@@ -43,6 +43,7 @@
 
 #define kUSDRenderParamCamera "camera"
 #define kUSDRenderParamFitMode "fitMode"
+#define kUSDRenderParamHeadlight "headlight"
 
 // The frame metadata key of the prim path behind a primId.id value: this prefix followed by the
 // value's bits as eight lowercase hexadecimal digits.
@@ -65,7 +66,8 @@ public:
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. A scene without lights is lit from the camera.",
+                       "frame metadata maps each hash to its path. Only the scene's lights light it, unless Headlight "
+                       "adds one at the camera.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -167,6 +169,7 @@ private:
 
     KnobChoiceWPtr _camera;
     KnobChoiceWPtr _fitMode;
+    KnobBoolWPtr _headlight;
     KnobChoiceWPtr _format;
     KnobIntWPtr _formatSize;
     KnobDoubleWPtr _formatPar;

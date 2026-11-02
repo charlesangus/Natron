@@ -1,10 +1,10 @@
-"""A Constant feeding a USDMaterial's Emissive Color input colours the card in the 3D view, live.
+"""A Constant feeding a USDEmissiveMaterial's Emissive input colours the card in the 3D view, live.
 
-The scene has no light and the view adds none, so the material's Shader is Emissive: the card shows
-the image unlit.
+The scene has no light and the view's headlight is off by default, so the material is the unlit
+USDEmissiveMaterial: the card shows the image as it is.
 
-Graph: Constant1 (red) into USDMaterial1's Emissive Color input, USDMaterial1 into USDCard1's
-Material input, USDCard1 into Viewer1. Once the scene view shows the card, the centre of the view
+Graph: Constant1 (red) into USDEmissiveMaterial1's Emissive input, USDEmissiveMaterial1 into
+USDCard1's Material input, USDCard1 into Viewer1. Once the scene view shows the card, the centre of the view
 must be red. Then the Constant's colour is set to green, and nothing else is touched: the view must
 re-sync and show the card green, with no error, within the timeout.
 
@@ -37,14 +37,11 @@ try:
         return node
 
     constant = make("net.sf.openfx.ConstantPlugin", 0, 0)
-    material = make("USDMaterial", 0, 100)
+    material = make("USDEmissiveMaterial", 0, 100)
     card = make("USDCard", 0, 200)
     color = constant.getParam("color")
     require(color is not None, "Constant1 has a color parameter")
     color.set(1.0, 0.0, 0.0, 1.0)
-    shader = material.getParam("shader")
-    require(shader is not None, "USDMaterial1 has a shader parameter")
-    shader.set("emissive")
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -106,8 +103,8 @@ try:
         report("SHOT " + path)
 
     def steps():
-        require(material.connectInput(4, constant), "connect Constant1 to USDMaterial1's Emissive Color input")
-        require(card.connectInput(0, material), "connect USDMaterial1 to USDCard1's Material input")
+        require(material.connectInput(0, constant), "connect Constant1 to USDEmissiveMaterial1's Emissive input")
+        require(card.connectInput(0, material), "connect USDEmissiveMaterial1 to USDCard1's Material input")
         require(viewer.connectInput(0, card), "connect the Viewer to USDCard1")
         ok = yield ("until", scene_drawn, STARTUP_TIMEOUT_S)
         require(ok, "the scene view shows the card")

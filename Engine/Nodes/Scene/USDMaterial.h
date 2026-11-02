@@ -39,9 +39,6 @@
 
 #define PLUGINID_NATRON_USDMATERIAL "USDMaterial"
 
-#define kUSDMaterialParamShader "shader"
-#define kUSDMaterialShaderLit "lit"
-#define kUSDMaterialShaderEmissive "emissive"
 #define kUSDMaterialParamDiffuseColor "diffuseColor"
 #define kUSDMaterialParamDiffuseTexture "diffuseTexture"
 #define kUSDMaterialParamMetallic "metallic"
@@ -74,10 +71,8 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
  * are in the project working space and written unchanged. A texture path that does not resolve
  * is authored anyway, with a node warning naming it.
  *
- * Shader picks how the surface shades: Lit, the full UsdPreviewSurface, which only the scene's own
- * lights light; or Emissive, which gives off its Emissive Color (or texture or input) unchanged by
- * any light, with no diffuse or specular response, as an image projected or shown on a card wants.
- * Emissive ignores the diffuse, metallic, roughness and normal controls and inputs.
+ * The surface is lit only by the scene's own lights (and a renderer's optional headlight): with
+ * none, only Emissive Color shows. USDEmissiveMaterial is the unlit material for images on cards.
  *
  * Optional image inputs (Diffuse Color, Roughness, Metallic, Normal, Emissive Color) drive the
  * same surface inputs, and Normal the surface's normal, from the image of the node connected,
@@ -104,8 +99,8 @@ public:
                        "places the material under its own prim and binds itself to it. Colours are in the project "
                        "working space and written unchanged. An image connected to an input of the same name drives "
                        "it instead, live and animated with no file on disk; the Normal input takes a tangent-space "
-                       "normal map encoded in 0..1. Shader Emissive makes an unlit surface that shows its emissive "
-                       "colour as it is, for projections and image cards.",
+                       "normal map encoded in 0..1. For an unlit image on a card or a projection, use "
+                       "USDEmissiveMaterial.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -141,10 +136,7 @@ private:
                      const LiveTextureSourceList& liveTextures,
                      std::string* errorMessage) const;
 
-    bool isEmissive() const;
-
     KnobStringWPtr _primPath;
-    KnobChoiceWPtr _shader;
     KnobColorWPtr _diffuseColor;
     KnobFileWPtr _diffuseTexture;
     KnobDoubleWPtr _metallic;

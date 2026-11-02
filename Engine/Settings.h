@@ -325,6 +325,12 @@ public:
     int getMaxOpenedNodesViewerContext() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
+
+    // Whether the viewer's 3D view adds a light at the camera to the scene's own lights.
+    bool getViewer3DHeadlight() const;
+
+    // Sets the preference and saves it.
+    void setViewer3DHeadlight(bool on);
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -621,6 +627,7 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobBoolPtr _viewer3DHeadlight;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

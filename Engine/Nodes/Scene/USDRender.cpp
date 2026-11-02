@@ -138,6 +138,15 @@ USDRender::initializeKnobs()
     fitMode->setAnimationEnabled(false);
     page->addKnob(fitMode);
     _fitMode = fitMode;
+
+    KnobBoolPtr headlight = createKnob<KnobBool>(tr("Headlight"));
+    headlight->setName(kUSDRenderParamHeadlight);
+    headlight->setHintToolTip(tr("Adds a light at the camera to the scene's own lights. Off, only the scene's lights light "
+                                 "it, and a scene with none renders its lit surfaces black."));
+    headlight->setDefaultValue(false);
+    headlight->setAnimationEnabled(false);
+    page->addKnob(headlight);
+    _headlight = headlight;
 } // USDRender::initializeKnobs
 
 void
@@ -416,6 +425,8 @@ USDRender::prepareRender(double time,
     setup->request.time = timeCode;
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
+    KnobBoolPtr headlightKnob = _headlight.lock();
+    setup->request.headlight = headlightKnob && headlightKnob->getValue();
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
         return false;

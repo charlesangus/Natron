@@ -73,7 +73,7 @@ class SceneViewportRenderer {
 public:
     enum DrawModeEnum {
         eDrawModeUnshaded = 0, // the prims' display colours, no lighting
-        eDrawModeShaded, // lit by a light at the camera
+        eDrawModeShaded, // lit by the scene's lights, and by a light at the camera with the headlight on
         eDrawModeWireframe
     };
 
@@ -146,6 +146,11 @@ public:
     void setShowGrid(bool show);
 
     bool getShowGrid() const;
+
+    // A light at the camera added to the scene's own lights in the shaded mode, off by default.
+    void setHeadlight(bool on);
+
+    bool getHeadlight() const;
 
     void setFreeCamera(const FreeCamera& camera);
 

@@ -51,6 +51,8 @@
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/garch/glApi.h>
+#include <pxr/imaging/glf/simpleLight.h>
+#include <pxr/imaging/glf/simpleMaterial.h>
 #include <pxr/imaging/hd/driver.h>
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
@@ -96,6 +98,8 @@ struct EngineEntry {
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
     std::unique_ptr<UsdImagingGLEngine> engine;
+    // Whether the engine lights the stage with a light at the camera.
+    bool headlight = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -189,6 +193,24 @@ takeGlError()
     }
 
     return first;
+}
+
+// The light at the camera usdview gives a stage, which the request may ask for.
+void
+setHeadlight(UsdImagingGLEngine* engine)
+{
+    GlfSimpleLight light;
+
+    light.SetIsCameraSpaceLight(true);
+    light.SetPosition(GfVec4f(0.f, 0.f, 0.f, 1.f));
+    light.SetAmbient(GfVec4f(0.f, 0.f, 0.f, 1.f));
+    light.SetDiffuse(GfVec4f(1.f, 1.f, 1.f, 1.f));
+    light.SetSpecular(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
+    GlfSimpleMaterial material;
+    material.SetAmbient(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
+    material.SetSpecular(GfVec4f(0.1f, 0.1f, 0.1f, 1.f));
+    material.SetShininess(32.);
+    engine->SetLightingState(GlfSimpleLightVector(1, light), material, GfVec4f(0.01f, 0.01f, 0.01f, 1.f));
 }
 
 /**
@@ -644,7 +666,9 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     }
     const bool edited = entry.stage->sync(request.scene);
     const UsdStageRefPtr& stage = entry.stage->getStage();
-    if (!entry.engine) {
+    // A headlight once set cannot be taken back, so the engine is made again when the request
+    // drops it.
+    if (!entry.engine || (request.headlight != entry.headlight)) {
         entry.engine.reset();
         entry.rendered = false;
         UsdImagingGLEngine::Parameters parameters;
@@ -659,6 +683,10 @@ RenderThread::renderStorm(const HydraRender::Request& request,
             _engineCount = _engines.size();
 
             return nullptr;
+        }
+        entry.headlight = request.headlight;
+        if (entry.headlight) {
+            setHeadlight(entry.engine.get());
         }
     }
     UsdImagingGLEngine* engine = entry.engine.get();

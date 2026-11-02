@@ -60,6 +60,7 @@
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -448,19 +449,24 @@ protected:
 
     /**
      * A card at the origin facing the camera at (0, 0, 10), its material's Diffuse Color input
-     * fed by a Constant, lit head on. Sets *constant to the Constant and returns the USDRender,
-     * kWidth x kHeight, null after a gtest failure.
+     * fed by a Constant, lit head on by a key light unless withLight is false, when the scene has
+     * no light. Sets *constant to the Constant and returns the USDRender, kWidth x kHeight, null
+     * after a gtest failure.
      **/
-    NodePtr createLiveTextureGraph(NodePtr* constant)
+    // The constant feeds the diffuse input of a USDMaterial, or with emissive the one input of a
+    // USDEmissiveMaterial.
+    NodePtr createLiveTextureGraph(NodePtr* constant,
+                                   bool withLight = true,
+                                   bool emissive = false)
     {
         NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr light = withLight ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT)) : NodePtr();
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!source || !material || !card || !camera || !light || !merge || !render) {
+        if (!source || !material || !card || !camera || (withLight && !light) || !merge || !render) {
             ADD_FAILURE() << "a node is not registered";
 
             return NodePtr();
@@ -476,15 +482,17 @@ protected:
         ok = ok && setString(card, kSceneParamPrimPath, "/Card");
         ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
         ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
-        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        ok = ok && (!light || setString(light, kSceneParamPrimPath, "/Key"));
         if (!ok) {
             return NodePtr();
         }
-        connectNodes(source, material, kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
-        connectNodes(light, merge, 2, true);
+        if (light) {
+            connectNodes(light, merge, 2, true);
+        }
         connectNodes(merge, render, 0, true);
         renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
         size->setValue(kWidth, ViewSpec::all(), 0);
@@ -713,6 +721,74 @@ TEST_F(USDRenderStormTest, ALiveTextureColoursTheCardWithTheImageConnected)
     EXPECT_GT(card.rgb[0], 0.1) << "card colour " << card.rgb[0] << ", " << card.rgb[1] << ", " << card.rgb[2];
     EXPECT_GT(card.rgb[0], 5. * card.rgb[1]);
     EXPECT_GT(card.rgb[0], 5. * card.rgb[2]);
+}
+
+// With no light in the scene a lit card is black, unless Headlight, off by default, adds a light at
+// the camera; turning it off again takes the light back.
+TEST_F(USDRenderStormTest, TheHeadlightLightsAnUnlitSceneOnlyWhenOn)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobBool* headlight = knob<KnobBool>(render, kUSDRenderParamHeadlight);
+    ASSERT_TRUE(color != nullptr);
+    ASSERT_TRUE(headlight != nullptr);
+    EXPECT_FALSE(headlight->getValue()) << "Headlight is off by default";
+    EXPECT_EQ(std::string("Headlight"), headlight->getLabel());
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage off = renderCard(render, 1.);
+    ASSERT_GT(off.count, 500);
+    EXPECT_LT(off.rgb[0], 0.02) << "card colour, headlight off " << off.rgb[0] << ", " << off.rgb[1] << ", " << off.rgb[2];
+    EXPECT_LT(off.rgb[1], 0.02);
+    EXPECT_LT(off.rgb[2], 0.02);
+
+    headlight->setValue(true);
+    const Coverage on = renderCard(render, 1.);
+    ASSERT_GT(on.count, 500);
+    EXPECT_GT(on.rgb[0], 0.1) << "card colour, headlight on " << on.rgb[0] << ", " << on.rgb[1] << ", " << on.rgb[2];
+    EXPECT_GT(on.rgb[0], 5. * on.rgb[1]);
+    EXPECT_GT(on.rgb[0], 5. * on.rgb[2]);
+
+    headlight->setValue(false);
+    const Coverage offAgain = renderCard(render, 1.);
+    ASSERT_GT(offAgain.count, 500);
+    EXPECT_LT(offAgain.rgb[0], 0.02) << "card colour, headlight off again " << offAgain.rgb[0];
+}
+
+// With no light and no headlight, the emissive material's card shows its input as it is.
+TEST_F(USDRenderStormTest, TheEmissiveMaterialShowsItsImageUnchangedWithNoLights)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobBool* headlight = knob<KnobBool>(render, kUSDRenderParamHeadlight);
+    ASSERT_TRUE(color != nullptr);
+    ASSERT_TRUE(headlight != nullptr);
+    ASSERT_FALSE(headlight->getValue());
+    const double source[3] = { 0.6, 0.3, 0.1 };
+    for (int c = 0; c < 3; ++c) {
+        color->setValue(source[c], ViewSpec::all(), c);
+    }
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage card = renderCard(render, 1.);
+    ASSERT_GT(card.count, 500);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(source[c], card.rgb[c], 0.03) << "channel " << c << ", card colour " << card.rgb[0] << ", " << card.rgb[1] << ", " << card.rgb[2];
+    }
 }
 
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test

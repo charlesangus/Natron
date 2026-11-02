@@ -48,11 +48,14 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
+#include <QSettings>
 #include <QSurfaceFormat>
 
 #include "Engine/AppManager.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Settings.h"
 #include "Gui/GuiGLRequirements.h"
 
 NATRON_NAMESPACE_USING
@@ -373,6 +376,62 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
     _renderer.setShowGrid(true);
     const int withGrid = countNonBackground(render());
     EXPECT_GT(withGrid, withoutGrid + 100) << "the grid drew nothing";
+}
+
+// The fixture has no light: the shaded box is black with the headlight off, lit with it on, and
+// black again once it is turned off, on the same engine.
+TEST_F(SceneViewportStorm, TheHeadlightLightsTheShadedSceneOnlyWhenOn)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_FALSE(_renderer.getHeadlight()) << "the headlight is off by default";
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const Rgb off = pixel(render(), 128, 128);
+    EXPECT_TRUE((off.r < 40) && (off.g < 40) && (off.b < 40)) << "shaded box, headlight off: " << off;
+
+    _renderer.setHeadlight(true);
+    EXPECT_TRUE(_renderer.getHeadlight());
+    const Rgb on = pixel(render(), 128, 128);
+    EXPECT_TRUE(isReddish(on)) << "shaded box, headlight on: " << on;
+
+    _renderer.setHeadlight(false);
+    const Rgb offAgain = pixel(render(), 128, 128);
+    EXPECT_TRUE((offAgain.r < 40) && (offAgain.g < 40) && (offAgain.b < 40)) << "shaded box, headlight off again: " << offAgain;
+    EXPECT_EQ(U64(1), _renderer.getEngineCount()) << "toggling the headlight keeps the engine";
+}
+
+// The 3D view's headlight is the Viewer 3D Headlight preference: off by default, and saved and
+// restored like any other.
+TEST(SceneViewportHeadlight, ThePreferenceIsOffByDefaultAndSavesAndLoads)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    ASSERT_TRUE(bool(settings));
+    KnobBoolPtr knob = settings->getKnobByNameAndType<KnobBool>("viewer3DHeadlight");
+    ASSERT_TRUE(bool(knob));
+    EXPECT_FALSE(knob->getDefaultValue(0));
+    EXPECT_EQ(std::string("Viewer 3D Headlight"), knob->getLabel());
+
+    const bool wasSaving = settings->getSaveSettings();
+    const bool was = settings->getViewer3DHeadlight();
+    settings->setSaveSettings(true);
+    settings->setViewer3DHeadlight(true);
+    {
+        QSettings saved(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        EXPECT_TRUE(saved.contains(QString::fromUtf8("viewer3DHeadlight")));
+    }
+    knob->setValue(false);
+    ASSERT_FALSE(settings->getViewer3DHeadlight());
+    settings->restoreKnobsFromSettings(std::vector<KnobI*>(1, knob.get()));
+    EXPECT_TRUE(settings->getViewer3DHeadlight()) << "the saved headlight is restored";
+
+    {
+        QSettings saved(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        saved.remove(QString::fromUtf8("viewer3DHeadlight"));
+    }
+    knob->setValue(was);
+    settings->setSaveSettings(wasSaving);
 }
 
 // The viewer's own drawing relies on the GL state it set before the scene view drew.

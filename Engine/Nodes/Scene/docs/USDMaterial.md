@@ -48,6 +48,10 @@ Changing the connected image re-writes this node's material and no other layer.
 An image that cannot be rendered leaves the renderer's fallback texture, and the
 node shows a warning that names it.
 
+The surface is lit only by the scene's lights, and by a renderer's headlight when
+one is turned on: with neither, only Emissive Color shows. For an unlit image on a
+card or a projection, use USDEmissiveMaterial.
+
 MaterialX is not supported.
 
 Tolerance: none recorded.

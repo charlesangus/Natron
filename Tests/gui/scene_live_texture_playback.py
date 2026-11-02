@@ -1,7 +1,7 @@
 """During playback the 3D view shows an animated live texture changing with the playhead.
 
 Graph: Constant1, its colour keyed red on odd frames and green on even ones over frames 1-24, into
-USDMaterial1's Emissive Color input (Shader Emissive, as the scene has no light), USDMaterial1 into
+USDEmissiveMaterial1's Emissive input (unlit, as the scene has no light), USDEmissiveMaterial1 into
 USDCard1's Material input, USDCard1 into Viewer1. Playback runs forward for a few seconds while the
 centre of the scene view is sampled every poll. The card must alternate between red and green many
 times, never staying on one colour for long: a view that repaints only when its scene worker happens
@@ -42,7 +42,7 @@ try:
 
     app.getProjectParam("frameRange").set(FIRST, LAST)
     constant = make("net.sf.openfx.ConstantPlugin", 0, 0)
-    material = make("USDMaterial", 0, 100)
+    material = make("USDEmissiveMaterial", 0, 100)
     card = make("USDCard", 0, 200)
     color = constant.getParam("color")
     require(color is not None, "Constant1 has a color parameter")
@@ -51,9 +51,6 @@ try:
             color.set(1.0, 0.0, 0.0, 1.0, frame)
         else:
             color.set(0.0, 1.0, 0.0, 1.0, frame)
-    shader = material.getParam("shader")
-    require(shader is not None, "USDMaterial1 has a shader parameter")
-    shader.set("emissive")
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -94,8 +91,8 @@ try:
         return None
 
     def steps():
-        require(material.connectInput(4, constant), "connect Constant1 to USDMaterial1's Emissive Color input")
-        require(card.connectInput(0, material), "connect USDMaterial1 to USDCard1's Material input")
+        require(material.connectInput(0, constant), "connect Constant1 to USDEmissiveMaterial1's Emissive input")
+        require(card.connectInput(0, material), "connect USDEmissiveMaterial1 to USDCard1's Material input")
         require(viewer.connectInput(0, card), "connect the Viewer to USDCard1")
         py_viewer = app.getViewer(viewer.getScriptName())
         require(py_viewer is not None, "the Viewer has a Python wrapper")

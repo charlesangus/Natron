@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
@@ -70,6 +71,8 @@
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/glf/simpleLight.h>
+#include <pxr/imaging/glf/simpleMaterial.h>
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
@@ -234,6 +237,9 @@ struct SceneViewportRenderer::Implementation {
     // Main thread only.
     DrawModeEnum drawMode = eDrawModeShaded;
     bool showGrid = true;
+    bool headlight = false;
+    // Whether the engine has been given a lighting state, which only another one undoes.
+    bool lightingSet = false;
     FreeCamera freeCamera;
     bool framedOnce = false;
     std::string lookThrough;
@@ -390,6 +396,7 @@ struct SceneViewportRenderer::Implementation {
         ++engineCount;
         ++engineConstructionCount;
         engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
+        lightingSet = false;
         applySelection();
 
         return true;
@@ -404,6 +411,33 @@ struct SceneViewportRenderer::Implementation {
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
         engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
+        applyLighting();
+    }
+
+    // A light at the camera, as usdview's default camera light, when headlight is on; none
+    // otherwise, so that only the scene's own lights light it.
+    void applyLighting()
+    {
+        if (!headlight && !lightingSet) {
+            return;
+        }
+        GlfSimpleLightVector lights;
+        if (headlight) {
+            GlfSimpleLight light;
+            light.SetIsCameraSpaceLight(true);
+            light.SetPosition(GfVec4f(0.f, 0.f, 0.f, 1.f));
+            light.SetAmbient(GfVec4f(0.f, 0.f, 0.f, 1.f));
+            light.SetDiffuse(GfVec4f(1.f, 1.f, 1.f, 1.f));
+            light.SetSpecular(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
+            lights.push_back(light);
+        }
+        GlfSimpleMaterial material;
+        material.SetAmbient(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
+        material.SetSpecular(GfVec4f(0.1f, 0.1f, 0.1f, 1.f));
+        material.SetShininess(32.);
+        const float ambient = headlight ? 0.01f : 0.f;
+        engine->SetLightingState(lights, material, GfVec4f(ambient, ambient, ambient, 1.f));
+        lightingSet = true;
     }
 
     // Needs stageMutex: a camera looked through is a prim of the stage.
@@ -738,6 +772,18 @@ bool
 SceneViewportRenderer::getShowGrid() const
 {
     return _imp->showGrid;
+}
+
+void
+SceneViewportRenderer::setHeadlight(bool on)
+{
+    _imp->headlight = on;
+}
+
+bool
+SceneViewportRenderer::getHeadlight() const
+{
+    return _imp->headlight;
 }
 
 void
@@ -1508,6 +1554,9 @@ SceneViewport::paintGL()
         const SceneViewportRenderer::FreeCamera& camera = _imp->renderer.getFreeCamera();
         setProperty("natronSceneFreeCamera", QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY });
     }
+    const bool headlight = appPTR->getCurrentSettings()->getViewer3DHeadlight();
+    _imp->renderer.setHeadlight(headlight);
+    setProperty("natronSceneHeadlight", headlight);
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done.
@@ -1819,6 +1868,16 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
     grid->setChecked(_imp->renderer.getShowGrid());
     QObject::connect(grid, &QAction::toggled, this, [this](bool show) {
         _imp->renderer.setShowGrid(show);
+        update();
+    });
+
+    QAction* headlight = menu.addAction(tr("Headlight"));
+    headlight->setToolTip(tr("Adds a light at the camera to the scene's own lights in the shaded mode. Saved as the "
+                             "Viewer 3D Headlight preference."));
+    headlight->setCheckable(true);
+    headlight->setChecked(appPTR->getCurrentSettings()->getViewer3DHeadlight());
+    QObject::connect(headlight, &QAction::toggled, this, [this](bool on) {
+        appPTR->getCurrentSettings()->setViewer3DHeadlight(on);
         update();
     });
 

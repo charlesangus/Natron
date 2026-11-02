@@ -1301,6 +1301,14 @@ Settings::initializeKnobsViewers()
                                             "displayed only for the render path for the current viewer "
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
+
+    _viewer3DHeadlight = AppManager::createKnob<KnobBool>(this, tr("Viewer 3D Headlight"));
+    _viewer3DHeadlight->setName("viewer3DHeadlight");
+    _viewer3DHeadlight->setHintToolTip(tr("Adds a light at the camera to the scene's own lights in the viewer's shaded 3D "
+                                          "view. Off, only the scene's lights light it, as USDRender does by default, and a "
+                                          "scene with none shows its lit surfaces black. Also toggled from the 3D view's "
+                                          "context menu."));
+    _viewersTab->addKnob(_viewer3DHeadlight);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1743,6 +1751,7 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _viewer3DHeadlight->setDefaultValue(false);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2473,6 +2482,11 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->onQueueRendersChanged( _queueRenders->getValue() );
     } else if ((k == _checkerboardTileSize.get()) || (k == _checkerboardColor1.get()) || (k == _checkerboardColor2.get())) {
         appPTR->onCheckerboardSettingsChanged();
+    } else if ((k == _viewer3DHeadlight.get()) && !_restoringSettings) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            (*it)->redrawAllViewers();
+        }
     } else if (k == _powerOf2Tiling.get() && !_restoringSettings) {
         appPTR->onViewerTileCacheSizeChanged();
     } else if (k == _texturesMode.get() && !_restoringSettings) {
@@ -2593,6 +2607,19 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+bool
+Settings::getViewer3DHeadlight() const
+{
+    return _viewer3DHeadlight->getValue();
+}
+
+void
+Settings::setViewer3DHeadlight(bool on)
+{
+    _viewer3DHeadlight->setValue(on);
+    saveSetting(_viewer3DHeadlight.get());
 }
 
 GpuComputeModeEnum

@@ -123,8 +123,9 @@ public:
     void reloadFile();
 
     /**
-     * @brief getRandomFrameName
-     * @param f The index of the frame.
+     * @brief The file the knob names at the given frame and view, with project variables expanded
+     * (and a relative path made relative to the project) before any frame or view pattern is
+     * substituted. The stored value is left as written.
      */
     std::string getFileName(int time, ViewSpec view);
 
@@ -252,6 +253,11 @@ public:
         return _showsRewriteButton;
     }
 
+    /**
+     * @brief The file written at the given frame and view, with project variables expanded (and a
+     * relative path made relative to the project) before any frame or view pattern is
+     * substituted. The stored value is left as written.
+     */
     QString generateFileNameAtTime(SequenceTime time, ViewSpec view);
 
 Q_SIGNALS:

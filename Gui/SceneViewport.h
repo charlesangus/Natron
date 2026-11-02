@@ -122,7 +122,7 @@ public:
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
 
-    // How many engines this renderer has made: one per GL context it rendered in.
+    // How many engines this renderer has made: one per GL context it rendered in and delegate.
     U64 getEngineCount() const;
 
     // How many engines every renderer of the process has made.
@@ -245,6 +245,20 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    /**
+     * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
+     * empty id. A change destroys the engine, so it needs the context of render() current.
+     **/
+    void setRendererId(const std::string& id);
+
+    const std::string& getRendererId() const;
+
+    // Why the chosen delegate could not render, empty if it can or has not been tried yet.
+    const std::string& getRendererError() const;
+
+    // The delegate of the engine held, empty if none is.
+    std::string getEngineRendererId() const;
+
     // The background colour render() clears to.
     static void getBackgroundColor(float rgb[3]);
 
@@ -297,6 +311,9 @@ public:
 
     void setDrawMode(SceneViewportRenderer::DrawModeEnum mode);
 
+    // Renders with the Hydra render delegate id, whatever any USDRender node renders with.
+    void setRendererId(const QString& id);
+
     void setLookThroughCamera(const QString& path);
 
     void frameScene();
@@ -342,8 +359,9 @@ protected:
 
 private:
     // Mirrors the error, whether a scene is shown, whether every request is synced, how many
-    // engines the renderer made and whether it holds one into the natronSceneError,
-    // natronSceneShown, natronSceneSynced, natronSceneEngineCount and natronSceneEngineHeld
+    // engines the renderer made, whether it holds one, its delegate and that delegate's error into
+    // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,
+    // natronSceneEngineHeld, natronSceneRenderer and natronSceneRendererError
     // properties.
     void publishState();
 

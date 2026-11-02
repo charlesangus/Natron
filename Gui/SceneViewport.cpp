@@ -2339,8 +2339,7 @@ matchesKeyBinding(const char* actionID,
         return false;
     }
 
-    return ((binding->key == key) && ((modifiers & relevant) == binding->modifiers)) ||
-           (binding->altKey && (binding->altKey == key) && ((modifiers & relevant) == binding->altModifiers));
+    return ((binding->key == key) && ((modifiers & relevant) == binding->modifiers)) || (binding->altKey && (binding->altKey == key) && ((modifiers & relevant) == binding->altModifiers));
 }
 
 // The transform widget's tools, their key actions, script names and menu labels.

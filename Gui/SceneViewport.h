@@ -155,8 +155,10 @@ public:
 
     /**
      * @brief Applies transform from the next render() on. Hydra's colour correction only uses
-     * OpenColorIO when $OCIO is set, so without it, without a config, or when the config cannot
-     * build the transform, the sRGB transform is applied instead.
+     * OpenColorIO when $OCIO is set, so without it, without a config, when the config cannot
+     * build the transform, or when the transform needs 1D or 2D LUT textures on the GPU (which
+     * Hydra's colour correction cannot bind, e.g. ACES 2.0 output transforms), the sRGB
+     * transform is applied instead.
      **/
     void setDisplayTransform(const DisplayTransform& transform);
 

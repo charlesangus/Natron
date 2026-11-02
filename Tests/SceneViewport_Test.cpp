@@ -509,7 +509,9 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
 
 // Through the studio config, the card and the background show as the 2D viewer shows images: from
 // the working space through the display and view, each pixel as OpenColorIO's CPU processor
-// computes it; without a config the sRGB transform comes back.
+// computes it. A view whose GPU shader needs 1D or 2D LUT textures (the ACES 2.0 output
+// transforms), which Hydra's colour correction cannot bind, and no config at all both give the
+// sRGB transform, with the card still drawn.
 TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
 {
     if (_skip) {
@@ -524,32 +526,48 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
     ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
 
-    for (const char* view : { kSDRView, "Un-tone-mapped" }) {
+    const Rgb srgb { codeValue(srgbEncode(0.6f)), 0, codeValue(srgbEncode(0.5f)) };
+    const int srgbBackground = codeValue(srgbEncode(0.05f));
+
+    for (const char* view : { "Un-tone-mapped", kSDRView }) {
         SceneViewportRenderer::DisplayTransform transform;
         transform.config = cm.getConfig();
         transform.colorSpace = kWorkingSpace;
         transform.display = kDisplay;
         transform.view = view;
-        _renderer.setDisplayTransform(transform);
-        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << view;
 
         OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
         displayView->setSrc(kWorkingSpace);
         displayView->setDisplay(kDisplay);
         displayView->setView(view);
-        OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = cm.getConfig()->getProcessor(displayView)->getDefaultCPUProcessor();
-        float plate[3] = { 0.6f, 0.f, 0.5f };
-        cpu->applyRGB(plate);
-        float background[3] = { 0.05f, 0.05f, 0.05f };
-        cpu->applyRGB(background);
-        const Rgb expected { codeValue(plate[0]), codeValue(plate[1]), codeValue(plate[2]) };
-        const Rgb srgb { codeValue(srgbEncode(0.6f)), 0, codeValue(srgbEncode(0.5f)) };
-        // Otherwise the check below could not tell the view from sRGB.
-        ASSERT_GT(std::abs(expected.r - srgb.r) + std::abs(expected.b - srgb.b), 20) << view << ": " << expected;
+        OCIO_NAMESPACE::ConstProcessorRcPtr processor = cm.getConfig()->getProcessor(displayView);
+        OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+        shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+        processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+        const bool needsTextures = shader->getNumTextures() > 0;
+        // The SDR view must exercise the fallback, the un-tone-mapped one the OpenColorIO path.
+        ASSERT_EQ(std::string(view) == kSDRView, needsTextures) << view;
+
+        _renderer.setDisplayTransform(transform);
+        ASSERT_EQ(!needsTextures, _renderer.isUsingOpenColorIO()) << view;
+
+        Rgb expected = srgb;
+        int expectedBackground = srgbBackground;
+        if (!needsTextures) {
+            const OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = processor->getDefaultCPUProcessor();
+            float plate[3] = { 0.6f, 0.f, 0.5f };
+            cpu->applyRGB(plate);
+            float background[3] = { 0.05f, 0.05f, 0.05f };
+            cpu->applyRGB(background);
+            expected = Rgb { codeValue(plate[0]), codeValue(plate[1]), codeValue(plate[2]) };
+            expectedBackground = codeValue(background[0]);
+            // Otherwise the check below could not tell the view from sRGB.
+            ASSERT_GT(std::abs(expected.r - srgb.r) + std::abs(expected.b - srgb.b), 20) << view << ": " << expected;
+        }
 
         float reported[3];
         _renderer.getBackgroundColor(reported);
-        EXPECT_NEAR(codeValue(background[0]), codeValue(reported[0]), 1) << view;
+        EXPECT_NEAR(expectedBackground, codeValue(reported[0]), 1) << view;
 
         const QImage image = render();
         const Rgb projected = pixel(image, 97, 128);
@@ -557,15 +575,15 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
         EXPECT_NEAR(expected.g, projected.g, 8) << view << ": " << projected << " expected " << expected;
         EXPECT_NEAR(expected.b, projected.b, 8) << view << ": " << projected << " expected " << expected;
         const Rgb outside = pixel(image, 20, 128);
-        EXPECT_NEAR(codeValue(background[0]), outside.r, 4) << view << ": " << outside;
-        EXPECT_NEAR(codeValue(background[2]), outside.b, 4) << view << ": " << outside;
+        EXPECT_NEAR(expectedBackground, outside.r, 4) << view << ": " << outside;
+        EXPECT_NEAR(expectedBackground, outside.b, 4) << view << ": " << outside;
     }
 
     _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
     EXPECT_FALSE(_renderer.isUsingOpenColorIO());
     const Rgb projected = pixel(render(), 97, 128);
-    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), projected.r, 8) << projected;
-    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), projected.b, 8) << projected;
+    EXPECT_NEAR(srgb.r, projected.r, 8) << projected;
+    EXPECT_NEAR(srgb.b, projected.b, 8) << projected;
 }
 
 // /World/Cam sits at (1, 1, 10) with the fallback aperture (vertical 15.2908 mm) and a 35 mm lens:

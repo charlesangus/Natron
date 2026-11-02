@@ -787,10 +787,22 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
             displayView->setSrc(transform.colorSpace.c_str());
             displayView->setDisplay(transform.display.c_str());
             displayView->setView(transform.view.c_str());
-            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-            transform.config->getProcessor(displayView)->getDefaultCPUProcessor()->applyRGB(rgb);
-            for (int c = 0; c < 3; ++c) {
-                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
+            OCIO_NAMESPACE::ConstProcessorRcPtr processor = transform.config->getProcessor(displayView);
+            // Hydra's colour correction task (v26.08 hdx/colorCorrectionTask.cpp) loses the
+            // sampler name of every 1D and 2D LUT texture OpenColorIO asks for, and the draw
+            // then fails with a GL error, leaving only the clear colour on screen. ACES 2.0
+            // output transforms need such textures; analytic transforms and 3D LUTs do not.
+            OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+            shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+            processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+            if (shader->getNumTextures() > 0) {
+                useOpenColorIO = false;
+            } else {
+                float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
+                processor->getDefaultCPUProcessor()->applyRGB(rgb);
+                for (int c = 0; c < 3; ++c) {
+                    background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
+                }
             }
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();

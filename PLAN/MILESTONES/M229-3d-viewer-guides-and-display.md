@@ -81,3 +81,4 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
   - verify: A test reads back the drawn guide extents for a rect light (width 2, height 1, scaled) and a sphere light (radius 0.5) and checks they match the prim's world-space size.
   - size: M
 - 2026-11-02 — UAT passed on the condition that sized guides are accurate (P4) (user). The user couldn't find the guide-size preference: the AppImage they tested (2026-10-28) predates P3; it is Preferences > Viewers > Viewer 3D Guide Size (PM).
+- 2026-11-02 — Camera frustum depth is not intrinsic (a camera has an aperture but no extent), so the frustum is drawn to the guide-size preference's depth, capped by the far clip; the film-back follows the authored aperture and focal length (PM, from review).

@@ -1079,7 +1079,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results, &QListView::activated, this, &SceneGraphPanel::onResultActivated);
     QObject::connect(_imp->results, &QListView::clicked, this, &SceneGraphPanel::onResultActivated);
-    QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset);
+    // Queued: the model fetches no rows while it is resetting, so nothing could be reopened then.
+    QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     if (gui) {

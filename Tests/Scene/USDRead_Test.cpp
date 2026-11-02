@@ -883,6 +883,7 @@ TEST_F(USDReadTest, FirstLevelsOpensTheViewerToTheGivenDepth)
     SceneStage closed(true);
     closed.sync(noLevel);
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), closed.computeViewerFolds(none, noDefaults));
-    // The Scene Graph opening the root prim draws all of it.
-    EXPECT_TRUE(closed.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, noDefaults).empty());
+    // The Scene Graph opening the root prim opens one level: its children show, each folded.
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world.AppendChild(PXR_NS::TfToken("Box")), world.AppendChild(PXR_NS::TfToken("Ball")), world.AppendChild(PXR_NS::TfToken("Cam")) }),
+              closed.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, noDefaults));
 }

@@ -2850,6 +2850,17 @@ struct SceneViewport::Implementation {
     bool foldBudgetPending = false;
     // The root prims the budget folded for foldNode.
     std::vector<std::string> budgetFolds;
+    // The prims setFolded() closed and then opened again. They fold as the scene's customData
+    // would, so the open override opens them one level, like any other folded prim.
+    std::vector<std::string> reopenedFolds;
+
+    std::vector<std::string> foldDefaults() const
+    {
+        std::vector<std::string> defaults = budgetFolds;
+        defaults.insert(defaults.end(), reopenedFolds.begin(), reopenedFolds.end());
+
+        return defaults;
+    }
 
     // Before a scene is requested: a node other than the last starts with no fold state.
     void followViewedNode()
@@ -2861,6 +2872,7 @@ struct SceneViewport::Implementation {
         foldNodeSet = true;
         foldNode = viewed;
         budgetFolds.clear();
+        reopenedFolds.clear();
         renderer.setFoldState(std::map<std::string, bool>(), budgetFolds, false);
         foldBudgetPending = bool(viewed);
     }
@@ -3142,8 +3154,13 @@ SceneViewport::onSynced(U64 serial,
         const int budget = appPTR->getCurrentSettings()->getViewer3DPrimBudget();
         if (!_imp->renderer.hasAuthoredFolds() && (budget > 0) && (_imp->renderer.countPrims((std::size_t)budget) > (std::size_t)budget)) {
             _imp->budgetFolds = _imp->renderer.getRootPrims();
-            _imp->renderer.setFoldState(_imp->renderer.getFoldOverrides(), _imp->budgetFolds, true);
+            _imp->renderer.setFoldState(_imp->renderer.getFoldOverrides(), _imp->foldDefaults(), true);
         }
+    } else if (ok && !_imp->budgetFolds.empty() && _imp->renderer.hasAuthoredFolds()) {
+        // The scene folds itself now (USDRead's Open Mode changed, say): the budget only stands in
+        // for a scene that folds nothing.
+        _imp->budgetFolds.clear();
+        _imp->renderer.setFoldState(_imp->renderer.getFoldOverrides(), _imp->foldDefaults(), true);
     }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
@@ -3972,14 +3989,20 @@ SceneViewport::setFolded(const QStringList& paths,
     std::map<std::string, bool> overrides = _imp->renderer.getFoldOverrides();
     const std::map<std::string, bool> before = overrides;
     for (const QString& path : paths) {
-        overrides[path.toStdString()] = folded;
+        const std::string key = path.toStdString();
+        const std::map<std::string, bool>::const_iterator was = before.find(key);
+        if (!folded && (was != before.end()) && was->second
+            && (std::find(_imp->reopenedFolds.begin(), _imp->reopenedFolds.end(), key) == _imp->reopenedFolds.end())) {
+            _imp->reopenedFolds.push_back(key);
+        }
+        overrides[key] = folded;
     }
     if (overrides == before) {
         return;
     }
     // A fold made before the node's first sync stands in for the budget's.
     _imp->foldBudgetPending = false;
-    _imp->renderer.setFoldState(overrides, _imp->budgetFolds, true);
+    _imp->renderer.setFoldState(overrides, _imp->foldDefaults(), true);
     update();
     Q_EMIT foldsChanged();
 }

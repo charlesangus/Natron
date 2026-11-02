@@ -486,7 +486,8 @@ SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
         bool byCustomData = (parentLevels == 0);
         int levels = (parentLevels == kAllLevels) ? kAllLevels : std::max(parentLevels - 1, 0);
         int openLevels = 0;
-        if (getCustomDataInt(prim, openLevelsKey, &openLevels)) {
+        const bool opensLevels = getCustomDataInt(prim, openLevelsKey, &openLevels);
+        if (opensLevels) {
             folded = false;
             byCustomData = false;
             levels = (openLevels < 0) ? kAllLevels : openLevels;
@@ -501,6 +502,10 @@ SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
         }
         if (defaults.count(path)) {
             folded = true;
+            // Unvisited, the levels it opens still fold what is below them.
+            if (opensLevels && (openLevels >= 0) && authored) {
+                *authored = true;
+            }
         }
         const std::map<PXR_NS::SdfPath, bool>::const_iterator overridden = overrides.find(path);
         if (overridden != overrides.end()) {

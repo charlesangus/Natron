@@ -315,7 +315,9 @@ TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
 
     // Defaults fold on top of the scene, and overrides on top of both; a folded prim opened by an
     // override leaves its children folded unless the scene opens them.
-    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath> { world }));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath> { world }, &authored));
+    // The levels /World's customData opens would fold below it: authored, though /World is not visited.
+    EXPECT_TRUE(authored);
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, std::set<PXR_NS::SdfPath> { world }));
 
     // Applying writes the folds, bounds included, and a render stage of the scene sees none.

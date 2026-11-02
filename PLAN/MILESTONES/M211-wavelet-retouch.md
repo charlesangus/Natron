@@ -188,3 +188,4 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - size: M
 
 **Verification gate:** Retouch parity and GUI checks pass; a new AppImage is accepted by the user.
+- 2026-11-02 — P6 at 1c7e18874. Decisions (user): the carried source offset starts at 0 like RotoPaint; Ctrl at pen down drags the offset as in RotoPaint; RotoPaint's Reset Transform button is relabelled Reset Clone Offset to match its script name.

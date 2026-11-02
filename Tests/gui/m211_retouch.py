@@ -533,6 +533,7 @@ try:
                 check(share >= MIN_OUTLINE_ANGLES, "the brush outline stays drawn around the pen while painting")
                 if mid is not None:
                     mid.save(os.path.join(gt.OUT, "retouch_viewer_mid_stroke.png"))
+        send_mouse(w, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
         yield ("sleep", 2 * SETTLE_MS)
         brush_text = shape_column_text(node, "Brush1")
         report("NOTE brush column text %r" % (brush_text,))

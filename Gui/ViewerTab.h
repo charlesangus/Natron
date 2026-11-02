@@ -504,6 +504,9 @@ private:
      **/
     void applyDisplayTransform();
 
+    // Gives the scene viewport the menus' display and view, as the GL viewer has them.
+    void refreshSceneDisplayTransform();
+
     void refreshFPSBoxFromClipPreferences();
 
     void onSpinboxFpsChangedInternal(double fps);

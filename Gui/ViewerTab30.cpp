@@ -224,6 +224,7 @@ ViewerTab::applyDisplayTransform()
     if (_imp->viewerNode) {
         _imp->viewerNode->setDisplayTransform(display, view, look);
     }
+    refreshSceneDisplayTransform();
 }
 
 void

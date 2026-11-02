@@ -39,6 +39,8 @@
 #include <QtCore/QPoint>
 #include <QtCore/QString>
 
+#include <OpenColorIO/OpenColorIO.h>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
 
@@ -141,6 +143,25 @@ public:
     void setDrawMode(DrawModeEnum mode);
 
     DrawModeEnum getDrawMode() const;
+
+    // How what Storm draws reaches the screen: the display and view of config, from colorSpace,
+    // as the 2D viewer shows images.
+    struct DisplayTransform {
+        OCIO_NAMESPACE::ConstConfigRcPtr config;
+        std::string colorSpace;
+        std::string display;
+        std::string view;
+    };
+
+    /**
+     * @brief Applies transform from the next render() on. Hydra's colour correction only uses
+     * OpenColorIO when $OCIO is set, so without it, without a config, or when the config cannot
+     * build the transform, the sRGB transform is applied instead.
+     **/
+    void setDisplayTransform(const DisplayTransform& transform);
+
+    // Whether render() applies the OpenColorIO display transform rather than sRGB.
+    bool isUsingOpenColorIO() const;
 
     // The ground grid, drawn over the scene by default.
     void setShowGrid(bool show);
@@ -249,8 +270,8 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
-    // The background colour render() clears to.
-    static void getBackgroundColor(float rgb[3]);
+    // The background colour render() clears to, as it shows through the display transform.
+    void getBackgroundColor(float rgb[3]) const;
 
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
@@ -300,6 +321,8 @@ public:
     SceneViewportRenderer& getRenderer();
 
     void setDrawMode(SceneViewportRenderer::DrawModeEnum mode);
+
+    void setDisplayTransform(const SceneViewportRenderer::DisplayTransform& transform);
 
     void setLookThroughCamera(const QString& path);
 

@@ -1123,6 +1123,7 @@ ViewerTab::onActiveInputDataKindChanged()
 
             return NodePtr();
         });
+        refreshSceneDisplayTransform();
     }
     if (!_imp->sceneViewport) {
         return;
@@ -1138,6 +1139,25 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
 } // onActiveInputDataKindChanged
+
+void
+ViewerTab::refreshSceneDisplayTransform()
+{
+    if (!_imp->sceneViewport) {
+        return;
+    }
+    SceneViewportRenderer::DisplayTransform transform;
+    ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (colorManagement) {
+        // The look is left out: Hydra's OpenColorIO 2 path sets the look name as the display
+        // (v26.08 hdx/colorCorrectionTask.cpp), which would break the whole transform.
+        getDisplayTransform(&transform.display, &transform.view, nullptr);
+        transform.config = colorManagement->getConfig();
+        transform.colorSpace = project->getWorkingColorSpace();
+    }
+    _imp->sceneViewport->setDisplayTransform(transform);
+}
 
 void
 ViewerTab::onSceneEvaluated(int textureIndex)

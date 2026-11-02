@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Gui/GuiGLRequirements.h"
 
 #include <pxr/base/gf/vec4f.h>
@@ -144,9 +145,10 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
 // /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
 // it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent
 // premultiplied red. The projector's frame covers the card's left half, x -2..0; Crop on and
-// Outside transparent leave the right half undrawn. /World/Backdrop, an opaque blue 6-unit square
-// at z = -1, lies behind the whole card. From the fixture's free camera the card spans pixels
-// 66..190 and the backdrop 44..212 on both axes.
+// Outside transparent leave the right half undrawn. /World/Backdrop, an opaque 6-unit square at
+// z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
+// card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
+// both axes.
 ScenePayload
 projectedCardScene(std::string* error)
 {
@@ -166,7 +168,14 @@ projectedCardScene(std::string* error)
     }
 
     PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
-    backdrop.CreateDisplayColorAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f, 0.f, 1.f))));
+    const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
+    PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
+    surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+    surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
+    surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+    backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
     PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
 
     const PXR_NS::SdfPath materialPath("/World/Projection");
@@ -235,16 +244,50 @@ isBluish(const Rgb& c)
     return (c.b > 90) && (c.b > c.r + 40) && (c.b > c.g + 20);
 }
 
-bool
-isBackground(const Rgb& c)
+int
+codeValue(float v)
 {
-    float rgb[3];
-
-    SceneViewportRenderer::getBackgroundColor(rgb);
-    const int grey = int(std::lround(rgb[0] * 255.f));
-
-    return (std::abs(c.r - grey) <= 20) && (std::abs(c.g - grey) <= 20) && (std::abs(c.b - grey) <= 20);
+    return int(std::lround(std::min(std::max(v, 0.f), 1.f) * 255.f));
 }
+
+float
+srgbEncode(float linear)
+{
+    return (linear <= 0.0031308f) ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+}
+
+const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
+const char* const kWorkingSpace = "ACEScg";
+const char* const kDisplay = "sRGB - Display";
+const char* const kSDRView = "ACES 2.0 - SDR 100 nits (Rec.709)";
+
+// Sets $OCIO, without which Hydra's colour correction ignores OpenColorIO, and puts it and OCIO's
+// current config back when it goes.
+class ScopedOcioEnv {
+public:
+    explicit ScopedOcioEnv(const char* value)
+        : _had(std::getenv("OCIO") != nullptr)
+        , _previous(_had ? std::getenv("OCIO") : "")
+        , _config(OCIO_NAMESPACE::GetCurrentConfig())
+    {
+        setenv("OCIO", value, 1);
+    }
+
+    ~ScopedOcioEnv()
+    {
+        if (_had) {
+            setenv("OCIO", _previous.c_str(), 1);
+        } else {
+            unsetenv("OCIO");
+        }
+        OCIO_NAMESPACE::SetCurrentConfig(_config);
+    }
+
+private:
+    bool _had;
+    std::string _previous;
+    OCIO_NAMESPACE::ConstConfigRcPtr _config;
+};
 
 class SceneViewportStorm
     : public ::testing::Test {
@@ -333,7 +376,17 @@ protected:
         return Rgb { c.red(), c.green(), c.blue() };
     }
 
-    static int countNonBackground(const QImage& image)
+    bool isBackground(const Rgb& c) const
+    {
+        float rgb[3];
+
+        _renderer.getBackgroundColor(rgb);
+        const int grey = codeValue(rgb[0]);
+
+        return (std::abs(c.r - grey) <= 20) && (std::abs(c.g - grey) <= 20) && (std::abs(c.b - grey) <= 20);
+    }
+
+    int countNonBackground(const QImage& image) const
     {
         int n = 0;
 
@@ -427,15 +480,17 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
     const ScenePayload scene = projectedCardScene(&error);
     ASSERT_TRUE(error.empty()) << error;
     ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    // Unshaded draws display colours and leaves every surface shader out.
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
 
     const QImage unselected = render();
     const Rgb projected = pixel(unselected, 97, 128);
     const Rgb beside = pixel(unselected, 159, 128);
     EXPECT_TRUE(isBluish(beside)) << "the backdrop where the card is transparent: " << beside;
-    // Half-transparent red over the blue backdrop: both show.
-    EXPECT_GT(projected.r, 120) << "the projected plate: " << projected;
-    EXPECT_GT(projected.b, 90) << "the backdrop through the plate: " << projected;
-    EXPECT_LT(projected.g, 60) << projected;
+    // (0.6, 0, 0, 0.5) premultiplied over linear blue is (0.6, 0, 0.5), (203, 0, 188) once in sRGB.
+    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), projected.r, 8) << "the projected plate: " << projected;
+    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), projected.b, 8) << "the backdrop through the plate: " << projected;
+    EXPECT_LT(projected.g, 10) << projected;
     EXPECT_TRUE(isBackground(pixel(unselected, 20, 128))) << pixel(unselected, 20, 128);
 
     EXPECT_EQ(std::string("/World/Card"), _renderer.pick(97, 128, kSize, kSize));
@@ -444,14 +499,73 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
     EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(97, 200, kSize, kSize));
     EXPECT_EQ(std::string(), _renderer.pick(20, 128, kSize, kSize));
 
+    // Storm's translucent pass draws no selection highlight, so only the backdrop is checked.
     _renderer.setSelectedPrim("/World/Card");
     const QImage selected = render();
-    const Rgb highlighted = pixel(selected, 97, 128);
-    EXPECT_GT(std::abs(highlighted.r - projected.r) + std::abs(highlighted.g - projected.g) + std::abs(highlighted.b - projected.b), 30)
-        << "highlight left the projected card unchanged: " << projected << " -> " << highlighted;
     const Rgb besideSelected = pixel(selected, 159, 128);
     EXPECT_LE(std::abs(besideSelected.r - beside.r) + std::abs(besideSelected.g - beside.g) + std::abs(besideSelected.b - beside.b), 6)
         << "the card's transparent half highlighted the backdrop: " << beside << " -> " << besideSelected;
+}
+
+// Through the studio config, the card and the background show as the 2D viewer shows images: from
+// the working space through the display and view, each pixel as OpenColorIO's CPU processor
+// computes it; without a config the sRGB transform comes back.
+TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
+{
+    if (_skip) {
+        return;
+    }
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const ScopedOcioEnv env(kStudioURI);
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    for (const char* view : { kSDRView, "Un-tone-mapped" }) {
+        SceneViewportRenderer::DisplayTransform transform;
+        transform.config = cm.getConfig();
+        transform.colorSpace = kWorkingSpace;
+        transform.display = kDisplay;
+        transform.view = view;
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << view;
+
+        OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+        displayView->setSrc(kWorkingSpace);
+        displayView->setDisplay(kDisplay);
+        displayView->setView(view);
+        OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = cm.getConfig()->getProcessor(displayView)->getDefaultCPUProcessor();
+        float plate[3] = { 0.6f, 0.f, 0.5f };
+        cpu->applyRGB(plate);
+        float background[3] = { 0.05f, 0.05f, 0.05f };
+        cpu->applyRGB(background);
+        const Rgb expected { codeValue(plate[0]), codeValue(plate[1]), codeValue(plate[2]) };
+        const Rgb srgb { codeValue(srgbEncode(0.6f)), 0, codeValue(srgbEncode(0.5f)) };
+        // Otherwise the check below could not tell the view from sRGB.
+        ASSERT_GT(std::abs(expected.r - srgb.r) + std::abs(expected.b - srgb.b), 20) << view << ": " << expected;
+
+        float reported[3];
+        _renderer.getBackgroundColor(reported);
+        EXPECT_NEAR(codeValue(background[0]), codeValue(reported[0]), 1) << view;
+
+        const QImage image = render();
+        const Rgb projected = pixel(image, 97, 128);
+        EXPECT_NEAR(expected.r, projected.r, 8) << view << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.g, projected.g, 8) << view << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.b, projected.b, 8) << view << ": " << projected << " expected " << expected;
+        const Rgb outside = pixel(image, 20, 128);
+        EXPECT_NEAR(codeValue(background[0]), outside.r, 4) << view << ": " << outside;
+        EXPECT_NEAR(codeValue(background[2]), outside.b, 4) << view << ": " << outside;
+    }
+
+    _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
+    EXPECT_FALSE(_renderer.isUsingOpenColorIO());
+    const Rgb projected = pixel(render(), 97, 128);
+    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), projected.r, 8) << projected;
+    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), projected.b, 8) << projected;
 }
 
 // /World/Cam sits at (1, 1, 10) with the fallback aperture (vertical 15.2908 mm) and a 35 mm lens:

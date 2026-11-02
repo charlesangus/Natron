@@ -68,8 +68,10 @@
 #include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/getenv.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
@@ -94,10 +96,10 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Storm clears to this, in scene-linear; it reaches the framebuffer through the sRGB transform.
+// Storm clears to this, in scene-linear; it reaches the framebuffer through the display transform.
 const float kBackgroundLinear = 0.05f;
 // The same grey once encoded to sRGB, for the clears and checks done outside Storm.
-const float kBackgroundDisplay = 0.2478f;
+const float kBackgroundSrgb = 0.2478f;
 
 // Storm may need more than one pass before an image is final.
 const int kMaxRenderPasses = 8;
@@ -241,6 +243,12 @@ struct SceneViewportRenderer::Implementation {
     std::unique_ptr<UsdImagingGLEngine> engine;
     U64 engineCount = 0;
 
+    DisplayTransform displayTransform;
+    bool useOpenColorIO = false;
+    float backgroundDisplay[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    // Set when the engine's colour correction task must be rebuilt from OCIO's current config.
+    bool colorCorrectionDirty = false;
+
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
     TransformHandles handles;
@@ -342,7 +350,14 @@ struct SceneViewportRenderer::Implementation {
 
         params.frame = UsdTimeCode(timeCode());
         params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
-        params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
+        if (useOpenColorIO) {
+            params.colorCorrectionMode = HdxColorCorrectionTokens->openColorIO;
+            params.ocioDisplay = TfToken(displayTransform.display);
+            params.ocioView = TfToken(displayTransform.view);
+            params.ocioColorSpace = TfToken(displayTransform.colorSpace);
+        } else {
+            params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
+        }
         params.highlight = true;
         switch (drawMode) {
         case eDrawModeUnshaded:
@@ -387,12 +402,36 @@ struct SceneViewportRenderer::Implementation {
         }
         UsdImagingGLEngine::Parameters parameters;
         engine.reset(new UsdImagingGLEngine(parameters));
+        // Without a render output Storm draws straight into the bound framebuffer and the colour
+        // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
+        engine->SetRendererAov(HdAovTokens->color);
+        colorCorrectionDirty = true;
         ++engineCount;
         ++engineConstructionCount;
         engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
         applySelection();
 
         return true;
+    }
+
+    // Needs the GL context current and an engine. Hydra's colour correction task reads OCIO's
+    // process-wide current config when its parameters change (v26.08
+    // hdx/colorCorrectionTask.cpp), so the config is made current here, and a config that changed
+    // under unchanged names forces new parameters by passing through disabled.
+    void prepareColorCorrection()
+    {
+        if (!colorCorrectionDirty) {
+            return;
+        }
+        colorCorrectionDirty = false;
+        if (useOpenColorIO) {
+            try {
+                OCIO_NAMESPACE::SetCurrentConfig(displayTransform.config);
+            } catch (const std::exception& e) {
+                qWarning() << "SceneViewport: OpenColorIO:" << e.what();
+            }
+        }
+        engine->SetColorCorrectionSettings(HdxColorCorrectionTokens->disabled);
     }
 
     void setCamera(const GfFrustum& frustum,
@@ -729,6 +768,48 @@ SceneViewportRenderer::getDrawMode() const
 }
 
 void
+SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
+{
+    const DisplayTransform& current = _imp->displayTransform;
+    if ((transform.config == current.config) && (transform.colorSpace == current.colorSpace)
+        && (transform.display == current.display) && (transform.view == current.view)) {
+        return;
+    }
+    _imp->displayTransform = transform;
+    _imp->colorCorrectionDirty = true;
+
+    bool useOpenColorIO = transform.config && !transform.colorSpace.empty() && !transform.display.empty()
+        && !transform.view.empty() && !TfGetenv("OCIO").empty();
+    float background[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    if (useOpenColorIO) {
+        try {
+            OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+            displayView->setSrc(transform.colorSpace.c_str());
+            displayView->setDisplay(transform.display.c_str());
+            displayView->setView(transform.view.c_str());
+            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
+            transform.config->getProcessor(displayView)->getDefaultCPUProcessor()->applyRGB(rgb);
+            for (int c = 0; c < 3; ++c) {
+                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
+            }
+        } catch (const std::exception& e) {
+            qWarning() << "SceneViewport: OpenColorIO:" << e.what();
+            useOpenColorIO = false;
+        }
+    }
+    _imp->useOpenColorIO = useOpenColorIO;
+    for (int c = 0; c < 3; ++c) {
+        _imp->backgroundDisplay[c] = background[c];
+    }
+}
+
+bool
+SceneViewportRenderer::isUsingOpenColorIO() const
+{
+    return _imp->useOpenColorIO;
+}
+
+void
 SceneViewportRenderer::setShowGrid(bool show)
 {
     _imp->showGrid = show;
@@ -1020,7 +1101,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     glDisable(GL_FRAMEBUFFER_SRGB);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
-    glClearColor(kBackgroundDisplay, kBackgroundDisplay, kBackgroundDisplay, 1.f);
+    glClearColor(_imp->backgroundDisplay[0], _imp->backgroundDisplay[1], _imp->backgroundDisplay[2], 1.f);
     glClearDepth(1.);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!_imp->ensureEngine()) {
@@ -1030,6 +1111,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->setCamera(frustum, width, height, fbo);
+    _imp->prepareColorCorrection();
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
@@ -1096,9 +1178,11 @@ SceneViewportRenderer::releaseGL()
 }
 
 void
-SceneViewportRenderer::getBackgroundColor(float rgb[3])
+SceneViewportRenderer::getBackgroundColor(float rgb[3]) const
 {
-    rgb[0] = rgb[1] = rgb[2] = kBackgroundDisplay;
+    for (int c = 0; c < 3; ++c) {
+        rgb[c] = _imp->backgroundDisplay[c];
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,6 +1448,13 @@ void
 SceneViewport::setDrawMode(SceneViewportRenderer::DrawModeEnum mode)
 {
     _imp->renderer.setDrawMode(mode);
+    update();
+}
+
+void
+SceneViewport::setDisplayTransform(const SceneViewportRenderer::DisplayTransform& transform)
+{
+    _imp->renderer.setDisplayTransform(transform);
     update();
 }
 

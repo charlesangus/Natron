@@ -67,6 +67,8 @@ struct InstallRequest {
 };
 
 const char* const kCancelled = "download cancelled";
+// Model archives come from CDNs that can pause for longer than the 5 s default between chunks.
+const int kModelHeartbeatMs = 30000;
 
 std::string
 joined(const QStringList& list)
@@ -290,7 +292,7 @@ ModelDownloader::start(const std::string& id,
     }
 
     const std::string package = entry->package;
-    job->downloader = new FileDownloader(url, false);
+    job->downloader = new FileDownloader(url, false, kModelHeartbeatMs);
     QNetworkReply* reply = job->downloader->getReply();
     const std::vector<std::string> ids = job->ids;
     QObject::connect(reply, &QNetworkReply::readyRead, this, [this, package] { onDataReady(package); });
@@ -342,7 +344,9 @@ ModelDownloader::onDownloaded(const std::string& package)
     job->file->close();
     job->file.reset();
     const QNetworkReply::NetworkError networkError = reply->error();
-    const std::string networkErrorString = (networkError == QNetworkReply::NoError) ? std::string() : describeNetworkError(networkError, reply->errorString(), reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute).toString(), job->sslErrors, reply->url());
+    const bool stalled = job->downloader->stalled();
+    const std::string networkErrorString = (networkError == QNetworkReply::NoError) ? std::string() : stalled ? "the server stopped sending data for " + std::to_string(kModelHeartbeatMs / 1000) + " s (" + reply->url().toDisplayString().toStdString() + ")"
+                                                                                                              : describeNetworkError(networkError, reply->errorString(), reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute).toString(), job->sslErrors, reply->url());
     job->downloader->deleteLater();
     job->downloader = nullptr;
 

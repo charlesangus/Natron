@@ -341,7 +341,6 @@ for config in configs:
 
 # Settings::tryLoadOpenColorIOConfig() exports OCIO long after the interpreter
 # snapshotted the environment into os.environ, so read the live one.
-
 libc = ctypes.CDLL(None)
 libc.getenv.restype = ctypes.c_char_p
 ocio = libc.getenv(b"OCIO")

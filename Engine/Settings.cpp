@@ -2268,7 +2268,7 @@ Settings::restoreKnobsFromSettings(const std::vector<KnobI*>& knobs)
                 } else {
                     assert(false);
                 }
-            } else if (!_restoringSettings) {
+            } else if (!_restoringSettings && knobs[i]->getIsPersistent()) {
                 // Never saved means the stored value is the default, so a discarded edit reverts to it.
                 knobs[i]->resetToDefaultValueWithoutSecretNessAndEnabledNess(j);
             }

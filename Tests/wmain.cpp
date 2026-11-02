@@ -216,8 +216,7 @@ registerCacheStressTestPlugins()
 void
 registerAiTestPlugins()
 {
-    // An AI node needs a model knob; none ships before the AI nodes, so ModelKnob_Test.cpp has
-    // a constant generator that carries one.
+    // A constant generator that carries a model knob, for the ModelKnob tests.
     registerTestBuiltInPlugin<AiModelTestEffect>();
 }
 }

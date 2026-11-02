@@ -147,6 +147,8 @@ TEST(RFVPatternMatch, PatternForLabelMatchesExactlyTheLabel)
         { "re:x", "x" },
         { "1.5 (a+b)", "1x5 (a+b)" },
         { "^$.|?*+()[]{}\\", "^$.|?*+()[]{}" },
+        { "line one\nline two", "line one line two" },
+        { "carriage\rreturn", "carriage return" },
     };
     for (const LabelCase& c : cases) {
         const std::string pattern = RFV::patternForLabel(c.label);
@@ -160,4 +162,5 @@ TEST(RFVPatternMatch, PatternForLabelMatchesExactlyTheLabel)
     EXPECT_EQ(std::string("re:a\\*b"), RFV::patternForLabel("a*b"));
     EXPECT_EQ(std::string("re:re:x"), RFV::patternForLabel("re:x"));
     EXPECT_EQ(std::string(), RFV::patternForLabel(""));
+    EXPECT_EQ(std::string("re:a\\nb\\rc"), RFV::patternForLabel("a\nb\rc"));
 }

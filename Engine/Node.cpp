@@ -2788,36 +2788,6 @@ Node::restoreSublabel()
 }
 
 void
-Node::loadKnob(const KnobIPtr& knob,
-               const Serialization::NodeSerialization& serialization,
-               bool /*updateKnobGui*/)
-{
-
-    const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
-
-    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-
-        if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) != knob->getName()) {
-            continue;
-        }
-
-        // Non persistent knobs are loaded too when the project saved a value for them.
-        // A knob might change its type between versions: fromSerialization() then loads nothing.
-        if (!knob->fromSerialization(*it)) {
-            continue;
-        }
-
-        if (knob->getName() == kOfxImageEffectFileParamName) {
-            computeFrameRangeForReader( knob.get() );
-        }
-
-        break;
-    }
-
-} // Node::loadKnob
-
-
-void
 Node::setPagesOrder(const std::list<std::string>& pages)
 {
     //re-order the pages

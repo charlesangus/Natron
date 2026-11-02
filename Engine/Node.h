@@ -139,10 +139,6 @@ public:
 
     void initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName);
 
-    void loadKnob(const KnobIPtr& knob,
-                  const Serialization::NodeSerialization& serialization,
-                  bool updateKnobGui = false);
-
     ///Set values for Knobs given their serialization
     void setValuesFromSerialization(const CreateNodeArgs& args);
 

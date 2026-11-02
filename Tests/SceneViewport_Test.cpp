@@ -201,7 +201,7 @@ projectedCardScene(std::string* error)
     texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2)
         .ConnectToSource(reader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2));
     for (const char* name : { "wrapS", "wrapT" }) {
-        texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token).Set(PXR_NS::TfToken("black"));
+        texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token).Set(PXR_NS::TfToken("clamp"));
     }
     texture.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(0.6f, 0.f, 0.f, 0.5f));
     shader.CreateInput(PXR_NS::TfToken("plate"), PXR_NS::SdfValueTypeNames->Float4)

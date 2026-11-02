@@ -114,6 +114,19 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     }
     vec4 Preference = worldToReference * Pworld;
 
+    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
+    // 0..1 across the format; the texture covers the region of definition, which may reach
+    // beyond the format or fall short of it.
+    vec2 frame = c.xy / ((c.w > 0.0) ? c.w : 1.0);
+    vec4 window = HdGet_plateTransform();
+    vec2 uv = frame * window.xy + window.zw;
+    bool crop = HdGet_crop() != 0;
+    // Sampled before any fragment returns or discards: the texture's level of detail comes from
+    // the coordinates' differences across the 2x2 fragment quad, which are undefined once a
+    // neighbour has left, so a quad straddling the frame's edge would read a coarse, smeared
+    // level. The texture clamps at its edges, as Crop off extends them.
+    vec4 plate = HdGet_plate(uv);
+
     int projectOn = HdGet_projectOn();
     if (projectOn != 0) {
         vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * inverse(worldToReference)
@@ -125,31 +138,21 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
         }
     }
 
-    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
     // Behind the camera nothing projects.
     if (c.w <= 0.0) {
         return natronProject3DOutside();
     }
-    vec3 ndc = c.xyz / c.w;
-    if (HdGet_clip() != 0 && (ndc.z < -1.0 || ndc.z > 1.0)) {
+    float depth = c.z / c.w;
+    if (HdGet_clip() != 0 && (depth < -1.0 || depth > 1.0)) {
         return natronProject3DOutside();
     }
-    // 0..1 across the format; the texture covers the region of definition, which may reach
-    // beyond the format or fall short of it.
-    vec2 uv = ndc.xy;
-    bool crop = HdGet_crop() != 0;
+    if (crop && (any(lessThan(frame, vec2(0.0))) || any(greaterThan(frame, vec2(1.0))))) {
+        return natronProject3DOutside();
+    }
     if (crop && (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
-        return natronProject3DOutside();
-    }
-    vec4 window = HdGet_plateTransform();
-    uv = uv * window.xy + window.zw;
-    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-        if (crop) {
-            // Inside the format but outside the image's data.
-            return ApplyColorOverrides(vec4(0.0));
-        }
-        uv = clamp(uv, vec2(0.0), vec2(1.0));
+        // Inside the format but outside the image's data.
+        return ApplyColorOverrides(vec4(0.0));
     }
 
-    return ApplyColorOverrides(HdGet_plate(uv));
+    return ApplyColorOverrides(plate);
 }

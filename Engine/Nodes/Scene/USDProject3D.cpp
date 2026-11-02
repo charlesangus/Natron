@@ -738,7 +738,10 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             && texture && texture.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdUVTexture")));
         const PXR_NS::UsdShadeInput st = ok ? texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2) : PXR_NS::UsdShadeInput();
         ok = st && st.ConnectToSource(readerOutput);
-        const PXR_NS::TfToken wrap(crop ? "black" : "clamp");
+        // Clamp even with Crop on, where the shader cuts at the frame and the data itself: a black
+        // border would filter into the plate's edge texels, leaving a see-through line between
+        // the plate and an opaque Outside.
+        const PXR_NS::TfToken wrap("clamp");
         for (const char* name : { "wrapS", "wrapT" }) {
             const PXR_NS::UsdShadeInput input = ok ? texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeInput();
             ok = input && input.Set(wrap);

@@ -339,7 +339,11 @@ future core work has solid ground to build on.
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | doing | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | doing | - | bosley-native-nodes | E10 | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
-| M276 | Cache Responsiveness Audit | todo | M260 |  | E14 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
+| M276 | Upstream Reuse On Edits | todo | M260 |  | E6 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
+| M300 | Unified Tiered Cache | todo | M276 |  | E6 | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
+| M301 | GPU Cache Tier | todo | M300 |  | E6 | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
+| M302 | Viewer Render State Cues | todo | - |  | E6 | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
+| M303 | Interactive Edit Latency | todo | M301 |  | E6 | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
 | M277 | Graph Creation And Insert | doing | M192, M193 | bosley-native-nodes | E10 | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 | M279 | Utility Renderer Foundation | todo | M248 |  | E19 | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |

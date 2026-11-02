@@ -1,43 +1,66 @@
-# M276 - Cache Responsiveness Audit
+# M276 - Upstream Reuse On Edits
 
-Determine why an expensive Raw-correction chain feeding HSVKeyer appears to recompute upstream work and deliver slow interactive feedback even after M260 - Cache Invalidation Follow-ups, then fix the measured cache or scheduling cause without weakening correctness.
+Measure why a downstream edit re-renders unchanged upstream work, and record the baseline the cache redesign is judged against. The reported cases: a ~24MP camera RAW → raw develop chain → Grade → Viewer, where dragging Grade is far from interactive and unchanged upstream nodes light up as if rendering; and the earlier Raw-correction → HSVKeyer chain. A code read on main (cd383143f) found the likely causes, but none were measured: GPU region outputs reach only the per-frame `FrameStore` (`Engine/GpuRegionTask.cpp` `storeOutputs` ~:2853) and never a cache; `Node::shouldCacheOutput` (`Engine/Node.cpp` ~:8225) skips nodes in a linear chain unless a panel is open; auto-proxy's draft key and mip switch at drag start and release; and `GpuPlacement` `isCached` (~:925) probing only the non-draft key. This milestone instruments, attributes and baselines. The structural fixes are M300 - Unified Tiered Cache and M301 - GPU Cache Tier.
 
 ## Scope
 
 **In:**
-- A reproducible Raw-correction → HSVKeyer interactive benchmark.
-- Cache hit/miss, hash-change and task-scheduling instrumentation sufficient to attribute repeated work.
-- A targeted fix and regression budget for the confirmed cause.
+- Cache hit/miss and executed-device fields in the `NATRON_RENDER_PROFILE` records.
+- An edit-latency benchmark: knob edits on the last node of a RAW chain (Grade) and of the Raw → HSVKeyer chain, timed from knob change to the viewer showing the new image, with per-node execution counts.
+- An attribution report that classifies every upstream execution.
+- The placement `isCached` draft-key bug, because it is independent of the redesign.
+- The baseline the later milestones' gates compare against.
 
 **Out:**
-- New cache architecture or eviction policy without evidence from the reproduction.
+- The cache redesign (M300 - Unified Tiered Cache) and device caching (M301 - GPU Cache Tier).
+- The viewer stale cue and the node-highlight semantics (M302 - Viewer Render State Cues).
+- Draft and auto-proxy behaviour, and the ≤33 ms gate (M303 - Interactive Edit Latency).
+- Render-scale support in the raw nodes (no milestone; low priority, user 2026-11-01).
 
-## Phase 276.1: Reproduce and attribute
+**Edge cases:**
+- Below 100% zoom, the raw nodes (`eSupportsNo`) are refused by GPU placement (`GpuPlacement.cpp` ~:659), so the chain runs on the CPU at full resolution. The benchmark covers fit-to-window and 100% so both paths show.
+- With the settings panel of the edited node open, today's rule caches its inputs. The benchmark runs with the panel open and with it closed.
 
-- [ ] M276.P1.T1 — Build the interactive keyer cache benchmark
-  - files: `tools/bench/`, synthetic Raw/keyer fixture, benchmark docs
-  - approach: Reproduce the reported chain with a small deterministic source; measure first render, repeat render and HSVKeyer-only adjustments under both schedulers while recording upstream executions.
-  - verify: Repeated runs emit timing and per-node execution counts in a machine-readable result.
+**Assumptions:**
+- The Canon 5D Mk III fixture (`Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2`, ~22MP) is close enough to the user's 24MP file to reproduce the problem.
+
+## Decisions
+
+- 2026-11-01 — **Broadened from "Cache Responsiveness Audit" (user):** the RAW → Grade report and the GPU-caching question fold in here. The fixes move to M300 - Unified Tiered Cache and M301 - GPU Cache Tier, so this milestone measures and baselines, and fixes only the independent placement-key bug.
+- 2026-11-01 — **The benchmark uses existing raw fixtures (user):** no new camera raws (LFS quota). The latency gate is judged on the user's host with a release AppImage.
+
+## Phase 276.1: Instrument and reproduce
+
+- [ ] M276.P1.T1 — Record cache hits and the executing device in the render profile
+  - files: `Engine/RenderScheduler.cpp` (profile writer ~:185), `Engine/GpuRegionTask.cpp` (region record), `tools/bench/render-profile-report.py`, `tools/bench/render-profile-sample.jsonl`
+  - approach: Add `cache` (`hit` | `partial` | `miss` | `bypass`) and `device` (`cpu` | `gpu`) to each task record. Each region record lists the members that executed, as opposed to those served from a store. Determine the hit state where `renderRoI` finds `rectsToRender` empty or non-empty (`EffectInstanceRenderRoI.cpp` ~:1885). Teach the report script to print per-node counts of hits and executions.
+  - verify: A unit or script test renders a two-node graph twice and the second profile shows the upstream task as `hit`. The report script prints per-node hit/execute counts on the updated sample.
   - size: M
 
-- [ ] M276.P1.T2 — Trace unexpected invalidation or cache misses
-  - files: cache/hash diagnostic hooks, benchmark analyser, focused tests
-  - approach: Attribute every repeated upstream render to a hash change, missing region, eviction, action invalidation or scheduler dependency and record the smallest confirmed cause.
-  - verify: The report accounts for every upstream execution in the reproduction and distinguishes expected from redundant work.
+- [ ] M276.P1.T2 — Build the edit-latency benchmark
+  - files: `tools/bench/edit_latency_bench.py` (new), `tools/bench/edit_latency.sh` (new), `tools/bench/README.md`
+  - approach: A GUI script run under Xvfb (recipe: `build/deeprepro/run-gui.sh`; pre-seed `checkForUpdates=false`). It builds Read(Canon fixture) → the raw develop chain used by `tools/bench/raw_large_bench.sh` → Grade → Viewer, plus a Raw chain → HSVKeyer variant. It sets the viewer to fit-to-window or 100%, then applies N successive value changes to the last node's knob. Per edit it records the latency from knob set to completion of the viewer's root task (from the profile) and the per-node executions. Switches: `NATRON_GPU` on/off, auto-proxy on/off, the edited node's panel open/closed. Output is JSON lines.
+  - verify: A run against a release AppImage writes one JSON line per edit per configuration, with latency and per-node execution counts.
   - size: M
 
-## Phase 276.2: Fix and guard
-
-- [ ] M276.P2.T1 — Remove the confirmed redundant upstream work
-  - files: exact cache/hash/scheduler area identified by Phase 276.1, focused regression test
-  - approach: Apply the narrow fix supported by the trace while retaining M260's file-pinning and mixed-state protections.
-  - verify: Correctness suites pass and the focused test fails before the fix and passes after it.
-  - size: L
-
-- [ ] M276.P2.T2 — Set the interactive repeat-render budget
-  - files: cache benchmark baseline and comparison script
-  - approach: Record the fixed host result and fail comparison when HSVKeyer-only edits re-execute the unchanged expensive upstream chain or exceed the accepted repeat-render budget.
-  - verify: The benchmark passes on the target host and reports near-immediate repeat feedback with upstream cache hits.
+- [ ] M276.P1.T3 — Attribute every upstream execution
+  - files: `docs/perf/interactive-edit-attribution.md` (new), `tools/bench/edit_latency_bench.py` (classifier)
+  - approach: Run the benchmark's configuration matrix. Classify each upstream execution by cause: not admitted (`shouldCacheOutput` false), GPU region member (no cache), mip or draft key change, placement `isCached` miss, eviction, or genuine hash change. Each cause cites the code path. State which later milestone owns each cause.
+  - verify: The report accounts for every upstream execution in every configuration, with none left unclassified.
   - size: M
 
-**Verification gate:** cache correctness and stress suites pass; the new benchmark attributes no redundant upstream execution and meets the user-approved interactive latency budget on the target host.
+## Phase 276.2: Independent fix and baseline
+
+- [ ] M276.P2.T1 — Placement probes the key the render will use
+  - files: `Engine/GpuPlacement.cpp` (`isCached` ~:925-962), `Tests/GpuPlacement_Test.cpp`
+  - approach: `isCached` builds its `ImageKey` with the task's actual draft flag and mip level, matching the lookup `renderRoI` will make, instead of the non-draft key.
+  - verify: A new `GpuPlacement_Test` case with a cached draft image keeps the node on the CPU. It fails before the fix and passes after.
+  - size: M
+
+- [ ] M276.P2.T2 — Record the edit-latency baseline
+  - files: `tools/bench/baselines/edit-latency.jsonl` (new), `tools/bench/compare.py` (edit-latency mode), `tools/bench/README.md`
+  - approach: Run the benchmark on the user's host with the release AppImage built from this branch. Commit the results as the baseline. `compare.py` reports per-configuration median and p95 latency and upstream execution counts against it.
+  - verify: `compare.py` run on a fresh benchmark run against the committed baseline prints the per-configuration deltas.
+  - size: M
+
+**Verification gate:** cache and placement suites pass. The profile carries hit/miss and device fields. The attribution report accounts for every upstream execution. The baseline is recorded from the user's host.

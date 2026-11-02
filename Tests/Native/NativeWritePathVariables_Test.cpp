@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstddef>
 #include <list>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -80,10 +81,7 @@ protected:
         ASSERT_TRUE(_dir.isValid());
         ASSERT_TRUE(QDir(_dir.path()).mkpath(QString::fromUtf8(kOutSubdir)));
         ASSERT_TRUE(QDir(_dir.path()).mkpath(QString::fromUtf8("rel")));
-        // The variables must resolve before any file name is set: a [Project] change rewrites the
-        // file names spelled through it.
         setPathVariable(NATRON_PROJECT_ENV_VAR_NAME, _dir.path().toStdString());
-        // A project path is a string variable of the project, here spelled through [Project].
         std::string error;
         ASSERT_TRUE(bool(project()->addPathVariable(kOutVariable, std::string("[") + NATRON_PROJECT_ENV_VAR_NAME + "]/" + kOutSubdir, &error))) << error;
 
@@ -329,4 +327,39 @@ TEST_F(NativeWritePathVariablesTest, AnUnknownVariableFailsAndWritesNothing)
     EXPECT_FALSE(exists(pathOf("[Nope]")));
     EXPECT_FALSE(exists("[Nope]/w.exr"));
     EXPECT_EQ(std::string("[Nope]/w.exr"), fileKnob()->getValue());
+}
+
+TEST_F(NativeWritePathVariablesTest, SavingElsewhereKeepsDirectAndNestedProjectPathsOnTheSameFiles)
+{
+    // Canonical, so that the rewritten values are the shortest relative spelling.
+    const QString root = QFileInfo(_dir.path()).canonicalFilePath();
+    ASSERT_FALSE(root.isEmpty());
+    ASSERT_TRUE(QDir(root).mkpath(QString::fromUtf8("saved")));
+    setPathVariable(NATRON_PROJECT_ENV_VAR_NAME, root.toStdString());
+
+    setFile("[Project]/out/w.####.exr");
+    NodePtr nestedWriter = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+    ASSERT_TRUE(bool(nestedWriter));
+    KnobOutputFile* nestedFile = dynamic_cast<KnobOutputFile*>(nestedWriter->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(nestedFile != NULL);
+    nestedFile->setValue(std::string("[") + kOutVariable + "]/n.####.exr");
+
+    const QString direct = root + QString::fromUtf8("/out/w.0001.exr");
+    const QString nested = root + QString::fromUtf8("/out/n.0001.exr");
+    ASSERT_EQ(direct, QDir::cleanPath(fileKnob()->generateFileNameAtTime(1, ViewIdx(0))));
+    ASSERT_EQ(nested, QDir::cleanPath(nestedFile->generateFileNameAtTime(1, ViewIdx(0))));
+
+    QString savedFilePath;
+    ASSERT_TRUE(project()->saveProject(root + QString::fromUtf8("/saved/"), QString::fromUtf8("moved.ntpz"), &savedFilePath));
+
+    std::map<std::string, std::string> env;
+    project()->getEnvironmentVariables(env);
+    EXPECT_EQ((root + QString::fromUtf8("/saved")).toStdString(), env[NATRON_PROJECT_ENV_VAR_NAME]);
+    EXPECT_EQ(std::string("[Project]/../out/w.####.exr"), fileKnob()->getValue());
+    EXPECT_EQ(std::string("[Project]/../out"), env[kOutVariable]);
+    EXPECT_EQ(std::string("[") + kOutVariable + "]/n.####.exr", nestedFile->getValue());
+    EXPECT_EQ(direct, QDir::cleanPath(fileKnob()->generateFileNameAtTime(1, ViewIdx(0))));
+    EXPECT_EQ(nested, QDir::cleanPath(nestedFile->generateFileNameAtTime(1, ViewIdx(0))));
+
+    nestedWriter->destroyNode(true, false);
 }

@@ -71,6 +71,7 @@ AddPathVariableDialog::AddPathVariableDialog(Gui* gui,
     , _created(false)
     , _fileKnob()
     , _fileName()
+    , _fileIsFolder(false)
 {
     setObjectName(QString::fromUtf8("addPathVariableDialog"));
     setWindowTitle(tr("Add Path Variable"));
@@ -267,7 +268,7 @@ AddPathVariableDialog::accept()
     std::shared_ptr<AddPathVariableCommand> command = std::make_shared<AddPathVariableCommand>(project, name, value);
     KnobStringBasePtr fileKnob = std::dynamic_pointer_cast<KnobStringBase>(_fileKnob.lock());
     if (fileKnob) {
-        command->addValueEdit(fileKnob, fileKnob->getValue(), filePathUnder(name, _fileName));
+        command->addValueEdit(fileKnob, fileKnob->getValue(), filePathUnder(name, _fileName, _fileIsFolder));
     }
     error = pushPathVariableCommand(_gui, project, command);
     if (!error.empty()) {
@@ -337,14 +338,14 @@ AddPathVariableDialog::availableName(const Project& project,
 
 std::string
 AddPathVariableDialog::filePathUnder(const std::string& name,
-                                     const std::string& fileName)
+                                     const std::string& fileName,
+                                     bool isFolder)
 {
-    std::string ret = '[' + name + ']';
-    if (!fileName.empty()) {
-        ret += '/' + fileName;
+    if (isFolder) {
+        return '[' + name + "]/";
     }
 
-    return ret;
+    return '[' + name + "]/" + fileName;
 }
 
 bool
@@ -361,9 +362,11 @@ AddPathVariableDialog::runForFilePath(Gui* gui,
     }
     const std::string filePath = isString->getValue();
     const std::string expanded = project->expandPathPreview(filePath);
+    // A value ending in '/' names a folder, which the variable then names itself.
+    const bool isFolder = !filePath.empty() && (filePath[filePath.size() - 1] == '/');
     std::string folder;
     if (!expanded.empty()) {
-        folder = QFileInfo(QString::fromUtf8(expanded.c_str())).path().toStdString();
+        folder = isFolder ? expanded : QFileInfo(QString::fromUtf8(expanded.c_str())).path().toStdString();
     }
     const std::string value = folder.empty() ? std::string() : spellThroughProjectPaths(*project, folder);
     const std::string name = folder.empty() ? std::string() : availableName(*project, QFileInfo(QString::fromUtf8(folder.c_str())).fileName().toStdString());
@@ -371,12 +374,16 @@ AddPathVariableDialog::runForFilePath(Gui* gui,
     AddPathVariableDialog dialog(gui, project, QString::fromUtf8(name.c_str()), QString::fromUtf8(value.c_str()), parent);
     // The file part is kept as typed, so a frame pattern or a view token survives unexpanded.
     const std::size_t slash = filePath.find_last_of('/');
-    dialog._fileKnob = fileKnob;
+    // An empty file path stays empty: there is nothing to spell through the variable.
+    if (!filePath.empty()) {
+        dialog._fileKnob = fileKnob;
+    }
     dialog._fileName = (slash == std::string::npos) ? filePath : filePath.substr(slash + 1);
+    dialog._fileIsFolder = isFolder;
     if (!dialog.exec()) {
         return false;
     }
-    *newFilePath = filePathUnder(dialog.getVariableName().toStdString(), dialog._fileName);
+    *newFilePath = filePath.empty() ? filePath : filePathUnder(dialog.getVariableName().toStdString(), dialog._fileName, dialog._fileIsFolder);
     *created = dialog.hasCreatedVariable();
 
     return true;

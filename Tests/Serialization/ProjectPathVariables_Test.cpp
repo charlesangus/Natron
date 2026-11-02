@@ -223,3 +223,22 @@ TEST_F(ProjectPathVariablesTest, ANestedVariableResolvesAfterSaveAndLoad)
     ASSERT_FALSE(projectDir.empty());
     EXPECT_EQ(QDir::cleanPath(QString::fromStdString(projectDir + "/shots/s01")).toStdString(), project()->expandPathPreview("[shot]"));
 }
+
+TEST_F(ProjectPathVariablesTest, EachProjectPathNamesTheFolderItExpandsTo)
+{
+    std::string error;
+    ASSERT_TRUE(bool(project()->addPathVariable("shots", "[Project]/shots", &error))) << error;
+    ASSERT_TRUE(bool(project()->addPathVariable("shot", "[shots]/s01/", &error))) << error;
+    ASSERT_TRUE(bool(project()->addPathVariable("note", "not a path", &error))) << error;
+
+    std::map<std::string, std::string> targets;
+    project()->getPathVariableTargets(targets);
+    EXPECT_EQ(_dir.path().toStdString(), targets[NATRON_PROJECT_ENV_VAR_NAME]);
+    EXPECT_EQ(under("shots"), targets["shots"]);
+    EXPECT_EQ(under("shots/s01"), targets["shot"]);
+    EXPECT_EQ(0u, targets.count("note"));
+
+    std::string path = under("shots/s01/a.exr");
+    project()->simplifyPath(path);
+    EXPECT_EQ(std::string("[shot]/a.exr"), path);
+}

@@ -511,6 +511,31 @@ public:
     void refreshFilePathKnobsUsingPathVariable(const std::string& name);
 
     /**
+     * @brief Refreshes, as refreshFilePathKnobsUsingPathVariable() does, the file-path parameters
+     * whose value used a string variable of previous, or uses a current declaration, where the two
+     * declaration sets differ (a name present in only one, or a different value). Does nothing while the
+     * project loads or closes. RFV::refreshDeclarationSnapshot() calls it when the project's
+     * declarations change.
+     **/
+    void onPathVariableDeclarationsChanged(const RFVDeclarationsConstPtr& previous);
+
+    /**
+     * @brief The folder each project path names: the name of every project path (see
+     * getEnvironmentVariables()) whose value, with the project paths it uses expanded, is an
+     * absolute path, with that path cleaned of '.', '..' and a trailing '/'. A value that stays
+     * relative, such as a text that is not a path, is left out. MT-safe.
+     **/
+    void getPathVariableTargets(std::map<std::string, std::string>& targets) const;
+
+    /**
+     * @brief Rewrites each string variable of the project whose value starts with [projectPathName]
+     * as fixFilePath() rewrites a file path, so that it keeps naming the same folder once
+     * [projectPathName] is newProjectPath. File paths spelled through such a variable keep their
+     * files with it.
+     **/
+    void fixRelativePathVariables(const std::string& projectPathName, const std::string& newProjectPath);
+
+    /**
      * @brief Expands the environment variables in the given string that are found in env
      **/
     static void expandVariable(const std::map<std::string, std::string>& env, std::string& str);
@@ -571,8 +596,9 @@ public:
     void canonicalizePath(std::string& str);
 
     /**
-     * @brief Tries to find any variable that str could start with and simplify the given path with the longest
-     * variable matching. It internally uses findReplaceVariable
+     * @brief Tries to find any project path whose folder (see getPathVariableTargets()) str could
+     * start with and simplify the given path with the longest one. It internally uses
+     * findReplaceVariable
      **/
     void simplifyPath(std::string& str);
 
@@ -758,6 +784,16 @@ private:
 
     // Re-keys the nodes whose hash includes the project frame range.
     void rehashNodesUsingFrameRange();
+
+    // The file-path parameters of the project's nodes whose value uses one of names under env, or
+    // under previousEnv when that is not empty.
+    KnobsVec getFilePathKnobsUsing(const std::map<std::string, std::string>& env,
+                                   const std::set<std::string>& names,
+                                   const std::map<std::string, std::string>& previousEnv) const;
+
+    // Refreshes the file-path parameters using a built-in project path whose value changed since
+    // the last call, outside project load and close.
+    void refreshFilePathKnobsUsingBuiltinPaths();
 
     std::string encodeLayersKnobTable() const;
 

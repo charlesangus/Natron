@@ -53,6 +53,10 @@ public:
     virtual void redo() OVERRIDE FINAL
     {
         _command->redo();
+        // A command that changed nothing must not leave an entry to undo.
+        if (!_command->getError().empty()) {
+            setObsolete(true);
+        }
     }
 
     virtual void undo() OVERRIDE FINAL

@@ -216,6 +216,10 @@ refreshDeclarationSnapshot(KnobHolder* holder)
     if (changed) {
         // What a Set overrides and what a project variable's readers read follow the declarations.
         invalidateRenderContextReads();
+        Project* isProject = dynamic_cast<Project*>(holder);
+        if (isProject) {
+            isProject->onPathVariableDeclarationsChanged(previous);
+        }
     }
 }
 

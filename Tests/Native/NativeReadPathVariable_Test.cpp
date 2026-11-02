@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -130,7 +131,79 @@ protected:
         ASSERT_TRUE(variable != NULL) << name;
         variable->setValue(value, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     }
+
+    void setProjectDirectory(const std::string& dir)
+    {
+        KnobPathPtr builtins = project()->getEnvVarKnob();
+        ASSERT_TRUE(bool(builtins));
+        std::list<std::vector<std::string>> table;
+        table.push_back(std::vector<std::string> { NATRON_PROJECT_ENV_VAR_NAME, dir });
+        builtins->setTable(table);
+    }
 };
+
+TEST_F(NativeReadPathVariableTest, ChangingTheProjectFolderRefreshesTheReadsReachingIt)
+{
+    QTemporaryDir first;
+    QTemporaryDir second;
+    ASSERT_TRUE(first.isValid());
+    ASSERT_TRUE(second.isValid());
+    for (int frame = 1; frame <= 3; ++frame) {
+        ASSERT_TRUE(writeFrame(first, frame));
+    }
+    for (int frame = 5; frame <= 6; ++frame) {
+        ASSERT_TRUE(writeFrame(second, frame));
+    }
+    setProjectDirectory(first.path().toStdString());
+    std::string error;
+    ASSERT_TRUE(bool(project()->addPathVariable("shots", "[Project]", &error))) << error;
+
+    NodePtr direct = createRead("[Project]/seq.####.exr");
+    NodePtr nested = createRead("[shots]/seq.####.exr");
+    NodePtr relative = createRead("seq.####.exr");
+    ASSERT_TRUE(direct && nested && relative);
+    EXPECT_EQ(1, originalFrame(direct, 0));
+    EXPECT_EQ(3, originalFrame(nested, 1));
+    EXPECT_EQ(3, originalFrame(relative, 1));
+    const U64 nestedHash = nested->getHashValue();
+
+    setProjectDirectory(second.path().toStdString());
+
+    EXPECT_EQ(std::string("[shots]/seq.####.exr"), fileKnob(nested)->getValue());
+    for (const NodePtr& read : { direct, nested, relative }) {
+        EXPECT_EQ(5, originalFrame(read, 0));
+        EXPECT_EQ(6, originalFrame(read, 1));
+    }
+    EXPECT_NE(nestedHash, nested->getHashValue());
+}
+
+TEST_F(NativeReadPathVariableTest, AddingAndRemovingAProjectPathRefreshesTheReadsUsingIt)
+{
+    QTemporaryDir plates;
+    ASSERT_TRUE(plates.isValid());
+    for (int frame = 1; frame <= 3; ++frame) {
+        ASSERT_TRUE(writeFrame(plates, frame));
+    }
+    std::string error;
+    ASSERT_TRUE(bool(project()->addPathVariable("shot", "[plates]", &error))) << error;
+    NodePtr direct = createRead("[plates]/seq.####.exr");
+    NodePtr nested = createRead("[shot]/seq.####.exr");
+    ASSERT_TRUE(direct && nested);
+
+    ASSERT_TRUE(bool(project()->addPathVariable("plates", plates.path().toStdString(), &error))) << error;
+
+    for (const NodePtr& read : { direct, nested }) {
+        EXPECT_EQ(1, originalFrame(read, 0));
+        EXPECT_EQ(3, originalFrame(read, 1));
+    }
+    const U64 directHash = direct->getHashValue();
+    const U64 nestedHash = nested->getHashValue();
+
+    ASSERT_TRUE(project()->removePathVariable("plates"));
+
+    EXPECT_NE(directHash, direct->getHashValue());
+    EXPECT_NE(nestedHash, nested->getHashValue());
+}
 
 TEST_F(NativeReadPathVariableTest, ChangingAProjectPathRefreshesTheReadsUsingIt)
 {

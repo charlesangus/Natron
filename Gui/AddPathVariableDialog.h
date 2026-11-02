@@ -89,7 +89,9 @@ public:
      * both in one undoable step.
      * @returns true with newFilePath set to the file name under the accepted project path and
      * created set to hasCreatedVariable(), or false when the dialog was cancelled. When created is
-     * false, fileKnob is left to the caller to set.
+     * false, fileKnob is left to the caller to set. A value ending in '/' is a folder: the
+     * dialog starts with that folder and the file path becomes [name]/. An empty value stays
+     * empty.
      **/
     static bool runForFilePath(Gui* gui,
                                const ProjectPtr& project,
@@ -123,7 +125,7 @@ public Q_SLOTS:
     virtual void accept() OVERRIDE;
 
 private:
-    static std::string filePathUnder(const std::string& name, const std::string& fileName);
+    static std::string filePathUnder(const std::string& name, const std::string& fileName, bool isFolder);
 
     Gui* _gui;
     ProjectWPtr _project;
@@ -141,6 +143,7 @@ private:
     bool _created;
     KnobIWPtr _fileKnob;
     std::string _fileName;
+    bool _fileIsFolder;
 };
 
 NATRON_NAMESPACE_EXIT

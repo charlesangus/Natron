@@ -103,7 +103,12 @@ try:
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
-        return views[0] if views else None
+        if not views:
+            return None
+        if not views[0].property("natronSceneRecordGuides"):
+            views[0].setProperty("natronSceneRecordGuides", True)
+            views[0].update()
+        return views[0]
 
     def scene_drawn():
         v = view()

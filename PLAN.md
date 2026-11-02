@@ -341,6 +341,7 @@ future core work has solid ground to build on.
 | M275 | Viewer Widget Editing | doing | - | bosley-native-nodes | E10 | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Cache Responsiveness Audit | todo | M260 |  | E14 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M277 | Graph Creation And Insert | doing | M192, M193 | bosley-native-nodes | E10 | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
+| M278 | Translucent Selection Highlight | todo | M234 |  | E9 | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 
 # Epics
 

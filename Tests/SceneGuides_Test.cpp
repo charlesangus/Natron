@@ -203,7 +203,7 @@ TEST(SceneGuides, SizedLightGuidesUseAuthoredSizeInWorldSpace)
     rect.CreateWidthAttr().Set(2.f);
     rect.CreateHeightAttr().Set(1.f);
     rect.AddTranslateOp().Set(GfVec3d(10., 20., 30.));
-    rect.AddScaleOp().Set(GfVec3d(3., 4., 1.));
+    rect.AddScaleOp(PXR_NS::UsdGeomXformOp::PrecisionDouble).Set(GfVec3d(3., 4., 1.));
     PXR_NS::UsdLuxSphereLight sphere = PXR_NS::UsdLuxSphereLight::Define(stage, PXR_NS::SdfPath("/Sphere"));
     sphere.CreateRadiusAttr().Set(0.5f);
     sphere.AddTranslateOp().Set(GfVec3d(-5., 0., 0.));

@@ -382,8 +382,10 @@ try:
 
         section("lock")
         yield from open_panel(lock_cam)
+        # The panel is found by its label before its pages are laid out and their spin boxes shown.
+        ok = yield ("until", lambda: panel_shows(lock_cam, "translate") and panel_shows(lock_cam, "rotate"), POLL_TIMEOUT_S)
         report("NOTE LockCam's panel shows translate %r, rotate %r" % (shown_values(lock_cam, "translate"), shown_values(lock_cam, "rotate")))
-        check(panel_shows(lock_cam, "translate") and panel_shows(lock_cam, "rotate"), "LockCam's panel shows its Translate and Rotate")
+        check(ok, "LockCam's panel shows its Translate and Rotate")
         v = view()
         key(v, Qt.Key_V)
         ok = yield from with_menu(v, lock_cam_path)

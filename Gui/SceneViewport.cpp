@@ -272,6 +272,21 @@ struct SceneViewportRenderer::Implementation {
     std::set<SdfPath> foldDefaults;
     std::set<SdfPath> foldApplied;
     bool foldAuthored = false;
+    // Bumped when the fold state starts over for another node; the stage still holds the last
+    // node's folds until a sync with foldGeneration past foldStageGeneration drops them.
+    U64 foldGeneration = 0;
+    U64 foldStageGeneration = 0;
+
+    // What a pick of path selects: the folded prim whose bounds stand for it, or path itself.
+    std::string pickedPrim(const std::string& path) const
+    {
+        if (path.empty() || !SdfPath::IsValidPathString(path)) {
+            return path;
+        }
+        std::lock_guard<std::mutex> foldLock(foldMutex);
+
+        return SceneStage::getFoldedAncestor(foldApplied, SdfPath(path)).GetString();
+    }
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
@@ -1201,7 +1216,8 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         // In the same step as the sync, so no frame shows the scene without the drag.
         _imp->clearPreviewLocked();
     }
-    // Folds first, so payloads under them are never loaded by this sync.
+    // Folds first, so payloads under them are never loaded by this sync; the last node's folds
+    // stay on until the new scene is composed, so its payloads are not loaded either.
     applyFoldsLocked(false);
     _imp->sceneStage->sync(payload);
     applyFoldsLocked(true);
@@ -1277,20 +1293,30 @@ SceneViewportRenderer::applyFoldsLocked(bool recompute)
     std::map<SdfPath, bool> overrides;
     std::set<SdfPath> defaults;
     std::set<SdfPath> applied;
+    U64 generation = 0;
+    bool reset = false;
     {
         std::lock_guard<std::mutex> foldLock(_imp->foldMutex);
         overrides = _imp->foldOverrides;
         defaults = _imp->foldDefaults;
         applied = _imp->foldApplied;
+        generation = _imp->foldGeneration;
+        reset = (generation != _imp->foldStageGeneration);
     }
     bool changed = false;
     if (recompute) {
+        if (reset) {
+            // Not setFoldedPrims({}): unfolding the old scene would load its payloads.
+            _imp->sceneStage->forgetFolds();
+            changed = true;
+        }
         bool authored = false;
-        changed = _imp->sceneStage->applyViewerFolds(overrides, defaults, &authored);
+        changed = _imp->sceneStage->applyViewerFolds(overrides, defaults, &authored) || changed;
         std::lock_guard<std::mutex> foldLock(_imp->foldMutex);
         _imp->foldApplied = _imp->sceneStage->getFoldedPrims();
         _imp->foldAuthored = authored;
-    } else {
+        _imp->foldStageGeneration = generation;
+    } else if (!reset) {
         changed = _imp->sceneStage->setFoldedPrims(applied);
     }
     if (!changed) {
@@ -1326,6 +1352,10 @@ SceneViewportRenderer::setFoldState(const std::map<std::string, bool>& overrides
             // Another scene's folds mean nothing to the next one, which is folded once composed.
             _imp->foldApplied.clear();
             _imp->foldAuthored = false;
+            ++_imp->foldGeneration;
+        } else if (_imp->foldGeneration != _imp->foldStageGeneration) {
+            // The stage still shows the last node: the state waits for the new scene's sync.
+            applyNow = false;
         }
     }
     if (applyNow) {
@@ -2322,11 +2352,11 @@ SceneViewportRenderer::pick(int x,
         // The nearer wins: depth is -z in the camera's space, for either projection.
         const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
         if (!hitPrim || (viewMatrix.Transform(guidePoint)[2] >= viewMatrix.Transform(results.front().hitPoint)[2])) {
-            return _imp->guides[guide].path;
+            return _imp->pickedPrim(_imp->guides[guide].path);
         }
     }
 
-    return hitPrim ? results.front().hitPrimPath.GetString() : std::string();
+    return hitPrim ? _imp->pickedPrim(results.front().hitPrimPath.GetString()) : std::string();
 }
 
 std::vector<std::string>
@@ -2372,7 +2402,7 @@ SceneViewportRenderer::pickRect(int x0,
         results.clear();
     }
     for (const UsdImagingGLEngine::IntersectionResult& result : results) {
-        const std::string path = result.hitPrimPath.GetString();
+        const std::string path = _imp->pickedPrim(result.hitPrimPath.GetString());
         if (!path.empty() && (std::find(paths.begin(), paths.end(), path) == paths.end())) {
             paths.push_back(path);
         }
@@ -2381,8 +2411,9 @@ SceneViewportRenderer::pickRect(int x0,
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
         const std::vector<SceneGuides::Guide>& guides = _imp->currentGuides();
         for (int index : SceneGuides::guidesInRect(view, guides, GfVec2d(left, top), GfVec2d(right + 1., bottom + 1.), _imp->lookThrough)) {
-            if (std::find(paths.begin(), paths.end(), guides[index].path) == paths.end()) {
-                paths.push_back(guides[index].path);
+            const std::string path = _imp->pickedPrim(guides[index].path);
+            if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+                paths.push_back(path);
             }
         }
     }

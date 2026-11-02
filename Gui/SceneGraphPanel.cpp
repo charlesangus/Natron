@@ -32,7 +32,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -69,6 +71,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -135,7 +138,9 @@ private:
 /**
  * @brief A pinned node's scene, evaluated on a worker into a stage of its own. A stage leased
  * from the query pool would be bound to the thread that leased it, and the panel holds this one
- * for as long as the node is pinned.
+ * for as long as the node is pinned. The stage keeps unloaded the payloads the scene's
+ * customData folds (USDRead's Open Mode, USDExpandHierarchy), and, when it folds nothing and has
+ * more prims than the Viewer 3D Prim Budget, those below its root prims, as a viewer would.
  **/
 class PinnedStageSource
     : public SceneGraphStageSource,
@@ -144,9 +149,11 @@ public:
     typedef std::function<void(bool ok, const QString& error)> SyncedFunc;
 
     PinnedStageSource(const NodePtr& node,
+                      int primBudget,
                       QObject* context,
                       const SyncedFunc& synced)
         : _node(node)
+        , _primBudget(primBudget)
         , _context(context)
         , _synced(synced)
     {
@@ -161,13 +168,26 @@ public:
         _stage.reset();
     }
 
-    void stop()
+    // Asks the worker to quit after the evaluation it is running, without waiting for it.
+    void requestStop()
     {
         {
             std::lock_guard<std::mutex> lock(_queueMutex);
             _quit = true;
         }
+        _stopRequested = true;
         _queueChanged.notify_all();
+    }
+
+    // Whether the worker has quit, so destroying the source waits for nothing.
+    bool isFinished() const
+    {
+        return _finished;
+    }
+
+    void stop()
+    {
+        requestStop();
         if (_worker.joinable()) {
             _worker.join();
         }
@@ -211,6 +231,8 @@ private:
                 std::unique_lock<std::mutex> lock(_queueMutex);
                 _queueChanged.wait(lock, [this]() { return _quit || _pending; });
                 if (_quit) {
+                    _finished = true;
+
                     return;
                 }
                 _pending = false;
@@ -233,29 +255,68 @@ private:
                 SceneWriteBarrier::ReadScope readScope;
                 std::lock_guard<std::mutex> lock(_stageMutex);
                 if (!_stage) {
-                    _stage.reset(new SceneStage);
+                    _stage.reset(new SceneStage(true));
+                    // Nothing loads before the scene's folds are known.
+                    _stage->loadNothing();
                 }
                 _stage->sync(ok ? payload : ScenePayload());
                 _shown = ok && !payload.isEmpty();
+                applyFoldsLocked();
                 _editCount = _stage->getEditCount();
             }
             std::weak_ptr<PinnedStageSource> self = weak_from_this();
             const QString qerror = QString::fromStdString(error);
             QMetaObject::invokeMethod(_context, [self, ok, qerror]() {
                 std::shared_ptr<PinnedStageSource> source = self.lock();
-                if (source && source->_synced) {
+                if (source && !source->_stopRequested && source->_synced) {
                     source->_synced(ok, qerror);
                 } }, Qt::QueuedConnection);
         }
     }
 
+    // Needs _stageMutex.
+    void applyFoldsLocked()
+    {
+        const std::map<SdfPath, bool> noOverrides;
+        bool authored = false;
+        _stage->applyViewerFolds(noOverrides, _budgetFolds, &authored);
+        if (!_budgetChecked && _shown) {
+            _budgetChecked = true;
+            if (authored || (_primBudget <= 0)) {
+                return;
+            }
+            std::size_t count = 0;
+            for (const UsdPrim& prim : _stage->getStage()->Traverse()) {
+                (void)prim;
+                if (++count > (std::size_t)_primBudget) {
+                    break;
+                }
+            }
+            if (count > (std::size_t)_primBudget) {
+                for (const UsdPrim& prim : _stage->getStage()->GetPseudoRoot().GetChildren()) {
+                    _budgetFolds.insert(prim.GetPath());
+                }
+                _stage->applyViewerFolds(noOverrides, _budgetFolds);
+            }
+        } else if (authored && !_budgetFolds.empty()) {
+            // The scene folds itself now: the budget only stands in for a scene that folds nothing.
+            _budgetFolds.clear();
+            _stage->applyViewerFolds(noOverrides, _budgetFolds);
+        }
+    }
+
     NodeWPtr _node;
+    const int _primBudget;
     QObject* _context;
     SyncedFunc _synced;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
+    std::set<SdfPath> _budgetFolds;
+    bool _budgetChecked = false;
     std::atomic<bool> _shown { false };
     std::atomic<U64> _editCount { 0 };
+    std::atomic<bool> _stopRequested { false };
+    std::atomic<bool> _finished { false };
     std::mutex _queueMutex;
     std::condition_variable _queueChanged;
     bool _pending = false;
@@ -393,6 +454,24 @@ valueString(const VtValue& value)
     return QString::fromStdString(text);
 }
 
+// The folded prim at or above path, or path when none is.
+QString
+foldedAncestorOf(const QSet<QString>& folded,
+                 const QString& path)
+{
+    if (folded.isEmpty()) {
+        return path;
+    }
+    QString found = path;
+    for (QString prefix = path; prefix.size() > 1; prefix.truncate(prefix.lastIndexOf(QLatin1Char('/')))) {
+        if (folded.contains(prefix)) {
+            found = prefix;
+        }
+    }
+
+    return found;
+}
+
 } // anon namespace
 
 // Shows the rows of folded prims in italics, marked in the name column.
@@ -451,12 +530,18 @@ struct SceneGraphPanel::Implementation {
     QPointer<SceneViewport> viewport;
     QPointer<TimeLine> viewerTimeLine;
 
-    // A node's own scene, when the panel does not show the viewer's: the pinned node's, or the
-    // selected node's when following the selection.
+    // The viewer's stage, for viewport.
+    SceneGraphStageSourcePtr viewerSource;
+
+    // The node shown when the panel does not follow the viewer: the pinned node, or the selected
+    // node when following the selection. Its own stage is used while the viewer shows another.
     std::shared_ptr<PinnedStageSource> pinned;
     bool userPinned = false;
     U64 pinnedMarkCount = 0;
     QTimer pinnedPoll;
+    // Sources let go of whose workers have not quit yet, kept until they have.
+    std::vector<std::shared_ptr<PinnedStageSource>> retired;
+    QTimer retiredReap;
 
     SceneGraphPanel::FollowEnum follow = SceneGraphPanel::eFollowViewer;
     NodeWPtr selectedNode;
@@ -535,7 +620,7 @@ struct SceneGraphPanel::Implementation {
 
     double currentFrame() const
     {
-        if (!pinned && viewer && viewer->getTimeLine()) {
+        if (viewerSource && (model->getSource() == viewerSource) && viewer && viewer->getTimeLine()) {
             return viewer->getTimeLine()->currentFrame();
         }
         GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
@@ -699,11 +784,60 @@ struct SceneGraphPanel::Implementation {
         publishState();
     }
 
+    // The source of what the panel shows: the viewer's stage when it shows that scene.
+    SceneGraphStageSourcePtr wantedSource() const
+    {
+        if (pinned) {
+            return sharesViewerSelection() ? viewerSource : pinned;
+        }
+
+        return (follow == SceneGraphPanel::eFollowViewer) ? viewerSource : SceneGraphStageSourcePtr();
+    }
+
+    void applySource()
+    {
+        const SceneGraphStageSourcePtr wanted = wantedSource();
+        if (model->getSource() == wanted) {
+            return;
+        }
+        model->setSource(wanted);
+        if (pinned && (wanted == pinned)) {
+            // Not evaluated while the viewer showed it.
+            NodePtr node = pinned->getNode();
+            pinnedMarkCount = node ? node->getHashMarkCount() : 0;
+            pinned->request(currentFrame());
+        }
+    }
+
+    void retirePinned()
+    {
+        if (!pinned) {
+            return;
+        }
+        pinned->requestStop();
+        retired.push_back(pinned);
+        pinned.reset();
+        retiredReap.start();
+    }
+
+    void reapRetired()
+    {
+        retired.erase(std::remove_if(retired.begin(), retired.end(), [](const std::shared_ptr<PinnedStageSource>& source) {
+                          return source->isFinished();
+                      }),
+                      retired.end());
+        if (retired.empty()) {
+            retiredReap.stop();
+        }
+    }
+
     void connectViewport(SceneViewport* newViewport)
     {
         if (viewport == newViewport) {
-            if (!pinned) {
+            if (viewerSource && (model->getSource() == viewerSource)) {
                 model->refresh();
+            } else {
+                applySource();
             }
 
             return;
@@ -720,9 +854,8 @@ struct SceneGraphPanel::Implementation {
                 mirrorFolds(false);
             });
         }
-        if (!pinned && (follow == SceneGraphPanel::eFollowViewer)) {
-            model->setSource(viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr());
-        }
+        viewerSource = viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr();
+        applySource();
     }
 
     void followViewer()
@@ -1024,8 +1157,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->stack->addWidget(_imp->noScene);
     _imp->stack->setCurrentWidget(_imp->noScene);
 
-    _imp->attributeModel = new QStandardItemModel(0, 4, this);
-    _imp->attributeModel->setHorizontalHeaderLabels(QStringList() << tr("Attribute") << tr("Value") << tr("Animated") << tr("Authored By"));
+    _imp->attributeModel = new QStandardItemModel(0, 5, this);
+    _imp->attributeModel->setHorizontalHeaderLabels(QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Animated") << tr("Authored By"));
     _imp->attributes = new QTreeView(splitter);
     _imp->attributes->setObjectName(QString::fromUtf8("sceneGraphAttributes"));
     _imp->attributes->setModel(_imp->attributeModel);
@@ -1046,6 +1179,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->attributeRefresh.setSingleShot(true);
     _imp->attributeRefresh.setInterval(0);
     _imp->pinnedPoll.setInterval(kPinnedPollMs);
+    _imp->retiredReap.setInterval(kPinnedPollMs);
     _imp->selectionPoll.setInterval(kSelectionPollMs);
 
     QObject::connect(_imp->pinButton, &QToolButton::toggled, this, &SceneGraphPanel::onPinToggled);
@@ -1069,6 +1203,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
     QObject::connect(&_imp->attributeRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshAttributes);
     QObject::connect(&_imp->pinnedPoll, &QTimer::timeout, this, &SceneGraphPanel::onPinnedPoll);
+    QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
     QObject::connect(&_imp->selectionPoll, &QTimer::timeout, this, &SceneGraphPanel::onSelectionPoll);
     QObject::connect(_imp->followChooser, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
         setFollow((index == (int)eFollowSelection) ? eFollowSelection : eFollowViewer);
@@ -1077,7 +1212,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
-    QObject::connect(_imp->results, &QListView::activated, this, &SceneGraphPanel::onResultActivated);
     QObject::connect(_imp->results, &QListView::clicked, this, &SceneGraphPanel::onResultActivated);
     // Queued: the model fetches no rows while it is resetting, so nothing could be reopened then.
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
@@ -1096,6 +1230,10 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
 
 SceneGraphPanel::~SceneGraphPanel()
 {
+    // Waits, once: no worker may call back into a destroyed panel.
+    for (const std::shared_ptr<PinnedStageSource>& source : _imp->retired) {
+        source->stop();
+    }
     if (_imp->pinned) {
         _imp->pinned->stop();
     }
@@ -1140,27 +1278,19 @@ SceneGraphPanel::showNodeScene(const NodePtr& node)
     if (_imp->pinned && node && (_imp->pinned->getNode() == node)) {
         return;
     }
-    if (_imp->pinned) {
-        _imp->pinned->stop();
-        _imp->pinned.reset();
-    }
+    _imp->retirePinned();
     _imp->pinnedPoll.stop();
     if (node) {
         QPointer<SceneGraphPanel> self(this);
-        _imp->pinned = std::make_shared<PinnedStageSource>(node, this, [self](bool ok, const QString& error) {
+        SettingsPtr settings = appPTR->getCurrentSettings();
+        _imp->pinned = std::make_shared<PinnedStageSource>(node, settings ? settings->getViewer3DPrimBudget() : 0, this, [self](bool ok, const QString& error) {
             if (self) {
                 self->onPinnedSynced(ok, error);
             }
         });
-        _imp->pinnedMarkCount = node->getHashMarkCount();
-        _imp->pinned->request(_imp->currentFrame());
-        _imp->model->setSource(_imp->pinned);
         _imp->pinnedPoll.start();
-    } else if (_imp->follow == eFollowSelection) {
-        _imp->model->setSource(SceneGraphStageSourcePtr());
-    } else {
-        _imp->model->setSource(_imp->viewport ? std::make_shared<ViewerStageSource>(_imp->viewport) : SceneGraphStageSourcePtr());
     }
+    _imp->applySource();
 }
 
 void
@@ -1220,48 +1350,39 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     const bool wasRestoring = _imp->restoringExpansion;
     _imp->syncingSelection = true;
     _imp->restoringExpansion = true;
-    // Showing a selection never opens a folded row: that would load what the fold keeps unloaded.
+    // A prim inside a folded branch shows as the folded row: opening the row to it would load
+    // what the fold keeps unloaded.
     QSet<QString> folded;
     if (SceneViewport* target = _imp->foldViewport()) {
         const QStringList folds = target->getFoldedPrims();
         folded = QSet<QString>(folds.begin(), folds.end());
     }
     QItemSelection selection;
+    QSet<QString> selected;
     QModelIndex current;
-    bool currentShown = false;
-    int shown = 0;
     // The current prim is last; the cap keeps it.
     for (int i = std::max(0, (int)paths.size() - kShownSelectionCap); i < paths.size(); ++i) {
-        const QModelIndex index = _imp->model->indexOfPath(paths[i], true);
+        const QString path = foldedAncestorOf(folded, paths[i]);
+        const QModelIndex index = _imp->model->indexOfPath(path, true);
         if (!index.isValid()) {
             continue;
         }
-        bool insideFold = false;
-        for (QModelIndex parent = index.parent(); parent.isValid(); parent = parent.parent()) {
-            if (folded.contains(_imp->model->pathOf(parent))) {
-                insideFold = true;
-                break;
-            }
-        }
-        if (!insideFold) {
+        if (!selected.contains(path)) {
+            selected.insert(path);
             for (QModelIndex parent = index.parent(); parent.isValid(); parent = parent.parent()) {
                 if (_imp->tree->isExpanded(parent)) {
                     break;
                 }
                 _imp->tree->expand(parent);
             }
+            selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
         }
-        selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
         current = index;
-        currentShown = !insideFold;
-        ++shown;
     }
     _imp->tree->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
     if (current.isValid()) {
         _imp->tree->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
-        if (currentShown) {
-            _imp->tree->scrollTo(current);
-        }
+        _imp->tree->scrollTo(current);
     }
     if (!_imp->filterPattern.isEmpty()) {
         _imp->selectResults(paths);
@@ -1292,7 +1413,7 @@ SceneGraphPanel::onViewerSceneChanged()
 void
 SceneGraphPanel::onSceneSynced()
 {
-    if (!_imp->pinned) {
+    if (_imp->viewerSource && (_imp->model->getSource() == _imp->viewerSource)) {
         _imp->model->refresh();
         if (!_imp->filterPattern.isEmpty()) {
             _imp->filterDebounce.start();
@@ -1346,7 +1467,13 @@ SceneGraphPanel::onResultActivated(const QModelIndex& index)
         return;
     }
     _imp->filterCap += kFilterCap;
+    // Gone at once, so a second click on it is a click on nothing, and it never turns into a
+    // selectable path.
+    const bool wasSyncing = _imp->syncingSelection;
+    _imp->syncingSelection = true;
     _imp->resultsModel->hasMoreRow = false;
+    _imp->resultsModel->removeRows(index.row(), 1);
+    _imp->syncingSelection = wasSyncing;
     _imp->filterStep.start();
     _imp->publishState();
 }
@@ -1410,7 +1537,8 @@ SceneGraphPanel::onPinnedPoll()
         return;
     }
     const U64 markCount = node->getHashMarkCount();
-    if (markCount != _imp->pinnedMarkCount) {
+    // While the viewer shows the node, the viewer evaluates it.
+    if ((markCount != _imp->pinnedMarkCount) && (_imp->model->getSource() == _imp->pinned)) {
         _imp->pinnedMarkCount = markCount;
         _imp->pinned->request(_imp->currentFrame());
     }
@@ -1420,7 +1548,7 @@ void
 SceneGraphPanel::onPinnedSynced(bool /*ok*/,
                                 const QString& /*error*/)
 {
-    if (!_imp->pinned) {
+    if (!_imp->pinned || (_imp->model->getSource() != _imp->pinned)) {
         return;
     }
     _imp->model->refresh();
@@ -1497,7 +1625,7 @@ SceneGraphPanel::refreshAttributes()
     const QString path = _imp->currentPath();
     SceneGraphStageSourcePtr source = _imp->model->getSource();
     struct Row {
-        QString name, value, animated, author, authorTip;
+        QString name, type, value, animated, author, authorTip;
     };
     std::vector<Row> rows;
 
@@ -1520,6 +1648,7 @@ SceneGraphPanel::refreshAttributes()
             for (const UsdAttribute& attribute : prim.GetAttributes()) {
                 Row row;
                 row.name = QString::fromStdString(attribute.GetName().GetString());
+                row.type = QString::fromStdString(attribute.GetTypeName().GetAsToken().GetString());
                 VtValue value;
                 if (attribute.Get(&value, time)) {
                     row.value = valueString(value);
@@ -1545,9 +1674,9 @@ SceneGraphPanel::refreshAttributes()
     _imp->attributeModel->removeRows(0, _imp->attributeModel->rowCount());
     for (const Row& row : rows) {
         QList<QStandardItem*> items;
-        items << new QStandardItem(row.name) << new QStandardItem(row.value) << new QStandardItem(row.animated) << new QStandardItem(row.author);
-        items[1]->setToolTip(row.value);
-        items[3]->setToolTip(row.authorTip);
+        items << new QStandardItem(row.name) << new QStandardItem(row.type) << new QStandardItem(row.value) << new QStandardItem(row.animated) << new QStandardItem(row.author);
+        items[2]->setToolTip(row.value);
+        items[4]->setToolTip(row.authorTip);
         _imp->attributeModel->appendRow(items);
     }
 }

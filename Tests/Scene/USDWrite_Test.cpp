@@ -595,6 +595,16 @@ TEST_F(USDWriteTest, ViewerFoldCustomDataIsNotWritten)
         for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
             EXPECT_FALSE(file.second.contains("viewerFold")) << file.first.toStdString();
             EXPECT_FALSE(file.second.contains("viewerOpenLevels")) << file.first.toStdString();
+            // USDRead's layer holds /World only for the folds: stripped, no over of it is left.
+            const QString suffix = QFileInfo(file.first).suffix();
+            if ((suffix != QString::fromUtf8("usda")) && (suffix != QString::fromUtf8("usdc")) && (suffix != QString::fromUtf8("usd"))) {
+                continue;
+            }
+            PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::FindOrOpen(QDir(dir).filePath(file.first).toStdString());
+            const PXR_NS::SdfPrimSpecHandle world = written ? written->GetPrimAtPath(PXR_NS::SdfPath("/World")) : PXR_NS::SdfPrimSpecHandle();
+            if (world && (world->GetSpecifier() == PXR_NS::SdfSpecifierOver)) {
+                EXPECT_FALSE(world->GetNameChildren().empty() && world->GetProperties().empty()) << file.first.toStdString();
+            }
         }
     }
 }

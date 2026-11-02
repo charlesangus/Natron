@@ -477,7 +477,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     if (openLevels >= 0) {
         // The root prims are those the file's whole layer stack composes, which its own root
         // specs may not list; nothing is loaded to find them.
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::UsdStage::LoadNone);
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
         if (!stage) {
             *errorMessage = tr("USD could not compose %1.").arg(QString::fromStdString(path)).toStdString();
 

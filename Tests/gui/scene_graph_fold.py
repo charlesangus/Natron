@@ -7,7 +7,9 @@ Checks:
   - selecting /World/Box's row and pressing Fold folds it: natronSceneGraphFolded lists it and the
     viewer redraws (screenshot of the box drawn as its bounding box);
   - Unfold takes the fold away;
-  - closing /World's row folds /World, and opening it again opens one level: its children show,
+  - closing /World's row folds /World; a click on its bounding box in the viewer, and a marquee
+    over the whole view, select /World, never a prim inside it, and the tree selects /World's row;
+  - opening it again opens one level: its children show,
     each closed;
   - folds made in the panel are transient: viewing the second reader and coming back finds the
     first reader's scene unfolded again;
@@ -28,13 +30,16 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 600
+GRID_COLUMNS = 24
+GRID_ROWS = 14
 WORLD = "/World"
 BOX = "/World/Box"
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
-    from PySide6.QtWidgets import QToolButton, QTreeView
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QToolButton, QTreeView
 
     from guitest import FIXTURES, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -146,6 +151,30 @@ try:
             w = w.parentWidget()
         return None
 
+    def viewer_selection():
+        v = view()
+        value = v.property("natronSceneSelection") if v is not None else None
+        return sorted(str(p) for p in value) if value else []
+
+    def selected_rows():
+        t = tree()
+        if t is None:
+            return []
+        try:
+            return sorted(path_of(i) for i in t.selectionModel().selectedRows())
+        except RuntimeError:
+            return []
+
+    def mouse(v, kind, pos, button, buttons):
+        event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(v, event)
+
+    def click(v, pos):
+        mouse(v, QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
+        mouse(v, QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
+        QApplication.processEvents()
+        return viewer_selection()
+
     def view_input(node):
         """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""
         viewer.disconnectInput(0)
@@ -198,6 +227,37 @@ try:
         check(ok, "closing /World's row folds it (got %r)" % (folded(),))
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-fold-world-closed.png")
+
+        v = view()
+        sx = max(1, v.width() // GRID_COLUMNS)
+        sy = max(1, v.height() // GRID_ROWS)
+        picks = set()
+        for row in range(GRID_ROWS):
+            for column in range(GRID_COLUMNS):
+                picked = click(v, QPoint(sx // 2 + column * sx, sy // 2 + row * sy))
+                if picked:
+                    picks.add(tuple(picked))
+            yield ("sleep", 0)
+        require(picks, "a click in the viewer picks the folded /World's bounding box")
+        check(picks == {(WORLD,)}, "every pick inside the folded /World selects /World (got %r)" % (sorted(picks),))
+        ok = yield ("until", lambda: selected_rows() == [WORLD], POLL_TIMEOUT_S)
+        check(ok, "the pick selects /World's row (got %r)" % (selected_rows(),))
+
+        click(v, QPoint(1, 1))
+        ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
+        require(ok, "a click on empty space clears the selection (got %r)" % (viewer_selection(),))
+        mouse(v, QEvent.MouseButtonPress, QPoint(1, 1), Qt.LeftButton, Qt.LeftButton)
+        for step in range(1, 9):
+            mouse(v, QEvent.MouseMove, QPoint(1 + (v.width() - 3) * step // 8, 1 + (v.height() - 3) * step // 8),
+                  Qt.NoButton, Qt.LeftButton)
+        mouse(v, QEvent.MouseButtonRelease, QPoint(v.width() - 2, v.height() - 2), Qt.LeftButton, Qt.NoButton)
+        QApplication.processEvents()
+        ok = yield ("until", lambda: viewer_selection() == [WORLD], POLL_TIMEOUT_S)
+        check(ok, "a marquee over the folded /World selects /World alone (got %r)" % (viewer_selection(),))
+        ok = yield ("until", lambda: selected_rows() == [WORLD], POLL_TIMEOUT_S)
+        check(ok, "the marquee selects /World's row (got %r)" % (selected_rows(),))
+        click(v, QPoint(1, 1))
+        v = None
         tree().expand(find(WORLD))
         ok = yield ("until", lambda: folded() == children, POLL_TIMEOUT_S)
         check(ok, "opening /World's row opens one level: its children show, each closed (got %r)" % (folded(),))

@@ -11,7 +11,8 @@ Checks:
   - selecting the box's row selects /World/Box in the viewer, and a click on the ball in the
     viewer selects the ball's row;
   - the filter lists the prims whose names match, and clearing it brings the tree back;
-  - the attribute list shows the current prim's attributes, with the node that authored them;
+  - the attribute list shows the current prim's attributes, with their types and the node that
+    authored them;
   - pinned to the USDRead, the tree stays on its scene when the viewer is switched to the
     camera; deleting the USDRead unpins the panel, which then shows the camera's scene.
 
@@ -166,7 +167,7 @@ try:
         m = a.model() if a is not None else None
         if m is None:
             return {}
-        return dict((str(m.index(r, 0).data()), (str(m.index(r, 1).data()), str(m.index(r, 3).data())))
+        return dict((str(m.index(r, 0).data()), (str(m.index(r, 2).data()), str(m.index(r, 4).data()), str(m.index(r, 1).data())))
                     for r in range(m.rowCount()))
 
     def view_input(node):
@@ -219,7 +220,9 @@ try:
         attributes = attribute_rows()
         check(ok, "the attribute list shows the box's size (got %r)" % (sorted(attributes.keys())[:12],))
         report("NOTE box attributes: %r" % (attributes,))
-        author = attributes.get("size", ("", ""))[1]
+        check(attributes.get("size", ("", "", ""))[2] == "double",
+              "the box's size has its type, double (got %r)" % (attributes.get("size", ("", "", ""))[2],))
+        author = attributes.get("size", ("", "", ""))[1]
         check(author.endswith("scene-reference.usda") or author == usd.getScriptName(),
               "the box's size names the file or the USDRead as its author (got %r)" % (author,))
         yield ("sleep", SETTLE_MS)

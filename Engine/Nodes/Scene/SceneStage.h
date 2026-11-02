@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -120,6 +122,29 @@ public:
     const std::set<PXR_NS::SdfPath>& getFoldedPrims() const;
 
     /**
+     * @brief Drops the folds without loading anything: the session layer's overs go, and the
+     * payloads they unloaded stay unloaded until the next setFoldedPrims(), which sets the load
+     * rules whatever it is given. For a stage about to
+     * compose another scene, whose folds the old ones mean nothing to.
+     **/
+    void forgetFolds();
+
+    /**
+     * @brief Unloads every payload until the next setFoldedPrims(), which sets the load rules
+     * whatever it is given: before a first sync, a scene whose folds applyViewerFolds() is to
+     * find loads only what they leave open. Fold bounds then come from the payloads'
+     * extentsHints, so a stage the viewer draws does not start this way.
+     **/
+    void loadNothing();
+
+    /**
+     * @brief The prim of folds at or above path, which a pick inside a folded branch stands for;
+     * path itself when none is. A property path maps through its prim.
+     **/
+    static PXR_NS::SdfPath getFoldedAncestor(const std::set<PXR_NS::SdfPath>& folds,
+                                             const PXR_NS::SdfPath& path);
+
+    /**
      * @brief Prim customData graph nodes author to fold the viewer's scene by default; renders
      * ignore them. kViewerFoldKey (bool) folds a prim when true and opens it when false.
      * kViewerOpenLevelsKey (int) opens a prim and that many levels below it, folding the level
@@ -143,7 +168,8 @@ public:
     /**
      * @brief Folds the stage to computeViewerFolds(), again while a fold change loads payloads that
      * bring more customData, and brings the bounds of folds whose prims changed up to date.
-     * Returns whether the folds changed.
+     * Returns whether the folds changed. Called again with the same overrides and defaults, with
+     * no sync() edit and no other fold change in between, it walks nothing.
      **/
     bool applyViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
                           const std::set<PXR_NS::SdfPath>& defaults,
@@ -169,12 +195,24 @@ private:
     PXR_NS::SdfLayerRefPtr _root;
     PXR_NS::SdfLayerRefPtr _session;
     std::set<PXR_NS::SdfPath> _folded;
+    // forgetFolds() or loadNothing() left load rules that the folds listed do not make.
+    bool _foldRulesStale = false;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
     std::vector<std::string> _subLayerPaths;
     SceneMetadata _metadata;
     U64 _editCount = 0;
     U64 _foldBoundsEditCount = 0;
+    // The last applyViewerFolds() arguments and result, which stand until the stage changes: any
+    // resync or prim metadata change, a layer reloaded in place included, voids them.
+    class FoldCacheListener;
+    std::unique_ptr<FoldCacheListener> _foldCacheListener;
+    PXR_NS::TfNotice::Key _foldCacheKey;
+    std::atomic<bool> _viewerFoldsValid { false };
+    std::map<PXR_NS::SdfPath, bool> _viewerFoldOverrides;
+    std::set<PXR_NS::SdfPath> _viewerFoldDefaults;
+    U64 _viewerFoldsEditCount = 0;
+    bool _viewerFoldsAuthored = false;
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
 };

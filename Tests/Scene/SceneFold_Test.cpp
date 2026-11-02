@@ -332,3 +332,128 @@ TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
     EXPECT_FALSE(render.applyViewerFolds(none, std::set<PXR_NS::SdfPath>()));
     EXPECT_EQ(3u, image(render.getStage()).countUnder(world, PXR_NS::HdPrimTypeTokens->cube));
 }
+
+TEST(SceneFoldTest, ForgettingFoldsLoadsNothing)
+{
+    PXR_NS::SdfLayerRefPtr asset = makeLayer("def Xform \"Asset\" {\n    def Cube \"Geo\" {}\n}\n");
+    PXR_NS::SdfLayerRefPtr layer = makeLayer("def Xform \"World\" {\n"
+                                             "    def Xform \"P\" ( payload = @"
+                                             + asset->GetIdentifier() + "@</Asset> ) {}\n"
+                                                                        "}\n");
+    const PXR_NS::SdfPath p("/World/P");
+
+    SceneStage stage(true);
+    ASSERT_TRUE(stage.isValid());
+    EXPECT_TRUE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath> { p }));
+    stage.sync(stackOf(layer));
+    const PXR_NS::UsdStageRefPtr& usd = stage.getStage();
+    ASSERT_TRUE(bool(usd->GetPrimAtPath(p)));
+    EXPECT_FALSE(usd->GetPrimAtPath(p).IsLoaded());
+
+    // The overs go and the fold list empties, but what the fold unloaded stays unloaded.
+    stage.forgetFolds();
+    EXPECT_TRUE(stage.getFoldedPrims().empty());
+    EXPECT_TRUE(stage.getStage()->GetSessionLayer()->GetRootPrims().empty());
+    EXPECT_FALSE(usd->GetPrimAtPath(p).IsLoaded());
+
+    // The next folds set the load rules, even when there are none.
+    EXPECT_TRUE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath> { PXR_NS::SdfPath("/World") }));
+    EXPECT_FALSE(usd->GetPrimAtPath(p).IsLoaded());
+    stage.forgetFolds();
+    EXPECT_TRUE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath>()));
+    EXPECT_TRUE(usd->GetPrimAtPath(p).IsLoaded());
+    EXPECT_FALSE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath>()));
+}
+
+TEST(SceneFoldTest, APickInsideAFoldStandsForTheFoldedPrim)
+{
+    const std::set<PXR_NS::SdfPath> folds { PXR_NS::SdfPath("/World/Heavy") };
+
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Heavy"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/Heavy/A")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Heavy"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/Heavy/A/Deeper")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Heavy"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/Heavy/A.size")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Heavy"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/Heavy")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Light"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/Light")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/HeavyOther"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World/HeavyOther")));
+    EXPECT_EQ(PXR_NS::SdfPath("/World"), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath("/World")));
+    EXPECT_EQ(PXR_NS::SdfPath(), SceneStage::getFoldedAncestor(folds, PXR_NS::SdfPath()));
+}
+
+// Applying the same fold state again is free, but a scene edit that changes its customData, even
+// one to a layer in place that no sync() sees, is picked up.
+TEST(SceneFoldTest, ViewerFoldsAreReappliedOnlyAfterTheSceneChanges)
+{
+    const PXR_NS::SdfPath world("/World");
+    const PXR_NS::SdfPath heavy("/World/Heavy");
+    const PXR_NS::SdfPath light("/World/Light");
+    PXR_NS::SdfLayerRefPtr layer = makeLayer(kScene);
+    SceneStage stage(true);
+    ASSERT_TRUE(stage.isValid());
+    stage.sync(stackOf(layer));
+
+    const std::map<PXR_NS::SdfPath, bool> none;
+    const std::set<PXR_NS::SdfPath> noDefaults;
+    bool authored = true;
+    EXPECT_FALSE(stage.applyViewerFolds(none, noDefaults, &authored));
+    EXPECT_FALSE(authored);
+    EXPECT_TRUE(stage.getFoldedPrims().empty());
+
+    PXR_NS::SdfLayerRefPtr same = layer;
+    EXPECT_FALSE(stage.sync(stackOf(same)));
+    EXPECT_FALSE(stage.applyViewerFolds(none, noDefaults, &authored));
+    EXPECT_FALSE(authored);
+
+    {
+        PXR_NS::UsdStageRefPtr edit = PXR_NS::UsdStage::Open(layer);
+        ASSERT_TRUE(bool(edit));
+        edit->GetPrimAtPath(heavy).SetCustomDataByKey(PXR_NS::TfToken(SceneStage::kViewerFoldKey), PXR_NS::VtValue(true));
+    }
+    EXPECT_TRUE(stage.applyViewerFolds(none, noDefaults, &authored));
+    EXPECT_TRUE(authored);
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.getFoldedPrims());
+
+    // Kept: the cached result reports the authored fold too.
+    EXPECT_FALSE(stage.applyViewerFolds(none, noDefaults, &authored));
+    EXPECT_TRUE(authored);
+
+    // Other arguments are another state.
+    EXPECT_TRUE(stage.applyViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, true } }, noDefaults));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.getFoldedPrims());
+    EXPECT_TRUE(stage.applyViewerFolds(none, std::set<PXR_NS::SdfPath> { light }));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy, light }), stage.getFoldedPrims());
+}
+
+// A stage that starts loading nothing loads only what the scene's folds leave open.
+TEST(SceneFoldTest, AStageLoadingNothingLoadsWhatTheFoldsLeaveOpen)
+{
+    PXR_NS::SdfLayerRefPtr asset = makeLayer("def Xform \"Asset\" {\n    def Cube \"Geo\" {}\n}\n");
+    PXR_NS::SdfLayerRefPtr layer = makeLayer("def Xform \"World\" {\n"
+                                             "    def Xform \"Outer\" (\n"
+                                             "        customData = { bool \"natron:viewerFold\" = 1 }\n"
+                                             "    ) {\n"
+                                             "        def Xform \"P\" ( payload = @"
+                                             + asset->GetIdentifier() + "@</Asset> ) {}\n"
+                                                                        "    }\n"
+                                                                        "    def Xform \"Q\" ( payload = @"
+                                             + asset->GetIdentifier() + "@</Asset> ) {}\n"
+                                                                        "}\n");
+    const PXR_NS::SdfPath outer("/World/Outer");
+    const PXR_NS::SdfPath p("/World/Outer/P");
+    const PXR_NS::SdfPath q("/World/Q");
+
+    SceneStage stage(true);
+    ASSERT_TRUE(stage.isValid());
+    stage.loadNothing();
+    stage.sync(stackOf(layer));
+    const PXR_NS::UsdStageRefPtr& usd = stage.getStage();
+    ASSERT_TRUE(bool(usd->GetPrimAtPath(q)));
+    EXPECT_FALSE(usd->GetPrimAtPath(q).IsLoaded());
+
+    bool authored = false;
+    EXPECT_TRUE(stage.applyViewerFolds(std::map<PXR_NS::SdfPath, bool>(), std::set<PXR_NS::SdfPath>(), &authored));
+    EXPECT_TRUE(authored);
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { outer }), stage.getFoldedPrims());
+    EXPECT_TRUE(usd->GetPrimAtPath(q).IsLoaded());
+    ASSERT_TRUE(bool(usd->GetPrimAtPath(p)));
+    EXPECT_FALSE(usd->GetPrimAtPath(p).IsLoaded());
+}

@@ -153,7 +153,7 @@ private:
     virtual void dropEvent(QDropEvent* e) OVERRIDE FINAL;
 
 private:
-    // Whether e carries prims the knob takes.
+    // Whether mime carries prims the knob takes.
     bool acceptsPrimPaths(const QMimeData* mime) const;
 
     KnobGuiWPtr _knobGui;

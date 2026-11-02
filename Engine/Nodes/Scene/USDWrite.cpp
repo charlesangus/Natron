@@ -536,7 +536,7 @@ clipTimeSamples(const PXR_NS::SdfLayerRefPtr& layer,
     std::vector<Bound> bounds;
     {
         // The layer composed on its own interpolates its samples as a stage reading the file will.
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::UsdStage::LoadNone);
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
         for (const PXR_NS::SdfPath& path : animated) {
             const std::set<double> times = layer->ListTimeSamplesForPath(path);
             const PXR_NS::UsdAttribute attribute = stage ? stage->GetAttributeAtPath(path) : PXR_NS::UsdAttribute();
@@ -585,9 +585,52 @@ stripViewerFolds(const PXR_NS::SdfLayerRefPtr& layer)
             primPaths.push_back(path);
         }
     });
+    std::set<PXR_NS::SdfPath> touched;
     for (const PXR_NS::SdfPath& path : primPaths) {
+        bool stripped = false;
         for (const PXR_NS::TfToken& key : foldKeys) {
-            layer->EraseFieldDictValueByKey(path, customDataKey, key);
+            if (!layer->GetFieldDictValueByKey(path, customDataKey, key).IsEmpty()) {
+                layer->EraseFieldDictValueByKey(path, customDataKey, key);
+                stripped = true;
+            }
+        }
+        if (!stripped) {
+            continue;
+        }
+        const PXR_NS::VtValue customData = layer->GetField(path, customDataKey);
+        if (customData.IsHolding<PXR_NS::VtDictionary>() && customData.UncheckedGet<PXR_NS::VtDictionary>().empty()) {
+            layer->EraseField(path, customDataKey);
+        }
+        for (PXR_NS::SdfPath prim = path; prim.IsPrimPath(); prim = prim.GetParentPath()) {
+            touched.insert(prim);
+        }
+    }
+    // An over that held only the folds would be left saying nothing; deepest first, so its
+    // parents empty out in turn.
+    std::vector<PXR_NS::SdfPath> candidates(touched.begin(), touched.end());
+    std::sort(candidates.begin(), candidates.end(), [](const PXR_NS::SdfPath& a, const PXR_NS::SdfPath& b) {
+        return a.GetPathElementCount() > b.GetPathElementCount();
+    });
+    for (const PXR_NS::SdfPath& candidate : candidates) {
+        const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(candidate);
+        if (!spec || (spec->GetSpecifier() != PXR_NS::SdfSpecifierOver) || !spec->GetNameChildren().empty() || !spec->GetProperties().empty()) {
+            continue;
+        }
+        bool empty = true;
+        for (const PXR_NS::TfToken& field : layer->ListFields(candidate)) {
+            if (field != PXR_NS::SdfFieldKeys->Specifier) {
+                empty = false;
+                break;
+            }
+        }
+        if (!empty) {
+            continue;
+        }
+        const PXR_NS::SdfPrimSpecHandle parent = spec->GetRealNameParent();
+        if (parent) {
+            parent->RemoveNameChild(spec);
+        } else {
+            layer->RemoveRootPrim(spec);
         }
     }
 }

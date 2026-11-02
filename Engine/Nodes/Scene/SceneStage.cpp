@@ -45,6 +45,36 @@ makeFoldBoundsCache()
 }
 } // anonymous namespace
 
+class SceneStage::FoldCacheListener
+    : public PXR_NS::TfWeakBase {
+public:
+    explicit FoldCacheListener(std::atomic<bool>* valid)
+        : _valid(valid)
+    {
+    }
+
+    // On whichever thread edits the stage. Attribute values (a drag's preview, time samples)
+    // fold nothing, so only resyncs and prim metadata count.
+    void onObjectsChanged(const PXR_NS::UsdNotice::ObjectsChanged& notice)
+    {
+        if (!notice.GetResyncedPaths().empty()) {
+            *_valid = false;
+
+            return;
+        }
+        for (const PXR_NS::SdfPath& path : notice.GetChangedInfoOnlyPaths()) {
+            if (path.IsAbsoluteRootOrPrimPath()) {
+                *_valid = false;
+
+                return;
+            }
+        }
+    }
+
+private:
+    std::atomic<bool>* _valid;
+};
+
 SceneStage::SceneStage(bool foldable)
 {
     if (!SceneOps::checkUsdRuntime(nullptr)) {
@@ -64,10 +94,18 @@ SceneStage::SceneStage(bool foldable)
         }
     }
     _stage = SceneOps::openStage(_root, _session);
+    if (_stage && _session) {
+        _foldCacheListener.reset(new FoldCacheListener(&_viewerFoldsValid));
+        _foldCacheKey = PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(_foldCacheListener.get()), &FoldCacheListener::onObjectsChanged,
+                                                   PXR_NS::UsdStageWeakPtr(_stage));
+    }
 }
 
 SceneStage::~SceneStage()
 {
+    if (_foldCacheKey.IsValid()) {
+        PXR_NS::TfNotice::Revoke(_foldCacheKey);
+    }
 }
 
 bool
@@ -283,7 +321,7 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
             wanted.insert(path);
         }
     }
-    if (wanted == _folded) {
+    if ((wanted == _folded) && !_foldRulesStale) {
         return false;
     }
 
@@ -375,9 +413,52 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
     }
     _stage->SetLoadRules(rules);
     _folded.swap(wanted);
+    _foldRulesStale = false;
+    _viewerFoldsValid = false;
 
     return true;
 } // SceneStage::setFoldedPrims
+
+void
+SceneStage::forgetFolds()
+{
+    if (!isFoldable()) {
+        return;
+    }
+    _session->SetRootPrims(PXR_NS::SdfPrimSpecHandleVector());
+    _folded.clear();
+    _foldRulesStale = true;
+    _viewerFoldsValid = false;
+}
+
+void
+SceneStage::loadNothing()
+{
+    if (!isFoldable()) {
+        return;
+    }
+    _stage->SetLoadRules(PXR_NS::UsdStageLoadRules::LoadNone());
+    _foldRulesStale = true;
+    _viewerFoldsValid = false;
+}
+
+PXR_NS::SdfPath
+SceneStage::getFoldedAncestor(const std::set<PXR_NS::SdfPath>& folds,
+                              const PXR_NS::SdfPath& path)
+{
+    if (folds.empty()) {
+        return path;
+    }
+    // The outermost fold: folds never nest, but a caller's set may.
+    PXR_NS::SdfPath found = path;
+    for (PXR_NS::SdfPath prefix = path.GetPrimPath(); prefix.IsPrimPath(); prefix = prefix.GetParentPath()) {
+        if (folds.count(prefix)) {
+            found = prefix;
+        }
+    }
+
+    return found;
+}
 
 PXR_NS::GfRange3d
 SceneStage::computeFoldBound(PXR_NS::UsdGeomBBoxCache& cache,
@@ -539,11 +620,19 @@ SceneStage::applyViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
     if (!isFoldable()) {
         return false;
     }
+    if (_viewerFoldsValid && (_viewerFoldsEditCount == _editCount) && (_viewerFoldOverrides == overrides) && (_viewerFoldDefaults == defaults)) {
+        if (authored) {
+            *authored = _viewerFoldsAuthored;
+        }
+
+        return false;
+    }
     // A pass can load payloads whose prims carry more folds; a few passes reach any real nesting.
     const int kMaxPasses = 8;
     bool changed = false;
+    bool foldsAuthored = false;
     for (int pass = 0; pass < kMaxPasses; ++pass) {
-        if (!setFoldedPrims(computeViewerFolds(overrides, defaults, authored))) {
+        if (!setFoldedPrims(computeViewerFolds(overrides, defaults, &foldsAuthored))) {
             break;
         }
         changed = true;
@@ -561,6 +650,14 @@ SceneStage::applyViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
             }
         }
         writeFoldBounds(bounds);
+    }
+    _viewerFoldOverrides = overrides;
+    _viewerFoldDefaults = defaults;
+    _viewerFoldsEditCount = _editCount;
+    _viewerFoldsAuthored = foldsAuthored;
+    _viewerFoldsValid = true;
+    if (authored) {
+        *authored = foldsAuthored;
     }
 
     return changed;

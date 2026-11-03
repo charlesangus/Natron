@@ -489,7 +489,6 @@ PassList
 makePasses(const BokehHighlight& highlight,
            int haloX,
            int haloY,
-           double radius,
            const IDefocusStatePtr& state)
 {
     PassList list;
@@ -510,7 +509,6 @@ makePasses(const BokehHighlight& highlight,
     gather.slot = list.resultSlot;
     // About two runs per kernel row from every source row within the halo.
     gather.tapsPerSample = (std::size_t)(2 * (2 * haloY + 1));
-    gather.sigma = 2. * radius / 2.4;
     list.passes.push_back(gather);
 
     return list;
@@ -1056,7 +1054,7 @@ IDefocus::opPasses(double time,
     int haloX = 0, haloY = 0;
     double radius = 0.;
     levelRangeHalo(params, context, lo, count, count, &haloX, &haloY, &radius);
-    PassList list = makePasses(params.defocus.highlight, haloX, haloY, radius, IDefocusStatePtr());
+    PassList list = makePasses(params.defocus.highlight, haloX, haloY, IDefocusStatePtr());
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && !image && (haloX <= kGpuMaxHalo) && (haloY <= kGpuMaxHalo)) {
@@ -1165,12 +1163,19 @@ IDefocus::opPassesInputRoI(int inputNb,
     return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
 }
 
-std::optional<GpuCostHint>
-IDefocus::gpuCostHint(double time,
-                      ViewIdx view,
-                      unsigned int mipmapLevel) const
+GpuWeight
+IDefocus::gpuWeight(double time,
+                    ViewIdx view,
+                    unsigned int mipmapLevel) const
 {
-    return passListCostHint(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const PassExtent extent = passListExtent(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const int halo = std::max(extent.haloX, extent.haloY);
+    if (halo <= 0) {
+        return GpuWeight::filter();
+    }
+
+    // Every output pixel visits its whole apron, so the cost follows the largest kernel's diameter.
+    return gpuSizeScaledWeight(2. * halo);
 }
 
 bool
@@ -1370,7 +1375,7 @@ IDefocus::renderOp(const RenderActionArgs& args,
         state->rowHaloY[(std::size_t)y] = most;
     }
 
-    return runPassesCpu(*this, plan, args, makePasses(params.defocus.highlight, haloX, haloY, radius, state));
+    return runPassesCpu(*this, plan, args, makePasses(params.defocus.highlight, haloX, haloY, state));
 } // IDefocus::renderOp
 
 void

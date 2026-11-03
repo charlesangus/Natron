@@ -327,7 +327,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                 if (layer.sharp) {
                     const float* const src = buffers->plane(1, p) + row + x1;
                     for (int i = 0; i < x2 - x1; ++i) {
-                        c[i] = a[i] * src[i];
+                        c[i] = (a[i] > 0.f && std::isfinite(src[i])) ? a[i] * src[i] : 0.f;
                     }
                 } else {
                     bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), c);
@@ -434,7 +434,6 @@ focalPlanePasses(const ZDefocusStatePtr& state)
 PassList
 resultPasses(int haloX,
              int haloY,
-             double sigma,
              std::size_t taps,
              const ZDefocusStatePtr& state,
              const std::vector<unsigned char>& used)
@@ -446,7 +445,6 @@ resultPasses(int haloX,
 
     Pass extent = Pass::gather(haloX, haloY, false, Worker());
     extent.slot = 2;
-    extent.sigma = sigma;
     extent.tapsPerSample = taps;
     list.passes.push_back(extent);
     if (!state) {
@@ -1023,7 +1021,14 @@ ZDefocus::slices(const ZDefocusParams& params,
     const int rest = std::max(1, params.layers - 1);
     int nFront = 0;
     int nBack = 0;
-    if (frontBlurs && backBlurs) {
+    if (frontBlurs && backBlurs && rest < 2) {
+        // One slice to share: it goes to the side that blurs more.
+        if (front >= back) {
+            nFront = 1;
+        } else {
+            nBack = 1;
+        }
+    } else if (frontBlurs && backBlurs) {
         nFront = std::clamp((int)std::lround(rest * front / (front + back)), 1, std::max(1, rest - 1));
         nBack = std::max(1, rest - nFront);
     } else if (frontBlurs) {
@@ -1404,10 +1409,9 @@ ZDefocus::opPasses(double time,
     int haloX = 0;
     int haloY = 0;
     halo(params, context, sliceList, &haloX, &haloY);
-    const double sigma = 2. * std::max(sliceList.front().radiusX, std::max(sliceList.front().radiusY, std::max(sliceList.back().radiusX, sliceList.back().radiusY))) / 2.4;
     // Every slice gathers its layer and its coverage, at most two reads per kernel row each.
     const std::size_t taps = (std::size_t)(2 * (2 * haloY + 1)) * sliceList.size();
-    PassList list = resultPasses(haloX, haloY, sigma, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
+    PassList list = resultPasses(haloX, haloY, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
 
 #ifdef NATRON_HAVE_GPU
     ImageLayerDesc depthLayer;
@@ -1431,12 +1435,22 @@ ZDefocus::readsGpuInput(int inputNb,
     return inputNb != kZDefocusInputKernel;
 }
 
-std::optional<GpuCostHint>
-ZDefocus::gpuCostHint(double time,
-                      ViewIdx view,
-                      unsigned int mipmapLevel) const
+GpuWeight
+ZDefocus::gpuWeight(double time,
+                    ViewIdx view,
+                    unsigned int mipmapLevel) const
 {
-    return passListCostHint(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const PassExtent extent = passListExtent(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const int halo = std::max(extent.haloX, extent.haloY);
+    if (halo <= 0) {
+        return GpuWeight::filter();
+    }
+
+    // The gather visits every kernel row once per slice, so its cost follows the kernel's diameter and the slice count.
+    const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+    const std::size_t sliceCount = std::max<std::size_t>(1, slices(getParams(time, view), getPassContext(time, view, scale)).size());
+
+    return gpuSizeScaledWeight(2. * halo * std::sqrt((double)sliceCount));
 }
 
 bool
@@ -1754,7 +1768,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
     const PassExtent extent = passListExtent(full);
     const Pass& first = full.passes.front();
 
-    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.sigma, first.tapsPerSample, state, used));
+    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used));
 } // ZDefocus::renderOp
 
 void

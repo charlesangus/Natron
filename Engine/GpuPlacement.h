@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/RenderScheduler.h"
@@ -55,16 +56,40 @@ struct PlacementInputs {
     // Whether the task's effect reads raw-kind data from an input. Unset: none does.
     std::function<bool(const FrameGraph::Task&)> readsRaw;
 
-    // Whether the task's costs are known. A candidate whose are not counts nothing towards a region's gain. A region
-    // with no priced member is placed without regionGain: on the GPU when it holds two or more candidates, else on
-    // the CPU. Unset: every task's are.
-    std::function<bool(const FrameGraph::Task&)> isPriced;
+    // How much a candidate weighs. When set and regionGain is not, regions are judged by regionWeightGain() with it.
+    std::function<GpuWeight(const FrameGraph::Task&)> taskWeight;
+
+    // Whether the consumer of the root takes it in device memory, so that a region holding it need not download it.
+    bool rootOnDevice = false;
 
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
-    // given has the members of the regions accepted so far on the GPU and every other task on the CPU. Unset: every
-    // region is accepted.
+    // given has the members of the regions accepted so far on the GPU and every other task on the CPU. Unset, with
+    // taskWeight unset too: every region is accepted.
     std::function<double(const FrameGraph&, const FrameGraph::Region&)> regionGain;
 };
+
+/**
+ * @brief The pixel count of the task's images: its renderedRoI, or its roi when that is null.
+ **/
+double taskPixelCount(const FrameGraph::Task& task);
+
+/**
+ * @brief Whether region moves no image between the devices: every external input is already on the GPU, and no output
+ * is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
+ **/
+bool regionTransfersAreFree(const FrameGraph& graph,
+                            const FrameGraph::Region& region,
+                            bool rootOnDevice);
+
+/**
+ * @brief The weight rule's judgment of region: 1 when it goes to the GPU, -1 when it stays on the CPU. It goes when its
+ * largest member image holds at least kGpuRegionMinPixels and either its transfers are free, a member is Heavy, or its
+ * members weigh kGpuRegionMinWeight together. Identity members weigh nothing, as they alias their dependency's image.
+ **/
+double regionWeightGain(const FrameGraph& graph,
+                        const FrameGraph::Region& region,
+                        const std::function<GpuWeight(const FrameGraph::Task&)>& taskWeight,
+                        bool rootOnDevice);
 
 const int kMaxRegionShrinkSteps = 16;
 
@@ -83,8 +108,7 @@ const int kMaxRegionShrinkSteps = 16;
  * once when that keeps the graph with each region contracted to one node acyclic, else the largest one of them that
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
- * then evaluated with regionGain, in topological order. A region, or a part left by shrinking, with no priced member
- * is not evaluated: it goes to the GPU when it holds two or more candidates, and a lone candidate stays on the CPU.
+ * then evaluated with regionGain, or by regionWeightGain() with taskWeight when only that is set, in topological order.
  *
  * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
@@ -155,19 +179,19 @@ bool makeGpuTaskPlanes(const FrameGraph::Task& task,
                        std::vector<GpuTaskPlane>* planes);
 
 /**
- * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, and, while the GPU
- * context is available, GpuCostModel::session() judges the regions at the context's calibrated bandwidth and tells
- * which tasks are priced. Must be called on the thread that built the graph, which has
- * the frame args of the render installed.
+ * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, each task weighs what
+ * its effect's gpuWeight() says (an effect that is not native weighs as a Filter), and the root stays on the device
+ * when the context wants it there. Must be called on the thread that built the graph, which has the frame args of the
+ * render installed.
  **/
 PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
 
 /**
  * @brief Places graph with makeRenderPlacementInputs() when isGpuPlacementAvailable(), and leaves it unchanged
  * otherwise. Returns whether it placed. A render starts here, so a GPU runtime lost by an earlier one is recreated
- * first when nothing holds it any more. While the GPU context is still initializing, it first waits for it, for at most
- * what the graph's regions would gain with free transfers, so that the first frame of a process is placed as a later
- * one would be. Same thread requirement as makeRenderPlacementInputs().
+ * first when nothing holds it any more. While the GPU context is still initializing, it first waits for it when the
+ * weight rule sends some region of the graph to the GPU, so that the first frame of a process is placed as a later one
+ * would be. Same thread requirement as makeRenderPlacementInputs().
  **/
 bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context);
 

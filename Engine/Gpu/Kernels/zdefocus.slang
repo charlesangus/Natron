@@ -274,8 +274,10 @@ void zdefocus_composite(uint3 tid : SV_DispatchThreadID)
     if (x >= 0 && y >= 0 && x < w && y < h) {
         if ((params.flags & kSharp) != 0u) {
             const float weight = sliceWeight(uint(x), uint(y));
-            for (uint c = 0; c < n && c < 4; ++c)
-                layer[c] = weight * workBuf[(uint(y) * params.domWidth + uint(x)) * n + c];
+            for (uint c = 0; c < n && c < 4; ++c) {
+                const float v = workBuf[(uint(y) * params.domWidth + uint(x)) * n + c];
+                layer[c] = (weight > 0.0 && isfinite(v)) ? weight * v : 0.0;
+            }
             layer[n] = weight;
         } else {
             for (uint r = 0; r < params.runCount; ++r) {

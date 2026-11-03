@@ -38,10 +38,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 #include <QKeyEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -58,8 +59,26 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+// The gesture's undo step ends on every way out of a release, early returns included, and after
+// the owner's own release handler has made its last edits.
+class OverlayEditStepCloser {
+public:
+    OverlayEditStepCloser() = default;
+    OverlayEditStepCloser(const OverlayEditStepCloser&) = delete;
+    OverlayEditStepCloser& operator=(const OverlayEditStepCloser&) = delete;
+
+    ~OverlayEditStepCloser()
+    {
+        EffectInstance::closeOverlayEditStep();
+    }
+};
+
+} // anonymous namespace
+
 #ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-//OpenGL is column-major for matrixes
+// OpenGL is column-major for matrixes
 static void
 transformToOpenGLMatrix(const Transform::Matrix3x3& mat,
                         GLdouble* oglMat)
@@ -526,12 +545,95 @@ ViewerTab::notifyOverlaysPenMotion(const RenderScale & renderScale,
 }
 
 bool
+ViewerTab::notifyOverlaysWheel(const RenderScale& renderScale,
+                               const QPointF& viewportPos,
+                               const QPointF& pos,
+                               double delta,
+                               const Qt::KeyboardModifiers& mods)
+{
+    if (!getGui()->getApp() || getGui()->getApp()->isClosing()) {
+        return false;
+    }
+
+    if (getGui()->getApp()->isShowingDialog()) {
+        // See notifyOverlaysPenMotion.
+        return false;
+    }
+
+    NodesList nodes;
+    getGui()->getNodesEntitledForOverlays(nodes);
+
+    const ViewIdx view = getCurrentView();
+    const KeyboardModifiers natronMods = QtEnumConvert::fromQtModifiers(mods);
+    bool didSomething = false;
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        double time = getGui()->getApp()->getTimeLine()->currentFrame();
+        QPointF transformPos;
+#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
+        transformPos = pos;
+#else
+        double transformedTime;
+        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
+        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
+            // overlay is not visible in current viewer, even though its parameter panel is open.
+            continue;
+        }
+        if (ok) {
+            // Like pen motion, retimed interacts are not editable.
+            if (time != transformedTime) {
+                continue;
+            }
+            time = transformedTime;
+        }
+
+        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
+        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
+        if (!ok) {
+            transformPos = pos;
+        } else {
+            mat = Transform::matInverse(mat);
+            Transform::Point3D p;
+            p.x = pos.x();
+            p.y = pos.y();
+            p.z = 1;
+            p = Transform::matApply(mat, p);
+            if (p.z < 0) {
+                // the transformed position has a negative z, don't send it
+                continue;
+            }
+            transformPos.rx() = p.x / p.z;
+            transformPos.ry() = p.y / p.z;
+        }
+#endif
+
+        if (!_imp->hasInactiveNodeViewerContext(*it)) {
+            EffectInstancePtr effect = (*it)->getEffectInstance();
+            assert(effect);
+            effect->setCurrentViewportForOverlays_public(_imp->viewer);
+            if (effect->onOverlayWheel_public(time, renderScale, view, viewportPos, transformPos, delta, natronMods)) {
+                didSomething = true;
+                break;
+            }
+        }
+    }
+
+    if (getGui()->getApp()->getOverlayRedrawRequestsCount() > 0) {
+        getGui()->getApp()->redrawAllViewers();
+    }
+    getGui()->getApp()->clearOverlayRedrawRequests();
+
+    return didSomething;
+} // ViewerTab::notifyOverlaysWheel
+
+bool
 ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
                                const QPointF & viewportPos,
                                const QPointF & pos,
                                double pressure,
                                double timestamp)
 {
+    OverlayEditStepCloser stepCloser;
     bool didSomething = false;
 
     if ( !getGui()->getApp() || getGui()->getApp()->isClosing() ) {
@@ -1065,6 +1167,8 @@ ViewerTab::notifyOverlaysFocusGained(const RenderScale & renderScale)
 bool
 ViewerTab::notifyOverlaysFocusLost(const RenderScale & renderScale)
 {
+    OverlayEditStepCloser stepCloser;
+
     if ( !getGui()->getApp() || getGui()->getApp()->isClosing() ) {
         return false;
     }

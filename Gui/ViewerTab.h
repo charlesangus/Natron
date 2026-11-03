@@ -78,6 +78,9 @@ public:
     // Whether the tab shows the scene view rather than the 2D viewer.
     bool isShowingScene() const;
 
+    // The node whose scene the scene view shows, the viewer's input A; null when none.
+    NodePtr getSceneViewedNode() const;
+
     void setCurrentView(ViewIdx view);
 
     ViewIdx getCurrentView() const;
@@ -106,6 +109,8 @@ public:
     bool notifyOverlaysPenMotion(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
     bool notifyOverlaysPenUp(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
+
+    bool notifyOverlaysWheel(const RenderScale& renderScale, const QPointF& viewportPos, const QPointF& pos, double delta, const Qt::KeyboardModifiers& mods);
 
     bool notifyOverlaysKeyDown(const RenderScale & renderScale, QKeyEvent* e);
 

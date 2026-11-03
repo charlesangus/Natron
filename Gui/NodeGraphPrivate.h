@@ -28,11 +28,12 @@
 
 #include "Global/Macros.h"
 
-#include <set>
 #include <list>
 #include <map>
-#include <utility>
+#include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -192,6 +193,8 @@ public:
     bool _splicePlanBuilt = false;
     NodesGuiList _splicePlanSelection;
     NodeGuiPtr _spliceEntry;
+    // The entry's inputs the plan allows, best first, and the one the hinted pipe goes into.
+    std::vector<int> _spliceEntryInputs;
     int _spliceEntryInput = -1;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;

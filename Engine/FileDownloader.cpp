@@ -34,20 +34,20 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 
-#define NATRON_FILE_DOWNLOAD_HEARBEAT_TIMEOUT_MS 5000
-
 NATRON_NAMESPACE_ENTER
 
 FileDownloader::FileDownloader(const QUrl& imageUrl,
                                bool useNetworkCache,
-                               QObject *parent)
+                               int heartbeatTimeoutMs,
+                               QObject* parent)
     : QObject(parent)
     , m_reply(0)
     , m_WebCtrl(new QNetworkAccessManager)
     , m_DownloadedData(new QByteArray)
-    , m_timer( new QTimer() )
+    , m_timer(new QTimer())
+    , m_stalled(false)
 {
-    m_timer->setInterval(NATRON_FILE_DOWNLOAD_HEARBEAT_TIMEOUT_MS);
+    m_timer->setInterval(heartbeatTimeoutMs);
     QObject::connect( m_timer.get(), SIGNAL(timeout()), this, SLOT(onTimerTimeout()) );
 
     connect( m_WebCtrl.get(), SIGNAL(finished(QNetworkReply*)),
@@ -81,8 +81,15 @@ void
 FileDownloader::onTimerTimeout()
 {
     if (m_reply) {
+        m_stalled = true;
         m_reply->abort();
     }
+}
+
+bool
+FileDownloader::stalled() const
+{
+    return m_stalled;
 }
 
 void

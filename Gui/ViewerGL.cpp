@@ -2099,6 +2099,8 @@ ViewerGL::disconnectInputTexture(int textureIndex, bool clearRoD)
             _imp->infoViewer[textureIndex]->setDataWindow(r);
         }
     }
+    // A failed or black render uploads nothing, yet the edit behind it can leave the line stale.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 void
@@ -3161,6 +3163,18 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     // The Qt Unit is 8 deltas per degree.
     // delta/2 gives a reasonable value in pixels (for panning, etc).
 
+    // Overlays get the wheel first, except Control's frame seek; the viewer zooms only when none
+    // consumes it.
+    if ((e->angleDelta().y() != 0) && !modCASIsControl(e)) {
+        const QPointF zoomPos = toZoomCoordinates(e->position());
+        if (_imp->viewerTab->notifyOverlaysWheel(RenderScale::fromMipmapLevel(getCurrentMipmapLevel()), e->position(), zoomPos,
+                                                 e->angleDelta().y() / 120., e->modifiers())) {
+            update();
+
+            return;
+        }
+    }
+
     // frame seeking works both with horizontal and vertical wheel + control modifier
     if ( modCASIsControl(e) ) {
         const int delta_max = 28;
@@ -3383,6 +3397,8 @@ ViewerGL::disconnectViewer()
     }
     //resetWipeControls();
     clearViewer();
+    // Failed renders land here rather than in disconnectInputTexture; the line may hold the previous graph's frames.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 /* The dataWindow of the currentFrame(BBOX) in canonical coordinates */

@@ -155,11 +155,11 @@ NodeGraph::NodeGraph(Gui* gui,
     QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintInputEdge->setDefaultColor(Edge::highlightColor(100));
+    _imp->_hintInputEdge->setIsSpliceHint(true);
     _imp->_hintInputEdge->hide();
 
     _imp->_hintOutputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintOutputEdge->setDefaultColor(Edge::highlightColor(100));
+    _imp->_hintOutputEdge->setIsSpliceHint(true);
     _imp->_hintOutputEdge->hide();
 
     _imp->_kissPreviewEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
@@ -417,7 +417,7 @@ NodeGraph::paintEvent(QPaintEvent* e)
     if ((_imp->_evtState == eEventStateCutting) && (_imp->_cutLine.size() > 1) && !isDoingNavigatorRender()) {
         QPainter p(viewport());
         p.setRenderHint(QPainter::Antialiasing);
-        QPen pen(Edge::highlightColor());
+        QPen pen(Edge::selectionColorWithAlpha());
         pen.setWidthF(TO_DPIX(2.));
         pen.setStyle(Qt::DashLine);
         p.setPen(pen);

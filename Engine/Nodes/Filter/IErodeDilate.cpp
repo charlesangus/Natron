@@ -1701,6 +1701,20 @@ IErodeDilateNode<MODE>::readsGpuInput(int inputNb,
 }
 
 template <ErodeDilateMode MODE>
+GpuWeight
+IErodeDilateNode<MODE>::gpuWeight(double time,
+                                  ViewIdx view,
+                                  unsigned int mipmapLevel) const
+{
+    IErodeDilateAxis x;
+    IErodeDilateAxis y;
+
+    getParams(time, view).axes(RenderScale::fromMipmapLevel(mipmapLevel), &x, &y);
+
+    return gpuSizeScaledWeight(std::floor(std::max({ x.black, x.white, y.black, y.white })));
+}
+
+template <ErodeDilateMode MODE>
 bool
 IErodeDilateNode<MODE>::opPassesInputLayer(int inputNb,
                                            const ImageLayerDesc& plane,

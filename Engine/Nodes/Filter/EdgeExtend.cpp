@@ -525,11 +525,9 @@ edgeExtendPasses(const EdgeExtendParams& params,
         // by pixels, and it takes the columns a block of adjacent ones at a time.
         Pass passX = Pass::lineX(slice.radiusX, 0, lineWorker(filterX, false));
         passX.tapsPerSample = (std::size_t)(2 * slice.radiusX + 1);
-        passX.sigma = slice.sigmaX;
         Pass passY = Pass::lineY(slice.radiusY, 0, lineWorker(filterY, true));
         passY.tapsPerSample = (std::size_t)(2 * slice.radiusY + 1);
         passY.columnBlock = BlurKernels::LineFilter::kColumnBlock;
-        passY.sigma = slice.sigmaY;
         list.passes.push_back(Pass::point(true, copyWorker()));
         list.passes.push_back(atSlot(passX, kSlotBlur));
         list.passes.push_back(atSlot(passY, kSlotBlur));
@@ -646,6 +644,15 @@ EdgeExtendOp::passes(const Params& params,
                      const PassContext& context) const
 {
     return edgeExtendPasses(params, pixelSizes(params, context));
+}
+
+std::optional<GpuWeight>
+EdgeExtendOp::gpuWeight(const Params& params,
+                        const PassContext& context) const
+{
+    const PixelSizes sizes = pixelSizes(params, context);
+
+    return gpuSizeScaledWeight(std::max(sizes.x, sizes.y));
 }
 
 EdgeExtend::EdgeExtend(NodePtr node)

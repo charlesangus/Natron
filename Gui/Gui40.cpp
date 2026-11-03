@@ -854,7 +854,7 @@ Gui::renderSelectedNode()
                 args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
                 args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
                 args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-                NodePtr writer = getApp()->createWriter(std::string(), args);
+                NodePtr writer = getApp()->createWriterFor(internalNode, args);
                 if (writer) {
                     writers.push_back(writer);
                     createdWriter = writer;

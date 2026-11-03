@@ -228,8 +228,6 @@ struct Plan {
     std::vector<Blur> blurs;
     int haloX = 0;
     int haloY = 0;
-    double sigma = 0.;
-    bool recursive = false;
 };
 
 namespace {
@@ -548,6 +546,18 @@ isIdentity(const Settings& settings)
     return (x <= 1) && (y <= 1);
 }
 
+std::optional<GpuWeight>
+gpuWeight(const Settings& settings)
+{
+    const Settings s = normalised(settings);
+
+    if (isGaussianFamily(s.filter) || (s.filter == BlurKernels::eFilterFIRGaussian)) {
+        return std::nullopt;
+    }
+
+    return gpuSizeScaledWeight(std::max(blurSize(s.sizeX, s.ratio, s.count - 1), blurSize(s.sizeY, s.ratio, s.count - 1)));
+}
+
 PlanPtr
 makePlan(const Settings& settings,
          bool nearest)
@@ -558,7 +568,6 @@ makePlan(const Settings& settings,
     plan->fir = (s.filter == BlurKernels::eFilterFIRGaussian);
     plan->nearest = nearest;
     plan->count = s.count;
-    plan->recursive = isGaussianFamily(s.filter);
     int levelX = 0;
     int levelY = 0;
     for (int i = 0; i < s.count; ++i) {
@@ -592,7 +601,6 @@ makePlan(const Settings& settings,
             // spans under three of its spacings of the pixels.
             haloX = (blur.factorX == 1) ? blur.radiusX : (int64_t)blur.factorX * (blur.radiusX + 4);
             haloY = (blur.factorY == 1) ? blur.radiusY : (int64_t)blur.factorY * (blur.radiusY + 4);
-            plan->sigma = std::max(plan->sigma, std::max(ex, ey));
 #ifdef NATRON_HAVE_GPU
             blur.weightsX = BlurKernels::LineFilter::firGaussianWeights(ex);
             blur.weightsY = BlurKernels::LineFilter::firGaussianWeights(ey);
@@ -602,14 +610,12 @@ makePlan(const Settings& settings,
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(py / 2.4), 0, nearest));
             haloX = blur.filterX->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(px * 1.5));
             haloY = blur.filterY->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(py * 1.5));
-            plan->sigma = std::max(plan->sigma, std::max(px, py) / 2.4);
         } else {
             const int iter = boxIterations(s.filter);
             blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)px, 0, nearest));
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)py, 0, nearest));
             haloX = blur.filterX->isIdentity() ? 0 : iter * (int64_t)(std::floor((px - 1) / 2) + 1);
             haloY = blur.filterY->isIdentity() ? 0 : iter * (int64_t)(std::floor((py - 1) / 2) + 1);
-            plan->sigma = std::max(plan->sigma, std::max(px, py) / 2.4);
         }
 #ifdef NATRON_HAVE_GPU
         if (!plan->fir) {
@@ -645,14 +651,12 @@ appendPasses(const PlanPtr& plan,
              int growY,
              std::vector<Pass>* passes)
 {
-    // The halo, the spread and the cost hint, for the whole bloom.
+    // The halo and the spread, for the whole bloom.
     Pass extent;
     extent.haloX = plan->haloX;
     extent.haloY = plan->haloY;
     extent.growX = growX;
     extent.growY = growY;
-    extent.sigma = plan->sigma;
-    extent.recursive = plan->recursive;
     passes->push_back(extent);
 
     const CpuLevelsPtr levels = std::make_shared<CpuLevels>();

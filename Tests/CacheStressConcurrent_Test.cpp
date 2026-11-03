@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -42,8 +43,10 @@
 
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "CacheStressTestEffect.h"
 #include "CountingTestEffect.h"
 #include "NativeParity.h"
+#include "SceneTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -54,6 +57,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -476,6 +480,289 @@ runRaces(const AppInstancePtr& app,
     return failures;
 } // runRaces
 
+void
+setSourceValue(const NodePtr& source,
+               int value)
+{
+    KnobInt* knob = dynamic_cast<KnobInt*>(source->getKnobByName("value").get());
+
+    ASSERT_TRUE(knob != NULL);
+    knob->setValue(value);
+}
+
+// The value the source's scene composes, evaluated on this thread.
+std::string
+evaluateSource(const NodePtr& source,
+               int* value)
+{
+    ScenePayload payload;
+    std::string error;
+
+    if (source->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(kTime, ViewIdx(0)), &payload, &error) != EffectInstance::eRenderRoIRetCodeOk) {
+        return "the evaluation failed: " + error;
+    }
+    if (!sceneTestReadSourceValue(payload, value, &error)) {
+        return "could not read the scene: " + error;
+    }
+
+    return std::string();
+}
+
+// One round: a worker evaluates the source with its value set to `asked`, and is held inside the
+// authoring while the main thread sets `edited`. Then the edit is undone and redone, each
+// evaluation checked against the knob, which is what a source authored from empty caches holds.
+std::string
+sceneRaceRound(const NodePtr& source,
+               int asked,
+               int edited)
+{
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool entered = false;
+    bool released = false;
+
+    setSourceValue(source, asked);
+    sceneTestSourceAuthorHook() = [&]() {
+        std::unique_lock<std::mutex> k(mutex);
+        entered = true;
+        cond.notify_all();
+        cond.wait_for(k, std::chrono::seconds(30), [&]() { return released; });
+    };
+    int workerValue = 0;
+    std::string workerError;
+    std::thread worker([&]() {
+        workerError = evaluateSource(source, &workerValue);
+    });
+    bool held = false;
+    {
+        std::unique_lock<std::mutex> k(mutex);
+        held = cond.wait_for(k, std::chrono::seconds(10), [&]() { return entered; });
+    }
+    if (held) {
+        setSourceValue(source, edited);
+    }
+    {
+        std::lock_guard<std::mutex> k(mutex);
+        released = true;
+        cond.notify_all();
+    }
+    worker.join();
+    sceneTestSourceAuthorHook() = std::function<void()>();
+    if (!held) {
+        return "the evaluation never reached the authoring";
+    }
+    if (!workerError.empty()) {
+        return "the held evaluation: " + workerError;
+    }
+
+    const int checks[] = { asked, edited };
+    for (int value : checks) {
+        setSourceValue(source, value);
+        int got = 0;
+        const std::string error = evaluateSource(source, &got);
+        if (!error.empty()) {
+            return error;
+        }
+        if (got != value) {
+            std::ostringstream os;
+            os << "the value is " << value << " but the scene composes " << got;
+
+            return os.str();
+        }
+    }
+
+    return std::string();
+} // sceneRaceRound
+
+// One round on source -> filter, filter reading wide or narrow: references of both, then from
+// cold caches connect wide, revert to narrow and connect wide again, each followed by a cached
+// render. The filter stores its region of definition from onInputChanged(), under the hash the
+// node has then. Returns "" or what went wrong.
+std::string
+inputChangedRound(const AppInstancePtr& app,
+                  const NodePtr& filter,
+                  const NodePtr& wide,
+                  const NodePtr& narrow)
+{
+    std::string error;
+    RenderedPlane refWide;
+    RenderedPlane refNarrow;
+
+    if (!filter->replaceInput(narrow, 0)) {
+        return "could not connect the narrow source";
+    }
+    clearEverything(app);
+    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refNarrow, &error)) {
+        return "the narrow reference failed: " + error;
+    }
+    if (!filter->replaceInput(wide, 0)) {
+        return "could not connect the wide source";
+    }
+    clearEverything(app);
+    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWide, &error)) {
+        return "the wide reference failed: " + error;
+    }
+    if (compareExact(refWide, refNarrow).empty()) {
+        return "the two sources render alike";
+    }
+    if (!filter->replaceInput(narrow, 0)) {
+        return "could not revert to the narrow source";
+    }
+    clearEverything(app);
+
+    const struct {
+        NodePtr source;
+        const RenderedPlane* ref;
+        const char* what;
+    } steps[] = {
+        { wide, &refWide, "connect wide" },
+        { narrow, &refNarrow, "revert to narrow" },
+        { wide, &refWide, "connect wide again" },
+    };
+    for (const auto& step : steps) {
+        if (!filter->replaceInput(step.source, 0)) {
+            return std::string(step.what) + ": the edit failed";
+        }
+        RenderedPlane got;
+        if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, false, &got, &error)) {
+            return std::string(step.what) + ": the cached render failed: " + error;
+        }
+        const std::string diff = compareExact(*step.ref, got);
+        if (!diff.empty()) {
+            return std::string(step.what) + ": " + diff;
+        }
+    }
+
+    return std::string();
+}
+
+struct TwoInputGroup {
+    NodePtr a;
+    NodePtr b;
+    NodePtr group;
+    NodePtr in1;
+    NodePtr in2;
+    NodePtr grade; // the probe, after the group
+};
+
+// a and b feed a group whose Merge puts its second input over its first.
+bool
+buildTwoInputGroup(const AppInstancePtr& app,
+                   const std::vector<double>& colorA,
+                   const std::vector<double>& colorB,
+                   TwoInputGroup* g,
+                   std::string* error)
+{
+    app->getProject()->reset(false, true);
+    clearEverything(app);
+    const NodeCollectionPtr root = app->getProject();
+    g->a = createConstantIn(app, root, kWindow, colorA);
+    g->b = createConstantIn(app, root, kWindow, colorB);
+    g->group = createEmptyGroupIn(app, root);
+    g->grade = createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    const NodeCollectionPtr inside = g->group ? std::dynamic_pointer_cast<NodeCollection>(g->group->getEffectInstance()) : NodeCollectionPtr();
+    if (!g->a || !g->b || !inside || !g->grade) {
+        *error = "could not create the nodes";
+
+        return false;
+    }
+    g->in1 = createIn(app, inside, PLUGINID_NATRON_INPUT);
+    g->in2 = createIn(app, inside, PLUGINID_NATRON_INPUT);
+    const NodePtr merge = createIn(app, inside, PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    const NodePtr out = createIn(app, inside, PLUGINID_NATRON_OUTPUT);
+    if (!g->in1 || !g->in2 || !merge || !out) {
+        *error = "could not create the group's nodes";
+
+        return false;
+    }
+    if (!merge->connectInput(g->in1, kNativeMergeInputB) || !merge->connectInput(g->in2, NativeMerge::aInput(0)) || !out->connectInput(merge, 0)
+        || !g->group->connectInput(g->a, 0) || !g->group->connectInput(g->b, 1) || !g->grade->connectInput(g->group, 0)) {
+        *error = "could not connect the group";
+
+        return false;
+    }
+
+    return true;
+}
+
+// One round: references with and without the group's second input, then from cold caches the
+// input is removed, a cached render runs, the dequeue a render's end asks for runs, and the
+// input is put back; every cached render must match its reference.
+std::string
+groupInputRound(const AppInstancePtr& app,
+                const TwoInputGroup& g)
+{
+    std::string error;
+    RenderedPlane refWith;
+    RenderedPlane refWithout;
+    NodeGroup* group = dynamic_cast<NodeGroup*>(g.group->getEffectInstance().get());
+
+    if (!group) {
+        return "the group is not a NodeGroup";
+    }
+    const auto remove = [&]() {
+        g.in2->deactivate();
+    };
+    const auto restore = [&]() -> bool {
+        g.in2->activate();
+
+        return g.group->connectInput(g.b, 1);
+    };
+    clearEverything(app);
+    if (!renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWith, &error)) {
+        return "the reference with both inputs failed: " + error;
+    }
+    remove();
+    clearEverything(app);
+    const bool withoutOk = renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWithout, &error);
+    if (!restore()) {
+        return "could not restore the second input";
+    }
+    if (!withoutOk) {
+        return "the reference without the second input failed: " + error;
+    }
+    if (compareExact(refWith, refWithout).empty()) {
+        return "the second input changes nothing";
+    }
+
+    clearEverything(app);
+    dequeueAll(app);
+    for (int m = 0; m < 2; ++m) {
+        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const std::string modeName = (m == 0) ? "legacy" : "task graph";
+        RenderedPlane got;
+        if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+            return modeName + ", both inputs: the cached render failed: " + error;
+        }
+        std::string diff = compareExact(refWith, got);
+        if (!diff.empty()) {
+            return modeName + ", both inputs: " + diff;
+        }
+        remove();
+        for (int pass = 0; pass < 2; ++pass) {
+            if (group->getNInputs() != 1) {
+                return modeName + ": the removed input came back after the dequeue";
+            }
+            if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+                return modeName + ", input removed: the cached render failed: " + error;
+            }
+            diff = compareExact(refWithout, got);
+            if (!diff.empty()) {
+                return modeName + ", input removed" + (pass ? " and dequeued: " : ": ") + diff;
+            }
+            dequeueAll(app);
+        }
+        if (!restore()) {
+            return "could not restore the second input";
+        }
+        dequeueAll(app);
+        if (group->getNInputs() != 2) {
+            return modeName + ": the restored input is missing after the dequeue";
+        }
+    }
+
+    return std::string();
+} // groupInputRound
 } // namespace
 
 class CacheStressConcurrentTest
@@ -511,4 +798,197 @@ TEST_F(CacheStressConcurrentTest, DISABLED_KnobEditsDuringRender)
 TEST_F(CacheStressConcurrentTest, DequeueUnderARestartedRender)
 {
     EXPECT_EQ(0, runRaces(getApp(), eRaceRestarted));
+}
+
+// A knob edited while a scene node authors its layer: the layer holds the edit, so it must not be
+// memoized under the key taken before it, or undoing the edit would serve it.
+TEST_F(CacheStressConcurrentTest, SceneKnobEditDuringAuthoring)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodePtr source = createIn(getApp(), getApp()->getProject(), kTestPluginIDSceneSource);
+        ASSERT_TRUE(bool(source));
+        std::mt19937 rng(seeds[s]);
+        std::ostringstream log;
+        // The memo holds the layer of the last value evaluated; asking for another one authors.
+        int last = 0;
+        for (int r = 0; r < rounds; ++r) {
+            int asked = 1 + (int)(rng() % 4);
+            if (asked == last) {
+                asked = last + 1;
+            }
+            const int edited = asked + 1 + (int)(rng() % 3);
+            last = edited;
+            log << "  " << r << ": ask " << asked << ", edit to " << edited << " while authoring\n";
+            const std::string mismatch = sceneRaceRound(source, asked, edited);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ": " << mismatch << "\nedit log:\n"
+                              << log.str();
+                break;
+            }
+        }
+    }
+}
+
+// What onInputChanged() stores in a node's own actions cache is keyed under the node's new hash:
+// stored under the hash from before the edit, reverting the edit would serve it.
+TEST_F(CacheStressConcurrentTest, OnInputChangedUnderTheNewHash)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodeCollectionPtr root = getApp()->getProject();
+        std::mt19937 rng(seeds[s]);
+        const NodePtr wide = createConstantIn(getApp(), root, kWindow, { 0.2, 0.3, 0.4, 1. });
+        const NodePtr filter = createIn(getApp(), root, kTestPluginIDInputChanged);
+        ASSERT_TRUE(bool(wide) && bool(filter));
+        for (int r = 0; r < rounds; ++r) {
+            // Strictly inside the window, so the two regions always differ.
+            const int x1 = 1 + (int)(rng() % (kWindow.width() / 2));
+            const int y1 = 1 + (int)(rng() % (kWindow.height() / 2));
+            const RectI extent(x1, y1, x1 + 1 + (int)(rng() % (kWindow.x2 - x1 - 1)), y1 + 1 + (int)(rng() % (kWindow.y2 - y1 - 1)));
+            const NodePtr narrow = createConstantIn(getApp(), root, extent, { 0.2, 0.3, 0.4, 1. });
+            ASSERT_TRUE(bool(narrow));
+            const std::string mismatch = inputChangedRound(getApp(), filter, wide, narrow);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ", narrow source (" << extent.x1 << ", " << extent.y1 << ", "
+                              << extent.x2 << ", " << extent.y2 << "): " << mismatch;
+                break;
+            }
+        }
+    }
+}
+
+// A render thread reads the viewer hash at the moment the A/B switch marks it. The mark comes
+// from refreshActiveInputs(), after the active inputs change and before the rest of the viewer's
+// onInputChanged() runs, so the hash read there, and the one the viewer keeps, name the input now
+// shown.
+TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+    const std::vector<std::vector<double>> colors = { { 0.9, 0.1, 0.1, 1. }, { 0.1, 0.8, 0.2, 1. }, { 0.2, 0.3, 0.7, 1. } };
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodeCollectionPtr root = getApp()->getProject();
+        const NodePtr viewerNode = createViewerIn(getApp(), root);
+        ASSERT_TRUE(bool(viewerNode));
+        InspectorNode* viewer = dynamic_cast<InspectorNode*>(viewerNode.get());
+        ASSERT_TRUE(viewer != NULL);
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            const NodePtr source = createConstantIn(getApp(), root, kWindow, colors[i]);
+            ASSERT_TRUE(bool(source));
+            ASSERT_TRUE(viewerNode->connectInput(source, (int)i));
+        }
+        viewer->setInputA(0);
+        // The hash of each B side, set the way that marks after the change.
+        std::vector<U64> hashOfB(colors.size());
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            viewer->setInputB((int)i);
+            hashOfB[i] = viewerNode->getHashValue();
+        }
+        int b = (int)colors.size() - 1;
+
+        std::mt19937 rng(seeds[s]);
+        std::ostringstream log;
+        for (int r = 0; r < rounds; ++r) {
+            const int next = (b + 1 + (int)(rng() % (colors.size() - 1))) % (int)colors.size();
+            log << "  " << r << ": B " << b << " -> " << next << "\n";
+            // Nothing else is pending, so the read below flushes no other mark.
+            (void)viewerNode->getHashValue();
+
+            std::mutex m;
+            std::condition_variable cv;
+            bool read = false;
+            U64 readHash = 0;
+            std::atomic<bool> armed(true);
+            std::thread worker;
+            Node::setHashMarkTraceForTesting([&](const Node* node,
+                                                 const char* /*reason*/,
+                                                 const KnobI* /*knob*/) {
+                if ((node != viewerNode.get()) || !armed.exchange(false)) {
+                    return;
+                }
+                worker = std::thread([&]() {
+                    const U64 h = viewerNode->getHashValue();
+                    {
+                        std::lock_guard<std::mutex> l(m);
+                        readHash = h;
+                        read = true;
+                    }
+                    cv.notify_all();
+                });
+                // Bounded: a read that has to report a mark of its own waits for this one.
+                std::unique_lock<std::mutex> l(m);
+                cv.wait_for(l, std::chrono::seconds(2), [&]() { return read; });
+            });
+            viewer->setActiveInputAndRefresh(next, false);
+            Node::setHashMarkTraceForTesting(Node::HashMarkTrace());
+            if (worker.joinable()) {
+                worker.join();
+            }
+            b = next;
+
+            int activeA = -1, activeB = -1;
+            viewer->getActiveInputs(activeA, activeB);
+            ASSERT_EQ(next, activeB);
+            if (armed) {
+                ADD_FAILURE() << "round " << r << ": the A/B switch did not mark the viewer";
+                break;
+            }
+            bool wasRead;
+            {
+                std::lock_guard<std::mutex> l(m);
+                wasRead = read;
+            }
+            if (wasRead && (readHash != hashOfB[next])) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r
+                              << ": a hash read at the mark names another input than the one now shown\nswitch log:\n"
+                              << log.str();
+                break;
+            }
+            if (viewerNode->getHashValue() != hashOfB[next]) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r
+                              << ": the viewer shows input " << next << " under another hash than that input's\nswitch log:\n"
+                              << log.str();
+                break;
+            }
+        }
+    }
+}
+
+// Removing a GroupInput updates the group's input lists at once; the dequeue that follows a
+// render must keep it removed, or the group would read through an input it no longer has.
+TEST_F(CacheStressConcurrentTest, GroupInputRemovedThenDequeued)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        std::mt19937 rng(seeds[s]);
+        for (int r = 0; r < rounds; ++r) {
+            const auto channel = [&rng]() { return 0.1 + 0.1 * (double)(rng() % 8); };
+            const std::vector<double> colorA = { channel(), channel(), channel(), 1. };
+            // Brighter than colorA times its alpha in every channel, so the over always shows.
+            const auto bright = [&rng]() { return 0.75 + 0.05 * (double)(rng() % 4); };
+            const std::vector<double> colorB = { bright(), bright(), bright(), 0.5 + 0.1 * (double)(rng() % 5) };
+            TwoInputGroup g;
+            std::string error;
+            ASSERT_TRUE(buildTwoInputGroup(getApp(), colorA, colorB, &g, &error)) << error;
+            const std::string mismatch = groupInputRound(getApp(), g);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ": " << mismatch;
+                break;
+            }
+        }
+    }
 }

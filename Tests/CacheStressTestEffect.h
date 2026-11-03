@@ -45,6 +45,7 @@
 
 #define kTestPluginIDStaleMemo "test.natron.built-in.StaleMemo"
 #define kTestPluginIDQueuedEdit "test.natron.built-in.QueuedEdit"
+#define kTestPluginIDInputChanged "test.natron.built-in.InputChanged"
 
 NATRON_NAMESPACE_ENTER
 
@@ -269,6 +270,122 @@ private:
     }
 
     KnobDoubleWPtr _value;
+};
+
+/**
+ * @brief A one-input filter whose region of definition is its input's, and which asks for it from
+ * onInputChanged(), so the answer is stored in its actions cache under whatever hash the node has
+ * while its inputs change. It renders 1 over its region of definition, so a region stored under
+ * the wrong hash shows in the pixels.
+ **/
+class InputChangedTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new InputChangedTestEffect(n);
+    }
+
+    explicit InputChangedTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        EffectInstancePtr input = getInput(0);
+
+        if (!input) {
+            return eStatusFailed;
+        }
+
+        return input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, NULL);
+    }
+
+    virtual void onInputChanged(int /*inputNo*/) OVERRIDE FINAL
+    {
+        RectD rod;
+
+        if (getInput(0)) {
+            (void)getRegionOfDefinition_public(getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, NULL);
+        }
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDInputChanged,
+        .label = "Test Input Changed",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+                return eStatusFailed;
+            }
+            const int numChannels = (int)image->getComponentsCount();
+            Image::WriteAccess access(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    float* pixel = (float*)access.pixelAt(x, y);
+                    if (!pixel) {
+                        return eStatusFailed;
+                    }
+                    for (int c = 0; c < numChannels; ++c) {
+                        pixel[c] = 1.f;
+                    }
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
 };
 
 NATRON_NAMESPACE_EXIT

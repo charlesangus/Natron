@@ -368,24 +368,6 @@ SplineWarpCurves::isBoundary(BezierCurve* curve) const
 }
 
 void
-SplineWarpCurves::setSoftBoundary(BezierCurve* curve,
-                                  bool boundary)
-{
-    if (refuses()) {
-        return;
-    }
-    runRaising([&]() { _ctx->setSoftBoundary(bezierOf(curve), boundary); });
-}
-
-bool
-SplineWarpCurves::isSoftBoundary(BezierCurve* curve) const
-{
-    BezierPtr bezier = bezierOf(curve);
-
-    return bezier && _ctx->isSoftBoundary(bezier);
-}
-
-void
 SplineWarpCurves::setCookieCutter(BezierCurve* curve,
                                   bool cookieCutter)
 {

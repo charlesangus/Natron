@@ -19,9 +19,8 @@ Each curve has a role, shown in the panel's Role column:
 
 - **Source** and **Destination**: the two curves of a link. The Linked To column names the other
   curve. Overlays draw sources red and destinations blue.
-- **Hard Boundary**: a closed curve that limits the warp. Overlays draw it yellow.
-- **Soft Boundary**: a curve, open or closed, that holds the image still along it without limiting
-  the warp elsewhere. Overlays draw it green.
+- **Boundary**: a closed curve that limits the warp. Its feather makes it soft: the warp eases out
+  between the curve and its feather points. Overlays draw it yellow.
 - No role: the curve is ignored by the warp. Overlays draw it grey.
 
 Apart from its role, a closed curve can be a **cookie cutter**, shown Yes in the Cookie Cutter
@@ -42,9 +41,8 @@ Links and boundaries are made from a curve's context menu in the panel:
 - **Unlink** removes the links of the selected curves. The curves stay, with no role.
 - **Swap Source/Destination** swaps the two curves of each selected link, keeping how their
   points pair.
-- **Toggle Hard Boundary** and **Toggle Soft Boundary** make every selected curve that kind of
-  boundary, or none of them when they all are. Making a curve one kind of boundary clears the
-  other. Hard boundaries must be closed and unlinked; soft boundaries only unlinked.
+- **Toggle Boundary** makes every selected curve a boundary, or none of them when they all are.
+  Boundaries must be closed and unlinked.
 - **Toggle Cookie Cutter** makes every selected closed curve a cookie cutter, or none of them
   when they all are.
 - **Link Transform to First** makes every other selected curve or layer take the first one's
@@ -59,13 +57,13 @@ point of the other curve. Drag either end along its curve; it cannot pass the co
 either side, so the pairing never folds. Delete or Backspace removes the selected one. With
 auto-keying on, adding or moving a correspondence sets a key at the current frame.
 
-**Boundaries and feather:** with at least one hard boundary, nothing outside every boundary's feather
-moves. Inside a boundary's curve the warp is whole; between the curve and its feather it eases to
-nothing along the curve's feather fall-off. A boundary with no feather cuts the warp off at the
-curve. A soft boundary only pins the image along its curve: the warp fades toward it but still
-moves everything on the far side. Boundary BBox (on by default) adds the Source format's
-rectangle as a soft boundary, so the image edges stay put. Boundary Curve Resolution is the
-distance, in full-resolution pixels, between samples along hard and soft boundaries.
+**Boundaries and feather:** with at least one boundary, nothing outside every boundary's feather
+moves. Inside a boundary's curve the warp is whole; between the curve and its feather points it
+eases to nothing along the curve's Feather Fall-off, so a feathered boundary is a soft boundary.
+A boundary with no feather cuts the warp off at the curve. Boundary BBox (on by default) holds the
+Source format's edges still without masking anything, so the warp fades toward them but the image
+edges stay put. Boundary Curve Resolution is the distance, in full-resolution pixels, between
+samples along each boundary's feather and the format's edges.
 
 **Amounts:** each link has its own amount (Python: `SplineWarpCurveLink.setAmount`), and the
 Amount knob scales every link on top of that. An amount moves the destination toward the source
@@ -136,9 +134,8 @@ links of the node's curves. The curves themselves are made and edited through
 `node.getRotoContext()`, and each curve's transform through its parameters (`curve.getParam("translate")`).
 
 - `link(source, destination, duplicate=False)`, `unlink(curve)`, `getLink(curve)`, `getLinks()`
-- `setBoundary(curve, on)`, `isBoundary(curve)`: hard boundaries, closed curves only.
-- `setSoftBoundary(curve, on)`, `isSoftBoundary(curve)`: soft boundaries, open or closed. Making a
-  curve one kind of boundary clears the other.
+- `setBoundary(curve, on)`, `isBoundary(curve)`: boundaries, closed unlinked curves only. Set the
+  curve's feather (`curve.setFeatherDistance(pixels, time)` or its feather points) for a soft falloff.
 - `setCookieCutter(curve, on)`, `isCookieCutter(curve)`: closed curves only.
 - `getLayerAmount(layer, time)`, `setLayerAmount(layer, value, time)`,
   `setLayerAmountAtTime(layer, time, value)`

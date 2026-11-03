@@ -110,10 +110,6 @@ public:
     void setBoundary(BezierCurve* curve, bool boundary);
     bool isBoundary(BezierCurve* curve) const;
 
-    // A soft boundary pins the warp along the curve, open or closed, without masking.
-    void setSoftBoundary(BezierCurve* curve, bool boundary);
-    bool isSoftBoundary(BezierCurve* curve) const;
-
     // A cookie cutter, closed curves only, makes the output mask.
     void setCookieCutter(BezierCurve* curve, bool cookieCutter);
     bool isCookieCutter(BezierCurve* curve) const;

@@ -69,8 +69,7 @@ enum SplineWarpActionEnum {
     eSplineWarpActionLink,
     eSplineWarpActionUnlink,
     eSplineWarpActionSwap,
-    eSplineWarpActionToggleHardBoundary,
-    eSplineWarpActionToggleSoftBoundary,
+    eSplineWarpActionToggleBoundary,
     eSplineWarpActionToggleCookieCutter,
 };
 
@@ -154,14 +153,12 @@ public:
     std::string swapSelected(UndoCommandPtr* pushed = 0);
 
     /**
-     * @brief Makes every selected curve a boundary of the given kind, or, when they all are, none
-     * of them. A curve made one kind of boundary stops being the other.
+     * @brief Makes every selected curve a boundary, or, when they all are, none of them.
      **/
-    std::string toggleBoundarySelected(bool soft,
-                                       UndoCommandPtr* pushed = 0);
+    std::string toggleBoundarySelected(UndoCommandPtr* pushed = 0);
 
-    // Why toggleBoundarySelected(soft) would refuse the current selection, empty when it would not.
-    std::string canToggleBoundary(bool soft) const;
+    // Why toggleBoundarySelected() would refuse the current selection, empty when it would not.
+    std::string canToggleBoundary() const;
 
     /**
      * @brief Makes every selected curve a cookie cutter, or, when they all are, none of them.

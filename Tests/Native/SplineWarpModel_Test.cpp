@@ -460,8 +460,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     single[0] = std::make_pair(420., 390.);
     BezierPtr pinDestination = makeCurve(ctx, single, false);
     BezierPtr boundary = makeQuad(ctx, -50., -50., 600.);
-    BezierPtr soft = makeOpenLine(ctx, 0., 300.);
-    ASSERT_TRUE(bool(a) && bool(b) && bool(c) && bool(d) && bool(pinSource) && bool(pinDestination) && bool(boundary) && bool(soft));
+    ASSERT_TRUE(bool(a) && bool(b) && bool(c) && bool(d) && bool(pinSource) && bool(pinDestination) && bool(boundary));
 
     SplineWarpLinkPtr closedLink = ctx->linkWithAlignment(a, b, 1.5, true);
     ASSERT_TRUE(bool(closedLink));
@@ -481,7 +480,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_EQ(0, ctx->addCorrespondence(pinLink, 0., 0.));
 
     ctx->setBoundary(boundary, true);
-    ctx->setSoftBoundary(soft, true);
+    boundary->setFeatherDistance(12., kTime);
     ctx->setCookieCutter(a, true);
 
     RotoLayerPtr layer = ctx->addLayer();
@@ -495,7 +494,6 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_TRUE(saved.hasSplineWarp);
     ASSERT_EQ(std::size_t(3), saved.splineWarp.links.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.boundaries.size());
-    ASSERT_EQ(std::size_t(1), saved.splineWarp.softBoundaries.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.cookieCutters.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.layerAmounts.size());
 
@@ -504,7 +502,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     const std::string aName = a->getScriptName(), bName = b->getScriptName(), cName = c->getScriptName(), dName = d->getScriptName();
     const std::string pinSourceName = pinSource->getScriptName(), pinDestinationName = pinDestination->getScriptName();
     const std::string boundaryName = boundary->getScriptName();
-    const std::string softName = soft->getScriptName(), layerName = layer->getScriptName();
+    const std::string layerName = layer->getScriptName();
     struct SavedCorrespondence {
         double time, source, destination;
     };
@@ -528,7 +526,6 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     pinSource.reset();
     pinDestination.reset();
     boundary.reset();
-    soft.reset();
     layer.reset();
     closedLink.reset();
     openLink.reset();
@@ -598,10 +595,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_TRUE(bool(loadedBoundary));
     EXPECT_TRUE(loadedCtx->isBoundary(loadedBoundary));
     EXPECT_EQ(eSplineWarpCurveRoleLinked, loadedCtx->getRole(curveNamed(aName)));
-    BezierPtr loadedSoft = curveNamed(softName);
-    ASSERT_TRUE(bool(loadedSoft));
-    EXPECT_TRUE(loadedCtx->isSoftBoundary(loadedSoft));
-    EXPECT_EQ(eSplineWarpCurveRoleSoftBoundary, loadedCtx->getRole(loadedSoft));
+    EXPECT_EQ(12., loadedBoundary->getFeatherDistance(kTime));
     ASSERT_TRUE(bool(curveNamed(aName)));
     EXPECT_TRUE(loadedCtx->isCookieCutter(curveNamed(aName)));
     EXPECT_FALSE(loadedCtx->isCookieCutter(curveNamed(bName)));

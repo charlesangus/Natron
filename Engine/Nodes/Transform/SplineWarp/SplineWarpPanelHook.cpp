@@ -44,8 +44,7 @@ const ActionInfo kActions[] = {
     { eSplineWarpActionLink, "link" },
     { eSplineWarpActionUnlink, "unlink" },
     { eSplineWarpActionSwap, "swap" },
-    { eSplineWarpActionToggleHardBoundary, "toggleHardBoundary" },
-    { eSplineWarpActionToggleSoftBoundary, "toggleSoftBoundary" },
+    { eSplineWarpActionToggleBoundary, "toggleBoundary" },
     { eSplineWarpActionToggleCookieCutter, "toggleCookieCutter" },
 };
 
@@ -68,7 +67,7 @@ SplineWarpPanelHook::getColumns() const
     std::vector<Column> columns(4);
 
     columns[eColumnRole].header = tr("Role").toStdString();
-    columns[eColumnRole].toolTip = tr("Source or Destination for a curve in a link, Hard Boundary or Soft Boundary for a boundary. "
+    columns[eColumnRole].toolTip = tr("Source or Destination for a curve in a link, Boundary for a boundary. "
                                       "Curves with no role are ignored by the warp.")
                                        .toStdString();
     columns[eColumnLinkedTo].header = tr("Linked To").toStdString();
@@ -106,10 +105,7 @@ SplineWarpPanelHook::getItemText(const RotoItemPtr& item,
             return isSource ? tr("Source").toStdString() : tr("Destination").toStdString();
         }
         if (context->isBoundary(curve)) {
-            return tr("Hard Boundary").toStdString();
-        }
-        if (context->isSoftBoundary(curve)) {
-            return tr("Soft Boundary").toStdString();
+            return tr("Boundary").toStdString();
         }
         break;
     case eColumnLinkedTo:
@@ -146,8 +142,7 @@ SplineWarpPanelHook::getItemMenuActions(const std::list<RotoItemPtr>& items) con
         tr("Link"),
         tr("Unlink"),
         tr("Swap Source/Destination"),
-        tr("Toggle Hard Boundary"),
-        tr("Toggle Soft Boundary"),
+        tr("Toggle Boundary"),
         tr("Toggle Cookie Cutter"),
     };
     for (std::size_t i = 0; i < sizeof(kActions) / sizeof(kActions[0]); ++i) {

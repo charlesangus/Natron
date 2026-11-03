@@ -2405,14 +2405,6 @@
                 }
             </inject-code>
         </modify-function>
-        <modify-function signature="setSoftBoundary(BezierCurve*,bool)">
-            <inject-code class="target" position="beginning">
-                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
-                if (PyErr_Occurred()) {
-                    return nullptr;
-                }
-            </inject-code>
-        </modify-function>
         <modify-function signature="setCookieCutter(BezierCurve*,bool)">
             <inject-code class="target" position="beginning">
                 %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);

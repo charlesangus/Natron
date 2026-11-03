@@ -615,20 +615,15 @@ TEST_F(SplineWarpToolsTest, ActionsRefuseWhatTheyCannotDo)
     EXPECT_NE(std::string(), ui->unlinkSelected(&command));
     EXPECT_NE(std::string(), ui->swapSelected(&command));
 
-    // Toggle Hard Boundary: an open curve, a linked curve, nothing.
+    // Toggle Boundary: an open curve, a linked curve, nothing.
     select(ui, open);
-    EXPECT_NE(std::string(), ui->canToggleBoundary(false));
-    EXPECT_NE(std::string(), ui->toggleBoundarySelected(false, &command));
-    EXPECT_EQ(std::string(), ui->canToggleBoundary(true));
+    EXPECT_NE(std::string(), ui->canToggleBoundary());
+    EXPECT_NE(std::string(), ui->toggleBoundarySelected(&command));
     select(ui, std::list<BezierPtr> { c, a });
-    EXPECT_NE(std::string(), ui->canToggleBoundary(false));
-    EXPECT_NE(std::string(), ui->toggleBoundarySelected(false, &command));
-    // Toggle Soft Boundary: a linked curve, nothing.
-    EXPECT_NE(std::string(), ui->canToggleBoundary(true));
-    EXPECT_NE(std::string(), ui->toggleBoundarySelected(true, &command));
+    EXPECT_NE(std::string(), ui->canToggleBoundary());
+    EXPECT_NE(std::string(), ui->toggleBoundarySelected(&command));
     select(ui, std::list<BezierPtr>());
-    EXPECT_NE(std::string(), ui->canToggleBoundary(false));
-    EXPECT_NE(std::string(), ui->canToggleBoundary(true));
+    EXPECT_NE(std::string(), ui->canToggleBoundary());
 
     EXPECT_FALSE(bool(command));
     EXPECT_EQ(hash, ctx->getContentHash());
@@ -653,9 +648,9 @@ TEST_F(SplineWarpToolsTest, ToggleBoundaryAndUndo)
 
     // Mixed: all become boundaries.
     select(ui, std::list<BezierPtr> { a, b });
-    EXPECT_EQ(std::string(), ui->canToggleBoundary(false));
+    EXPECT_EQ(std::string(), ui->canToggleBoundary());
     UndoCommandPtr command;
-    ASSERT_EQ(std::string(), ui->toggleBoundarySelected(false, &command));
+    ASSERT_EQ(std::string(), ui->toggleBoundarySelected(&command));
     EXPECT_TRUE(ctx->isBoundary(a));
     EXPECT_TRUE(ctx->isBoundary(b));
     const U64 hashAfter = ctx->getContentHash();
@@ -668,47 +663,9 @@ TEST_F(SplineWarpToolsTest, ToggleBoundaryAndUndo)
     EXPECT_EQ(hashAfter, ctx->getContentHash());
 
     // All boundaries: none stay.
-    ASSERT_EQ(std::string(), ui->toggleBoundarySelected(false));
+    ASSERT_EQ(std::string(), ui->toggleBoundarySelected());
     EXPECT_FALSE(ctx->isBoundary(a));
     EXPECT_FALSE(ctx->isBoundary(b));
-}
-
-TEST_F(SplineWarpToolsTest, ToggleSoftBoundaryTakesOpenCurvesAndClearsHard)
-{
-    NodePtr node = makeSplineWarp(NodePtr());
-    ASSERT_TRUE(bool(node));
-    SplineWarpInteractPtr ui = interactOf(node);
-    SplineWarpContextPtr ctx = contextOf(node);
-    ASSERT_TRUE(ui && ctx);
-
-    BezierPtr closed = makeQuad(ctx, 10., 10., 10.);
-    BezierPtr open = makeOpenLine(ctx, 5., 40.);
-    ASSERT_TRUE(closed && open);
-    ctx->setBoundary(closed, true);
-    const U64 hashBefore = ctx->getContentHash();
-
-    select(ui, std::list<BezierPtr> { closed, open });
-    UndoCommandPtr command;
-    ASSERT_EQ(std::string(), ui->toggleBoundarySelected(true, &command));
-    ASSERT_TRUE(bool(command));
-    EXPECT_TRUE(ctx->isSoftBoundary(closed));
-    EXPECT_TRUE(ctx->isSoftBoundary(open));
-    EXPECT_FALSE(ctx->isBoundary(closed));
-    EXPECT_EQ(eSplineWarpCurveRoleSoftBoundary, ctx->getRole(open));
-
-    command->undo();
-    EXPECT_TRUE(ctx->isBoundary(closed));
-    EXPECT_FALSE(ctx->isSoftBoundary(closed));
-    EXPECT_FALSE(ctx->isSoftBoundary(open));
-    EXPECT_EQ(hashBefore, ctx->getContentHash());
-    command->redo();
-
-    // A soft boundary cannot be linked; all soft, so toggling clears them.
-    select(ui, std::list<BezierPtr> { closed, open });
-    EXPECT_NE(std::string(), ui->linkSelected());
-    ASSERT_EQ(std::string(), ui->toggleBoundarySelected(true));
-    EXPECT_FALSE(ctx->isSoftBoundary(closed));
-    EXPECT_FALSE(ctx->isSoftBoundary(open));
 }
 
 TEST_F(SplineWarpToolsTest, CorrespondencesAreMadeMovedAndDeleted)
@@ -1079,14 +1036,11 @@ TEST_F(SplineWarpToolsTest, ThePanelShowsRolesAndPartners)
     EXPECT_EQ(std::string("LipTarget"), hook->getItemText(source, SplineWarpPanelHook::eColumnLinkedTo));
     EXPECT_EQ(std::string("Destination"), hook->getItemText(destination, SplineWarpPanelHook::eColumnRole));
     EXPECT_EQ(std::string("Lip"), hook->getItemText(destination, SplineWarpPanelHook::eColumnLinkedTo));
-    EXPECT_EQ(std::string("Hard Boundary"), hook->getItemText(boundary, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string("Boundary"), hook->getItemText(boundary, SplineWarpPanelHook::eColumnRole));
     EXPECT_EQ(std::string(), hook->getItemText(boundary, SplineWarpPanelHook::eColumnLinkedTo));
     EXPECT_EQ(std::string(), hook->getItemText(loose, SplineWarpPanelHook::eColumnRole));
     EXPECT_EQ(std::string(), hook->getItemText(loose, SplineWarpPanelHook::eColumnLinkedTo));
     EXPECT_EQ(std::string(), hook->getItemText(ctx->getOrCreateBaseLayer(), SplineWarpPanelHook::eColumnRole));
-    ctx->setSoftBoundary(loose, true);
-    EXPECT_EQ(std::string("Soft Boundary"), hook->getItemText(loose, SplineWarpPanelHook::eColumnRole));
-    EXPECT_EQ(std::string(), hook->getItemText(loose, SplineWarpPanelHook::eColumnLinkedTo));
 
     // Swapping the link swaps the roles.
     SplineWarpInteractPtr ui = interactOf(node);
@@ -1126,12 +1080,12 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
         }
     };
 
-    // Two unlinked curves: Link; the open one cannot be a hard boundary, but can be a soft one.
-    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", true }, { "toggleCookieCutter", false }, { "linkTransform", true }, { "unlinkTransform", false } });
-    // One closed unlinked curve: Duplicate and Link, both boundaries.
-    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", true }, { "toggleSoftBoundary", true }, { "toggleCookieCutter", true }, { "linkTransform", false }, { "unlinkTransform", false } });
+    // Two unlinked curves: Link; the open one cannot be a boundary.
+    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", true }, { "unlinkTransform", false } });
+    // One closed unlinked curve: Duplicate and Link, Toggle Boundary.
+    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", true }, { "toggleCookieCutter", true }, { "linkTransform", false }, { "unlinkTransform", false } });
     // A layer in the selection is not a curve.
-    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
 
     // The items' order picks the source.
     hook->onItemMenuActionTriggered("link", std::list<RotoItemPtr> { b, open });
@@ -1139,7 +1093,7 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     ASSERT_TRUE(bool(link));
     EXPECT_EQ(b, link->getSource());
     EXPECT_EQ(open, link->getDestination());
-    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
 
     hook->onItemMenuActionTriggered("swap", std::list<RotoItemPtr> { open });
     link = ctx->getLink(b);
@@ -1150,10 +1104,10 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     EXPECT_FALSE(bool(ctx->getLink(b)));
     EXPECT_FALSE(bool(ctx->getLink(open)));
 
-    hook->onItemMenuActionTriggered("toggleHardBoundary", std::list<RotoItemPtr> { a });
+    hook->onItemMenuActionTriggered("toggleBoundary", std::list<RotoItemPtr> { a });
     EXPECT_TRUE(ctx->isBoundary(a));
-    hook->onItemMenuActionTriggered("toggleSoftBoundary", std::list<RotoItemPtr> { open });
-    EXPECT_TRUE(ctx->isSoftBoundary(open));
+    hook->onItemMenuActionTriggered("toggleBoundary", std::list<RotoItemPtr> { open });
+    EXPECT_FALSE(ctx->isBoundary(open));
     hook->onItemMenuActionTriggered("toggleCookieCutter", std::list<RotoItemPtr> { a });
     EXPECT_TRUE(ctx->isCookieCutter(a));
     EXPECT_TRUE(ctx->isBoundary(a));

@@ -531,7 +531,6 @@ SplineWarpContext::SplineWarpContext(const NodePtr& node)
     , _warpMutex()
     , _links()
     , _boundaries()
-    , _softBoundaries()
     , _cookieCutters()
     , _layerAmounts()
     , _layerTransforms()
@@ -634,9 +633,6 @@ SplineWarpContext::checkLinkable(const BezierPtr& curve,
     if (containsCurve(_boundaries, curve.get())) {
         throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is a boundary.");
     }
-    if (containsCurve(_softBoundaries, curve.get())) {
-        throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is a soft boundary.");
-    }
     if (findLinkLocked(curve.get())) {
         throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is already linked.");
     }
@@ -677,9 +673,6 @@ SplineWarpContext::getRole(const BezierPtr& curve) const
     if (containsCurve(_boundaries, curve.get())) {
         return eSplineWarpCurveRoleBoundary;
     }
-    if (containsCurve(_softBoundaries, curve.get())) {
-        return eSplineWarpCurveRoleSoftBoundary;
-    }
     if (findLinkLocked(curve.get())) {
         return eSplineWarpCurveRoleLinked;
     }
@@ -697,49 +690,26 @@ void
 SplineWarpContext::setBoundary(const BezierPtr& curve,
                                bool boundary)
 {
-    setBoundaryRole(curve, false, boundary);
-}
-
-bool
-SplineWarpContext::isSoftBoundary(const BezierPtr& curve) const
-{
-    return getRole(curve) == eSplineWarpCurveRoleSoftBoundary;
-}
-
-void
-SplineWarpContext::setSoftBoundary(const BezierPtr& curve,
-                                   bool softBoundary)
-{
-    setBoundaryRole(curve, true, softBoundary);
-}
-
-void
-SplineWarpContext::setBoundaryRole(const BezierPtr& curve,
-                                   bool soft,
-                                   bool on)
-{
     KnobContentWrite write;
     {
         std::lock_guard<std::mutex> l(_warpMutex);
-        std::list<BezierWPtr>& curves = soft ? _softBoundaries : _boundaries;
-        const bool isNow = curve && containsCurve(curves, curve.get());
-        if (isNow == on) {
+        const bool isNow = curve && containsCurve(_boundaries, curve.get());
+        if (isNow == boundary) {
             return;
         }
-        if (on) {
+        if (boundary) {
             if (!ownsCurve(curve)) {
-                throw std::invalid_argument(soft ? "SplineWarp: a soft boundary must be a curve of this node." : "SplineWarp: a boundary must be a curve of this node.");
+                throw std::invalid_argument("SplineWarp: a boundary must be a curve of this node.");
             }
-            if (!soft && !SplineWarpCurveShape::isClosedCurve(*curve)) {
+            if (!SplineWarpCurveShape::isClosedCurve(*curve)) {
                 throw std::invalid_argument("SplineWarp: a boundary must be a closed curve.");
             }
             if (findLinkLocked(curve.get())) {
-                throw std::invalid_argument(soft ? "SplineWarp: a linked curve cannot be a soft boundary." : "SplineWarp: a linked curve cannot be a boundary.");
+                throw std::invalid_argument("SplineWarp: a linked curve cannot be a boundary.");
             }
-            eraseCurve(soft ? &_boundaries : &_softBoundaries, curve.get());
-            curves.push_back(curve);
+            _boundaries.push_back(curve);
         } else {
-            eraseCurve(&curves, curve.get());
+            eraseCurve(&_boundaries, curve.get());
         }
     }
     warpDataChanged(true);
@@ -752,14 +722,6 @@ SplineWarpContext::getBoundaries() const
     std::lock_guard<std::mutex> l(_warpMutex);
 
     return lockedCurves(_boundaries);
-}
-
-std::list<BezierPtr>
-SplineWarpContext::getSoftBoundaries() const
-{
-    std::lock_guard<std::mutex> l(_warpMutex);
-
-    return lockedCurves(_softBoundaries);
 }
 
 bool
@@ -1926,7 +1888,6 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
     {
         std::lock_guard<std::mutex> l(_warpMutex);
         changed = eraseCurve(&_boundaries, curve.get());
-        changed = eraseCurve(&_softBoundaries, curve.get()) || changed;
         changed = eraseCurve(&_cookieCutters, curve.get()) || changed;
         SplineWarpLinkPtr link = findLinkLocked(curve.get());
         if (link) {
@@ -1955,7 +1916,6 @@ struct SplineWarpHostState
 
     std::vector<SavedLink> links;
     std::list<BezierWPtr> boundaries;
-    std::list<BezierWPtr> softBoundaries;
     std::list<BezierWPtr> cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> layerAmounts;
     std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>> layerTransforms;
@@ -1970,7 +1930,6 @@ SplineWarpContext::saveHostState() const
     std::lock_guard<std::mutex> l(_warpMutex);
 
     state->boundaries = _boundaries;
-    state->softBoundaries = _softBoundaries;
     state->cookieCutters = _cookieCutters;
     state->layerAmounts = _layerAmounts;
     state->layerTransforms = _layerTransforms;
@@ -2004,7 +1963,6 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
     {
         std::lock_guard<std::mutex> l(_warpMutex);
         _boundaries = saved->boundaries;
-        _softBoundaries = saved->softBoundaries;
         _cookieCutters = saved->cookieCutters;
         _layerAmounts = saved->layerAmounts;
         _layerTransforms = saved->layerTransforms;
@@ -2035,11 +1993,6 @@ SplineWarpContext::appendHostContentHash(ContentHasher& h) const
     h.appendString("SplineWarp");
     h.appendU64((U64)_boundaries.size());
     for (std::list<BezierWPtr>::const_iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
-        BezierPtr curve = it->lock();
-        h.appendString(curve ? curve->getScriptName() : std::string());
-    }
-    h.appendU64((U64)_softBoundaries.size());
-    for (std::list<BezierWPtr>::const_iterator it = _softBoundaries.begin(); it != _softBoundaries.end(); ++it) {
         BezierPtr curve = it->lock();
         h.appendString(curve ? curve->getScriptName() : std::string());
     }
@@ -2100,12 +2053,6 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
         BezierPtr curve = it->lock();
         if (curve) {
             warp.boundaries.push_back(curve->getScriptName());
-        }
-    }
-    for (std::list<BezierWPtr>::const_iterator it = _softBoundaries.begin(); it != _softBoundaries.end(); ++it) {
-        BezierPtr curve = it->lock();
-        if (curve) {
-            warp.softBoundaries.push_back(curve->getScriptName());
         }
     }
     for (std::list<BezierWPtr>::const_iterator it = _cookieCutters.begin(); it != _cookieCutters.end(); ++it) {
@@ -2185,7 +2132,6 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
         std::lock_guard<std::mutex> l(_warpMutex);
         _links.clear();
         _boundaries.clear();
-        _softBoundaries.clear();
         _cookieCutters.clear();
         _layerAmounts.clear();
         _layerTransforms.clear();
@@ -2210,14 +2156,6 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
                 continue;
             }
             _boundaries.push_back(curve);
-        }
-        for (std::list<std::string>::const_iterator it = warp.softBoundaries.begin(); it != warp.softBoundaries.end(); ++it) {
-            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
-            if (!curve || containsCurve(_boundaries, curve.get()) || containsCurve(_softBoundaries, curve.get())) {
-                logDropped("SplineWarp: dropped soft boundary " + *it + ": no curve without another boundary role has that name.");
-                continue;
-            }
-            _softBoundaries.push_back(curve);
         }
         for (std::list<std::string>::const_iterator it = warp.cookieCutters.begin(); it != warp.cookieCutters.end(); ++it) {
             BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
@@ -2245,7 +2183,7 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
                 logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
                 continue;
             }
-            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || containsCurve(_softBoundaries, source.get()) || containsCurve(_softBoundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
+            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
                 logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
                 continue;
             }

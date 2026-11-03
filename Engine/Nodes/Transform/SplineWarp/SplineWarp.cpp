@@ -347,8 +347,8 @@ SplineWarp::initializeKnobs()
 
     KnobBoolPtr boundaryBBox = createKnob<KnobBool>(tr("Boundary BBox"));
     boundaryBBox->setName(kSplineWarpParamBoundaryBBox);
-    boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, as a soft boundary, so the warp eases "
-                                    "out toward them instead of moving the whole image."));
+    boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, without masking anything, so the warp "
+                                    "eases out toward them instead of moving the whole image."));
     boundaryBBox->setDefaultValue(true);
     boundaryBBox->setAnimationEnabled(false);
     page->addKnob(boundaryBBox);
@@ -413,7 +413,7 @@ SplineWarp::initializeKnobs()
     KnobDoublePtr boundaryCurveResolution = createKnob<KnobDouble>(tr("Boundary Curve Resolution"));
     boundaryCurveResolution->setName(kSplineWarpParamBoundaryCurveResolution);
     boundaryCurveResolution->setHintToolTip(tr("The distance, in full-resolution pixels, between consecutive samples "
-                                               "along the boundaries and soft boundaries, the format's edges included."));
+                                               "along the boundaries' feathers and the format's edges."));
     boundaryCurveResolution->setDefaultValue(4.);
     boundaryCurveResolution->setMinimum(0.5);
     boundaryCurveResolution->setDisplayMinimum(1.);
@@ -1351,10 +1351,10 @@ SplineWarp::sampleWarp(double time,
     sampling.boundarySpacing = settings.boundaryCurveResolution;
 
     return _samples.get(key, [&]() {
-        std::vector<SplineWarpSoftBoundarySamplingInput> format;
+        std::vector<SplineWarpPinnedOutline> format;
         if (!settings.boundaryFormat.isNull()) {
             const RectD& f = settings.boundaryFormat;
-            format.push_back(splineWarpRectangleBoundary(f.x1, f.y1, f.x2, f.y2));
+            format.push_back(splineWarpRectangleOutline(f.x1, f.y1, f.x2, f.y2));
         }
 
         return sampleSplineWarp(*context, sampling, format);

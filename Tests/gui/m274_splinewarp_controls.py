@@ -1,6 +1,6 @@
-"""SplineWarp's remaining controls: the Controls, Transform and Render pages fit at 1920x1080, a soft
-boundary, a drag of the viewer transform overlay, the cookie mask in the Output Mask layer, and
-Crop To Format on and off.
+"""SplineWarp's remaining controls: the Controls, Transform and Render pages fit at 1920x1080, a
+feathered boundary's soft falloff, a drag of the viewer transform overlay, the cookie mask in the
+Output Mask layer, and Crop To Format on and off.
 
 A CheckerBoard feeds a Transform feeding a SplineWarp feeding the viewer, with the SplineWarp's
 settings panel open. Curves, links and roles are made through Python; the overlay is dragged in
@@ -36,6 +36,8 @@ CROP_SHIFT = -400.0
 CROP_SOURCE_RECT = (-300.0, 380.0, -100.0, 580.0)
 CROP_DEST_RECT = (100.0, 380.0, 300.0, 580.0)
 OVERLAY_CENTRE = (1500.0, 220.0)
+BOUNDARY_MARGIN = 20.0  # the boundary curve sits this far outside the destination
+BOUNDARY_FEATHER = 200.0
 DRAG_BY = (80, -60)  # viewer pixels: right and up
 
 try:
@@ -356,27 +358,34 @@ try:
         require(set_param(warp, "show", SHOW_BOTH), "set Show to Both")
         yield ("sleep", RENDER_MS)
 
-        gt.section("soft-boundary")
-        # An open line just right of the destination, where the shift moves the picture most.
-        lx = dest_rect[2] + 40.0
-        line = hold(roto.createBezier(lx, dest_rect[1] - 100.0, 1.0))
-        require(line is not None, "created an open curve")
-        line.addControlPoint(lx, (dest_rect[1] + dest_rect[3]) / 2.0)
-        line.addControlPoint(lx, dest_rect[3] + 100.0)
+        gt.section("feathered-boundary")
+        m = BOUNDARY_MARGIN
+        bound_rect = (dest_rect[0] - m, dest_rect[1] - m, dest_rect[2] + m, dest_rect[3] + m)
+        bound = make_rect(roto, bound_rect)
+        require(bound is not None, "created the boundary curve")
+        bound.setFeatherDistance(0.0, 1.0)
+        sw.setBoundary(bound, True)
+        check(sw.isBoundary(bound), "the closed curve is a boundary")
+        check(not hasattr(sw, "setSoftBoundary"), "there is no separate soft boundary")
         yield ("sleep", RENDER_MS)
-        near = mapping.rect((lx - 60.0, dest_rect[1], lx + 60.0, dest_rect[3]))
-        before = grab_viewer()
-        sw.setSoftBoundary(line, True)
-        check(sw.isSoftBoundary(line), "the open curve is a soft boundary")
-        check(not sw.isBoundary(line), "a soft boundary is not a hard boundary")
+        role = cell(tree, bound, "Role")
+        check(role == "Boundary", "the curve list shows Boundary (%r)" % role)
+        # A band right of the curve, where the shift moves the picture most: outside an unfeathered
+        # boundary nothing moves, inside the feather the warp eases out.
+        band = mapping.rect((bound_rect[2] + 10.0, dest_rect[1], bound_rect[2] + 110.0, dest_rect[3]))
+        hard = grab_viewer()
+        gt.shot("m274-boundary-unfeathered.png")
+        bound.setFeatherDistance(BOUNDARY_FEATHER, 1.0)
+        check(abs(bound.getFeatherDistance(1.0) - BOUNDARY_FEATHER) < 1e-6, "feathered the boundary")
         yield ("sleep", RENDER_MS)
-        role = cell(tree, line, "Role")
-        check(role == "Soft Boundary", "the curve list shows Soft Boundary (%r)" % role)
-        after = grab_viewer()
-        d = region_difference(before, after, near)
-        report("NOTE the soft boundary changes the picture near it by %.2f" % d)
-        check(d > 1.0, "the soft boundary holds the picture along the curve")
-        gt.shot("m274-soft-boundary.png")
+        feathered = grab_viewer()
+        d = region_difference(hard, feathered, band)
+        report("NOTE the feather changes the picture right of the boundary by %.2f" % d)
+        check(d > 1.0, "the feathered boundary warps between its curve and its feather")
+        gt.shot("m274-boundary-feathered.png")
+        sw.setBoundary(bound, False)
+        check(not sw.isBoundary(bound), "cleared the boundary for the later steps")
+        yield ("sleep", RENDER_MS)
 
         gt.section("transform-overlay")
         centre = dest.getParam("center")

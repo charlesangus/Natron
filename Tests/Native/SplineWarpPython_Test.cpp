@@ -280,8 +280,8 @@ TEST_F(SplineWarpPythonTest, ErrorsRaiseValueError)
                                                                            "assert len(sw.getLinks()) == 0\n");
 }
 
-// Soft boundaries and layer amounts, set from Python, reach the model.
-TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
+// Feathered boundaries and layer amounts, set from Python, reach the model.
+TEST_F(SplineWarpPythonTest, FeatheredBoundariesAndLayerAmounts)
 {
     resetProject();
     NodePtr node = makeSplineWarp(NodePtr());
@@ -293,13 +293,13 @@ TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
                                                                            "a = quad(roto, 20., 15., 10.)\n"
                                                                            "b = quad(roto, 20., 15., 10., 3., -2.)\n"
                                                                            "l = sw.link(a, b)\n"
-                                                                           "line = roto.createBezier(2., 2., 1.)\n"
-                                                                           "line.addControlPoint(40., 2.)\n"
-                                                                           "sw.setSoftBoundary(line, True)\n"
-                                                                           "assert sw.isSoftBoundary(line)\n"
-                                                                           "assert not sw.isBoundary(line)\n"
-                                                                           "assert raises(lambda: sw.setSoftBoundary(a, True)), 'linked curve as soft boundary'\n"
-                                                                           "assert raises(lambda: sw.link(line, quad(roto, 4., 30., 6.))), 'soft boundary linked'\n"
+                                                                           "bound = rectangle(roto, 0., 0., 60., 50.)\n"
+                                                                           "bound.setFeatherDistance(8., 1.)\n"
+                                                                           "bound.setFeatherFallOff(2., 1.)\n"
+                                                                           "sw.setBoundary(bound, True)\n"
+                                                                           "assert sw.isBoundary(bound)\n"
+                                                                           "assert not hasattr(sw, 'setSoftBoundary')\n"
+                                                                           "assert not hasattr(sw, 'isSoftBoundary')\n"
                                                                            "layer = roto.createLayer()\n"
                                                                            "layer.addItem(b)\n"
                                                                            "assert abs(sw.getLayerAmount(layer, 1.) - 1.) < 1e-12\n"
@@ -311,7 +311,10 @@ TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
 
     SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext());
     ASSERT_TRUE(bool(ctx));
-    EXPECT_EQ(1u, ctx->getSoftBoundaries().size());
+    const std::list<BezierPtr> boundaries = ctx->getBoundaries();
+    ASSERT_EQ(1u, boundaries.size());
+    EXPECT_DOUBLE_EQ(8., boundaries.front()->getFeatherDistance(1.));
+    EXPECT_DOUBLE_EQ(2., boundaries.front()->getFeatherFallOff(1.));
     const std::vector<SplineWarpLinkPtr> links = ctx->getLinks();
     ASSERT_EQ(1u, links.size());
     ASSERT_TRUE(bool(links[0]->getDestination()));

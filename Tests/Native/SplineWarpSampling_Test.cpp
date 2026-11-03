@@ -427,50 +427,6 @@ TEST_F(SplineWarpSamplingTest, DeactivatedCurvesAndLayersAreIgnored)
     EXPECT_EQ((std::size_t)boundaryOff.linkPairCount, boundaryOff.pairs.size());
 }
 
-TEST_F(SplineWarpSamplingTest, ASoftBoundaryPinsItsCurveAndMasksNothing)
-{
-    ASSERT_TRUE(bool(_ctx));
-    ASSERT_TRUE(bool(makeHorizontalLink(line(0., 10., 100., 10.))));
-    BezierPtr soft = makeCurve(line(0., 60., 100., 60.), false);
-    ASSERT_TRUE(bool(soft));
-    _ctx->setSoftBoundary(soft, true);
-
-    const SplineWarpSampleSet set = sampleSplineWarp(*_ctx, settings(10.));
-    EXPECT_TRUE(set.boundaries.empty());
-    ASSERT_EQ(2u, set.polylines.size());
-    EXPECT_FALSE(set.polylines[1].closed);
-    // About ten spans along the open curve, and its end.
-    ASSERT_GE(set.pairs.size(), (std::size_t)set.linkPairCount + 11u);
-    ASSERT_LE(set.pairs.size(), (std::size_t)set.linkPairCount + 12u);
-    const SplineWarpTps tps = SplineWarpTps::solve(set.pairs, 0.);
-    for (std::size_t k = set.linkPairCount; k < set.pairs.size(); ++k) {
-        const SplineWarpSamplePair& p = set.pairs[k];
-        EXPECT_EQ(p.source.x, p.destination.x) << k;
-        EXPECT_EQ(p.source.y, p.destination.y) << k;
-        EXPECT_NEAR(60., p.destination.y, 1e-6) << k;
-        const Point s = tps.evaluate(p.destination.x, p.destination.y);
-        EXPECT_NEAR(p.destination.x, s.x, 1e-6) << k;
-        EXPECT_NEAR(p.destination.y, s.y, 1e-6) << k;
-    }
-    // Between the link and the curve the warp eases out; past the curve it still moves.
-    const Point between = tps.evaluate(50., 35.);
-    EXPECT_GT(std::fabs(between.y - 35.), 1.);
-    EXPECT_LT(std::fabs(between.y - 35.), 10.);
-    const Point beyond = tps.evaluate(50., 110.);
-    EXPECT_GT(std::fabs(beyond.y - 110.), 1.);
-
-    // A soft boundary cannot be linked, and becoming a hard boundary clears it.
-    BezierPtr other = makeCurve(line(0., 80., 100., 80.), false);
-    ASSERT_TRUE(bool(other));
-    EXPECT_THROW(_ctx->linkWithAlignment(soft, other, 0., false), std::invalid_argument);
-    BezierPtr loop = makeCurve(square(150., 150., 20.), true);
-    ASSERT_TRUE(bool(loop));
-    _ctx->setSoftBoundary(loop, true);
-    _ctx->setBoundary(loop, true);
-    EXPECT_FALSE(_ctx->isSoftBoundary(loop));
-    EXPECT_TRUE(_ctx->isBoundary(loop));
-}
-
 TEST_F(SplineWarpSamplingTest, TheFormatRectanglePinsTheCorners)
 {
     ASSERT_TRUE(bool(_ctx));
@@ -484,7 +440,7 @@ TEST_F(SplineWarpSamplingTest, TheFormatRectanglePinsTheCorners)
         EXPECT_GT(std::fabs(s.x - corners[c][0]) + std::fabs(s.y - corners[c][1]), 1.) << c;
     }
 
-    const std::vector<SplineWarpSoftBoundarySamplingInput> format(1, splineWarpRectangleBoundary(0., 0., 100., 80.));
+    const std::vector<SplineWarpPinnedOutline> format(1, splineWarpRectangleOutline(0., 0., 100., 80.));
     const SplineWarpSampleSet on = sampleSplineWarp(*_ctx, settings(10.), format);
     EXPECT_TRUE(on.boundaries.empty());
     // The perimeter, 360, at 10 apart.
@@ -501,16 +457,16 @@ TEST_F(SplineWarpSamplingTest, TheFormatRectanglePinsTheCorners)
 TEST_F(SplineWarpSamplingTest, BoundarySamplesFollowTheBoundarySpacing)
 {
     ASSERT_TRUE(bool(_ctx));
-    BezierPtr hard = makeCurve(square(0., 0., 100.), true);
-    ASSERT_TRUE(bool(hard));
-    hard->setFeatherDistance(0., kTime);
-    _ctx->setBoundary(hard, true);
-    // Apart from the hard boundary, so no samples merge.
-    const std::vector<SplineWarpSoftBoundarySamplingInput> format(1, splineWarpRectangleBoundary(200., 0., 300., 80.));
+    BezierPtr boundary = makeCurve(square(0., 0., 100.), true);
+    ASSERT_TRUE(bool(boundary));
+    boundary->setFeatherDistance(0., kTime);
+    _ctx->setBoundary(boundary, true);
+    // Apart from the boundary, so no samples merge.
+    const std::vector<SplineWarpPinnedOutline> format(1, splineWarpRectangleOutline(200., 0., 300., 80.));
 
     SplineWarpSamplingSettings s = settings(1.);
     s.boundarySpacing = 10.;
-    // 400 / 10 along the hard boundary, 360 / 10 along the rectangle; the link spacing plays no part.
+    // 400 / 10 along the boundary, 360 / 10 along the rectangle; the link spacing plays no part.
     EXPECT_EQ(40u + 36u, sampleSplineWarp(*_ctx, s, format).pairs.size());
     s.boundarySpacing = 20.;
     EXPECT_EQ(20u + 18u, sampleSplineWarp(*_ctx, s, format).pairs.size());

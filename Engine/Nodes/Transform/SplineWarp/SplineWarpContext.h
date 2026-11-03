@@ -48,14 +48,13 @@ struct SplineWarpAnimatedValueSerialization;
 
 /**
  * @brief What a curve does in the warp. A linked curve is the source or destination of a link; a
- * (hard) boundary is a closed curve outside of which nothing moves; a soft boundary, open or
- * closed, holds the image still along itself and masks nothing.
+ * boundary is a closed curve outside of whose feather nothing moves, the warp easing out between
+ * the curve and its feather.
  **/
 enum SplineWarpCurveRoleEnum {
     eSplineWarpCurveRoleUnlinked = 0,
     eSplineWarpCurveRoleLinked,
-    eSplineWarpCurveRoleBoundary,
-    eSplineWarpCurveRoleSoftBoundary
+    eSplineWarpCurveRoleBoundary
 };
 
 /**
@@ -242,7 +241,7 @@ typedef std::shared_ptr<SplineWarpContext> SplineWarpContextPtr;
  *
  * Correspondence parameters and start offsets follow control-point insertions and removals so they
  * keep their place on the curve. Deleting a curve deletes its link, its boundary role and its cookie
- * cutter flag; opening a curve clears its hard boundary role and its cookie cutter flag.
+ * cutter flag; opening a curve clears its boundary role and its cookie cutter flag.
  **/
 class SplineWarpContext
     : public RotoCurveContext {
@@ -267,16 +266,6 @@ public:
     void setBoundary(const BezierPtr& curve, bool boundary);
 
     std::list<BezierPtr> getBoundaries() const;
-
-    bool isSoftBoundary(const BezierPtr& curve) const;
-
-    /**
-     * @brief Throws std::invalid_argument when making a soft boundary of a curve that is linked or
-     * not in this context. Making a curve one kind of boundary clears the other kind.
-     **/
-    void setSoftBoundary(const BezierPtr& curve, bool softBoundary);
-
-    std::list<BezierPtr> getSoftBoundaries() const;
 
     /**
      * @brief A cookie cutter makes the output mask, whatever its
@@ -492,7 +481,6 @@ protected:
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;
-    void setBoundaryRole(const BezierPtr& curve, bool soft, bool on);
     SplineWarpAnimatedValue& layerAmountLocked(const RotoLayerPtr& layer);
     SplineWarpLinkPtr findLinkLocked(const Bezier* curve) const;
     void checkLinkable(const BezierPtr& curve, const char* what) const;
@@ -512,7 +500,6 @@ private:
     mutable std::mutex _warpMutex;
     std::vector<SplineWarpLinkPtr> _links;
     std::list<BezierWPtr> _boundaries;
-    std::list<BezierWPtr> _softBoundaries;
     std::list<BezierWPtr> _cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> _layerAmounts;
     std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>> _layerTransforms;

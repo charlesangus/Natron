@@ -452,33 +452,17 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                     showNodePanel(false, modCASIsShift(e), nearbyNode);
                 }
             }
-        } else if ( !_imp->_selection.empty() ) {
-            NodesGuiList nodesToMove;
-            for (NodesGuiList::iterator it = _imp->_selection.begin();
-                 it != _imp->_selection.end(); ++it) {
-                const NodeGuiPtr& node = *it;
-                nodesToMove.push_back(node);
-
-                std::map<NodeGuiPtr, NodesGuiList>::iterator foundBd = _imp->_nodesWithinBDAtPenDown.find(*it);
-                if ( !modCASIsControl(e) && ( foundBd != _imp->_nodesWithinBDAtPenDown.end() ) ) {
-                    for (NodesGuiList::iterator it2 = foundBd->second.begin();
-                         it2 != foundBd->second.end(); ++it2) {
-                        ///add it only if it's not already in the list
-                        bool found = false;
-                        for (NodesGuiList::iterator it3 = nodesToMove.begin();
-                             it3 != nodesToMove.end(); ++it3) {
-                            if (*it3 == *it2) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            nodesToMove.push_back(*it2);
-                        }
-                    }
+        } else if (!_imp->_selection.empty()) {
+            NodesGuiList kissTouched;
+            QUndoCommand* kissCommand = takeKissCommand(&kissTouched);
+            // Alt returns the nodes to where they were picked up, with the pipes the drag kissed.
+            if (kissCommand && modifierHasAlt(e)) {
+                for (std::map<NodeGuiPtr, QPointF>::const_iterator it = _imp->_dragPickupPositions.begin(); it != _imp->_dragPickupPositions.end(); ++it) {
+                    it->first->setPosition(it->second.x(), it->second.y());
                 }
+                _imp->_deltaSinceMousePress = QPointF(0, 0);
+                resetSplicePlan();
             }
-            const bool hasMoved = (_imp->_deltaSinceMousePress.x() != 0) || (_imp->_deltaSinceMousePress.y() != 0);
 
             if (_imp->_splicePipe) {
                 Edge* pipe = _imp->_splicePipe;
@@ -487,28 +471,43 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 int entryInput = _imp->_spliceEntryInput;
                 resetSplicePlan();
 
-                QUndoCommand* spliceCommand = new QUndoCommand(tr("Insert nodes"));
-                NodesGuiList touched = nodesToMove;
+                QUndoCommand* spliceCommand = kissCommand ? kissCommand : new QUndoCommand(tr("Insert nodes"));
+                NodesGuiList touched;
+                takeDragMoveCommand(spliceCommand, &touched);
+                touched.insert(touched.end(), kissTouched.begin(), kissTouched.end());
                 touched.push_back(pipe->getDest());
                 touched.push_back(pipe->getSource());
                 touched.push_back(exitGui);
                 touched.push_back(entryGui);
-                if (hasMoved) {
-                    new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y(), spliceCommand);
-                }
                 new InsertNodeCommand(this, pipe, exitGui, entryGui, entryInput, spliceCommand);
                 pushUndoCommand(spliceCommand, touched);
+            } else if (kissCommand) {
+                NodesGuiList touched;
+                takeDragMoveCommand(kissCommand, &touched);
+                touched.insert(touched.end(), kissTouched.begin(), kissTouched.end());
+                pushUndoCommand(kissCommand, touched);
             } else {
-                if (hasMoved) {
-                    pushUndoCommand(new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y()), nodesToMove);
+                NodesGuiList moved;
+                QUndoCommand* moveCommand = takeDragMoveCommand(nullptr, &moved);
+                if (moveCommand) {
+                    pushUndoCommand(moveCommand, moved);
                 }
             }
         }
     } else if (state == eEventStateSelectionRect) {
         _imp->editSelectionFromSelectionRectangle(modCASIsShift(e));
+    } else if (state == eEventStateCutting) {
+        commitCut();
+    }
+    // Kisses still held here were made by a drag that did not end in the move branch above.
+    NodesGuiList kissTouched;
+    QUndoCommand* kissCommand = takeKissCommand(&kissTouched);
+    if (kissCommand) {
+        pushUndoCommand(kissCommand, kissTouched);
     }
     resetSplicePlan();
     _imp->_nodesWithinBDAtPenDown.clear();
+    _imp->_dragPickupPositions.clear();
 
     _imp->cursorSet = false;
     unsetCursor();

@@ -1778,9 +1778,9 @@ AppManager::loadBuiltinNodePlugins()
 
 #include "NativeRegistryAll.inc"
 
-    if ( !isBackground() ) {
-        registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
-    }
+    // Registered in the background too, so that a script that loads and saves a project keeps its
+    // viewers. Without a viewer widget a viewer never renders.
+    registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
 }
 
 bool

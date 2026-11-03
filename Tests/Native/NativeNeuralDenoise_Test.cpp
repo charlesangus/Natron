@@ -25,11 +25,17 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <list>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,6 +56,7 @@
 
 #include "Engine/Ai/ModelDownloader.h"
 #include "Engine/Ai/ModelKnob.h"
+#include "Engine/Ai/ModelPackage.h"
 #include "Engine/Ai/ModelRegistry.h"
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
@@ -65,6 +72,7 @@
 #include "Engine/RectI.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/Bundle/ZipStore.h"
 
 NATRON_NAMESPACE_USING
 using namespace OcioNodeTest;
@@ -79,26 +87,56 @@ const int kFixtureSize = 602;
 const char* const kSrgbModel = "test-denoise";
 const char* const kLinearModel = "test-denoise-linear";
 const char* const kLinearRec2020 = "Linear Rec.2020";
+// An sRGB model whose output differs from its input: scale2.onnx, packed by the test.
+const char* const kScaleModel = "test-denoise-scale2";
+const char* const kScalePackage = "test-scale2";
+
+QJsonObject
+modelEntry(const char* id,
+           const char* name,
+           const char* task,
+           const char* package,
+           const QString& path,
+           const std::string& sha256,
+           int size)
+{
+    return QJsonObject {
+        { QStringLiteral("id"), QString::fromLatin1(id) },
+        { QStringLiteral("task"), QString::fromLatin1(task) },
+        { QStringLiteral("name"), QString::fromLatin1(name) },
+        { QStringLiteral("package"), QString::fromLatin1(package) },
+        { QStringLiteral("files"), QJsonArray { QStringLiteral("model.onnx") } },
+        { QStringLiteral("url"), QUrl::fromLocalFile(path).toString() },
+        { QStringLiteral("sha256"), QString::fromStdString(sha256) },
+        { QStringLiteral("size"), size },
+        { QStringLiteral("weightsLicence"), QStringLiteral("MIT") },
+        { QStringLiteral("trainingDataLicence"), QStringLiteral("none") },
+        { QStringLiteral("osaid"), QStringLiteral("Open Source AI") },
+        { QStringLiteral("cardUrl"), QStringLiteral("https://example.invalid/card") },
+    };
+}
 
 QJsonObject
 fixtureEntry(const char* id,
              const char* name,
              const char* task)
 {
-    return QJsonObject {
-        { QStringLiteral("id"), QString::fromLatin1(id) },
-        { QStringLiteral("task"), QString::fromLatin1(task) },
-        { QStringLiteral("name"), QString::fromLatin1(name) },
-        { QStringLiteral("package"), QString::fromLatin1(kFixturePackage) },
-        { QStringLiteral("files"), QJsonArray { QStringLiteral("model.onnx") } },
-        { QStringLiteral("url"), QUrl::fromLocalFile(QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/ai/identity.dtmodel")).toString() },
-        { QStringLiteral("sha256"), QString::fromLatin1(kFixtureSha256) },
-        { QStringLiteral("size"), kFixtureSize },
-        { QStringLiteral("weightsLicence"), QStringLiteral("MIT") },
-        { QStringLiteral("trainingDataLicence"), QStringLiteral("none") },
-        { QStringLiteral("osaid"), QStringLiteral("Open Source AI") },
-        { QStringLiteral("cardUrl"), QStringLiteral("https://example.invalid/card") },
-    };
+    return modelEntry(id, name, task, kFixturePackage, QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/ai/identity.dtmodel"), kFixtureSha256, kFixtureSize);
+}
+
+// The mean of the source's noise is 0, so its standard deviation is the root mean square of
+// the difference from the clean picture.
+double
+rmsDifference(const std::vector<float>& values,
+              const std::vector<float>& clean)
+{
+    double sum2 = 0.;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const double d = (double)values[i] - clean[i];
+        sum2 += d * d;
+    }
+
+    return values.empty() ? 0. : std::sqrt(sum2 / (double)values.size());
 }
 
 // This gtest has no GTEST_SKIP: a skipped case prints why, records it in the XML report and passes.
@@ -121,12 +159,8 @@ protected:
         setConfig(getApp(), kStudioURI);
 
         ASSERT_TRUE(_models.isValid());
-        const QJsonArray models { fixtureEntry(kSrgbModel, "Identity sRGB", "denoise"),
-                                  fixtureEntry(kLinearModel, "Identity Linear", "denoise-linear") };
-        const QJsonObject root { { QStringLiteral("schema"), 1 }, { QStringLiteral("models"), models } };
-        _downloader.reset(new ModelDownloader(std::make_shared<const ModelRegistry>(QJsonDocument(root).toJson().toStdString(),
-                                                                                    _models.path().toStdString())));
-        NeuralDenoise::downloaderForTesting() = _downloader.get();
+        useModels(QJsonArray { fixtureEntry(kSrgbModel, "Identity sRGB", "denoise"),
+                               fixtureEntry(kLinearModel, "Identity Linear", "denoise-linear") });
 
         SettingsPtr settings = appPTR->getCurrentSettings();
         settings->getKnobByNameAndType<KnobPath>("aiOrtLibraryPath")->setValue(std::string(NATRON_TESTS_ONNXRUNTIME_DIR));
@@ -145,6 +179,40 @@ protected:
         settings->getKnobByNameAndType<KnobChoice>("aiDevice")->setValueFromID("auto", 0);
         settings->getKnobByNameAndType<KnobPath>("aiOrtLibraryPath")->setValue(std::string());
         BaseTest::TearDown();
+    }
+
+    // Replaces the registry the nodes created next list. Call it before creating any.
+    void useRegistry(const std::shared_ptr<const ModelRegistry>& registry)
+    {
+        NeuralDenoise::downloaderForTesting() = nullptr;
+        _downloader.reset(new ModelDownloader(registry));
+        NeuralDenoise::downloaderForTesting() = _downloader.get();
+    }
+
+    void useModels(const QJsonArray& models)
+    {
+        const QJsonObject root { { QStringLiteral("schema"), 1 }, { QStringLiteral("models"), models } };
+        useRegistry(std::make_shared<const ModelRegistry>(QJsonDocument(root).toJson().toStdString(), _models.path().toStdString()));
+    }
+
+    // Packs scale2.onnx as an sRGB denoise package and returns its manifest entry.
+    QJsonObject scaleEntry()
+    {
+        EXPECT_TRUE(_packages.isValid());
+        std::ifstream onnx(NATRON_TESTS_FIXTURES_DIR "/ai/scale2.onnx", std::ios::binary);
+        const std::string model((std::istreambuf_iterator<char>(onnx)), std::istreambuf_iterator<char>());
+        EXPECT_FALSE(model.empty());
+        const std::string config = std::string(R"json({ "id": ")json") + kScalePackage + R"json(", "name": "test scale2", "task": "denoise", "backend": "onnx", "tiling": true })json";
+
+        const std::string path = _packages.filePath(QStringLiteral("scale2.dtmodel")).toStdString();
+        {
+            Serialization::ZipWriter writer(path, "application/octet-stream", kScalePackage);
+            writer.addMember("config.json", std::as_bytes(std::span<const char>(config.data(), config.size())));
+            writer.addMember("model.onnx", std::as_bytes(std::span<const char>(model.data(), model.size())));
+            writer.finish();
+        }
+
+        return modelEntry(kScaleModel, "Scale sRGB", "denoise", kScalePackage, QString::fromStdString(path), sha256OfFile(path), (int)std::filesystem::file_size(path));
     }
 
     ParityPair makePair()
@@ -214,7 +282,74 @@ protected:
                                        &planes, &error);
     }
 
+    // A real model installed in NATRON_TEST_AI_MODELS_DIR, else in the default models folder of
+    // the user running the tests (the tests' own data folder is a fresh one), at least halves the
+    // noise of a noisy gradient away from its edges where the gradient lies within 0.05 to 0.95,
+    // the range the sRGB models were trained on.
+    void expectRealModelHalvesTheNoise(const char* id)
+    {
+        const char* modelsEnv = std::getenv("NATRON_TEST_AI_MODELS_DIR");
+        const char* home = std::getenv("HOME");
+        const std::string models = modelsEnv ? std::string(modelsEnv) : (home ? std::string(home) + "/.local/share/INRIA/Natron/models" : std::string());
+        const std::shared_ptr<const ModelRegistry> registry = std::make_shared<const ModelRegistry>(ModelRegistry::builtinManifest(), models);
+        const AiModelEntry* entry = registry->find(id);
+        ASSERT_TRUE(entry != nullptr) << id;
+        if (registry->resolve(id).status != AiModelStatus::eInstalled) {
+            reportSkip(std::string(id) + " is not installed in " + models);
+
+            return;
+        }
+        const std::shared_ptr<const OrtLoader> ort = OrtLoader::process();
+        if (!ort->available()) {
+            reportSkip("ONNX Runtime is unavailable: " + ort->unavailableReason());
+
+            return;
+        }
+        useRegistry(registry);
+        ParityPair pair = makePair();
+        ASSERT_TRUE(bool(pair.native));
+        setParitySourceNoise(pair.source, true);
+        ASSERT_TRUE(setKnobValue(pair.native, "model", id));
+        if (entry->task == AiModelTask::eDenoise) {
+            setBool(pair.native, kNeuralDenoiseParamPreserveWideGamut, false);
+        }
+
+        const RectI window = paritySourceWindow(pair.source, kTime, 0);
+        RenderedPlane noisy;
+        ASSERT_TRUE(renderColorPlane(pair.source, window, &noisy));
+        RenderedPlane denoised;
+        ASSERT_TRUE(renderColorPlane(pair.native, window, &denoised));
+        EXPECT_EQ(std::string(), errorOf(pair.native)) << id;
+
+        const int border = 8;
+        std::vector<float> in, out, clean;
+        for (int y = window.y1 + border; y < window.y2 - border; ++y) {
+            for (int x = window.x1 + border; x < window.x2 - border; ++x) {
+                float rgb[3];
+                bool flat = true;
+                for (int c = 0; c < 3; ++c) {
+                    rgb[c] = paritySourceColorValue(c, x, y, kTime);
+                    flat = flat && (rgb[c] >= 0.05f) && (rgb[c] <= 0.95f);
+                }
+                if (!flat) {
+                    continue;
+                }
+                for (int c = 0; c < 3; ++c) {
+                    clean.push_back(rgb[c]);
+                    in.push_back(planeValue(noisy, x, y, c));
+                    out.push_back(planeValue(denoised, x, y, c));
+                }
+            }
+        }
+        ASSERT_GE(clean.size(), (std::size_t)100 * 3) << id;
+        const double before = rmsDifference(in, clean);
+        const double after = rmsDifference(out, clean);
+        ASSERT_GT(before, 0.02) << id;
+        EXPECT_LE(after * 2., before) << id << ": noise " << before << " before, " << after << " after";
+    }
+
     QTemporaryDir _models;
+    QTemporaryDir _packages;
     std::unique_ptr<ModelDownloader> _downloader;
 };
 
@@ -656,4 +791,147 @@ TEST_F(NativeNeuralDenoiseTest, DisabledAiFailsWithAnError)
 
     EXPECT_TRUE(renderFails(pair.native, paritySourceWindow(pair.source, kTime, 0)));
     EXPECT_NE(errorOf(pair.native).find("AI is disabled"), std::string::npos) << errorOf(pair.native);
+}
+
+TEST_F(NativeNeuralDenoiseTest, NonFiniteSourcePixelsKeepTheSourceAndSpareTheirNeighbours)
+{
+    const std::string unavailable = install();
+    if (!unavailable.empty()) {
+        reportSkip(unavailable);
+
+        return;
+    }
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    setParitySourceNonFinite(pair.source, RectI(10, 8, 22, 18));
+
+    const RectI window = paritySourceWindow(pair.source, kTime, 0);
+    RenderedPlane source;
+    ASSERT_TRUE(renderColorPlane(pair.source, window, &source));
+    const auto finiteAt = [&](int x, int y) {
+        return std::isfinite(planeValue(source, x, y, 0)) && std::isfinite(planeValue(source, x, y, 1)) && std::isfinite(planeValue(source, x, y, 2));
+    };
+    int nonFinite = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            nonFinite += finiteAt(x, y) ? 0 : 1;
+        }
+    }
+    ASSERT_GT(nonFinite, 0);
+
+    // Through the identity model every pixel is the Source, the non-finite ones untouched.
+    RenderedPlane plane;
+    ASSERT_TRUE(renderColorPlane(pair.native, window, &plane));
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                ASSERT_TRUE(matches(planeValue(source, x, y, c), planeValue(plane, x, y, c), 1e-4))
+                    << x << "," << y << " c=" << c << ": expected " << planeValue(source, x, y, c) << ", got " << planeValue(plane, x, y, c);
+            }
+        }
+    }
+
+    // Detail recovery and the gamut pass both read neighbourhoods of the whole frame.
+    ASSERT_TRUE(setKnobValue(pair.native, "model", kSrgbModel));
+    ASSERT_TRUE(setKnobOnBoth(pair, kNeuralDenoiseParamStrength, { 0.5 }));
+    ASSERT_TRUE(renderColorPlane(pair.native, window, &plane));
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const bool finite = finiteAt(x, y);
+            for (int c = 0; c < 3; ++c) {
+                if (finite) {
+                    ASSERT_TRUE(std::isfinite(planeValue(plane, x, y, c))) << x << "," << y << " c=" << c;
+                } else {
+                    ASSERT_TRUE(matches(planeValue(source, x, y, c), planeValue(plane, x, y, c), 0.)) << x << "," << y << " c=" << c;
+                }
+            }
+        }
+    }
+}
+
+TEST_F(NativeNeuralDenoiseTest, SrgbStrengthHalfAddsHalfTheFilteredResidualToTheModel)
+{
+    useModels(QJsonArray { fixtureEntry(kSrgbModel, "Identity sRGB", "denoise"),
+                           fixtureEntry(kLinearModel, "Identity Linear", "denoise-linear"),
+                           scaleEntry() });
+    std::string error;
+    ASSERT_TRUE(_downloader->download(kScaleModel, &error)) << error;
+    const std::shared_ptr<const OrtLoader> ort = OrtLoader::process();
+    if (!ort->available()) {
+        reportSkip("ONNX Runtime is unavailable: " + ort->unavailableReason());
+
+        return;
+    }
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(setKnobValue(pair.native, "model", kScaleModel));
+    ASSERT_TRUE(setKnobValue(pair.native, kModelColourspaceParam, kSRGB));
+    setBool(pair.native, kNeuralDenoiseParamPreserveWideGamut, false);
+    ASSERT_TRUE(setKnobOnBoth(pair, kNeuralDenoiseParamStrength, { 0.5 }));
+    NeuralDenoise* effect = effectOf(pair.native);
+    ASSERT_TRUE(effect != nullptr);
+
+    const OcioNodeKnobs& ocio = effect->colourspaceKnobs().ocio();
+    const OCIO_NAMESPACE::ConstTransformRcPtr toSrgb = ocio.spaceTransform(ocio.workingSpace(), kSRGB);
+    const OCIO_NAMESPACE::ConstTransformRcPtr fromSrgb = ocio.spaceTransform(kSRGB, ocio.workingSpace());
+    ASSERT_TRUE(toSrgb && fromSrgb);
+    const OCIO_NAMESPACE::ConstCPUProcessorRcPtr toModel = referenceProcessor(config(getApp()), toSrgb);
+    const OCIO_NAMESPACE::ConstCPUProcessorRcPtr fromModel = referenceProcessor(config(getApp()), fromSrgb);
+
+    // The model doubles the sRGB-encoded values.
+    const RectI window = paritySourceWindow(pair.source, kTime, 0);
+    const int width = window.width();
+    const int height = window.height();
+    std::vector<float> original((std::size_t)width * height * 3);
+    std::vector<float> denoised(original.size());
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const std::size_t p = (std::size_t)(y - window.y1) * width + (x - window.x1);
+            float rgb[3];
+            for (int c = 0; c < 3; ++c) {
+                rgb[c] = original[p * 3 + c] = paritySourceColorValue(c, x, y, kTime);
+            }
+            toModel->applyRGB(rgb);
+            for (float& v : rgb) {
+                v *= 2.f;
+            }
+            fromModel->applyRGB(rgb);
+            std::copy(rgb, rgb + 3, &denoised[p * 3]);
+        }
+    }
+    const std::vector<float> detail = NeuralDenoise::filteredLuminanceResidual(original.data(), denoised.data(), width, height, NeuralDenoise::kDetailBandDefaults);
+    float largest = 0.f;
+    for (float d : detail) {
+        largest = std::max(largest, std::fabs(0.5f * d));
+    }
+    ASSERT_GT(largest, 0.01f);
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderColorPlane(pair.native, window, &plane));
+    EXPECT_EQ(std::string(), errorOf(pair.native));
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const std::size_t p = (std::size_t)(y - window.y1) * width + (x - window.x1);
+            for (int c = 0; c < 3; ++c) {
+                const float expected = denoised[p * 3 + c] + 0.5f * detail[p];
+                ASSERT_TRUE(matches(expected, planeValue(plane, x, y, c), 1e-3))
+                    << x << "," << y << " c=" << c << ": expected " << expected << ", got " << planeValue(plane, x, y, c);
+            }
+        }
+    }
+}
+
+TEST_F(NativeNeuralDenoiseTest, NindHalvesTheNoise)
+{
+    expectRealModelHalvesTheNoise("denoise-nind");
+}
+
+TEST_F(NativeNeuralDenoiseTest, NafnetHalvesTheNoise)
+{
+    expectRealModelHalvesTheNoise("denoise-nafnet");
+}
+
+TEST_F(NativeNeuralDenoiseTest, RawNindLinearHalvesTheNoise)
+{
+    expectRealModelHalvesTheNoise("rawdenoise-nind-linear");
 }

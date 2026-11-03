@@ -29,6 +29,9 @@
 #include <cmath>
 #include <cstddef>
 #include <exception>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -177,6 +180,89 @@ sourcePixelRoD(EffectInstance& effect,
 
     return !rod->isNull();
 }
+
+inline bool
+finiteRgb(const float* rgb)
+{
+    return std::isfinite(rgb[0]) && std::isfinite(rgb[1]) && std::isfinite(rgb[2]);
+}
+
+// A convolution spreads one non-finite value over its whole receptive field, and a debug build
+// traps the arithmetic on it, so such a pixel is 0 everywhere before the output takes the Source
+// back there.
+void
+zeroNonFinite(float* rgb,
+              std::size_t pixels)
+{
+    for (std::size_t p = 0; p < pixels; ++p) {
+        float* v = rgb + p * 3;
+        if (!finiteRgb(v)) {
+            v[0] = v[1] = v[2] = 0.f;
+        }
+    }
+}
+
+// The value in slot for key, computed once however many renders ask for it at once: the mutex is
+// held only to look the slot up and to publish to it, so purging never waits on a computation.
+// compute fills its argument and returns eStatusOK, or fails, which the waiting renders see as an
+// empty result and retry, one of them computing it in turn.
+template <class Value, class Slot, class Compute>
+StatusEnum
+sharedValue(std::mutex& mutex,
+            Slot& slot,
+            U64 key,
+            const Compute& compute,
+            std::shared_ptr<const Value>* result)
+{
+    for (;;) {
+        std::promise<std::shared_ptr<const Value>> promise;
+        std::shared_future<std::shared_ptr<const Value>> future;
+        bool owner = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (slot.value.valid() && (slot.key == key)) {
+                future = slot.value;
+            } else {
+                future = promise.get_future().share();
+                slot.key = key;
+                slot.value = future;
+                owner = true;
+            }
+        }
+        if (!owner) {
+            *result = future.get();
+            if (*result) {
+                return eStatusOK;
+            }
+            continue;
+        }
+
+        const auto abandon = [&]() {
+            promise.set_value(std::shared_ptr<const Value>());
+            std::lock_guard<std::mutex> lock(mutex);
+            if (slot.key == key) {
+                slot = Slot();
+            }
+        };
+        std::shared_ptr<const Value> computed;
+        StatusEnum status = eStatusFailed;
+        try {
+            status = compute(&computed);
+        } catch (...) {
+            abandon();
+            throw;
+        }
+        if ((status != eStatusOK) || !computed) {
+            abandon();
+
+            return (status != eStatusOK) ? status : eStatusFailed;
+        }
+        promise.set_value(computed);
+        *result = computed;
+
+        return eStatusOK;
+    }
+}
 } // anonymous namespace
 
 bool
@@ -202,19 +288,39 @@ NeuralDenoise::filteredLuminanceResidual(const float* original,
                                          const std::array<double, kDetailBands>& bandMultipliers)
 {
     const std::size_t count = (std::size_t)std::max(width, 0) * std::max(height, 0);
+
+    return filterLuminanceResidual(luminanceResidual(original, denoised, count), width, height, bandMultipliers);
+}
+
+std::vector<float>
+NeuralDenoise::luminanceResidual(const float* original,
+                                 const float* denoised,
+                                 std::size_t count)
+{
     std::vector<float> residual(count);
 
-    if (count == 0) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const float r = luma709(original + i * 3) - luma709(denoised + i * 3);
+        residual[i] = std::isfinite(r) ? r : 0.f;
+    }
+
+    return residual;
+}
+
+std::vector<float>
+NeuralDenoise::filterLuminanceResidual(std::vector<float> residual,
+                                       int width,
+                                       int height,
+                                       const std::array<double, kDetailBands>& bandMultipliers)
+{
+    const std::size_t count = residual.size();
+
+    if ((count == 0) || (count != (std::size_t)std::max(width, 0) * std::max(height, 0))) {
         return residual;
     }
     double sum = 0.;
     double sum2 = 0.;
-    for (std::size_t i = 0; i < count; ++i) {
-        float r = luma709(original + i * 3) - luma709(denoised + i * 3);
-        if (!std::isfinite(r)) {
-            r = 0.f;
-        }
-        residual[i] = r;
+    for (float r : residual) {
         sum += (double)r;
         sum2 += (double)r * (double)r;
     }
@@ -417,8 +523,20 @@ NeuralDenoise::onKnobsLoaded()
 void
 NeuralDenoise::purgeCaches()
 {
-    std::lock_guard<std::mutex> lock(_frameMutex);
-    _frame.reset();
+    releaseFrame();
+}
+
+void
+NeuralDenoise::releaseFrame()
+{
+    SharedSlot<WholeFrame> frame;
+    SharedSlot<std::vector<float>> detail;
+    // Swapped out so that the frame, hundreds of megabytes at 8K, is freed after the unlock.
+    {
+        std::lock_guard<std::mutex> lock(_frameMutex);
+        std::swap(frame, _frame);
+        std::swap(detail, _detail);
+    }
 }
 
 void
@@ -460,6 +578,7 @@ NeuralDenoise::knobChanged(KnobI* k,
                            bool /*originatedFromMainThread*/)
 {
     if (_model && (k == _model->modelKnob().get())) {
+        releaseFrame();
         _colourspace.modelChanged();
         refreshKnobsForModel();
 
@@ -641,6 +760,9 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
     const int shadowBoost = rgbModel ? (shadowBoostKnob ? shadowBoostKnob->getValueAtTime(args.time, 0, args.view) : (int)eShadowBoostAuto) : (int)eShadowBoostOff;
     const bool mayBoost = (shadowBoost == (int)eShadowBoostOn) || ((shadowBoost == (int)eShadowBoostAuto) && declaresShadowBoost(resolved->config));
     const bool recoverDetail = rgbModel && (strength < 1.f);
+    if (!recoverDetail) {
+        releaseFrame();
+    }
     std::array<double, kDetailBands> bands = kDetailBandDefaults;
     for (int b = 0; b < kDetailBands; ++b) {
         if (KnobDoublePtr band = _detailBands[b].lock()) {
@@ -716,6 +838,7 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
         // recovered luminance over the same window, when it applies.
         RectI window;
         std::shared_ptr<const WholeFrame> whole;
+        std::shared_ptr<const std::vector<float>> wholeDetail;
         std::vector<float> regionResult;
         const std::vector<float>* denoised = nullptr;
         const std::vector<float>* detail = nullptr;
@@ -740,6 +863,7 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                     for (int y = rect.y1; y < rect.y2; ++y) {
                         PassExec::readSourceRow(src.get(), &access, srcBounds, srcNComps, rect.x1, y, rect.width(), 3, &(*rgb)[(std::size_t)(y - rect.y1) * rect.width() * 3]);
                     }
+                    zeroNonFinite(rgb->data(), rgb->size() / 3);
                 };
 
                 // darktable decides once per image, from every 16th pixel from the top left.
@@ -750,7 +874,9 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                     for (int y = frame.y2 - 1; y >= frame.y1; y -= 16) {
                         PassExec::readSourceRow(src.get(), &access, srcBounds, srcNComps, frame.x1, y, frame.width(), 3, &row[0]);
                         for (int x = 0; x < frame.width(); x += 16) {
-                            samples.insert(samples.end(), &row[(std::size_t)x * 3], &row[(std::size_t)x * 3] + 3);
+                            if (finiteRgb(&row[(std::size_t)x * 3])) {
+                                samples.insert(samples.end(), &row[(std::size_t)x * 3], &row[(std::size_t)x * 3] + 3);
+                            }
                         }
                     }
                     boost = hasDeepShadows(samples.data(), samples.size() / 3);
@@ -784,6 +910,7 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                         for (int r = 0; r < rect.height(); ++r) {
                             const int y = rect.y2 - 1 - r;
                             PassExec::readSourceRow(src.get(), &access, srcBounds, srcNComps, rect.x1, y, width, 3, &rgb[0]);
+                            zeroNonFinite(&rgb[0], (std::size_t)width);
                             if (boost) {
                                 ModelColourspaceKnobs::apply(linear.toModel, &rgb[0], (std::size_t)width);
                                 for (float& v : rgb) {
@@ -793,6 +920,8 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                             } else {
                                 ModelColourspaceKnobs::apply(conversion.toModel, &rgb[0], (std::size_t)width);
                             }
+                            // The conversion can overflow a finite value.
+                            zeroNonFinite(&rgb[0], (std::size_t)width);
                             float* dst = tile.data() + (std::size_t)r * width;
                             for (int x = 0; x < width; ++x) {
                                 dst[x] = rgb[(std::size_t)x * 3];
@@ -850,7 +979,7 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
 
                 if (recoverDetail) {
                     // Detail recovery measures the whole frame, so the frame is denoised once
-                    // and kept for every window and Strength.
+                    // and kept for every window, Strength and Detail Band.
                     Hash64 hash;
                     EffectInstancePtr input = getInput(kNeuralDenoiseInputSource);
                     hash.append<U64>(input ? input->getRenderHash() : 0);
@@ -870,30 +999,46 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                     hash.append<bool>(preserve);
                     hash.append<bool>(boost);
                     hash.append<int>(spec.tile);
-                    for (double band : bands) {
-                        hash.append<double>(band);
-                    }
                     hash.computeHash();
                     const U64 key = hash.value();
 
-                    std::lock_guard<std::mutex> lock(_frameMutex);
-                    if (!_frame || (_frame->key != key)) {
-                        _frame.reset();
+                    const auto computeFrame = [&](std::shared_ptr<const WholeFrame>* out) {
                         std::shared_ptr<WholeFrame> computed = std::make_shared<WholeFrame>();
                         std::vector<float> original;
-                        const StatusEnum status = denoise(frame, &original, &computed->denoised);
-                        if (status != eStatusOK) {
-                            return status;
+                        const StatusEnum ran = denoise(frame, &original, &computed->denoised);
+                        if (ran != eStatusOK) {
+                            return ran;
                         }
-                        computed->detail = filteredLuminanceResidual(original.data(), computed->denoised.data(), frame.width(), frame.height(), bands);
+                        computed->residual = luminanceResidual(original.data(), computed->denoised.data(), (std::size_t)frame.width() * frame.height());
                         computed->frame = frame;
-                        computed->key = key;
-                        _frame = computed;
+                        *out = computed;
+
+                        return eStatusOK;
+                    };
+                    StatusEnum status = sharedValue<WholeFrame>(_frameMutex, _frame, key, computeFrame, &whole);
+                    if (status != eStatusOK) {
+                        return status;
                     }
-                    whole = _frame;
+
+                    // The bands only filter the residual, so changing them reruns the filter, not the model.
+                    Hash64 detailHash;
+                    detailHash.append<U64>(key);
+                    for (double band : bands) {
+                        detailHash.append<double>(band);
+                    }
+                    detailHash.computeHash();
+                    const auto computeDetail = [&](std::shared_ptr<const std::vector<float>>* out) {
+                        *out = std::make_shared<const std::vector<float>>(filterLuminanceResidual(whole->residual, whole->frame.width(), whole->frame.height(), bands));
+
+                        return eStatusOK;
+                    };
+                    status = sharedValue<std::vector<float>>(_frameMutex, _detail, detailHash.value(), computeDetail, &wholeDetail);
+                    if (status != eStatusOK) {
+                        return status;
+                    }
                     window = whole->frame;
                     denoised = &whole->denoised;
-                    detail = &whole->detail;
+                    detail = wholeDetail.get();
                 } else {
                     // The gamut neighbourhood reaches past the window's edge.
                     const int margin = preserve ? kGamutRadius : 0;
@@ -922,7 +1067,8 @@ NeuralDenoise::renderOp(const RenderActionArgs& args,
                     const float in = src ? src[at] : 0.f;
                     float out = in;
                     const int x = io.x0 + i;
-                    if (denoised && (c < 3) && (x >= window.x1) && (x < window.x2) && (io.y >= window.y1) && (io.y < window.y2)) {
+                    // The Source stays where the model was given 0 for a non-finite value.
+                    if (denoised && (c < 3) && (x >= window.x1) && (x < window.x2) && (io.y >= window.y1) && (io.y < window.y2) && (!src || finiteRgb(src + (std::size_t)i * io.nComps))) {
                         const std::size_t p = (std::size_t)(io.y - window.y1) * window.width() + (x - window.x1);
                         const float model = (*denoised)[p * 3 + c];
                         if (detail) {

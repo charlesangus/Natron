@@ -28,8 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -85,8 +89,9 @@ bool wholeFrameFitsGpu(const RectI& frame,
                        std::uint64_t maxScratchBytes) WARN_UNUSED_RETURN;
 
 /**
- * @brief One whole-frame result a node keeps between the windows of a frame. Concurrent windows
- * asking for the same key wait for the one computing it and then share its result.
+ * @brief The last few whole-frame results a node keeps between the windows of its frames.
+ * Concurrent windows asking for the same key wait for the one computing it and then share its
+ * result; callers with other keys compute alongside it.
  **/
 class WholeFrameCache {
 public:
@@ -99,29 +104,57 @@ public:
     using Compute = std::function<Result()>;
 
     /**
-     * @brief what names the result to RawNodeSupport::noteFrameComputed(), which every compute
-     * calls, so tests can count computes.
+     * @brief Finished results kept by default. Two frames rendered in parallel (a Write, or a
+     * viewer and a thumbnail) each keep theirs while the other publishes, and a third and fourth
+     * cover deeper frame-parallel renders. An entry is the size of one plane of the frame at most
+     * (ContrastTexture's map: one float a pixel, 33 MB at 3840x2160), and results still being
+     * computed are held by their callers, not counted.
      **/
-    explicit WholeFrameCache(const char* what);
+    static constexpr std::size_t kDefaultCapacity = 4;
+
+    /**
+     * @brief what names the result to RawNodeSupport::noteFrameComputed(), which every compute
+     * calls, so tests can count computes. capacity is the number of finished results kept, at
+     * least one.
+     **/
+    explicit WholeFrameCache(const char* what,
+                             std::size_t capacity = kDefaultCapacity);
 
     /**
      * @brief The result kept under key, or the one compute returns, kept under key in place of
-     * the previous one. compute runs under the cache's lock, once for any number of concurrent
-     * callers with the same key.
+     * the least recently used one when the cache is full. compute runs outside the cache's lock,
+     * once for any number of concurrent callers with the same key. When it returns null, the
+     * callers waiting on it compute again with their own compute, so one cancelled render does
+     * not cancel another; an exception from compute is passed on to its caller alone.
      **/
     Result get(const std::string& key,
                const Compute& compute);
 
     /**
-     * @brief Forgets the result, as purgeCaches() and Clear Caches ask.
+     * @brief Forgets the results, as purgeCaches() and Clear Caches ask. A compute running across
+     * it still hands its result to the callers waiting on it but does not keep it.
      **/
     void clear();
 
 private:
+    struct InFlight {
+        bool done = false;
+        Result result;
+    };
+
+    void finish(const std::string& key,
+                const std::shared_ptr<InFlight>& flight,
+                const Result& result,
+                std::uint64_t generation);
+
     const char* _what;
+    const std::size_t _capacity;
     std::mutex _mutex;
-    std::string _key;
-    Result _result;
+    std::condition_variable _finished;
+    // Most recently used first.
+    std::list<std::pair<std::string, Result>> _results;
+    std::map<std::string, std::shared_ptr<InFlight>> _computing;
+    std::uint64_t _generation;
 };
 
 NATRON_NAMESPACE_EXIT

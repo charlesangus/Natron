@@ -279,6 +279,21 @@ TEST_F(ContrastTextureGpuRegionTest, RegionIndependentGpu)
                                 options);
     }
 }
+
+// Over an infinite source the GPU passes the source through outside the format, as the CPU does.
+TEST_F(ContrastTextureGpuRegionTest, RegionIndependentGpuOverAnInfiniteSource)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    RegionIndependenceOptions options;
+    options.gpu = runtime.get();
+    expectInfiniteRoDClamped([this](const NodePtr& source) {
+        return makeContrastTexture(source, {});
+    },
+                             options);
+}
 #endif
 
 } // namespace

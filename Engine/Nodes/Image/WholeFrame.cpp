@@ -25,6 +25,7 @@
 
 #include "WholeFrame.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "Engine/EffectInstance.h"
@@ -128,11 +129,15 @@ wholeFrameFitsGpu(const RectI& frame,
     return (floats <= UINT32_MAX) && (floats <= maxScratchBytes / sizeof(float));
 }
 
-WholeFrameCache::WholeFrameCache(const char* what)
+WholeFrameCache::WholeFrameCache(const char* what,
+                                 std::size_t capacity)
     : _what(what)
+    , _capacity(std::max<std::size_t>(capacity, 1))
     , _mutex()
-    , _key()
-    , _result()
+    , _finished()
+    , _results()
+    , _computing()
+    , _generation(0)
 {
 }
 
@@ -140,19 +145,67 @@ WholeFrameCache::Result
 WholeFrameCache::get(const std::string& key,
                      const Compute& compute)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::unique_lock<std::mutex> lock(_mutex);
 
-    if (_result && (_key == key)) {
-        return _result;
+    for (;;) {
+        for (std::list<std::pair<std::string, Result>>::iterator it = _results.begin(); it != _results.end(); ++it) {
+            if (it->first == key) {
+                _results.splice(_results.begin(), _results, it);
+
+                return _results.front().second;
+            }
+        }
+        const std::map<std::string, std::shared_ptr<InFlight>>::const_iterator computing = _computing.find(key);
+        if (computing == _computing.end()) {
+            break;
+        }
+        const std::shared_ptr<InFlight> flight = computing->second;
+        _finished.wait(lock, [&flight]() { return flight->done; });
+        if (flight->result) {
+            return flight->result;
+        }
     }
-    Result result = compute();
+    const std::shared_ptr<InFlight> flight = std::make_shared<InFlight>();
+    _computing[key] = flight;
+    const std::uint64_t generation = _generation;
+    lock.unlock();
+
+    Result result;
+    try {
+        result = compute();
+    } catch (...) {
+        finish(key, flight, Result(), generation);
+        throw;
+    }
     RawNodeSupport::noteFrameComputed(_what, (U64)std::hash<std::string>()(key));
-    if (result) {
-        _key = key;
-        _result = result;
-    }
+    finish(key, flight, result, generation);
 
     return result;
+}
+
+void
+WholeFrameCache::finish(const std::string& key,
+                        const std::shared_ptr<InFlight>& flight,
+                        const Result& result,
+                        std::uint64_t generation)
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (result && (generation == _generation)) {
+            _results.emplace_front(key, result);
+            while (_results.size() > _capacity) {
+                _results.pop_back();
+            }
+        }
+        flight->result = result;
+        flight->done = true;
+        const std::map<std::string, std::shared_ptr<InFlight>>::iterator it = _computing.find(key);
+        if ((it != _computing.end()) && (it->second == flight)) {
+            _computing.erase(it);
+        }
+    }
+    _finished.notify_all();
 }
 
 void
@@ -160,8 +213,8 @@ WholeFrameCache::clear()
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _key.clear();
-    _result.reset();
+    _results.clear();
+    ++_generation;
 }
 
 NATRON_NAMESPACE_EXIT

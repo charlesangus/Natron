@@ -601,7 +601,7 @@ public:
 
 #ifdef NATRON_HAVE_GPU
             if (options.gpu) {
-                checkGpu(makeNode, options, rod, level, frame, whole, windows, reference, &mismatches);
+                checkGpu(makeNode, options, rod, level, whole, windows, reference, &mismatches);
             }
 #endif
         }
@@ -630,7 +630,8 @@ public:
     /**
      * @brief Over an infinite source, expects a window straddling the corner of options.format to
      * equal, inside the format, the node over the source cropped to the format, and outside it the
-     * source itself.
+     * source itself. With options.gpu set, the GPU render of the window is held to the same: the
+     * GPU render over the cropped source inside the format, and the source outside it, bit for bit.
      **/
     void expectInfiniteRoDClamped(const MakeNode& makeNode,
                                   const RegionIndependenceOptions& options = RegionIndependenceOptions())
@@ -668,6 +669,12 @@ public:
             const RectI top(window.x1, format.y2, format.x2, window.y2);
             EXPECT_EQ(std::string(), firstMismatch(source, got, right)) << at.str() << "right of the format, against the source";
             EXPECT_EQ(std::string(), firstMismatch(source, got, top)) << at.str() << "above the format, against the source";
+
+#ifdef NATRON_HAVE_GPU
+            if (options.gpu) {
+                checkGpuInfiniteRoDClamped(makeNode, options, level, window, format, got, source);
+            }
+#endif
         }
     }
 
@@ -827,11 +834,61 @@ private:
         return true;
     }
 
+    // The GPU half of expectInfiniteRoDClamped(): cpu is the CPU render of window over the
+    // infinite source, which gives the layer and channels, and source the source over window.
+    void checkGpuInfiniteRoDClamped(const MakeNode& makeNode,
+                                    const RegionIndependenceOptions& options,
+                                    unsigned level,
+                                    const RectI& window,
+                                    const RectI& format,
+                                    const RenderedPlane& cpu,
+                                    const RenderedPlane& source)
+    {
+        const RectI& f = options.format;
+        const RenderScale scale = RenderScale::fromMipmapLevel(level);
+        std::ostringstream at;
+        at << "mipmap level " << level << ", GPU window " << describe(window) << ": ";
+
+        RenderedPlane got[2];
+        for (int infinite = 0; infinite < 2; ++infinite) {
+            const NodePtr chainSource = createRegionSource(f, infinite != 0);
+            const NodePtr node = chainSource ? makeNode(chainSource) : NodePtr();
+            NativeEffectBase* effect = node ? dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get()) : NULL;
+            if (!effect) {
+                destroyChain(node, chainSource);
+                ADD_FAILURE() << at.str() << "the node is not native";
+
+                return;
+            }
+            const GpuQuery query = options.gpuQuery ? options.gpuQuery(*effect, scale) : defaultGpuQuery(*effect, options.plane, scale);
+            std::string error;
+            const bool accepted = effect->canRenderOnGpu(query);
+            const bool ok = accepted && renderGpuWindow(*options.gpu, *effect, query, chainSource, level, window, cpu, &got[infinite], &error);
+            destroyChain(node, chainSource);
+            if (!accepted) {
+                ADD_FAILURE() << at.str() << "canRenderOnGpu() refuses the query";
+
+                return;
+            }
+            if (!ok) {
+                ADD_FAILURE() << at.str() << (infinite ? "over the infinite source: " : "over the cropped source: ") << error;
+
+                return;
+            }
+        }
+
+        const RectI inside(window.x1, window.y1, format.x2, format.y2);
+        EXPECT_EQ(std::string(), firstMismatch(got[0], got[1], inside)) << at.str() << "inside the format, against the GPU node over the cropped source";
+        const RectI right(format.x2, window.y1, window.x2, window.y2);
+        const RectI top(window.x1, format.y2, format.x2, window.y2);
+        EXPECT_EQ(std::string(), firstMismatch(source, got[1], right)) << at.str() << "right of the format, against the source";
+        EXPECT_EQ(std::string(), firstMismatch(source, got[1], top)) << at.str() << "above the format, against the source";
+    }
+
     void checkGpu(const MakeNode& makeNode,
                   const RegionIndependenceOptions& options,
                   const RectI& rod,
                   unsigned level,
-                  const RectI& frame,
                   const RectI& whole,
                   const std::vector<RectI>& windows,
                   const RenderedPlane& cpuReference,
@@ -885,8 +942,9 @@ private:
         const int nComps = (int)cpuReference.channels.size();
         std::vector<float> cpu;
         std::vector<float> gpu;
-        for (int y = frame.y1; y < frame.y2; ++y) {
-            for (int x = frame.x1; x < frame.x2; ++x) {
+        // Over the margin too: past the frame the GPU must pass through what the CPU does.
+        for (int y = whole.y1; y < whole.y2; ++y) {
+            for (int x = whole.x1; x < whole.x2; ++x) {
                 for (int c = 0; c < nComps; ++c) {
                     cpu.push_back(pixelOf(cpuReference, x, y, c));
                     gpu.push_back(pixelOf(gpuWhole, x, y, c));
@@ -906,7 +964,7 @@ private:
             const std::size_t pixel = diff.firstMismatchIndex / (std::size_t)nComps;
             std::ostringstream s;
             s << at.str() << "frame against the CPU frame: " << diff.mismatches << " of " << diff.compared << " floats outside the tolerance, the first at pixel ("
-              << frame.x1 + (int)(pixel % (std::size_t)frame.width()) << "," << frame.y1 + (int)(pixel / (std::size_t)frame.width()) << ") channel "
+              << whole.x1 + (int)(pixel % (std::size_t)whole.width()) << "," << whole.y1 + (int)(pixel / (std::size_t)whole.width()) << ") channel "
               << diff.firstMismatchIndex % (std::size_t)nComps << ", the worst by " << diff.worstAbsolute;
             mismatches->push_back(s.str());
         }

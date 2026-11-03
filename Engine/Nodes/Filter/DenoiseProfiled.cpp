@@ -892,11 +892,14 @@ DenoiseProfiled::getRegionsOfInterest(double time,
     }
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     if (isWavelets(r->settings.mode) || (r->settings.mode == eModeVariance)) {
-        // The whole frame, and the window, outside the frame passed through.
+        // The whole frame when the window touches it; a window outside it passes through.
         RectI frame;
         if (framePixels(time, view, scale, &frame)) {
-            RectD need = PassExec::toCanonical(frame, scale, par);
-            need.merge(renderWindow);
+            const RectD frameCanonical = PassExec::toCanonical(frame, scale, par);
+            RectD need = renderWindow;
+            if (need.intersects(frameCanonical)) {
+                need.merge(frameCanonical);
+            }
             (*ret)[input] = need;
         }
 
@@ -974,7 +977,10 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if ((s.mode == eModeVariance) && !jobs.empty() && jobs[0].src && (jobs[0].nComps >= 3)) {
+    // A window outside the frame did not ask for the frame, so it cannot measure it.
+    RectI frameOverlap;
+    const bool touchesFrame = intersectRects(roi, rodPixel, &frameOverlap) && !isEmptyRect(frameOverlap);
+    if ((s.mode == eModeVariance) && touchesFrame && !jobs.empty() && jobs[0].src && (jobs[0].nComps >= 3)) {
         // Measured over the whole frame, so neither the window nor the tile changes it; the
         // output passes through.
         PlaneJob measureJob = jobs[0];
@@ -1004,7 +1010,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             return std::make_shared<const std::vector<float>>(std::vector<float> { (float)v[0], (float)v[1], (float)v[2] });
         });
         if (!measured) {
-            return eStatusOK;
+            return eStatusFailed;
         }
         showVariance({ (double)(*measured)[0], (double)(*measured)[1], (double)(*measured)[2] }, rodPixel, renderScale);
     }

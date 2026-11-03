@@ -981,8 +981,11 @@ ToneEqualizer::getRegionsOfInterest(double time,
     if (!input || !framePixels(*this, time, scale, view, &frame)) {
         return;
     }
-    RectD need = PassExec::toCanonical(frame, scale, getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput()));
-    need.merge(renderWindow);
+    const RectD frameCanonical = PassExec::toCanonical(frame, scale, getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput()));
+    RectD need = renderWindow;
+    if (need.intersects(frameCanonical)) {
+        need.merge(frameCanonical);
+    }
     (*ret)[input] = need;
 }
 

@@ -331,6 +331,24 @@ TEST_F(ToneEqualizerGpuRegionTest, RegionIndependentGpu)
     }
 }
 
+// Over an infinite source the GPU passes the source through outside the format, as the CPU does.
+TEST_F(ToneEqualizerGpuRegionTest, RegionIndependentGpuOverAnInfiniteSource)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    RegionIndependenceOptions options;
+    options.gpu = runtime.get();
+    for (DetailsEnum details : kRegionDetails) {
+        SCOPED_TRACE((int)details);
+        expectInfiniteRoDClamped([this, details](const NodePtr& source) {
+            return setUpRegionToneEqualizer(createAfter(PLUGINID_NATRON_TONEEQUALIZER, source), details);
+        },
+                                 options);
+    }
+}
+
 } // namespace
 
 #endif // NATRON_HAVE_GPU

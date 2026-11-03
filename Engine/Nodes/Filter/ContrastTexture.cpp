@@ -304,8 +304,11 @@ ContrastTexture::getRegionsOfInterest(double time,
     }
     // The whole frame, and the window, outside the frame passed through.
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    RectD need = PassExec::toCanonical(frame, scale, metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.);
-    need.merge(renderWindow);
+    const RectD frameCanonical = PassExec::toCanonical(frame, scale, metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.);
+    RectD need = renderWindow;
+    if (need.intersects(frameCanonical)) {
+        need.merge(frameCanonical);
+    }
     (*ret)[input] = need;
 }
 
@@ -474,8 +477,11 @@ ContrastTexture::getOpGpuInputRoI(int inputNb,
     if (!makePlan(time, view, scale, &full, &plan)) {
         return outputRect;
     }
+    // The window outside the frame passes the source through.
+    RectI need = outputRect;
+    need.merge(full);
 
-    return full;
+    return need;
 }
 
 StatusEnum

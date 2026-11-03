@@ -188,7 +188,7 @@ TEST_F(WholeFrameTest, ConcurrentWindowsComputeOnce)
 
 TEST_F(WholeFrameTest, KeyChangeRecomputes)
 {
-    WholeFrameCache cache("wholeFrameTest");
+    WholeFrameCache cache("wholeFrameTest", 1);
     int computes = 0;
     auto compute = [&](float value) {
         return [&computes, value]() {
@@ -223,6 +223,117 @@ TEST_F(WholeFrameTest, KeyChangeRecomputes)
     EXPECT_EQ(5, computes);
     cache.get("c", compute(3.f));
     EXPECT_EQ(6, computes);
+}
+
+TEST_F(WholeFrameTest, KeepsTheMostRecentlyUsedResults)
+{
+    WholeFrameCache cache("wholeFrameTest", 2);
+    int computes = 0;
+    auto compute = [&computes](float value) {
+        return [&computes, value]() {
+            ++computes;
+
+            return resultOf(value);
+        };
+    };
+
+    const WholeFrameCache::Result a = cache.get("a", compute(1.f));
+    cache.get("b", compute(2.f));
+    EXPECT_EQ(2, computes);
+    EXPECT_EQ(a.get(), cache.get("a", compute(1.f)).get());
+    EXPECT_EQ(2, computes);
+
+    // "a" was used last, so "c" evicts "b".
+    cache.get("c", compute(3.f));
+    EXPECT_EQ(3, computes);
+    EXPECT_EQ(a.get(), cache.get("a", compute(1.f)).get());
+    EXPECT_EQ(3, computes);
+    cache.get("b", compute(2.f));
+    EXPECT_EQ(4, computes);
+}
+
+TEST_F(WholeFrameTest, OtherKeysComputeAlongside)
+{
+    WholeFrameCache cache("wholeFrameTest");
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool aComputing = false;
+    bool bComputed = false;
+
+    std::thread a([&]() {
+        cache.get("a", [&]() {
+            std::unique_lock<std::mutex> lock(mutex);
+            aComputing = true;
+            changed.notify_all();
+            // Bounded, so a cache that serialises keys fails the expectation below instead of hanging.
+            changed.wait_for(lock, std::chrono::seconds(10), [&]() { return bComputed; });
+
+            return resultOf(1.f);
+        });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&]() { return aComputing; });
+    }
+    const WholeFrameCache::Result b = cache.get("b", [&]() {
+        return resultOf(2.f);
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        bComputed = bool(b);
+    }
+    changed.notify_all();
+    a.join();
+
+    ASSERT_TRUE(bool(b));
+    EXPECT_EQ(2.f, (*b)[0]);
+}
+
+TEST_F(WholeFrameTest, CancelledComputeLetsWaitersRecompute)
+{
+    WholeFrameCache cache("wholeFrameTest");
+    std::atomic<int> computes(0);
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool started = false;
+    WholeFrameCache::Result cancelled = resultOf(0.f);
+
+    std::thread first([&]() {
+        cancelled = cache.get("frame", [&]() {
+            ++computes;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                started = true;
+            }
+            changed.notify_all();
+            // Long enough that the second caller is waiting on this compute when it is cancelled.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            return WholeFrameCache::Result();
+        });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&]() { return started; });
+    }
+    const WholeFrameCache::Result second = cache.get("frame", [&]() {
+        ++computes;
+
+        return resultOf(2.f);
+    });
+    first.join();
+
+    EXPECT_FALSE(bool(cancelled));
+    ASSERT_TRUE(bool(second));
+    EXPECT_EQ(2.f, (*second)[0]);
+    EXPECT_EQ(2, computes.load());
+    EXPECT_EQ(second.get(), cache.get("frame", [&]() {
+                                     ++computes;
+
+                                     return resultOf(3.f);
+                                 })
+                                .get());
+    EXPECT_EQ(2, computes.load());
 }
 
 TEST_F(WholeFrameTest, GpuFitBoundaries)

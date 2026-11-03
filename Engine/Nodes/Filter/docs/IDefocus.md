@@ -47,5 +47,5 @@ for bit.
 GPU: `idefocus.slang` loads each pixel's level, by `mapremap.slang` exactly as the CPU remaps it, and its boosted
 source, then gathers every output pixel over its apron from the levels' weight table, in float. The GPU holds
 `kIDefocusTolerance` against the CPU (`Tests/Native/NativeIDefocusGpu_Test.cpp`). A halo over 64 pixels and the
-Image kernel stay on the CPU, as do byte, short and half images. `gpuCostHint()` reports the bokeh's diameter as a
-size-scaled sigma (2 r / 2.4 at the larger radius), as Defocus does.
+Image kernel stay on the CPU, as do byte, short and half images. `gpuWeight()` scales with the bokeh's diameter
+(twice the larger halo), as Defocus does.

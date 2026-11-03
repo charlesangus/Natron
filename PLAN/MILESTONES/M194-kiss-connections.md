@@ -80,3 +80,4 @@ Scouted facts (2026-10-25): node drag runs through `NodeGraph::moveSelectedNodes
 
 **Verification gate:** the full build and `ctest` pass, `Tests/gui/m194_kiss.py` and `Tests/gui/m55_node_graph.py` pass under Xvfb on a `package.sh` AppImage, and screenshots of a kiss preview are shared with the user before sign-off. The GUI bench rule applies.
 - 2026-11-02 — main merged in (M193 pre-squash resolved to main's Edge colouring); gate green via M195's tip; kiss GUI check probe widened (STRIP_PAD) (PM).
+- 2026-11-03 — Merged to main as d3a0f8734 (#169).

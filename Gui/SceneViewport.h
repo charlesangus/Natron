@@ -65,7 +65,7 @@ struct SceneTransformDrag;
  *
  * Another delegate, such as a path tracer, renders progressively in the background
  * (HydraRender::ProgressiveRender): each edit of the stage, the view or Max Samples restarts it, it
- * refines until it converges, reaches Max Samples or is stopped, and render() draws its latest
+ * refines until it converges, reaches Max Samples or is paused, and render() draws its latest
  * frame, uploaded to a texture, under the grid and handles.
  *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
@@ -495,16 +495,15 @@ public:
 
     /**
      * @brief The cap on the samples per pixel of a progressive render; <= 0 for the delegate's
-     * default. A change restarts the render. Choosing another delegate resets it.
+     * default. A change restarts the render; it holds across a change of delegate.
      **/
     void setMaxSamples(int samples);
 
     // The cap in force: the one set, or the delegate's default once known, else 0.
     int getMaxSamples() const;
 
-    // Pauses a progressive render, keeping its samples; resumeRefinement() continues from them.
-    void stopRefinement();
-    void resumeRefinement();
+    // Pausing keeps a progressive render's samples; unpausing continues from them.
+    void setRefinementPaused(bool paused);
 
     RefineStatus getRefineStatus() const;
 
@@ -584,12 +583,11 @@ public:
 
     void setLightingMode(SceneViewportRenderer::LightingModeEnum mode);
 
-    // The progressive render's cap on samples per pixel, <= 0 for the delegate's default.
-    Q_INVOKABLE void setMaxSamples(int samples);
+    // The progressive render's cap on samples per pixel, <= 0 for the delegate's default. The
+    // viewer's Max Samples and Refinement Paused knobs drive these.
+    void setMaxSamples(int samples);
 
-    Q_INVOKABLE void stopRefinement();
-
-    Q_INVOKABLE void resumeRefinement();
+    void setRefinementPaused(bool paused);
 
     void setLookThroughCamera(const QString& path);
 
@@ -689,6 +687,12 @@ public:
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
+
+    // From the context menu's Renderer submenu.
+    void rendererChanged(const QString& id);
+
+    // Whenever the natronSceneSamples family of properties is published.
+    void refineStateChanged();
 
 protected:
     void initializeGL() override;

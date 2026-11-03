@@ -49,7 +49,6 @@
 #include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
-#include <QSpinBox>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -2460,8 +2459,6 @@ SceneViewportRenderer::setRendererId(const std::string& id)
     // refining.
     _imp->progressive->setRenderer(std::string());
     _imp->refineRenderer.clear();
-    _imp->maxSamples = 0;
-    _imp->progressive->resume();
 }
 
 const std::string&
@@ -2504,15 +2501,13 @@ SceneViewportRenderer::getMaxSamples() const
 }
 
 void
-SceneViewportRenderer::stopRefinement()
+SceneViewportRenderer::setRefinementPaused(bool paused)
 {
-    _imp->progressive->stop();
-}
-
-void
-SceneViewportRenderer::resumeRefinement()
-{
-    _imp->progressive->resume();
+    if (paused) {
+        _imp->progressive->stop();
+    } else {
+        _imp->progressive->resume();
+    }
 }
 
 SceneViewportRenderer::RefineStatus
@@ -2545,7 +2540,6 @@ void
 SceneViewportRenderer::releaseRefinement()
 {
     _imp->progressive->setRenderer(std::string());
-    _imp->progressive->resume();
     _imp->refineRenderer.clear();
 }
 
@@ -3344,6 +3338,7 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
     setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
+    Q_EMIT refineStateChanged();
 }
 
 // Takes the viewer lock: only from a paint that found the stage idle.
@@ -3431,6 +3426,7 @@ SceneViewport::setRendererId(const QString& id)
     doneCurrent();
     publishState();
     update();
+    Q_EMIT rendererChanged(id);
 }
 
 void
@@ -3442,17 +3438,9 @@ SceneViewport::setMaxSamples(int samples)
 }
 
 void
-SceneViewport::stopRefinement()
+SceneViewport::setRefinementPaused(bool paused)
 {
-    _imp->renderer.stopRefinement();
-    publishRefineState();
-    update();
-}
-
-void
-SceneViewport::resumeRefinement()
-{
-    _imp->renderer.resumeRefinement();
+    _imp->renderer.setRefinementPaused(paused);
     publishRefineState();
     update();
 }
@@ -4200,7 +4188,7 @@ SceneViewport::paintGL()
                 hud += tr(" | %1 samples").arg(drawn);
             }
             if (refine.stopped) {
-                hud += tr(" (stopped)");
+                hud += tr(" (paused)");
             }
         }
         const std::vector<std::string>& selected = _imp->renderer.getSelectedPrims();
@@ -4783,40 +4771,6 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         const QString id = QString::fromStdString(delegate.id);
         QObject::connect(action, &QAction::triggered, this, [this, id]() {
             setRendererId(id);
-        });
-    }
-    if (rendererId != kRenderDelegateStormId) {
-        // The progressive render's controls.
-        renderers->addSeparator();
-        const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
-        QWidget* samplesRow = new QWidget(renderers);
-        QHBoxLayout* samplesLayout = new QHBoxLayout(samplesRow);
-        samplesLayout->setContentsMargins(8, 2, 8, 2);
-        QLabel* samplesLabel = new QLabel(tr("Max Samples"), samplesRow);
-        QSpinBox* samples = new QSpinBox(samplesRow);
-        samples->setObjectName(QString::fromUtf8("maxSamples"));
-        samples->setRange(1, 1 << 20);
-        samples->setValue(std::max(1, _imp->renderer.getMaxSamples()));
-        samples->setToolTip(tr("The samples per pixel the renderer refines the view to; a change restarts the render."));
-        samplesLayout->addWidget(samplesLabel);
-        samplesLayout->addWidget(samples);
-        QWidgetAction* samplesAction = new QWidgetAction(renderers);
-        samplesAction->setDefaultWidget(samplesRow);
-        renderers->addAction(samplesAction);
-        QObject::connect(samples, &QSpinBox::editingFinished, this, [this, samples]() {
-            if (samples->value() != _imp->renderer.getMaxSamples()) {
-                setMaxSamples(samples->value());
-            }
-        });
-        QAction* stop = renderers->addAction(tr("Stop"));
-        stop->setEnabled(refine.active && !refine.stopped);
-        QObject::connect(stop, &QAction::triggered, this, [this]() {
-            stopRefinement();
-        });
-        QAction* resume = renderers->addAction(tr("Resume"));
-        resume->setEnabled(refine.stopped);
-        QObject::connect(resume, &QAction::triggered, this, [this]() {
-            resumeRefinement();
         });
     }
 

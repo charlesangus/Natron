@@ -855,6 +855,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->maxSamplesBox->setObjectName(QString::fromUtf8(kViewerParamMaxSamples));
     _imp->maxSamplesBox->setMinimum(0);
     _imp->maxSamplesBox->setValue(0);
+    _imp->maxSamplesBox->setMinimumWidth(_imp->maxSamplesBox->fontMetrics().horizontalAdvance(QString::fromUtf8("1048576")) + TO_DPIX(24));
     _imp->maxSamplesBox->setToolTip(maxSamplesTt);
     _imp->sceneRenderRowLayout->addWidget(_imp->maxSamplesBox);
 

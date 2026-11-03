@@ -527,7 +527,7 @@ TEST_F(NativeVectorBlurTest, KnobsAndInputs)
 {
     NodePtr node = makeVectorBlur(NodePtr());
     ASSERT_TRUE(bool(node));
-    for (const char* name : { kVectorBlurParamUV, kVectorBlurParamOffset, kVectorBlurParamScale, kVectorBlurParamVectorUnits, kVectorBlurParamSamples,
+    for (const char* name : { kVectorBlurParamUV, kVectorBlurParamOffset, kVectorBlurParamScale, kVectorBlurParamVectorUnits, kVectorBlurParamMinimumSamples,
                               kVectorBlurParamMaxSamples, kVectorBlurParamFilter, kVectorBlurParamMaxLength, kVectorBlurParamOcclusion,
                               kVectorBlurParamDepth, kVectorBlurParamDepthUnits }) {
         EXPECT_TRUE(bool(node->getKnobByName(name))) << name;
@@ -566,7 +566,7 @@ TEST_F(NativeVectorBlurTest, ConstantVectorIsABoxBlur)
     NodePtr source = makeSource(eSceneSmooth, 8., 0.);
     NodePtr node = makeVectorBlur(source);
     ASSERT_TRUE(bool(source) && bool(node));
-    ASSERT_TRUE(setKnobValues(node, kVectorBlurParamSamples, { 16. }));
+    ASSERT_TRUE(setKnobValues(node, kVectorBlurParamMinimumSamples, { 16. }));
     const auto box = [](int x, int y, float* out) {
         const int n = 4096;
         double acc[4] = { 0., 0., 0., 0. };

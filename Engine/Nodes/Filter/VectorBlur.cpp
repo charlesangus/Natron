@@ -434,21 +434,21 @@ VectorBlur::initializeKnobs()
     page->addKnob(scale);
     _scale = scale;
 
-    KnobIntPtr samples = createKnob<KnobInt>(tr("Samples"));
-    samples->setName(kVectorBlurParamSamples);
-    samples->setHintToolTip(tr("The fewest samples taken along a streak. A streak longer than this many pixels takes one "
-                               "sample per pixel, up to Max Samples."));
-    samples->setMinimum(1);
-    samples->setDisplayMinimum(1);
-    samples->setDisplayMaximum(64);
-    samples->setDefaultValue(16);
-    samples->setAddNewLine(false);
-    page->addKnob(samples);
-    _samples = samples;
+    KnobIntPtr minimumSamples = createKnob<KnobInt>(tr("Minimum Samples"));
+    minimumSamples->setName(kVectorBlurParamMinimumSamples);
+    minimumSamples->setHintToolTip(tr("The fewest samples taken along a streak. A streak longer than this many pixels takes one "
+                                      "sample per pixel, up to Max Samples."));
+    minimumSamples->setMinimum(1);
+    minimumSamples->setDisplayMinimum(1);
+    minimumSamples->setDisplayMaximum(64);
+    minimumSamples->setDefaultValue(16);
+    minimumSamples->setAddNewLine(false);
+    page->addKnob(minimumSamples);
+    _minimumSamples = minimumSamples;
 
     KnobIntPtr maxSamples = createKnob<KnobInt>(tr("Max Samples"));
     maxSamples->setName(kVectorBlurParamMaxSamples);
-    maxSamples->setHintToolTip(tr("The most samples taken along a streak, however long. Never fewer than Samples."));
+    maxSamples->setHintToolTip(tr("The most samples taken along a streak, however long. Never fewer than Minimum Samples."));
     maxSamples->setMinimum(1);
     maxSamples->setDisplayMinimum(1);
     maxSamples->setDisplayMaximum(512);
@@ -633,13 +633,13 @@ VectorBlur::readSettings(double time,
     if (vectorUnits) {
         settings->normalised = vectorUnits->getValueAtTime(time, 0, view) == 1;
     }
-    KnobIntPtr samples = _samples.lock();
-    if (samples) {
-        settings->samples = std::max(1, samples->getValueAtTime(time, 0, view));
+    KnobIntPtr minimumSamples = _minimumSamples.lock();
+    if (minimumSamples) {
+        settings->minimumSamples = std::max(1, minimumSamples->getValueAtTime(time, 0, view));
     }
     KnobIntPtr maxSamples = _maxSamples.lock();
     if (maxSamples) {
-        settings->maxSamples = std::max(settings->samples, maxSamples->getValueAtTime(time, 0, view));
+        settings->maxSamples = std::max(settings->minimumSamples, maxSamples->getValueAtTime(time, 0, view));
     }
     KnobChoicePtr filter = _filter.lock();
     if (filter) {
@@ -986,7 +986,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         g.fy = (float)fy;
         g.offset = (float)settings.offset;
         g.maxLength = (float)(settings.maxLength * args.mappedScale.toOfxPointD().x);
-        g.minSamples = settings.samples;
+        g.minSamples = settings.minimumSamples;
         g.maxSamples = settings.maxSamples;
         g.triangle = settings.triangle;
         g.occlusion = layers.depthValid && (bool)depthImage;
@@ -1099,7 +1099,7 @@ VectorBlur::gpuWeight(double time,
     readSettings(time, view, &settings);
     const double length = settings.maxLength * RenderScale::fromMipmapLevel(mipmapLevel).toOfxPointD().x;
     // The most samples a streak takes is the cost per pixel.
-    const double samples = std::max((double)settings.samples, std::min(std::ceil(length), (double)settings.maxSamples));
+    const double samples = std::max((double)settings.minimumSamples, std::min(std::ceil(length), (double)settings.maxSamples));
 
     return gpuSizeScaledWeight(samples);
 }
@@ -1279,7 +1279,7 @@ VectorBlur::renderOpGpu(const GpuRenderArgs& args)
     if (settings.triangle) {
         params.flags |= kVectorBlurGpuTriangle;
     }
-    params.minSamples = settings.samples;
+    params.minSamples = settings.minimumSamples;
     params.maxSamples = settings.maxSamples;
     params.offset = (float)settings.offset;
     params.fx = (float)fx;

@@ -242,10 +242,10 @@ TEST_F(NativeVectorBlurGpuTest, SamplesUnitsAndClampMatchTheCpuFrame)
     ASSERT_TRUE(source && node);
     ASSERT_TRUE(setKnobValues(node, kVectorBlurParamScale, { 0.5 }));
     ASSERT_TRUE(setKnobValue(node, kVectorBlurParamVectorUnits, std::string(kVectorBlurUnitsNormalised)));
-    ASSERT_TRUE(setKnobValues(node, kVectorBlurParamSamples, { 3. }));
+    ASSERT_TRUE(setKnobValues(node, kVectorBlurParamMinimumSamples, { 3. }));
     ASSERT_TRUE(setKnobValues(node, kVectorBlurParamMaxSamples, { 9. }));
     ASSERT_TRUE(setKnobValues(node, kVectorBlurParamMaxLength, { 10. }));
-    expectParity(source, node, "samples, units and clamp");
+    expectParity(source, node, "minimum samples, units and clamp");
 }
 
 TEST_F(NativeVectorBlurGpuTest, OcclusionMatchesTheCpuFrame)

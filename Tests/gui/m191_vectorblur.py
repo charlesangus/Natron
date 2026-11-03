@@ -452,10 +452,10 @@ try:
               % (None if start is None else round(start[5], 1), None if end is None else round(end[5], 1)))
         set_checked(node, "offset", 0.5)
 
-        set_checked(node, "samples", 2)
+        set_checked(node, "minimumSamples", 2)
         few = yield from measure()
-        report("NOTE Samples 2 lit extent %r vs default %r" % (size_of(few), (hw, hh)))
-        set_checked(node, "samples", 16)
+        report("NOTE Minimum Samples 2 lit extent %r vs default %r" % (size_of(few), (hw, hh)))
+        set_checked(node, "minimumSamples", 16)
 
         set_zoom("Fit")
 

@@ -44,7 +44,7 @@
 #define kVectorBlurParamOffset "offset"
 #define kVectorBlurParamScale "scale"
 #define kVectorBlurParamVectorUnits "vectorUnits"
-#define kVectorBlurParamSamples "samples"
+#define kVectorBlurParamMinimumSamples "minimumSamples"
 #define kVectorBlurParamMaxSamples "maxSamples"
 #define kVectorBlurParamFilter "filter"
 #define kVectorBlurParamMaxLength "maxLength"
@@ -104,7 +104,7 @@ inline constexpr ImagePipelineSpec kVectorBlurPipeline = {
  * selected channels times Scale, in pixels at the render scale (Pixels: full-resolution pixels;
  * Normalised to Width: fractions of the Source format's width). A vector longer than Max Length
  * is shortened to it. Taps are bilinear, black outside the Source, at the centres of
- * max(Samples, ceil(|d|)) equal steps, at most max(Samples, Max Samples), weighted evenly (Box)
+ * max(Minimum Samples, ceil(|d|)) equal steps, at most max(Minimum Samples, Max Samples), weighted evenly (Box)
  * or by a tent peaking mid-streak (Triangle). A zero or non-finite vector leaves the pixel as it is.
  *
  * Depth-aware occlusion leaves out a sample whose depth, at its nearest pixel, is nearer than the
@@ -168,7 +168,7 @@ public:
         double offset = 0.5;
         double scale = 1.;
         bool normalised = false;
-        int samples = 16;
+        int minimumSamples = 16;
         int maxSamples = 128;
         bool triangle = false;
         double maxLength = 128.;
@@ -259,7 +259,7 @@ private:
     KnobDoubleWPtr _offset;
     KnobDoubleWPtr _scale;
     KnobChoiceWPtr _vectorUnits;
-    KnobIntWPtr _samples;
+    KnobIntWPtr _minimumSamples;
     KnobIntWPtr _maxSamples;
     KnobChoiceWPtr _filter;
     KnobDoubleWPtr _maxLength;

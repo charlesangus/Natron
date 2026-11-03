@@ -38,7 +38,6 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
@@ -74,13 +73,6 @@ struct USDProject3D::CameraSamples {
     U64 digest = 0;
 };
 
-// Where the image's format lies in its live texture, once, or at every frame of the project range.
-struct USDProject3D::PlateWindows {
-    std::vector<double> frames;
-    std::vector<PXR_NS::GfVec4f> transforms;
-    U64 digest = 0;
-};
-
 struct USDProject3D::Implementation {
     std::mutex lock;
     // The last samples and what they were read from, so an evaluation that changes nothing they
@@ -88,10 +80,6 @@ struct USDProject3D::Implementation {
     bool samplesValid = false;
     U64 samplesKey = 0;
     std::shared_ptr<const CameraSamples> samples;
-    // Likewise for the image's regions of definition.
-    bool windowsValid = false;
-    U64 windowsKey = 0;
-    std::shared_ptr<const PlateWindows> windows;
 };
 
 USDProject3D::USDProject3D(NodePtr node)
@@ -357,36 +345,6 @@ USDProject3D::getPlateAspect(double time) const
     return (format.height() > 0) ? format.width() * format.getPixelAspectRatio() / format.height() : 1.;
 }
 
-void
-USDProject3D::getPlateTransform(const NodePtr& source,
-                                double time,
-                                double transform[4]) const
-{
-    transform[0] = transform[1] = 1.;
-    transform[2] = transform[3] = 0.;
-    // The node the live texture renders, over its region of definition.
-    const EffectInstancePtr input = source ? source->getEffectInstance() : EffectInstancePtr();
-    const NodeMetadataConstPtr metadata = input ? input->getMetadata(time, ViewIdx(0)) : NodeMetadataConstPtr();
-    RectI window;
-    if (!metadata || !getNodeDefinitionPixelRect(input->getNode(), time, ViewIdx(0), &window)) {
-        return;
-    }
-    RectI format = metadata->getOutputFormat();
-    if (format.isNull()) {
-        // As live textures over the format take it, so both variants agree on the camera frame.
-        Format projectFormat;
-        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
-        format = projectFormat;
-    }
-    if ((format.width() <= 0) || (format.height() <= 0)) {
-        return;
-    }
-    transform[0] = format.width() / (double)window.width();
-    transform[1] = format.height() / (double)window.height();
-    transform[2] = (format.x1 - window.x1) / (double)window.width();
-    transform[3] = (format.y1 - window.y1) / (double)window.height();
-}
-
 StatusEnum
 USDProject3D::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,
@@ -567,68 +525,8 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     // The image's identity and hash, without rendering it: the layer reads nothing else of it.
     LiveTextureSource plate;
     const bool hasPlate = SceneNodeAuthoring::getLiveTextureSource(*this, kUSDProject3DInputImage, kLiveTextureLayer, &plate);
-    // Overscan projects when Crop is off, so the texture holds all of it; plateTransform maps the
-    // format inside it.
-    plate.coverage = eLiveTextureCoverageDefinition;
-
-    std::shared_ptr<const PlateWindows> windows;
-    {
-        ContentHasher windowsKeyHasher;
-        windowsKeyHasher.appendBool(hasPlate);
-        if (hasPlate) {
-            SceneNodeAuthoring::appendLiveTextureSource(plate, &windowsKeyHasher);
-        }
-        windowsKeyHasher.appendDouble(layerKey.firstFrame);
-        windowsKeyHasher.appendDouble(layerKey.lastFrame);
-        // An infinite region of definition is taken as the project format.
-        Format projectFormat;
-        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
-        for (int side : { projectFormat.x1, projectFormat.y1, projectFormat.x2, projectFormat.y2 }) {
-            windowsKeyHasher.appendI64(side);
-        }
-        const U64 windowsKey = windowsKeyHasher.finalize();
-        {
-            std::lock_guard<std::mutex> l(_imp->lock);
-            if (_imp->windowsValid && (_imp->windowsKey == windowsKey)) {
-                windows = _imp->windows;
-            }
-        }
-        if (!windows) {
-            std::shared_ptr<PlateWindows> computed = std::make_shared<PlateWindows>();
-            std::vector<double> sourceFrames;
-            if (hasPlate && plate.varying) {
-                SceneLayerEdit range;
-                range.firstFrame = layerKey.firstFrame;
-                range.lastFrame = layerKey.lastFrame;
-                computed->frames = SceneNodeAuthoring::getSampleFrames(range);
-                for (double frame : computed->frames) {
-                    sourceFrames.push_back(plate.getSourceFrame(frame));
-                }
-            } else {
-                sourceFrames.push_back(layerKey.firstFrame);
-            }
-            ContentHasher digest;
-            digest.appendU64(computed->frames.size());
-            for (double frame : sourceFrames) {
-                double transform[4] = { 1., 1., 0., 0. };
-                if (hasPlate) {
-                    getPlateTransform(plate.node.lock(), frame, transform);
-                }
-                computed->transforms.push_back(PXR_NS::GfVec4f((float)transform[0], (float)transform[1], (float)transform[2], (float)transform[3]));
-                digest.appendBytes(computed->transforms.back().data(), 4 * sizeof(float));
-            }
-            computed->digest = digest.finalize();
-            windows = computed;
-            std::lock_guard<std::mutex> l(_imp->lock);
-            _imp->windowsValid = true;
-            _imp->windowsKey = windowsKey;
-            _imp->windows = windows;
-        }
-    }
-
     ContentHasher facts;
     facts.appendU64(samples->digest);
-    facts.appendU64(windows->digest);
     facts.appendString(shaderPath);
     facts.appendU64((U64)space);
     facts.appendBool(useFrameHold);
@@ -638,18 +536,24 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     facts.appendBool(hasPlate);
     if (hasPlate) {
         SceneNodeAuthoring::appendLiveTextureSource(plate, &facts);
+        // The texture's window falls back on the project format for an image without one.
+        Format projectFormat;
+        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        for (int side : { projectFormat.x1, projectFormat.y1, projectFormat.x2, projectFormat.y2 }) {
+            facts.appendI64(side);
+        }
     }
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
-    reads.frameRange = !samples->frames.empty() || !windows->frames.empty() || (hasPlate && plate.varying);
+    reads.frameRange = !samples->frames.empty() || (hasPlate && plate.varying);
 
     PXR_NS::SdfPath path;
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {
         return fail();
     }
     const double framesPerSecond = layerKey.framesPerSecond;
-    SceneLayerMemo::AuthorFunc author = [samples, windows, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate, cameraPath, aspect, fitValue,
+    SceneLayerMemo::AuthorFunc author = [samples, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate, cameraPath, aspect, fitValue,
                                          framesPerSecond](const SceneLayerEdit& edit, std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
         if (!stage) {
@@ -672,14 +576,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         for (std::size_t i = 0; ok && (i < samples->frames.size()); ++i) {
             const PXR_NS::UsdTimeCode time = SceneNodeAuthoring::frameToTimeCode(edit, samples->frames[i]);
             ok = matrix.Set(samples->worldToProjector[i], time) && origin.Set(samples->origin[i], time);
-        }
-        const PXR_NS::UsdShadeInput window = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4) : PXR_NS::UsdShadeInput();
-        ok = bool(window);
-        if (ok && windows->frames.empty()) {
-            ok = window.Set(windows->transforms.front());
-        }
-        for (std::size_t i = 0; ok && (i < windows->frames.size()); ++i) {
-            ok = window.Set(windows->transforms[i], SceneNodeAuthoring::frameToTimeCode(edit, windows->frames[i]));
         }
         if (ok && samples->missing) {
             const PXR_NS::UsdPrim prim = shader.GetPrim();
@@ -739,10 +635,30 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         }
         const PXR_NS::UsdShadeInput colorSpace = ok ? texture.CreateInput(PXR_NS::TfToken("sourceColorSpace"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeInput();
         ok = colorSpace && colorSpace.Set(PXR_NS::TfToken("auto"));
+        // The texture holds the image's window, the format and the data beyond it; plateTransform
+        // maps the format inside it, so overscan projects when Crop is off.
+        const PXR_NS::UsdShadeInput window = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4) : PXR_NS::UsdShadeInput();
+        ok = bool(window);
         if (ok && hasPlate) {
             const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, plate);
             const PXR_NS::UsdShadeInput file = texture.CreateInput(PXR_NS::TfToken("file"), PXR_NS::SdfValueTypeNames->Asset);
             ok = file && SceneNodeAuthoring::authorValue(file.GetAttr(), edit, live.varying, [&live](double frame) { return PXR_NS::SdfAssetPath(live.getUri(frame)); });
+            bool windowVaries = false;
+            for (std::size_t i = 1; i < live.windows.size(); ++i) {
+                if ((live.windows[i].format != live.windows[0].format) || (live.windows[i].window != live.windows[0].window)) {
+                    windowVaries = true;
+                    break;
+                }
+            }
+            ok = ok && SceneNodeAuthoring::authorValue(window.GetAttr(), edit, windowVaries, [&live](double frame) {
+                     double scale[2];
+                     double translation[2];
+                     live.getWindow(frame).getUvTransform(scale, translation);
+
+                     return PXR_NS::GfVec4f((float)scale[0], (float)scale[1], (float)translation[0], (float)translation[1]);
+                 });
+        } else if (ok) {
+            ok = window.Set(PXR_NS::GfVec4f(1.f, 1.f, 0.f, 0.f));
         }
         const PXR_NS::UsdShadeOutput rgba = ok ? texture.CreateOutput(PXR_NS::TfToken("rgba"), PXR_NS::SdfValueTypeNames->Float4) : PXR_NS::UsdShadeOutput();
         const PXR_NS::UsdShadeInput plateInput = rgba ? shader.CreateInput(PXR_NS::TfToken("plate"), PXR_NS::SdfValueTypeNames->Float4) : PXR_NS::UsdShadeInput();

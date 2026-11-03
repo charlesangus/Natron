@@ -266,30 +266,6 @@ TEST_F(LiveTextureTest, AVaryingSourceHasOneUriPerHeldFrame)
     EXPECT_EQ(0u, source.getUri(1.).find("natron://Read1/rgba?v="));
 }
 
-// A texture over the region of definition is another texture than the same image over its format:
-// its URI, and so its store entry and the consumer's layer key, differ.
-TEST_F(LiveTextureTest, TheDefinitionVariantHasItsOwnUri)
-{
-    LiveTextureSource source;
-    source.nodeName = "Read1";
-    source.layer = "rgba";
-    source.contentHash = 42;
-    source.firstFrame = 1.;
-    source.lastFrame = 10.;
-    const std::string overFormat = source.getUri(1.);
-    EXPECT_EQ(std::string::npos, overFormat.find("cover="));
-
-    source.coverage = eLiveTextureCoverageDefinition;
-    const std::string overDefinition = source.getUri(1.);
-    EXPECT_NE(overFormat, overDefinition);
-    EXPECT_EQ(overFormat + kLiveTextureCoverDefinitionQuery, overDefinition);
-    EXPECT_EQ(LiveTextureSource::makeUri("Read1", "rgba", 42, eLiveTextureCoverageDefinition), overDefinition);
-
-    source.varying = true;
-    EXPECT_NE(source.getUri(1.), source.getUri(2.));
-    EXPECT_NE(std::string::npos, source.getUri(2.).find(kLiveTextureCoverDefinitionQuery));
-}
-
 TEST_F(LiveTextureTest, PrepareRendersAMissingTextureOnce)
 {
     NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
@@ -505,64 +481,6 @@ TEST_F(LiveTextureTest, TheWholeDataWindowIsHeld)
     RectI window;
     ASSERT_TRUE(getNodeImageWindow(constant, 1., ViewIdx(0), &formatRect, &window));
     EXPECT_EQ(RectI(format.x1 - 10 * format.width(), format.y1, format.x1 + 10 * format.width(), format.y1 + format.height() / 2 + 10 * format.height()), window);
-}
-
-// The same image both ways, as a material and a projection of it would ask: two store entries, one
-// the size of the format, the other the size of the region of definition with its overscan.
-TEST_F(LiveTextureTest, TheTwoVariantsAreStoredApartAndSizedToTheirExtent)
-{
-    Format format;
-    getApp()->getProject()->getProjectDefaultFormat(&format);
-    ASSERT_GT(format.width(), 8);
-    ASSERT_GT(format.height(), 8);
-
-    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-    ASSERT_TRUE(bool(constant));
-    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
-    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName(kNativeGeneratorParamExtent).get());
-    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamBottomLeft).get());
-    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamSize).get());
-    ASSERT_TRUE(color && extent && bottomLeft && size);
-    color->setValue(0.5, ViewSpec::all(), 0);
-    color->setValue(0.25, ViewSpec::all(), 1);
-    color->setValue(0.75, ViewSpec::all(), 2);
-    color->setValue(1., ViewSpec::all(), 3);
-    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
-    const int margin = 4;
-    bottomLeft->setValue(format.x1 - margin, ViewSpec::all(), 0);
-    bottomLeft->setValue(format.y1 - 2 * margin, ViewSpec::all(), 1);
-    size->setValue(format.width() + 2 * margin, ViewSpec::all(), 0);
-    size->setValue(format.height() + 4 * margin, ViewSpec::all(), 1);
-
-    LiveTextureSource overFormat;
-    overFormat.node = constant;
-    overFormat.nodeName = constant->getFullyQualifiedName();
-    overFormat.layer = "rgba";
-    overFormat.contentHash = constant->getEffectInstance()->getHash();
-    overFormat.firstFrame = 1.;
-    overFormat.lastFrame = 1.;
-    LiveTextureSource overDefinition = overFormat;
-    overDefinition.coverage = eLiveTextureCoverageDefinition;
-    LiveTextureSourceList sources;
-    sources.push_back(overFormat);
-    sources.push_back(overDefinition);
-
-    ASSERT_EQ(0, prepareOffMainThread(sources, 1.)) << LiveTextureStore::instance().getFailure(overDefinition.getUri(1.));
-    const LiveTextureBufferConstPtr formatBuffer = LiveTextureStore::instance().find(overFormat.getUri(1.));
-    const LiveTextureBufferConstPtr definitionBuffer = LiveTextureStore::instance().find(overDefinition.getUri(1.));
-    ASSERT_TRUE(formatBuffer && definitionBuffer);
-    EXPECT_NE(formatBuffer, definitionBuffer);
-    EXPECT_EQ(format.width(), formatBuffer->getWidth());
-    EXPECT_EQ(format.height(), formatBuffer->getHeight());
-    EXPECT_EQ(format.width() + 2 * margin, definitionBuffer->getWidth());
-    EXPECT_EQ(format.height() + 4 * margin, definitionBuffer->getHeight());
-
-    // The overscan corner is the image's colour: the definition variant leaves nothing out.
-    const float* corner = definitionBuffer->getRow(0);
-    EXPECT_NEAR(0.5, corner[0], 1e-5);
-    EXPECT_NEAR(0.25, corner[1], 1e-5);
-    EXPECT_NEAR(0.75, corner[2], 1e-5);
-    EXPECT_NEAR(1., corner[3], 1e-5);
 }
 
 TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)

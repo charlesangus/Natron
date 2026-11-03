@@ -87,38 +87,6 @@ isMainThread()
     return app && (QThread::currentThread() == app->thread());
 }
 
-// A generator's infinite region becomes the project format.
-void
-clipInfiniteSides(const NodePtr& node,
-                  RectD* rod)
-{
-    if (!rod->isInfinite()) {
-        return;
-    }
-    Format format;
-    node->getApp()->getProject()->getProjectDefaultFormat(&format);
-    const RectD formatRect = format.toCanonicalFormat();
-    if (rod->x1 <= kOfxFlagInfiniteMin) {
-        rod->x1 = formatRect.x1;
-    }
-    if (rod->y1 <= kOfxFlagInfiniteMin) {
-        rod->y1 = formatRect.y1;
-    }
-    if (rod->x2 >= kOfxFlagInfiniteMax) {
-        rod->x2 = formatRect.x2;
-    }
-    if (rod->y2 >= kOfxFlagInfiniteMax) {
-        rod->y2 = formatRect.y2;
-    }
-}
-
-// What renderLayer() renders over: pixelRect, window, or the whole region of definition.
-enum RenderExtentEnum {
-    eRenderExtentPixelRect,
-    eRenderExtentWindow,
-    eRenderExtentDefinition,
-};
-
 bool
 renderLayer(const NodePtr& node,
             const AbortableRenderInfoPtr& abortInfo,
@@ -127,7 +95,6 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
-            RenderExtentEnum extent,
             const RectI* window,
             RectI* roi,
             ImagePtr* image)
@@ -156,7 +123,7 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    if (extent == eRenderExtentWindow) {
+    if (window) {
         // Clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
         const RectD clipped = rod.intersect(Format(*window, par).toCanonicalFormat());
         *roi = clipped.isNull() ? RectI() : clipped.toPixelEnclosing(mipmapLevel, par).intersect(*window);
@@ -166,9 +133,6 @@ renderLayer(const NodePtr& node,
 
             return true;
         }
-    } else if (extent == eRenderExtentDefinition) {
-        clipInfiniteSides(node, &rod);
-        *roi = rod.toPixelEnclosing(mipmapLevel, par);
     } else {
         *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     }
@@ -222,13 +186,12 @@ renderNodeImageImpl(const NodePtr& node,
                     unsigned int mipmapLevel,
                     const RectI& pixelRect,
                     const ImageLayerDesc& layer,
-                    RenderExtentEnum extent,
                     const RectI* window,
                     RectI* renderedRect,
                     bool* rendered)
 {
     *rendered = false;
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || ((extent == eRenderExtentPixelRect) && pixelRect.isNull())) {
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!window && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -253,7 +216,7 @@ renderNodeImageImpl(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, extent, window, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -283,7 +246,7 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, eRenderExtentPixelRect, nullptr, renderedRect, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, &rendered);
 }
 
 bool
@@ -340,45 +303,9 @@ renderNodeImageOverWindow(const NodePtr& node,
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, eRenderExtentWindow, &window, renderedRect, &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, &rendered);
 
     return rendered;
-}
-
-ImagePtr
-renderNodeImageOverDefinition(const NodePtr& node,
-                              double time,
-                              ViewIdx view,
-                              const ImageLayerDesc& layer,
-                              RectI* renderedRect)
-{
-    bool rendered;
-
-    return renderNodeImageImpl(node, time, view, 0, RectI(), layer, eRenderExtentDefinition, nullptr, renderedRect, &rendered);
-}
-
-bool
-getNodeDefinitionPixelRect(const NodePtr& node,
-                           double time,
-                           ViewIdx view,
-                           RectI* rect)
-{
-    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-
-    if (!effect) {
-        return false;
-    }
-    RectD rod;
-    bool isProjectFormat = false;
-    if (effect->getRegionOfDefinition_public(effect->getHash(), time, RenderScale::identity, view, &rod, &isProjectFormat) != eStatusOK) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = effect->getMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
-    clipInfiniteSides(node, &rod);
-    *rect = rod.toPixelEnclosing(0, (par > 0.) ? par : 1.);
-
-    return !rect->isNull();
 }
 
 bool

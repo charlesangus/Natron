@@ -80,26 +80,6 @@ bool renderNodeImageOverWindow(const NodePtr& node,
                                RectI* renderedRect);
 
 /**
- * @brief As renderNodeImage(), at full scale over the whole region of definition, overscan
- * included, with an infinite side clipped to the project format. renderedRect receives the region.
- **/
-ImagePtr renderNodeImageOverDefinition(const NodePtr& node,
-                                       double time,
-                                       ViewIdx view,
-                                       const ImageLayerDesc& layer,
-                                       RectI* renderedRect);
-
-/**
- * @brief The pixel rectangle at full scale renderNodeImageOverDefinition() renders node over at
- * time, without rendering: its region of definition, an infinite side clipped to the project
- * format. False when the region cannot be computed or is empty. For use outside a render.
- **/
-bool getNodeDefinitionPixelRect(const NodePtr& node,
-                                double time,
-                                ViewIdx view,
-                                RectI* rect);
-
-/**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on
  * the calling thread, and writes the mean of every rendered pixel of layer to rgba. Asking for the
  * time, view, scale and layer the viewer last rendered makes this a cache lookup in the usual case.

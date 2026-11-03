@@ -117,35 +117,25 @@ renderSource(const LiveTextureSource& source,
         return LiveTextureBufferConstPtr();
     }
     // SceneNodeAuthoring::getLiveTextureSource() already took a disabled node's pass-through input.
-    // Over the definition, the texture is exactly the rendered region. Otherwise it holds the whole
-    // window its layer authored texture coordinates for: the format with the overscan around it,
-    // transparent black where the image does not reach.
+    // The texture holds the whole window its layer authored texture coordinates for: the format
+    // with the overscan around it, transparent black where the image does not reach.
     char frameText[32];
     std::snprintf(frameText, sizeof(frameText), "%g", frame);
-    RectI extent;
-    RectI rect;
-    ImagePtr image;
-    bool rendered;
-    if (source.coverage == eLiveTextureCoverageDefinition) {
-        image = renderNodeImageOverDefinition(node, frame, view, ImageLayerDesc::getRGBAComponents(), &rect);
-        rendered = bool(image);
-        extent = rect;
-    } else {
-        LiveTextureWindow window = source.getWindow(frame);
-        if (window.isNull() && !getNodeImageWindow(node, frame, view, &window.format, &window.window)) {
-            *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
-
-            return LiveTextureBufferConstPtr();
-        }
-        extent = window.window;
-        rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), extent, &image, &rect);
-    }
-    if (!rendered || extent.isNull() || (image && rect.isNull())) {
+    LiveTextureWindow window = source.getWindow(frame);
+    if (window.isNull() && !getNodeImageWindow(node, frame, view, &window.format, &window.window)) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
         return LiveTextureBufferConstPtr();
     }
-    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(extent.width(), extent.height());
+    RectI rect;
+    ImagePtr image;
+    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect);
+    if (!rendered || (image && rect.isNull())) {
+        *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
+
+        return LiveTextureBufferConstPtr();
+    }
+    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(window.window.width(), window.window.height());
     if (!buffer) {
         *failure = "the image of " + node->getFullyQualifiedName() + " at frame " + frameText + " is too large to hold";
 
@@ -157,7 +147,7 @@ renderSource(const LiveTextureSource& source,
     const int numComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image.get());
     for (int y = rect.y1; y < rect.y2; ++y) {
-        float* row = buffer->getRow(y - extent.y1) + std::size_t(rect.x1 - extent.x1) * 4;
+        float* row = buffer->getRow(y - window.window.y1) + std::size_t(rect.x1 - window.window.x1) * 4;
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
             copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, row);
@@ -258,13 +248,13 @@ std::string
 LiveTextureSource::getUri(double frame) const
 {
     if (!varying) {
-        return makeUri(nodeName, layer, contentHash, coverage);
+        return makeUri(nodeName, layer, contentHash);
     }
     ContentHasher h;
     h.appendU64(contentHash);
     h.appendDouble(getSourceFrame(frame));
 
-    return makeUri(nodeName, layer, h.finalize(), coverage);
+    return makeUri(nodeName, layer, h.finalize());
 }
 
 LiveTextureWindow
@@ -298,18 +288,12 @@ LiveTextureWindow::getUvTransform(double scale[2],
 std::string
 LiveTextureSource::makeUri(const std::string& nodeName,
                            const std::string& layer,
-                           U64 version,
-                           LiveTextureCoverageEnum coverage)
+                           U64 version)
 {
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)version);
 
-    std::string uri = std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex;
-    if (coverage == eLiveTextureCoverageDefinition) {
-        uri += kLiveTextureCoverDefinitionQuery;
-    }
-
-    return uri;
+    return std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex;
 }
 
 LiveTextureStore::LiveTextureStore()

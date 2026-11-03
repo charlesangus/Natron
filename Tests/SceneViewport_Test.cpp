@@ -149,8 +149,8 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
 }
 
 // /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
-// it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent
-// premultiplied red. The projector's frame covers the card's left half, x -2..0; Crop on and
+// it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent red
+// in straight colour, as live textures hold it, which the shader premultiplies to (0.6, 0, 0, 0.5). The projector's frame covers the card's left half, x -2..0; Crop on and
 // Outside transparent leave the right half undrawn. /World/Backdrop, an opaque 6-unit square at
 // z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
 // card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
@@ -218,7 +218,7 @@ projectedCardScene(std::string* error)
     for (const char* name : { "wrapS", "wrapT" }) {
         texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token).Set(PXR_NS::TfToken("clamp"));
     }
-    texture.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(0.6f, 0.f, 0.f, 0.5f));
+    texture.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(1.2f, 0.f, 0.f, 0.5f));
     shader.CreateInput(PXR_NS::TfToken("plate"), PXR_NS::SdfValueTypeNames->Float4)
         .ConnectToSource(texture.CreateOutput(PXR_NS::TfToken("rgba"), PXR_NS::SdfValueTypeNames->Float4));
 

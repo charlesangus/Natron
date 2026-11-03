@@ -45,10 +45,8 @@
 
 // Free of USD: the store is filled by Natron renders, which know nothing of pxr.
 
-// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>, with
-// "&cover=definition" appended for a texture covering the region of definition.
+// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>.
 #define kLiveTextureScheme "natron"
-#define kLiveTextureCoverDefinitionQuery "&cover=definition"
 
 NATRON_NAMESPACE_ENTER
 
@@ -111,16 +109,6 @@ private:
 typedef std::shared_ptr<const LiveTextureBuffer> LiveTextureBufferConstPtr;
 
 /**
- * @brief What a live texture holds. Materials' textures hold their window (LiveTextureWindow), texture
- * coordinates 0 to 1 spanning the image's format. A camera projection's texture is exactly the region
- * of definition, and the projection maps the format inside it.
- **/
-enum LiveTextureCoverageEnum {
-    eLiveTextureCoverageFormat,
-    eLiveTextureCoverageDefinition,
-};
-
-/**
  * @brief Where a live texture lies, in the full-scale pixel coordinates of its source's image: the
  * texture holds window, and texture coordinates 0 to 1 span format, so the overscan around the
  * format is read at coordinates outside 0 to 1. Null when not known.
@@ -157,7 +145,6 @@ struct LiveTextureSource {
     U64 contentHash = 0;
     // Whether the image changes over time; a static one has one URI at every frame.
     bool varying = false;
-    LiveTextureCoverageEnum coverage = eLiveTextureCoverageFormat;
     // The frames the layer authors samples at, as SceneNodeAuthoring::getSampleFrames does.
     double firstFrame = 0.;
     double lastFrame = 0.;
@@ -175,8 +162,7 @@ struct LiveTextureSource {
 
     static std::string makeUri(const std::string& nodeName,
                                const std::string& layer,
-                               U64 version,
-                               LiveTextureCoverageEnum coverage = eLiveTextureCoverageFormat);
+                               U64 version);
 };
 
 typedef std::vector<LiveTextureSource> LiveTextureSourceList;

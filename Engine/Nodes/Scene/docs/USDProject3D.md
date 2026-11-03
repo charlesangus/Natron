@@ -7,9 +7,12 @@ scene is bound (a collection binding included). The projection is per fragment a
 correct, so coarse geometry does not warp it. It is a Storm (glslfx) surface: it
 shows in the Viewer's 3D view and in USDRender; USDWrite bakes it to UVs and a
 `UsdPreviewSurface` for other renderers. The surface is unlit and emissive: it shows
-the image as it is, whatever lights the scene has. It is alpha-blended over what is
-behind it, so where the image is transparent the geometry and scene behind show
-through. The image is taken as premultiplied, as Natron's images are.
+the image as it is, whatever lights the scene has. The image's alpha is its
+opacity, as with USDEmissiveMaterial's Use Alpha on: the surface shows the image as
+it would be composited over what is behind it, so where the image is transparent
+the geometry and scene behind show through. Outside the frame with Crop on and
+beyond the image's data it is transparent. A transparent surface is drawn in the
+renderer's translucent pass, which writes no depth or prim id.
 
 The camera comes from the Camera input, read where it is wired, at Camera Path.
 Camera lists that scene's cameras and picks Camera Path from them; Camera Path
@@ -21,10 +24,9 @@ prim path. The camera is stored as values
 (a matrix per frame when it moves), so the material keeps projecting where the
 camera was wherever it is grafted.
 
-The image's format fills the camera's frame. Unlike a USDMaterial texture, which
-spans only the format, the projection's texture holds the whole region of
-definition: data beyond the format (overscan) shows past the frame's edges when
-Crop is off.
+The image's format fills the camera's frame. The projection's texture, like a
+material's live texture, holds the format and the image's data beyond it: data
+beyond the format (overscan) shows past the frame's edges when Crop is off.
 
 Controls:
 

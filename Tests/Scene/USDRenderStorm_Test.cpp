@@ -1538,8 +1538,9 @@ TEST_F(USDRenderStormTest, StormProject3DWorld)
     renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DWorld);
 }
 
-// The projection is unlit and alpha-blended: a half-transparent premultiplied plate shows as itself
-// over the empty background, whether or not the scene has a light.
+// The projection is unlit and alpha-blended: a half-transparent premultiplied plate, held straight
+// in its live texture, shows as itself over the empty background, whether or not the scene has a
+// light.
 TEST_F(USDRenderStormTest, StormProject3DBlendsItsAlphaUnlit)
 {
     if (skipWithoutGL()) {

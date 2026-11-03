@@ -328,13 +328,13 @@ TEST_F(USDProject3DTest, TheImageIsALiveTextureTheShaderSamples)
     ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("file")).Get(&file));
     const std::string prefix = std::string(kLiveTextureScheme) + "://" + plate->getFullyQualifiedName() + "/rgba?v=";
     EXPECT_EQ(0u, file.GetAssetPath().rfind(prefix, 0)) << file.GetAssetPath();
-    EXPECT_NE(std::string::npos, file.GetAssetPath().find(kLiveTextureCoverDefinitionQuery)) << file.GetAssetPath();
 
-    // Recorded for consumers to render, over the region of definition rather than the format.
+    // Recorded for consumers to render, over the window the plate transform was authored for.
     const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
     ASSERT_EQ((std::size_t)1, sources.size());
     EXPECT_EQ(file.GetAssetPath(), sources[0].getUri(1.));
-    EXPECT_EQ(eLiveTextureCoverageDefinition, sources[0].coverage);
+    ASSERT_EQ((std::size_t)1, sources[0].windows.size());
+    EXPECT_FALSE(sources[0].windows[0].isNull());
 }
 
 TEST_F(USDProject3DTest, ACardWithTheProjectionAsItsMaterialIsBoundToIt)
@@ -619,8 +619,8 @@ TEST_F(USDProject3DTest, AnImageWithoutOverscanFillsTheTexture)
     EXPECT_EQ((int)USDProject3D::eProjectionSpaceWorld, getInt(shader, kUSDProject3DInputProjectionSpace));
 }
 
-// The live texture covers the image's region of definition; the shader maps the frame to the format
-// inside it, so overscan neither shrinks nor shifts the projection.
+// The live texture covers the image's format and its data beyond it; the shader maps the frame to
+// the format inside it, so overscan neither shrinks nor shifts the projection.
 TEST_F(USDProject3DTest, TheFormatOfAnImageWithOverscanFillsTheFrame)
 {
     createRig();
@@ -647,8 +647,33 @@ TEST_F(USDProject3DTest, TheFormatOfAnImageWithOverscanFillsTheFrame)
     EXPECT_NEAR(2200.f / 2400.f, 1.f * transform[0] + transform[2], 1e-6f);
 }
 
+// An image smaller than its format still fills the frame with its format: the texture spans the
+// format, transparent where the image does not reach, so the projection is not stretched.
+TEST_F(USDProject3DTest, AnImageSmallerThanItsFormatKeepsTheFormatInTheFrame)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(plate, kNativeGeneratorParamExtent)->setValue((int)ExtentKnobs::eExtentSize);
+    KnobDouble* bottomLeft = getKnob<KnobDouble>(plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = getKnob<KnobDouble>(plate, kNativeGeneratorParamSize);
+    ASSERT_TRUE(bottomLeft && size);
+    bottomLeft->setValue(500., ViewSpec::all(), 0);
+    bottomLeft->setValue(250., ViewSpec::all(), 1);
+    size->setValue(1000., ViewSpec::all(), 0);
+    size->setValue(500., ViewSpec::all(), 1);
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(projector);
+    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    const PXR_NS::GfVec4f transform = getPlateTransform(shader);
+    EXPECT_NEAR(1.f, transform[0], 1e-6f);
+    EXPECT_NEAR(1.f, transform[1], 1e-6f);
+    EXPECT_NEAR(0.f, transform[2], 1e-6f);
+    EXPECT_NEAR(0.f, transform[3], 1e-6f);
+}
+
 // With Crop off the overscan beyond the frame projects: the texture the projection samples holds
-// the whole region of definition, so frame coordinates below 0 still find the image there.
+// the whole data window, so frame coordinates below 0 still find the image there.
 TEST_F(USDProject3DTest, WithCropOffTheOverscanIsInTheProjectedTexture)
 {
     createRig();

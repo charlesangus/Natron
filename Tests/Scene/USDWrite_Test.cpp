@@ -815,7 +815,7 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
     // Facing the camera, the card's UVs are exact: no warning.
     EXPECT_FALSE(writer->hasPersistentMessage()) << messageOf(writer).toStdString();
-    EXPECT_EQ(QStringList() << QString::fromUtf8("Plate1_rgba_definition.exr"), fileNames(tmp.path() + QString::fromUtf8("/scene_textures")));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("Plate1_rgba.exr"), fileNames(tmp.path() + QString::fromUtf8("/scene_textures")));
 
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
     ASSERT_TRUE(bool(stage));
@@ -853,9 +853,9 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     EXPECT_EQ(std::string("rgb"), sourceName.GetString());
     PXR_NS::SdfAssetPath file;
     ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetInput(PXR_NS::TfToken("file")).Get(&file));
-    EXPECT_EQ(std::string("./scene_textures/Plate1_rgba_definition.exr"), file.GetAssetPath());
-    // Unlit and alpha-blended, as the live projection is: the plate's alpha is the opacity and
-    // nothing but the emission shows.
+    EXPECT_EQ(std::string("./scene_textures/Plate1_rgba.exr"), file.GetAssetPath());
+    // Unlit and alpha-blended, as the live projection is: the plate's straight colour is the
+    // emission, its alpha the opacity in the presence mode that multiplies the two.
     const PXR_NS::SdfPath texturePath = source.GetPath();
     ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).GetConnectedSource(&source, &sourceName, &sourceType));
     EXPECT_EQ(texturePath, source.GetPath());
@@ -863,7 +863,7 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     EXPECT_FALSE(bool(surface.GetInput(PXR_NS::TfToken("opacityThreshold"))));
     PXR_NS::TfToken opacityMode;
     ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&opacityMode));
-    EXPECT_EQ(std::string("transparent"), opacityMode.GetString());
+    EXPECT_EQ(std::string("presence"), opacityMode.GetString());
     PXR_NS::GfVec3f color(1.f);
     ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("diffuseColor")).Get(&color));
     EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
@@ -997,6 +997,6 @@ TEST_F(USDWriteProjectionTest, AnOverscanPlateBakesUVsSpanningItsFormat)
     EXPECT_NEAR(100.f / 1200.f, bounds.first[1], 1e-4f);
     EXPECT_NEAR(2200.f / 2400.f, bounds.second[0], 1e-4f);
     EXPECT_NEAR(1100.f / 1200.f, bounds.second[1], 1e-4f);
-    // The exported texture holds the whole region of definition, overscan included.
-    EXPECT_EQ(std::make_pair(2400, 1200), sizeOf(tmp.path() + QString::fromUtf8("/scene_textures/Plate1_rgba_definition.exr")));
+    // The exported texture holds the whole data window, overscan included.
+    EXPECT_EQ(std::make_pair(2400, 1200), sizeOf(tmp.path() + QString::fromUtf8("/scene_textures/Plate1_rgba.exr")));
 }

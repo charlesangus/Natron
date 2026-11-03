@@ -630,8 +630,7 @@ fileNameOf(const std::string& name)
 /**
  * @brief Every URI sources author over their frames, keyed to the file in directory it is
  * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
- * the frame padded to 4 digits. A texture covering the region of definition, as projections use, is
- * <node>_<layer>_definition, so it never overwrites the same image over its format.
+ * the frame padded to 4 digits.
  **/
 std::map<std::string, LiveTextureExport>
 planLiveTextureExports(const LiveTextureSourceList& sources,
@@ -640,8 +639,7 @@ planLiveTextureExports(const LiveTextureSourceList& sources,
     std::map<std::string, LiveTextureExport> exports;
 
     for (const LiveTextureSource& source : sources) {
-        const QString suffix = (source.coverage == eLiveTextureCoverageDefinition) ? QString::fromUtf8("_definition") : QString();
-        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer) + suffix);
+        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer));
         const double first = std::ceil(source.firstFrame);
         const double last = source.varying ? std::max(first, std::floor(source.lastFrame)) : first;
         for (double frame = first; frame <= last; frame += 1.) {
@@ -878,8 +876,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         // The plate's texture, already reading st, feeds an unlit preview surface in place of the
         // projection shader: no diffuse, and the specular workflow with a black specular colour,
         // which unlike the metallic workflow's dielectric reflects nothing, so only the emission
-        // shows. The plate is premultiplied and the transparent opacity mode attenuates only the
-        // diffuse, so emission over opacity is the live projection's blend.
+        // shows. The plate holds straight colour, which the presence opacity mode multiplies by the
+        // plate's alpha as the live projection does.
         const PXR_NS::UsdShadeMaterial material(out->OverridePrim(materialPath));
         PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(out, materialPath.AppendChild(PXR_NS::TfToken("BakedSurface")));
         bool ok = material && surface && surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
@@ -889,13 +887,11 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const PXR_NS::UsdShadeInput roughness = ok ? surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float) : PXR_NS::UsdShadeInput();
         const PXR_NS::UsdShadeInput specularWorkflow = ok ? surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int) : PXR_NS::UsdShadeInput();
         const PXR_NS::UsdShadeInput specularColor = ok ? surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
-        const PXR_NS::UsdShadeInput opacityMode = ok ? surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeInput();
         ok = diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f)) && emissive
             && metallic && metallic.Set(0.f)
             && roughness && roughness.Set(1.f)
             && specularWorkflow && specularWorkflow.Set(1)
-            && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f))
-            && opacityMode && opacityMode.Set(PXR_NS::TfToken("transparent"));
+            && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f));
         PXR_NS::UsdShadeConnectableAPI plateSource;
         PXR_NS::TfToken plateOutput;
         PXR_NS::UsdShadeAttributeType plateType;
@@ -903,9 +899,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         if (ok && plate && plate.GetConnectedSource(&plateSource, &plateOutput, &plateType)) {
             PXR_NS::UsdShadeShader texture(out->OverridePrim(plateSource.GetPath()));
             const PXR_NS::UsdShadeOutput rgb = texture ? texture.CreateOutput(PXR_NS::TfToken("rgb"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeOutput();
-            const PXR_NS::UsdShadeOutput alpha = texture ? texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float) : PXR_NS::UsdShadeOutput();
-            const PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
-            ok = rgb && alpha && opacity && emissive.ConnectToSource(rgb) && opacity.ConnectToSource(alpha);
+            ok = rgb && emissive.ConnectToSource(rgb) && SceneNodeAuthoring::connectOpacityToAlpha(surface, texture);
         } else if (ok) {
             ok = emissive.Set(PXR_NS::GfVec3f(0.f));
         }

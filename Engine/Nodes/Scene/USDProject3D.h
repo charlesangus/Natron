@@ -170,15 +170,8 @@ private:
     // The Image input's format as a width over height in square pixels, the project's without one.
     double getPlateAspect(double time) const;
 
-    // Where source's format lies in its live texture at time, the texture covering the image's
-    // region of definition: texture coordinates are the frame's 0..1 coordinates times
-    // (transform[0], transform[1]) plus (transform[2], transform[3]). The identity without an image
-    // or when its region is unknown.
-    void getPlateTransform(const NodePtr& source, double time, double transform[4]) const;
-
     // Defined where USD is included.
     struct CameraSamples;
-    struct PlateWindows;
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 

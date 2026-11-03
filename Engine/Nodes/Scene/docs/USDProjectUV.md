@@ -6,7 +6,7 @@ The pattern is a list of absolute prim paths separated by spaces, whose names ma
 use `*` and `?`, as in USDEditTransform. The result is a `faceVarying` primvar
 named by Primvar Name (`st` by default, which `UsdPreviewSurface` textures read),
 indexed per face vertex, authored as an over on each mesh. Texture it with a
-USDMaterial. The UVs are per vertex, so a projection onto coarse geometry warps
+USDEmissiveMaterial, unlit as USDProject3D is, or a USDMaterial. The UVs are per vertex, so a projection onto coarse geometry warps
 between vertices; subdivide the mesh where that shows.
 
 The camera comes from the Camera input, read where it is wired, or from the Scene

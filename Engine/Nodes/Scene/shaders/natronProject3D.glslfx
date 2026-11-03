@@ -4,7 +4,8 @@
 // Natron's camera projection surface for Storm: the plate, sampled where the
 // fragment's world position, or in Geometry space its position on the object,
 // projects through a camera, shown unlit and alpha-blended over what is behind
-// it. The plate is premultiplied, as Natron's images are.
+// it. The plate holds straight colour, as live textures do; the surface returns
+// it premultiplied, which the translucent pass blends.
 //
 
 -- configuration
@@ -15,7 +16,7 @@
     "parameters": {
         "plate": {
             "default": [0.0, 0.0, 0.0, 1.0],
-            "documentation": "The projected image, premultiplied. Connect a texture's rgba output."
+            "documentation": "The projected image, straight colour. Connect a texture's rgba output."
         },
         "worldToProjector": {
             "default": [1.0, 0.0, 0.0, 0.0,
@@ -26,7 +27,7 @@
         },
         "plateTransform": {
             "default": [1.0, 1.0, 0.0, 0.0],
-            "documentation": "Where the image's format lies in the plate texture, which covers its region of definition: texture coordinates are the frame's 0..1 coordinates times xy plus zw."
+            "documentation": "Where the image's format lies in the plate texture, which covers the format and the data window around it: texture coordinates are the frame's 0..1 coordinates times xy plus zw."
         },
         "projectionSpace": {
             "default": 0,
@@ -115,8 +116,7 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     vec4 Preference = worldToReference * Pworld;
 
     vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
-    // 0..1 across the format; the texture covers the region of definition, which may reach
-    // beyond the format or fall short of it.
+    // 0..1 across the format; the texture covers the format and the data window beyond it.
     vec2 frame = c.xy / ((c.w > 0.0) ? c.w : 1.0);
     vec4 window = HdGet_plateTransform();
     vec2 uv = frame * window.xy + window.zw;
@@ -155,5 +155,5 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
         return ApplyColorOverrides(vec4(0.0));
     }
 
-    return ApplyColorOverrides(plate);
+    return ApplyColorOverrides(vec4(plate.rgb * plate.a, plate.a));
 }

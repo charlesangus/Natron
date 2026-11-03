@@ -62,7 +62,6 @@ const std::vector<KnobRow>&
 auditRows()
 {
     static const std::vector<KnobRow> rows = {
-        { kSplineWarpParamCookieCutInput, "Cookie Cut Input", kControls, { 0. } },
         { kSplineWarpParamCropToFormat, "Crop To Format", kControls, { 1. } },
         { kSplineWarpParamBoundaryBBox, "Boundary BBox", kControls, { 1. } },
         { kSplineWarpUIParamOutputWarped, "Output Warped", kControls, { 1. } },

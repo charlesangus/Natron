@@ -1046,8 +1046,8 @@ TEST_F(NativeSplineWarpGpuTest, OversizedFieldFallsBackToTheCpu)
 #endif
 }
 
-// Cookie Cut Input multiplies the Source by the cutter's mask in a pass before the resample.
-TEST_F(NativeSplineWarpGpuTest, CookieCutFrameMatchesTheCpu)
+// A cookie cutter leaves the Source as it is.
+TEST_F(NativeSplineWarpGpuTest, CookieCutterFrameMatchesTheCpu)
 {
     resetProject();
     NodePtr source = makeSource();
@@ -1060,10 +1060,7 @@ TEST_F(NativeSplineWarpGpuTest, CookieCutFrameMatchesTheCpu)
         BezierPtr cutter = makeQuad(ctx, 12., 8., 30.);
         ASSERT_TRUE(bool(cutter));
         ctx->setCookieCutter(cutter, true);
-        ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
-        expectWarpRunsOnTheGpu(source, warp, mesh ? "cookie cut, mesh" : "cookie cut, TPS");
-        ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 0. }));
-        expectWarpRunsOnTheGpu(source, warp, mesh ? "cookie cutter, input not cut, mesh" : "cookie cutter, input not cut, TPS");
+        expectWarpRunsOnTheGpu(source, warp, mesh ? "cookie cutter, mesh" : "cookie cutter, TPS");
     }
 }
 
@@ -1084,13 +1081,12 @@ TEST_F(NativeSplineWarpGpuTest, CropToFormatFrameMatchesTheCpu)
             expectWarpRunsOnTheGpu(source, warp, what.str());
         }
     }
-    // Cut as well: the cut pass reads only the cropped Source.
+    // With a cookie cutter as well.
     SplineWarpContextPtr ctx = contextOf(warp);
     ASSERT_TRUE(bool(ctx));
     BezierPtr cutter = makeRectangle(ctx, -6., -4., 40., 30.);
     ASSERT_TRUE(bool(cutter));
     ctx->setCookieCutter(cutter, true);
-    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
     ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 1. }));
-    expectWarpRunsOnTheGpu(source, warp, "crop and cookie cut");
+    expectWarpRunsOnTheGpu(source, warp, "crop and cookie cutter");
 }

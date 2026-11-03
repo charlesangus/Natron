@@ -7,12 +7,9 @@ import resamplecore;
 // the parameter block in wrapAux carries the settings, the field's window and table layout, the
 // inverse of a concatenated upstream matrix and the geometry of sampleBuf; fieldBuf holds the
 // tables SplineWarpField::getGpuTables() builds, after a table of the fields to average with
-// motion blur; sampleBuf holds the image sampled: the Source cropped to its format, the Source
-// cut by the cookie mask, or the cookie mask itself. SplineWarpGpuParams in
+// motion blur; sampleBuf holds the image sampled: the Source cropped to its format, or the
+// cookie mask itself. SplineWarpGpuParams in
 // Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h mirrors the block's words.
-//
-// With kSplineWarpCutPass the dispatch instead writes the Source times the cookie mask in
-// sampleBuf, the image a later dispatch samples.
 
 [[vk::binding(4, 0)]] StructuredBuffer<uint> fieldBuf;
 [[vk::binding(5, 0)]] StructuredBuffer<float> sampleBuf;
@@ -24,7 +21,6 @@ static const uint kSplineWarpSample = 8;
 static const uint kSplineWarpField = 16;
 static const uint kSplineWarpFeathers = 32;
 static const uint kSplineWarpMatrix = 64;
-static const uint kSplineWarpCutPass = 128;
 
 // Where SplineWarp's mapRowThrough sends a coordinate the matrix maps behind the camera.
 static const float kOutsideCoord = -1e9;
@@ -270,8 +266,6 @@ struct SplineWarpOp : IPixelOp
 
     float4 apply(float4 v, int2 xy)
     {
-        if ((s.flags & kSplineWarpCutPass) != 0)
-            return wrapReadSource(xy) * readSample(s, xy).w;
         if (s.subFrames == 0)
             return splineWarpSample(s, xy);
         // Summed in sub-frame order then divided, as SplineWarp::renderOp does.

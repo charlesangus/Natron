@@ -85,8 +85,6 @@ inline constexpr uint32_t kSplineWarpGpuSample = 8;
 inline constexpr uint32_t kSplineWarpGpuField = 16;
 inline constexpr uint32_t kSplineWarpGpuFeathers = 32;
 inline constexpr uint32_t kSplineWarpGpuMatrix = 64;
-// The dispatch writes the Source times the cookie mask, which is the image sampled, instead.
-inline constexpr uint32_t kSplineWarpGpuCutPass = 128;
 
 // The image sampled: offset and stride in floats, bounds in pixels.
 inline void

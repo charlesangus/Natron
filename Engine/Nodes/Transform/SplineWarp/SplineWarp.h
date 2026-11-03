@@ -62,7 +62,6 @@
 #define kSplineWarpParamBBox "bbox"
 #define kSplineWarpParamMotionBlur "motionBlur"
 #define kSplineWarpParamShutter "shutter"
-#define kSplineWarpParamCookieCutInput "cookieCutInput"
 #define kSplineWarpParamOutputMask "outputMask"
 #define kSplineWarpParamCropToFormat "cropToFormat"
 
@@ -231,8 +230,6 @@ private:
         Resampler::ShutterOffsetEnum shutterOffset = Resampler::eShutterOffsetStart;
         double shutterCustomOffset = 0.;
         bool warped = true;
-        // cookieCutInput is on and some curve is an active cookie cutter.
-        bool cookieCut = false;
         // The Source's format in canonical coordinates, which the Source is sampled inside; null
         // when cropToFormat is off.
         RectD cropFormat;
@@ -377,7 +374,7 @@ private:
     SplineWarpCookieMaskConstPtr computeCookieMask(double time, const Settings& settings, const RenderScale& scale, double par);
     // Whether the outputMask channel names a plane this render is asked for.
     bool isOutputMaskPlane(const ImageLayerDesc& plane, double time, ViewIdx view) const;
-    // Enables cookieCutInput and outputMask while some curve is a cookie cutter.
+    // Enables outputMask while some curve is a cookie cutter.
     void updateCookieKnobsEnabled();
     // The Source's region of definition at full scale, null without a Source or when it fails.
     RectD getSourceBounds(double time, ViewIdx view);
@@ -431,7 +428,6 @@ private:
     KnobDoubleWPtr _linkAmount;
     KnobBoolWPtr _boundaryBBox;
     KnobDoubleWPtr _boundaryCurveResolution;
-    KnobBoolWPtr _cookieCutInput;
     KnobChannelSelectWPtr _outputMask;
     KnobBoolWPtr _cropToFormat;
     // While syncAmountKnobs() sets the amount knobs, which must not write back.

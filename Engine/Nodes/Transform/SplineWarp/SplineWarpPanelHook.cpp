@@ -74,8 +74,7 @@ SplineWarpPanelHook::getColumns() const
     columns[eColumnLinkedTo].header = tr("Linked To").toStdString();
     columns[eColumnLinkedTo].toolTip = tr("The other curve of the link the curve is in.").toStdString();
     columns[eColumnCookieCutter].header = tr("Cookie Cutter").toStdString();
-    columns[eColumnCookieCutter].toolTip = tr("Yes for a closed curve that cuts the Source to its shape (Cookie Cut Input) "
-                                              "and makes the Output Mask, whatever its role.")
+    columns[eColumnCookieCutter].toolTip = tr("Yes for a closed curve that makes the Output Mask, whatever its role.")
                                                .toStdString();
     columns[eColumnTransformLink].header = tr("Transform Link").toStdString();
     columns[eColumnTransformLink].toolTip = tr("The curve or layer whose transform the item takes in place of its own.").toStdString();

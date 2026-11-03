@@ -7,7 +7,7 @@ Rectangle, and a point tool that makes a curve of one point) and listed in the s
 
 The settings panel has three pages:
 
-- **Controls:** `amount`, `invert`, `layerAmount`, `linkAmount`, `cookieCutInput`, `outputMask`,
+- **Controls:** `amount`, `invert`, `layerAmount`, `linkAmount`, `outputMask`,
   `cropToFormat`, `boundaryBBox`, and the mask and mix every staged node has.
 - **Transform:** the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`,
   `skewx`, `skewy`, `skewOrder`, `center` and `extraMatrix`.
@@ -98,10 +98,8 @@ default 25) sets its quality: the field step is `fieldResolution` × 100 / `prev
 curves and boundaries are sampled the square root of that as coarsely, and the filter is Impulse.
 At the default the field is four times as coarse and the curves are sampled half as finely.
 
-**Cookie cutters:** with `cookieCutInput` on (default off), the Source is multiplied by the mask of
-the cookie cutter curves, at their source positions, before it is warped, so only what they hold
-is warped. `outputMask` (default `SplineWarpMask.A`) is the channel the same mask is written to,
-warped as the Source is; it can be None or a channel of a layer other than the colour layer.
+**Cookie cutters:** `outputMask` (default `SplineWarpMask.A`) is the channel the mask of the
+cookie cutter curves is written to, warped as the Source is; it can be None or a channel of a layer other than the colour layer.
 Both are disabled while no curve is a cookie cutter. A linked cookie cutter cuts with its source
 curve's shape.
 
@@ -122,7 +120,6 @@ handle where they overlap.
 ## Differences from Nuke
 
 - `amount`, `layerAmount` and `linkAmount` are Nuke's root warp, layer warp and pair warp.
-  `cookieCutInput` is Nuke's premultiply input, renamed so it is not taken for a premultiply knob.
 - `curveResolution` and `boundaryCurveResolution` are distances in pixels between samples (default
   4), not Nuke's detail levels.
 - `solver` defaults to Thin Plate Spline, close to Nuke's classic warping; Mesh, the triangle mesh

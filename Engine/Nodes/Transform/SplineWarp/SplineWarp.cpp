@@ -324,17 +324,6 @@ SplineWarp::initializeKnobs()
     page->addKnob(linkAmount);
     _linkAmount = linkAmount;
 
-    KnobBoolPtr cookieCutInput = createKnob<KnobBool>(tr("Cookie Cut Input"));
-    cookieCutInput->setName(kSplineWarpParamCookieCutInput);
-    cookieCutInput->setHintToolTip(tr("Multiply the Source by the mask of the cookie cutter curves, at their source "
-                                      "positions, before it is warped, so only what they hold is warped. Enabled while "
-                                      "some curve is a cookie cutter."));
-    cookieCutInput->setDefaultValue(false);
-    cookieCutInput->setAnimationEnabled(false);
-    cookieCutInput->setAllDimensionsEnabled(false);
-    page->addKnob(cookieCutInput);
-    _cookieCutInput = cookieCutInput;
-
     KnobChannelSelectPtr outputMask = createKnob<KnobChannelSelect>(tr("Output Mask"));
     outputMask->setName(kSplineWarpParamOutputMask);
     outputMask->setAnimationEnabled(false);
@@ -585,7 +574,7 @@ SplineWarp::initializeKnobs()
             syncTransformKnobs();
         });
         // Linking and unlinking change which selections linkAmount edits.
-        // So does setting cookie cutters, which enable the cookie knobs.
+        // So does setting cookie cutters, which enable the Output Mask knob.
         QObject::connect(curveContext.get(), &RotoCurveContext::itemPanelColumnsChanged, this, [this](const RotoItemPtr&) {
             syncAmountKnobs();
             syncTransformKnobs();
@@ -636,10 +625,6 @@ SplineWarp::updateCookieKnobsEnabled()
 {
     SplineWarpContextPtr context = splineWarpContext(*this);
     const bool any = context && !context->getCookieCutters().empty();
-    KnobBoolPtr cookieCutInput = _cookieCutInput.lock();
-    if (cookieCutInput) {
-        cookieCutInput->setAllDimensionsEnabled(any);
-    }
     KnobChannelSelectPtr outputMask = _outputMask.lock();
     if (outputMask) {
         outputMask->setAllDimensionsEnabled(any);
@@ -1147,11 +1132,6 @@ SplineWarp::readSettings(double time,
     if (cropToFormat && cropToFormat->getValueAtTime(time, 0, view)) {
         settings->cropFormat = getSourceFormat(time, view);
     }
-    KnobBoolPtr cookieCutInput = _cookieCutInput.lock();
-    if (cookieCutInput && cookieCutInput->getValueAtTime(time, 0, view)) {
-        SplineWarpContextPtr context = splineWarpContext(*this);
-        settings->cookieCut = context && context->hasActiveCookieCutter(time);
-    }
     KnobDoublePtr fieldResolution = _fieldResolution.lock();
     if (fieldResolution) {
         settings->fieldResolution = std::max(1., fieldResolution->getValueAtTime(time, 0, view));
@@ -1531,14 +1511,6 @@ SplineWarp::getInputsHoldingTransform(std::list<int>* inputs) const
     if (!inputs) {
         return false;
     }
-    // The cut multiplies the Source's own pixels, which a concatenated upstream image is not.
-    KnobBoolPtr cookieCutInput = _cookieCutInput.lock();
-    if (cookieCutInput && cookieCutInput->getValue()) {
-        SplineWarpContextPtr context = splineWarpContext(*this);
-        if (context && !context->getCookieCutters().empty()) {
-            return false;
-        }
-    }
     inputs->push_back(kSplineWarpInputSource);
 
     return true;
@@ -1741,7 +1713,7 @@ SplineWarp::isOpIdentity(double time,
     Settings settings;
     readSettings(time, view, &settings, isDraftRender());
     ImageLayerDesc maskLayer;
-    if (settings.cookieCut || getOutputMaskLayer(time, view, &maskLayer)) {
+    if (getOutputMaskLayer(time, view, &maskLayer)) {
         return false;
     }
     if (!settings.cropFormat.isNull() && !settings.cropFormat.contains(getSourceBounds(time, view))) {
@@ -1867,7 +1839,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         anyMaskPlane = anyMaskPlane || planes[p]->maskPlane;
     }
     SplineWarpCookieMaskConstPtr cookie;
-    if (settings.cookieCut || anyMaskPlane) {
+    if (anyMaskPlane) {
         cookie = computeCookieMask(args.time, settings, args.mappedScale, par);
     }
 
@@ -1902,10 +1874,9 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             // A concatenated image is in upstream pixels, which the sampling crops by coordinate.
             const RectI readBounds = (crop && !plane.concatenated) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
-            const bool cut = settings.cookieCut && !plane.concatenated;
             if (readBounds.isNull()) {
                 plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
-            } else if ((srcNComps == nComps) && !cut) {
+            } else if (srcNComps == nComps) {
                 plane.source = Resampler::SourceImage((const float*)plane.srcAccess->pixelAt(readBounds.x1, readBounds.y1), readBounds, nComps);
                 plane.source.rowStride = (std::size_t)plane.srcBounds.width() * nComps;
             } else {
@@ -1914,15 +1885,6 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 for (int y = readBounds.y1; y < readBounds.y2; ++y) {
                     float* row = &plane.converted[(std::size_t)(y - readBounds.y1) * readWidth * nComps];
                     PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, srcNComps, readBounds.x1, y, readWidth, nComps, row);
-                    if (!cut) {
-                        continue;
-                    }
-                    for (int i = 0; i < readWidth; ++i) {
-                        const float m = cookie ? cookie->at(readBounds.x1 + i, y) : 0.f;
-                        for (int c = 0; c < nComps; ++c) {
-                            row[(std::size_t)i * nComps + c] *= m;
-                        }
-                    }
                 }
                 plane.source = Resampler::SourceImage(plane.converted.empty() ? (const float*)0 : &plane.converted[0], readBounds, nComps);
             }
@@ -2167,7 +2129,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     const bool crop = !settings.cropFormat.isNull();
     const RectI formatPixels = crop ? settings.cropFormat.toPixelEnclosing(query.mappedScale, par) : RectI();
     SplineWarpCookieMaskConstPtr cookie;
-    if (maskPlane || settings.cookieCut) {
+    if (maskPlane) {
         cookie = computeCookieMask(query.time, settings, query.mappedScale, par);
     }
     GpuImageView cookieView;
@@ -2182,8 +2144,8 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     }
 
     // The Source cropped to its region of definition, as the CPU fetches it, is blended under the
-    // mask and mix; the image sampled is that Source inside the format when cropping, cut by the
-    // cookie mask, or, for the outputMask plane, the cookie mask.
+    // mask and mix; the image sampled is that Source inside the format when cropping, or, for the
+    // outputMask plane, the cookie mask.
     const StagePlan plan = resolveGpuPlan(query);
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
@@ -2201,46 +2163,6 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         if (source.buffer) {
             sampleView = crop ? PassExec::cropGpuView(source, source.bounds.intersect(formatPixels)) : source;
         }
-    }
-    if (!maskPlane && settings.cookieCut && sampleView.buffer && !sampleView.bounds.isNull()) {
-        // The cut Source in a scratch buffer of its own, written by a dispatch before the warp.
-        const RectI& bounds = sampleView.bounds;
-        const int nComps = sampleView.nComps;
-        const std::size_t bytes = (std::size_t)bounds.width() * bounds.height() * nComps * sizeof(float);
-        gpu::GpuBuffer* cut = nullptr;
-        if ((bytes > ctx.maxScratchBytes()) || !ctx.scratch(bytes, cut) || !cut) {
-            return eStatusFailed;
-        }
-        SplineWarpGpuParams cutParams;
-        cutParams.flags = kSplineWarpGpuCutPass;
-        setSplineWarpGpuSample(cookieView.byteOffset / sizeof(float), cookieView.rowStrideFloats, cookieView.bounds, 1, &cutParams);
-        gpu::GpuBuffer* cutParamsBuffer = uploadScratch(ctx, &cutParams, sizeof(cutParams));
-        if (!cutParamsBuffer) {
-            return eStatusFailed;
-        }
-        gpu::GpuWrap wrap;
-        wrap.src = toGpuWrapView(sampleView);
-        wrap.dst.buffer = cut;
-        wrap.dst.bounds = gpu::GpuWrapRect { bounds.x1, bounds.y1, bounds.x2, bounds.y2 };
-        wrap.dst.strideFloats = (uint32_t)(bounds.width() * nComps);
-        wrap.dst.nComps = (uint32_t)nComps;
-        wrap.output = wrap.dst.bounds;
-        wrap.nComps = (uint32_t)nComps;
-        gpu::GpuWrapView cutInputs[2];
-        cutInputs[0].nComps = 1;
-        cutInputs[1].nComps = 1;
-        if (cookieView.buffer) {
-            cutInputs[1] = toGpuWrapView(cookieView);
-        }
-        if (!gpu::recordWrappedInputs(ctx, gpu::GpuKernelId::splinewarp, wrap, cutParamsBuffer, std::span<const gpu::GpuWrapView>(cutInputs, 2))) {
-            return eStatusFailed;
-        }
-        ctx.computeBarrier();
-        sampleView = GpuImageView();
-        sampleView.buffer = cut;
-        sampleView.bounds = bounds;
-        sampleView.rowStrideFloats = bounds.width() * nComps;
-        sampleView.nComps = nComps;
     }
     if (sampleView.buffer && !sampleView.bounds.isNull()) {
         params.flags |= kSplineWarpGpuSample;

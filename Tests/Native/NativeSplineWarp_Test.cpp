@@ -351,7 +351,6 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
         kSplineWarpParamLinkAmount,
         kSplineWarpParamBoundaryBBox,
         kSplineWarpParamBoundaryCurveResolution,
-        kSplineWarpParamCookieCutInput,
         kSplineWarpParamOutputMask,
         kSplineWarpParamCropToFormat,
     };
@@ -398,11 +397,7 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     ASSERT_TRUE(bool(boundaryCurveResolution));
     EXPECT_EQ("Boundary Curve Resolution", boundaryCurveResolution->getLabel());
     EXPECT_EQ(4., boundaryCurveResolution->getValue());
-    KnobBoolPtr cookieCutInput = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kSplineWarpParamCookieCutInput));
-    ASSERT_TRUE(bool(cookieCutInput));
-    EXPECT_EQ("Cookie Cut Input", cookieCutInput->getLabel());
-    EXPECT_FALSE(cookieCutInput->getValue());
-    EXPECT_FALSE(cookieCutInput->isEnabled(0)) << "no cookie cutter";
+    EXPECT_FALSE(bool(node->getKnobByName("cookieCutInput")));
     KnobChannelSelectPtr outputMask = std::dynamic_pointer_cast<KnobChannelSelect>(node->getKnobByName(kSplineWarpParamOutputMask));
     ASSERT_TRUE(bool(outputMask));
     EXPECT_EQ("Output Mask", outputMask->getLabel());
@@ -417,7 +412,7 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     KnobPagePtr controls = amount->getTopLevelPage();
     ASSERT_TRUE(bool(controls));
     for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox,
-                              kSplineWarpParamCookieCutInput, kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
+                              kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_EQ(controls, knob->getTopLevelPage()) << name;
@@ -450,16 +445,14 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     ASSERT_TRUE(setKnobValues(node, kSplineWarpParamSolver, { 0. }));
     EXPECT_FALSE(smoothness->getIsSecret());
 
-    // A cookie cutter enables the cookie knobs; removing the last disables them again.
+    // A cookie cutter enables Output Mask; removing the last disables them again.
     SplineWarpContextPtr ctx = contextOf(node);
     ASSERT_TRUE(bool(ctx));
     BezierPtr cutter = makeRectangle(ctx, 16., 12., 48., 36.);
     ASSERT_TRUE(bool(cutter));
     ctx->setCookieCutter(cutter, true);
-    EXPECT_TRUE(cookieCutInput->isEnabled(0));
     EXPECT_TRUE(outputMask->isEnabled(0));
     ctx->setCookieCutter(cutter, false);
-    EXPECT_FALSE(cookieCutInput->isEnabled(0));
     EXPECT_FALSE(outputMask->isEnabled(0));
 }
 
@@ -789,9 +782,9 @@ producesLayer(const NodePtr& node,
 
 } // namespace
 
-// Cookie Cut Input multiplies the Source by the cutter's mask, and Output Mask writes that mask:
-// with no link the warp moves nothing, so both are exact.
-TEST_F(NativeSplineWarpTest, CookieCutterCutsTheSourceAndWritesTheMask)
+// Output Mask writes the cutter's mask and the cutter never cuts the Source: with no link the warp
+// moves nothing, so both are exact.
+TEST_F(NativeSplineWarpTest, CookieCutterWritesTheMaskAndLeavesTheSource)
 {
     resetProject();
     NodePtr source = makeSource();
@@ -805,13 +798,12 @@ TEST_F(NativeSplineWarpTest, CookieCutterCutsTheSourceAndWritesTheMask)
 
     ctx->setCookieCutter(cutter, true);
     EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
-    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
     EXPECT_FALSE(isIdentityOnSource(warp));
 
     const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
-    RenderedPlane original, cut, mask;
+    RenderedPlane original, warped, mask;
     ASSERT_TRUE(renderRGBA(source, window, &original));
-    ASSERT_TRUE(renderRGBA(warp, window, &cut));
+    ASSERT_TRUE(renderRGBA(warp, window, &warped));
     ASSERT_TRUE(renderLayer(warp, window, outputMaskLayer(), &mask));
     ASSERT_EQ(1u, mask.channels.size());
     std::size_t wrong = 0;
@@ -824,25 +816,17 @@ TEST_F(NativeSplineWarpTest, CookieCutterCutsTheSourceAndWritesTheMask)
                 EXPECT_EQ(0.f, m) << x << ", " << y << " is well outside the cutter";
             }
             const float* src = pixelAt(original, x, y);
-            const float* got = pixelAt(cut, x, y);
+            const float* got = pixelAt(warped, x, y);
             for (int c = 0; c < 4; ++c) {
-                if (got[c] != src[c] * m) {
+                if (got[c] != src[c]) {
                     ++wrong;
                 }
             }
         }
     }
-    EXPECT_EQ(0u, wrong) << "the output is not the Source times the mask";
-
-    // Off, the Source is not cut; the mask is still written.
-    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 0. }));
-    RenderedPlane uncut;
-    ASSERT_TRUE(renderRGBA(warp, window, &uncut));
-    EXPECT_EQ(0., maxDiff(original, uncut, window));
-    EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+    EXPECT_EQ(0u, wrong) << "the output is not the Source";
 
     // A deactivated cutter is ignored but keeps its role.
-    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
     cutter->setActivated(false, kTime);
     EXPECT_TRUE(ctx->isCookieCutter(cutter));
     EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer));

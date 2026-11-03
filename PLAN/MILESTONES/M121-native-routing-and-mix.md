@@ -175,3 +175,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - The AppImage is built with `package.sh` for UAT.
 - The four retired OFX IDs no longer load.
 - 2026-11-02 — main merged in; LightWrap ShuffleCopy input swap committed (77072f0a0, correct: native ShuffleCopy's in2 is input 0) with its render test, fixed to set KnobColor through KnobDoubleBase; gate re-running (PM).
+- 2026-11-02 — LightWrap render test reads the group through a Dot: rendering a NodeGroup directly returns unwritten memory (M319 - Group Node Direct Render). The product graph checked out (PM).

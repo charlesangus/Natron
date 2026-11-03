@@ -384,6 +384,7 @@ future core work has solid ground to build on.
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 | M317 | Traditional Keyer | todo | M95 |  | E3 | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
 | M318 | LensCorrect Bounded Input Region | todo | M160 |  | E3 | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
+| M319 | Group Node Direct Render | todo | - |  | E14 | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
 
 # Epics
 

@@ -532,3 +532,42 @@ TEST_F(RotoLayerTest, RotoPaintToolbarKnobsKeepTheirNamesAndOrder)
 
     project->reset(false, true);
 }
+
+TEST_F(RotoLayerTest, ObjectSelectKnobsStayOutOfTheRenderHash)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    for (const char* pluginID : { PLUGINID_NATRON_ROTO, PLUGINID_NATRON_ROTOPAINT }) {
+        NodePtr roto = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(roto)) << pluginID;
+
+        KnobChoicePtr resolution = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("objectInferenceResolution"));
+        ASSERT_TRUE(bool(resolution)) << pluginID;
+        EXPECT_EQ("Object Inference Resolution", resolution->getLabel());
+        EXPECT_TRUE(resolution->isHashExempt());
+        EXPECT_FALSE(resolution->getEvaluateOnChange());
+        const std::vector<std::string> labels = { "Full", "50%", "25%", "1K", "2K", "4K" };
+        const std::vector<ChoiceOption> options = resolution->getEntries_mt_safe();
+        ASSERT_EQ(labels.size(), options.size());
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            EXPECT_EQ(labels[i], options[i].label);
+        }
+        EXPECT_EQ(4, resolution->getDefaultValue(0)) << "2K by default";
+
+        const U64 hashBefore = roto->getHashValue();
+        resolution->setValue(2);
+        EXPECT_EQ(hashBefore, roto->getHashValue()) << pluginID;
+        resolution->setValue(0);
+        EXPECT_EQ(hashBefore, roto->getHashValue()) << pluginID;
+
+        for (const char* name : { "objectThreshold", "objectDensity", "objectMinArea", "objectHoles", "objectSmooth", "objectFeather" }) {
+            KnobIPtr knob = roto->getKnobByName(name);
+            ASSERT_TRUE(bool(knob)) << name;
+            EXPECT_TRUE(knob->isHashExempt()) << name;
+        }
+    }
+
+    project->reset(false, true);
+}

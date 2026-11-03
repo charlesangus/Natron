@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -37,6 +38,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Ai/InferenceSession.h"
+#include "Engine/Ai/MaskTrace.h"
 #include "Engine/Ai/ModelPackage.h"
 #include "Engine/Ai/Segmentation.h"
 #include "Tests/Ai/AiTestSupport.h"
@@ -159,6 +161,71 @@ point(float x,
     return p;
 }
 
+// The traced outlines' matte (holes cut out), sampled at pixel centres of a width x height grid.
+std::vector<bool>
+rasterizeContours(const std::vector<MaskTrace::Contour>& contours,
+                  int width,
+                  int height)
+{
+    const int samples = 16;
+    std::vector<std::vector<MaskTrace::Point>> polygons;
+
+    for (const MaskTrace::Contour& contour : contours) {
+        std::vector<MaskTrace::Point> poly;
+        const std::size_t n = contour.points.size();
+        for (std::size_t k = 0; k < n; ++k) {
+            const MaskTrace::CurvePoint& a = contour.points[k];
+            const MaskTrace::CurvePoint& b = contour.points[(k + 1) % n];
+            for (int s = 0; s < samples; ++s) {
+                const double t = (double)s / samples;
+                const double m = 1. - t;
+                MaskTrace::Point p;
+                p.x = m * m * m * a.position.x + 3. * m * m * t * a.right.x + 3. * m * t * t * b.left.x + t * t * t * b.position.x;
+                p.y = m * m * m * a.position.y + 3. * m * m * t * a.right.y + 3. * m * t * t * b.left.y + t * t * t * b.position.y;
+                poly.push_back(p);
+            }
+        }
+        polygons.push_back(poly);
+    }
+
+    std::vector<bool> inside((size_t)width * height, false);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            bool inOutline = false, inHole = false;
+            for (std::size_t c = 0; c < contours.size(); ++c) {
+                const std::vector<MaskTrace::Point>& poly = polygons[c];
+                bool hit = false;
+                for (std::size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+                    if (((poly[i].y > y) != (poly[j].y > y))
+                        && (x < (poly[j].x - poly[i].x) * (y - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)) {
+                        hit = !hit;
+                    }
+                }
+                if (hit) {
+                    (contours[c].isHole ? inHole : inOutline) = true;
+                }
+            }
+            inside[(size_t)y * width + x] = inOutline && !inHole;
+        }
+    }
+
+    return inside;
+}
+
+double
+iou(const std::vector<bool>& a,
+    const std::vector<bool>& b)
+{
+    std::size_t both = 0, either = 0;
+
+    for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+        both += (a[i] && b[i]) ? 1 : 0;
+        either += (a[i] || b[i]) ? 1 : 0;
+    }
+
+    return either ? (double)both / (double)either : 0.;
+}
+
 class AiSegmentation
     : public ::testing::Test {
 protected:
@@ -247,6 +314,161 @@ TEST_F(AiSegmentation, EncodingsAreCachedByKey)
     EXPECT_TRUE(seg->isCached(key(1)));
     EXPECT_FALSE(seg->isCached(key(1, 2.)));
     EXPECT_FALSE(seg->select(key(1, 2.)));
+}
+
+TEST(AiSegmentationScaling, InferenceSizesNeverUpscale)
+{
+    int w = 0, h = 0;
+
+    SegmentationScaling::inferenceSize(3840, 2160, SegmentationResolution::eFull, &w, &h);
+    EXPECT_EQ(3840, w);
+    EXPECT_EQ(2160, h);
+    SegmentationScaling::inferenceSize(3840, 2160, SegmentationResolution::eHalf, &w, &h);
+    EXPECT_EQ(1920, w);
+    EXPECT_EQ(1080, h);
+    SegmentationScaling::inferenceSize(3840, 2160, SegmentationResolution::eQuarter, &w, &h);
+    EXPECT_EQ(960, w);
+    EXPECT_EQ(540, h);
+    SegmentationScaling::inferenceSize(3840, 2160, SegmentationResolution::e1K, &w, &h);
+    EXPECT_EQ(1024, w);
+    EXPECT_EQ(576, h);
+    SegmentationScaling::inferenceSize(3840, 2160, SegmentationResolution::e2K, &w, &h);
+    EXPECT_EQ(2048, w);
+    EXPECT_EQ(1152, h);
+    // The long edge is the one capped, tall images included.
+    SegmentationScaling::inferenceSize(4320, 8192, SegmentationResolution::e4K, &w, &h);
+    EXPECT_EQ(2160, w);
+    EXPECT_EQ(4096, h);
+
+    // An image already within the cap keeps its size.
+    SegmentationScaling::inferenceSize(1920, 1080, SegmentationResolution::e2K, &w, &h);
+    EXPECT_EQ(1920, w);
+    EXPECT_EQ(1080, h);
+    SegmentationScaling::inferenceSize(2048, 858, SegmentationResolution::e4K, &w, &h);
+    EXPECT_EQ(2048, w);
+    EXPECT_EQ(858, h);
+
+    // Tiny images keep a pixel.
+    SegmentationScaling::inferenceSize(3, 1, SegmentationResolution::eQuarter, &w, &h);
+    EXPECT_EQ(1, w);
+    EXPECT_EQ(1, h);
+}
+
+TEST(AiSegmentationScaling, CoordinatesMapPixelCentres)
+{
+    // Pixel edges line up: the left edge of a 400-pixel row is the left edge of its 100-pixel copy.
+    EXPECT_FLOAT_EQ(-0.5f, SegmentationScaling::mapCoordinate(-0.5f, 400, 100));
+    EXPECT_FLOAT_EQ(99.5f, SegmentationScaling::mapCoordinate(399.5f, 400, 100));
+    EXPECT_FLOAT_EQ(1.5f, SegmentationScaling::mapCoordinate(7.5f, 400, 100));
+    EXPECT_FLOAT_EQ(7.5f, SegmentationScaling::mapCoordinate(SegmentationScaling::mapCoordinate(7.5f, 400, 100), 100, 400));
+    EXPECT_FLOAT_EQ(12.25f, SegmentationScaling::mapCoordinate(12.25f, 64, 64));
+}
+
+TEST(AiSegmentationScaling, ResamplingAveragesAreasAndUpsamplesSmoothly)
+{
+    // A 4x2 two-channel image down to 2x1: each output pixel is the mean of its 2x2 block.
+    // Channel 0 holds 0, 2, 4, 6 on the top row and 8, 10, 12, 14 below; channel 1 is 1 throughout.
+    std::vector<float> src;
+    for (int i = 0; i < 8; ++i) {
+        src.push_back(2.f * i);
+        src.push_back(1.f);
+    }
+    const std::vector<float> down = SegmentationScaling::resample(src.data(), 4, 2, 2, 2, 1);
+    ASSERT_EQ(4u, down.size());
+    EXPECT_FLOAT_EQ(5.f, down[0]);
+    EXPECT_FLOAT_EQ(1.f, down[1]);
+    EXPECT_FLOAT_EQ(9.f, down[2]);
+    EXPECT_FLOAT_EQ(1.f, down[3]);
+
+    // A non-integer ratio keeps a flat image flat.
+    const std::vector<float> flat((size_t)7 * 5, 0.25f);
+    for (float v : SegmentationScaling::resample(flat.data(), 7, 5, 1, 3, 2)) {
+        EXPECT_NEAR(0.25, v, 1e-6);
+    }
+    // Wider and shorter at once, as an anamorphic plate gives.
+    const std::vector<float> both = SegmentationScaling::resample(flat.data(), 7, 5, 1, 14, 2);
+    ASSERT_EQ((size_t)14 * 2, both.size());
+    for (float v : both) {
+        EXPECT_NEAR(0.25, v, 1e-6);
+    }
+
+    // The mask upsampling is bilinear: a step becomes a ramp, its 0.5 crossing where the step was.
+    const std::vector<float> step = { 0.f, 0.f, 1.f, 1.f };
+    const std::vector<float> up = SegmentationScaling::upsampleMask(step, 4, 1, 16, 1);
+    ASSERT_EQ(16u, up.size());
+    EXPECT_FLOAT_EQ(0.f, up[0]);
+    EXPECT_FLOAT_EQ(1.f, up[15]);
+    EXPECT_GT(up[8], 0.5f);
+    EXPECT_LT(up[7], 0.5f);
+    for (int i = 1; i < 16; ++i) {
+        EXPECT_GE(up[i], up[i - 1]);
+    }
+    EXPECT_GT(up[7], 0.f);
+    EXPECT_LT(up[8], 1.f);
+}
+
+TEST(AiSegmentationScaling, ResolutionIsPartOfTheKey)
+{
+    SegmentationKey full = key(1);
+    SegmentationKey quarter = key(1);
+
+    quarter.resolution = SegmentationResolution::eQuarter;
+    EXPECT_FALSE(full == quarter);
+    quarter.resolution = SegmentationResolution::eFull;
+    EXPECT_TRUE(full == quarter);
+}
+
+/*
+ * The same object segmented on the full image and on a quarter-size copy, the latter's prompt
+ * mapped down and its mask upsampled back, traces to outlines that cover the same full-resolution
+ * pixels.
+ */
+TEST_F(AiSegmentation, QuarterResolutionTracesTheSameOutlineAtFullResolution)
+{
+    std::unique_ptr<Segmenter> seg = fakeSegNext();
+    const int w = 256, h = 160;
+    // Off centre, in a wide image, so that a mapping error shows as a shift.
+    const Disc disc = { 150., 70., 50. };
+    const std::vector<uint8_t> image = discImage(w, h, { disc });
+    const SegmentationPoint click = point(150.f, 70.f);
+
+    SegmentationKey fullKey = key(1);
+    EXPECT_FALSE(seg->encode(image.data(), w, h, fullKey));
+    const std::vector<float> fullMask = seg->segment({ click }, {}, 0.5f);
+    ASSERT_EQ((size_t)w * h, fullMask.size());
+
+    int qw = 0, qh = 0;
+    SegmentationScaling::inferenceSize(w, h, SegmentationResolution::eQuarter, &qw, &qh);
+    ASSERT_EQ(64, qw);
+    ASSERT_EQ(40, qh);
+    std::vector<float> rgbFloat(image.begin(), image.end());
+    const std::vector<float> small = SegmentationScaling::resample(rgbFloat.data(), w, h, 3, qw, qh);
+    std::vector<uint8_t> smallRgb(small.size());
+    for (std::size_t i = 0; i < small.size(); ++i) {
+        smallRgb[i] = (uint8_t)std::lround(std::min(255.f, std::max(0.f, small[i])));
+    }
+    SegmentationKey quarterKey = key(1);
+    quarterKey.resolution = SegmentationResolution::eQuarter;
+    EXPECT_FALSE(seg->encode(smallRgb.data(), qw, qh, quarterKey));
+    EXPECT_EQ(2u, seg->encoderRuns());
+    EXPECT_EQ(qw, seg->encodedWidth());
+
+    const SegmentationPoint smallClick = point(SegmentationScaling::mapCoordinate(click.x, w, qw),
+                                               SegmentationScaling::mapCoordinate(click.y, h, qh));
+    const std::vector<float> quarterMask = SegmentationScaling::upsampleMask(seg->segment({ smallClick }, {}, 0.5f), qw, qh, w, h);
+    ASSERT_EQ((size_t)w * h, quarterMask.size());
+    EXPECT_GT(iouWithDisc(quarterMask, w, h, disc), 0.9);
+
+    MaskTrace::Options options;
+    const std::vector<MaskTrace::Contour> fullOutline = MaskTrace::trace(fullMask, w, h, options);
+    const std::vector<MaskTrace::Contour> quarterOutline = MaskTrace::trace(quarterMask, w, h, options);
+    ASSERT_EQ(1u, fullOutline.size());
+    ASSERT_EQ(1u, quarterOutline.size());
+    EXPECT_GT(iou(rasterizeContours(fullOutline, w, h), rasterizeContours(quarterOutline, w, h)), 0.9);
+
+    // Going back to the full resolution is a cache hit.
+    EXPECT_TRUE(seg->encode(image.data(), w, h, fullKey));
+    EXPECT_EQ(2u, seg->encoderRuns());
 }
 
 TEST_F(AiSegmentation, SegNextRefusesBoxes)

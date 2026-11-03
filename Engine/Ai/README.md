@@ -192,8 +192,8 @@ them from the model.
 ## Object segmentation
 
 `Segmenter` (`Segmentation.h`) runs darktable-ai's two-graph `mask-object` models, SegNext and SAM
-2.1. The encoder sees the image once per (image hash, frame, model) key, and the segmenter keeps the
-last `kCacheCapacity` encodings. The decoder turns click points (and, for SAM, boxes) into a
+2.1. The encoder sees the image once per (image hash, frame, model, inference resolution) key, and
+the segmenter keeps the last `kCacheCapacity` encodings. The decoder turns click points (and, for SAM, boxes) into a
 probability mask, refined over two passes as darktable's object tool does. `MaskTrace` turns that
 mask into closed Bezier outlines and holes: marching squares, Douglas-Peucker simplification, then
 a Schneider curve fit. Without smoothing, it keeps straight segments between corners.
@@ -222,13 +222,35 @@ both for now. In the viewer:
 - Undoing a commit removes the shapes and brings the selection back (its prompts, the cached
   encoding and the outline) to adjust and commit again. Redo commits the undone shapes again.
 - The prompts belong to one frame: changing frame drops them.
+- Object Inference Resolution (Full, 50%, 25%, 1K, 2K or 4K; K caps the long edge at 1024, 2048
+  or 4096 pixels, and a smaller image is never enlarged) sets the size of the image the model
+  segments. The viewer, the prompts, the outline and the committed shapes stay at full resolution.
+  Changing it with prompts placed keeps them where they are and segments again, encoding the
+  smaller image unless its encoding is cached. The default is 2K.
 
 Until the tool is picked, Roto pays nothing for it: no model file is opened, the segmenter and its
 encoding cache do not exist, and its viewer knobs are left out of the render hash. The segmenter is
 made on the first prompt, and keeps its encodings after the tool is put down.
-It renders the Source on a worker thread at full resolution and converts it to the project's
-default display and view as 8-bit sRGB, not the viewer's. Then it resamples it to square pixels
-and encodes it. Prompts and decoding run on the main thread.
+It renders the Source on a worker thread at full resolution, then area-averages it, still scene
+linear, to square pixels at the inference resolution (`SegmentationScaling`). It converts that to
+the project's default display and view as 8-bit sRGB, not the viewer's, and encodes it. Prompts and
+decoding run on the main thread: prompts are kept in canonical coordinates and mapped to the
+inference image for each decode, and the probability mask the decoder returns is upsampled
+bilinearly to full resolution before it is thresholded and traced. Object Density's tolerance and
+Object Min Area are therefore in full-resolution pixels whatever the inference resolution.
+
+Where the time goes on a large plate: the encoders take a fixed input (a 1024-pixel long edge for
+SegNext and SAM 2.1), so their cost does not grow with the image, and neither does the decoder's.
+What grows with the pixel count is everything around them. Once per encoding: reading the rendered
+Source, the display transform and the copy kept as the guide of the mask upsampling. On every
+click: the joint-bilateral upsampling of each decoder pass's mask to the encoded image, the
+interior-point distance transform and box between passes, the IoU check and the seed-area flood
+fill, which all run at the encoded size. A smaller inference resolution moves all of these to the
+small image and leaves one bilinear upsampling and the trace at full resolution. Rendering the
+Source itself stays at full resolution. Since the encoders shrink their input to 1024 anyway, 2K
+costs the model nothing; the area average even gives the encoder a less aliased image than its own
+bilinear resize of an 8K plate would. Below 2K the mask's edge follows a coarser image, so 1K and
+25% trade edge accuracy for speed.
 
 ## Testing
 

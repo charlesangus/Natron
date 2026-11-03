@@ -70,18 +70,54 @@ struct SegmentationBox {
 };
 
 /**
- * @brief What an encoding belongs to: the node and state of the image, its frame and the model.
+ * @brief How large the image a segmentation runs on is, against the image the user works on: a
+ * fraction of it, or its long edge capped at a number of pixels. Never larger than the image.
+ **/
+enum class SegmentationResolution {
+    eFull = 0,
+    eHalf,
+    eQuarter,
+    e1K,
+    e2K,
+    e4K,
+};
+
+/**
+ * @brief What an encoding belongs to: the node and state of the image, its frame, the model and
+ * the resolution the image was encoded at.
  **/
 struct SegmentationKey {
     uint64_t imageHash = 0;
     double frame = 0.;
     std::string modelId;
+    SegmentationResolution resolution = SegmentationResolution::eFull;
 
     bool operator==(const SegmentationKey& other) const
     {
-        return (imageHash == other.imageHash) && (frame == other.frame) && (modelId == other.modelId);
+        return (imageHash == other.imageHash) && (frame == other.frame) && (modelId == other.modelId) && (resolution == other.resolution);
     }
 };
+
+/**
+ * @brief Moving between the image the user works on and the smaller one a segmentation runs on.
+ * Pixel grids put pixel j's centre at j, as SegmentationPoint does.
+ **/
+namespace SegmentationScaling {
+// The size width x height is segmented at under resolution: at least 1 x 1, at most the image.
+void inferenceSize(int width, int height, SegmentationResolution resolution, int* outWidth, int* outHeight);
+
+// A coordinate on a grid of srcSize pixels, on a grid of dstSize pixels spanning the same extent.
+float mapCoordinate(float v, int srcSize, int dstSize);
+
+/**
+ * @brief Resamples interleaved float pixels, channels per pixel, onto dstWidth x dstHeight: an
+ * area average along an axis that shrinks, bilinear along one that grows. Rows stay in order.
+ **/
+std::vector<float> resample(const float* src, int srcWidth, int srcHeight, int channels, int dstWidth, int dstHeight);
+
+// Bilinear upsampling of a soft mask, so that its thresholded edge stays smooth.
+std::vector<float> upsampleMask(const std::vector<float>& mask, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
+} // namespace SegmentationScaling
 
 /**
  * @brief Click-to-segment with a two-graph model of darktable-ai's "mask" task (SegNext or SAM 2.1):

@@ -76,6 +76,12 @@ struct RotoObjectSelectSession;
 #define kRotoUIParamObjectFeatherLabel "Object Feather"
 #define kRotoUIParamObjectFeatherHint "The feather distance the committed shapes get."
 
+#define kRotoUIParamObjectInferenceResolution "objectInferenceResolution"
+#define kRotoUIParamObjectInferenceResolutionLabel "Object Inference Resolution"
+#define kRotoUIParamObjectInferenceResolutionHint "The size of the image the model segments. Smaller sizes segment large images faster, with coarser edges. " \
+                                                  "The viewer, the clicks and the shapes stay at full resolution; a smaller image is never enlarged. "        \
+                                                  "Full uses the image as it is, 50% and 25% scale it down, 1K, 2K and 4K cap its long edge at 1024, 2048 and 4096 pixels."
+
 #define kRotoUIParamObjectClearPrompts "objectClearPrompts"
 #define kRotoUIParamObjectClearPromptsLabel "Object Clear Prompts"
 #define kRotoUIParamObjectClearPromptsHint "Removes every click and box of the current selection (Esc)."
@@ -85,9 +91,10 @@ struct RotoObjectSelectSession;
  * segmentation model run on the Source input, the mask it returns is traced into outlines shown
  * as a preview, and committing turns the outlines into Beziers.
  *
- * Prompts are kept in canonical coordinates. The Source is rendered at full resolution, converted
- * to the project's default display and view as 8-bit sRGB and resampled to square pixels before it
- * is encoded, on a worker thread; prompts made meanwhile wait for the encoding. Everything else
+ * Prompts are kept in canonical coordinates. The Source is rendered at full resolution, resampled
+ * to square pixels at the inference resolution, converted to the project's default display and
+ * view as 8-bit sRGB and encoded, on a worker thread; prompts made meanwhile wait for the
+ * encoding. The mask is upsampled back to full resolution before it is traced. Everything else
  * runs on the main thread.
  **/
 class RotoObjectSelect {
@@ -153,7 +160,7 @@ public:
     // Drops the selection being made, as a commit does.
     void endSession();
 
-    // The fitting tolerance, in encoded pixels, of a density knob value.
+    // The fitting tolerance, in full-resolution pixels, of a density knob value.
     static double toleranceForDensity(double density);
 
     const std::vector<Prompt>& prompts() const
@@ -170,13 +177,17 @@ public:
 private:
     friend struct RotoObjectSelectSession;
 
-    // Where the encoded image sits in canonical coordinates. Encoded pixels are square, with y down.
+    // Where the image sits in canonical coordinates. Its pixels are square, with y down.
     struct Frame {
         SegmentationKey key;
-        // The canonical rectangle the encoded image covers.
+        // The canonical rectangle the image covers.
         RectD canonical;
+        // The full-resolution image, which masks and outlines are at.
         int width = 0;
         int height = 0;
+        // The image the model sees.
+        int inferenceWidth = 0;
+        int inferenceHeight = 0;
     };
 
     struct Job;
@@ -185,6 +196,7 @@ private:
     static void runJob(Job* job);
 
     MaskTrace::Options traceOptions() const;
+    SegmentationResolution inferenceResolution() const;
     QPointF toEncoded(const QPointF& canonical) const;
     MaskTrace::Point toCanonical(const MaskTrace::Point& encoded) const;
     NodePtr sourceNode() const;
@@ -210,6 +222,7 @@ private:
     KnobBoolWPtr _holes;
     KnobBoolWPtr _smooth;
     KnobDoubleWPtr _feather;
+    KnobChoiceWPtr _inferenceResolution;
     KnobButtonWPtr _clearPrompts;
     KnobButtonWPtr _toolButton;
     // Identity only, never dereferenced: knob changes on the host test against these without locking.

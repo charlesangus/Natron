@@ -272,6 +272,30 @@ RotoObjectSelect::createKnobs(const KnobPagePtr& page)
     _feather = feather;
     viewerKnobs.push_back(feather);
 
+    KnobChoicePtr resolution = AppManager::createKnob<KnobChoice>(host, std::string(kRotoUIParamObjectInferenceResolutionLabel));
+    resolution->setName(kRotoUIParamObjectInferenceResolution);
+    resolution->setInViewerContextLabel(QString::fromUtf8(kRotoUIParamObjectInferenceResolutionLabel));
+    resolution->setHintToolTip(std::string(kRotoUIParamObjectInferenceResolutionHint));
+    resolution->setEvaluateOnChange(false);
+    resolution->setAnimationEnabled(false);
+    {
+        // In the order of SegmentationResolution.
+        std::vector<ChoiceOption> choices;
+        choices.push_back(ChoiceOption("full", "Full", "The image as it is."));
+        choices.push_back(ChoiceOption("half", "50%", "Half the image's width and height."));
+        choices.push_back(ChoiceOption("quarter", "25%", "A quarter of the image's width and height."));
+        choices.push_back(ChoiceOption("1k", "1K", "The long edge capped at 1024 pixels."));
+        choices.push_back(ChoiceOption("2k", "2K", "The long edge capped at 2048 pixels."));
+        choices.push_back(ChoiceOption("4k", "4K", "The long edge capped at 4096 pixels."));
+        resolution->populateChoices(choices);
+    }
+    // The encoders see a 1024-pixel long edge whatever they are given, so 2K costs them nothing
+    // while keeping the per-click mask work off the full size of 4K and larger plates.
+    resolution->setDefaultValue((int)SegmentationResolution::e2K);
+    page->addKnob(resolution);
+    _inferenceResolution = resolution;
+    viewerKnobs.push_back(resolution);
+
     KnobButtonPtr clear = AppManager::createKnob<KnobButton>(host, std::string(kRotoUIParamObjectClearPromptsLabel));
     clear->setName(kRotoUIParamObjectClearPrompts);
     clear->setHintToolTip(std::string(kRotoUIParamObjectClearPromptsHint));
@@ -318,7 +342,8 @@ RotoObjectSelect::setActive(bool active)
     const KnobIPtr knobs[] = {
         _model ? KnobIPtr(_model->modelKnob()) : KnobIPtr(),
         _model ? KnobIPtr(_model->downloadKnob()) : KnobIPtr(),
-        _threshold.lock(), _density.lock(), _minArea.lock(), _holes.lock(), _smooth.lock(), _feather.lock(), _clearPrompts.lock()
+        _threshold.lock(), _density.lock(), _minArea.lock(), _holes.lock(), _smooth.lock(), _feather.lock(),
+        _inferenceResolution.lock(), _clearPrompts.lock()
     };
     for (const KnobIPtr& knob : knobs) {
         if (knob) {
@@ -357,7 +382,7 @@ RotoObjectSelect::onKnobChanged(KnobI* k)
 
         return true;
     }
-    if (k == _threshold.lock().get()) {
+    if ((k == _threshold.lock().get()) || (k == _inferenceResolution.lock().get())) {
         refreshMask();
 
         return true;
@@ -436,6 +461,19 @@ RotoObjectSelect::traceOptions() const
     return options;
 }
 
+SegmentationResolution
+RotoObjectSelect::inferenceResolution() const
+{
+    KnobChoicePtr k = _inferenceResolution.lock();
+    const int index = k ? k->getValue() : (int)SegmentationResolution::eFull;
+
+    if ((index < (int)SegmentationResolution::eFull) || (index > (int)SegmentationResolution::e4K)) {
+        return SegmentationResolution::eFull;
+    }
+
+    return (SegmentationResolution)index;
+}
+
 QPointF
 RotoObjectSelect::toEncoded(const QPointF& canonical) const
 {
@@ -484,6 +522,7 @@ RotoObjectSelect::currentKey(double time,
     key->imageHash = source->getEffectInstance()->getHash();
     key->frame = time;
     key->modelId = (*model)->entry->id;
+    key->resolution = inferenceResolution();
 
     return true;
 }
@@ -567,12 +606,19 @@ RotoObjectSelect::refreshMask()
     _frame = *frame;
     _frames.splice(_frames.begin(), _frames, frame);
 
+    // Prompts stay in full-resolution pixels until here, so a change of resolution keeps them in place.
+    auto toInference = [this](const QPointF& canonical) {
+        const QPointF full = toEncoded(canonical);
+
+        return QPointF(SegmentationScaling::mapCoordinate((float)full.x(), _frame.width, _frame.inferenceWidth),
+                       SegmentationScaling::mapCoordinate((float)full.y(), _frame.height, _frame.inferenceHeight));
+    };
     std::vector<SegmentationPoint> points;
     std::vector<SegmentationBox> boxes;
     for (const Prompt& prompt : _prompts) {
-        const QPointF a = toEncoded(prompt.a);
+        const QPointF a = toInference(prompt.a);
         if (prompt.kind == Prompt::eBox) {
-            const QPointF b = toEncoded(prompt.b);
+            const QPointF b = toInference(prompt.b);
             SegmentationBox box;
             box.x1 = (float)std::min(a.x(), b.x());
             box.y1 = (float)std::min(a.y(), b.y());
@@ -588,7 +634,8 @@ RotoObjectSelect::refreshMask()
         }
     }
     try {
-        _mask = _segmenter->segment(points, boxes, (float)traceOptions().threshold);
+        _mask = SegmentationScaling::upsampleMask(_segmenter->segment(points, boxes, (float)traceOptions().threshold),
+                                                  _frame.inferenceWidth, _frame.inferenceHeight, _frame.width, _frame.height);
     } catch (const std::exception& e) {
         _mask.clear();
         setMessage(e.what());
@@ -708,6 +755,10 @@ RotoObjectSelect::runJob(Job* job)
         const int h = rect.height();
         const int nComps = (int)image->getComponentsCount();
         std::vector<float> rgba((std::size_t)w * h * 4);
+        // The encoder assumes square pixels: the full-resolution image has the canonical width.
+        const int fullWidth = std::max(1, (int)std::lround(w * par));
+        int width = fullWidth, height = h;
+        SegmentationScaling::inferenceSize(fullWidth, h, job->key.resolution, &width, &height);
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
             readRows<unsigned char>(*image, rect, nComps, 1.f / 255.f, &rgba);
@@ -722,12 +773,21 @@ RotoObjectSelect::runJob(Job* job)
             throw std::runtime_error("The Source's bit depth is not supported.");
         }
         image.reset();
+        if (job->abort) {
+            return;
+        }
+
+        // Scene-linear area averaging, ahead of the display transform, which then runs on the
+        // smaller image only.
+        if ((width != w) || (height != h)) {
+            rgba = SegmentationScaling::resample(rgba.data(), w, h, 4, width, height);
+        }
 
         bool displayed = false;
         if (job->display) {
             try {
-                for (int row = 0; row < h; ++row) {
-                    job->display->applyForEightBitOutput(&rgba[(std::size_t)row * w * 4], w);
+                for (int row = 0; row < height; ++row) {
+                    job->display->applyForEightBitOutput(&rgba[(std::size_t)row * width * 4], width);
                 }
                 displayed = true;
             } catch (const std::exception&) {
@@ -742,23 +802,14 @@ RotoObjectSelect::runJob(Job* job)
             }
         }
 
-        // The encoder assumes square pixels: resample the rows to the canonical width.
-        const int width = std::max(1, (int)std::lround(w * par));
-        std::vector<uint8_t> rgb((std::size_t)width * h * 3);
-        for (int row = 0; row < h; ++row) {
-            const float* src = &rgba[(std::size_t)row * w * 4];
-            uint8_t* dst = &rgb[(std::size_t)row * width * 3];
-            for (int x = 0; x < width; ++x) {
-                const double fx = std::min((double)w - 1., std::max(0., (x + 0.5) * w / (double)width - 0.5));
-                const int x0 = (int)fx;
-                const int x1 = std::min(x0 + 1, w - 1);
-                const float t = (float)(fx - x0);
-                for (int c = 0; c < 3; ++c) {
-                    const float v = src[x0 * 4 + c] * (1.f - t) + src[x1 * 4 + c] * t;
-                    dst[x * 3 + c] = (uint8_t)std::lround(std::min(1.f, std::max(0.f, v)) * 255.f);
-                }
+        std::vector<uint8_t> rgb((std::size_t)width * height * 3);
+        for (std::size_t i = 0, n = (std::size_t)width * height; i < n; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                rgb[i * 3 + c] = (uint8_t)std::lround(std::min(1.f, std::max(0.f, rgba[i * 4 + c])) * 255.f);
             }
         }
+        rgba.clear();
+        rgba.shrink_to_fit();
 
         if (!job->segmenter || (job->segmenterModelId != job->key.modelId)) {
             if (job->model.files.size() < 2) {
@@ -769,7 +820,7 @@ RotoObjectSelect::runJob(Job* job)
             job->segmenterModelId = job->key.modelId;
         }
         Job* abortSource = job;
-        job->segmenter->encode(rgb.data(), width, h, job->key, [abortSource]() {
+        job->segmenter->encode(rgb.data(), width, height, job->key, [abortSource]() {
             return abortSource->abort.load();
         });
 
@@ -778,8 +829,10 @@ RotoObjectSelect::runJob(Job* job)
         job->frame.canonical.x2 = rect.x2 * par;
         job->frame.canonical.y1 = rect.y1;
         job->frame.canonical.y2 = rect.y2;
-        job->frame.width = width;
+        job->frame.width = fullWidth;
         job->frame.height = h;
+        job->frame.inferenceWidth = width;
+        job->frame.inferenceHeight = height;
         job->ok = !job->abort;
     } catch (const std::exception& e) {
         job->error = e.what();

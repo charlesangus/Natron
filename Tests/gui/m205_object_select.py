@@ -1,7 +1,9 @@
 """GUI test of the Roto node's Object Select tool: a click on a still in the viewer prompts a
 segmentation model, the mask is previewed as outlines, Return commits it as Beziers keyed on the
 frame (the hole as a Stencil shape), and one undo removes them and brings the selection back to
-adjust. Object Density changes the committed shapes' point count.
+adjust. Object Density changes the committed shapes' point count. Object Inference Resolution
+re-runs the segmentation on a smaller image while the click stays put, and the shapes stay at full
+resolution.
 
 Nothing is downloaded. The manifest is the built-in one plus two entries for the committed fake
 segmentation models (Tests/fixtures/ai/seg-*.onnx, whose mask is the image's bright pixels), and
@@ -15,6 +17,7 @@ Screenshots, in $NATRON_GUI_TEST_OUT (default build/gui-test-out/):
     m205-object-committed.png  the committed shapes
     m205-object-undone.png     after undo: the selection is back
     m205-object-dense.png      the selection at a high density, before the commit
+    m205-object-quarter.png    the selection re-segmented at 25% inference resolution
 
 Usage, in the natron-dev container:
     Tests/gui/run-gui-test.sh Tests/gui/m205_object_select.py <Natron.AppImage or release binary>
@@ -320,7 +323,7 @@ try:
         roto.setPosition(0, 200)
         require(roto.getParam("model") is not None, "the Roto node has a model parameter")
         for name in ("objectThreshold", "objectDensity", "objectMinArea", "objectHoles", "objectSmooth",
-                     "objectFeather", "objectClearPrompts", "downloadModel"):
+                     "objectFeather", "objectInferenceResolution", "objectClearPrompts", "downloadModel"):
             check(roto.getParam(name) is not None, "the Roto node has a %s parameter" % name)
         require(pick_model(roto, SEGNEXT_ID), "picked the Test SegNext model")
 
@@ -474,6 +477,62 @@ try:
         ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
         check(ok, "a single undo removes every shape of the last commit")
         density.setValue(default_density)
+        QApplication.processEvents()
+
+        # Inference Resolution: the click stays where it is and a new inference runs on the
+        # smaller image, whose mask comes back at full resolution.
+        resolution = roto.getParam("objectInferenceResolution")
+        require(resolution is not None, "the Roto node has an objectInferenceResolution parameter")
+        default_resolution = resolution.getValue()
+        check(default_resolution == 4, "Object Inference Resolution defaults to 2K (index %d)" % default_resolution)
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        require(ok, "the selection is back before the resolution change")
+        resolution.setValue(0)
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        require(ok, "the outline is shown at Full")
+        key(gl, Qt.Key_Return)
+        ok = yield ("until", lambda: len(shapes(roto)) >= 1, POLL_TIMEOUT_S)
+        require(ok, "Return commits the selection at Full")
+        full_points = sorted(tuple(round(v, 3) for v in c.getControlPointPosition(i, time)[:2])
+                             for c in shapes(roto) for i in range(c.getNumControlPoints()))
+        undo = edit_action("undo")
+        require(undo is not None and undo.isEnabled(), "Undo is enabled after the Full commit")
+        undo.trigger()
+        ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+        require(ok, "undo removes the Full commit's shapes")
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        require(ok, "and brings the selection back")
+
+        resolution.setValue(2)
+        QApplication.processEvents()
+        yield ("sleep", RENDER_MS)
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "the outline is shown at 25%% without a new click (%d outline pixels)" % outline_pixels(gl, box))
+        gt.shot("m205-object-quarter.png")
+        key(gl, Qt.Key_Return)
+        ok = yield ("until", lambda: len(shapes(roto)) >= 1, POLL_TIMEOUT_S)
+        require(ok, "Return commits the selection at 25%")
+        quarter = shapes(roto)
+        quarter_points = sorted(tuple(round(v, 3) for v in c.getControlPointPosition(i, time)[:2])
+                                for c in quarter for i in range(c.getNumControlPoints()))
+        check(quarter_points != full_points,
+              "a new inference ran at 25%%: its shapes differ from Full's (%d against %d points)" % (len(quarter_points), len(full_points)))
+        iou = matte_iou(quarter, time)
+        check(iou > 0.8, "the 25%% shapes still match the object at full resolution, so the click stayed in place (IoU %.3f)" % iou)
+
+        undo = edit_action("undo")
+        require(undo is not None and undo.isEnabled(), "Undo is enabled after the 25% commit")
+        undo.trigger()
+        ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+        check(ok, "one undo removes the 25% commit")
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "and brings the selection back")
+        key(gl, Qt.Key_Backspace)
+        ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+        check(ok, "the resolution changes kept a single click: one Backspace clears the selection")
+        resolution.setValue(default_resolution)
 
     gt.run(steps())
 except Exception:

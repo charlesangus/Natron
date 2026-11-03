@@ -379,7 +379,184 @@ appendBoxes(const std::vector<SegmentationBox>& boxes,
     }
 }
 
+// For each destination pixel along one axis, the first source pixel it reads and their weights.
+struct AxisTaps {
+    std::vector<int> first;
+    std::vector<int> count;
+    std::vector<float> weights;
+    std::vector<std::size_t> offset;
+};
+
+AxisTaps
+axisTaps(int srcN,
+         int dstN)
+{
+    AxisTaps taps;
+    taps.first.resize(dstN);
+    taps.count.resize(dstN);
+    taps.offset.resize(dstN);
+    const double ratio = (double)srcN / (double)dstN;
+
+    for (int i = 0; i < dstN; ++i) {
+        taps.offset[i] = taps.weights.size();
+        if (ratio > 1.) {
+            // Area average over the source span the destination pixel covers.
+            const double a = i * ratio;
+            const double b = std::min((double)srcN, (i + 1) * ratio);
+            const int j0 = std::max(0, (int)std::floor(a));
+            const int j1 = std::min(srcN - 1, (int)std::ceil(b) - 1);
+            taps.first[i] = j0;
+            taps.count[i] = j1 - j0 + 1;
+            double sum = 0.;
+            for (int j = j0; j <= j1; ++j) {
+                const double w = std::min(b, (double)(j + 1)) - std::max(a, (double)j);
+                taps.weights.push_back((float)std::max(0., w));
+                sum += std::max(0., w);
+            }
+            for (int k = 0; k < taps.count[i]; ++k) {
+                taps.weights[taps.offset[i] + k] = (float)(taps.weights[taps.offset[i] + k] / sum);
+            }
+        } else {
+            const double s = std::min((double)srcN - 1., std::max(0., (i + 0.5) * ratio - 0.5));
+            const int j0 = (int)s;
+            const int j1 = std::min(j0 + 1, srcN - 1);
+            const float t = (float)(s - j0);
+            taps.first[i] = j0;
+            taps.count[i] = (j1 > j0) ? 2 : 1;
+            taps.weights.push_back((j1 > j0) ? 1.f - t : 1.f);
+            if (j1 > j0) {
+                taps.weights.push_back(t);
+            }
+        }
+    }
+
+    return taps;
+}
+
 } // namespace
+
+void
+SegmentationScaling::inferenceSize(int width,
+                                   int height,
+                                   SegmentationResolution resolution,
+                                   int* outWidth,
+                                   int* outHeight)
+{
+    width = std::max(1, width);
+    height = std::max(1, height);
+    double scale = 1.;
+    int longEdge = 0;
+    switch (resolution) {
+    case SegmentationResolution::eFull:
+        break;
+    case SegmentationResolution::eHalf:
+        scale = 0.5;
+        break;
+    case SegmentationResolution::eQuarter:
+        scale = 0.25;
+        break;
+    case SegmentationResolution::e1K:
+        longEdge = 1024;
+        break;
+    case SegmentationResolution::e2K:
+        longEdge = 2048;
+        break;
+    case SegmentationResolution::e4K:
+        longEdge = 4096;
+        break;
+    }
+    if (longEdge > 0) {
+        scale = std::min(1., (double)longEdge / (double)std::max(width, height));
+    }
+    if (scale >= 1.) {
+        *outWidth = width;
+        *outHeight = height;
+
+        return;
+    }
+    *outWidth = std::min(width, std::max(1, (int)std::lround(width * scale)));
+    *outHeight = std::min(height, std::max(1, (int)std::lround(height * scale)));
+}
+
+float
+SegmentationScaling::mapCoordinate(float v,
+                                   int srcSize,
+                                   int dstSize)
+{
+    if ((srcSize == dstSize) || (srcSize <= 0)) {
+        return v;
+    }
+
+    return (v + 0.5f) * (float)dstSize / (float)srcSize - 0.5f;
+}
+
+std::vector<float>
+SegmentationScaling::resample(const float* src,
+                              int srcWidth,
+                              int srcHeight,
+                              int channels,
+                              int dstWidth,
+                              int dstHeight)
+{
+    const std::size_t srcCount = (std::size_t)srcWidth * srcHeight * channels;
+
+    if ((srcWidth == dstWidth) && (srcHeight == dstHeight)) {
+        return std::vector<float>(src, src + srcCount);
+    }
+    const AxisTaps xTaps = axisTaps(srcWidth, dstWidth);
+    const AxisTaps yTaps = axisTaps(srcHeight, dstHeight);
+
+    // Rows first, so that the vertical pass reads rows already narrowed.
+    std::vector<float> rows((std::size_t)dstWidth * srcHeight * channels, 0.f);
+    for (int y = 0; y < srcHeight; ++y) {
+        const float* srow = src + (std::size_t)y * srcWidth * channels;
+        float* drow = &rows[(std::size_t)y * dstWidth * channels];
+        for (int x = 0; x < dstWidth; ++x) {
+            const float* w = &xTaps.weights[xTaps.offset[x]];
+            float* d = drow + (std::size_t)x * channels;
+            for (int k = 0; k < xTaps.count[x]; ++k) {
+                const float* s = srow + (std::size_t)(xTaps.first[x] + k) * channels;
+                for (int c = 0; c < channels; ++c) {
+                    d[c] += s[c] * w[k];
+                }
+            }
+        }
+    }
+
+    std::vector<float> out((std::size_t)dstWidth * dstHeight * channels, 0.f);
+    const std::size_t rowSize = (std::size_t)dstWidth * channels;
+    for (int y = 0; y < dstHeight; ++y) {
+        const float* w = &yTaps.weights[yTaps.offset[y]];
+        float* drow = &out[(std::size_t)y * rowSize];
+        for (int k = 0; k < yTaps.count[y]; ++k) {
+            const float* srow = &rows[(std::size_t)(yTaps.first[y] + k) * rowSize];
+            for (std::size_t i = 0; i < rowSize; ++i) {
+                drow[i] += srow[i] * w[k];
+            }
+        }
+    }
+
+    return out;
+} // SegmentationScaling::resample
+
+std::vector<float>
+SegmentationScaling::upsampleMask(const std::vector<float>& mask,
+                                  int srcWidth,
+                                  int srcHeight,
+                                  int dstWidth,
+                                  int dstHeight)
+{
+    if ((srcWidth == dstWidth) && (srcHeight == dstHeight)) {
+        return mask;
+    }
+    if ((srcWidth <= 0) || (srcHeight <= 0) || (mask.size() != (std::size_t)srcWidth * srcHeight)) {
+        return std::vector<float>();
+    }
+    std::vector<float> out((std::size_t)dstWidth * dstHeight);
+    resamplePlane(mask.data(), srcWidth, srcHeight, out.data(), dstWidth, dstHeight);
+
+    return out;
+}
 
 Segmenter::Arch
 Segmenter::archFromConfig(const ModelConfig& config)

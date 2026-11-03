@@ -664,7 +664,7 @@ try:
         node.getParam("shapeBrushSize").setValue(BRUSH2_SIZE)
         node.getParam("shapeAlgorithm").setValue(ALGORITHM_FILL)
         node.getParam("shapeFillMode").setValue(FILL_MODE_COLOR)
-        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY)
+        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY, 1.0)
         yield ("sleep", SETTLE_MS)
         names_before = item_names(ctx)
         drag(visible_viewer(), to_widget(BRUSH2_FROM), to_widget(BRUSH2_TO), Qt.NoModifier, 16)
@@ -704,7 +704,7 @@ try:
         node.getParam("shapeBrushSize").setValue(BRUSH1_EDIT_SIZE)
         node.getParam("shapeAlgorithm").setValue(ALGORITHM_FILL)
         node.getParam("shapeFillMode").setValue(FILL_MODE_COLOR)
-        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY)
+        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY, 1.0)
         node.getParam("shapeScale").setValue(0)
         yield ("sleep", SETTLE_MS)
         check(brush1.getParam("shapeBrushSize").getValue() == BRUSH1_EDIT_SIZE

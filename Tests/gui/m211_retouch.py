@@ -784,7 +784,10 @@ try:
             return out
 
         def differs(a, b):
-            return a is None or b is None or any(abs(x - y) > COLOUR_SLACK for x, y in zip(a, b))
+            # Two overlay samples agree: the dashed line to the source crosses the disc and stays put.
+            if a is None or b is None:
+                return (a is None) != (b is None)
+            return any(abs(x - y) > COLOUR_SLACK for x, y in zip(a, b))
 
         def settled(sample):
             """Waits until two samples RENDER_MS apart agree, and returns the last one, or None when

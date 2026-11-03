@@ -435,27 +435,21 @@ RotoCurveContext::makeEllipse(double x,
                               double time)
 {
     double half = diameter / 2.;
-    BezierPtr curve = makeBezier(x, fromCenter ? y - half : y, kRotoEllipseBaseName, time, false);
+    // The positions are not read back from the points: during a render the points are written to
+    // the GUI curves only, and the internal ones still read 0.
+    const double topX = x;
+    const double topY = fromCenter ? y - half : y;
+    const double rightX = fromCenter ? x + half : x + diameter;
+    const double rightY = fromCenter ? y : y - diameter;
+    const double btmX = x;
+    const double btmY = fromCenter ? y + half : y - diameter;
+    const double leftX = fromCenter ? x - half : x - diameter;
+    const double leftY = fromCenter ? y : y - diameter;
+    BezierPtr curve = makeBezier(topX, topY, kRotoEllipseBaseName, time, false);
 
-    if (fromCenter) {
-        curve->addControlPoint(x + half, y, time);
-        curve->addControlPoint(x, y + half, time);
-        curve->addControlPoint(x - half, y, time);
-    } else {
-        curve->addControlPoint(x + diameter, y - diameter, time);
-        curve->addControlPoint(x, y - diameter, time);
-        curve->addControlPoint(x - diameter, y - diameter, time);
-    }
-
-    BezierCPPtr top = curve->getControlPointAtIndex(0);
-    BezierCPPtr right = curve->getControlPointAtIndex(1);
-    BezierCPPtr bottom = curve->getControlPointAtIndex(2);
-    BezierCPPtr left = curve->getControlPointAtIndex(3);
-    double topX, topY, rightX, rightY, btmX, btmY, leftX, leftY;
-    top->getPositionAtTime(false, time, ViewIdx(0), &topX, &topY);
-    right->getPositionAtTime(false, time, ViewIdx(0), &rightX, &rightY);
-    bottom->getPositionAtTime(false, time, ViewIdx(0), &btmX, &btmY);
-    left->getPositionAtTime(false, time, ViewIdx(0), &leftX, &leftY);
+    curve->addControlPoint(rightX, rightY, time);
+    curve->addControlPoint(btmX, btmY, time);
+    curve->addControlPoint(leftX, leftY, time);
 
     curve->setLeftBezierPoint(0, time, (leftX + topX) / 2., topY);
     curve->setRightBezierPoint(0, time, (rightX + topX) / 2., topY);

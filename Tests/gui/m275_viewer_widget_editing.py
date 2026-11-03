@@ -42,9 +42,9 @@ SETTLE_MS = 400
 RENDER_MS = 1200
 EPS = 1e-9
 
-TRANSFORM = "net.sf.openfx.TransformPlugin"
-POSITION = "net.sf.openfx.Position"
-CONSTANT = "net.sf.openfx.ConstantPlugin"
+TRANSFORM = "Transform"
+POSITION = "Position"
+CONSTANT = "Constant"
 
 # Distinct per-dimension values keep 2D knobs unfolded in the panel, so each dimension has a box.
 TRANSFORM_KEYS = {"translate": (3.0, 10.0), "rotate": (7.0,), "scale": (1.5, 1.25)}
@@ -498,7 +498,7 @@ try:
         require(ok, "the main window is active")
         gt.close_all_panels()
 
-        viewer_node = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 400, 400)
+        viewer_node = app.getNode("Viewer1") or create("Viewer", 400, 400)
         constant = create(CONSTANT, 0, 0)
         for d, v in enumerate((0.0, 0.0, 0.0, 1.0)):
             constant.getParam("color").setValue(v, d)

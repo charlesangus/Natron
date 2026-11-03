@@ -119,8 +119,8 @@ try:
         yield from expect_line("after clear all", [4])
 
         gt.section("failed render")
-        read = app.createNode("fr.inria.built-in.Read")
-        require(read is not None, "create a Read", gt.plugin_problem("fr.inria.built-in.Read"))
+        read = app.createNode("Read")
+        require(read is not None, "create a Read", gt.plugin_problem("Read"))
         read.getParam("filename").setValue(os.path.join(gt.OUT, "m178-missing-file.exr"))
         gt.close_all_panels()
         viewer.disconnectInput(0)

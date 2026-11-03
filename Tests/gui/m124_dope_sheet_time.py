@@ -32,11 +32,11 @@ STARTUP_TIMEOUT_S = 60.0
 POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 240
 SETTLE_MS = 400
-READ_ID = "fr.inria.built-in.Read"
+READ_ID = "Read"
 TIMEOFFSET_ID = "TimeOffset"
 FRAMERANGE_ID = "FrameRange"
 RETIME_ID = "Retime"
-TRANSFORM_ID = "net.sf.openfx.TransformPlugin"
+TRANSFORM_ID = "Transform"
 SEQUENCE = "flat-seq-layers.####.exr"
 READ_LAST_FRAME = 30
 CONSTANT_OFFSET = 10
@@ -484,7 +484,7 @@ try:
         rotate = transform.getParam("rotate")
         require(rotate is not None, "the Transform has a rotate parameter")
         rotate.setValueAtTime(30.0, KEY_FRAME, 0)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)

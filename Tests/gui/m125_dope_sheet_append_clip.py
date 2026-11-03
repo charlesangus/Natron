@@ -29,10 +29,10 @@ STARTUP_TIMEOUT_S = 60.0
 POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 240
 SETTLE_MS = 400
-READ_ID = "fr.inria.built-in.Read"
+READ_ID = "Read"
 APPENDCLIP_ID = "AppendClip"
 FRAMERANGE_ID = "FrameRange"
-TRANSFORM_ID = "net.sf.openfx.TransformPlugin"
+TRANSFORM_ID = "Transform"
 SEQUENCE = "flat-seq-layers.####.exr"
 READ1_LAST_FRAME = 20
 READ2_LAST_FRAME = 30
@@ -387,7 +387,7 @@ try:
 
         # ---- keys above input 2 follow where AppendClip plays it.
         gt.section("keys through AppendClip")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)

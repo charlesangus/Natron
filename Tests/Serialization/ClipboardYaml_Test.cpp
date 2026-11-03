@@ -175,7 +175,7 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
 TEST(ClipboardYaml, ACopiedNodeLeavesItsCacheIDBehind)
 {
     ClipboardSerialization clipboard;
-    NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur");
+    NodeSerializationPtr blur = makeNode("Blur1", "Blur");
     blur->cacheID = "0b6f1d3c-6a0e-4c43-9f55-2f7e8d1a4b90";
     clipboard.nodes = { blur };
     const std::string text = Serialization::encodeClipboardYaml(clipboard);

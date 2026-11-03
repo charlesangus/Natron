@@ -20,9 +20,9 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
-READ_ID = "fr.inria.built-in.Read"
-WRITE_ID = "fr.inria.built-in.Write"
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
+READ_ID = "Read"
+WRITE_ID = "Write"
+CONSTANT_ID = "Constant"
 GREEN = (0.1, 0.8, 0.1)
 BLUE = (0.1, 0.1, 0.8)
 FILE_RELOAD_TOOLTIP = "Reload the file"
@@ -141,7 +141,7 @@ try:
         else:
             report("NOTE could not save screenshot " + path)
 
-    viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
     require(viewer is not None, "a Viewer node exists")
     viewer.setPosition(400, 600)
     state["viewer"] = viewer

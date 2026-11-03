@@ -536,7 +536,7 @@ TEST(ProjectYaml, NodeWithoutLayoutWritesNoLayoutKeys)
 TEST(ProjectYaml, ANodeCacheIDRoundTrips)
 {
     ProjectSerialization project;
-    NodeSerializationPtr read = makeNode("Read1", "fr.inria.built-in.Read", 1, 0);
+    NodeSerializationPtr read = makeNode("Read1", "Read", 1, 0);
     read->cacheID = "0b6f1d3c-6a0e-4c43-9f55-2f7e8d1a4b90";
     project.nodes.nodes = { read };
     Serialization::MemoryBlobStore blobs;

@@ -425,15 +425,11 @@ ErodeDilateOp<MODE>::passes(const Params& params,
 }
 
 template <ErodeDilateMode MODE>
-std::optional<GpuCostHint>
-ErodeDilateOp<MODE>::costHint(const Params& params,
-                              const PassContext& context) const
+std::optional<GpuWeight>
+ErodeDilateOp<MODE>::gpuWeight(const Params& params,
+                               const PassContext& context) const
 {
-    GpuCostHint hint;
-
-    hint.size = (int)std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * context.scale.toOfxPointD().x);
-
-    return hint;
+    return gpuSizeScaledWeight(std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * context.scale.toOfxPointD().x));
 }
 
 template struct ErodeDilateOp<ErodeDilateMode::Erode>;

@@ -71,9 +71,16 @@ public:
     }
 
     /**
+     * @brief Why this process cannot make HTTPS requests, or empty when Qt has a TLS backend
+     * that implements sockets. Names the backends Qt found and where it looked for them.
+     **/
+    static std::string tlsUnavailableReason();
+
+    /**
      * @brief Starts downloading the package of model id, or joins its download if one is running.
-     * Returns false, setting error and emitting nothing, when the id is unknown or the temporary
-     * folder cannot be made; otherwise finished() follows.
+     * Returns false, setting error and emitting nothing, when the id is unknown, the package is
+     * served over HTTPS and tlsUnavailableReason() is not empty, or the temporary folder cannot
+     * be made; otherwise finished() follows.
      **/
     bool start(const std::string& id, std::string* error = nullptr);
 

@@ -178,6 +178,13 @@ unpacks it, parses `config.json` for each model of the package, and renames the 
 A failure at any step deletes the temporary folder and leaves what was installed untouched. A second
 request for a package being downloaded joins the first.
 
+Packages come over HTTPS, which needs Qt's OpenSSL TLS backend (`plugins/tls/libqopensslbackend.so`,
+linking OpenSSL 3). The bundle stages it, and `tools/release/check-startup.sh` checks that the
+packaged Natron loads it and OpenSSL from inside the bundle. When no backend works,
+`ModelDownloader::start()` refuses an HTTPS package with `tlsUnavailableReason()`, which names the
+backends found and the folders searched. A failed download says whether the certificate was refused,
+the TLS handshake failed or the server answered with an HTTP error.
+
 `config.json` is darktable-ai's: `ModelConfig` takes the task, tiling, input sizes (the tile size),
 input kind and colour space from it, looking up a model's attributes by its file stem
 (`model_x4`) over the package-wide ones. Tensor names and shapes are not in it; the session reads
@@ -197,7 +204,8 @@ can't and returns nothing.
 tree (`NATRON_TESTS_ONNXRUNTIME_DIR`). The tests use the tiny models in `Tests/fixtures/ai`, which
 `tools/ai/make-test-models.py` generates. The downloader tests install `identity.dtmodel`, which
 `tools/ai/make-test-dtmodel.py` packs, through a `file://` URL in a manifest they write, so they never
-touch the network.
+touch the network. The HTTP error test serves a 404 from a local `QTcpServer`, and the TLS test
+asserts the tree's Qt has a working OpenSSL backend.
 
 `InferenceSession::setFailureInjectorForTesting()` makes chosen runs fail with a given ORT message.
 With it, the tests drive the out-of-memory and error paths without a device that actually fails.

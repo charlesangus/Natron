@@ -494,6 +494,11 @@ public:
 
     void setItemKey(const RotoItemPtr& item, double time);
 
+    // Every shape's keyframes are followed, selected or not, so the timeline shows current
+    // keys as soon as a shape is selected.
+    void trackBezierKeyframes(const BezierPtr& bezier);
+    void untrackBezierKeyframes(const BezierPtr& bezier);
+
     void removeItemKey(const RotoItemPtr& item, double time);
 
     void removeItemAnimation(const RotoItemPtr& item);
@@ -777,14 +782,6 @@ RotoPanel::onSelectionChangedInternal()
     std::list<std::set<double> > toRemove;
 
     for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (isBezier) {
-            QObject::disconnect( isBezier.get(), SIGNAL(keyframeSet(double)), this, SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-            QObject::disconnect( isBezier.get(), SIGNAL(aboutToClone()), this, SLOT(onSelectedBezierAboutToClone()) );
-            QObject::disconnect( isBezier.get(), SIGNAL(cloned()), this, SLOT(onSelectedBezierCloned()) );
-        }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
         if ( found != _imp->keyframes.end() ) {
             toRemove.push_back(found->second.keys);
@@ -817,13 +814,8 @@ RotoPanel::onSelectionChangedInternal()
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         const RotoLayer* isLayer = dynamic_cast<const RotoLayer*>( it->get() );
         if (isBezier) {
-            QObject::connect( isBezier.get(), SIGNAL(keyframeSet(double)), this, SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::connect( isBezier.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::connect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-            QObject::connect( isBezier.get(), SIGNAL(aboutToClone()), this, SLOT(onSelectedBezierAboutToClone()) );
-            QObject::connect( isBezier.get(), SIGNAL(cloned()), this, SLOT(onSelectedBezierCloned()) );
             ++selectedBeziersCount;
-        } else if ( isLayer && !isLayer->getItems().empty() ) {
+        } else if (isLayer && !isLayer->getItems().empty()) {
             ++selectedBeziersCount;
         }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
@@ -1245,6 +1237,7 @@ RotoPanelPrivate::insertItemRecursively(double time,
                 keys.visible = false;
                 keyframes.insert( std::make_pair(isBezier, keys) );
             }
+            trackBezierKeyframes(isBezier);
         }
     } else if (layer) {
         treeItem->setIcon(0, iconLayer);
@@ -1348,6 +1341,7 @@ RotoPanelPrivate::insertItemInternal(int reason,
             keys.visible = false;
             keyframes.insert( std::make_pair(isBezier, keys) );
         }
+        trackBezierKeyframes(isBezier);
     }
     if ( (RotoItem::SelectionReasonEnum)reason == RotoItem::eSelectionReasonSettingsPanel ) {
         RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
@@ -1365,18 +1359,16 @@ void
 RotoPanel::onItemRemoved(const RotoItemPtr& item,
                          int reason)
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
 
     if (isBezier) {
+        _imp->untrackBezierKeyframes(isBezier);
         ItemKeys::iterator it = _imp->keyframes.find(isBezier);
         if ( it != _imp->keyframes.end() ) {
-            for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
-                getNode()->getNode()->getApp()->removeKeyFrameIndicator(*it2);
+            if (it->second.visible) {
+                for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
+                    getNode()->getNode()->getApp()->removeKeyFrameIndicator(*it2);
+                }
             }
             _imp->keyframes.erase(it);
         }
@@ -1841,18 +1833,6 @@ RotoPanel::onItemSelectionChanged()
     std::list<std::set<double> > toRemove;
 
     for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (isBezier) {
-            QObject::disconnect( isBezier.get(),
-                                 SIGNAL(keyframeSet(double)),
-                                 this,
-                                 SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::disconnect( isBezier.get(),
-                                 SIGNAL(keyframeRemoved(double)),
-                                 this,
-                                 SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-        }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
         if ( found != _imp->keyframes.end() ) {
             toRemove.push_back(found->second.keys);
@@ -2421,6 +2401,26 @@ RotoPanelPrivate::itemHasKey(const RotoItemPtr& item,
 }
 
 void
+RotoPanelPrivate::trackBezierKeyframes(const BezierPtr& bezier)
+{
+    QObject::connect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()), Qt::UniqueConnection);
+}
+
+void
+RotoPanelPrivate::untrackBezierKeyframes(const BezierPtr& bezier)
+{
+    QObject::disconnect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)));
+    QObject::disconnect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)));
+    QObject::disconnect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()));
+    QObject::disconnect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()));
+    QObject::disconnect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()));
+}
+
+void
 RotoPanelPrivate::setItemKey(const RotoItemPtr& item,
                              double time)
 {
@@ -2528,7 +2528,8 @@ RotoPanel::onSettingsPanelClosed(bool closed)
         for (TreeItems::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
             BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(it->rotoItem);
             if (isBezier) {
-                assert ( _imp->keyframes.find(isBezier) == _imp->keyframes.end() );
+                _imp->keyframes.erase(isBezier);
+                _imp->trackBezierKeyframes(isBezier);
                 TimeLineKeys keys;
                 isBezier->getKeyframeTimes(&keys.keys);
                 keys.visible = false;

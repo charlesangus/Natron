@@ -32,24 +32,16 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
-#include "Engine/RenderStats.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Calibration samples of the members of a pipelined GPU region, taken from the intervals whose device time was
- * not shared with a transfer.
- *
- * Only the timestamped uploads and downloads make up the transfer-busy intervals: pinned downloads are not
- * timestamped, so contention from them cannot be seen here.
+ * @brief Interval arithmetic over the busy times of a pipelined GPU region's compute and transfers.
  **/
 namespace GpuMemberTiming {
 
 // Half-open [begin, end) intervals, all in one timebase.
 typedef std::vector<std::pair<std::uint64_t, std::uint64_t>> Intervals;
-
-// An interval is contended when more than this fraction of its length overlaps the transfer-busy intervals.
-static const double kDefaultContendedFraction = 0.10;
 
 // The sorted, disjoint intervals covering the same time as intervals; touching and overlapping ones are merged.
 Intervals unionOf(Intervals intervals);
@@ -60,36 +52,6 @@ std::uint64_t lengthOf(const Intervals& intervals);
 // The length of the time both a and b cover. a and b must each be sorted and disjoint, as unionOf returns them.
 std::uint64_t overlapOf(const Intervals& a,
                         const Intervals& b);
-
-// What the clean intervals of one member add up to.
-struct MemberSample {
-    int member = 0;
-
-    // Summed length of the clean intervals.
-    std::uint64_t cleanNs = 0;
-
-    // Summed pixels of the clean intervals, in millions. They are the pixels the member computed, halo rows included,
-    // not the area of its task's RoI.
-    double cleanMegapixels = 0.;
-
-    int cleanCount = 0;
-    int contendedCount = 0;
-
-    bool hasSample() const { return cleanCount > 0; }
-};
-
-/**
- * @brief Splits each member's intervals into clean and contended against transferBusy and sums the clean ones. One
- * sample per member that has an interval, ordered by member index. Intervals with a nonpositive length are ignored.
- *
- * planes[m], where given and positive, is how many planes member m renders, each in an interval of its own over the
- * same pixels. Each such interval counts that fraction of its pixels, so that the clean megapixels count the task's
- * area once and the sample is the task's rate with all its planes, as the cost model prices a task.
- **/
-std::vector<MemberSample> cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
-                                             const Intervals& transferBusy,
-                                             const std::vector<int>& planes = std::vector<int>(),
-                                             double contendedFraction = kDefaultContendedFraction);
 
 } // namespace GpuMemberTiming
 

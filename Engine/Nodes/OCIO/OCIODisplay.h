@@ -103,6 +103,9 @@ struct OCIODisplayOp {
 
     GpuOpRef gpu(const Params& params) const;
 
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
+
     /**
      * @brief Fills the display menu, and the view menu with the views of the chosen display, and
      * makes the config's default display and view the knobs' defaults. When the menus were filled

@@ -57,6 +57,14 @@ Selection's viewer dropdown and M251 - Cycles Rendering.
 
 **Verification gate:** CI green; in the Xvfb GUI a Cycles viewer refines, restarts on edit, stops at Max Samples and on Stop; no engine or thread leaks on viewer close; screenshots of an early and a converged frame are shared with the user.
 
+## Phase 254.2: Max Samples on the Viewer node
+
+- [ ] M254.P2.T1 — Max Samples and Stop/Resume as Viewer knobs in a viewer toolbar
+  - files: `Engine/ViewerNode*.{h,cpp}` (Viewer knobs), `Gui/ViewerTab*`/`Gui/SceneViewport.{h,cpp}` (toolbar), `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, the M254 tests
+  - approach: replace the Renderer-submenu spin box with Viewer node knobs `maxSamples` ("Max Samples") and a Stop/Resume button knob; show them in a viewer toolbar, visible when the viewer's renderer is progressive (non-Storm), driven by the knobs (so they save with the project and are scriptable). Changing Max Samples restarts refinement as before; the sample counter stays in the toolbar. The 4K event-loop check records only on remote runners.
+  - verify: release gate green; GUI check sets `maxSamples` via Python and sees the toolbar value and refinement stop at the cap; screenshot of the toolbar shared with the user.
+  - size: L
+
 ## Decisions
 
 - 2026-10-28: Implemented (build pending). HydraRender::ProgressiveRender runs a background refine loop for any non-Storm renderer; stops at converged + cap, or no progress for 1 s. SceneStage::sync changes → invalidate(); edits coalesced (20 ms quiet, 100 ms cap); stale passes dropped. Deviation: Max Samples is a spin box in the viewer's Renderer submenu (M248 put renderer choice there), with Stop/Resume; changing it restarts. Edits wait while stopped. Render at nice 10 on effect CPU budget − 1. Open (user): menu spin box OK instead of a knob? 4K event-loop check hard-fail or record-only?

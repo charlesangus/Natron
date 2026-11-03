@@ -145,6 +145,9 @@ public:
         , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
         , lastRenderParams()
+        , lastLookupMutex()
+        , lastLookup()
+        , hasLastLookup(false)
         , partialUpdateRects()
         , viewportCenter()
         , viewportCenterSet(false)
@@ -510,6 +513,11 @@ public:
     //When painting, this is the last texture we've drawn onto so that we can update only the specific portion needed
     mutable QMutex lastRenderParamsMutex;
     UpdateViewerParamsPtr lastRenderParams[2];
+
+    // The last full-quality cache lookup of input A, which the timeline's cached line follows.
+    mutable QMutex lastLookupMutex;
+    ViewerFrameFilter lastLookup;
+    bool hasLastLookup;
 
     /*
      * @brief If this list is not empty, this is the list of canonical rectangles we should update on the viewer, completely

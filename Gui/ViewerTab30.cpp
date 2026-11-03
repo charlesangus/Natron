@@ -46,6 +46,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
@@ -882,6 +883,11 @@ ViewerTab::refreshCompositingOperatorFromKnob()
     } else {
         manageSlotsForInfoWidget(1, true);
         _imp->infoWidget[1]->show();
+    }
+
+    // Input B joins or leaves the displayed inputs RFVRead resolves through.
+    if (getGui()) {
+        RFV::scheduleReaderRefresh(getGui()->getApp());
     }
 
     _imp->viewer->update();

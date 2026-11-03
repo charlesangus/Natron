@@ -87,6 +87,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/UndoRecorder.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -281,6 +282,25 @@ AppInstance::getNodesBeingCreated() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_creatingNodeQueue;
+}
+
+NodePtr
+AppInstance::getActiveViewerNode() const
+{
+    ViewerInstance* last = getLastViewerUsingTimeline();
+    NodePtr node = last ? last->getNode() : NodePtr();
+    if (node) {
+        return node;
+    }
+    ProjectPtr project = getProject();
+    const NodesList nodes = project ? project->getNodes() : NodesList();
+    for (const NodePtr& candidate : nodes) {
+        if (candidate && candidate->isEffectViewer() && candidate->isActivated()) {
+            return candidate;
+        }
+    }
+
+    return NodePtr();
 }
 
 bool
@@ -1112,6 +1132,19 @@ AppInstance::createWriter(const std::string& filename,
     return createNode(args);
 }
 
+NodePtr
+AppInstance::createWriterFor(const NodePtr& source,
+                             CreateNodeArgs& args)
+{
+    NodePtr writer = createWriter(std::string(), args);
+
+    if (writer && source) {
+        writer->connectInput(source, 0);
+    }
+
+    return writer;
+}
+
 static std::string removeTrailingDigits(const std::string& str)
 {
     if (str.empty()) {
@@ -1660,6 +1693,7 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
         groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
+        groups << QString::fromUtf8(PLUGIN_GROUP_RFV);
         groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
         groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);
         groups << QString::fromUtf8("Extra"); // openfx-arena

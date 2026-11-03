@@ -274,6 +274,27 @@ public:
      **/
     void setPointAtIndex(bool feather, int index, double time, double x, double y, double lx, double ly, double rx, double ry);
 
+    /**
+     * @brief Moves the control point at index to (x, y) in the shape's own coordinates at an
+     * existing keyframe, taking its tangents along. The feather point follows when the feather
+     * link is on or when it sits on the control point. Ignores auto-keying and ripple edit.
+     * Returns false, changing nothing, when there is no keyframe at time or no such point.
+     **/
+    bool setPointPositionAtKeyframe(int index, double time, double x, double y);
+
+    /**
+     * @brief Reads the control point's position at time from the curve setPointPositionAtKeyframe
+     * writes to, so a read-modify-write of one coordinate sees the other's pending edit.
+     * Returns false when there is no such point.
+     **/
+    bool getPointPositionForEdit(int index, double time, double* x, double* y) const;
+
+    /**
+     * @brief Asks the curve editor to show (or stop showing) the x/y curves of the given
+     * control points, which must belong to this shape.
+     **/
+    void requestPointsInCurveEditor(const std::list<BezierCPPtr>& points, bool show);
+
 private:
 
     void setPointAtIndexInternal(bool setLeft, bool setRight, bool setPoint, bool feather, bool featherAndCp, int index, double time, double x, double y, double lx, double ly, double rx, double ry);
@@ -715,6 +736,8 @@ Q_SIGNALS:
     void animationRemoved();
 
     void controlPointRemoved();
+
+    void curveEditorPointsRequested(const std::list<BezierCPPtr>& points, bool show);
 
 private:
 

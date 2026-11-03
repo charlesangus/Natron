@@ -165,6 +165,12 @@ RenderContextName::loops(const std::string& loopName,
     return RenderContextName("loops." + loopName, name);
 }
 
+RenderContextName
+RenderContextName::choiceLabels(const std::string& name)
+{
+    return RenderContextName("choiceLabels", name);
+}
+
 namespace {
 U64
 bindingIdentity(const KnobIPtr& knob,

@@ -298,6 +298,24 @@ GuiApp::getRGBColorDialog() const
     return ret;
 }
 
+Effect*
+GuiApp::createNodeInGraph(const QString& pluginID,
+                          int majorVersion,
+                          Group* group,
+                          const NodeCreationPropertyMap& props) const
+{
+    GuiAppInstancePtr app = getInternalGuiApp();
+    NodeCollectionPtr collection;
+    if (!group && app && !app->getNodeCreationContextCollection() && app->getGui()) {
+        collection = app->getGui()->getLastSelectedNodeCollection();
+    }
+    if (!collection) {
+        collection = getCollectionFromGroup(group);
+    }
+
+    return createNodeInCollection(pluginID, majorVersion, collection, props, true);
+}
+
 std::list<Effect*>
 GuiApp::getSelectedNodes(Group* group) const
 {

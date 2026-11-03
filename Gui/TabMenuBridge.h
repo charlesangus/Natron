@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <QPointF>
 #include <QString>
 
 #include "Gui/GuiFwd.h"
@@ -47,6 +48,13 @@ namespace TabMenuBridge {
  * a graph the action is triggered as is.
  **/
 void triggerAction(QAction* action);
+
+/**
+ * @brief Triggers action with a node creation context on graph at scenePos, as triggerAction() does
+ * for the tab menu's graph, so that a shortcut bound to a nodes menu action creates its node where a
+ * plug-in's own shortcut would. Without a graph the action is triggered as is.
+ **/
+void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scenePos);
 
 /**
  * @brief Records the graph and the cursor's scene position, then opens the tab menu.

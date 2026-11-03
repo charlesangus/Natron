@@ -1046,6 +1046,12 @@ RotoPaint::onOverlayClaimsAltPenDown(double time,
     return _imp->ui->claimsAltPenDown(time, pos);
 }
 
+void
+RotoPaint::onOverlayPenDownModifiers(KeyboardModifiers modifiers)
+{
+    _imp->ui->syncModifiers(modifiers);
+}
+
 bool
 RotoPaint::onOverlayPenMotion(double time,
                               const RenderScale& /*renderScale*/,

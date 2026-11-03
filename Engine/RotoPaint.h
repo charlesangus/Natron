@@ -155,6 +155,7 @@ private:
     virtual bool onOverlayPenDown(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp, PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool onOverlayClaimsAltPenDown(double time, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void onOverlayPenDownModifiers(KeyboardModifiers modifiers) OVERRIDE FINAL;
     virtual bool onOverlayPenMotion(double time, const RenderScale & renderScale, ViewIdx view,
                                     const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayPenUp(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;

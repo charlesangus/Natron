@@ -19,9 +19,14 @@ Checks, each on its own shape:
   - V pressed again cycles the drawing tools (Bezier to Ellipse); Shift+drag draws a circle (equal
     width and height); Ctrl+Shift+drag draws it from the centre (the shape is centred on the press).
   - Ripple edit draws a red border just inside the viewer edges, and no border once it is off.
+  - Shift+E resets the feather of the selected point only; with the shape selected and no point,
+    it resets every feather of the shape. One undo restores them.
   - A plain drag of a feather bar grows the feather tangents with the feather; Alt+drag of the bar
-    moves the feather but keeps its tangents and does not pan the viewer. Alt+drag on empty viewer
-    space pans the viewer and changes no shape.
+    moves the feather but keeps its tangents and does not pan the viewer.
+  - Alt+drag of a feather point or a feather tangent moves it without panning; plain drags of each
+    still work afterwards. After an Alt press whose release is lost, plain drags of both still work
+    and a plain feather bar drag still grows the tangents. Alt+drag on empty viewer space pans the
+    viewer and changes no shape.
 Saves screenshots of the sketched shape, the moved pivot and the ripple border.
 
 Modifiers are read by the roto interact from key events, so every modified gesture sends the
@@ -309,6 +314,13 @@ try:
     def close(a, b, tol):
         return all(abs(a[i] - b[i]) <= tol for i in range(len(a)))
 
+    def grow_feathers(bez, angles, by):
+        """Moves every feather point, with its tangents, by outwards from its control point."""
+        for i, a in enumerate(angles):
+            c = point(bez, i)
+            ox, oy = math.cos(a) * by, math.sin(a) * by
+            bez.setFeatherPointAtIndex(i, T, c[0] + ox, c[1] + oy, c[2] + ox, c[3] + oy, c[4] + ox, c[5] + oy)
+
     def star(ctx, vmap, gl, handle_fn=None):
         """A closed five-point star-ordered pentagon around the viewer centre, with tangents along
         the outline, or as handle_fn(i, x, y, tx, ty, tl) returns them."""
@@ -450,6 +462,40 @@ try:
         trigger("undo")
         yield ("sleep", SETTLE_MS)
         check(close(feather(bez, 0)[:2], pts[0], 1e-6), "one undo restores the feather")
+
+        gt.section("reset-feather-selected")
+        bez, pts, angles, _c = star(ctx, vmap, gl)
+        grow_feathers(bez, angles, 20 * ps)
+        yield ("sleep", RENDER_MS)
+        grown = [feather(bez, i) for i in range(5)]
+        click(gl, vmap.to_widget(pts[0][0], pts[0][1]))
+        yield ("sleep", SETTLE_MS)
+        with_modifiers(gl, Qt.ShiftModifier, lambda m: send_key(gl, Qt.Key_E, m))
+        yield ("sleep", SETTLE_MS)
+        check(close(feather(bez, 0), point(bez, 0), 1e-6), "Shift+E resets the selected point's feather")
+        check(all(close(feather(bez, i), grown[i], 1e-9) for i in range(1, 5)),
+              "Shift+E leaves the feather of the unselected points alone")
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+        check(all(close(feather(bez, i), grown[i], 1e-9) for i in range(5)), "one undo restores the selected point's feather")
+
+        gt.section("reset-feather-all")
+        # Sharp corners make the outline straight, so the middle of a chord is on the curve.
+        bez, pts, angles, _c = star(ctx, vmap, gl, lambda i, x, y, tx, ty, tl: (x, y, x, y))
+        grow_feathers(bez, angles, 20 * ps)
+        yield ("sleep", RENDER_MS)
+        grown = [feather(bez, i) for i in range(5)]
+        click(gl, QPointF(gl.width() * 0.08, gl.height() * 0.9))
+        yield ("sleep", SETTLE_MS)
+        click(gl, vmap.to_widget((pts[0][0] + pts[1][0]) / 2.0, (pts[0][1] + pts[1][1]) / 2.0))
+        yield ("sleep", SETTLE_MS)
+        with_modifiers(gl, Qt.ShiftModifier, lambda m: send_key(gl, Qt.Key_E, m))
+        yield ("sleep", SETTLE_MS)
+        check(all(close(feather(bez, i), point(bez, i), 1e-6) for i in range(5)),
+              "with the shape selected and no point, Shift+E resets every feather of the shape")
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+        check(all(close(feather(bez, i), grown[i], 1e-9) for i in range(5)), "one undo restores every feather")
 
     def drawing_sections(gl, ctx, vmap):
         ps = vmap.pixel_scale()
@@ -728,6 +774,92 @@ try:
               and abs(length(right_off(after)) - length(right_off(before))) < 1e-6,
               "Alt+drag of the feather bar keeps the feather tangents")
         check(canonical_under(probe) == view_before, "Alt+drag of the feather bar does not pan the viewer")
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("alt-drag-feather-handles")
+        bez, pts, angles, _c = star(ctx, vmap, gl)
+        grow_feathers(bez, angles, 25 * ps)
+        yield ("sleep", RENDER_MS)
+        click(gl, vmap.to_widget(pts[0][0], pts[0][1]))
+        yield ("sleep", SETTLE_MS)
+        sideways = QPointF(20, 0)
+
+        def feather_at():
+            f = feather(bez, 0)
+            return vmap.to_widget(f[0], f[1])
+
+        def feather_tangent_at():
+            f = feather(bez, 0)
+            return vmap.to_widget(f[4], f[5])
+
+        def moved_by(before, after, i):
+            return math.hypot(after[i] - before[i], after[i + 1] - before[i + 1])
+
+        def drag_feather_point(modifiers, what):
+            view_before = canonical_under(probe)
+            before = feather(bez, 0)
+            start = feather_at()
+            if modifiers == Qt.NoModifier:
+                drag(gl, start, start + sideways)
+            else:
+                with_modifiers(gl, modifiers, lambda m: drag(gl, start, start + sideways, m))
+            yield ("sleep", SETTLE_MS)
+            after = feather(bez, 0)
+            report("NOTE %s of the feather point: moved %.3f (20 px = %.3f)" % (what, moved_by(before, after, 0), 20 * ps))
+            check(abs(moved_by(before, after, 0) - 20 * ps) < 0.2 * 20 * ps, "%s of the feather point moves it" % what)
+            check(close(point(bez, 0)[:2], pts[0], 1e-9),
+                  "%s of the feather point leaves the control point" % what)
+            check(canonical_under(probe) == view_before, "%s of the feather point does not pan the viewer" % what)
+            trigger("undo")
+            yield ("sleep", SETTLE_MS)
+
+        def drag_feather_tangent(modifiers, what):
+            view_before = canonical_under(probe)
+            before = feather(bez, 0)
+            start = feather_tangent_at()
+            if modifiers == Qt.NoModifier:
+                drag(gl, start, start + QPointF(0, -15))
+            else:
+                with_modifiers(gl, modifiers, lambda m: drag(gl, start, start + QPointF(0, -15), m))
+            yield ("sleep", SETTLE_MS)
+            after = feather(bez, 0)
+            report("NOTE %s of the feather tangent: handle moved %.3f, point moved %.3f"
+                   % (what, moved_by(before, after, 4), moved_by(before, after, 0)))
+            check(moved_by(before, after, 4) > 10 * ps, "%s of the feather tangent moves the handle" % what)
+            check(moved_by(before, after, 0) < 1e-9, "%s of the feather tangent leaves the feather point" % what)
+            check(canonical_under(probe) == view_before, "%s of the feather tangent does not pan the viewer" % what)
+            trigger("undo")
+            yield ("sleep", SETTLE_MS)
+
+        for cmd in drag_feather_point(Qt.AltModifier, "Alt+drag"):
+            yield cmd
+        for cmd in drag_feather_tangent(Qt.AltModifier, "Alt+drag"):
+            yield cmd
+        for cmd in drag_feather_point(Qt.NoModifier, "a plain drag after an Alt+drag"):
+            yield cmd
+        for cmd in drag_feather_tangent(Qt.NoModifier, "a plain drag after an Alt+drag"):
+            yield cmd
+
+        gt.section("lost-alt-release")
+        # An Alt press whose release never reaches the viewer, as when the window manager takes it.
+        QApplication.sendEvent(gl, QKeyEvent(QEvent.KeyPress, Qt.Key_Alt, Qt.AltModifier))
+        QApplication.processEvents()
+        for cmd in drag_feather_point(Qt.NoModifier, "after a lost Alt release, a plain drag"):
+            yield cmd
+        for cmd in drag_feather_tangent(Qt.NoModifier, "after a lost Alt release, a plain drag"):
+            yield cmd
+        before = feather(bez, 0)
+        f = feather(bez, 0)
+        bar = vmap.to_widget(f[0] + out[0] * 12 * ps, f[1] + out[1] * 12 * ps)
+        drag(gl, bar, bar + (vmap.to_widget(pts[0][0] + out[0] * 30 * ps, pts[0][1] + out[1] * 30 * ps)
+                             - vmap.to_widget(pts[0][0], pts[0][1])))
+        yield ("sleep", SETTLE_MS)
+        after = feather(bez, 0)
+        grew = length(right_off(after)) / length(right_off(before))
+        report("NOTE plain bar drag after a lost Alt release: feather out %.3f, tangent ratio %.4f" % (outward(before, after), grew))
+        check(outward(before, after) > 15 * ps, "after a lost Alt release a plain drag of the feather bar moves the feather")
+        check(grew > 1.05, "after a lost Alt release a plain drag of the feather bar still grows the tangents")
         trigger("undo")
         yield ("sleep", SETTLE_MS)
 

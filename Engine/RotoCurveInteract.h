@@ -707,10 +707,17 @@ public:
     void drawOverlay(double time);
     bool onOverlayPenDown(double time, const QPointF& pos, double pressure, double timestamp, PenType pen);
     /**
-     * @brief True when an Alt+left press at pos would grab a feather bar, the only Alt drag this
-     * interact takes; every other Alt drag is left to the viewer's pan.
+     * @brief True when an Alt+left press at pos would grab a feather handle (a feather point, a
+     * feather tangent or a feather bar), the only Alt drags this interact takes; every other Alt
+     * drag is left to the viewer's pan.
      **/
     bool claimsAltPenDown(double time, const QPointF& pos);
+    /**
+     * @brief Matches shiftDown, ctrlDown and altDown, counted from key events, to the modifiers
+     * held at a pen press. A modifier release the viewer never receives (a window manager or
+     * another widget taking it mid-gesture) would otherwise stay held for every later gesture.
+     **/
+    void syncModifiers(KeyboardModifiers modifiers);
     bool onOverlayPenMotion(double time, const QPointF& pos, double pressure, double timestamp);
     bool onOverlayPenUp();
     bool onOverlayPenDoubleClicked(const QPointF& pos);

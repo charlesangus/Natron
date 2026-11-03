@@ -2541,11 +2541,32 @@ RotoCurveInteract::removeFeatherForSelectedCurve()
     std::list<RemoveFeatherUndoCommand::RemoveFeatherData> datas;
 
     if (!selectedCps.empty()) {
+        // One entry per curve, each feather point once: the command saves a point's state when it
+        // reaches it, so a point listed twice would be saved already reset and undo would keep it reset.
         for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
-            RemoveFeatherUndoCommand::RemoveFeatherData data;
-            data.curve = it->first->getBezier();
-            data.newPoints = data.curve->getFeatherPoints();
-            datas.push_back(data);
+            const BezierCPPtr fp = it->first->isFeatherPoint() ? it->first : it->second;
+            if (!fp) {
+                continue;
+            }
+            BezierPtr curve = fp->getBezier();
+            if (!curve) {
+                continue;
+            }
+            std::list<RemoveFeatherUndoCommand::RemoveFeatherData>::iterator found = datas.begin();
+            for (; found != datas.end(); ++found) {
+                if (found->curve == curve) {
+                    break;
+                }
+            }
+            if (found == datas.end()) {
+                RemoveFeatherUndoCommand::RemoveFeatherData data;
+                data.curve = curve;
+                datas.push_back(data);
+                found = --datas.end();
+            }
+            if (std::find(found->newPoints.begin(), found->newPoints.end(), fp) == found->newPoints.end()) {
+                found->newPoints.push_back(fp);
+            }
         }
     } else {
         for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
@@ -3333,11 +3354,9 @@ RotoCurveInteract::claimsAltPenDown(double time,
     }
     std::pair<double, double> pixelScale;
     _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
-    if (!isNearbyFeatherBar(time, pixelScale, pos).first) {
-        return false;
-    }
 
-    // onOverlayPenDown gives points and tangent handles precedence over a feather bar under them.
+    // Same precedence as onOverlayPenDown (a point, then a tangent handle, then a feather bar), so
+    // the press is claimed exactly when onOverlayPenDown would grab a feather handle with it.
     RotoCurveContextPtr context = getCurveContext();
     assert(context);
     double nearbyBezierT;
@@ -3347,26 +3366,61 @@ RotoCurveInteract::claimsAltPenDown(double time,
     if (nearbyBezier) {
         const Bezier::ControlPointSelectionPrefEnum pref = (selectedTool == eRotoToolSelectFeatherPoints) ? Bezier::eControlPointSelectionPrefFeatherFirst : Bezier::eControlPointSelectionPrefWhateverFirst;
         int nearbyCpIndex = -1;
-        if (nearbyBezier->isNearbyControlPoint(pos.x(), pos.y(), kControlPointSelectionTolerance * pixelScale.first, pref, &nearbyCpIndex).first) {
-            return false;
+        std::pair<BezierCPPtr, BezierCPPtr> nearbyCP = nearbyBezier->isNearbyControlPoint(pos.x(), pos.y(), kControlPointSelectionTolerance * pixelScale.first, pref, &nearbyCpIndex);
+        if (nearbyCP.first) {
+            altPressClaimed = nearbyCP.first->isFeatherPoint();
+
+            return altPressClaimed;
         }
     }
     const double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
     for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        BezierCPPtr tangentOf;
         if (selectedTool == eRotoToolSelectAll) {
-            if ((it->first->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0) || (it->second && (it->second->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0))) {
-                return false;
+            if (it->first->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0) {
+                tangentOf = it->first;
+            } else if (it->second && (it->second->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0)) {
+                tangentOf = it->second;
             }
         } else {
             const BezierCPPtr& fp = it->first->isFeatherPoint() ? it->first : it->second;
             if (fp && (fp->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0)) {
-                return false;
+                tangentOf = fp;
             }
         }
-    }
-    altPressClaimed = true;
+        if (tangentOf) {
+            altPressClaimed = tangentOf->isFeatherPoint();
 
-    return true;
+            return altPressClaimed;
+        }
+    }
+    if (isNearbyFeatherBar(time, pixelScale, pos).first) {
+        altPressClaimed = true;
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+RotoCurveInteract::syncModifiers(KeyboardModifiers modifiers)
+{
+    const std::pair<int*, KeyboardModifierEnum> held[] = {
+        std::make_pair(&shiftDown, eKeyboardModifierShift),
+        std::make_pair(&ctrlDown, eKeyboardModifierControl),
+        std::make_pair(&altDown, eKeyboardModifierAlt),
+    };
+    for (const std::pair<int*, KeyboardModifierEnum>& h : held) {
+        if (!modifiers.testFlag(h.second)) {
+            *h.first = 0;
+        } else if (*h.first == 0) {
+            *h.first = 1;
+        }
+    }
+    if (!modifiers.testFlag(eKeyboardModifierAlt)) {
+        altPressClaimed = false;
+    }
 }
 
 bool
@@ -4192,6 +4246,8 @@ RotoCurveInteract::onOverlayPenUp()
     }
     sketchSamples.clear();
     closingTangentDrag = false;
+    // A claimed Alt press that another overlay took first must not make the next press an Alt one.
+    altPressClaimed = false;
 
     undoGesture.end();
     _openDragCommand.reset();

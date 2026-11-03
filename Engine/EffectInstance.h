@@ -2509,6 +2509,14 @@ public:
         return false;
     }
 
+    /**
+     * @brief The keyboard modifiers held at a pen press in the viewer. An overlay that tracks
+     * modifiers from key events matches its state to these, since a key release can be lost.
+     **/
+    virtual void onOverlayPenDownModifiers(KeyboardModifiers /*modifiers*/)
+    {
+    }
+
     bool onOverlayPenMotion_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 
     bool onOverlayPenDoubleClicked_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos) WARN_UNUSED_RETURN;

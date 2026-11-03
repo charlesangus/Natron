@@ -351,6 +351,26 @@ ViewerTab::overlaysClaimAltPenDown(const QPointF& pos,
     return false;
 }
 
+void
+ViewerTab::notifyOverlaysPenDownModifiers(Qt::KeyboardModifiers modifiers)
+{
+    if (!getGui()->getApp() || getGui()->getApp()->isClosing()) {
+        return;
+    }
+
+    const KeyboardModifiers natronMods = QtEnumConvert::fromQtModifiers(modifiers);
+    NodesList nodes;
+    getGui()->getNodesEntitledForOverlays(nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_imp->hasInactiveNodeViewerContext(*it)) {
+            continue;
+        }
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        assert(effect);
+        effect->onOverlayPenDownModifiers(natronMods);
+    }
+}
+
 bool
 ViewerTab::notifyOverlaysPenDoubleClick(const RenderScale & renderScale,
                                         const QPointF & viewportPos,

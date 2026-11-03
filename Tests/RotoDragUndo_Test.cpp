@@ -550,3 +550,84 @@ TEST_F(RotoDragUndoTest, TransformBox)
 
     expectUndoRedo(cmd, before);
 }
+
+namespace {
+
+Point
+controlPosition(const BezierPtr& shape,
+                int index,
+                double time)
+{
+    Point p;
+
+    shape->getControlPointAtIndex(index)->getPositionAtTime(false, time, ViewIdx(0), &p.x, &p.y);
+
+    return p;
+}
+
+} // namespace
+
+TEST_F(RotoDragUndoTest, ResetFeatherResetsOnlyTheSelectedPoints)
+{
+    const int count = _square->getControlPointsCount();
+
+    for (int i = 0; i < count; ++i) {
+        _square->moveFeatherByIndex(i, _time, 6., -5.);
+    }
+    std::vector<Point> before;
+    for (int i = 0; i < count; ++i) {
+        before.push_back(featherPosition(_square, i, _time));
+    }
+
+    std::list<RotoDrawableItemPtr> curves;
+    PointList points;
+    curves.push_back(_square);
+    points.push_back(pointAt(1));
+    points.push_back(std::make_pair(pointAt(1).second, pointAt(1).first));
+    _ui->setSelection(curves, points);
+    ASSERT_TRUE(_ui->removeFeatherForSelectedCurve());
+
+    for (int i = 0; i < count; ++i) {
+        const Point fp = featherPosition(_square, i, _time);
+        const Point target = (i == 1) ? controlPosition(_square, i, _time) : before[i];
+        EXPECT_DOUBLE_EQ(target.x, fp.x) << "feather " << i;
+        EXPECT_DOUBLE_EQ(target.y, fp.y) << "feather " << i;
+    }
+}
+
+TEST_F(RotoDragUndoTest, ResetFeatherWithNoPointSelectedResetsTheWholeShape)
+{
+    const int count = _square->getControlPointsCount();
+
+    for (int i = 0; i < count; ++i) {
+        _square->moveFeatherByIndex(i, _time, 6., -5.);
+    }
+
+    std::list<RotoDrawableItemPtr> curves;
+    curves.push_back(_square);
+    _ui->setSelection(curves, PointList());
+    ASSERT_TRUE(_ui->removeFeatherForSelectedCurve());
+
+    for (int i = 0; i < count; ++i) {
+        const Point fp = featherPosition(_square, i, _time);
+        const Point cp = controlPosition(_square, i, _time);
+        EXPECT_DOUBLE_EQ(cp.x, fp.x) << "feather " << i;
+        EXPECT_DOUBLE_EQ(cp.y, fp.y) << "feather " << i;
+    }
+}
+
+TEST_F(RotoDragUndoTest, PenDownModifiersClearALostAltRelease)
+{
+    _ui->altDown = 1;
+    _ui->altPressClaimed = true;
+    _ui->shiftDown = 2;
+    _ui->syncModifiers(KeyboardModifiers(eKeyboardModifierShift));
+    EXPECT_EQ(0, _ui->altDown);
+    EXPECT_FALSE(_ui->altPressClaimed);
+    EXPECT_EQ(2, _ui->shiftDown) << "a held key keeps its count, so its own release still balances it";
+    EXPECT_EQ(0, _ui->ctrlDown);
+
+    _ui->syncModifiers(KeyboardModifiers(eKeyboardModifierAlt));
+    EXPECT_EQ(1, _ui->altDown);
+    EXPECT_EQ(0, _ui->shiftDown);
+}

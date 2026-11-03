@@ -104,6 +104,12 @@ public:
      **/
     bool overlaysClaimAltPenDown(const QPointF& pos, double timestamp);
 
+    /**
+     * @brief Tells the active overlays which modifiers are held at a press, before any of them
+     * sees it.
+     **/
+    void notifyOverlaysPenDownModifiers(Qt::KeyboardModifiers modifiers);
+
     bool notifyOverlaysPenDoubleClick(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos);
 
     bool notifyOverlaysPenMotion(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);

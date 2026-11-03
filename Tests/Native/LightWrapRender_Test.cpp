@@ -175,7 +175,7 @@ protected:
                     const char* name,
                     const std::vector<double>& values)
     {
-        KnobDoublePtr k = knob<KnobDouble>(node, name);
+        KnobDoubleBasePtr k = knob<KnobDoubleBase>(node, name);
         if (!k) {
             return;
         }

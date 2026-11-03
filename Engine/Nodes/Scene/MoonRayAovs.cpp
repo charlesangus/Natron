@@ -41,7 +41,10 @@
 #include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/rendererPluginRegistry.h>
+#include <pxr/imaging/hd/retainedDataSource.h>
+#include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
 #include <pxr/usd/usdLux/lightFilter.h>
 #include <pxr/usdImaging/usdImaging/adapterRegistry.h>
 #include <pxr/usdImaging/usdImaging/apiSchemaAdapter.h>
@@ -133,6 +136,27 @@ configureEngine(UsdImagingGLEngine* engine,
     for (const std::pair<TfToken, VtValue>& setting : renderSettings(threadBudget)) {
         engine->SetRendererSetting(setting.first, setting.second);
     }
+}
+
+void
+registerSceneIndices()
+{
+    static std::once_flag once;
+    std::call_once(once, []() {
+        static const TfToken types[] = { HdPrimTypeTokens->cube, HdPrimTypeTokens->sphere, HdPrimTypeTokens->cone, HdPrimTypeTokens->cylinder, HdPrimTypeTokens->capsule, HdPrimTypeTokens->plane };
+        const std::size_t count = sizeof(types) / sizeof(types[0]);
+        const HdDataSourceBaseHandle toMesh = HdRetainedTypedSampledDataSource<TfToken>::New(HdsiImplicitSurfaceSceneIndexTokens->toMesh);
+        const std::vector<HdDataSourceBaseHandle> modes(count, toMesh);
+        // The display name hdMoonray's plugInfo gives its renderer.
+        HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
+            "Moonray",
+            [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
+                return HdsiImplicitSurfaceSceneIndex::New(input, args);
+            },
+            HdRetainedContainerDataSource::New(count, types, modes.data()),
+            0,
+            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    });
 }
 
 struct LogCapture::Imp {
@@ -289,7 +313,8 @@ namespace {
             return false;
         }
         *path = parsed.GetPrimPath();
-        *rest = text.substr(end);
+        // The property the path names, such as ".material", says what kind of thing failed.
+        *rest = (parsed.IsPropertyPath() ? "." + parsed.GetName() : std::string()) + text.substr(end);
 
         return !path->IsEmpty();
     }

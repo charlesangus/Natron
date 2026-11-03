@@ -865,6 +865,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             parameters.gpuEnabled = false;
         }
         CyclesAovs::registerSceneIndices();
+        MoonRayAovs::registerSceneIndices();
         std::string startError;
         const std::function<void()> make = [&]() {
             TfErrorMark mark;

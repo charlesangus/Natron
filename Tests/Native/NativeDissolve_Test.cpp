@@ -194,7 +194,33 @@ TEST_F(NativeDissolveTest, WhichTwoAndAHalfIsClampedToTheLastInput)
     ParityPair pair = makePair(3);
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 2.5 }));
-    expectParity(pair, "which-2.5", true);
+
+    // The region is the union of the connected inputs, so the OpenFX Dissolve's project-format region
+    // is not the reference here; input 2 alone defines it.
+    NodePtr last = pair.native->getInput(3);
+    ASSERT_TRUE(bool(last));
+    EffectInstancePtr nativeEffect = pair.native->getEffectInstance();
+    EffectInstancePtr lastEffect = last->getEffectInstance();
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+        RectD nativeRod, lastRod;
+        ASSERT_NE(eStatusFailed, nativeEffect->getRegionOfDefinition(nativeEffect->getRenderHash(), kTime, scale, ViewIdx(0), &nativeRod));
+        ASSERT_NE(eStatusFailed, lastEffect->getRegionOfDefinition(lastEffect->getRenderHash(), kTime, scale, ViewIdx(0), &lastRod));
+        EXPECT_EQ(lastRod, nativeRod) << "mipmap " << mipmapLevel;
+
+        const RectI window = lastRod.toPixelEnclosing(mipmapLevel, 1.);
+        const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> out, in;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(pair.native, kTime, ViewIdx(0), mipmapLevel, window, layers, &out, &error)) << error;
+        ASSERT_TRUE(renderNodePlanesDirect(last, kTime, ViewIdx(0), mipmapLevel, window, layers, &in, &error)) << error;
+        ASSERT_EQ(1u, out.size());
+        ASSERT_EQ(1u, in.size());
+        ASSERT_EQ(in[0].pixels.size(), out[0].pixels.size());
+        for (std::size_t i = 0; i < in[0].pixels.size(); ++i) {
+            ASSERT_EQ(in[0].pixels[i], out[0].pixels[i]) << "mipmap " << mipmapLevel << ", sample " << i;
+        }
+    }
 }
 
 TEST_F(NativeDissolveTest, MaskedBlend)

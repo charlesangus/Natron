@@ -382,12 +382,15 @@ colorWheelHueIndex(double degrees)
     return (int)std::floor(degrees * kColorWheelHueTableSize / 360.0 + 0.5) % kColorWheelHueTableSize;
 }
 
+namespace {
+// The ring of the kColorWheelHueTableSize working-space colours in tableRgb, one per whole
+// degree, each drawn at its display hue in the legend's lightness and chroma.
 QImage
-renderColorWheelRing(const LumaBasis& basis,
-                     double outerRadius,
-                     double innerRadius,
-                     double dpr,
-                     const std::function<void(float* rgb, int count)>& converter)
+renderRingFromHueTable(const std::vector<float>& tableRgb,
+                       double outerRadius,
+                       double innerRadius,
+                       double dpr,
+                       const std::function<void(float* rgb, int count)>& converter)
 {
     int n = (int)std::ceil(2.0 * outerRadius * dpr);
 
@@ -395,8 +398,7 @@ renderColorWheelRing(const LumaBasis& basis,
         return QImage();
     }
 
-    ColorWheelHueTable table = buildColorWheelHueTable(basis);
-    const std::vector<double> hues = displayLegendHues(table.rgb, converter);
+    const std::vector<double> hues = displayLegendHues(tableRgb, converter);
     std::vector<int> bytes(3 * kColorWheelHueTableSize, 0);
 
     for (int k = 0; k < kColorWheelHueTableSize; ++k) {
@@ -435,6 +437,21 @@ renderColorWheelRing(const LumaBasis& basis,
 
     return image;
 }
+} // namespace
+
+QImage
+renderColorWheelRing(const LumaBasis& basis,
+                     double outerRadius,
+                     double innerRadius,
+                     double dpr,
+                     const std::function<void(float* rgb, int count)>& converter)
+{
+    if ((int)std::ceil(2.0 * outerRadius * dpr) <= 0) {
+        return QImage();
+    }
+
+    return renderRingFromHueTable(buildColorWheelHueTable(basis).rgb, outerRadius, innerRadius, dpr, converter);
+}
 
 void
 drawColorWheelRingOutlines(QPainter& p,
@@ -459,7 +476,7 @@ ColorWheelWidget::DiscCacheKey::operator==(const DiscCacheKey& other) const
 bool
 ColorWheelWidget::RingCacheKey::operator==(const RingCacheKey& other) const
 {
-    return valid && other.valid && size == other.size && basisGeneration == other.basisGeneration && converterGeneration == other.converterGeneration;
+    return valid && other.valid && size == other.size && rim == other.rim && basisGeneration == other.basisGeneration && converterGeneration == other.converterGeneration;
 }
 
 ColorWheelWidget::ColorWheelWidget(QWidget* parent)
@@ -475,11 +492,15 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     , _basisGeneration(0)
     , _converterGeneration(0)
     , _preferredDiameter(minimumDiameter())
+    , _minDiameter(minimumDiameter())
     , _maxDiameter(maximumDiameter())
     , _dragZone(eHitZoneNone)
     , _lastDragPos()
     , _gestureOffset()
     , _gestureMoved(false)
+    , _polar(false)
+    , _polarColour()
+    , _polarPoint()
 {
     QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
@@ -544,6 +565,35 @@ ColorWheelWidget::setRim(double rim)
         return;
     }
     _rim = clamped;
+    update();
+}
+
+void
+ColorWheelWidget::setPolarMode(const PolarColour& colour)
+{
+    _polar = true;
+    _polarColour = colour;
+    _hasDragOffset = false;
+    _dragOffset = PlanePoint();
+    // The disc and ring caches key on the basis generation; the colour function replaces it.
+    ++_basisGeneration;
+    updateAnchor();
+    update();
+}
+
+bool
+ColorWheelWidget::isPolarMode() const
+{
+    return _polar;
+}
+
+void
+ColorWheelWidget::setPolarValue(double hueDegrees,
+                                double radius)
+{
+    double theta = hueDegrees * kPi / 180.0;
+
+    _polarPoint = planePoint(radius * std::cos(theta), radius * std::sin(theta));
     update();
 }
 
@@ -622,6 +672,11 @@ ColorWheelWidget::hasDragOffset() const
 void
 ColorWheelWidget::updateAnchor()
 {
+    if (_polar) {
+        _anchor = planePoint(0.0, 0.0);
+
+        return;
+    }
     _anchor = toPlane(_role, _basis, _value);
     if (!_anchor.valid) {
         _anchor.x = 0.0;
@@ -722,7 +777,7 @@ ColorWheelWidget::getWhiteMarkerCaret() const
 DiscClamp
 ColorWheelWidget::getPuck() const
 {
-    return clampToDisc(getDragOffset(), _rim);
+    return clampToDisc(_polar ? _polarPoint : getDragOffset(), _rim);
 }
 
 QPointF
@@ -737,7 +792,7 @@ ColorWheelWidget::getGamutTrianglePolygon() const
     QPolygonF polygon;
     GamutTriangle triangle = gamutTriangle(_basis);
 
-    if (!triangle.valid) {
+    if (_polar || !triangle.valid) {
         return polygon;
     }
     for (int i = 0; i < 3; ++i) {
@@ -768,7 +823,7 @@ ColorWheelWidget::maximumDiameter()
 void
 ColorWheelWidget::setMaximumDiameter(int pixels)
 {
-    int cap = std::max(pixels, minimumDiameter());
+    int cap = std::max(pixels, _minDiameter);
 
     if (cap == _maxDiameter) {
         return;
@@ -777,6 +832,21 @@ ColorWheelWidget::setMaximumDiameter(int pixels)
     setMaximumSize(cap, cap);
     if (_preferredDiameter > cap) {
         _preferredDiameter = cap;
+    }
+    updateGeometry();
+}
+
+void
+ColorWheelWidget::setMinimumDiameter(int pixels)
+{
+    int floor = std::max(1, std::min(pixels, _maxDiameter));
+
+    if (floor == _minDiameter) {
+        return;
+    }
+    _minDiameter = floor;
+    if (_preferredDiameter < floor) {
+        _preferredDiameter = floor;
     }
     updateGeometry();
 }
@@ -790,7 +860,7 @@ ColorWheelWidget::getMaximumDiameter() const
 void
 ColorWheelWidget::setPreferredDiameter(int pixels)
 {
-    int d = std::min(std::max(pixels, minimumDiameter()), _maxDiameter);
+    int d = std::min(std::max(pixels, _minDiameter), _maxDiameter);
 
     if (d == _preferredDiameter) {
         return;
@@ -814,7 +884,7 @@ ColorWheelWidget::sizeHint() const
 QSize
 ColorWheelWidget::minimumSizeHint() const
 {
-    return QSize(minimumDiameter(), minimumDiameter());
+    return QSize(_minDiameter, _minDiameter);
 }
 
 bool
@@ -849,6 +919,18 @@ bool
 ColorWheelWidget::discColour(const PlanePoint& q,
                              double rgb[3]) const
 {
+    if (_polar) {
+        if (!_polarColour) {
+            rgb[0] = rgb[1] = rgb[2] = kGrey;
+
+            return true;
+        }
+        double degrees = std::atan2(q.y, q.x) * 180.0 / kPi;
+
+        _polarColour(degrees < 0.0 ? degrees + 360.0 : degrees, std::hypot(q.x, q.y), rgb);
+
+        return std::isfinite(rgb[0]) && std::isfinite(rgb[1]) && std::isfinite(rgb[2]);
+    }
     if (isRatioRole(_role)) {
         ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGainValue(), q, kGrey);
 
@@ -957,13 +1039,28 @@ ColorWheelWidget::ringImage() const
     key.size = QSize(n, n);
     key.basisGeneration = _basisGeneration;
     key.converterGeneration = _converterGeneration;
+    key.rim = _polar ? _rim : 0.0;
     key.valid = true;
 
     if ((key == _ringKey) || (n <= 0)) {
         return _ring;
     }
 
-    _ring = renderColorWheelRing(_basis, Ro, Ri, dpr, _converter);
+    if (_polar) {
+        std::vector<float> table(3 * kColorWheelHueTableSize, (float)kGrey);
+
+        for (int k = 0; _polarColour && k < kColorWheelHueTableSize; ++k) {
+            double rgb[3];
+
+            _polarColour(360.0 * k / kColorWheelHueTableSize, _rim, rgb);
+            for (int i = 0; i < 3; ++i) {
+                table[3 * k + i] = (float)rgb[i];
+            }
+        }
+        _ring = renderRingFromHueTable(table, Ro, Ri, dpr, _converter);
+    } else {
+        _ring = renderColorWheelRing(_basis, Ro, Ri, dpr, _converter);
+    }
     _ringKey = key;
 
     return _ring;
@@ -988,6 +1085,10 @@ ColorWheelWidget::activeColour() const
 void
 ColorWheelWidget::drawOverlays(QPainter& p) const
 {
+    if (_polar) {
+        return;
+    }
+
     QPolygonF triangle = getGamutTrianglePolygon();
 
     if (!triangle.isEmpty()) {
@@ -1073,7 +1174,7 @@ ColorWheelWidget::drawPuck(QPainter& p) const
 {
     DiscClamp puck = getPuck();
     QPointF pos = getPuckPosition();
-    QColor fill = _hasDragOffset ? activeColour() : QColor(232, 232, 232);
+    QColor fill = (_polar ? isDragging() : _hasDragOffset) ? activeColour() : QColor(232, 232, 232);
 
     if (!puck.offDisc) {
         double r = TO_DPIX(kPuckRadius);
@@ -1217,7 +1318,7 @@ ColorWheelWidget::dragTo(const QPointF& pos,
     double g = gear(modifiers.testFlag(Qt::ControlModifier), modifiers.testFlag(Qt::ShiftModifier));
     ColorEdit edit;
 
-    edit.axis = getActiveLock();
+    edit.axis = _polar ? eColorAxisTrackball : getActiveLock();
     switch (edit.axis) {
     case eColorAxisValue:
         edit.d1 = (dx - dy) * valueRatePerPixel(rates, _role) * g;
@@ -1244,7 +1345,9 @@ ColorWheelWidget::dragTo(const QPointF& pos,
         edit.d2 = -dy * scale;
         _gestureOffset.x += edit.d1;
         _gestureOffset.y += edit.d2;
-        setDragOffset(_gestureOffset);
+        if (!_polar) {
+            setDragOffset(_gestureOffset);
+        }
         emitStep(edit, tr("Trackball"));
         break;
     }
@@ -1312,8 +1415,10 @@ ColorWheelWidget::mousePressEvent(QMouseEvent* e)
 
     if (zone == eHitZoneRing) {
         emitRingHue(pos);
-    } else {
+    } else if (!_polar) {
         setDragOffset(_gestureOffset);
+    } else {
+        update();
     }
 }
 

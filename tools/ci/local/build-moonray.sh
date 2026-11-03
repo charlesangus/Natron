@@ -103,13 +103,29 @@ else
     fetch_submodule moonray/hydra/moonray_sdr_plugins
 fi
 
-# OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool),
-# which both hdMoonray plug-ins still mark override; it loses the keyword. Applied only when
-# present, so a tag that has caught up builds unpatched.
+# OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool)
+# and made IsSupported(const HdRendererCreateArgsSchema &, std::string *) pure. Both hdMoonray
+# plug-ins still mark the bool overload override and lack the new one, so they cannot be
+# instantiated. The bool overload loses the keyword, and the new override is added next to it,
+# delegating to it with its old default. Upstream has no fix for API 103 (its unmerged
+# test/usd263-issupported-override branch targets the removed HdRendererCreateArgs). Applied only
+# when the plug-in still lacks the new overload; a missing anchor fails the build.
 if grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
     for plugin in hd_moonray hd_moonray_debug; do
         file="${src}/moonray/hydra/hdMoonray/plugin/${plugin}/RendererPlugin.cc"
-        sed -i 's/bool IsSupported(bool gpuEnabled = true) const override {/bool IsSupported(bool gpuEnabled = true) const {/' "$file"
+        if grep -q 'HdRendererCreateArgsSchema' "$file"; then
+            continue
+        fi
+        anchor='    bool IsSupported(bool gpuEnabled = true) const override {'
+        if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+            echo "build-moonray: IsSupported(bool) anchor not found exactly once in ${file}" >&2
+            exit 1
+        fi
+        sed -i 's/^    bool IsSupported(bool gpuEnabled = true) const override {$/    bool IsSupported(const pxr::HdRendererCreateArgsSchema \&, std::string * = nullptr) const override {\n        return IsSupported(true);\n    }\n    bool IsSupported(bool gpuEnabled = true) const {/' "$file"
+        grep -qF 'bool IsSupported(const pxr::HdRendererCreateArgsSchema &, std::string * = nullptr) const override {' "$file" || {
+            echo "build-moonray: IsSupported patch did not apply to ${file}" >&2
+            exit 1
+        }
     done
 fi
 
@@ -157,6 +173,9 @@ test -n "$boost_python"
 # 1.87 removed; its POSIX-socket variant is selected instead.
 # CMAKE_CUDA_COMPILER=NOTFOUND stops the top-level check_language(CUDA) from enabling CUDA because
 # the image happens to carry a toolkit.
+# MoonRay was written against older libstdc++ headers that pulled <algorithm>, <cstdint>, <cstring> and
+# <limits> (and more) in transitively; GCC 14's do not, so the common standard headers are force-included
+# for every C++ unit.
 cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -164,7 +183,7 @@ cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
     -DNATRON_MTLX_USD_PREFIX="$usd_prefix" \
     -DCMAKE_PROJECT_INCLUDE="$mtlx_aliases" \
-    -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \
+    -DCMAKE_CXX_FLAGS="-DUDPSYSLOG_NO_BOOST -include algorithm -include array -include atomic -include chrono -include cmath -include cstdint -include cstdio -include cstdlib -include cstring -include functional -include iomanip -include limits -include memory -include mutex -include numeric -include optional -include sstream -include stdexcept -include string -include thread -include utility -include vector" \
     -DCMAKE_ISPC_COMPILER="$ispc" \
     -DCMAKE_CUDA_COMPILER=NOTFOUND \
     -DPXR_USD_LOCATION="$usd_prefix" \
@@ -184,7 +203,8 @@ jobs=$((mem_kb / (2 * 1024 * 1024)))
 if [ "$jobs" -gt "$(nproc)" ]; then jobs="$(nproc)"; fi
 if [ "$jobs" -lt 1 ]; then jobs=1; fi
 SECONDS=0
-cmake --build "$build" -j "$jobs"
+# -k reports every failing unit in one image build instead of stopping at the first.
+cmake --build "$build" -j "$jobs" -- -k
 echo "build-moonray: compiled in $((SECONDS / 60)) min with ${jobs} jobs"
 cmake --install "$build" --prefix "$prefix" >/dev/null
 install -m 0644 "${src}/LICENSE" "${prefix}/LICENSE"
@@ -228,7 +248,12 @@ if grep -q 'not found' <<<"$raw"; then
     echo "build-moonray: unresolved dependency" >&2
     exit 1
 fi
-deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u)"
+# ldd prints the path as the RUNPATH spelled it, so one file can appear as lib64/x.so and
+# rdl2dso/../lib64/x.so. Canonicalise each path first: the same file then collapses, while two
+# distinct files for one soname still stay apart and fail the check below.
+deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u | while read -r soname path; do
+    echo "${soname} $(realpath -e "$path" 2>/dev/null || echo "$path")"
+done | sort -u)"
 split="$(awk '{ print $1 }' <<<"$deps" | uniq -d)"
 if [ -n "$split" ]; then
     echo "build-moonray: resolved to more than one file: ${split}" >&2

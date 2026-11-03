@@ -507,7 +507,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dci.ppEnabledExtensionNames = enabled.data();
     VkResult r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
     if (r != VK_SUCCESS) {
-        return fail(r, "vkCreateDevice failed");
+        return fail(r, "vkCreateDevice failed on " + dev->info_.name + " (VkResult " + std::to_string(static_cast<int>(r)) + ")");
     }
 
     {

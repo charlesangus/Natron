@@ -152,3 +152,4 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 - 2026-10-20 — **Linking existing curves auto-aligns, then the user refines (user, grill).**
 - 2026-10-20 — **Live feedback from a coarse field while dragging (user, grill).**
 - 2026-10-20 — **No field or mesh preview overlay (user, grill).**
+- 2026-11-03 — UAT is one integration build, branch uat/splinewarp (M274 + M151 + M152, c8e0975bb; conflicts resolved to M274's single Boundary role; copy/paste also carries cookie cutters, layer amounts and transforms). Each milestone still merges from its own branch; the copy extension must be carried back to M152 before it merges.

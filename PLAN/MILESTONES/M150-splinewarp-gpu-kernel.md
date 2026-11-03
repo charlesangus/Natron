@@ -54,3 +54,4 @@ Scouted facts (2026-10-20; re-check at promotion):
 - 2026-10-20 — **A GPU kernel is in scope (user).**
 - 2026-10-20 — **Field built on the CPU, sampled on the GPU (planner):** one solver implementation, and the GPU only does the per-pixel work.
 - 2026-11-02 — main merged in; the GPU test creates the internal SplineWarp node with the allow-non-user-creatable flag (PM).
+- 2026-11-03 — UAT is one integration build, branch uat/splinewarp (M274 + M151 + M152, c8e0975bb; conflicts resolved to M274's single Boundary role; copy/paste also carries cookie cutters, layer amounts and transforms). Each milestone still merges from its own branch; the copy extension must be carried back to M152 before it merges.

@@ -93,3 +93,4 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 - 2026-10-20 — **Track links and Roto copy are in scope (user).**
 - 2026-10-20 — **Both live in the geometry base (planner):** Roto gets track-linked points and cross-node paste too, at no extra cost.
 - 2026-11-02 — main and M148's tip merged in; gate re-running after M147's fixes (PM).
+- 2026-11-03 — UAT is one integration build, branch uat/splinewarp (M274 + M151 + M152, c8e0975bb; conflicts resolved to M274's single Boundary role; copy/paste also carries cookie cutters, layer amounts and transforms). Each milestone still merges from its own branch; the copy extension must be carried back to M152 before it merges.

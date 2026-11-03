@@ -32,6 +32,7 @@
 #include <functional>
 #include <string>
 
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -57,10 +58,19 @@ bool isCycles(const std::string& renderer) WARN_UNUSED_RETURN;
  * Capsule and Plane) into meshes for every Cycles engine made after it. The engine hands a
  * delegate those prims as implicit-surface rprims, which Cycles does not take, and only Storm
  * registers the scene index that turns them into meshes, so Cycles would render none of them.
+ * Polygonal meshes without vertex normals, the tessellated Cube and Plane among them, are
+ * flagged flat-shaded, as USD has them faceted and the delegate would shade them smooth.
  * Must run before the engine is made: its render index builds its scene index chain once. Safe
  * to call any number of times from any thread.
  **/
 void registerSceneIndices();
+
+/**
+ * @brief What Cycles renders, for DelegateSupport::warningText(): its delegate's types and render
+ * contexts, the implicit surfaces registerSceneIndices() has made meshes of, and the shader ids
+ * hdCycles builds nodes of. Its prim types are empty when Cycles cannot be loaded.
+ **/
+const DelegateSupport::Support& support();
 
 /**
  * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and

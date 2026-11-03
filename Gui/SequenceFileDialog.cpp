@@ -385,7 +385,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     _selectionLayout->addWidget(_relativeChoice);
     _relativeChoice->addItem( tr("Absolute") );
     std::map<std::string, std::string> projectPaths;
-    gui->getApp()->getProject()->getEnvironmentVariables(projectPaths);
+    gui->getApp()->getProject()->getPathVariableTargets(projectPaths);
     int i = 1;
     for (std::map<std::string, std::string>::iterator it = projectPaths.begin(); it != projectPaths.end(); ++it, ++i) {
         std::string varName = '[' + it->first + ']';
@@ -706,16 +706,14 @@ SequenceFileDialog::restoreState(const QByteArray & state,
     _sequenceButton->setCurrentIndex(sequenceMode_i);
 
     std::map<std::string, std::string> envVar;
-    _gui->getApp()->getProject()->getEnvironmentVariables(envVar);
+    _gui->getApp()->getProject()->getPathVariableTargets(envVar);
 
     std::vector<QUrl> stdBookMarks;
     std::set<QString> stdBookMarkUrlPaths;
     QStringList expandedVars;
     for (std::map<std::string, std::string>::iterator it = envVar.begin(); it != envVar.end(); ++it) {
         QString var( QString::fromUtf8( it->second.c_str() ) );
-        if ( (it->first != NATRON_OCIO_ENV_VAR_NAME) && !var.isEmpty() ) {
-            ///The variable may be nested
-            Project::expandVariable(envVar, it->second);
+        if (it->first != NATRON_OCIO_ENV_VAR_NAME) {
             expandedVars.push_back(var);
             QUrl url = QUrl::fromLocalFile(var);
             if ( isDirectory(var) ) {
@@ -870,10 +868,13 @@ SequenceFileDialog::getRelativeChoiceProjectPath(std::string& varName,
         return false; //< absolute
     } else {
         --choice; //we skip the absolute choice
+        // The same list as the relative choice menu, each project path by the folder it names.
         std::map<std::string, std::string> projectPaths;
-        _gui->getApp()->getProject()->getEnvironmentVariables(projectPaths);
+        _gui->getApp()->getProject()->getPathVariableTargets(projectPaths);
+        if (choice >= (int)projectPaths.size()) {
+            return false;
+        }
         std::map<std::string, std::string>::iterator it = projectPaths.begin();
-        assert( choice < (int)projectPaths.size() );
         std::advance(it, choice);
         varName = it->first;
         varValue = it->second;
@@ -2331,7 +2332,7 @@ FavoriteView::setModelAndUrls(QFileSystemModel *model,
     assert(!urlModel);
 
     std::map<std::string, std::string> envVars;
-    _gui->getApp()->getProject()->getEnvironmentVariables(envVars);
+    _gui->getApp()->getProject()->getPathVariableTargets(envVars);
 
     urlModel = new UrlModel(envVars, this);
     urlModel->setFileSystemModel(model);

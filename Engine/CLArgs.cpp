@@ -78,6 +78,8 @@ public:
     bool isEmpty;
     mutable QString imageFilename;
     QString exportDocsPath;
+    bool listModels;
+    QString downloadModelId;
 
     CLArgsPrivate()
         : args()
@@ -100,6 +102,8 @@ public:
         , isEmpty(true)
         , imageFilename()
         , exportDocsPath()
+        , listModels(false)
+        , downloadModelId()
     {
     }
 
@@ -258,6 +262,8 @@ CLArgs::operator=(const CLArgs& other)
     _imp->isEmpty = other._imp->isEmpty;
     _imp->imageFilename = other._imp->imageFilename;
     _imp->exportDocsPath = other._imp->exportDocsPath;
+    _imp->listModels = other._imp->listModels;
+    _imp->downloadModelId = other._imp->downloadModelId;
 }
 
 bool
@@ -311,6 +317,12 @@ CLArgs::printUsage(const std::string& programName)
                      "    Clears the image cache on startup.\n"
                      "  --clear-openfx-cache\n"
                      "    Clears the OpenFX plugins cache on startup.\n"
+                     "  --list-models\n"
+                     "    Lists the AI models %1 can download, with their task, whether they\n"
+                     "    are installed and their licences, then exits.\n"
+                     "  --download-model <id>\n"
+                     "    Downloads and installs the AI model with the given id, then exits.\n"
+                     "    Exits with a non-zero status if the download fails.\n"
                      "  --no-settings\n"
                      "    When passed on the command-line, the %1 settings will not be restored\n"
                      "    from the preferences file on disk so that %1 uses the default ones.\n"
@@ -563,6 +575,18 @@ const QString &
 CLArgs::getExportDocsPath() const
 {
     return _imp->exportDocsPath;
+}
+
+bool
+CLArgs::isListModels() const
+{
+    return _imp->listModels;
+}
+
+const QString&
+CLArgs::getDownloadModelId() const
+{
+    return _imp->downloadModelId;
 }
 
 QStringList::iterator
@@ -848,6 +872,31 @@ CLArgsPrivate::parse()
             it = args.erase(it);
 
             enableRenderStats = true;
+        }
+    }
+
+    {
+        QStringList::iterator it = hasToken(QString::fromUtf8("list-models"), QString());
+        if (it != args.end()) {
+            it = args.erase(it);
+            listModels = true;
+            isBackground = true;
+        }
+    }
+
+    {
+        QStringList::iterator it = hasToken(QString::fromUtf8("download-model"), QString());
+        if (it != args.end()) {
+            it = args.erase(it);
+            if (it == args.end() || it->startsWith(QChar::fromLatin1('-'))) {
+                std::cout << tr("You must specify the id of the model to download").toStdString() << std::endl;
+                error = 1;
+
+                return;
+            }
+            downloadModelId = *it;
+            it = args.erase(it);
+            isBackground = true;
         }
     }
 
@@ -1151,7 +1200,7 @@ CLArgsPrivate::parse()
             it = findFileNameWithExtension( QString::fromUtf8("py") );
             if (it != args.end()) {
                 isPythonScript = true;
-            } else if (!isInterpreterMode && isBackground) {
+            } else if (!isInterpreterMode && isBackground && !listModels && downloadModelId.isEmpty()) {
                 std::cout << tr("You must specify the filename of a script or %1 project. (.%2)").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).arg( QString::fromUtf8(NATRON_PROJECT_FILE_EXT) ).toStdString() << std::endl;
                 error = 1;
 
@@ -1190,6 +1239,8 @@ CLArgsPrivate::parse()
     qDebug() << "isInterpreterMode:" << isInterpreterMode;
     qDebug() << "enableRenderStats:" << enableRenderStats;
     qDebug() << "exportDocsPath:" << exportDocsPath;
+    qDebug() << "listModels:" << listModels;
+    qDebug() << "downloadModelId:" << downloadModelId;
     qDebug() << "ipcPipe:" << ipcPipe;
     qDebug() << "defaultOnProjectLoadedScript:" << defaultOnProjectLoadedScript;
     qDebug() << "settingCommands:";

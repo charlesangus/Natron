@@ -189,6 +189,10 @@ struct EndToEndResult {
 // with `error`.
 typedef std::function<bool(std::string* error)> GpuContextReady;
 
+// Called once the GPU frame has rendered and before the CPU one, so a test can read the state the
+// GPU frame alone left.
+typedef std::function<void()> GpuFrameDone;
+
 // Renders `root` over `window` at `time` twice. First as a frame of the render scheduler with a
 // forced GPU context, with every node of `graph` whose effect accepts the task on the GPU, as
 // regions, a run of raw-reading tasks all or nothing as a render places it. Then on the CPU under
@@ -197,7 +201,8 @@ EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const NodePtr& root,
                               const RectI& window,
                               double time = 1.,
-                              const GpuContextReady& onGpuContext = GpuContextReady());
+                              const GpuContextReady& onGpuContext = GpuContextReady(),
+                              const GpuFrameDone& onGpuFrame = GpuFrameDone());
 
 NATRON_NAMESPACE_EXIT
 

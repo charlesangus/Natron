@@ -106,8 +106,12 @@ inherit E1 ([expressions-and-links.md](expressions-and-links.md)).
   (:589-591, :630-632); disk-cache images are `mmap`ed (`MemoryFile`, CacheEntry.h:428, :555).
   A page-aligned, page-multiple range from either can be unmapped or freed while its import stays
   cached. A later allocation at the same address with the same length then uploads through the
-  stale import. Unconfirmed by test. **Not fixed by M202.**
+  stale import. **Fixed in M260:** only transfers that set `cacheImport` (memory whose free calls
+  `forgetHostAllocation`) keep a new import; other ranges are imported per transfer. Test:
+  `CacheStressGpuTest.DiskCacheSourcesAreNotImportedByAddress`.
 - **G2 Shader gate ignores the device.** `StageGpuShaderGate::accept` keys `_rejected` by entry and
   source only (Nodes/Image/StagePlan.cpp:1639-1644, :1681). A shader rejected on one device stays
   rejected after a device switch. Placement only: the node runs on the CPU. Listed in
-  [node-private.md](node-private.md). **Not fixed by M202.**
+  [node-private.md](node-private.md). **Fixed in M260:** rejections are keyed by the pipeline
+  cache's device tag (vendor, device, driver) as well, so a device switch retries the shader. Test:
+  `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader`.

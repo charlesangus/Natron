@@ -35,12 +35,14 @@
 #include <QTextStream>
 #include <QFormLayout>
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h" // KnobFile
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectPathVariableCommands.h"
 #include "Engine/RFV.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
@@ -53,6 +55,7 @@
 #include "Gui/KnobGui.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
+#include "Gui/PathVariableUndo.h"
 #include "Gui/SpinBox.h"
 
 
@@ -1731,6 +1734,7 @@ AddKnobDialog::onOkClicked()
     ///If the knob was in a group, we need to place it at the same index
     int oldIndexInParent = -1;
     std::string oldKnobScriptName;
+    std::string oldKnobLabel;
     std::vector<std::pair<std::string, bool> > expressions;
     std::map<KnobIPtr, std::vector<std::pair<std::string, bool> > > listenersExpressions;
     KnobPagePtr oldKnobIsPage;
@@ -1741,6 +1745,7 @@ AddKnobDialog::onOkClicked()
     } else {
         oldKnobIsPage = std::dynamic_pointer_cast<KnobPage>(_imp->knob);
         oldKnobScriptName = _imp->knob->getName();
+        oldKnobLabel = _imp->knob->getLabel();
         effect = dynamic_cast<EffectInstance*>( _imp->knob->getHolder() );
         oldParentPage = _imp->knob->getTopLevelPage();
         wasNewLineActivated = _imp->knob->isNewLineActivated();
@@ -1959,6 +1964,16 @@ AddKnobDialog::onOkClicked()
         }
     }
 
+    if (_imp->knob && !oldKnobScriptName.empty() && (oldKnobScriptName != _imp->knob->getName())) {
+        Project* isProject = dynamic_cast<Project*>(_imp->panel->getHolder());
+        if (isProject && dynamic_cast<KnobString*>(_imp->knob.get()) && isProject->getRFVGroup() && (_imp->knob->getParentKnob() == isProject->getRFVGroup()) && isProject->getApp()) {
+            ProjectPtr project = isProject->getApp()->getProject();
+            std::shared_ptr<RenamePathVariableCommand> command = std::make_shared<RenamePathVariableCommand>(project, oldKnobScriptName, _imp->knob->getName(), oldKnobLabel, _imp->knob->getLabel());
+            if (command->hasValueEdits()) {
+                ignore_result(pushPathVariableCommand(_imp->panel->getGui(), project, command));
+            }
+        }
+    }
 
     accept();
 } // AddKnobDialog::onOkClicked

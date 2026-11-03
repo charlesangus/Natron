@@ -227,7 +227,11 @@ fi
 
 echo "==> Copying Qt6 plugins from $QT_PLUGIN_DIR"
 
-for subdir in platforms imageformats iconengines xcbglintegrations; do
+# tls/ holds Qt's TLS backends. Without them every HTTPS request, model
+# downloads included, fails with "TLS initialization failed".
+# libqopensslbackend.so links libssl.so.3 and libcrypto.so.3, so stage_elf
+# bundles OpenSSL 3 with it: hosts older than OpenSSL 3 have no libssl.so.3.
+for subdir in platforms imageformats iconengines xcbglintegrations tls; do
     src="$QT_PLUGIN_DIR/$subdir"
     if [[ -d "$src" ]]; then
         mkdir -p "$STAGE_DIR/plugins/$subdir"
@@ -240,6 +244,11 @@ done
 
 if [[ ! -f "$STAGE_DIR/plugins/platforms/libqxcb.so" ]]; then
     echo "warning: libqxcb.so not found in Qt plugins — XCB platform may be missing" >&2
+fi
+
+if [[ ! -f "$STAGE_DIR/plugins/tls/libqopensslbackend.so" ]]; then
+    echo "error: $QT_PLUGIN_DIR/tls/libqopensslbackend.so not found; the bundle could not make HTTPS requests" >&2
+    exit 1
 fi
 
 echo "==> Writing qt.conf"

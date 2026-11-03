@@ -27,13 +27,24 @@
 
 #include <limits>
 #include <mutex>
+#include <set>
+#include <vector>
 
 #include <pxr/base/tf/token.h>
+#include <pxr/base/vt/array.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/filteringSceneIndex.h>
+#include <pxr/imaging/hd/legacyDisplayStyleSchema.h>
+#include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/overlayContainerDataSource.h>
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
+#include <pxr/usd/sdr/registry.h>
+#include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
 #include <tbb/task_arena.h>
@@ -49,27 +60,160 @@ isCycles(const std::string& renderer)
     return renderer == kRenderDelegateCyclesId;
 }
 
+namespace {
+    const TfTokenVector&
+    tessellatedTypes()
+    {
+        static const TfTokenVector types = { HdPrimTypeTokens->cube, HdPrimTypeTokens->sphere, HdPrimTypeTokens->cone, HdPrimTypeTokens->cylinder, HdPrimTypeTokens->capsule, HdPrimTypeTokens->plane };
+
+        return types;
+    }
+
+    // hdCycles builds a node of an id that names a Cycles node, bare or after "cycles_" or "cycles:",
+    // and maps these of UsdPreviewSurface's set; of the rest, an id Sdr knows is another renderer's or
+    // another part of that set, and one it does not cannot be told from a bare Cycles node name.
+    bool
+    takesShader(const TfToken& id)
+    {
+        static const std::set<TfToken> mapped = { TfToken("UsdPreviewSurface"), TfToken("UsdUVTexture"), TfToken("UsdPrimvarReader_float"), TfToken("UsdPrimvarReader_float2"), TfToken("UsdPrimvarReader_float3"), TfToken("UsdPrimvarReader_float4"), TfToken("UsdPrimvarReader_int") };
+        static const std::set<TfToken> known = [] {
+            const SdrIdentifierVec ids = SdrRegistry::GetInstance().GetShaderNodeIdentifiers();
+
+            return std::set<TfToken>(ids.begin(), ids.end());
+        }();
+
+        if ((id.GetString().rfind("cycles", 0) == 0) || mapped.count(id)) {
+            return true;
+        }
+
+        return !known.count(id);
+    }
+
+    /**
+     * Flags flatShadingEnabled on every polygonal (none or bilinear) mesh without vertex normals.
+     * USD renders such a mesh faceted, as Storm does, but Cycles' delegate shades every mesh
+     * smooth unless flatShadingEnabled is set, from normals it averages at shared points, and
+     * ignores uniform normals. The implicit Cube and Plane tessellate to such meshes, and an
+     * 8-point cube shaded smooth has normals tilted across each face like a sphere's.
+     **/
+    class FacetedMeshSceneIndex;
+    typedef TfRefPtr<FacetedMeshSceneIndex> FacetedMeshSceneIndexRefPtr;
+
+    class FacetedMeshSceneIndex
+        : public HdSingleInputFilteringSceneIndexBase {
+    public:
+        static FacetedMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+        {
+            return TfCreateRefPtr(new FacetedMeshSceneIndex(input));
+        }
+
+        HdSceneIndexPrim GetPrim(const SdfPath& path) const override
+        {
+            HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(path);
+            if ((prim.primType == HdPrimTypeTokens->mesh) && prim.dataSource && faceted(prim.dataSource)) {
+                static const HdContainerDataSourceHandle flat = HdRetainedContainerDataSource::New(
+                    HdLegacyDisplayStyleSchema::GetSchemaToken(),
+                    HdLegacyDisplayStyleSchema::Builder().SetFlatShadingEnabled(HdRetainedTypedSampledDataSource<bool>::New(true)).Build());
+                prim.dataSource = HdOverlayContainerDataSource::New(flat, prim.dataSource);
+            }
+
+            return prim;
+        }
+
+        SdfPathVector GetChildPrimPaths(const SdfPath& path) const override
+        {
+            return _GetInputSceneIndex()->GetChildPrimPaths(path);
+        }
+
+    protected:
+        void _PrimsAdded(const HdSceneIndexBase& /*sender*/,
+                         const HdSceneIndexObserver::AddedPrimEntries& entries) override
+        {
+            _SendPrimsAdded(entries);
+        }
+
+        void _PrimsRemoved(const HdSceneIndexBase& /*sender*/,
+                           const HdSceneIndexObserver::RemovedPrimEntries& entries) override
+        {
+            _SendPrimsRemoved(entries);
+        }
+
+        void _PrimsDirtied(const HdSceneIndexBase& /*sender*/,
+                           const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
+        {
+            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetSubdivisionSchemeLocator(), HdPrimvarsSchema::GetDefaultLocator().Append(HdTokens->normals) };
+            HdSceneIndexObserver::DirtiedPrimEntries forwarded = entries;
+            for (HdSceneIndexObserver::DirtiedPrimEntry& entry : forwarded) {
+                if (entry.dirtyLocators.Intersects(decides)) {
+                    entry.dirtyLocators.insert(HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator());
+                }
+            }
+            _SendPrimsDirtied(forwarded);
+        }
+
+    private:
+        explicit FacetedMeshSceneIndex(const HdSceneIndexBaseRefPtr& input)
+            : HdSingleInputFilteringSceneIndexBase(input)
+        {
+        }
+
+        static bool faceted(const HdContainerDataSourceHandle& prim)
+        {
+            TfToken scheme = UsdGeomTokens->catmullClark;
+            if (HdTokenDataSourceHandle ds = HdMeshSchema::GetFromParent(prim).GetSubdivisionScheme()) {
+                scheme = ds->GetTypedValue(0.f);
+            }
+            if ((scheme != UsdGeomTokens->none) && (scheme != UsdGeomTokens->bilinear)) {
+                return false;
+            }
+            const HdPrimvarSchema normals = HdPrimvarsSchema::GetFromParent(prim).GetPrimvar(HdTokens->normals);
+            const HdSampledDataSourceHandle value = normals.GetPrimvarValue();
+            if (!value) {
+                return true;
+            }
+            const VtValue sampled = value->GetValue(0.f);
+            if (!sampled.IsHolding<VtVec3fArray>() || sampled.UncheckedGet<VtVec3fArray>().empty()) {
+                return true;
+            }
+            const HdTokenDataSourceHandle interpolation = normals.GetInterpolation();
+
+            return interpolation && (interpolation->GetTypedValue(0.f) == HdPrimvarSchemaTokens->uniform);
+        }
+    };
+} // anon namespace
+
 void
 registerSceneIndices()
 {
     static std::once_flag once;
     std::call_once(once, []() {
-        const TfToken types[] = { HdPrimTypeTokens->cube, HdPrimTypeTokens->sphere, HdPrimTypeTokens->cone, HdPrimTypeTokens->cylinder, HdPrimTypeTokens->capsule, HdPrimTypeTokens->plane };
-        constexpr std::size_t count = sizeof(types) / sizeof(types[0]);
+        const TfTokenVector& types = tessellatedTypes();
+        const std::size_t count = types.size();
         const HdDataSourceBaseHandle toMesh = HdRetainedTypedSampledDataSource<TfToken>::New(HdsiImplicitSurfaceSceneIndexTokens->toMesh);
-        HdDataSourceBaseHandle modes[count];
-        for (std::size_t i = 0; i < count; ++i) {
-            modes[i] = toMesh;
-        }
+        const std::vector<HdDataSourceBaseHandle> modes(count, toMesh);
         HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
             kRenderDelegateCyclesDisplayName,
             [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
-                return HdsiImplicitSurfaceSceneIndex::New(input, args);
+                return FacetedMeshSceneIndex::New(HdsiImplicitSurfaceSceneIndex::New(input, args));
             },
-            HdRetainedContainerDataSource::New(count, types, modes),
+            HdRetainedContainerDataSource::New(count, types.data(), modes.data()),
             0,
             HdSceneIndexPluginRegistry::InsertionOrderAtStart);
     });
+}
+
+const DelegateSupport::Support&
+support()
+{
+    static const DelegateSupport::Support cycles = [] {
+        DelegateSupport::Support probed = DelegateSupport::probe(kRenderDelegateCyclesId);
+        probed.tessellated = tessellatedTypes();
+        probed.takesShader = takesShader;
+
+        return probed;
+    }();
+
+    return cycles;
 }
 
 void

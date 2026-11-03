@@ -84,6 +84,15 @@ try:
                 parent = parent.parentWidget()
         return None
 
+    def fresh_tree(node):
+        """The node's curve list, found again on every call: a tree wrapper held across a yield can
+        be invalidated, and the panel wrapper is held so the tree's wrapper outlives this call."""
+        panel = panel_of(node)
+        if panel is None:
+            return None
+        hold(panel)
+        return curve_tree(panel)
+
     def open_panel(view, node):
         app.selectNode(node, True)
         QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
@@ -236,7 +245,7 @@ try:
         ok = yield ("until", lambda: visible_viewer() is not None, POLL_TIMEOUT_S)
         require(ok, "a viewer is on screen")
         yield ("sleep", RENDER_MS)
-        tree = curve_tree(panel_of(warp))
+        tree = fresh_tree(warp)
         require(tree is not None, "the settings panel holds the curve list")
 
         gt.section("panel-columns")
@@ -254,6 +263,7 @@ try:
             closed.addControlPoint(x, y)
         closed.setCurveFinished(True)
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [closed])
         require(len(items) == 1, "selected the closed curve in the curve list")
         seen = {}
@@ -264,6 +274,7 @@ try:
         link = hold(sw.getLink(closed))
         dest = hold(link.getDestination())
         check(link.getSource().getScriptName() == closed.getScriptName(), "the original is the source")
+        tree = fresh_tree(warp)
         role, partner = role_and_partner(tree, closed)
         check(role == "Source", "the original's Role is Source (%r)" % role)
         check(partner == dest.getLabel(), "the original is linked to the copy (%r)" % partner)
@@ -369,6 +380,7 @@ try:
         open_b.addControlPoint(600.0, 150.0)
         point = hold(roto.createBezier(1500.0, 800.0, 1.0))
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [open_a, open_b])
         require(len(items) == 2, "selected two open curves in the curve list")
         seen = {}
@@ -377,11 +389,13 @@ try:
         check(seen.get("Link", False), "the context menu enables Link for two open curves")
         check(ok, "Link linked the two open curves")
         if ok:
+            tree = fresh_tree(warp)
             role_a, partner_a = role_and_partner(tree, open_a)
             role_b, _ = role_and_partner(tree, open_b)
             check(role_a == "Source" and role_b == "Destination",
                   "the first selected is the source (%r, %r)" % (role_a, role_b))
             check(partner_a == open_b.getLabel(), "the open source is linked to the other open curve")
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [point])
         require(len(items) == 1, "selected the single point in the curve list")
         seen = {}
@@ -403,6 +417,7 @@ try:
         boundary.setCurveFinished(True)
         boundary.setFeatherDistance(60.0, 1.0)
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [boundary])
         require(len(items) == 1, "selected the boundary curve in the curve list")
         before = grab_viewer()
@@ -410,6 +425,7 @@ try:
         run_menu_action(tree, items[0], "Toggle Boundary", seen)
         ok = yield ("until", lambda: sw.isBoundary(boundary), POLL_TIMEOUT_S)
         check(ok, "Toggle Boundary made the curve a boundary")
+        tree = fresh_tree(warp)
         role, partner = role_and_partner(tree, boundary)
         check(role == "Boundary" and partner == "", "the boundary's Role is Boundary (%r, %r)" % (role, partner))
         yield ("sleep", RENDER_MS)
@@ -417,6 +433,7 @@ try:
         check(len(coloured_pixels(img, is_boundary)) > MIN_INK, "the boundary is drawn yellow")
         report("NOTE the boundary changes the picture by %.2f" % region_difference(before, img, inside))
         gt.shot("m148-boundary-feather.png")
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [closed])
         seen = {}
         run_menu_action(tree, items[0], "Toggle Boundary", seen)

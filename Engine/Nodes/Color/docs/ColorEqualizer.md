@@ -4,10 +4,10 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| ColorEqualizer | darktable reference | `kReferenceMean` 1e-3, `kReferenceMax` 2e-2 | mean and largest absolute error over the crop's interior, a `halo()` in from each edge, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorEqualizer_Test.cpp`, `MatchesDarktable`). darktable filters the whole developed image, so the crop's border is not comparable. Provisional until the references are rendered |
+| ColorEqualizer | darktable reference | `kReferenceMean` 1e-3, `kReferenceMax` 2e-2 | mean and largest absolute error over the crop's interior, a `halo()` in from each edge, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorEqualizer_Test.cpp`, `MatchesDarktable`). darktable filters the whole developed image, so the crop's border is not comparable |
 | ColorEqualizer | identity | 1e-4 + 1e-3 relative | defaults on flat in-gamut colours, with and without the filter (`DefaultsAreTheIdentityOnFlatColours`) |
 | ColorEqualizer | render | 1e-4 + 1e-4 relative | the node's render against `process()` (`RenderMatchesTheKernel`) |
-| ColorEqualizer | gpu | `ParityTolerance::make(2e-3, 1e-3)` | kernels against the CPU render, every control, downsampled guided filters, every output and preset (`NativeColorEqualizerGpu_Test.cpp`). Provisional until measured |
+| ColorEqualizer | gpu | `ParityTolerance::make(2e-3, 1e-3)` | kernels against the CPU render, every control, downsampled guided filters, every output and preset (`NativeColorEqualizerGpu_Test.cpp`) |
 
 The node ports darktable's color equalizer (`src/iop/colorequal.c` and
 `data/kernels/colorequal.cl`, release-5.6.2) with every parameter of
@@ -47,10 +47,12 @@ darktable's four built-in looks; Apply writes every control but Output.
 - **Fixed working space.** The node converts the working space to linear Rec.2020, darktable's
   pipeline space, equalizes, and converts back. A matrix working space uses a 3x3 matrix; any other
   working space goes through OCIO via XYZ D65 and renders on the CPU only.
-- **Guided filter reach.** The node reads a halo about the render window large enough for the
-  filters' gaussians; darktable's tiling reach is computed differently, so results within a few
-  pixels of a tile edge may differ slightly. The downsampled filter grid is anchored at the buffer
-  origin.
+- **Whole-frame guided filters.** As darktable filters the whole image, the node runs the guided
+  filters over the whole region of definition, whatever window is asked for, so no window's result
+  depends on where it lies; the downsampled filter grid is anchored at the region of definition's
+  origin. The first window of a frame computes the whole frame and the others reuse it; the node
+  keeps the last frame until a control or input changes or the caches are cleared. An infinite
+  region of definition is bounded by the host to the inputs and the project format first.
 - **Overlays.** The threshold outputs draw their weighting curve across the region of definition.
   The node never reports itself as an identity: gamut mapping applies even at the defaults.
 - **Not ported:** the colour picker that selects a node from the image and the on-image hue

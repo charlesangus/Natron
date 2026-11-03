@@ -245,7 +245,7 @@ encodeProjectYaml(const ProjectSerialization& project,
     em << YAML::EndMap;
     emitKey(em, "nodes");
     em << YAML::Value;
-    emitNodeMap(em, project.nodes.nodes, std::string(), sink, &usedPaths);
+    emitNodeMap(em, project.nodes.nodes, std::string(), sink, &usedPaths, true);
     em << YAML::EndMap;
 
     return documentText(em);

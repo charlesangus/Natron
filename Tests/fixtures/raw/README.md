@@ -92,9 +92,9 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf}-colorcal-gray-normalize-{on,off}.tif` | D 4500 K CAT16, gray 0.4, 0.6, 0.3, normalize on and off | RCD, Markesteijn |
 | `dng-colorcal-camera.tif` | CAT16, as shot in camera, embedded matrix | RCD |
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
-| `retouch-{clone,heal,blur,fill}-{circle,ellipse,path}.tif`, `retouch-heal-circle-image.tif`, `retouch-blur-bilateral-circle.tif`, `retouch-fill-color-ellipse.tif`, `retouch-mixed-merge.tif` | darktable's retouch on a 64x48 plate, the tests' ParitySource with its noise at time 1 (written to the scratch directory, not kept), with XMP-authored circle, ellipse and path forms on two detail scales and the residual, with feather and opacity; `NativeRetouch_Test` builds the same shapes. Whole image, RGB half float, zip, ~15 KB each, not LFS | `Engine/Nodes/Filter/docs/Retouch.md` |
 | `toneequal-source.tif` | Synthetic 128x96 linear Rec. 709 RGB half float source of the toneequal jobs, written by `make-reference.py` (`toneequal_scene()`): -10 EV to +1 EV left to right with ripples, hard-edged patches and texture, three tints by row band | (source) |
 | `toneequal-{bands,details-*,estimator-*,compensations-*,smoothing-diffusion,quantization}.tif` | toneequal on the source, whole frame, RGB half float (~50 KB); colorin (input and working profile linear Rec. 709) and colorout (linear Rec. 709) are identities around it. Every job sets the bands to 1.2, 0.9, 0.6, 0.3, 0, -0.2, -0.5, -0.8, -1 EV; `bands` is darktable's defaults otherwise (EIGF, euclidean norm, smoothing diameter 5 %, curve smoothing sqrt 2); `details-*` each preserve details mode, `estimator-*` each luminance estimator; `compensations-guided` guided filter with mask exposure 1.5 EV and contrast 0.8 EV, `compensations-eigf` -0.5 EV and 0.6 EV; `smoothing-diffusion` curve smoothing 2^0.75, 3 iterations, feathering 20, diameter 10 %; `quantization` mask quantization 0.5 | ToneEqualizer |
+| `retouch-{clone,heal,blur,fill}-{circle,ellipse,path}.tif`, `retouch-heal-circle-image.tif`, `retouch-blur-bilateral-circle.tif`, `retouch-fill-color-ellipse.tif`, `retouch-mixed-merge.tif` | darktable's retouch on a 64x48 plate, the tests' ParitySource with its noise at time 1 (written to the scratch directory, not kept), with XMP-authored circle, ellipse and path forms on two detail scales and the residual, with feather and opacity; `NativeRetouch_Test` builds the same shapes. Whole image, RGB half float, zip, ~15 KB each, not LFS | `Engine/Nodes/Filter/docs/Retouch.md` |
 
 ### Color balance rgb
 
@@ -124,7 +124,7 @@ references do not change.
 
 ### Color equalizer
 
-`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.py --only colorequal`, 20 jobs) are the
+`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.sh --only colorequal`, 20 jobs) are the
 same develop as color balance rgb's with color equalizer on (params version 4, every field not
 listed at its default), RGB half float 192x192 crops. `Tests/Native/NativeColorEqualizer_Test.cpp`
 feeds colour balance rgb's `-base.tif` to ColorEqualizer in a Linear Rec.2020 project. darktable

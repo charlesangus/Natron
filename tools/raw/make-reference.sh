@@ -57,8 +57,9 @@ fi
 # release job's output, never the other way round.
 REFS=()
 for ref in release master; do
-    if python3 -I "${ROOT}/tools/raw/make-reference.py" --dry-run "${ONLY[@]}" --ref "${ref}" \
-        "${FIXTURES}" "${LOG_DIR}/out" "${LOG_DIR}/xmp-${ref}" | grep -q " <- "; then
+    listing="$(python3 -I "${ROOT}/tools/raw/make-reference.py" --dry-run "${ONLY[@]}" --ref "${ref}" \
+        "${FIXTURES}" "${LOG_DIR}/out" "${LOG_DIR}/xmp-${ref}")"
+    if [[ "${listing}" == *" <- "* ]]; then
         REFS+=("${ref}")
     fi
 done
@@ -67,7 +68,12 @@ if [ "${#REFS[@]}" = 0 ]; then
     exit 1
 fi
 
-for f in canon-eos-5d-mark-iii.cr2 fujifilm-x-pro2-14bit-uncompressed.raf canon-eos-5d-mark-iii-linear-rgb.dng; do
+# The ashift jobs render a synthetic source and need no camera file.
+CAMERA_FILES=(canon-eos-5d-mark-iii.cr2 fujifilm-x-pro2-14bit-uncompressed.raf canon-eos-5d-mark-iii-linear-rgb.dng)
+if [ "${#ONLY[@]}" -gt 0 ] && [[ "${ONLY[1]}" == ashift* ]]; then
+    CAMERA_FILES=()
+fi
+for f in "${CAMERA_FILES[@]}"; do
     # An LFS pointer is a few hundred bytes of text.
     if [ "$(stat -c %s "${FIXTURES}/${f}")" -lt 1000000 ]; then
         echo "${FIXTURES}/${f} is not checked out; run git lfs pull" >&2

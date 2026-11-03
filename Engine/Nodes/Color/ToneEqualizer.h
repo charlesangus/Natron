@@ -80,6 +80,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace PassExec {
+struct PlaneJob;
+}
+
 /**
  * @brief darktable's tone equalizer: a gain per exposure band, nine bands from -8 to 0 EV joined
  * by a curve of gaussians, driven by a luminance mask that an edge-aware filter smooths so that
@@ -87,7 +91,8 @@ NATRON_NAMESPACE_ENTER
  * through.
  *
  * The mask's filter runs over the whole frame, so the node reads the whole source and keeps the
- * last mask, which band edits reuse and the viewer readout and auto-adjust buttons read.
+ * last mask, which band edits reuse, and the colour layer's last mask, which the viewer readout,
+ * the wheel and the auto-adjust buttons read.
  **/
 class ToneEqualizer
     : public StagedImageEffect {
@@ -105,10 +110,12 @@ public:
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The last mask rendered, over the source's region at scale, rows from the top.
+     * @brief A mask of the colour layer, over the source's region at scale, rows from the top.
+     * source names the source frame and the divide it was computed from.
      **/
     struct Mask {
         ToneEqualizerKernels::Settings settings;
+        std::string source;
         double time = 0.;
         ViewIdx view;
         double scale = 1.;
@@ -117,10 +124,14 @@ public:
         std::shared_ptr<const std::vector<float>> values;
     };
 
+    /**
+     * @brief The colour layer's mask the viewer readout last used, rendered or computed for it.
+     **/
     std::optional<Mask> lastMask() const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The readout at a canonical position over mask, as the viewer cursor shows it.
+     * @brief The readout at a canonical position over mask, as the viewer cursor shows it; none
+     * when mask is of another time or view.
      **/
     ToneEqualizerInteract::Reading readingAt(const Mask& mask,
                                              const QPointF& canonical,
@@ -150,11 +161,61 @@ private:
 
     /**
      * @brief The mask of the source at time, view and scale for the current knobs: the kept one
-     * when it matches, else computed from the source.
+     * when it matches, else computed as the render computes it, and kept.
      **/
     std::optional<Mask> maskForAdjust(double time,
                                       ViewIdx view,
                                       const RenderScale& scale) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mask the viewer readout and wheel read at time and view: the kept one when it
+     * matches the source and the knobs at any scale, else, when compute is true and no render
+     * is computing one, computed at the overlay's scale and kept.
+     **/
+    std::optional<Mask> interactMask(double time,
+                                     ViewIdx view,
+                                     bool compute) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Mask::source for the mask of time and view, with the plan it reads the source by in
+     * plan when that is not NULL; empty with no source.
+     **/
+    std::string maskSource(double time,
+                           ViewIdx view,
+                           StagePlan* plan) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The kept mask when it was computed from source with settings at time and view, and,
+     * for a scale above zero, at that scale.
+     **/
+    std::optional<Mask> keptMask(const std::string& source,
+                                 const ToneEqualizerKernels::Settings& settings,
+                                 double time,
+                                 ViewIdx view,
+                                 double scale) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Reads into job the source the mask of time and view is computed from, as renderOp()
+     * reads it: plan's source input, with its "(Un)premult by" divisor. skipPlane holds the
+     * components whose channel the divide leaves alone.
+     **/
+    void readMaskSource(const StagePlan& plan,
+                        double time,
+                        const RenderScale& scale,
+                        ViewIdx view,
+                        const ImageLayerDesc& skipPlane,
+                        PassExec::PlaneJob* job);
+
+    /**
+     * @brief The colour layer's mask at time, view and scale for r: the kept one when it matches,
+     * else computed as renderOp() computes it, and kept. With wait false, gives none rather than
+     * wait for another thread computing a mask.
+     **/
+    std::optional<Mask> colourMask(double time,
+                                   ViewIdx view,
+                                   const RenderScale& scale,
+                                   const Resolved& r,
+                                   bool wait) WARN_UNUSED_RETURN;
 
     void keepMask(const Mask& mask);
 
@@ -229,9 +290,13 @@ private:
     KnobButtonWPtr _applyPreset;
     KnobStringWPtr _cursorReadout;
 
+    // _maskMutex only guards the slots; _maskComputeMutex keeps two threads from computing a
+    // whole-frame mask at once without holding up the viewer, which reads the slots.
     mutable std::mutex _maskMutex;
+    std::mutex _maskComputeMutex;
     std::string _maskKey;
     std::optional<Mask> _mask;
+    std::optional<Mask> _colourMask;
 
     ToneEqualizerInteract _interact;
 

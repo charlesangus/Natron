@@ -36,6 +36,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -50,12 +51,15 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/UndoCommand.h"
 #include "Global/GLIncludes.h"
 
@@ -71,6 +75,9 @@ NATRON_NAMESPACE_ENTER
 namespace RC = RetouchCore;
 
 namespace {
+// The source mark of a shape tool, which has no brush footprint to draw.
+const double kSourceMarkRadiusPixels = 3.5;
+
 template <typename T>
 std::shared_ptr<T>
 itemKnob(const RotoDrawableItemPtr& item,
@@ -85,7 +92,86 @@ isRetouchShape(const RotoItemPtr& item)
 {
     const RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
 
-    return std::dynamic_pointer_cast<Bezier>(drawable) && bool(itemKnob<KnobInt>(drawable, kRetouchShapeParamScale));
+    return (std::dynamic_pointer_cast<Bezier>(drawable) || std::dynamic_pointer_cast<RotoStrokeItem>(drawable))
+        && bool(itemKnob<KnobInt>(drawable, kRetouchShapeParamScale));
+}
+
+// Whether a shape is complete: a Bezier is closed or ended, a brush stroke has had its pen up.
+bool
+isShapeFinished(const RotoDrawableItemPtr& item,
+                const RotoStrokeItemPtr& strokeBeingPainted)
+{
+    BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(item);
+    if (bezier) {
+        return bezier->isCurveFinished();
+    }
+
+    return std::dynamic_pointer_cast<RotoStrokeItem>(item) && (item != strokeBeingPainted);
+}
+
+// The canonical centre line of a brush shape at time, and its radius.
+bool
+brushCentreLine(const RotoDrawableItemPtr& item,
+                double time,
+                std::vector<QPointF>* line,
+                double* radius)
+{
+    RotoStrokeItemPtr stroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    KnobDoublePtr size = itemKnob<KnobDouble>(item, kRetouchShapeParamBrushSize);
+    if (!stroke || !size) {
+        return false;
+    }
+    *radius = size->getValueAtTime(time) / 2.;
+    std::list<std::list<std::pair<Point, double>>> strokes;
+    stroke->evaluateStroke(0, time, &strokes);
+    line->clear();
+    for (std::list<std::list<std::pair<Point, double>>>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
+        for (std::list<std::pair<Point, double>>::const_iterator p = it->begin(); p != it->end(); ++p) {
+            line->push_back(QPointF(p->first.x, p->first.y));
+        }
+    }
+
+    return !line->empty();
+}
+
+// Whether pos is on the source of a brush shape whose source is (dx, dy) from it.
+bool
+brushSourceContains(const RotoDrawableItemPtr& item,
+                    double time,
+                    double dx,
+                    double dy,
+                    const QPointF& pos)
+{
+    std::vector<QPointF> line;
+    double radius = 0.;
+    if (!brushCentreLine(item, time, &line, &radius)) {
+        return false;
+    }
+    const double px = pos.x() - dx;
+    const double py = pos.y() - dy;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const QPointF& a = line[i];
+        const QPointF& b = (i + 1 < line.size()) ? line[i + 1] : line[i];
+        const double ex = b.x() - a.x();
+        const double ey = b.y() - a.y();
+        const double len2 = ex * ex + ey * ey;
+        const double t = (len2 > 0.) ? std::max(0., std::min(1., ((px - a.x()) * ex + (py - a.y()) * ey) / len2)) : 0.;
+        const double qx = a.x() + t * ex - px;
+        const double qy = a.y() + t * ey - py;
+        if (qx * qx + qy * qy <= radius * radius) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The tools that draw a new shape, the ones darktable's source placement applies to.
+bool
+isDrawingTool(RotoToolEnum tool)
+{
+    return (tool == eRotoToolDrawBezier) || (tool == eRotoToolDrawEllipse) || (tool == eRotoToolDrawRectangle)
+        || (tool == eRotoToolSolidBrush);
 }
 
 /**
@@ -129,6 +215,38 @@ setItemKnobValue(const KnobIPtr& knob,
         }
     }
 }
+
+/**
+ * @brief Writes a shape's source offset at time and asks for one render. The node's knob, written
+ * too while the shape is selected, would otherwise ask for one per dimension, and the curve
+ * context's evaluation one more.
+ **/
+void
+writeSourceOffset(const RotoCurveContextPtr& context,
+                  const KnobIPtr& offset,
+                  const double* values,
+                  double time,
+                  const bool* keyframe)
+{
+    NodePtr node = context ? context->getNode() : NodePtr();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (effect) {
+        effect->beginChanges();
+    }
+    for (int d = 0; d < 2; ++d) {
+        setItemKnobValue<double>(offset, d, values[d], time, keyframe[d]);
+    }
+    if (context) {
+        context->incrementAge();
+    }
+    if (effect) {
+        effect->endChanges(true);
+        effect->incrHashAndEvaluate(true, false);
+    }
+}
+
+// The cycles of a draft heal, from the previous solve: enough to follow a drag smoothly.
+const int kDraftHealCycles = 2;
 
 const char* const kAlgorithmLabels[] = { "Clone", "Heal", "Blur", "Fill" };
 
@@ -325,10 +443,7 @@ private:
         if (!offset) {
             return;
         }
-        for (int d = 0; d < 2; ++d) {
-            setItemKnobValue<double>(offset, d, values[d], _time, _keyframe[d]);
-        }
-        _context->evaluateChange();
+        writeSourceOffset(_context, offset, values, _time, _keyframe);
     }
 };
 
@@ -336,8 +451,7 @@ Retouch::Retouch(NodePtr node)
     : StagedImageEffect(node)
     // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()
     // and its endChanges() already calls knobChanged().
-    , _ui(RotoCurveInteract::create(this))
-    , _result(kRetouchFrameResult)
+    , _ui(RetouchInteract::create(this))
 {
 }
 
@@ -357,6 +471,51 @@ Retouch::imagePipelineSpec() const
     return staticImagePipelineSpec<kRetouchPipeline, kRetouchNodeSpec>();
 }
 
+bool
+Retouch::setInteractiveDraft(bool draft)
+{
+    // A render whose hash snapshot predates the hash mark refuses to cache what it rendered.
+    KnobContentWrite write;
+    const bool was = _draft.exchange(draft);
+    if (was == draft) {
+        return was;
+    }
+    if (!draft) {
+        std::lock_guard<std::mutex> lock(_warmStartsMutex);
+        _warmStarts.clear();
+    }
+    getNode()->markHashDirty();
+
+    return was;
+}
+
+void
+Retouch::requestStrokeRender()
+{
+    ++_renderRequests;
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (context) {
+        context->evaluateChange_noIncrement();
+    }
+}
+
+void
+Retouch::evaluate(bool isSignificant,
+                  bool refreshMetadatas)
+{
+    if (isSignificant) {
+        ++_renderRequests;
+    }
+    StagedImageEffect::evaluate(isSignificant, refreshMetadatas);
+}
+
+void
+Retouch::appendNodeContentHash(ContentHasher& h) const
+{
+    StagedImageEffect::appendNodeContentHash(h);
+    h.appendBool(_draft.load());
+}
+
 RotoCurvePanelHook*
 Retouch::getCurvePanelHook() const
 {
@@ -370,8 +529,11 @@ Retouch::initializeKnobs()
 
     KnobPagePtr page = createControlsPage();
     _ui->createViewerButtonKnobs(page);
-    _ui->createToolbarKnobs(eRotoCurveToolSetAll);
+    _ui->createBrushToolbarKnobs(_ui->createToolbarKnobs(eRotoCurveToolSetAll));
     _ui->createRightClickMenuKnobs(page);
+    KnobButtonPtr resetCloneOffset = _ui->createResetCloneOffsetKnob(page);
+    resetCloneOffset->setSecretByDefault(false);
+    addKnobToViewerUI(resetCloneOffset);
 
     const std::vector<ChoiceOption> algorithms = algorithmOptions();
 
@@ -508,7 +670,7 @@ Retouch::initializeKnobs()
 
     KnobIntPtr maxHealIterations = createKnob<KnobInt>(tr("Max Heal Iterations"));
     maxHealIterations->setName(kRetouchParamMaxHealIterations);
-    maxHealIterations->setHintToolTip(tr("The most iterations a Heal shape's solver runs before it stops."));
+    maxHealIterations->setHintToolTip(tr("The most iterations a Heal shape's solver runs before it stops. It usually converges within 20; the GPU solver stops at 64."));
     maxHealIterations->setDefaultValue(EdgeAware::kPoissonHealDefaultIterations);
     maxHealIterations->setMinimum(1);
     maxHealIterations->setMaximum(100000);
@@ -518,20 +680,104 @@ Retouch::initializeKnobs()
     page->addKnob(maxHealIterations);
     _maxHealIterations = maxHealIterations;
 
-    // The selected shapes' own settings, slaved to them by the curve context.
-    KnobGroupPtr selectedShape = createKnob<KnobGroup>(tr("Selected Shape"));
-    selectedShape->setName(kRetouchParamSelectedShape);
-    selectedShape->setAsTab();
-    page->addKnob(selectedShape);
+    KnobDoublePtr brushSize = createKnob<KnobDouble>(tr("Brush Size"));
+    brushSize->setName(kRetouchParamBrushSize);
+    brushSize->setHintToolTip(tr("The diameter new brush shapes get, in pixels: where the brush reaches 0."));
+    brushSize->setDefaultValue(100.);
+    brushSize->setMinimum(1.);
+    brushSize->setMaximum(4000.);
+    brushSize->setDisplayMinimum(1.);
+    brushSize->setDisplayMaximum(500.);
+    page->addKnob(brushSize);
+    _brushSize = brushSize;
+    _ui->brushSizeKnob = brushSize;
+
+    KnobDoublePtr brushHardness = createKnob<KnobDouble>(tr("Brush Hardness"));
+    brushHardness->setName(kRetouchParamBrushHardness);
+    brushHardness->setHintToolTip(tr("The hardness new brush shapes get: the fraction of the radius at full density, the rest "
+                                     "falling off to 0."));
+    brushHardness->setDefaultValue(0.66);
+    brushHardness->setMinimum(RC::kBrushHardnessMin);
+    brushHardness->setMaximum(1.);
+    brushHardness->setDisplayMinimum(0.);
+    brushHardness->setDisplayMaximum(1.);
+    page->addKnob(brushHardness);
+    _brushHardness = brushHardness;
+
+    KnobDoublePtr brushDensity = createKnob<KnobDouble>(tr("Brush Density"));
+    brushDensity->setName(kRetouchParamBrushDensity);
+    brushDensity->setHintToolTip(tr("The density new brush shapes get: the mask's value at the centre of the stroke."));
+    brushDensity->setDefaultValue(1.);
+    brushDensity->setMinimum(0.);
+    brushDensity->setMaximum(1.);
+    brushDensity->setDisplayMinimum(0.);
+    brushDensity->setDisplayMaximum(1.);
+    page->addKnob(brushDensity);
+    _brushDensity = brushDensity;
+
+    KnobChoicePtr brushPressure = createKnob<KnobChoice>(tr("Brush Pressure"));
+    brushPressure->setName(kRetouchParamBrushPressure);
+    brushPressure->setHintToolTip(tr("What pen pressure changes on new brush shapes."));
+    brushPressure->populateChoices(brushPressureOptions());
+    brushPressure->setDefaultValue((int)RC::eBrushPressureOff);
+    brushPressure->setAnimationEnabled(false);
+    page->addKnob(brushPressure);
+    _brushPressure = brushPressure;
+
+    // The curve context slaves these to the selected shapes. With none selected they edit the
+    // next-shape knobs above, which keep those settings while a shape is selected and so are hidden.
+    KnobGroupPtr shapeSettings = createKnob<KnobGroup>(tr("Shape Settings"));
+    shapeSettings->setName(kRetouchParamShapeSettings);
+    shapeSettings->setHintToolTip(tr("The selected shapes' settings. With no shape selected, the settings the next shape gets."));
+    shapeSettings->setAsTab();
+    page->addKnob(shapeSettings);
     RotoCurveContextPtr context = getNode()->getCurveContext();
-    const std::vector<KnobIPtr> shapeKnobs = createShapeKnobs(this);
+    const std::vector<KnobIPtr> shapeKnobs = createShapeKnobs(this, true);
     for (std::vector<KnobIPtr>::const_iterator it = shapeKnobs.begin(); it != shapeKnobs.end(); ++it) {
-        (*it)->setDefaultAllDimensionsEnabled(false);
+        const std::string& name = (*it)->getName();
+        if (name == kRetouchShapeParamScale) {
+            _shapeScaleKnob = *it;
+            (*it)->setDefaultAllDimensionsEnabled(false);
+        } else if (name == kRetouchShapeParamSourceOffset) {
+            _shapeSourceOffsetKnob = *it;
+            (*it)->setDefaultAllDimensionsEnabled(false);
+        }
         (*it)->setIsPersistent(false);
-        selectedShape->addKnob(*it);
+        shapeSettings->addKnob(*it);
         if (context) {
             context->addHostItemKnob(*it);
         }
+    }
+    const std::pair<const char*, KnobIPtr> nextShapeKnobs[] = {
+        { kRetouchShapeParamAlgorithm, algorithm },
+        { kRetouchShapeParamBlurType, blurType },
+        { kRetouchShapeParamBlurRadius, blurRadius },
+        { kRetouchShapeParamFillMode, fillMode },
+        { kRetouchShapeParamFillColor, fillColor },
+        { kRetouchShapeParamFillBrightness, fillBrightness },
+        { kRetouchShapeParamBrushSize, brushSize },
+        { kRetouchShapeParamBrushHardness, brushHardness },
+        { kRetouchShapeParamBrushDensity, brushDensity },
+        { kRetouchShapeParamBrushPressure, brushPressure },
+    };
+    for (const std::pair<const char*, KnobIPtr>& next : nextShapeKnobs) {
+        for (std::vector<KnobIPtr>::const_iterator it = shapeKnobs.begin(); it != shapeKnobs.end(); ++it) {
+            if ((*it)->getName() == next.first) {
+                next.second->setSecretByDefault(true);
+                _shapeKnobDefaults.push_back(std::make_pair(KnobIWPtr(*it), KnobIWPtr(next.second)));
+                break;
+            }
+        }
+    }
+    if (context) {
+        // The General tab's Color is a Roto shape's paint colour; a retouch mask has none.
+        KnobColorPtr color = context->getColorKnob();
+        if (color) {
+            color->setSecretByDefault(true);
+        }
+        QObject::connect(context.get(), &RotoCurveContext::selectionChanged, this, [this](int) {
+            onShapeSelectionChanged();
+        });
     }
 
     addStageKnobs(page);
@@ -573,8 +819,27 @@ Retouch::fillModeOptions()
     return fillModes;
 }
 
+std::vector<ChoiceOption>
+Retouch::brushPressureOptions()
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("off", tr("Off").toStdString(), tr("Pressure changes nothing.").toStdString()));
+    options.push_back(ChoiceOption("hardnessRelative", tr("Hardness (Relative)").toStdString(),
+                                   tr("The hardness is scaled by the pressure.").toStdString()));
+    options.push_back(ChoiceOption("hardnessAbsolute", tr("Hardness (Absolute)").toStdString(),
+                                   tr("The hardness is the pressure.").toStdString()));
+    options.push_back(ChoiceOption("opacityRelative", tr("Opacity (Relative)").toStdString(),
+                                   tr("The density is scaled by the pressure.").toStdString()));
+    options.push_back(ChoiceOption("opacityAbsolute", tr("Opacity (Absolute)").toStdString(),
+                                   tr("The density is the pressure.").toStdString()));
+    options.push_back(ChoiceOption("sizeRelative", tr("Brush Size (Relative)").toStdString(),
+                                   tr("The size is scaled by the pressure.").toStdString()));
+    return options;
+}
+
 std::vector<KnobIPtr>
-Retouch::createShapeKnobs(Retouch* host)
+Retouch::createShapeKnobs(Retouch* host,
+                          bool withBrush)
 {
     std::vector<KnobIPtr> knobs;
     const auto make = [host](auto typeTag, const QString& label, int dimension) {
@@ -662,16 +927,59 @@ Retouch::createShapeKnobs(Retouch* host)
     fillBrightness->setDisplayMaximum(1.);
     knobs.push_back(fillBrightness);
 
+    if (!withBrush) {
+        return knobs;
+    }
+
+    KnobDoublePtr brushSize = make(KnobDoublePtr(), tr("Shape Brush Size"), 1);
+    brushSize->setName(kRetouchShapeParamBrushSize);
+    brushSize->setHintToolTip(tr("The diameter of a brush shape, in pixels: where the brush reaches 0."));
+    brushSize->setDefaultValue(100.);
+    brushSize->setMinimum(1.);
+    brushSize->setMaximum(4000.);
+    brushSize->setDisplayMinimum(1.);
+    brushSize->setDisplayMaximum(500.);
+    knobs.push_back(brushSize);
+
+    KnobDoublePtr brushHardness = make(KnobDoublePtr(), tr("Shape Brush Hardness"), 1);
+    brushHardness->setName(kRetouchShapeParamBrushHardness);
+    brushHardness->setHintToolTip(tr("The fraction of a brush shape's radius at full density, the rest falling off to 0."));
+    brushHardness->setDefaultValue(0.66);
+    brushHardness->setMinimum(RC::kBrushHardnessMin);
+    brushHardness->setMaximum(1.);
+    brushHardness->setDisplayMinimum(0.);
+    brushHardness->setDisplayMaximum(1.);
+    knobs.push_back(brushHardness);
+
+    KnobDoublePtr brushDensity = make(KnobDoublePtr(), tr("Shape Brush Density"), 1);
+    brushDensity->setName(kRetouchShapeParamBrushDensity);
+    brushDensity->setHintToolTip(tr("The mask's value at the centre of a brush shape's stroke."));
+    brushDensity->setDefaultValue(1.);
+    brushDensity->setMinimum(0.);
+    brushDensity->setMaximum(1.);
+    brushDensity->setDisplayMinimum(0.);
+    brushDensity->setDisplayMaximum(1.);
+    knobs.push_back(brushDensity);
+
+    KnobChoicePtr brushPressure = make(KnobChoicePtr(), tr("Shape Brush Pressure"), 1);
+    brushPressure->setName(kRetouchShapeParamBrushPressure);
+    brushPressure->setHintToolTip(tr("What the pen pressure recorded with a brush shape changes."));
+    brushPressure->populateChoices(brushPressureOptions());
+    brushPressure->setDefaultValue((int)RC::eBrushPressureOff);
+    brushPressure->setAnimationEnabled(false);
+    knobs.push_back(brushPressure);
+
     return knobs;
 } // Retouch::createShapeKnobs
 
 void
 Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
 {
-    if (!std::dynamic_pointer_cast<Bezier>(item)) {
+    const bool isBrush = bool(std::dynamic_pointer_cast<RotoStrokeItem>(item));
+    if (!isBrush && !std::dynamic_pointer_cast<Bezier>(item)) {
         return;
     }
-    const std::vector<KnobIPtr> knobs = createShapeKnobs(NULL);
+    const std::vector<KnobIPtr> knobs = createShapeKnobs(NULL, isBrush);
     for (std::vector<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         item->addHostKnob(*it);
     }
@@ -709,6 +1017,24 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
     if (fillBrightness) {
         itemKnob<KnobDouble>(item, kRetouchShapeParamFillBrightness)->setValue(fillBrightness->getValueAtTime(time), ViewSpec::all(), 0, true);
     }
+    if (isBrush) {
+        KnobDoublePtr brushSize = _brushSize.lock();
+        KnobDoublePtr brushHardness = _brushHardness.lock();
+        KnobDoublePtr brushDensity = _brushDensity.lock();
+        KnobChoicePtr brushPressure = _brushPressure.lock();
+        if (brushSize) {
+            itemKnob<KnobDouble>(item, kRetouchShapeParamBrushSize)->setValue(brushSize->getValueAtTime(time), ViewSpec::all(), 0, true);
+        }
+        if (brushHardness) {
+            itemKnob<KnobDouble>(item, kRetouchShapeParamBrushHardness)->setValue(brushHardness->getValueAtTime(time), ViewSpec::all(), 0, true);
+        }
+        if (brushDensity) {
+            itemKnob<KnobDouble>(item, kRetouchShapeParamBrushDensity)->setValue(brushDensity->getValueAtTime(time), ViewSpec::all(), 0, true);
+        }
+        if (brushPressure) {
+            itemKnob<KnobChoice>(item, kRetouchShapeParamBrushPressure)->setValue(brushPressure->getValue(), ViewSpec::all(), 0, true);
+        }
+    }
 
     // Keep the panel's Scale / Algorithm column current.
     RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -729,7 +1055,7 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
         }
     }
 
-    _newShapes.push_back(item);
+    _newShapes.push_back(NewShape { item, _ui ? _ui->getSelectedTool() : eRotoToolDrawBezier });
 } // Retouch::onCurveItemCreated
 
 RC::ShapeSettings
@@ -797,14 +1123,12 @@ Retouch::setShapeSourceOffset(const RotoDrawableItemPtr& item,
     }
     RotoCurveContextPtr context = getNode()->getCurveContext();
     const double values[2] = { dx, dy };
+    bool keyframe[2];
     for (int d = 0; d < 2; ++d) {
-        const bool keyframe = (context && context->isAutoKeyingEnabled()) || offset->isAnimated(d, ViewSpec::all())
+        keyframe[d] = (context && context->isAutoKeyingEnabled()) || offset->isAnimated(d, ViewSpec::all())
             || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
-        setItemKnobValue<double>(offset, d, values[d], time, keyframe);
     }
-    if (context) {
-        context->evaluateChange();
-    }
+    writeSourceOffset(context, offset, values, time, keyframe);
 }
 
 UndoCommandPtr
@@ -937,7 +1261,9 @@ Retouch::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
 {
     RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
     RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
+    RetouchInteract::getBrushToolbarShortcuts(shortcuts);
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel));
 }
 
 void
@@ -957,6 +1283,56 @@ Retouch::onKnobsLoaded()
     _ui->setCurrentTool(defaultAction);
     _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
     _ui->onToolChangedInternal(defaultAction);
+    onShapeSelectionChanged();
+}
+
+bool
+Retouch::hasSelectedShapes() const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+
+    return context && !context->getSelectedCurves().empty();
+}
+
+void
+Retouch::onShapeSelectionChanged()
+{
+    const bool selected = hasSelectedShapes();
+    for (const std::pair<KnobIWPtr, KnobIWPtr>& pair : _shapeKnobDefaults) {
+        KnobIPtr shown = pair.first.lock();
+        KnobIPtr next = pair.second.lock();
+        if (!shown || !next) {
+            continue;
+        }
+        if (!selected) {
+            shown->cloneAndUpdateGui(next.get());
+        }
+        // Deselecting a shape disables every knob the curve context slaves.
+        shown->setAllDimensionsEnabled(true);
+    }
+    const KnobIPtr shapeOnly[] = { _shapeScaleKnob.lock(), _shapeSourceOffsetKnob.lock() };
+    for (const KnobIPtr& k : shapeOnly) {
+        if (k) {
+            k->setAllDimensionsEnabled(selected);
+        }
+    }
+}
+
+KnobIPtr
+Retouch::counterpartOfShapeKnob(const KnobI* knob) const
+{
+    for (const std::pair<KnobIWPtr, KnobIWPtr>& pair : _shapeKnobDefaults) {
+        KnobIPtr shown = pair.first.lock();
+        KnobIPtr next = pair.second.lock();
+        if (knob && (shown.get() == knob)) {
+            return next;
+        }
+        if (knob && (next.get() == knob)) {
+            return shown;
+        }
+    }
+
+    return KnobIPtr();
 }
 
 bool
@@ -971,6 +1347,18 @@ Retouch::knobChanged(KnobI* k,
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
     }
+    KnobIPtr counterpart = counterpartOfShapeKnob(k);
+    // Changes to either side reach the other: the shown knob while nothing is selected, the
+    // next-shape knob from the brush size gesture.
+    if (counterpart && !hasSelectedShapes()) {
+        counterpart->cloneAndUpdateGui(k);
+    }
+    if (k && (k == _ui->resetCloneOffsetButton.lock().get())) {
+        _ui->cloneOffset = std::make_pair(0., 0.);
+        redrawOverlayInteract();
+
+        return true;
+    }
     if (k && ((k == _scales.lock().get()) || (k->getName() == kRetouchShapeParamScale) || (k->getName() == kRetouchShapeParamAlgorithm))) {
         RotoCurveContextPtr context = getNode()->getCurveContext();
         if (context) {
@@ -984,30 +1372,36 @@ Retouch::knobChanged(KnobI* k,
 }
 
 void
-Retouch::applyDefaultSourceOffsets()
+Retouch::applyNewShapeSourceOffsets()
 {
     const double time = getCurrentTime();
-    for (std::list<RotoDrawableItemWPtr>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
-        RotoDrawableItemPtr item = it->lock();
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(item);
-        if (!bezier) {
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
+    for (std::list<NewShape>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
+        RotoDrawableItemPtr item = it->item.lock();
+        if (!isRetouchShape(item)) {
             it = _newShapes.erase(it);
             continue;
         }
-        if (!bezier->isCurveFinished()) {
+        if (!isShapeFinished(item, painting)) {
             ++it;
             continue;
         }
         KnobDoublePtr offset = itemKnob<KnobDouble>(item, kRetouchShapeParamSourceOffset);
         if (offset && !offset->isAnimated(0, ViewSpec::all()) && !offset->isAnimated(1, ViewSpec::all())
             && (offset->getValueAtTime(time, 0) == 0.) && (offset->getValueAtTime(time, 1) == 0.)) {
-            const RectD bbox = bezier->getBoundingBox(time);
-            if (!bbox.isNull()) {
-                setShapeSourceOffset(item, time, bbox.width() / 2., bbox.height() / 2.);
-            }
+            setShapeSourceOffset(item, time, _ui->cloneOffset.first, _ui->cloneOffset.second);
         }
         it = _newShapes.erase(it);
     }
+}
+
+bool
+Retouch::newShapesTakeSource() const
+{
+    KnobChoicePtr algorithm = _algorithm.lock();
+    const int newAlgorithm = algorithm ? algorithm->getValue() : (int)RC::eAlgorithmHeal;
+
+    return (newAlgorithm == (int)RC::eAlgorithmClone) || (newAlgorithm == (int)RC::eAlgorithmHeal);
 }
 
 RotoDrawableItemPtr
@@ -1020,9 +1414,9 @@ Retouch::pickSource(double time,
     }
     const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder();
     // The topmost shape first.
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
     for (std::list<RotoDrawableItemPtr>::const_reverse_iterator it = curves.rbegin(); it != curves.rend(); ++it) {
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (!bezier || !isRetouchShape(bezier) || bezier->isLockedRecursive() || !bezier->isCurveFinished()) {
+        if (!isRetouchShape(*it) || (*it)->isLockedRecursive() || !isShapeFinished(*it, painting)) {
             continue;
         }
         const RC::ShapeSettings s = readShapeSettings(*it, time);
@@ -1031,9 +1425,39 @@ Retouch::pickSource(double time,
         }
         double dx, dy;
         readShapeSourceOffset(*it, time, &dx, &dy);
+        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
+        if (!bezier) {
+            if (brushSourceContains(*it, time, dx, dy, pos)) {
+                return *it;
+            }
+            continue;
+        }
         std::list<ParametricPoint> points;
         bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, NULL);
         if (pointInPolygon(points, dx, dy, pos)) {
+            return *it;
+        }
+    }
+
+    return RotoDrawableItemPtr();
+}
+
+RotoDrawableItemPtr
+Retouch::pickBrush(double time,
+                   const QPointF& pos) const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (!context) {
+        return RotoDrawableItemPtr();
+    }
+    const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder();
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
+    for (std::list<RotoDrawableItemPtr>::const_reverse_iterator it = curves.rbegin(); it != curves.rend(); ++it) {
+        if (!isRetouchShape(*it) || std::dynamic_pointer_cast<Bezier>(*it) || (*it)->isLockedRecursive()
+            || !isShapeFinished(*it, painting)) {
+            continue;
+        }
+        if (brushSourceContains(*it, time, 0., 0., pos)) {
             return *it;
         }
     }
@@ -1063,9 +1487,9 @@ Retouch::drawOverlay(double time,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_LINE_SMOOTH);
     glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (!bezier || !isRetouchShape(bezier) || !bezier->isGloballyActivated() || !bezier->isCurveFinished()) {
+        if (!isRetouchShape(*it) || !(*it)->isGloballyActivated() || !isShapeFinished(*it, painting)) {
             continue;
         }
         const RC::ShapeSettings s = readShapeSettings(*it, time);
@@ -1074,23 +1498,43 @@ Retouch::drawOverlay(double time,
         }
         double dx, dy;
         readShapeSourceOffset(*it, time, &dx, &dy);
-        std::list<ParametricPoint> points;
-        RectD bbox;
-        bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, &bbox);
-        if (points.empty()) {
+        // A Bezier's source is its outline moved; a brush's is its centre line moved.
+        std::vector<QPointF> outline;
+        bool closed = true;
+        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
+        if (bezier) {
+            std::list<ParametricPoint> points;
+            bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, NULL);
+            for (std::list<ParametricPoint>::const_iterator p = points.begin(); p != points.end(); ++p) {
+                outline.push_back(QPointF(p->x, p->y));
+            }
+        } else {
+            double radius = 0.;
+            if (brushCentreLine(*it, time, &outline, &radius)) {
+                closed = false;
+            }
+        }
+        if (outline.empty()) {
             continue;
+        }
+        RectD bbox(outline.front().x(), outline.front().y(), outline.front().x(), outline.front().y());
+        for (const QPointF& p : outline) {
+            bbox.x1 = std::min(bbox.x1, p.x());
+            bbox.x2 = std::max(bbox.x2, p.x());
+            bbox.y1 = std::min(bbox.y1, p.y());
+            bbox.y2 = std::max(bbox.y2, p.y());
         }
         const bool isSelected = (*it == dragged) || (std::find(selected.begin(), selected.end(), *it) != selected.end());
         double color[4];
-        bezier->getOverlayColor(color);
+        (*it)->getOverlayColor(color);
         color[3] = isSelected ? 1. : 0.5;
         glColor4dv(color);
         glLineWidth((isSelected ? 1.5 : 1.) * screenPixelRatio);
         glEnable(GL_LINE_STIPPLE);
         glLineStipple(2, 0xAAAA);
-        glBegin(GL_LINE_LOOP);
-        for (std::list<ParametricPoint>::const_iterator p = points.begin(); p != points.end(); ++p) {
-            glVertex2d(p->x + dx, p->y + dy);
+        glBegin(closed ? GL_LINE_LOOP : GL_LINE_STRIP);
+        for (const QPointF& p : outline) {
+            glVertex2d(p.x() + dx, p.y() + dy);
         }
         glEnd();
         // From the source's centre to the shape's.
@@ -1102,6 +1546,36 @@ Retouch::drawOverlay(double time,
         glVertex2d(cx, cy);
         glEnd();
         glDisable(GL_LINE_STIPPLE);
+    }
+
+    // Where the next shape's source goes, drawn as RotoPaint's clone brush draws it.
+    const RotoToolEnum tool = _ui->getSelectedTool();
+    if (isDrawingTool(tool) && !isDrawingPassiveOverlay() && newShapesTakeSource()) {
+        QPointF centre;
+        bool hasCentre = true;
+        if (painting || (_ui->state == eEventStateDraggingCloneOffset)) {
+            centre = _ui->lastMousePos;
+        } else {
+            double cx, cy;
+            viewport->getCursorPosition(cx, cy);
+            centre = QPointF(cx, cy);
+            hasCentre = viewport->getViewportRect().contains(cx, cy);
+        }
+        const std::pair<double, double> offset = _ui->cloneOffset;
+        if (hasCentre && ((offset.first != 0.) || (offset.second != 0.))) {
+            double radius;
+            KnobDoublePtr brushSize = _brushSize.lock();
+            if ((tool == eRotoToolSolidBrush) && brushSize) {
+                radius = brushSize->getValue() / 2.;
+            } else {
+                double psx, psy;
+                viewport->getPixelScale(psx, psy);
+                radius = kSourceMarkRadiusPixels * psx;
+            }
+            std::pair<double, double> viewportSize;
+            viewport->getViewportSize(viewportSize.first, viewportSize.second);
+            _ui->drawCloneSource(centre, offset, radius, 1., screenPixelRatio, viewportSize);
+        }
     }
 } // Retouch::drawOverlay
 
@@ -1116,9 +1590,10 @@ Retouch::onOverlayPenDown(double time,
                           PenType pen)
 {
     // Shapes made before this press have had their pen up.
-    for (std::list<RotoDrawableItemWPtr>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(it->lock());
-        if (!bezier || bezier->isCurveFinished()) {
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
+    for (std::list<NewShape>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
+        RotoDrawableItemPtr item = it->item.lock();
+        if (!item || isShapeFinished(item, painting)) {
             it = _newShapes.erase(it);
         } else {
             ++it;
@@ -1126,8 +1601,36 @@ Retouch::onOverlayPenDown(double time,
     }
 
     const RotoToolEnum tool = _ui->getSelectedTool();
+    // RotoPaint's clone gesture: Ctrl+drag keeps the source where it is and moves the pen away.
+    if (isDrawingTool(tool) && !_ui->getBezierBeingBuild() && !_ui->getStrokeBeingPainted() && newShapesTakeSource()
+        && _ui->isCloneOffsetDragModifier()) {
+        _ui->startCloneOffsetDrag(pos);
+        redrawOverlayInteract();
+
+        return true;
+    }
     if ((tool == eRotoToolSelectAll) || (tool == eRotoToolSelectCurves) || (tool == eRotoToolSelectPoints)) {
+        // A brush stroke has no outline for the curve interact to pick, so a click inside its
+        // footprint selects it, unless a Bezier outline is close enough to claim the click.
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        bool nearBezier = false;
+        if (context) {
+            const std::pair<double, double> pixelScale = _ui->getPixelScale();
+            int cpIndex;
+            double t;
+            bool isFeather;
+            nearBezier = bool(context->isNearbyBezier(pos.x(), pos.y(), kBezierSelectionTolerance * pixelScale.first, &cpIndex, &t, &isFeather));
+        }
+        const RotoDrawableItemPtr brush = nearBezier ? RotoDrawableItemPtr() : pickBrush(time, pos);
         RotoDrawableItemPtr item = pickSource(time, pos);
+        // Grabbing a brush's source selects the brush too: a Heal or Clone brush's source starts on
+        // the brush itself, so the source would otherwise take every click on it.
+        if (item && !std::dynamic_pointer_cast<Bezier>(item) && !nearBezier) {
+            if (!_ui->shiftDown) {
+                _ui->clearCPSSelection();
+            }
+            _ui->handleItemSelection(item);
+        }
         if (item) {
             _draggedSource = item;
             _dragPressPos = pos;
@@ -1135,6 +1638,16 @@ Retouch::onOverlayPenDown(double time,
             readShapeSourceOffset(item, time, &_dragStart[0], &_dragStart[1]);
             _dragEnd[0] = _dragStart[0];
             _dragEnd[1] = _dragStart[1];
+            redrawOverlayInteract();
+
+            return true;
+        }
+        if (brush) {
+            if (!_ui->shiftDown) {
+                _ui->clearCPSSelection();
+            }
+            _ui->handleItemSelection(brush);
+            _ui->lastMousePos = pos;
             redrawOverlayInteract();
 
             return true;
@@ -1153,17 +1666,31 @@ Retouch::onOverlayPenMotion(double time,
                             double pressure,
                             double timestamp)
 {
+    if (_ui->state == eEventStateDraggingCloneOffset) {
+        _ui->dragCloneOffset(pos.x() - _ui->lastMousePos.x(), pos.y() - _ui->lastMousePos.y());
+        _ui->lastMousePos = pos;
+        redrawOverlayInteract();
+
+        return true;
+    }
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
         _dragEnd[0] = _dragStart[0] + (pos.x() - _dragPressPos.x());
         _dragEnd[1] = _dragStart[1] + (pos.y() - _dragPressPos.y());
+        setInteractiveDraft(true);
         setShapeSourceOffset(dragged, _dragTime, _dragEnd[0], _dragEnd[1]);
         redrawOverlayInteract();
 
         return true;
     }
 
-    return _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
+    const bool ret = _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
+    // The source follows the cursor.
+    if (isDrawingTool(_ui->getSelectedTool())) {
+        redrawOverlayInteract();
+    }
+
+    return ret;
 }
 
 bool
@@ -1175,21 +1702,32 @@ Retouch::onOverlayPenUp(double /*time*/,
                         double /*pressure*/,
                         double /*timestamp*/)
 {
+    if (_ui->state == eEventStateDraggingCloneOffset) {
+        _ui->state = eEventStateNone;
+        redrawOverlayInteract();
+
+        return true;
+    }
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
         _draggedSource.reset();
+        const bool drafted = setInteractiveDraft(false);
+        UndoCommandPtr command;
         if ((_dragEnd[0] != _dragStart[0]) || (_dragEnd[1] != _dragStart[1])) {
-            UndoCommandPtr command = makeSourceDragCommand(dragged, _dragTime, _dragStart, _dragEnd);
-            if (command) {
-                pushUndoCommand(command);
-            }
+            command = makeSourceDragCommand(dragged, _dragTime, _dragStart, _dragEnd);
+        }
+        // Pushing the step writes the offset again, which renders the final result.
+        if (command) {
+            pushUndoCommand(command);
+        } else if (drafted) {
+            incrHashAndEvaluate(true, false);
         }
         redrawOverlayInteract();
 
         return true;
     }
     const bool ret = _ui->onOverlayPenUp();
-    applyDefaultSourceOffsets();
+    applyNewShapeSourceOffsets();
 
     return ret;
 }
@@ -1213,7 +1751,7 @@ Retouch::onOverlayKeyDown(double /*time*/,
 {
     const bool ret = _ui->onOverlayKeyDown(key);
     // Return closes an open Bezier.
-    applyDefaultSourceOffsets();
+    applyNewShapeSourceOffsets();
 
     return ret;
 }
@@ -1234,6 +1772,9 @@ Retouch::onOverlayFocusLost(double /*time*/,
                             ViewIdx /*view*/)
 {
     _draggedSource.reset();
+    if (setInteractiveDraft(false)) {
+        incrHashAndEvaluate(true, false);
+    }
 
     return _ui->onOverlayFocusLost();
 }
@@ -1284,16 +1825,103 @@ Retouch::framePixels(double time,
     return wholeFramePixels(*this, getSourceInput(), time, view, scale, pixels) && !pixels->isNull();
 }
 
-void
-Retouch::purgeCaches()
+std::vector<std::vector<RC::BrushPoint>>
+Retouch::readBrushStrokes(const RotoDrawableItemPtr& item,
+                          double time,
+                          double scale,
+                          const RectI& full)
 {
-    _result.clear();
+    std::vector<std::vector<RC::BrushPoint>> result;
+    RotoStrokeItemPtr stroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    KnobDoublePtr sizeKnob = itemKnob<KnobDouble>(item, kRetouchShapeParamBrushSize);
+    if (!stroke || !sizeKnob) {
+        return result;
+    }
+    KnobDoublePtr hardnessKnob = itemKnob<KnobDouble>(item, kRetouchShapeParamBrushHardness);
+    KnobDoublePtr densityKnob = itemKnob<KnobDouble>(item, kRetouchShapeParamBrushDensity);
+    KnobChoicePtr pressureKnob = itemKnob<KnobChoice>(item, kRetouchShapeParamBrushPressure);
+    const float radius = (float)(std::max(0., sizeKnob->getValueAtTime(time)) / 2. * scale);
+    const float hardness = (float)std::max((double)RC::kBrushHardnessMin, std::min(1., hardnessKnob ? hardnessKnob->getValueAtTime(time) : 1.));
+    const float density = (float)std::max(0., std::min(1., densityKnob ? densityKnob->getValueAtTime(time) : 1.));
+    const RC::BrushPressureEnum pressureMode = pressureKnob ? (RC::BrushPressureEnum)pressureKnob->getValue() : RC::eBrushPressureOff;
+    const float minRadius = RC::kBrushBorderMin * (float)std::min(full.width(), full.height());
+
+    std::list<std::list<std::pair<Point, double>>> strokes;
+    stroke->evaluateStroke(0, time, &strokes);
+    for (std::list<std::list<std::pair<Point, double>>>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
+        std::vector<RC::BrushPoint> points;
+        points.reserve(it->size());
+        for (std::list<std::pair<Point, double>>::const_iterator p = it->begin(); p != it->end(); ++p) {
+            RC::BrushPoint b;
+            b.x = (float)(p->first.x * scale - full.x1);
+            b.y = (float)(full.y2 - p->first.y * scale);
+            b.radius = radius;
+            b.hardness = hardness;
+            b.density = density;
+            RC::applyBrushPressure(pressureMode, (float)std::max(0., std::min(1., p->second)), minRadius, &b);
+            points.push_back(b);
+        }
+        if (!points.empty()) {
+            result.push_back(points);
+        }
+    }
+
+    return result;
+} // Retouch::readBrushStrokes
+
+bool
+Retouch::rasterizeBrushShape(const RotoDrawableItemPtr& item,
+                             double time,
+                             double scale,
+                             const RectI& full,
+                             RC::Region* roi,
+                             std::vector<float>* mask,
+                             const EdgeAware::ParallelFor& parallel,
+                             RC::PatchCache* masks)
+{
+    const std::vector<std::vector<RC::BrushPoint>> strokes = readBrushStrokes(item, time, scale, full);
+    std::vector<RC::BrushPoint> all;
+    RC::KeyHash key;
+    for (const std::vector<RC::BrushPoint>& points : strokes) {
+        all.insert(all.end(), points.begin(), points.end());
+        key.add(points.size());
+        key.addBytes(points.data(), points.size() * sizeof(RC::BrushPoint));
+    }
+    *roi = RC::brushBounds(all);
+    if ((roi->width <= 0) || (roi->height <= 0)) {
+        return false;
+    }
+    key.addRegion(*roi);
+    std::unique_ptr<RC::CacheClaim> claim;
+    if (masks) {
+        const std::shared_ptr<const RC::PatchCache::Patch> hit = masks->acquire(key.value());
+        if (hit) {
+            *mask = hit->values;
+
+            return true;
+        }
+        claim.reset(new RC::CacheClaim(masks, key.value()));
+    }
+    mask->assign((std::size_t)roi->width * (std::size_t)roi->height, 0.f);
+    for (const std::vector<RC::BrushPoint>& points : strokes) {
+        RC::accumulateBrush(points, *roi, mask->data(), parallel);
+    }
+    if (claim) {
+        std::shared_ptr<RC::PatchCache::Patch> patch = std::make_shared<RC::PatchCache::Patch>();
+        patch->area = *roi;
+        patch->values = *mask;
+        claim->publish(patch);
+    }
+
+    return true;
 }
 
 std::vector<RC::Shape>
 Retouch::collectShapes(double time,
                        const RenderScale& scale,
-                       const RectI& full) const
+                       const RectI& full,
+                       bool rasterize,
+                       bool draft) const
 {
     std::vector<RC::Shape> shapes;
     RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -1302,37 +1930,82 @@ Retouch::collectShapes(double time,
     }
     const double s = scale.toOfxPointD().x;
     const unsigned int mipmapLevel = scale.toMipmapLevel();
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    // Not cancellable: a mask left half drawn would be kept in the mask cache.
+    const EdgeAware::ParallelFor parallel = [nThreads](int count, const std::function<void(int)>& body) {
+        parallelForOnGlobalPool(count, nThreads, body);
+    };
     const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(true);
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (!bezier || !isRetouchShape(bezier) || !bezier->isActivated(time)) {
-            continue;
-        }
-        const RectD bbox = bezier->getBoundingBox(time);
-        if (bbox.isNull()) {
-            continue;
-        }
-        RectI pixels;
-        pixels.x1 = (int)std::floor(bbox.x1 * s);
-        pixels.y1 = (int)std::floor(bbox.y1 * s);
-        pixels.x2 = (int)std::ceil(bbox.x2 * s);
-        pixels.y2 = (int)std::ceil(bbox.y2 * s);
-        std::vector<float> coverage;
-        if (!bezier->rasterizeCoverage(time, mipmapLevel, pixels, &coverage)) {
+        if (!isRetouchShape(*it) || !(*it)->isActivated(time)) {
             continue;
         }
         RC::Shape shape;
+        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
+        if (bezier) {
+            const RectD bbox = bezier->getBoundingBox(time);
+            if (bbox.isNull()) {
+                continue;
+            }
+            RectI pixels;
+            pixels.x1 = (int)std::floor(bbox.x1 * s);
+            pixels.y1 = (int)std::floor(bbox.y1 * s);
+            pixels.x2 = (int)std::ceil(bbox.x2 * s);
+            pixels.y2 = (int)std::ceil(bbox.y2 * s);
+            shape.maskRoi.x = pixels.x1 - full.x1;
+            shape.maskRoi.y = full.y2 - pixels.y2;
+            shape.maskRoi.width = pixels.width();
+            shape.maskRoi.height = pixels.height();
+            if (rasterize) {
+                RC::KeyHash key;
+                key.add(bezier->getContentHash());
+                key.addBytes(&time, sizeof(time));
+                key.add(mipmapLevel);
+                key.addRegion(shape.maskRoi);
+                const std::shared_ptr<const RC::PatchCache::Patch> hit = _shapeMasks.acquire(key.value());
+                if (hit) {
+                    shape.mask = hit->values;
+                } else {
+                    RC::CacheClaim claim(&_shapeMasks, key.value());
+                    std::vector<float> coverage;
+                    if (!bezier->rasterizeCoverage(time, mipmapLevel, pixels, &coverage)) {
+                        continue;
+                    }
+                    // Coverage rows go up from pixels.y1; the shape's mask rows go down.
+                    shape.mask.resize(coverage.size());
+                    const std::size_t w = (std::size_t)shape.maskRoi.width;
+                    for (int r = 0; r < shape.maskRoi.height; ++r) {
+                        std::copy(&coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w], &coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w] + w,
+                                  &shape.mask[(std::size_t)r * w]);
+                    }
+                    std::shared_ptr<RC::PatchCache::Patch> patch = std::make_shared<RC::PatchCache::Patch>();
+                    patch->area = shape.maskRoi;
+                    patch->values = shape.mask;
+                    claim.publish(patch);
+                }
+            }
+        } else if (rasterize) {
+            if (!rasterizeBrushShape(*it, time, s, full, &shape.maskRoi, &shape.mask, parallel, &_shapeMasks)) {
+                continue;
+            }
+        } else {
+            std::vector<RC::BrushPoint> all;
+            for (const std::vector<RC::BrushPoint>& points : readBrushStrokes(*it, time, s, full)) {
+                all.insert(all.end(), points.begin(), points.end());
+            }
+            shape.maskRoi = RC::brushBounds(all);
+            if ((shape.maskRoi.width <= 0) || (shape.maskRoi.height <= 0)) {
+                continue;
+            }
+        }
         shape.settings = readShapeSettings(*it, time);
-        shape.maskRoi.x = pixels.x1 - full.x1;
-        shape.maskRoi.y = full.y2 - pixels.y2;
-        shape.maskRoi.width = pixels.width();
-        shape.maskRoi.height = pixels.height();
-        // Coverage rows go up from pixels.y1; the shape's mask rows go down.
-        shape.mask.resize(coverage.size());
-        const std::size_t w = (std::size_t)shape.maskRoi.width;
-        for (int r = 0; r < shape.maskRoi.height; ++r) {
-            std::copy(&coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w], &coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w] + w,
-                      &shape.mask[(std::size_t)r * w]);
+        if (draft && (shape.settings.algorithm == RC::eAlgorithmHeal)) {
+            std::lock_guard<std::mutex> lock(_warmStartsMutex);
+            std::shared_ptr<RC::HealWarmStart>& warm = _warmStarts[(*it)->getScriptName()];
+            if (!warm) {
+                warm = std::make_shared<RC::HealWarmStart>();
+            }
+            shape.warmStart = warm;
         }
         double offsetX, offsetY;
         readShapeSourceOffset(*it, time, &offsetX, &offsetY);
@@ -1357,16 +2030,68 @@ Retouch::getRegionsOfInterest(double time,
 
     const int sourceInput = getSourceInput();
     EffectInstancePtr input = getInput(sourceInput);
-    RectI frame;
-    if (!input || !framePixels(time, view, scale, &frame)) {
+    if (!input) {
         return;
     }
-    // The whole frame, and the window, outside the frame passed through.
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    RectD need = PassExec::toCanonical(frame, scale, metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.);
-    need.merge(renderWindow);
-    (*ret)[input] = need;
+    const double par = metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.;
+    const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
+    RectI full, crop;
+    RC::Params params;
+    std::vector<RC::Shape> shapes;
+    if (!processPlan(time, view, scale, window, false, false, &full, &crop, &params, &shapes) || crop.isNull()) {
+        return;
+    }
+    const RectD needed = PassExec::toCanonical(crop, scale, par);
+    RoIMap::iterator found = ret->find(input);
+    if (found == ret->end()) {
+        (*ret)[input] = needed;
+    } else {
+        found->second.merge(needed);
+    }
 }
+
+bool
+Retouch::processPlan(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     const RectI& window,
+                     bool rasterize,
+                     bool draft,
+                     RectI* full,
+                     RectI* crop,
+                     RC::Params* params,
+                     std::vector<RC::Shape>* shapes) const
+{
+    if (!framePixels(time, view, scale, full)) {
+        return false;
+    }
+    *params = readParams(time, view, (float)scale.toOfxPointD().x);
+    *shapes = collectShapes(time, scale, *full, rasterize, draft);
+    RC::Region w;
+    w.x = window.x1 - full->x1;
+    w.y = full->y2 - window.y2;
+    w.width = window.width();
+    w.height = window.height();
+    const RC::Region c = RC::processRegion(w, *shapes, *params, full->width(), full->height());
+    if ((c.width <= 0) || (c.height <= 0)) {
+        *crop = RectI();
+    } else {
+        crop->x1 = full->x1 + c.x;
+        crop->x2 = crop->x1 + c.width;
+        crop->y2 = full->y2 - c.y;
+        crop->y1 = crop->y2 - c.height;
+    }
+    params->originX = c.x;
+    params->originY = c.y;
+    params->fullWidth = full->width();
+    params->fullHeight = full->height();
+    if (draft) {
+        params->draftHealCycles = kDraftHealCycles;
+    }
+
+    return true;
+} // Retouch::processPlan
 
 bool
 Retouch::isOpIdentity(double time,
@@ -1397,21 +2122,45 @@ Retouch::renderOp(const RenderActionArgs& args,
                   const StagePlan& plan)
 {
     const int sourceInput = getSourceInput();
-    RectI full;
-    if (!framePixels(args.time, args.view, args.mappedScale, &full)) {
+    RectI full, crop;
+    RC::Params params;
+    std::vector<RC::Shape> shapes;
+    // Read once, after the render's hash snapshot: setInteractiveDraft() brackets its flip as a
+    // content write, so a frame whose flag differs from its hash is never cached under it.
+    const bool draft = _draft.load();
+    if (!processPlan(args.time, args.view, args.mappedScale, args.roi, true, draft, &full, &crop, &params, &shapes)) {
         return eStatusFailed;
     }
-    RectI overlap;
-    // A window outside the frame is the source alone.
-    const bool touchesFrame = PassExec::intersectRects(args.roi, full, &overlap) && !PassExec::isEmptyRect(overlap);
+
+    ImagePtr src;
+    ImageLayerDesc sourceLayer;
+    if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
+        RectI sourceRoI;
+        src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
+    }
+    if (src && !PassExec::isFloatImage(src)) {
+        return eStatusFailed;
+    }
+    std::shared_ptr<Image::ReadAccess> srcAccess;
+    RectI srcBounds;
+    int srcNComps = 0;
+    if (src) {
+        srcAccess = std::make_shared<Image::ReadAccess>(src.get());
+        srcBounds = src->getBounds();
+        srcNComps = (int)src->getComponentsCount();
+    }
 
     RenderCancellation cancel(this);
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     const EdgeAware::ParallelFor parallel = [&cancel, nThreads](int count, const std::function<void(int)>& body) {
         parallelForCancellable(count, nThreads, cancel, body);
     };
-    const int width = full.width();
-    const int height = full.height();
+    const int width = crop.width();
+    const int height = crop.height();
+    params.cache = &_shapeResults;
+    params.cancelled = [&cancel]() {
+        return cancel.check();
+    };
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         if (!it->second) {
@@ -1419,75 +2168,56 @@ Retouch::renderOp(const RenderActionArgs& args,
         }
         const int nComps = (int)it->second->getComponentsCount();
 
-        WholeFrameCache::Result result;
-        if (touchesFrame) {
-            const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, full, it->first.getLayerID(), nComps);
-            result = _result.get(key, [&]() -> WholeFrameCache::Result {
-                ImagePtr src;
-                ImageLayerDesc sourceLayer;
-                if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-                    RectI sourceRoI;
-                    src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-                }
-                if (src && !PassExec::isFloatImage(src)) {
-                    return WholeFrameCache::Result();
-                }
-                std::shared_ptr<Image::ReadAccess> srcAccess;
-                RectI srcBounds;
-                int srcNComps = 0;
-                if (src) {
-                    srcAccess = std::make_shared<Image::ReadAccess>(src.get());
-                    srcBounds = src->getBounds();
-                    srcNComps = (int)src->getComponentsCount();
-                }
-                const RC::Params params = readParams(args.time, args.view, (float)args.mappedScale.toOfxPointD().x);
-                const std::vector<RC::Shape> shapes = collectShapes(args.time, args.mappedScale, full);
-
-                // The whole source, top-down, as darktable's 4 channels: one channel goes to all three colours.
-                auto processed = std::make_shared<std::vector<float>>((std::size_t)width * height * 4, 0.f);
-                std::vector<float>& image = *processed;
-                parallel(height, [&](int r) {
-                    const int y = full.y2 - 1 - r;
-                    std::vector<float> row((std::size_t)width * nComps);
-                    PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, row.data());
-                    float* dst = &image[(std::size_t)r * width * 4];
-                    for (int x = 0; x < width; ++x) {
-                        const float* p = &row[(std::size_t)x * nComps];
-                        if (nComps == 1) {
-                            dst[4 * x] = dst[4 * x + 1] = dst[4 * x + 2] = p[0];
-                        } else {
-                            for (int c = 0; c < std::min(nComps, 4); ++c) {
-                                dst[4 * x + c] = p[c];
-                            }
-                        }
-                    }
-                });
-                if (cancel.check()) {
-                    return WholeFrameCache::Result();
-                }
-                RC::process(image.data(), width, height, params, shapes, parallel);
-                if (cancel.check()) {
-                    return WholeFrameCache::Result();
-                }
-
-                return processed;
-            });
-            if (!result) {
-                return eStatusFailed;
-            }
+        // The source image names the crop's pixels only where it covers the crop.
+        params.inputKey = 0;
+        if (src && srcBounds.contains(crop) && (src->getKey().getTreeVersion() != 0)) {
+            RC::KeyHash key;
+            key.add(src->getKey().getHash());
+            key.add(src->getMipmapLevel());
+            key.addBytes(sourceLayer.getLayerID().data(), sourceLayer.getLayerID().size());
+            key.add((std::uint64_t)nComps);
+            key.add((std::uint64_t)srcNComps);
+            key.add((std::uint64_t)(std::uint32_t)full.x1 | ((std::uint64_t)(std::uint32_t)full.y1 << 32));
+            key.add((std::uint64_t)(std::uint32_t)full.x2 | ((std::uint64_t)(std::uint32_t)full.y2 << 32));
+            params.inputKey = std::max<std::uint64_t>(key.value(), 1);
         }
-        const float* image = result ? result->data() : nullptr;
+
+        // The crop of the source, top-down, as darktable's 4 channels: one channel goes to all three colours.
+        std::vector<float> image((std::size_t)width * height * 4, 0.f);
+        parallel(height, [&](int r) {
+            const int y = crop.y2 - 1 - r;
+            std::vector<float> row((std::size_t)width * nComps);
+            PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, crop.x1, y, width, nComps, row.data());
+            float* dst = &image[(std::size_t)r * width * 4];
+            for (int x = 0; x < width; ++x) {
+                const float* p = &row[(std::size_t)x * nComps];
+                if (nComps == 1) {
+                    dst[4 * x] = dst[4 * x + 1] = dst[4 * x + 2] = p[0];
+                } else {
+                    for (int c = 0; c < std::min(nComps, 4); ++c) {
+                        dst[4 * x + c] = p[c];
+                    }
+                }
+            }
+        });
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
+        RC::process(image.data(), width, height, params, shapes, parallel);
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
 
         const auto row = [&](const RowIO& io) {
             const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
-            const bool insideRow = image && (io.y >= full.y1) && (io.y < full.y2);
-            const std::size_t rowStart = insideRow ? (std::size_t)(full.y2 - 1 - io.y) * width : 0;
+            const bool insideRow = (io.y >= crop.y1) && (io.y < crop.y2);
+            const std::size_t rowStart = insideRow ? (std::size_t)(crop.y2 - 1 - io.y) * width : 0;
             for (int i = 0; i < io.width; ++i) {
                 const int x = io.x0 + i;
                 const float* in = io.src[0] ? &io.src[0][(std::size_t)i * io.nComps] : zero;
                 float out[4] = { 0.f, 0.f, 0.f, 0.f };
-                if (insideRow && (x >= full.x1) && (x < full.x2)) {
-                    const float* p = &image[4 * (rowStart + (x - full.x1))];
+                if (insideRow && (x >= crop.x1) && (x < crop.x2)) {
+                    const float* p = &image[4 * (rowStart + (x - crop.x1))];
                     std::copy(p, p + std::min(io.nComps, 4), out);
                 } else {
                     std::copy(in, in + io.nComps, out);
@@ -1550,15 +2280,6 @@ struct RetouchGpuParams {
     uint32_t padding0;
 };
 static_assert(sizeof(RetouchGpuParams) == 128, "RetouchGpuParams must match the push-constant block");
-
-bool
-deviceHasPushDescriptors()
-{
-    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
-    gpu::GpuRuntime* runtime = gpu ? gpu->runtime() : nullptr;
-
-    return runtime && runtime->device().info().pushDescriptor;
-}
 } // anonymous namespace
 #endif
 
@@ -1604,13 +2325,8 @@ Retouch::canRenderOpOnGpu(const GpuQuery& query) const
     if (!gpuPlan(query.time, query.view, query.mappedScale, &full, &params, &scales)) {
         return false;
     }
-    // The frame is held as four floats a pixel in one buffer.
-    if (!wholeFrameFitsGpu(full, 4, query.maxScratchBytes)) {
-        return false;
-    }
     RotoCurveContextPtr context = getNode()->getCurveContext();
     if (context) {
-        const bool healIterationsFit = (params.maxHealIterations <= EdgeAware::kPoissonHealGpuMaxIterationsWithoutPushDescriptors) || deviceHasPushDescriptors();
         const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(true);
         for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
             if (!isRetouchShape(*it) || !(*it)->isActivated(query.time)) {
@@ -1622,9 +2338,6 @@ Retouch::canRenderOpOnGpu(const GpuQuery& query) const
             }
             // The bilateral grid has no GPU port.
             if ((s.algorithm == RC::eAlgorithmBlur) && (s.blurType == RC::eBlurTypeBilateral) && (std::fabs(s.blurRadius) > 0.1f)) {
-                return false;
-            }
-            if ((s.algorithm == RC::eAlgorithmHeal) && !healIterationsFit) {
                 return false;
             }
         }
@@ -1664,9 +2377,17 @@ Retouch::getOpGpuInputRoI(int inputNb,
     if (inputNb != getSourceInput()) {
         return outputRect;
     }
-    RectI full;
+    RectI full, crop;
+    RC::Params params;
+    std::vector<RC::Shape> shapes;
+    if (!processPlan(time, view, scale, outputRect, false, false, &full, &crop, &params, &shapes) || crop.isNull()) {
+        return outputRect;
+    }
+    // retouch_store copies the source over the whole output rect, not only over the crop.
+    RectI needed = crop;
+    needed.merge(outputRect);
 
-    return framePixels(time, view, scale, &full) ? full : outputRect;
+    return needed;
 }
 
 StatusEnum
@@ -1691,10 +2412,16 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     const StagePlan plan = resolveGpuPlan(query);
-    const std::vector<RC::Shape> shapes = collectShapes(query.time, query.mappedScale, full);
+    // The GPU heal solves in full, so a draft renders as the final frame does.
+    RectI crop;
+    std::vector<RC::Shape> shapes;
+    if (!processPlan(query.time, query.view, query.mappedScale, rect, true, false, &full, &crop, &params, &shapes)) {
+        return eStatusFailed;
+    }
 
-    const int width = full.width();
-    const int height = full.height();
+    // Only the crop is processed; the rest of the rect, outside the source, stores the source.
+    const int width = crop.isNull() ? 0 : crop.width();
+    const int height = crop.isNull() ? 0 : crop.height();
     const uint64_t imageFloats = (uint64_t)4 * (uint64_t)width * (uint64_t)height;
     const uint64_t filteredFloats = (uint64_t)rect.area() * (uint64_t)nComps;
     const uint64_t srcEnd = source.buffer ? (source.byteOffset / sizeof(float) + (uint64_t)source.bounds.height() * (uint64_t)source.rowStrideFloats) : 0;
@@ -1706,7 +2433,7 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     gpu::GpuBuffer* image = nullptr;
     gpu::GpuBuffer* filteredBuffer = nullptr;
     gpu::GpuBuffer* standIn = nullptr;
-    if (!ctx.scratch(imageFloats * sizeof(float), image) || !image || !ctx.scratch(filteredFloats * sizeof(float), filteredBuffer) || !filteredBuffer
+    if (!ctx.scratch(std::max<uint64_t>(imageFloats, 4) * sizeof(float), image) || !image || !ctx.scratch(filteredFloats * sizeof(float), filteredBuffer) || !filteredBuffer
         || !ctx.scratch(4 * sizeof(float), standIn) || !standIn) {
         return eStatusFailed;
     }
@@ -1715,8 +2442,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     RetouchGpuParams p = {};
     p.width = (uint32_t)width;
     p.height = (uint32_t)height;
-    p.fullX1 = full.x1;
-    p.fullY2 = full.y2;
+    p.fullX1 = crop.x1;
+    p.fullY2 = crop.y2;
     if (source.buffer) {
         p.srcOffset = (uint32_t)(source.byteOffset / sizeof(float));
         p.srcStride = (uint32_t)source.rowStrideFloats;
@@ -1754,6 +2481,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     // processLayer() of the shapes on one scale, on a layer of the region's size.
     const auto processLayer = [&](const gpu::GpuBuffer* layer, int scale) {
         RC::Region layerRoi;
+        layerRoi.x = params.originX;
+        layerRoi.y = params.originY;
         layerRoi.width = width;
         layerRoi.height = height;
         std::vector<float> mask;
@@ -1789,8 +2518,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
             }
 
             RetouchGpuParams sp = p;
-            sp.maskX = maskRoi.x;
-            sp.maskY = maskRoi.y;
+            sp.maskX = maskRoi.x - layerRoi.x;
+            sp.maskY = maskRoi.y - layerRoi.y;
             sp.maskW = (uint32_t)maskRoi.width;
             sp.maskH = (uint32_t)maskRoi.height;
             sp.opacity = s.opacity;
@@ -1820,7 +2549,7 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
                 if (!run(gpu::GpuKernelId::retouch_crop, sp, layer, aux, maskBuffer, sp.maskW, sp.maskH)) {
                     return false;
                 }
-                if (!EdgeAware::recordPoissonHeal(ctx, *aux2, *aux, *maskBuffer, maskRoi.width, maskRoi.height, params.maxHealIterations)) {
+                if (!EdgeAware::recordPoissonHeal(ctx, *aux2, *aux, *maskBuffer, mask.data(), maskRoi.width, maskRoi.height, params.maxHealIterations)) {
                     return false;
                 }
                 break;
@@ -1857,10 +2586,10 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         return true;
     };
 
-    if (!run(gpu::GpuKernelId::retouch_load, p, image, nullptr, nullptr, p.width, p.height) || !processLayer(image, 0)) {
+    if ((width > 0) && (!run(gpu::GpuKernelId::retouch_load, p, image, nullptr, nullptr, p.width, p.height) || !processLayer(image, 0))) {
         return eStatusFailed;
     }
-    if (scales > 0) {
+    if ((width > 0) && (scales > 0)) {
         std::vector<gpu::GpuBuffer*> details((std::size_t)scales, nullptr);
         for (gpu::GpuBuffer*& band : details) {
             if (!ctx.scratch(imageFloats * sizeof(float), band) || !band) {
@@ -1873,7 +2602,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         }
         const std::vector<const gpu::GpuBuffer*> bandViews(details.begin(), details.end());
         int bands = 0;
-        if (!EdgeAware::recordDwtDecomposeScales(ctx, *image, width, height, scales, std::span<const gpu::GpuBuffer* const>(bandViews.data(), bandViews.size()), *residual, bands)
+        if (!EdgeAware::recordDwtDecomposeScales(ctx, *image, width, height, scales, std::span<const gpu::GpuBuffer* const>(bandViews.data(), bandViews.size()), *residual, bands,
+                                                 full.width(), full.height())
             || (bands != scales)) {
             return eStatusFailed;
         }

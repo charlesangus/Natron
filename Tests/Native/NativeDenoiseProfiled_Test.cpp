@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/DenoiseProfiled.h"
 #include "Engine/Nodes/Filter/DenoiseProfiledKernels.h"
 #include "Engine/Nodes/Filter/NoiseProfiles.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawKernels.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
@@ -110,7 +111,7 @@ TEST(DenoiseProfiledKernels, AnscombeRoundTrip)
     preconditionV2(in.data(), buf.data(), n, 3e-4f, p, 1e-5f, wb);
     backtransformV2(buf.data(), n, 3e-4f, p, 1e-5f, 0.f, wb);
     for (std::size_t i = 0; i < 3 * n; ++i) {
-        EXPECT_NEAR(in[i], buf[i], 2e-5f * std::max(1.f, in[i])) << i;
+        EXPECT_NEAR(in[i], buf[i], 1e-5f * std::max(1.f, in[i])) << i;
     }
 }
 
@@ -184,6 +185,16 @@ TEST(DenoiseProfiledKernels, WhiteBalanceFactors)
     EXPECT_FLOAT_EQ(2.f, adaptive[0]);
     EXPECT_FLOAT_EQ(1.f, adaptive[1]);
     EXPECT_FLOAT_EQ(1.5f, adaptive[2]);
+}
+
+TEST(DenoiseProfiledKernels, CameraSpaceNotice)
+{
+    ImageMetadata metadata;
+
+    RawMetadata::setMake(&metadata, "Canon");
+    EXPECT_TRUE(DenoiseProfiled::cameraSpaceNotice(metadata).empty());
+    RawMetadata::setInputColorApplied(&metadata);
+    EXPECT_FALSE(DenoiseProfiled::cameraSpaceNotice(metadata).empty());
 }
 
 // A constant image stays constant through both paths.

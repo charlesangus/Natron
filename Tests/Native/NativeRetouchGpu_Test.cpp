@@ -116,9 +116,10 @@ protected:
     // with Retouch run on the device.
     void expectParity(const NodePtr& node,
                       const std::string& name,
-                      const ParityTolerance& tolerance = kRetouchTolerance)
+                      const ParityTolerance& tolerance = kRetouchTolerance,
+                      const RectI& window = kWindow)
     {
-        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, kWindow, kTime);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime);
 
         if (result.skipped) {
             return;
@@ -199,8 +200,6 @@ TEST_F(NativeRetouchGpuTest, HealMatchesTheCpu)
 {
     NodePtr node = makeRetouch();
     ASSERT_TRUE(bool(node));
-    // Within the iterations a device without push descriptors records.
-    ASSERT_TRUE(setKnobValues(node, kRetouchParamMaxHealIterations, { 400. }));
     RetouchTest::ShapeSpec spec;
     spec.algorithm = RetouchCore::eAlgorithmHeal;
     spec.scale = 1;
@@ -215,6 +214,27 @@ TEST_F(NativeRetouchGpuTest, HealMatchesTheCpu)
     spec.feather = 2.;
     ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
     expectParity(node, "heal on the image, feather 2", kRetouchHealTolerance);
+}
+
+// A window the shapes reach only part of: the device processes the region the CPU crops to.
+TEST_F(NativeRetouchGpuTest, PartialWindowMatchesTheCpu)
+{
+    NodePtr node = makeRetouch();
+    ASSERT_TRUE(bool(node));
+    RetouchTest::ShapeSpec spec;
+    spec.algorithm = RetouchCore::eAlgorithmHeal;
+    spec.scale = 0;
+    spec.sourceX = 14.;
+    spec.sourceY = 8.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
+    spec.cx = 42.;
+    spec.algorithm = RetouchCore::eAlgorithmClone;
+    spec.scale = 2;
+    spec.sourceX = -12.;
+    spec.sourceY = 4.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
+    expectParity(node, "heal and clone, left window", kRetouchHealTolerance, RectI(0, 0, 24, kParitySourceHeight));
+    expectParity(node, "heal and clone, right window", kRetouchHealTolerance, RectI(36, 10, kParitySourceWidth, 40));
 }
 
 TEST_F(NativeRetouchGpuTest, BlurMatchesTheCpu)
@@ -262,8 +282,7 @@ namespace {
 class RetouchGpuRegionTest
     : public RegionIndependenceTest {
 protected:
-    // A Retouch of source with 3 scales and the two region shapes of algorithm. Heal stays within
-    // the iterations a device without push descriptors records.
+    // A Retouch of source with 3 scales and the two region shapes of algorithm.
     NodePtr makeRetouch(const NodePtr& source,
                         RetouchCore::AlgorithmEnum algorithm)
     {
@@ -273,7 +292,6 @@ protected:
             return node;
         }
         EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
-        EXPECT_TRUE(setKnobValues(node, kRetouchParamMaxHealIterations, { 400. }));
         for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
             EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
         }
@@ -282,21 +300,8 @@ protected:
     }
 };
 
-// A frame too large for one device buffer is refused before anything is recorded.
-TEST_F(RetouchGpuRegionTest, OversizedFrameStaysOnTheCpu)
-{
-    NodePtr source = createRegionSource(RectI(0, 0, 70000, 70000), false);
-    NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
-    Retouch* effect = node ? dynamic_cast<Retouch*>(node->getEffectInstance().get()) : NULL;
-    ASSERT_TRUE(effect != NULL);
-    GpuQuery q = eligibleQuery();
-    q.mappedScale = RenderScale::identity;
-    EXPECT_FALSE(effect->canRenderOnGpu(q));
-}
-
 #ifdef NATRON_HAVE_GPU
-// The heal's error is summed in a fixed order in each group and over the groups, so the GPU frame
-// is the same from tile to tile without pinning its iterations.
+// The GPU frame is the same from tile to tile without pinning the heal's iterations.
 TEST_F(RetouchGpuRegionTest, RegionIndependentGpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;

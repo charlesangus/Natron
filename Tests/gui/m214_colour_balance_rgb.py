@@ -4,8 +4,10 @@ must fit a 1920x1080 screen. Shots go to $NATRON_GUI_TEST_OUT as colorbalancergb
 
 The 4 Ways tab is a 2x2 grid of wheels (angle = hue, radius = chroma), each with its title above,
 its luminance slider beneath and a value readout, and the knobs' rows in a collapsed Values group.
-In the default layout the tab must fit the panel without a vertical scrollbar. A drag on the lift
-wheel must change liftHue and liftChroma, and one undo must restore both.
+In the default layout the panel with its 4 Ways tab must fit the Properties viewport without
+scrolling. A drag on the lift wheel must change liftHue and liftChroma, and one undo must restore
+both. The pickers are pick colour knobs with the regular eyedropper: setting one, as a viewer pick
+does, must move the knobs it drives.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m214_colour_balance_rgb.py <Natron binary or AppImage>
 """
@@ -38,6 +40,14 @@ try:
     import guitest as gt
     from guitest import check, report, require
 
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
     def node_graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
         return views[0] if views else None
@@ -50,7 +60,7 @@ try:
             for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
                 try:
                     if w.text() == label:
-                        return panel
+                        return hold(panel)
                 except RuntimeError:
                     continue
         return None
@@ -95,15 +105,26 @@ try:
     def child_named(panel, name):
         for w in panel.findChildren(QWidget):
             if w.objectName() == name:
-                return w
+                return hold(w)
         return None
 
-    def scroll_area_of(panel, widget):
-        for area in panel.findChildren(QScrollArea):
-            content = area.widget()
-            if content is not None and content.isAncestorOf(widget):
-                return area
+    def scroll_area_of(widget):
+        """The nearest QScrollArea holding widget. Node panel pages have none of their own: the
+        Properties bin's scroll area scrolls every open panel."""
+        w = widget.parentWidget()
+        while w is not None:
+            if isinstance(w, QScrollArea):
+                return hold(w)
+            w = w.parentWidget()
         return None
+
+    def parent_chain(widget):
+        names = []
+        w = widget
+        while w is not None:
+            names.append("%s(%s)" % (gt.class_name(w), w.objectName()))
+            w = w.parentWidget()
+        return " < ".join(names)
 
     def send_mouse(widget, kind, local, button, buttons):
         local = QPointF(local)
@@ -144,27 +165,35 @@ try:
         require(ok, "open ColorBalanceRGB's settings panel")
         yield ("sleep", 800)
         panel = panel_of(node)
+        require(panel is not None, "find ColorBalanceRGB's settings panel")
 
         # Before enlarge(): the tab must fit the panel as the default layout sizes it.
         check(show_tab(panel, "4 Ways"), "the panel has a 4 Ways tab")
         yield ("sleep", 300)
-        grid = child_named(panel_of(node), "ColorWheelGrid_wheels")
+        grid = child_named(panel, "ColorWheelGrid_wheels")
         if check(grid is not None and grid.isVisible(), "the 4 Ways tab shows the wheel grid"):
-            area = scroll_area_of(panel_of(node), grid)
-            if check(area is not None, "the wheel grid sits in the panel's scroll area"):
+            area = scroll_area_of(grid)
+            if area is None:
+                report("NOTE wheel grid parents: " + parent_chain(grid))
+            if check(area is not None, "the wheel grid sits in the Properties scroll area"):
+                port = area.viewport()
                 bar = area.verticalScrollBar()
-                report("NOTE 4 Ways viewport %dx%d, content %dx%d, scroll max %d" % (
-                    area.viewport().width(), area.viewport().height(),
-                    area.widget().width(), area.widget().height(), bar.maximum()))
-                check(not bar.isVisible() and bar.maximum() == 0,
-                      "the 4 Ways tab fits the panel without a vertical scrollbar")
-            cells = [child_named(panel_of(node), "ColorWheelCell_%sChroma" % w) for w in WHEELS]
+                report("NOTE 4 Ways viewport %dx%d, panel %dx%d, scroll %d of %d" % (
+                    port.width(), port.height(), panel.width(), panel.height(), bar.value(), bar.maximum()))
+                check(panel.height() <= port.height(),
+                      "the panel with its 4 Ways tab fits the Properties viewport (panel %d, viewport %d)"
+                      % (panel.height(), port.height()))
+                grid_rect = QRect(port.mapFromGlobal(grid.mapToGlobal(QPoint(0, 0))), grid.size())
+                check(port.rect().contains(grid_rect),
+                      "the whole wheel grid is visible without scrolling (grid %r, viewport %r)"
+                      % (grid_rect, port.rect()))
+            cells = [child_named(panel, "ColorWheelCell_%sChroma" % w) for w in WHEELS]
             if check(all(c is not None for c in cells), "the grid has a cell per wheel"):
                 pos = [grid.mapFromGlobal(c.mapToGlobal(QPoint(0, 0))) for c in cells]
                 check(pos[0].y() == pos[1].y() and pos[2].y() == pos[3].y() and pos[0].y() < pos[2].y()
                       and pos[0].x() < pos[1].x() and pos[2].x() < pos[3].x(),
                       "the wheels are laid out two to a row (offset, lift / gain, power)")
-        screen_crop("colorbalancergb_4ways_default", panel_of(node))
+        screen_crop("colorbalancergb_4ways_default", panel)
         enlarge(panel)
         yield ("sleep", 300)
 
@@ -235,6 +264,40 @@ try:
             yield ("sleep", 300)
             screen_crop("colorbalancergb_masks_" + name, panel_of(node))
         output.setValue(0)
+
+        # Each picker is a pick colour knob with the regular viewer eyedropper; setting its
+        # colour, as a viewer pick does, moves the knobs it drives.
+        gt.section("pickers")
+        for gone in ("pickerBottomLeft", "pickerSize"):
+            check(node.getParam(gone) is None, "ColorBalanceRGB has no %s knob" % gone)
+        show_tab(panel_of(node), "Masks")
+        yield ("sleep", 300)
+        eyedroppers = [w for w in panel_of(node).findChildren(QWidget)
+                       if gt.class_name(w) == "ColorPickerLabel" and w.isVisible()]
+        report("NOTE Masks tab shows %d colour picker buttons" % len(eyedroppers))
+        check(len(eyedroppers) >= 2, "the Masks tab shows an eyedropper for each fulcrum picker")
+        for picker, knobs in (("pickLift", ("liftHue", "liftChroma")),
+                              ("pickWhiteFulcrum", ("whiteFulcrum",)),
+                              ("pickContrastGreyFulcrum", ("contrastGreyFulcrum",))):
+            param = node.getParam(picker)
+            if not check(param is not None, "ColorBalanceRGB has a %s colour" % picker):
+                continue
+            check(type(param).__name__ == "ColorParam", "%s is a colour knob (got %s)" % (picker, type(param).__name__))
+            before = [node.getParam(k).getValue() for k in knobs]
+            param.set(0.5, 0.25, 0.1, 1.0)
+            yield ("sleep", 300)
+            after = [node.getParam(k).getValue() for k in knobs]
+            report("NOTE %s: %r -> %r" % (picker, before, after))
+            check(after != before, "picking a colour into %s sets %s" % (picker, ", ".join(knobs)))
+        screen_crop("colorbalancergb_masks_picked", panel_of(node))
+        values = node.getParam("values")
+        if check(values is not None, "the 4 Ways tab has its Values group"):
+            values.setOpened(True)
+            show_tab(panel_of(node), "4 Ways")
+            yield ("sleep", 400)
+            screen_crop("colorbalancergb_4ways_values_pickers", panel_of(node))
+            values.setOpened(False)
+            yield ("sleep", 200)
         node.destroy()
         yield ("sleep", 200)
 

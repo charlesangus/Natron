@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -172,7 +174,8 @@ cpuKernelRender(ColorBalanceRGB* effect,
 void
 expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     ColorBalanceRGB* effect,
-                    const std::string& what)
+                    const std::string& what,
+                    bool requireFinite = false)
 {
     const std::vector<float> values = testValues();
     const int width = 32;
@@ -200,6 +203,12 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
         ASSERT_TRUE(run.ok) << what;
         EXPECT_EQ(0u, run.writtenOutside) << what;
         ASSERT_EQ(want.size(), run.pixels.size()) << what;
+        if (requireFinite) {
+            // A NaN on both sides could pass the tolerance, so finiteness is checked on its own.
+            const auto finite = [](float v) { return std::isfinite(v); };
+            EXPECT_TRUE(std::all_of(want.begin(), want.end(), finite)) << what << " cpu components " << nComps;
+            EXPECT_TRUE(std::all_of(run.pixels.begin(), run.pixels.end(), finite)) << what << " gpu components " << nComps;
+        }
 
         const int formula = effect->bakeColorBalanceRGB(kTime, ViewIdx(0)).saturationFormula;
         const ImageDiff diff = compareImages(want, run.pixels, gpuTolerance(formula));
@@ -287,6 +296,38 @@ TEST_F(NativeColorBalanceRGBGpuTest, MatchesTheCpuKernelForMaskOutputs)
             return;
         }
     }
+}
+
+// Both grey fulcrums held at their minimum, by the knobs and by expressions of 0 that bypass it.
+TEST_F(NativeColorBalanceRGBGpuTest, MatchesTheCpuKernelAtTheGreyFulcrumMinimum)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = makeNode();
+    ASSERT_TRUE(bool(node));
+    ColorBalanceRGB* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    applySettings(node, kBusySetting, sizeof(kBusySetting) / sizeof(kBusySetting[0]));
+    if (HasFatalFailure()) {
+        return;
+    }
+    const char* const fulcrums[] = { kColorBalanceRGBParamMaskGreyFulcrum, kColorBalanceRGBParamContrastGreyFulcrum };
+    for (const char* name : fulcrums) {
+        ASSERT_TRUE(setKnobValues(node, name, std::vector<double>(1, 0.))) << name;
+    }
+    expectGpuMatchesCpu(*runtime, effect, "fulcrums at the knob minimum", true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    for (const char* name : fulcrums) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(knob)) << name;
+        ASSERT_NO_THROW(knob->setExpression(0, "0", false, false)) << name;
+    }
+    expectGpuMatchesCpu(*runtime, effect, "fulcrums at an expression of 0", true);
 }
 
 // Every darktable preset.

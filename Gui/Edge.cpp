@@ -77,6 +77,7 @@ struct EdgePrivate
     NodeGuiWPtr dest;
     NodeGuiWPtr source;
     QColor defaultColor;
+    bool isSpliceHint;
     QColor renderingColor;
     bool useRenderingColor;
     bool useHighlight;
@@ -105,6 +106,7 @@ struct EdgePrivate
         , dest()
         , source()
         , defaultColor(Qt::black)
+        , isSpliceHint(false)
         , renderingColor(243, 149, 0)
         , useRenderingColor(false)
         , useHighlight(false)
@@ -260,10 +262,20 @@ Edge::isOutputEdge() const
     return _imp->isOutputEdge;
 }
 
-void
-Edge::setDefaultColor(const QColor & color)
+QColor
+Edge::selectionColorWithAlpha(int alpha)
 {
-    _imp->defaultColor = color;
+    double r, g, b;
+    appPTR->getCurrentSettings()->getSelectionColor(&r, &g, &b);
+
+    return QColor::fromRgbF(r, g, b, alpha / 255.);
+}
+
+void
+Edge::setIsSpliceHint(bool hint)
+{
+    _imp->isSpliceHint = hint;
+    update();
 }
 
 bool
@@ -861,10 +873,14 @@ Edge::paint(QPainter *painter,
     }
 
     QColor color, arrowColor;
-    if (_imp->useSelected) {
-        color = arrowColor = Qt::white;
+    // A highlight marks a pipe an edit in progress will change, which matters more than the
+    // selection of its node.
+    if (_imp->isSpliceHint) {
+        color = arrowColor = selectionColorWithAlpha(100);
     } else if (_imp->useHighlight) {
-        color = arrowColor = Qt::green;
+        color = arrowColor = selectionColorWithAlpha();
+    } else if (_imp->useSelected) {
+        color = arrowColor = Qt::white;
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {

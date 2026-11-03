@@ -43,7 +43,7 @@ encodeClipboardYaml(const ClipboardSerialization& clipboard)
     }
     emitKey(em, "nodes");
     em << YAML::Value;
-    emitNodeMap(em, clipboard.nodes, std::string(), sink, &usedPaths);
+    emitNodeMap(em, clipboard.nodes, std::string(), sink, &usedPaths, false);
 
     em << YAML::EndMap;
 

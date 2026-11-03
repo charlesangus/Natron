@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
@@ -304,7 +305,13 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    if (_imp->_activeViewer == viewer) {
+        return;
+    }
     _imp->_activeViewer = viewer;
+    Q_EMIT activeViewerChanged();
+    // RFVRead lists what reaches it from the active viewer.
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 ViewerTab*

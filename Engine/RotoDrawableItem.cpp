@@ -52,6 +52,8 @@
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Time/FrameHold.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -64,8 +66,6 @@
 #include "Engine/ViewerInstance.h"
 
 #define kBlurCImgParamSize "size"
-#define kTimeOffsetParamOffset "timeOffset"
-#define kFrameHoldParamFirstFrame "firstFrame"
 
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
@@ -245,27 +245,27 @@ RotoDrawableItem::createNodes(bool connectNodes)
             {
                 fixedNamePrefix = baseFixedName;
                 fixedNamePrefix.append( QString::fromUtf8("TimeOffset") );
-                CreateNodeArgs args(PLUGINID_OFX_TIMEOFFSET, NodeCollectionPtr() );
+                CreateNodeArgs args(PLUGINID_NATRON_TIMEOFFSET, NodeCollectionPtr());
                 args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
                 args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
                 args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
 
                 _imp->timeOffsetNode = app->createNode(args);
                 if (!_imp->timeOffsetNode) {
-                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_OFX_TIMEOFFSET " in order to work");
+                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_NATRON_TIMEOFFSET " in order to work");
                 }
                 assert(_imp->timeOffsetNode);
             }
             {
                 fixedNamePrefix = baseFixedName;
                 fixedNamePrefix.append( QString::fromUtf8("FrameHold") );
-                CreateNodeArgs args( PLUGINID_OFX_FRAMEHOLD, NodeCollectionPtr() );
+                CreateNodeArgs args(PLUGINID_NATRON_FRAMEHOLD, NodeCollectionPtr());
                 args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
                 args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
                 args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
                 _imp->frameHoldNode = app->createNode(args);
                 if (!_imp->frameHoldNode) {
-                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_OFX_FRAMEHOLD " in order to work");
+                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_NATRON_FRAMEHOLD " in order to work");
                 }
                 assert(_imp->frameHoldNode);
             }
@@ -361,7 +361,9 @@ RotoDrawableItem::createNodes(bool connectNodes)
 std::string
 RotoDrawableItem::getCacheID() const
 {
-    assert(_imp->mergeNode);
+    if (!_imp->mergeNode) {
+        return getScriptName() + ".RotoDrawableItem";
+    }
 
     //The cache iD is the one of the internal merge node + RotoDrawableItem
     return _imp->mergeNode->getCacheID() + ".RotoDrawableItem";
@@ -370,8 +372,10 @@ RotoDrawableItem::getCacheID() const
 void
 RotoDrawableItem::disconnectNodes()
 {
-    _imp->mergeNode->disconnectInput(0);
-    _imp->mergeNode->disconnectInput(1);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->disconnectInput(0);
+        _imp->mergeNode->disconnectInput(1);
+    }
     if (_imp->effectNode) {
         _imp->effectNode->disconnectInput(0);
     }
@@ -406,7 +410,9 @@ RotoDrawableItem::activateNodes()
     if (_imp->effectNode) {
         _imp->effectNode->activate(std::list<NodePtr>(), false, false);
     }
-    _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->activate(std::list<NodePtr>(), false, false);
     }
@@ -595,11 +601,11 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         KnobIPtr offsetKnob;
 
         if (offsetMode_i == 0) {
-            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamOffset);
+            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamTimeOffset);
         } else {
             offsetKnob = _imp->frameHoldNode->getKnobByName(kFrameHoldParamFirstFrame);
         }
-        KnobInt* offset = dynamic_cast<KnobInt*>( offsetKnob.get() );
+        KnobDouble* offset = dynamic_cast<KnobDouble*>(offsetKnob.get());
         if (offset) {
             double value = _imp->timeOffset->getValue();
             offset->setValue(value);
@@ -745,6 +751,9 @@ RotoDrawableItem::getFrameHoldNode() const
 void
 RotoDrawableItem::refreshNodesConnections()
 {
+    if (!_imp->mergeNode) {
+        return;
+    }
     RotoDrawableItem* previous = findPreviousInHierarchy();
     NodePtr rotoPaintInput =  getContext()->getNode()->getInput(0);
     NodePtr upstreamNode = previous ? previous->getMergeNode() : rotoPaintInput;
@@ -894,7 +903,9 @@ RotoDrawableItem::resetNodesThreadSafety()
     if (_imp->effectNode) {
         _imp->effectNode->revertToPluginThreadSafety();
     }
-    _imp->mergeNode->revertToPluginThreadSafety();
+    if (_imp->mergeNode) {
+        _imp->mergeNode->revertToPluginThreadSafety();
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->revertToPluginThreadSafety();
     }
@@ -1056,11 +1067,11 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
         KnobIPtr offsetKnob;
 
         if (offsetMode_i == 0) {
-            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamOffset);
+            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamTimeOffset);
         } else {
             offsetKnob = _imp->frameHoldNode->getKnobByName(kFrameHoldParamFirstFrame);
         }
-        KnobInt* offset = dynamic_cast<KnobInt*>( offsetKnob.get() );
+        KnobDouble* offset = dynamic_cast<KnobDouble*>(offsetKnob.get());
         if (offset) {
             offset->clone( _imp->timeOffset.get() );
         }

@@ -133,8 +133,6 @@ float shadowsHighlights(float lowpass)
     return correctionEv - normalizedEv;
 }
 
-// The normalised luminance plus the coarsest level's noise bias, into the low-pass and the
-// high-pass; the corrections start at 0.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void contrastntexture_luminance(uint3 tid : SV_DispatchThreadID)
@@ -161,8 +159,6 @@ void contrastntexture_luminance(uint3 tid : SV_DispatchThreadID)
     corrBuf[k] = 0.0f;
 }
 
-// One level after its blur: the detail into the corrections, the noise bias lowered to the next
-// level's, and the high-pass the next level starts from.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void contrastntexture_details(uint3 tid : SV_DispatchThreadID)
@@ -180,8 +176,6 @@ void contrastntexture_details(uint3 tid : SV_DispatchThreadID)
     highBuf[k] = low;
 }
 
-// The result over the output rect: the source times the multiplier, or a preview. Outside the
-// source's region the source passes through.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void contrastntexture_apply(uint3 tid : SV_DispatchThreadID)

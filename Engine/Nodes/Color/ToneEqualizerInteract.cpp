@@ -96,21 +96,16 @@ ToneEqualizerInteract::bandLabel(int band)
     return buffer;
 }
 
-float
+std::optional<float>
 ToneEqualizerInteract::wheelStepEv(KeyboardModifiers modifiers)
 {
-    const bool shift = modifiers.testFlag(eKeyboardModifierShift);
-    const bool control = modifiers.testFlag(eKeyboardModifierControl);
-    const bool other = modifiers.testFlag(eKeyboardModifierAlt) || modifiers.testFlag(eKeyboardModifierMeta);
+    const KeyboardModifiers others = KeyboardModifiers(eKeyboardModifierControl) | eKeyboardModifierAlt | eKeyboardModifierMeta;
 
-    if (shift && !control && !other) {
-        return 1.0f;
-    }
-    if (control && !shift && !other) {
-        return 0.1f;
+    if (modifiers.testAnyFlags(others)) {
+        return std::nullopt;
     }
 
-    return 0.25f;
+    return modifiers.testFlag(eKeyboardModifierShift) ? 0.02f : 0.1f;
 }
 
 int

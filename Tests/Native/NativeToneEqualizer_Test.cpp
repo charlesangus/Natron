@@ -265,6 +265,16 @@ TEST(ToneEqualizerKernels, ReadoutText)
     EXPECT_EQ(std::string("Dark Highlights (-3 EV), correction +0.50 EV"), ToneEqualizerInteract::detailText(r));
 }
 
+TEST(ToneEqualizerKernels, WheelStep)
+{
+    EXPECT_EQ(std::optional<float>(0.1f), ToneEqualizerInteract::wheelStepEv(KeyboardModifiers()));
+    EXPECT_EQ(std::optional<float>(0.02f), ToneEqualizerInteract::wheelStepEv(KeyboardModifiers(eKeyboardModifierShift)));
+    EXPECT_FALSE(ToneEqualizerInteract::wheelStepEv(KeyboardModifiers(eKeyboardModifierControl)));
+    EXPECT_FALSE(ToneEqualizerInteract::wheelStepEv(KeyboardModifiers(eKeyboardModifierShift) | eKeyboardModifierControl));
+    EXPECT_FALSE(ToneEqualizerInteract::wheelStepEv(KeyboardModifiers(eKeyboardModifierAlt)));
+    EXPECT_FALSE(ToneEqualizerInteract::wheelStepEv(KeyboardModifiers(eKeyboardModifierMeta)));
+}
+
 class NativeToneEqualizerTest
     : public BaseTest {
 protected:
@@ -490,6 +500,18 @@ TEST_F(NativeToneEqualizerTest, AutoMaskExposureCompensation)
     trigger(node, kToneEqualizerParamAutoMaskExposureCompensation);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_NEAR(want, getDouble(node, kToneEqualizerParamMaskExposureCompensation), 0.05);
+
+    // With nothing rendered, the mask the button computed is kept for the viewer readout, which
+    // reads it only at its own time.
+    ToneEqualizer* effect = dynamic_cast<ToneEqualizer*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    const std::optional<ToneEqualizer::Mask> kept = effect->lastMask();
+    ASSERT_TRUE(kept && kept->values);
+    EXPECT_EQ(RectI(0, 0, width, height), kept->bounds);
+    EXPECT_EQ((std::size_t)width * height, kept->values->size());
+    const QPointF centre(width / 2., height / 2.);
+    EXPECT_TRUE(effect->readingAt(*kept, centre, kept->time, kept->view).valid);
+    EXPECT_FALSE(effect->readingAt(*kept, centre, kept->time + 1., kept->view).valid);
 }
 
 namespace {

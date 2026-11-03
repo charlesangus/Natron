@@ -49,6 +49,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class RotoObjectSelect;
 struct PluginActionShortcut;
 
 #define kControlPointMidSize 3
@@ -128,6 +129,20 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
+#define kRotoUIParamResetCloneOffset "resetCloneOffsetButton"
+#define kRotoUIParamResetCloneOffsetLabel "Reset Clone Offset"
+#define kRotoUIParamResetCloneOffsetHint "Reset the transform applied before cloning to identity"
+
+#define kRotoUIParamObjectSelectToolButton "ObjectSelectToolButton"
+#define kRotoUIParamObjectSelectToolButtonLabel "Object Select Tool Button"
+
+#define kRotoUIParamObjectSelectToolButtonAction "ObjectSelectTool"
+#define kRotoUIParamObjectSelectToolButtonActionLabel "Object Select Tool"
+#define kRotoUIParamObjectSelectToolButtonActionHint "Click an object in the Source to outline it with shapes: click adds a point on the object, "                                  \
+                                                     "Shift-click a point off it, dragging a box around it (SAM models only). Backspace removes the last prompt, Esc clears them, " \
+                                                     "Enter commits the outlines as shapes."
+#define kRotoUIParamObjectSelectToolButtonActionNoSourceHint "Connect the Source input to select objects in it."
+
 // The right click menu
 #define kRotoUIParamRightClickMenu kNatronOfxParamRightClickMenu
 
@@ -165,6 +180,12 @@ struct PluginActionShortcut;
 
 #define kRotoUIParamRightClickMenuActionLockShapes "lockShapesAction"
 #define kRotoUIParamRightClickMenuActionLockShapesLabel "Lock Shape(s)"
+
+#define kRotoUIParamRightClickMenuActionShowInCurveEditor "showInCurveEditorAction"
+#define kRotoUIParamRightClickMenuActionShowInCurveEditorLabel "Show in Curve Editor"
+
+#define kRotoUIParamRightClickMenuActionRemoveFromCurveEditor "removeFromCurveEditorAction"
+#define kRotoUIParamRightClickMenuActionRemoveFromCurveEditorLabel "Remove from Curve Editor"
 
 // Viewer UI buttons
 
@@ -239,6 +260,8 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    // A host's two-point line tool (eRotoToolDrawLine) is dragging the line's end.
+    eEventStateBuildingLine,
 };
 
 enum HoverStateEnum {
@@ -266,7 +289,8 @@ enum RotoRoleEnum {
     eRotoRolePaintBrush,
     eRotoRoleCloneBrush,
     eRotoRoleEffectBrush,
-    eRotoRoleMergeBrush
+    eRotoRoleMergeBrush,
+    eRotoRoleObjectSelect
 };
 
 enum RotoToolEnum {
@@ -299,7 +323,12 @@ enum RotoToolEnum {
     eRotoToolSmear,
 
     eRotoToolDodge,
-    eRotoToolBurn
+    eRotoToolBurn,
+
+    eRotoToolObjectSelect,
+    // A two-point open curve drawn by a click and drag. The curve interact leaves it to the host's
+    // interact, through the paint hooks (AutoStraighten's guide lines).
+    eRotoToolDrawLine
 };
 
 // The curve tool groups RotoCurveInteract::createToolbarKnobs() can create, as a bitmask.
@@ -307,7 +336,9 @@ enum RotoCurveToolSetEnum {
     eRotoCurveToolSetSelection = 0x1,
     eRotoCurveToolSetPointsEdition = 0x2,
     eRotoCurveToolSetShapesDrawing = 0x4,
-    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing
+    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing,
+    // The AI object select tool; it needs the host's input 0 as its Source.
+    eRotoCurveToolSetObjectSelect = 0x8
 };
 
 /**
@@ -348,6 +379,11 @@ public:
     int shiftDown;
     int ctrlDown;
     int altDown;
+    // From the pen to the point a clone brush, or a Retouch shape, takes its source from, canonical.
+    // Ctrl+drag moves it and every later stroke or shape carries it.
+    std::pair<double, double> cloneOffset;
+    // Where a Shift+drag of the brush size started: the brush outline stays there during the drag.
+    QPointF mouseCenterOnSizeChange;
     // Open from pen down to pen up. The drag commands pushed in between carry its key, so one drag
     // is one undo step and the next drag, even of the same points, is another.
     UndoGesture undoGesture;
@@ -373,6 +409,9 @@ public:
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
 
+    KnobGroupWPtr objectSelectToolGroup;
+    KnobButtonWPtr objectSelectAction;
+
     //////Right click menu
     KnobChoiceWPtr rightClickMenuKnob;
 
@@ -382,6 +421,7 @@ public:
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
+    KnobButtonWPtr showInCurveEditorMenuAction, removeFromCurveEditorMenuAction;
 
     // Right click on curve
     KnobButtonWPtr selectAllMenuAction;
@@ -398,6 +438,10 @@ public:
     KnobButtonWPtr addKeyframeButton;
     KnobButtonWPtr removeKeyframeButton;
     KnobButtonWPtr showTransformHandle;
+    KnobButtonWPtr resetCloneOffsetButton;
+
+    // Set when the toolbar has the object select tool.
+    std::unique_ptr<RotoObjectSelect> objectSelect;
 
 private:
     EffectInstance* _host;
@@ -465,6 +509,18 @@ public:
     void createRightClickMenuKnobs(const KnobPagePtr& page);
 
     /**
+     * @brief Creates the object select tool's knobs on page, after the host's own viewer knobs.
+     * Needs createToolbarKnobs() to have been asked for eRotoCurveToolSetObjectSelect.
+     **/
+    void createObjectSelectKnobs(const KnobPagePtr& page);
+
+    // The host's onInputChanged() forwards to this.
+    void onHostInputChanged();
+
+    // The host's onEffectCreated() forwards to this.
+    void onHostEffectCreated(const CreateNodeArgs& args);
+
+    /**
      * @brief Keeps the selection and lock state in step with the curve context and redraws the
      * host's overlay when they, or the context's overlays, change.
      **/
@@ -523,7 +579,52 @@ public:
     /// same as drawArrow but the two ends will make an angle of 90 degrees
     void drawBendedArrow(double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
 
+    /// Creates the Reset Clone Offset button, which sets cloneOffset back to 0, on page.
+    KnobButtonPtr createResetCloneOffsetKnob(const KnobPagePtr& page);
+
+    /// Ctrl+drag, with no other modifier: the gesture that moves cloneOffset.
+    bool isCloneOffsetDragModifier() const;
+
+    /// Starts a Ctrl+drag of cloneOffset with the pen at pos.
+    void startCloneOffsetDrag(const QPointF& pos);
+
+    /**
+     * @brief Moves the pen by (dx, dy) during a Ctrl+drag of cloneOffset: the source stays where
+     * it is and the pen moves away from it. False when no such drag is under way.
+     **/
+    bool dragCloneOffset(double dx, double dy);
+
+    /// Shift+drag, with no other modifier: the gesture that sizes the brush.
+    bool isBrushSizeDragModifier() const;
+
+    /// Starts a Shift+drag of the brush size with the pen at pos.
+    void startBrushSizeDrag(const QPointF& pos);
+
+    /**
+     * @brief Grows size by the pen's move (dx, dy) during a Shift+drag of the brush size, rounded
+     * to a hundredth and at least 1. False when no such drag is under way.
+     **/
+    bool dragBrushSize(const KnobDoublePtr& size, double dx, double dy);
+
+    /**
+     * @brief Draws where a stroke painted from centre takes its source: a cross and a circle of
+     * radius around centre moved by offset, shadowed, and while cloneOffset is dragged a line
+     * between the two.
+     **/
+    void drawCloneSource(const QPointF& centre,
+                         const std::pair<double, double>& offset,
+                         double radius,
+                         double opacity,
+                         double screenPixelRatio,
+                         const std::pair<double, double>& viewportSize);
+
+    /// Starts item's life time on the timeline's current frame, as a new paint stroke's.
+    void startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item);
+
     void handleBezierSelection(const BezierPtr& curve);
+
+    /// Selects item as a click on it does, adding to the selection when Shift is held.
+    void handleItemSelection(const RotoDrawableItemPtr& item);
 
     void handleControlPointSelection(const std::pair<BezierCPPtr, BezierCPPtr>& p);
 

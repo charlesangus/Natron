@@ -261,6 +261,9 @@ DenoiseProfiled::cameraSpaceNotice(const ImageMetadata& metadata)
     if (!RawMetadata::getMake(metadata)) {
         return tr("The input does not come from a raw file. Noise profiles are measured on camera RGB before the input colour transform, so the noise is only roughly evened out.").toStdString();
     }
+    if (RawMetadata::getInputColorApplied(metadata)) {
+        return tr("The input has been through RawInputColor. Noise profiles are measured on camera RGB, before it; denoise before RawInputColor for the best result.").toStdString();
+    }
     if (RawMetadata::getCatApplied(metadata)) {
         return tr("The input has been through a chromatic adaptation. Noise profiles are measured on camera RGB, before RawInputColor; denoise there for the best result.").toStdString();
     }

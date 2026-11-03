@@ -140,7 +140,10 @@ bandWeight(int band,
            int level,
            float maxLevel)
 {
-    float t = (float)level / maxLevel - 0.5f;
+    // A zero maxLevel (a 64 px image at the default detail level) makes darktable's level / maxLevel
+    // NaN or +inf, which its fminf clamp turns into 0.5; take that branch without the division,
+    // which would raise FE_INVALID.
+    float t = (maxLevel != 0.0f) ? (float)level / maxLevel - 0.5f : 0.5f;
 
     t = std::fmax(std::fmin(t, 0.5f), -0.5f);
     float weight = 0.0f;

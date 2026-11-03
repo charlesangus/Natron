@@ -62,7 +62,11 @@ void retouchClone(float* layer,
                   int dy,
                   float opacity);
 
-/// _retouch_heal(), on EdgeAware::poissonHeal().
+/**
+ * @brief _retouch_heal(), solved by EdgeAware::poissonHealMultigrid() rather than darktable's
+ * capped SOR. guess, when not null, covers maskRoi and is poissonHealMultigrid()'s starting
+ * dest - src; difference, when not null, receives the solved dest - src over maskRoi.
+ **/
 void retouchHeal(float* layer,
                  const Region& layerRoi,
                  const float* mask,
@@ -70,8 +74,10 @@ void retouchHeal(float* layer,
                  int dx,
                  int dy,
                  float opacity,
-                 int maxIterations,
-                 const EdgeAware::ParallelFor& parallel);
+                 int maxCycles,
+                 const EdgeAware::ParallelFor& parallel,
+                 const float* guess = nullptr,
+                 std::vector<float>* difference = nullptr);
 
 /// _retouch_fill() with darktable's fill colour: the brightness, or the colour plus it.
 void retouchFill(float* layer,

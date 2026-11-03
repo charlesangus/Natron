@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -37,9 +40,9 @@
 
 #include "Engine/ChoiceOption.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Filter/RetouchInteract.h"
 #include "Engine/Nodes/Filter/RetouchRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
-#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -62,10 +65,15 @@
 #define kRetouchParamFillMode "fillMode"
 #define kRetouchParamFillColor "fillColor"
 #define kRetouchParamFillBrightness "fillBrightness"
+#define kRetouchParamBrushSize "brushSize"
+#define kRetouchParamBrushHardness "brushHardness"
+#define kRetouchParamBrushDensity "brushDensity"
+#define kRetouchParamBrushPressure "brushPressure"
 #define kRetouchParamMaxHealIterations "maxHealIterations"
-#define kRetouchParamSelectedShape "selectedShape"
+#define kRetouchParamShapeSettings "shapeSettings"
 
-// Per-shape knobs, on every shape and, for the selected shapes, on the node.
+// Per-shape knobs, on every shape and on the node. On the node they show and edit the selected
+// shapes, or with none selected the settings the next shape gets.
 #define kRetouchShapeParamAlgorithm "shapeAlgorithm"
 #define kRetouchShapeParamScale "shapeScale"
 #define kRetouchShapeParamSourceOffset "sourceOffset"
@@ -74,6 +82,11 @@
 #define kRetouchShapeParamFillMode "shapeFillMode"
 #define kRetouchShapeParamFillColor "shapeFillColor"
 #define kRetouchShapeParamFillBrightness "shapeFillBrightness"
+// Per-shape knobs of brush shapes only.
+#define kRetouchShapeParamBrushSize "shapeBrushSize"
+#define kRetouchShapeParamBrushHardness "shapeBrushHardness"
+#define kRetouchShapeParamBrushDensity "shapeBrushDensity"
+#define kRetouchShapeParamBrushPressure "shapeBrushPressure"
 
 #define kRetouchAlgorithmClone "clone"
 #define kRetouchAlgorithmHeal "heal"
@@ -86,8 +99,6 @@
 #define kRetouchOutputResult "result"
 #define kRetouchOutputCurrentScale "currentScale"
 #define kRetouchOutputResidual "residual"
-
-#define kRetouchFrameResult "Retouch.result"
 
 // The curve panel's actions.
 #define kRetouchActionCopyToScale "copyToCurrentScale"
@@ -109,8 +120,9 @@ inline constexpr NodeSpec kRetouchNodeSpec = {
                    "copies it and matches it to the surroundings, Blur blurs under the shape and Fill paints a colour. "
                    "Clone and Heal take their source at the shape's Source Offset, which the viewer shows as a "
                    "dashed outline to drag.\n"
-                   "New shapes take the node's Algorithm, Current Scale, blur and fill settings; the selected shapes' "
-                   "own settings are under Selected Shape. Output shows the result, the current scale or the residual.\n"
+                   "Shape Settings shows the selected shapes' settings and edits them; with no shape selected it sets "
+                   "what the next shape gets, which goes on Current Scale. Output shows the result, the current scale "
+                   "or the residual.\n"
                    "The whole image is decomposed at once, so the scales follow the image size.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_RETOUCH,
@@ -143,7 +155,7 @@ public:
 
     virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return false;
+        return true;
     }
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -182,7 +194,7 @@ public:
 
     /**
      * @brief Sets a shape's source offset at time, keyframed when auto-keying is on or the knob is
-     * already animated. Writes the node's Selected Shape knob when the shape is selected.
+     * already animated. Writes the node's Source Offset knob when the shape is selected.
      **/
     void setShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double dx, double dy);
 
@@ -198,17 +210,66 @@ public:
     /// The offset from a shape to its source, canonical, at time.
     static void readShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double* dx, double* dy);
 
-    /// The per-shape knobs, owned by host or, without one, detached.
-    static std::vector<KnobIPtr> createShapeKnobs(Retouch* host);
+    /// The per-shape knobs, owned by host or, without one, detached. withBrush adds the brush knobs.
+    static std::vector<KnobIPtr> createShapeKnobs(Retouch* host, bool withBrush);
+
+    /**
+     * @brief The strokes of a brush shape at time in the pixels of a render at scale over full,
+     * the source's pixels (top-down, as RetouchCore::Region), with the shape's size, hardness,
+     * density and pressure mode applied; darktable's smallest border is a fraction of full's
+     * smaller side. Empty for a shape that is not a brush.
+     **/
+    static std::vector<std::vector<RetouchCore::BrushPoint>> readBrushStrokes(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full);
+
+    /**
+     * @brief The mask of a brush shape over its bounds, as collectShapes() makes it, rows split
+     * over parallel and taken from or kept in masks, by stroke geometry, when given. False when
+     * the shape is not a brush or covers nothing.
+     **/
+    static bool rasterizeBrushShape(const RotoDrawableItemPtr& item,
+                                    double time,
+                                    double scale,
+                                    const RectI& full,
+                                    RetouchCore::Region* roi,
+                                    std::vector<float>* mask,
+                                    const EdgeAware::ParallelFor& parallel = EdgeAware::serialFor,
+                                    RetouchCore::PatchCache* masks = nullptr);
 
     static std::vector<ChoiceOption> algorithmOptions();
     static std::vector<ChoiceOption> blurTypeOptions();
     static std::vector<ChoiceOption> fillModeOptions();
+    static std::vector<ChoiceOption> brushPressureOptions();
 
-    const RotoCurveInteractPtr& getInteract() const
+    const RetouchInteractPtr& getInteract() const
     {
         return _ui;
     }
+
+    /**
+     * @brief Starts or ends an interactive edit, a stroke being painted or a source being
+     * dragged, during which renders are drafts: a Heal shape refines its previous solve for a few
+     * cycles instead of solving afresh. Drafts hash apart from final renders, so the render
+     * that follows the end is a full one. Returns whether a draft was on.
+     **/
+    bool setInteractiveDraft(bool draft);
+
+    bool isInteractiveDraft() const
+    {
+        return _draft.load();
+    }
+
+    /// Asks the viewers for a render of the stroke being painted.
+    void requestStrokeRender();
+
+    /// The renders asked for since the node was made: evaluations and stroke renders.
+    int getRenderRequestCount() const
+    {
+        return _renderRequests.load();
+    }
+
+    virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE;
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -268,23 +329,55 @@ private:
     // The whole frame in pixels at scale: the source's region of definition, cut to the format when it is infinite.
     bool framePixels(double time, ViewIdx view, const RenderScale& scale, RectI* pixels) const WARN_UNUSED_RETURN;
 
-    // Drops the kept results.
-    virtual void purgeCaches() OVERRIDE FINAL;
-
     // The region, parameters and capped scale count of a GPU render; false when the GPU cannot render it.
     bool gpuPlan(double time, ViewIdx view, const RenderScale& scale, RectI* full, RetouchCore::Params* params, int* scales) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The shapes of a render at time and scale over full, the source's pixels, top-down,
-     * rasterised, in render order.
+     * in render order; rasterised unless rasterize is false, which leaves their masks empty. A
+     * draft gives its Heal shapes their warm starts.
      **/
-    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full) const;
+    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full, bool rasterize, bool draft) const;
 
-    // The finished shapes of a new drawing get darktable's default source, up and right by half their size.
-    void applyDefaultSourceOffsets();
+    /**
+     * @brief What a render of window (pixels at scale) processes: the source's pixel extent
+     * full, the crop of it RetouchCore::processRegion() asks for, and the parameters and shapes,
+     * rasterised when rasterize is true, for a draft render when draft is. False when there is
+     * no source.
+     **/
+    bool processPlan(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     const RectI& window,
+                     bool rasterize,
+                     bool draft,
+                     RectI* full,
+                     RectI* crop,
+                     RetouchCore::Params* params,
+                     std::vector<RetouchCore::Shape>* shapes) const WARN_UNUSED_RETURN;
+
+    // The finished shapes of a new drawing get the carried source offset.
+    void applyNewShapeSourceOffsets();
+
+    // True when shapes the drawing tools make now take a source (Clone or Heal).
+    bool newShapesTakeSource() const;
 
     // The shape whose source outline is under pos, if any.
     RotoDrawableItemPtr pickSource(double time, const QPointF& pos) const;
+
+    // The topmost finished brush shape whose footprint is under pos, if any.
+    RotoDrawableItemPtr pickBrush(double time, const QPointF& pos) const;
+
+    bool hasSelectedShapes() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief With no shape selected, the node's shape knobs show the next shape's settings again
+     * and stay editable; Shape Scale and Source Offset belong to a shape and are disabled.
+     **/
+    void onShapeSelectionChanged();
+
+    // The node's shape knob of a next-shape knob, or the next-shape knob of a node's shape knob.
+    KnobIPtr counterpartOfShapeKnob(const KnobI* knob) const;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -317,7 +410,7 @@ private:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    RotoCurveInteractPtr _ui;
+    RetouchInteractPtr _ui;
 
     KnobChoiceWPtr _algorithm;
     KnobIntWPtr _scales;
@@ -331,9 +424,23 @@ private:
     KnobColorWPtr _fillColor;
     KnobDoubleWPtr _fillBrightness;
     KnobIntWPtr _maxHealIterations;
+    KnobDoubleWPtr _brushSize;
+    KnobDoubleWPtr _brushHardness;
+    KnobDoubleWPtr _brushDensity;
+    KnobChoiceWPtr _brushPressure;
+
+    // The node's shape knobs paired with the hidden knobs that keep what the next shape gets.
+    std::vector<std::pair<KnobIWPtr, KnobIWPtr>> _shapeKnobDefaults;
+    KnobIWPtr _shapeScaleKnob;
+    KnobIWPtr _shapeSourceOffsetKnob;
+
+    struct NewShape {
+        RotoDrawableItemWPtr item;
+        RotoToolEnum tool;
+    };
 
     // Shapes created since the last pen down, waiting for their default source.
-    std::list<RotoDrawableItemWPtr> _newShapes;
+    std::list<NewShape> _newShapes;
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     // The drag's offset is the offset at the press moved by the pen since the press; it is never read
@@ -343,8 +450,14 @@ private:
     double _dragStart[2] = { 0., 0. };
     double _dragEnd[2] = { 0., 0. };
 
-    // The retouched frame, so tiles and windows of one frame process it once.
-    WholeFrameCache _result;
+    std::atomic<bool> _draft { false };
+    std::atomic<int> _renderRequests { 0 };
+    // The Heal shapes' warm starts while a draft is on, by script name.
+    mutable std::mutex _warmStartsMutex;
+    mutable std::map<std::string, std::shared_ptr<RetouchCore::HealWarmStart>> _warmStarts;
+    // Shape results and shape masks kept across renders and tiles, keyed by what they depend on.
+    mutable RetouchCore::PatchCache _shapeResults { (std::size_t)256 << 20 };
+    mutable RetouchCore::PatchCache _shapeMasks { (std::size_t)64 << 20 };
 };
 
 NATRON_NAMESPACE_EXIT

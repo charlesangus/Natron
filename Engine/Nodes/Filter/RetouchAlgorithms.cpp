@@ -318,8 +318,10 @@ retouchHeal(float* layer,
             int dx,
             int dy,
             float opacity,
-            int maxIterations,
-            const EdgeAware::ParallelFor& parallel)
+            int maxCycles,
+            const EdgeAware::ParallelFor& parallel,
+            const float* guess,
+            std::vector<float>* difference)
 {
     const std::size_t size = (std::size_t)4 * maskRoi.width * maskRoi.height;
     std::vector<float> src(size);
@@ -327,7 +329,13 @@ retouchHeal(float* layer,
 
     copyInToOut(layer, layerRoi, src.data(), maskRoi, dx, dy);
     copyInToOut(layer, layerRoi, dest.data(), maskRoi, 0, 0);
-    EdgeAware::poissonHeal(src.data(), dest.data(), mask, maskRoi.width, maskRoi.height, maxIterations, parallel);
+    EdgeAware::poissonHealMultigrid(src.data(), dest.data(), mask, maskRoi.width, maskRoi.height, maxCycles, parallel, guess);
+    if (difference) {
+        difference->resize(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            (*difference)[i] = dest[i] - src[i];
+        }
+    }
     copyImageMasked(dest.data(), layer, layerRoi, mask, maskRoi, opacity);
 }
 

@@ -41,6 +41,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -49,6 +51,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/Image/ColorMath.h"
@@ -357,8 +360,85 @@ addDouble(KnobHolder* holder,
 const float kWheelShownChroma = 0.12f;
 const float kWheelShownLuminance = 0.35f;
 
+/**
+ * @brief The conversion from XYZ D65 to the project's working space that the wheels are painted
+ * in: OCIO when the working space has no matrix to XYZ, the inverse matrix otherwise. It is
+ * resolved again whenever the config or the working space has changed.
+ **/
+class WheelColourSpace {
+public:
+    explicit WheelColourSpace(const KnobHolder* holder)
+        : _holder(holder)
+    {
+    }
+
+    void fromXyz(const float xyz[3],
+                 double rgb[3])
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        refresh();
+        if (_processor) {
+            float px[3] = { xyz[0], xyz[1], xyz[2] };
+            std::string error;
+            (void)IoColorSpace::convertRow(*_processor, px, 1, 3, &error);
+            for (int c = 0; c < 3; ++c) {
+                rgb[c] = px[c];
+            }
+
+            return;
+        }
+        for (int c = 0; c < 3; ++c) {
+            rgb[c] = _hasMatrix ? (_toWorking[3 * c] * xyz[0] + _toWorking[3 * c + 1] * xyz[1] + _toWorking[3 * c + 2] * xyz[2]) : xyz[c];
+        }
+    }
+
+private:
+    void refresh()
+    {
+        AppInstancePtr app = _holder ? _holder->getApp() : AppInstancePtr();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        ProjectColorManagementPtr cm = project ? project->getColorManagement() : ProjectColorManagementPtr();
+        OCIO_NAMESPACE::ConstConfigRcPtr config = cm ? cm->getConfig() : OCIO_NAMESPACE::ConstConfigRcPtr();
+        const std::string working = project ? project->getWorkingColorSpace() : std::string();
+
+        if (_resolved && (config == _config) && (working == _working)) {
+            return;
+        }
+        _resolved = true;
+        _config = config;
+        _working = working;
+        _processor.reset();
+        double w[9];
+        if (cm && !cm->getWorkingToXYZ(w)) {
+            std::string error;
+            OCIO_NAMESPACE::ConstCPUProcessorRcPtr from;
+            if (IoColorSpace::processor(*project, kXyzD65Role, working, {}, &from, &error) && from) {
+                _processor = from;
+
+                return;
+            }
+        }
+        ColorMath::workingToXYZ(_holder, w);
+        const std::optional<RawColorMath::Mat3> toWorking = RawColorMath::invert(RawColorMath::Mat3 { w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8] });
+        _hasMatrix = toWorking.has_value();
+        if (toWorking) {
+            std::copy(toWorking->begin(), toWorking->end(), _toWorking);
+        }
+    }
+
+    const KnobHolder* _holder;
+    std::mutex _mutex;
+    bool _resolved = false;
+    OCIO_NAMESPACE::ConstConfigRcPtr _config;
+    std::string _working;
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr _processor;
+    bool _hasMatrix = false;
+    double _toWorking[9] = {};
+};
+
 void
-wheelColour(const KnobHolder* holder,
+wheelColour(WheelColourSpace& space,
             double displayMaximum,
             double hueDegrees,
             double chroma,
@@ -375,13 +455,50 @@ wheelColour(const KnobHolder* holder,
     gradingRgbToLms(grading, lms);
     lmsToXyz(lms, xyz);
 
-    double w[9];
-    ColorMath::workingToXYZ(holder, w);
-    const std::optional<RawColorMath::Mat3> toWorking = RawColorMath::invert(RawColorMath::Mat3 { w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8] });
+    space.fromXyz(xyz, rgb);
     for (int c = 0; c < 3; ++c) {
-        rgb[c] = toWorking ? ((*toWorking)[3 * c] * xyz[0] + (*toWorking)[3 * c + 1] * xyz[1] + (*toWorking)[3 * c + 2] * xyz[2]) : xyz[c];
         rgb[c] = std::max(0., rgb[c]);
     }
+}
+
+/**
+ * @brief darktable's pipe_RGB_to_Ych() on linear Rec.2020.
+ **/
+void
+pipeToYch(const ColorBalanceRGBOp::Params& params,
+          const float rgb[3],
+          float ych[4])
+{
+    float lms[3];
+    float yrg[3];
+
+    apply(params.inputMatrix, rgb, lms);
+    lmsToYrg(lms, yrg);
+    yrgToYch(yrg, ych);
+}
+
+KnobColorPtr
+addPickColour(KnobHolder* holder,
+              const KnobGroupPtr& group,
+              const char* name,
+              const char* label,
+              const char* hint)
+{
+    KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, EffectInstance::tr(label).toStdString(), 3);
+
+    knob->setName(name);
+    knob->setHintToolTip(EffectInstance::tr(hint).toStdString());
+    for (int d = 0; d < 3; ++d) {
+        knob->setDefaultValue(0., d);
+        knob->setMinimum(-DBL_MAX, d);
+        knob->setMaximum(DBL_MAX, d);
+        knob->setDisplayMinimum(0., d);
+        knob->setDisplayMaximum(1., d);
+    }
+    knob->setEvaluateOnChange(false);
+    group->addKnob(knob);
+
+    return knob;
 }
 
 } // anonymous namespace
@@ -467,6 +584,25 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     values->setHintToolTip(EffectInstance::tr("The wheels' hue, chroma and luminance as numbers.").toStdString());
     values->setDefaultValue(false);
     fourWays->addKnob(values);
+    {
+        KnobBoolPtr sameHue = AppManager::createKnob<KnobBool>(knobHolder, EffectInstance::tr("Pick Same Hue").toStdString());
+        sameHue->setName(kColorBalanceRGBParamPickSameHue);
+        sameHue->setHintToolTip(EffectInstance::tr("Off, a wheel's picker sets the hue opposite the picked colour's, to neutralize it; "
+                                                   "on, the picked hue itself (darktable's ctrl+click). Applies at the next pick.")
+                                    .toStdString());
+        sameHue->setDefaultValue(false);
+        sameHue->setAnimationEnabled(false);
+        sameHue->setEvaluateOnChange(false);
+        values->addKnob(sameHue);
+        pickSameHue = sameHue;
+    }
+    const char* const pickNames[eWheelCount] = { kColorBalanceRGBParamPickOffset, kColorBalanceRGBParamPickLift, kColorBalanceRGBParamPickGain, kColorBalanceRGBParamPickPower };
+    const char* const pickLabels[eWheelCount] = { "Pick Offset", "Pick Lift", "Pick Gain", "Pick Power" };
+    const auto addWheelPicker = [&](int wheel) {
+        pickers[wheel] = addPickColour(knobHolder, values, pickNames[wheel], pickLabels[wheel],
+                                       "Pick a colour in the viewer: the wheel takes the opposite hue to neutralize it (the same hue "
+                                       "with Pick Same Hue), and a chroma from how colourful the colour is.");
+    };
     addSeparator(knobHolder, values, "offsetSection", "Global Offset");
     wheels[eWheelOffset].hue = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetHue, "Offset Hue",
                                          "Hue of the global color offset, in degrees.", 0., 0., 360., 0., 360.);
@@ -474,6 +610,7 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
                                             "Chroma of the global color offset.", 0., 0., 1., 0., 0.01);
     wheels[eWheelOffset].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetLuminance, "Offset Luminance",
                                                "Global luminance offset.", 0., -1., 1., -0.05, 0.05);
+    addWheelPicker(eWheelOffset);
     addSeparator(knobHolder, values, "liftSection", "Shadows Lift");
     wheels[eWheelLift].hue = addDouble(knobHolder, values, kColorBalanceRGBParamLiftHue, "Lift Hue",
                                        "Hue of the color gain in shadows, in degrees.", 0., 0., 360., 0., 360.);
@@ -481,6 +618,7 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
                                           "Chroma of the color gain in shadows.", 0., 0., 1., 0., 0.5);
     wheels[eWheelLift].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamLiftLuminance, "Lift Luminance",
                                              "Luminance gain in shadows.", 0., -1., 1., -1., 1.);
+    addWheelPicker(eWheelLift);
     addSeparator(knobHolder, values, "gainSection", "Highlights Gain");
     wheels[eWheelGain].hue = addDouble(knobHolder, values, kColorBalanceRGBParamGainHue, "Gain Hue",
                                        "Hue of the color gain in highlights, in degrees.", 0., 0., 360., 0., 360.);
@@ -488,6 +626,7 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
                                           "Chroma of the color gain in highlights.", 0., 0., 1., 0., 0.2);
     wheels[eWheelGain].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamGainLuminance, "Gain Luminance",
                                              "Luminance gain in highlights.", 0., -1., 1., -0.5, 0.5);
+    addWheelPicker(eWheelGain);
     addSeparator(knobHolder, values, "powerSection", "Power");
     wheels[eWheelPower].hue = addDouble(knobHolder, values, kColorBalanceRGBParamPowerHue, "Power Hue",
                                         "Hue of the color exponent in mid-tones, in degrees.", 0., 0., 360., 0., 360.);
@@ -495,16 +634,18 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
                                            "Chroma of the color exponent in mid-tones.", 0., 0., 1., 0., 0.1);
     wheels[eWheelPower].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamPowerLuminance, "Power Luminance",
                                               "Luminance exponent in mid-tones.", 0., -1., 1., -0.25, 0.25);
+    addWheelPicker(eWheelPower);
     const char* const wheelLabels[eWheelCount] = { "Global Offset", "Shadows Lift", "Highlights Gain", "Power" };
     std::vector<KnobSeparator::ColorWheelSpec> wheelSpecs(eWheelCount);
+    const std::shared_ptr<WheelColourSpace> wheelSpace = std::make_shared<WheelColourSpace>(knobHolder);
     for (int i = 0; i < eWheelCount; ++i) {
         const double displayMaximum = wheels[i].chroma.lock()->getDisplayMaximum();
         wheelSpecs[i].label = EffectInstance::tr(wheelLabels[i]).toStdString();
         wheelSpecs[i].hue = wheels[i].hue;
         wheelSpecs[i].chroma = wheels[i].chroma;
         wheelSpecs[i].luminance = wheels[i].luminance;
-        wheelSpecs[i].colour = [knobHolder, displayMaximum](double hueDegrees, double c, double rgb[3]) {
-            wheelColour(knobHolder, displayMaximum, hueDegrees, c, rgb);
+        wheelSpecs[i].colour = [wheelSpace, displayMaximum](double hueDegrees, double c, double rgb[3]) {
+            wheelColour(*wheelSpace, displayMaximum, hueDegrees, c, rgb);
         };
     }
     wheelGrid->setColorWheelGrid(wheelSpecs);
@@ -518,14 +659,20 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     shadowsWeight = addDouble(knobHolder, masks, kColorBalanceRGBParamShadowsWeight, "Shadows Weight",
                               "Weight of the shadows over the whole tonal range (darktable's shadows fall-off).", 1., 0., 3., 0., 3.);
     maskGreyFulcrum = addDouble(knobHolder, masks, kColorBalanceRGBParamMaskGreyFulcrum, "Mask Grey Fulcrum",
-                                "Position of the middle-grey reference for masking.", 0.1845, 0., 1., 0., 1.);
+                                "Position of the middle-grey reference for masking.", 0.1845, kMinimumGreyFulcrum, 1., 0., 1.);
     highlightsWeight = addDouble(knobHolder, masks, kColorBalanceRGBParamHighlightsWeight, "Highlights Weight",
                                  "Weight of the highlights over the whole tonal range (darktable's highlights fall-off).", 1., 0., 3., 0., 3.);
     addSeparator(knobHolder, masks, "threshold", "Threshold");
     whiteFulcrum = addDouble(knobHolder, masks, kColorBalanceRGBParamWhiteFulcrum, "White Fulcrum",
                              "Peak white luminance, in EV, used to normalize the power function.", 0., -16., 16., -2., 2.);
+    pickers[ePickerWhiteFulcrum] = addPickColour(knobHolder, masks, kColorBalanceRGBParamPickWhiteFulcrum, "Pick White Fulcrum",
+                                                 "Pick the brightest white in the viewer to set White Fulcrum. Only the luminance of the "
+                                                 "picked colour is used.");
     contrastGreyFulcrum = addDouble(knobHolder, masks, kColorBalanceRGBParamContrastGreyFulcrum, "Contrast Grey Fulcrum",
-                                    "Middle-grey luminance the contrast pivots around.", 0.1845, 0., 1., 0.1, 0.5);
+                                    "Middle-grey luminance the contrast pivots around.", 0.1845, kMinimumGreyFulcrum, 1., 0.1, 0.5);
+    pickers[ePickerContrastGreyFulcrum] = addPickColour(knobHolder, masks, kColorBalanceRGBParamPickContrastGreyFulcrum, "Pick Contrast Grey Fulcrum",
+                                                        "Pick a middle grey in the viewer to set Contrast Grey Fulcrum. Only the luminance of the "
+                                                        "picked colour is used.");
     addSeparator(knobHolder, masks, "maskPreview", "Mask Preview");
     output = addChoice(knobHolder, masks, kColorBalanceRGBParamOutput, "Output",
                        "Result renders the grade. The mask outputs write the opacity of the shadows, mid-tones or highlights "
@@ -583,10 +730,9 @@ ColorBalanceRGBOp::bake(const KnobReader& reader) const
     p.gamutLut = gamutLut(p.saturationFormula);
     resolveWorkingSpace(holder, &p);
 
-    // commit_params()
     p.vibrance = (float)reader.value(vibrance);
     p.contrast = 1.f + (float)reader.value(contrast);
-    p.greyFulcrum = (float)reader.value(contrastGreyFulcrum);
+    p.greyFulcrum = (float)std::max((double)reader.value(contrastGreyFulcrum), kMinimumGreyFulcrum);
     p.chromaGlobal = (float)reader.value(chromaGlobal);
     p.chroma[0] = (float)reader.value(chromaShadows);
     p.chroma[1] = (float)reader.value(chromaMidtones);
@@ -638,11 +784,53 @@ ColorBalanceRGBOp::bake(const KnobReader& reader) const
     p.midtonesY = 1.f / (1.f + (float)reader.value(wheels[eWheelPower].luminance));
     p.whiteFulcrum = std::exp2((float)reader.value(whiteFulcrum));
     p.midtonesWeight = square(p.shadowsWeight) * square(p.highlightsWeight) / (square(p.shadowsWeight) + square(p.highlightsWeight));
-    p.maskGreyFulcrum = std::pow((float)reader.value(maskGreyFulcrum), kMaskExponent);
+    p.maskGreyFulcrum = std::pow((float)std::max((double)reader.value(maskGreyFulcrum), kMinimumGreyFulcrum), kMaskExponent);
     p.lWhite = yToUcsLStar(p.whiteFulcrum);
 
     return p;
 } // ColorBalanceRGBOp::bake
+
+ColorBalanceRGBOp::PickedValues
+ColorBalanceRGBOp::pickedValues(const Params& params,
+                                const float mean[3],
+                                const float maximum[3],
+                                bool sameHue)
+{
+    PickedValues v;
+    float ych[4];
+    float maxYch[4];
+
+    pipeToYch(params, mean, ych);
+    pipeToYch(params, maximum, maxYch);
+    float hue = std::atan2(ych[3], ych[2]) * (180.f / kPi) - kAngleShift;
+    if (!sameHue) {
+        hue += 180.f;
+    }
+    hue = std::fmod(hue, 360.f);
+    if (hue < 0.f) {
+        hue += 360.f;
+    }
+    v.hue = hue;
+    v.chroma = std::clamp((double)(ych[1] * ych[0]), 0., 1.);
+    v.whiteFulcrum = (maxYch[0] > 0.f) ? std::clamp((double)std::log2(maxYch[0]), -16., 16.) : -16.;
+    v.greyFulcrum = std::clamp((double)ych[0], kMinimumGreyFulcrum, 1.);
+
+    return v;
+}
+
+void
+ColorBalanceRGBOp::workingToPipe(const Params& params,
+                                 float* rgb,
+                                 int count)
+{
+    if (!params.matrixWorkingSpace && params.toXyz) {
+        std::string error;
+        (void)IoColorSpace::convertRow(*params.toXyz, rgb, count, 3, &error);
+    }
+    for (int i = 0; i < count; ++i) {
+        apply(params.toPipe, rgb + (size_t)i * 3, rgb + (size_t)i * 3);
+    }
+}
 
 bool
 ColorBalanceRGBOp::isIdentity(const Params& /*params*/) const
@@ -814,15 +1002,12 @@ ColorBalanceRGBOp::row(const Params& params,
                 buffer[i * 3 + c] = src[i * nComps + c];
             }
         }
-        if (viaOcio && params.toXyz) {
-            (void)IoColorSpace::convertRow(*params.toXyz, buffer, n, 3, &error);
-        }
+        workingToPipe(params, buffer, n);
         for (int i = 0; i < n; ++i) {
             float* px = buffer + i * 3;
-            float pipe[3];
+            const float pipe[3] = { px[0], px[1], px[2] };
             float graded[3];
             float opacities[3];
-            apply(params.toPipe, px, pipe);
             pixel(params, pipe, graded, opacities);
             if (result) {
                 apply(params.fromPipe, graded, px);
@@ -1019,6 +1204,54 @@ ColorBalanceRGB::applyPresetAt(int index)
 }
 
 bool
+ColorBalanceRGB::applyPickedColour(int picker,
+                                   double time)
+{
+    const ColorBalanceRGBOp& o = op();
+
+    if ((picker < 0) || (picker >= ColorBalanceRGBOp::ePickerCount)) {
+        return false;
+    }
+    const KnobColorPtr colour = o.pickers[picker].lock();
+    if (!colour) {
+        return false;
+    }
+    const ColorBalanceRGBOp::Params params = bakeColorBalanceRGB(time, ViewIdx(0));
+    float rgb[3];
+    for (int c = 0; c < 3; ++c) {
+        rgb[c] = (float)colour->getValueAtTime(time, c);
+    }
+    ColorBalanceRGBOp::workingToPipe(params, rgb, 1);
+    const KnobBoolPtr sameHueKnob = o.pickSameHue.lock();
+    const ColorBalanceRGBOp::PickedValues picked = ColorBalanceRGBOp::pickedValues(params, rgb, rgb, sameHueKnob && sameHueKnob->getValue());
+
+    AppInstancePtr app = getApp();
+    const bool oneUndoStep = app && !app->isCreatingPythonGroup();
+    if (oneUndoStep) {
+        setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+    }
+    const auto set = [](const KnobDoubleWPtr& weak,
+                        double v) {
+        if (KnobDoublePtr knob = weak.lock()) {
+            knob->setValue(v);
+        }
+    };
+    if (picker < ColorBalanceRGBOp::eWheelCount) {
+        set(o.wheels[picker].hue, picked.hue);
+        set(o.wheels[picker].chroma, picked.chroma);
+    } else if (picker == ColorBalanceRGBOp::ePickerWhiteFulcrum) {
+        set(o.whiteFulcrum, picked.whiteFulcrum);
+    } else {
+        set(o.contrastGreyFulcrum, picked.greyFulcrum);
+    }
+    if (oneUndoStep) {
+        setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    }
+
+    return true;
+} // ColorBalanceRGB::applyPickedColour
+
+bool
 ColorBalanceRGB::knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -1034,6 +1267,20 @@ ColorBalanceRGB::knobChanged(KnobI* k,
         }
 
         return true;
+    }
+    for (int i = 0; i < ColorBalanceRGBOp::ePickerCount; ++i) {
+        const KnobColorPtr pick = op().pickers[i].lock();
+        if (pick && (k == pick.get())) {
+            AppInstancePtr app = getApp();
+            const bool loading = app && app->getProject() && app->getProject()->isLoadingProject();
+            // A project load or a time change restores the picked colour; only a pick moves the
+            // knobs it drives.
+            if (!loading && (reason != eValueChangedReasonTimeChanged) && (reason != eValueChangedReasonSlaveRefresh) && (reason != eValueChangedReasonRestoreDefault)) {
+                (void)applyPickedColour(i, time);
+            }
+
+            return true;
+        }
     }
 
     return ImageNode<ColorBalanceRGBOp>::knobChanged(k, reason, view, time, originatedFromMainThread);

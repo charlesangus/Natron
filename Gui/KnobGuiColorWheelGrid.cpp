@@ -33,6 +33,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMetaObject>
 #include <QUndoCommand>
 #include <QVBoxLayout>
 
@@ -196,11 +197,14 @@ KnobGuiColorWheelGrid::KnobGuiColorWheelGrid(KnobIPtr knob,
     , _value()
     , _moved(false)
     , _draftGui()
+    , _configCallbackOwner()
+    , _configCallbackId(-1)
 {
 }
 
 KnobGuiColorWheelGrid::~KnobGuiColorWheelGrid()
 {
+    unregisterConfigCallback();
     if (_draftGui) {
         _draftGui->setDraftRenderEnabled(false);
     }
@@ -265,7 +269,49 @@ KnobGuiColorWheelGrid::createWidget(QHBoxLayout* layout)
     for (std::size_t i = 0; i < _cells.size(); ++i) {
         refreshCell((int)i);
     }
+
+    unregisterConfigCallback();
+    KnobHolder* holder = knob ? knob->getHolder() : 0;
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (colorManagement) {
+        QPointer<KnobGuiColorWheelGrid> self(this);
+        const auto refresh = [self]() {
+            if (self) {
+                self->onProjectColorConfigChanged();
+            }
+        };
+        _configCallbackId = colorManagement->addConfigChangedCallback([self, refresh]() {
+            if (self) {
+                QMetaObject::invokeMethod(self.data(), refresh, Qt::AutoConnection);
+            }
+        });
+        _configCallbackOwner = colorManagement;
+    }
 } // KnobGuiColorWheelGrid::createWidget
+
+void
+KnobGuiColorWheelGrid::onProjectColorConfigChanged()
+{
+    for (const Cell& cell : _cells) {
+        if (cell.wheel) {
+            cell.wheel->setDisplayConverter(makeDisplayConverter(cell.spec.chroma.lock()));
+        }
+    }
+}
+
+void
+KnobGuiColorWheelGrid::unregisterConfigCallback()
+{
+    ProjectColorManagementPtr colorManagement = _configCallbackOwner.lock();
+
+    if (colorManagement && (_configCallbackId >= 0)) {
+        colorManagement->removeConfigChangedCallback(_configCallbackId);
+    }
+    _configCallbackOwner.reset();
+    _configCallbackId = -1;
+}
 
 QWidget*
 KnobGuiColorWheelGrid::createCell(int index,
@@ -548,6 +594,7 @@ KnobGuiColorWheelGrid::removeSpecificGui()
         _grid->deleteLater();
     }
     _cells.clear();
+    unregisterConfigCallback();
 }
 
 void

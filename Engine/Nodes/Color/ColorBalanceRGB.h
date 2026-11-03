@@ -96,6 +96,14 @@
 #define kColorBalanceRGBParamContrastGreyFulcrum "contrastGreyFulcrum"
 #define kColorBalanceRGBParamOutput "output"
 
+#define kColorBalanceRGBParamPickSameHue "pickSameHue"
+#define kColorBalanceRGBParamPickOffset "pickOffset"
+#define kColorBalanceRGBParamPickLift "pickLift"
+#define kColorBalanceRGBParamPickGain "pickGain"
+#define kColorBalanceRGBParamPickPower "pickPower"
+#define kColorBalanceRGBParamPickWhiteFulcrum "pickWhiteFulcrum"
+#define kColorBalanceRGBParamPickContrastGreyFulcrum "pickContrastGreyFulcrum"
+
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kColorBalanceRGBInputs[] = {
@@ -132,6 +140,30 @@ struct ColorBalanceRGBOp {
         eWheelPower,
         eWheelCount
     };
+
+    /**
+     * @brief darktable's colour pickers, each a pick colour knob: one per wheel (in WheelEnum's
+     * order), then White Fulcrum and Contrast Grey Fulcrum.
+     **/
+    enum PickerEnum {
+        ePickerWhiteFulcrum = eWheelCount,
+        ePickerContrastGreyFulcrum,
+        ePickerCount
+    };
+
+    /**
+     * @brief What color_picker_apply() takes from a picked colour: a wheel's hue (degrees) and
+     * chroma, White Fulcrum (EV) and Contrast Grey Fulcrum.
+     **/
+    struct PickedValues {
+        double hue = 0.;
+        double chroma = 0.;
+        double whiteFulcrum = 0.;
+        double greyFulcrum = 0.;
+    };
+
+    // The grey fulcrums divide the luminance; darktable's range starts at 0, which makes NaNs.
+    static constexpr double kMinimumGreyFulcrum = 1e-4;
 
     struct Params {
         int output = eOutputResult;
@@ -217,6 +249,25 @@ struct ColorBalanceRGBOp {
                       float opacities[3]);
 
     /**
+     * @brief darktable's color_picker_apply() on a picked area's mean and per-channel maximum, both
+     * in linear Rec.2020: a wheel takes the hue opposite the mean's (the mean's own when sameHue),
+     * in [0, 360), and the chroma Y times c of the mean's Ych; White Fulcrum is log2 of the
+     * maximum's Y; Contrast Grey Fulcrum the mean's Y. Each is clamped to its knob's range.
+     **/
+    static PickedValues pickedValues(const Params& params,
+                                     const float mean[3],
+                                     const float maximum[3],
+                                     bool sameHue);
+
+    /**
+     * @brief Converts count working-space RGB pixels (three floats each) to linear Rec.2020 in
+     * place, as the row kernel does before grading.
+     **/
+    static void workingToPipe(const Params& params,
+                              float* rgb,
+                              int count);
+
+    /**
      * @brief The double knobs a preset writes, in darktable's parameter order; the rest of the
      * node's double knobs are reset to their defaults when a preset is applied.
      **/
@@ -250,6 +301,9 @@ struct ColorBalanceRGBOp {
     KnobDoubleWPtr whiteFulcrum;
     KnobDoubleWPtr contrastGreyFulcrum;
     KnobChoiceWPtr output;
+
+    KnobBoolWPtr pickSameHue;
+    KnobColorWPtr pickers[ePickerCount];
 
     KnobHolder* holder = nullptr;
 };
@@ -287,6 +341,14 @@ public:
      * the Apply button does: the preset's values, and the default for every other control.
      **/
     void applyPresetAt(int index);
+
+    /**
+     * @brief Sets the knobs darktable's picker sets (ColorBalanceRGBOp::PickerEnum) from the
+     * picker's colour knob at time, read as working-space RGB and converted to darktable's
+     * pipeline space first, as one undo step. False, changing nothing, for an unknown picker.
+     **/
+    bool applyPickedColour(int picker,
+                           double time);
 
 private:
     virtual bool knobChanged(KnobI* k,

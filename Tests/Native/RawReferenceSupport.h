@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -193,6 +194,12 @@ inline double
 halfFloatError(double got,
                double want)
 {
+    if (got == want) {
+        return 0.;
+    }
+    if (!std::isfinite(got) || !std::isfinite(want)) {
+        return std::numeric_limits<double>::infinity();
+    }
     return std::max(0., std::fabs(got - want) - halfFloatRounding(want));
 }
 } // namespace RawReference

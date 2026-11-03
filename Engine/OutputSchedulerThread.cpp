@@ -3608,6 +3608,12 @@ RenderEngine::isSequentialRenderBeingAborted() const
     return _imp->scheduler->isBeingAborted();
 }
 
+int
+RenderEngine::getNRenderThreads() const
+{
+    return _imp->scheduler ? _imp->scheduler->getNRenderThreads() : 0;
+}
+
 bool
 RenderEngine::hasThreadsAlive() const
 {

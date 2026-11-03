@@ -43,6 +43,7 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
 
 #include <SequenceParsing.h>
 
@@ -762,8 +763,34 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
         }
     } parallelRenders;
 
+    // With a single pool thread task-graph mode never opens a second frame thread and there is nothing to stop.
+    struct PoolThreadsScope {
+        int saved;
+
+        PoolThreadsScope()
+            : saved(QThreadPool::globalInstance()->maxThreadCount())
+        {
+            if (saved < 2) {
+                QThreadPool::globalInstance()->setMaxThreadCount(2);
+            }
+        }
+
+        ~PoolThreadsScope()
+        {
+            QThreadPool::globalInstance()->setMaxThreadCount(saved);
+        }
+    } poolThreads;
+
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+    RenderEnginePtr engine = writerEffect->getRenderEngine();
+
     std::atomic<int> capSeenByAction { -1 };
-    const std::function<void()> lowerCap = [&capSeenByAction]() {
+    std::atomic<int> threadsSeenByAction { -1 };
+    const std::function<void()> lowerCap = [&capSeenByAction, &threadsSeenByAction, engine]() {
+        // Read as is: the scheduler thread, which opens frame threads, is blocked on this action.
+        const int nThreads = engine->getNRenderThreads();
+        threadsSeenByAction = nThreads;
         appPTR->getCurrentSettings()->setNumberOfParallelRenders(1);
         capSeenByAction = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
     };
@@ -771,6 +798,7 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
     const int finishedCode = renderWithActionAtFrame(lowerCap, eActionThreadOwn, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_GT(threadsSeenByAction.load(), 1) << "only " << threadsSeenByAction.load() << " live render thread(s) when the cap was lowered, so no thread was left to stop";
     EXPECT_EQ(1, capSeenByAction.load()) << "the Settings write was refused mid-render";
     EXPECT_EQ(0, finishedCode);
     for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {

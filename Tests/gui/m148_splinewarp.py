@@ -198,7 +198,11 @@ try:
             popup.close()
 
         QTimer.singleShot(MENU_MS, pick)
-        pos = tree.visualItemRect(item).center()
+        # A release on any other column of a selected row is taken as a click on that cell (activation,
+        # lock, colour) and opens no menu, so the click lands on the name column.
+        header = tree.header()
+        x = header.sectionViewportPosition(0) + header.sectionSize(0) // 2
+        pos = QPoint(x, tree.visualItemRect(item).center().y())
         send_mouse(tree.viewport(), QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
 
     def role_and_partner(tree, curve):

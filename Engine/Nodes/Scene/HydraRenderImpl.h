@@ -124,8 +124,8 @@ struct Request {
     // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
-    // calling task; any count when 0. Cycles and MoonRay take it when the owner's engine is
-    // made.
+    // calling task; any count when 0. Cycles and MoonRay take it when an engine is made; every
+    // Cycles engine made under another budget is made again.
     int threads = 0;
 };
 

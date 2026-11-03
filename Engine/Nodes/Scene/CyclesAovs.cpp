@@ -25,17 +25,25 @@
 
 #include "CyclesAovs.h"
 
+#include <algorithm>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <numeric>
 #include <set>
 #include <vector>
 
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/typeHeaders.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/base/vt/visitValue.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
 #include <pxr/imaging/hd/legacyDisplayStyleSchema.h>
 #include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/meshTopologySchema.h>
 #include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/primvarSchema.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
@@ -89,32 +97,407 @@ namespace {
         return !known.count(id);
     }
 
-    /**
-     * Flags flatShadingEnabled on every polygonal (none or bilinear) mesh without vertex normals.
-     * USD renders such a mesh faceted, as Storm does, but Cycles' delegate shades every mesh
-     * smooth unless flatShadingEnabled is set, from normals it averages at shared points, and
-     * ignores uniform normals. The implicit Cube and Plane tessellate to such meshes, and an
-     * 8-point cube shaded smooth has normals tilted across each face like a sphere's.
-     **/
-    class FacetedMeshSceneIndex;
-    typedef TfRefPtr<FacetedMeshSceneIndex> FacetedMeshSceneIndexRefPtr;
+    enum ShadingEnum {
+        eShadingAsAuthored = 0,
+        eShadingFlat,
+        eShadingPointNormals,
+        eShadingUnwelded
+    };
 
-    class FacetedMeshSceneIndex
+    // A corner normal within about 1.8 degrees of its face's is taken for the face's.
+    const float kHardNormalCosine = 0.9995f;
+
+    VtValue
+    sampleAtZero(const HdSampledDataSourceHandle& source)
+    {
+        return source ? source->GetValue(0.f) : VtValue();
+    }
+
+    // Whether every face's corner normals are the face's own, as a box's are: Cycles shading the
+    // mesh flat then gives what they do. A face of no area constrains nothing.
+    bool
+    hardNormals(const VtVec3fArray& normals,
+                const VtVec3fArray& points,
+                const VtIntArray& counts,
+                const VtIntArray& indices,
+                bool leftHanded)
+    {
+        std::size_t corner = 0;
+        for (const int count : counts) {
+            GfVec3f face(0.f);
+            for (int i = 0; i < count; ++i) {
+                const GfVec3f& a = points[indices[corner + i]];
+                const GfVec3f& b = points[indices[corner + (i + 1) % count]];
+                face += GfVec3f((a[1] - b[1]) * (a[2] + b[2]), (a[2] - b[2]) * (a[0] + b[0]), (a[0] - b[0]) * (a[1] + b[1]));
+            }
+            const float length = face.GetLength();
+            if (length > 0.f) {
+                face /= leftHanded ? -length : length;
+                for (int i = 0; i < count; ++i) {
+                    const GfVec3f& normal = normals[corner + i];
+                    const float normalLength = normal.GetLength();
+                    if (!(normalLength > 0.f) || !(GfDot(normal, face) >= kHardNormalCosine * normalLength)) {
+                        return false;
+                    }
+                }
+            }
+            corner += (std::size_t)count;
+        }
+
+        return true;
+    }
+
+    // Whether the corners of each point all have the same normal, as a sphere's do: they can then
+    // be vertex normals.
+    bool
+    pointNormals(const VtVec3fArray& normals,
+                 const VtIntArray& indices,
+                 std::size_t pointCount)
+    {
+        std::vector<int> firstCorner(pointCount, -1);
+        for (std::size_t corner = 0; corner < indices.size(); ++corner) {
+            int& first = firstCorner[(std::size_t)indices[corner]];
+            if (first < 0) {
+                first = (int)corner;
+                continue;
+            }
+            const GfVec3f& a = normals[(std::size_t)first];
+            const GfVec3f& b = normals[corner];
+            if ((a != b) && !(GfDot(a, b) >= kHardNormalCosine * a.GetLength() * b.GetLength())) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Natron's cube and card author faceVarying normals that are their faces' own, its sphere ones
+    // that agree at each point; its cylinder's smooth sides and hard caps need the split. The implicit Cube and Plane tessellate to meshes
+    // without normals, and an 8-point cube shaded smooth has normals tilted across each face like a
+    // sphere's.
+    ShadingEnum
+    shading(const HdContainerDataSourceHandle& prim)
+    {
+        const HdMeshSchema mesh = HdMeshSchema::GetFromParent(prim);
+        TfToken scheme = UsdGeomTokens->catmullClark;
+        if (HdTokenDataSourceHandle ds = mesh.GetSubdivisionScheme()) {
+            scheme = ds->GetTypedValue(0.f);
+        }
+        if ((scheme != UsdGeomTokens->none) && (scheme != UsdGeomTokens->bilinear)) {
+            return eShadingAsAuthored;
+        }
+        const HdPrimvarsSchema primvars = HdPrimvarsSchema::GetFromParent(prim);
+        const HdPrimvarSchema normalsPrimvar = primvars.GetPrimvar(HdTokens->normals);
+        const VtValue normalsValue = sampleAtZero(normalsPrimvar.GetPrimvarValue());
+        if (!normalsValue.IsHolding<VtVec3fArray>() || normalsValue.UncheckedGet<VtVec3fArray>().empty()) {
+            return eShadingFlat;
+        }
+        const HdTokenDataSourceHandle interpolationDs = normalsPrimvar.GetInterpolation();
+        const TfToken interpolation = interpolationDs ? interpolationDs->GetTypedValue(0.f) : TfToken();
+        if (interpolation == HdPrimvarSchemaTokens->uniform) {
+            return eShadingFlat;
+        }
+        if (interpolation != HdPrimvarSchemaTokens->faceVarying) {
+            return eShadingAsAuthored;
+        }
+        // The delegate reads no normals of a mesh it subdivides.
+        if (scheme == UsdGeomTokens->bilinear) {
+            const HdIntDataSourceHandle refine = HdLegacyDisplayStyleSchema::GetFromParent(prim).GetRefineLevel();
+            if (refine && (refine->GetTypedValue(0.f) > 0)) {
+                return eShadingAsAuthored;
+            }
+        }
+        const HdMeshTopologySchema topology = mesh.GetTopology();
+        const HdIntArrayDataSourceHandle countsDs = topology.GetFaceVertexCounts();
+        const HdIntArrayDataSourceHandle indicesDs = topology.GetFaceVertexIndices();
+        const VtValue pointsValue = sampleAtZero(primvars.GetPrimvar(HdTokens->points).GetPrimvarValue());
+        if (!countsDs || !indicesDs || !pointsValue.IsHolding<VtVec3fArray>()) {
+            return eShadingAsAuthored;
+        }
+        const VtIntArray counts = countsDs->GetTypedValue(0.f);
+        const VtIntArray indices = indicesDs->GetTypedValue(0.f);
+        const VtVec3fArray& points = pointsValue.UncheckedGet<VtVec3fArray>();
+        const VtVec3fArray& normals = normalsValue.UncheckedGet<VtVec3fArray>();
+        std::size_t corners = 0;
+        for (const int count : counts) {
+            if (count < 0) {
+                return eShadingAsAuthored;
+            }
+            corners += (std::size_t)count;
+        }
+        if ((corners != indices.size()) || (corners != normals.size())) {
+            return eShadingAsAuthored;
+        }
+        for (const int index : indices) {
+            if ((index < 0) || ((std::size_t)index >= points.size())) {
+                return eShadingAsAuthored;
+            }
+        }
+        const HdTokenDataSourceHandle orientation = topology.GetOrientation();
+        const bool leftHanded = orientation && (orientation->GetTypedValue(0.f) == HdTokens->leftHanded);
+
+        if (hardNormals(normals, points, counts, indices, leftHanded)) {
+            return eShadingFlat;
+        }
+
+        return pointNormals(normals, indices, points.size()) ? eShadingPointNormals : eShadingUnwelded;
+    } // shading
+
+    // A per-point array spread to one entry per face corner, elementSize values each.
+    struct ExpandToCorners {
+        template <class T>
+        VtValue operator()(const VtArray<T>& values,
+                           const VtIntArray& indices,
+                           std::size_t elementSize) const
+        {
+            VtArray<T> expanded(indices.size() * elementSize);
+            T* out = expanded.data();
+            for (const int index : indices) {
+                if ((index < 0) || ((std::size_t)index * elementSize + elementSize > values.size())) {
+                    return VtValue();
+                }
+                out = std::copy_n(values.cdata() + (std::size_t)index * elementSize, elementSize, out);
+            }
+
+            return VtValue(expanded);
+        }
+
+        template <class T>
+        VtValue operator()(const T& /*value*/,
+                           const VtIntArray& /*indices*/,
+                           std::size_t /*elementSize*/) const
+        {
+            return VtValue();
+        }
+    };
+
+    class CornerValueDataSource
+        : public HdSampledDataSource {
+    public:
+        HD_DECLARE_DATASOURCE(CornerValueDataSource);
+
+        VtValue GetValue(Time shutterOffset) override
+        {
+            return VtVisitValue(_values->GetValue(shutterOffset), ExpandToCorners(), _indices, _elementSize);
+        }
+
+        bool GetContributingSampleTimesForInterval(Time startTime,
+                                                   Time endTime,
+                                                   std::vector<Time>* outSampleTimes) override
+        {
+            return _values->GetContributingSampleTimesForInterval(startTime, endTime, outSampleTimes);
+        }
+
+    private:
+        CornerValueDataSource(const HdSampledDataSourceHandle& values,
+                              const VtIntArray& indices,
+                              std::size_t elementSize)
+            : _values(values)
+            , _indices(indices)
+            , _elementSize(elementSize)
+        {
+        }
+
+        HdSampledDataSourceHandle _values;
+        VtIntArray _indices;
+        std::size_t _elementSize;
+    };
+
+    // faceVarying normals that are the same at every corner of a point, gathered per point. Hydra
+    // counts a mesh's points from its face vertices, and an unused point gets +Z.
+    class PointNormalsDataSource
+        : public HdSampledDataSource {
+    public:
+        HD_DECLARE_DATASOURCE(PointNormalsDataSource);
+
+        VtValue GetValue(Time shutterOffset) override
+        {
+            const VtValue value = _normals->GetValue(shutterOffset);
+            if (!value.IsHolding<VtVec3fArray>() || (value.UncheckedGet<VtVec3fArray>().size() != _indices.size())) {
+                return VtValue();
+            }
+            const VtVec3fArray& normals = value.UncheckedGet<VtVec3fArray>();
+            VtVec3fArray gathered(_pointCount, GfVec3f(0.f, 0.f, 1.f));
+            for (std::size_t corner = 0; corner < _indices.size(); ++corner) {
+                gathered[(std::size_t)_indices[corner]] = normals[corner];
+            }
+
+            return VtValue(gathered);
+        }
+
+        bool GetContributingSampleTimesForInterval(Time startTime,
+                                                   Time endTime,
+                                                   std::vector<Time>* outSampleTimes) override
+        {
+            return _normals->GetContributingSampleTimesForInterval(startTime, endTime, outSampleTimes);
+        }
+
+    private:
+        PointNormalsDataSource(const HdSampledDataSourceHandle& normals,
+                               const VtIntArray& indices)
+            : _normals(normals)
+            , _indices(indices)
+            , _pointCount(indices.empty() ? 0 : (std::size_t)*std::max_element(indices.cbegin(), indices.cend()) + 1)
+        {
+        }
+
+        HdSampledDataSourceHandle _normals;
+        VtIntArray _indices;
+        std::size_t _pointCount;
+    };
+
+    // A mesh's primvars once its points are split per face corner: vertex and varying ones spread
+    // to the corners, faceVarying normals made vertex normals. A rebuilt primvar has no indices,
+    // which an overlay would let through from the original.
+    class CornerPrimvarsDataSource
+        : public HdContainerDataSource {
+    public:
+        HD_DECLARE_DATASOURCE(CornerPrimvarsDataSource);
+
+        TfTokenVector GetNames() override
+        {
+            return _input->GetNames();
+        }
+
+        HdDataSourceBaseHandle Get(const TfToken& name) override
+        {
+            const HdDataSourceBaseHandle child = _input->Get(name);
+            const HdPrimvarSchema primvar(HdContainerDataSource::Cast(child));
+            const HdTokenDataSourceHandle interpolation = primvar.GetInterpolation();
+            const HdSampledDataSourceHandle value = primvar.GetPrimvarValue();
+            if (!interpolation || !value) {
+                return child;
+            }
+            const TfToken mode = interpolation->GetTypedValue(0.f);
+            HdPrimvarSchema::Builder builder;
+            if ((name == HdTokens->normals) && (mode == HdPrimvarSchemaTokens->faceVarying)) {
+                builder.SetPrimvarValue(value).SetInterpolation(HdRetainedTypedSampledDataSource<TfToken>::New(HdPrimvarSchemaTokens->vertex));
+            } else if ((mode == HdPrimvarSchemaTokens->vertex) || (mode == HdPrimvarSchemaTokens->varying)) {
+                const HdIntDataSourceHandle elementSize = primvar.GetElementSize();
+                const int size = elementSize ? std::max(1, elementSize->GetTypedValue(0.f)) : 1;
+                builder.SetPrimvarValue(CornerValueDataSource::New(value, _indices, (std::size_t)size)).SetInterpolation(interpolation);
+            } else {
+                return child;
+            }
+
+            return builder.SetRole(primvar.GetRole()).SetColorSpace(primvar.GetColorSpace()).SetElementSize(primvar.GetElementSize()).Build();
+        }
+
+    private:
+        CornerPrimvarsDataSource(const HdContainerDataSourceHandle& input,
+                                 const VtIntArray& indices)
+            : _input(input)
+            , _indices(indices)
+        {
+        }
+
+        HdContainerDataSourceHandle _input;
+        VtIntArray _indices;
+    };
+
+    class ReplacedChildDataSource
+        : public HdContainerDataSource {
+    public:
+        HD_DECLARE_DATASOURCE(ReplacedChildDataSource);
+
+        TfTokenVector GetNames() override
+        {
+            return _input->GetNames();
+        }
+
+        HdDataSourceBaseHandle Get(const TfToken& name) override
+        {
+            return (name == _name) ? _child : _input->Get(name);
+        }
+
+    private:
+        ReplacedChildDataSource(const HdContainerDataSourceHandle& input,
+                                const TfToken& name,
+                                const HdDataSourceBaseHandle& child)
+            : _input(input)
+            , _name(name)
+            , _child(child)
+        {
+        }
+
+        HdContainerDataSourceHandle _input;
+        TfToken _name;
+        HdDataSourceBaseHandle _child;
+    };
+
+    HdContainerDataSourceHandle
+    withPointNormals(const HdContainerDataSourceHandle& prim)
+    {
+        const HdIntArrayDataSourceHandle indicesDs = HdMeshSchema::GetFromParent(prim).GetTopology().GetFaceVertexIndices();
+        const HdPrimvarsSchema primvars = HdPrimvarsSchema::GetFromParent(prim);
+        const HdPrimvarSchema normals = primvars.GetPrimvar(HdTokens->normals);
+        if (!indicesDs || !primvars.GetContainer() || !normals.GetPrimvarValue()) {
+            return prim;
+        }
+        const HdContainerDataSourceHandle vertexNormals = HdPrimvarSchema::Builder()
+                                                              .SetPrimvarValue(PointNormalsDataSource::New(normals.GetPrimvarValue(), indicesDs->GetTypedValue(0.f)))
+                                                              .SetInterpolation(HdRetainedTypedSampledDataSource<TfToken>::New(HdPrimvarSchemaTokens->vertex))
+                                                              .SetRole(normals.GetRole())
+                                                              .Build();
+
+        return ReplacedChildDataSource::New(prim, HdPrimvarsSchema::GetSchemaToken(), ReplacedChildDataSource::New(primvars.GetContainer(), HdTokens->normals, vertexNormals));
+    }
+
+    // The mesh with a point per face corner: face vertex i is point i.
+    HdContainerDataSourceHandle
+    unwelded(const HdContainerDataSourceHandle& prim)
+    {
+        const HdIntArrayDataSourceHandle indicesDs = HdMeshSchema::GetFromParent(prim).GetTopology().GetFaceVertexIndices();
+        const VtIntArray indices = indicesDs ? indicesDs->GetTypedValue(0.f) : VtIntArray();
+        VtIntArray corners(indices.size());
+        std::iota(corners.begin(), corners.end(), 0);
+        const HdContainerDataSourceHandle topology = HdRetainedContainerDataSource::New(
+            HdMeshSchema::GetSchemaToken(),
+            HdRetainedContainerDataSource::New(
+                HdMeshSchemaTokens->topology,
+                HdRetainedContainerDataSource::New(HdMeshTopologySchemaTokens->faceVertexIndices, HdRetainedTypedSampledDataSource<VtIntArray>::New(corners))));
+        const HdContainerDataSourceHandle primvars = HdPrimvarsSchema::GetFromParent(prim).GetContainer();
+        if (!primvars) {
+            return prim;
+        }
+
+        return HdOverlayContainerDataSource::New(topology, ReplacedChildDataSource::New(prim, HdPrimvarsSchema::GetSchemaToken(), CornerPrimvarsDataSource::New(primvars, indices)));
+    }
+
+    class CyclesMeshSceneIndex;
+    typedef TfRefPtr<CyclesMeshSceneIndex> CyclesMeshSceneIndexRefPtr;
+
+    // Hands every mesh to Cycles as shading() says it has to be.
+    class CyclesMeshSceneIndex
         : public HdSingleInputFilteringSceneIndexBase {
     public:
-        static FacetedMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+        static CyclesMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
         {
-            return TfCreateRefPtr(new FacetedMeshSceneIndex(input));
+            return TfCreateRefPtr(new CyclesMeshSceneIndex(input));
         }
 
         HdSceneIndexPrim GetPrim(const SdfPath& path) const override
         {
             HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(path);
-            if ((prim.primType == HdPrimTypeTokens->mesh) && prim.dataSource && faceted(prim.dataSource)) {
+            if ((prim.primType != HdPrimTypeTokens->mesh) || !prim.dataSource) {
+                return prim;
+            }
+            switch (cachedShading(path, prim.dataSource)) {
+            case eShadingFlat: {
                 static const HdContainerDataSourceHandle flat = HdRetainedContainerDataSource::New(
                     HdLegacyDisplayStyleSchema::GetSchemaToken(),
                     HdLegacyDisplayStyleSchema::Builder().SetFlatShadingEnabled(HdRetainedTypedSampledDataSource<bool>::New(true)).Build());
                 prim.dataSource = HdOverlayContainerDataSource::New(flat, prim.dataSource);
+                break;
+            }
+            case eShadingPointNormals:
+                prim.dataSource = withPointNormals(prim.dataSource);
+                break;
+            case eShadingUnwelded:
+                prim.dataSource = unwelded(prim.dataSource);
+                break;
+            case eShadingAsAuthored:
+                break;
             }
 
             return prim;
@@ -129,56 +512,93 @@ namespace {
         void _PrimsAdded(const HdSceneIndexBase& /*sender*/,
                          const HdSceneIndexObserver::AddedPrimEntries& entries) override
         {
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                for (const HdSceneIndexObserver::AddedPrimEntry& entry : entries) {
+                    _shading.erase(entry.primPath);
+                }
+            }
             _SendPrimsAdded(entries);
         }
 
         void _PrimsRemoved(const HdSceneIndexBase& /*sender*/,
                            const HdSceneIndexObserver::RemovedPrimEntries& entries) override
         {
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                for (const HdSceneIndexObserver::RemovedPrimEntry& entry : entries) {
+                    for (std::map<SdfPath, ShadingEnum>::iterator it = _shading.begin(); it != _shading.end();) {
+                        it = it->first.HasPrefix(entry.primPath) ? _shading.erase(it) : std::next(it);
+                    }
+                }
+            }
             _SendPrimsRemoved(entries);
         }
 
+        // A mesh whose shading changes, or whose face vertices change while its primvars are
+        // rebuilt from them, has every primvar change.
         void _PrimsDirtied(const HdSceneIndexBase& /*sender*/,
                            const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
         {
-            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetSubdivisionSchemeLocator(), HdPrimvarsSchema::GetDefaultLocator().Append(HdTokens->normals) };
+            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetDefaultLocator(), HdPrimvarsSchema::GetNormalsLocator(), HdPrimvarsSchema::GetPointsLocator(), HdLegacyDisplayStyleSchema::GetRefineLevelLocator() };
+            static const HdDataSourceLocatorSet reshaped = { HdMeshSchema::GetTopologyLocator(), HdPrimvarsSchema::GetDefaultLocator(), HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator() };
             HdSceneIndexObserver::DirtiedPrimEntries forwarded = entries;
             for (HdSceneIndexObserver::DirtiedPrimEntry& entry : forwarded) {
-                if (entry.dirtyLocators.Intersects(decides)) {
-                    entry.dirtyLocators.insert(HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator());
+                if (!entry.dirtyLocators.Intersects(decides)) {
+                    continue;
+                }
+                bool known = false;
+                ShadingEnum was = eShadingAsAuthored;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    std::map<SdfPath, ShadingEnum>::iterator found = _shading.find(entry.primPath);
+                    if (found != _shading.end()) {
+                        known = true;
+                        was = found->second;
+                        _shading.erase(found);
+                    }
+                }
+                const HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(entry.primPath);
+                if ((prim.primType != HdPrimTypeTokens->mesh) || !prim.dataSource) {
+                    continue;
+                }
+                const ShadingEnum now = cachedShading(entry.primPath, prim.dataSource);
+                if (!known || (now != was)) {
+                    entry.dirtyLocators.insert(reshaped);
+                } else if (((now == eShadingUnwelded) || (now == eShadingPointNormals)) && entry.dirtyLocators.Intersects(HdMeshSchema::GetTopologyLocator())) {
+                    entry.dirtyLocators.insert(HdPrimvarsSchema::GetDefaultLocator());
                 }
             }
             _SendPrimsDirtied(forwarded);
         }
 
     private:
-        explicit FacetedMeshSceneIndex(const HdSceneIndexBaseRefPtr& input)
+        explicit CyclesMeshSceneIndex(const HdSceneIndexBaseRefPtr& input)
             : HdSingleInputFilteringSceneIndexBase(input)
         {
         }
 
-        static bool faceted(const HdContainerDataSourceHandle& prim)
+        // Reading a mesh's points and normals costs as much as Cycles' own reading of them, and
+        // the delegate asks for the prim many times a sync.
+        ShadingEnum cachedShading(const SdfPath& path,
+                                  const HdContainerDataSourceHandle& prim) const
         {
-            TfToken scheme = UsdGeomTokens->catmullClark;
-            if (HdTokenDataSourceHandle ds = HdMeshSchema::GetFromParent(prim).GetSubdivisionScheme()) {
-                scheme = ds->GetTypedValue(0.f);
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                std::map<SdfPath, ShadingEnum>::const_iterator found = _shading.find(path);
+                if (found != _shading.end()) {
+                    return found->second;
+                }
             }
-            if ((scheme != UsdGeomTokens->none) && (scheme != UsdGeomTokens->bilinear)) {
-                return false;
-            }
-            const HdPrimvarSchema normals = HdPrimvarsSchema::GetFromParent(prim).GetPrimvar(HdTokens->normals);
-            const HdSampledDataSourceHandle value = normals.GetPrimvarValue();
-            if (!value) {
-                return true;
-            }
-            const VtValue sampled = value->GetValue(0.f);
-            if (!sampled.IsHolding<VtVec3fArray>() || sampled.UncheckedGet<VtVec3fArray>().empty()) {
-                return true;
-            }
-            const HdTokenDataSourceHandle interpolation = normals.GetInterpolation();
+            const ShadingEnum computed = shading(prim);
+            std::lock_guard<std::mutex> lock(_mutex);
+            _shading[path] = computed;
 
-            return interpolation && (interpolation->GetTypedValue(0.f) == HdPrimvarSchemaTokens->uniform);
+            return computed;
         }
+
+        mutable std::mutex _mutex;
+        mutable std::map<SdfPath, ShadingEnum> _shading;
     };
 } // anon namespace
 
@@ -194,12 +614,18 @@ registerSceneIndices()
         HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
             kRenderDelegateCyclesDisplayName,
             [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
-                return FacetedMeshSceneIndex::New(HdsiImplicitSurfaceSceneIndex::New(input, args));
+                return meshShadingSceneIndex(HdsiImplicitSurfaceSceneIndex::New(input, args));
             },
             HdRetainedContainerDataSource::New(count, types.data(), modes.data()),
             0,
             HdSceneIndexPluginRegistry::InsertionOrderAtStart);
     });
+}
+
+HdSceneIndexBaseRefPtr
+meshShadingSceneIndex(const HdSceneIndexBaseRefPtr& input)
+{
+    return CyclesMeshSceneIndex::New(input);
 }
 
 const DelegateSupport::Support&

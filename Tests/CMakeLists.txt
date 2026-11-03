@@ -370,7 +370,14 @@ if(NATRON_MOONRAY_PREFIX)
 else()
     set(NATRON_MOONRAY_BUNDLED OFF)
 endif()
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+# A build whose OpenUSD install carries the Cycles delegate (tools/ci/local/build-cycles.sh) bundles
+# it, so CyclesDelegate must fail, not skip, if the plug-in is not registered.
+if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
+    set(NATRON_CYCLES_BUNDLED ON)
+else()
+    set(NATRON_CYCLES_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 

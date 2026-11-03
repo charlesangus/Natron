@@ -66,6 +66,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ThemedIcon.h"
@@ -1159,8 +1160,8 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
-        // Handles are drawn for the USDEditTransform whose settings panel was opened last.
-        _imp->sceneViewport->setTransformNodeProvider([this]() -> NodePtr {
+        // The USDEditTransform whose settings panel was opened last.
+        const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
             if (!gui) {
                 return NodePtr();
@@ -1176,10 +1177,24 @@ ViewerTab::onActiveInputDataKindChanged()
             }
 
             return NodePtr();
-        });
+        };
+        _imp->sceneViewport->setTransformNodeProvider(openEditNode);
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });
+        {
+            SceneTransformPolicyTarget::Context context;
+            context.viewedNode = [this]() -> NodePtr {
+                return getSceneViewedNode();
+            };
+            context.openEditNode = openEditNode;
+            context.undoHistory = [this]() -> UndoHistory* {
+                Gui* gui = getGui();
+
+                return gui ? gui->getUndoHistory() : nullptr;
+            };
+            _imp->sceneViewport->setTransformTarget(std::make_shared<SceneTransformPolicyTarget>(context));
+        }
         _imp->sceneViewport->setCameraNodeProvider([this](const std::string& primPath) -> NodePtr {
             std::set<Node*> visited;
 

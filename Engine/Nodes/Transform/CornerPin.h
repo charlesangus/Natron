@@ -147,8 +147,12 @@ struct CornerPinOp {
 
     static bool rendersWithMotionBlur(const Params& params);
 
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
+    /**
+     * @brief Heavy when the render averages several matrices per pixel, as rendersWithMotionBlur()
+     * says; empty otherwise, for the Resample default.
+     **/
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobDoubleWPtr to[4];
     KnobBoolWPtr enable[4];

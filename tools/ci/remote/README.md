@@ -54,7 +54,8 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]...
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
+tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 ```
 
 - `--tests` also runs the ctest suite and the Python bindings smoke test on
@@ -110,8 +111,40 @@ and no AppImage. It only keeps the ccache warm for branch runs.
 
 ## GUI checks in remote mode
 
-Run GUI scripts inside the natron-dev container (through the main
-`tools/ci/local/devshell.sh`), against the downloaded AppImage under
+`--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions, one job
+per script in parallel, against the run's AppImage (so not with `debug` or
+`--no-appimage`):
+
+```
+tools/ci/remote/build.sh fast --gui "Tests/gui/m55_node_graph.py Tests/gui/m45_tab_menu.py"
+tools/ci/remote/build.sh release --from-run 12345678901 --gui "Tests/gui/m55_node_graph.py"
+```
+
+Each job runs `Tests/gui/run-gui-test.sh` in the dev image with a 1920x1080
+screen and a 900 s script timeout, and uploads its `NATRON_GUI_TEST_OUT`
+(screenshots, `results.txt`, `natron.log`) as `gui-<name>-<preset>-<sha>`,
+even when the script fails. A failing or timed-out script fails only its own
+job. Git LFS fixtures are fetched only when the script names them (by file
+name), so most scripts download none.
+
+`--from-run <run-id>` skips the build and uses the `natron-<preset>-<sha>`
+AppImage of an earlier `remote-build` run (artifacts last 7 days). The GUI
+jobs check out that run's commit, so the scripts and fixtures, the
+`run-gui-test.sh` and the dev image are the ones of the branch under test,
+which need not carry this workflow itself: dispatch from a branch that does.
+`--gui-ref <ref>` (only with `--from-run`) checks out that branch or sha for the
+scripts, fixtures and `run-gui-test.sh` instead of the run's commit, still
+testing the run's AppImage under the dev image of the run's commit.
+`--from-run` takes no build or test options, and replaces only
+`build/remote/<preset>/gui/`.
+
+The outputs land in `build/remote/<preset>/gui/<name>/`. The script prints a
+`gui: PASS|FAIL <script> (<n> passed, <n> failed): <dir>` line per script,
+judged by the job's conclusion with the counts from `results.txt`, and exits
+non-zero if any script failed.
+
+To run a script locally instead, run it inside the natron-dev container
+(through the main `tools/ci/local/devshell.sh`), against the downloaded AppImage under
 `build/`, under Xvfb:
 
 ```

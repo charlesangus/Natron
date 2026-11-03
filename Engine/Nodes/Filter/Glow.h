@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/BlurKernels.h"
@@ -164,6 +166,12 @@ struct GlowOp {
     /// The map, the bloom and the combination over the scratch slots, and their GPU recorder.
     PassList passes(const Params& params,
                     const PassContext& context) const;
+
+    /**
+     * @brief The Filter weight the bloom's filter and largest blur call for (BloomKernels::gpuWeight).
+     **/
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobHolder* holder = nullptr;
     KnobDoubleWPtr threshold;

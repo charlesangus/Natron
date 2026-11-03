@@ -8,9 +8,8 @@
 #   NP_NODE    key of a node in NODES (below)
 #   NP_CHAIN   copies of the node in series (default 8). A generator is never chained. A chain
 #              lets the placement see a region worth its transfers; kernel time is then per chain.
-#              With the GPU on it must be 2 or more: a node with no GPU cost row is unpriced, and
-#              the placement keeps a lone unpriced candidate on the CPU, so a chain of 1 profiles
-#              the CPU while claiming to profile the GPU.
+#              With the GPU on, the chain must weigh at least kGpuRegionMinWeight (Engine/GpuWeight.h)
+#              or it stays on the CPU: one Filter node does, a Point node takes 4 copies.
 #   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
 #   NP_WORK    directory the frames are written to
 #   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
@@ -240,9 +239,6 @@ def main():
             param(size_map, "point1").set(3840.0, 0.0)
             param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
             param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
-        if (os.environ.get("NATRON_GPU", "off") != "off") and (CHAIN < 2):
-            # Two or more unpriced candidates form a GPU region without a cost judgement; one stays on the CPU.
-            raise RuntimeError("NP_CHAIN must be 2 or more with the GPU on, or the node renders on the CPU")
         uv = None
         if NODE in UV_INPUTS:
             uv = make("net.sf.openfx.Ramp", "np_uv")

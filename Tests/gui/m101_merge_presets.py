@@ -18,7 +18,7 @@ Sections:
   - keys: ; ' Shift+; and Shift+' sent to the node graph create a Merge with operation mask, stencil,
     mask and stencil; the All Layers variants set row 0 of the layers param to All;
   - tab menu: the tab menu lists one Merge and one Plus, the old node and its presets being gone,
-    lists Plus under [Merge], and choosing it creates a Merge whose operation is plus.
+    lists Plus under [Merge/Merge Presets], and choosing it creates a Merge whose operation is plus.
 
 Shots: m101-tab-menu-plus.png.
 """
@@ -232,9 +232,9 @@ try:
         merges = [e for e in listed(line_edit, view, "Merge") if row_name(e) == "Merge" and "[Merge]" in e]
         check(len(merges) == 1, "tab menu: lists one Merge, the old node's entry gone (got %r)" % merges)
         entries = listed(line_edit, view, "Plus")
-        row = next((r for r, e in enumerate(entries) if row_name(e) == "Plus" and "[Merge]" in e), -1)
-        check(row >= 0, "tab menu: lists Plus under [Merge] (got %r)" % entries)
-        pluses = [e for e in entries if row_name(e) == "Plus" and "[Merge]" in e]
+        row = next((r for r, e in enumerate(entries) if row_name(e) == "Plus" and "[Merge/Merge Presets]" in e), -1)
+        check(row >= 0, "tab menu: lists Plus under [Merge/Merge Presets] (got %r)" % entries)
+        pluses = [e for e in entries if row_name(e) == "Plus"]
         check(len(pluses) == 1, "tab menu: lists one Plus, the old Plus preset gone (got %r)" % pluses)
         if row < 0:
             QTest.keyClick(popup, Qt.Key_Escape)

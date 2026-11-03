@@ -937,13 +937,6 @@ edgeDetectPasses(const EdgeDetectParams& params,
     PassList list;
     list.boundary = PassExec::Boundary::Nearest;
     list.scratchSlots = 3;
-    // What gpuCostHint() reports: the blur's sigma, recursive for the Gaussians.
-    const auto withCost = [&](Pass pass, double size, const LineFilterPtr& lineFilter) {
-        pass.sigma = size / 2.4;
-        pass.recursive = isGaussianFamily(filter) && !lineFilter->isIdentity();
-
-        return pass;
-    };
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeDetectGpuPlan> gpuPlan = std::make_shared<EdgeDetectGpuPlan>();
     gpuPlan->multiChannel = params.multiChannel;
@@ -960,8 +953,8 @@ edgeDetectPasses(const EdgeDetectParams& params,
             preBlurX = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, neumann));
             preBlurY = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, neumann));
         }
-        list.passes.push_back(withCost(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)), sx, preBlurX));
-        list.passes.push_back(withCost(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)), sy, preBlurY));
+        list.passes.push_back(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)));
+        list.passes.push_back(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)));
         Pass stencil = Pass::gather(1, 1, true, stencilWorker(params.filter));
         stencil.growX = stencil.growY = params.expandRoD ? 1 : 0;
         list.passes.push_back(stencil);
@@ -996,10 +989,10 @@ edgeDetectPasses(const EdgeDetectParams& params,
             gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(boxY), 1, neumann));
         }
         list.passes.push_back(Pass::point(true, copyWorker()));
-        list.passes.push_back(atSlot(withCost(Pass::lineX(haloX, growX, lineWorker(gxRows)), sx, gxRows), kSlotGx));
-        list.passes.push_back(atSlot(withCost(Pass::lineY(haloY, growY, lineWorker(gxColumns)), sy, gxColumns), kSlotGx));
-        list.passes.push_back(atSlot(withCost(Pass::lineX(0, 0, lineWorker(gyRows)), sx, gyRows), kSlotGy));
-        list.passes.push_back(atSlot(withCost(Pass::lineY(0, 0, lineWorker(gyColumns)), sy, gyColumns), kSlotGy));
+        list.passes.push_back(atSlot(Pass::lineX(haloX, growX, lineWorker(gxRows)), kSlotGx));
+        list.passes.push_back(atSlot(Pass::lineY(haloY, growY, lineWorker(gxColumns)), kSlotGx));
+        list.passes.push_back(atSlot(Pass::lineX(0, 0, lineWorker(gyRows)), kSlotGy));
+        list.passes.push_back(atSlot(Pass::lineY(0, 0, lineWorker(gyColumns)), kSlotGy));
 #ifdef NATRON_HAVE_GPU
         gpuPlan->gxRows = BlurKernels::toGpuLineFilter(*gxRows);
         gpuPlan->gxColumns = BlurKernels::toGpuLineFilter(*gxColumns);

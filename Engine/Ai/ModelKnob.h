@@ -144,6 +144,9 @@ private:
     std::optional<Resolved> _resolved;
     // The last error this helper posted, so it takes back only its own.
     std::string _postedError;
+    // Why the last download of _failedModelId failed; the not-installed message would hide it while that model is missing.
+    std::string _failedModelId;
+    std::string _downloadFailure;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -69,6 +69,26 @@ public:
         eColorTrackballWheelWidthFifth
     };
 
+    // The mouse bindings of the 3D viewer's navigation and selection, named after the
+    // application whose scheme they follow. Custom is whatever the shortcut editor made of them.
+    enum Viewer3DNavigationEnum {
+        eViewer3DNavigationNuke = 0,
+        eViewer3DNavigationMaya,
+        eViewer3DNavigationBlender,
+        eViewer3DNavigationHoudini,
+        eViewer3DNavigationCustom
+    };
+
+    // Where a drag of the 3D viewer's transform widget writes its change.
+    enum Viewer3DTransformTargetEnum {
+        // The knobs of the node that made the prim, else an edit node.
+        eViewer3DTransformTargetOwner = 0,
+        // The USDEditTransform whose panel is open, else a new one.
+        eViewer3DTransformTargetOpenEdit,
+        // A USDEditTransform after the viewed node, reused while the selection stays the same.
+        eViewer3DTransformTargetAlwaysEdit
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -285,6 +305,9 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
+    bool isDevelopRawDenoiseEnabled() const;
+
     ///////////////////////////////////////////////////////
     // "AI" pane
     bool isAiEnabled() const;
@@ -328,6 +351,19 @@ public:
     bool isAutoProxyEnabled() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
+
+    Viewer3DNavigationEnum getViewer3DNavigation() const;
+
+    // How long camera frustums reach and how big light icons are in the viewer's 3D view, in
+    // scene units.
+    double getViewer3DGuideSize() const;
+
+    // Sets the preference, which applies a preset's bindings to the 3D viewer's shortcuts.
+    void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
+
+    bool isViewer3DNavigationKnob(const KnobI* knob) const;
+
+    Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
     ///////////////////////////////////////////////////////
@@ -335,6 +371,15 @@ public:
     bool areRGBPixelComponentsSupported() const;
 
     bool isTransformConcatenationEnabled() const;
+
+    /**
+     * @brief A digest of the knobs that change what a render produces. Project::getContentDigest()
+     * folds it in, so changing one of them re-keys every node. A Settings knob read while rendering
+     * must be flagged with setRenderAffecting() unless either output may serve the other.
+     **/
+    U64 getRenderAffectingDigest() const;
+
+    bool isRenderAffecting(const KnobI* knob) const;
 
     bool useInputAForMergeAutoConnect() const;
 
@@ -534,6 +579,9 @@ private:
     KnobBoolPtr _activateRGBSupport;
     KnobBoolPtr _activateTransformConcatenationSupport;
 
+    // Filled at knob creation only, so it is read without a lock.
+    std::vector<KnobIPtr> _renderAffectingKnobs;
+
     // General/GPU
     KnobPagePtr _gpuPage;
     KnobChoicePtr _gpuComputeMode;
@@ -555,6 +603,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 
@@ -627,6 +676,9 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _viewer3DNavigation;
+    KnobDoublePtr _viewer3DGuideSize;
+    KnobChoicePtr _viewer3DTransformTarget;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

@@ -245,9 +245,11 @@ public:
      **/
     void releaseState();
 
-    bool getIdentityResult(U64 hash, double time, ViewIdx view, int* inputNbIdentity, ViewIdx *inputView, double* identityTime);
+    // Keyed on the mipmap level too: identity can depend on scale (a one-pixel erode is an
+    // identity at a lower level only).
+    bool getIdentityResult(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel, int* inputNbIdentity, ViewIdx* inputView, double* identityTime);
 
-    void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
+    void setIdentityResult(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel, int inputNbIdentity, ViewIdx inputView, double identityTime);
 
     EffectInstance::ComponentsNeededResultsPtr getComponentsNeededResults(U64 hash, double time, ViewIdx view);
 

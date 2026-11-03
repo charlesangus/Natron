@@ -65,14 +65,18 @@ class FileDownloader
     Q_OBJECT
 
 public:
-    explicit FileDownloader(const QUrl &imageUrl,
+    explicit FileDownloader(const QUrl& imageUrl,
                             bool useNetworkCache,
-                            QObject *parent = 0);
+                            int heartbeatTimeoutMs = 5000,
+                            QObject* parent = 0);
 
     virtual ~FileDownloader();
 
     const QByteArray& downloadedData() const;
     QNetworkReply* getReply() const;
+
+    /// True when the download was aborted because no data arrived within the heartbeat timeout.
+    bool stalled() const;
 
 Q_SIGNALS:
     void downloaded();
@@ -91,6 +95,7 @@ private:
     std::unique_ptr<QNetworkAccessManager> m_WebCtrl;
     std::unique_ptr<QByteArray> m_DownloadedData;
     std::unique_ptr<QTimer> m_timer;
+    bool m_stalled;
 };
 
 NATRON_NAMESPACE_EXIT

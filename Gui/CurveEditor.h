@@ -208,6 +208,11 @@ public:
 
     bool isVisible() const;
 
+    bool hasKnobCurvesShown() const
+    {
+        return _hasKnobCurvesShown;
+    }
+
     void setVisible(bool visible);
 
     NodeCurveEditorElement* findElement(CurveGui* curve) const WARN_UNUSED_RETURN;
@@ -223,6 +228,7 @@ private:
     NodeGuiPtr _node;
     Elements _nodeElements;
     QTreeWidgetItem* _nameItem;
+    bool _hasKnobCurvesShown;
 };
 
 
@@ -242,10 +248,6 @@ public:
                           RotoCurveEditorContext* context);
 
     virtual ~RotoItemEditorContext();
-
-    //Called when the destr. of RotoCurveEditorContext is called to prevent
-    //the tree items to be deleted twice due to Qt's parenting
-    void preventItemDeletion();
 
     QTreeWidgetItem* getItem() const;
     RotoDrawableItemPtr getRotoItem() const;
@@ -272,9 +274,13 @@ public Q_SLOTS:
     void onShapeCloned();
 
 protected:
-
-    virtual void getAnimCurveAndItem(QTreeWidgetItem** /*item*/,
-                                     CurveGuiPtr* /*curve*/) const {}
+    /**
+     * @brief Selects the control point rows under 'cur', or all of them when 'all' is set,
+     * adding their curves. Returns true when 'cur' is one of those rows.
+     **/
+    virtual bool recursiveSelectPoints(QTreeWidgetItem* /*cur*/,
+                                       bool /*all*/,
+                                       std::vector<CurveGuiPtr>* /*curves*/) { return false; }
 
 private:
 
@@ -298,9 +304,27 @@ public:
 
     virtual ~BezierEditorContext() OVERRIDE;
 
-    virtual void getAnimCurveAndItem(QTreeWidgetItem** item, CurveGuiPtr* curve) const OVERRIDE FINAL;
+    /**
+     * @brief Adds (or removes) a row per control point holding its x and y curves.
+     * Feather points and points of other shapes are ignored.
+     **/
+    void showControlPoints(const std::list<BezierCPPtr>& points, bool show);
+
+    std::list<BezierCPCurveGuiPtr> getControlPointCurves() const;
+
+public Q_SLOTS:
+
+    void onShapeAboutToClone();
+
+    void onShapeClonedRebindPoints();
+
+    void onControlPointRemoved();
+
+protected:
+    virtual bool recursiveSelectPoints(QTreeWidgetItem* cur, bool all, std::vector<CurveGuiPtr>* curves) OVERRIDE FINAL;
 
 private:
+    void refreshPointLabels();
 
     std::unique_ptr<BezierEditorContextPrivate> _imp;
 };
@@ -315,10 +339,12 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
+    // The item rows go under 'nodeItem', the host node's row, which this context does not own.
     RotoCurveEditorContext(CurveEditor* widget,
-                           QTreeWidget *tree,
-                           const NodeGuiPtr &node);
+                           QTreeWidget* tree,
+                           const NodeGuiPtr& node,
+                           QTreeWidgetItem* nodeItem,
+                           bool hostHasKnobCurves);
 
     virtual ~RotoCurveEditorContext() OVERRIDE;
 
@@ -335,8 +361,6 @@ public:
     std::list<NodeCurveEditorElement*> findElement(const KnobGuiPtr& knob, int dimension) const;
 
 public Q_SLOTS:
-
-    void onNameChanged(const QString & name);
 
     void onItemNameChanged(const RotoItemPtr& item);
 

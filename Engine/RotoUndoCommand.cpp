@@ -559,7 +559,7 @@ RemovePointUndoCommand::redo()
             }
         }
         isBezier->setAutoOrientationComputation(true);
-        isBezier->refreshPolygonOrientation(true);
+        isBezier->invalidatePolygonOrientation();
     }
 
     for (std::list<BezierPtr>::iterator it = toRemove.begin(); it != toRemove.end(); ++it) {

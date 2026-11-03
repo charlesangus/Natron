@@ -807,6 +807,14 @@ IBlur::readsGpuInput(int inputNb,
     return _map.resolveChannel(const_cast<IBlur*>(this), kIBlurInputMap, time, view, &layer, &channel);
 }
 
+GpuWeight
+IBlur::gpuWeight(double /*time*/,
+                 ViewIdx /*view*/,
+                 unsigned int /*mipmapLevel*/) const
+{
+    return GpuWeight::filter();
+}
+
 bool
 IBlur::opPassesInputLayer(int inputNb,
                           const ImageLayerDesc& plane,

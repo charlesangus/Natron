@@ -453,6 +453,7 @@ Project::loadProject(const QString & path,
         return false;
     }
 
+    Q_EMIT loaded();
     refreshViewersAndPreviews();
 
     return true;

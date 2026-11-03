@@ -478,8 +478,10 @@ NodeGraph::createNodeGUI(const NodePtr & node,
 
     Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
-    // A Dot is a routing aid created in passing, so its panel only opens when asked for.
-    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot;
+    // A Dot is a routing aid created in passing, and every project starts with a Viewer, so their
+    // panels only open when asked for.
+    bool isViewer = node->isEffectViewer() != 0;
+    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot && !isViewer;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
         node_ui->ensurePanelCreated();
     }

@@ -766,6 +766,10 @@ Q_SIGNALS:
 
     void projectNameChanged(QString name, bool modified);
 
+    // Emitted once a load has succeeded and isLoadingProject() is false again: views that ignore
+    // resizes during a load act on the restored graph here.
+    void loaded();
+
     // Emitted from the saving thread whenever saveProject_imp() ends, so that a save waiting on
     // the main thread can stop waiting.
     void saveFinished();

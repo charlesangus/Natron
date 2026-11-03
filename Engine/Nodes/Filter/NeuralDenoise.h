@@ -30,6 +30,7 @@
 
 #include <array>
 #include <cstddef>
+#include <future>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -152,6 +153,22 @@ public:
                                                         const std::array<double, kDetailBands>& bandMultipliers);
 
     /**
+     * @brief The luminance of original minus denoised, packed RGB of count pixels, non-finite
+     * values as 0: filteredLuminanceResidual() before its filter.
+     **/
+    static std::vector<float> luminanceResidual(const float* original,
+                                                const float* denoised,
+                                                std::size_t count);
+
+    /**
+     * @brief filteredLuminanceResidual()'s filter over a residual from luminanceResidual().
+     **/
+    static std::vector<float> filterLuminanceResidual(std::vector<float> residual,
+                                                      int width,
+                                                      int height,
+                                                      const std::array<double, kDetailBands>& bandMultipliers);
+
+    /**
      * @brief Preserve Wide Gamut: each pixel of denoised whose inGamut is 0 takes original's
      * colour, shifted by the mean luminance of the denoised in-gamut pixels in the 5x5 window
      * around it less its own. Packed RGB of width by height.
@@ -197,7 +214,8 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
-    // The Source over the window grown by the tile overlap.
+    // The Source over the window grown by the tile overlap and the gamut radius, or the whole
+    // Source when detail recovery or Auto Shadow Boost needs the frame.
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,
@@ -232,13 +250,23 @@ private:
     static bool declaresShadowBoost(const ModelConfig& config);
 
     struct WholeFrame {
-        U64 key = 0;
         RectI frame;
         // Packed RGB over frame, rows from frame.y1, in the working space.
         std::vector<float> denoised;
-        // One value per pixel, as denoised.
-        std::vector<float> detail;
+        // The luminance the model removed, unfiltered, one value per pixel as denoised.
+        std::vector<float> residual;
     };
+
+    // One cached value and its key. The value is a future so that renders asking for the key
+    // while another computes it wait on the result rather than on the mutex.
+    template <class T>
+    struct SharedSlot {
+        U64 key = 0;
+        std::shared_future<std::shared_ptr<const T>> value;
+    };
+
+    // Drops the whole frame and its detail.
+    void releaseFrame();
 
     void postError(const std::string& message);
     void clearError();
@@ -253,7 +281,9 @@ private:
     std::array<KnobDoubleWPtr, kDetailBands> _detailBands;
     KnobIntWPtr _tileSize;
     std::mutex _frameMutex;
-    std::shared_ptr<const WholeFrame> _frame;
+    SharedSlot<WholeFrame> _frame;
+    // residual filtered by the Detail Bands, keyed by the frame's key and the bands.
+    SharedSlot<std::vector<float>> _detail;
     // The error of the node's own it last posted, rather than one of the model knob's.
     std::mutex _errorMutex;
     std::string _postedError;

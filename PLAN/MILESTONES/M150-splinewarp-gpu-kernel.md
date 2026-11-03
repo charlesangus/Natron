@@ -26,7 +26,7 @@ Scouted facts (2026-10-20; re-check at promotion):
 
 ## Phase 150.1: GPU path
 
-- [ ] M150.P1.T1 — `splinewarp.slang` kernel
+- [x] M150.P1.T1 — `splinewarp.slang` kernel
   - files: `Engine/Gpu/Kernels/splinewarp.slang` (new), `Engine/Gpu/Kernels/splinewarp.cmake` (new), `Tests/Native/NativeSplineWarpGpu_Test.cpp` (new)
   - approach:
     - Inputs: the source texture, the field texture (RG32F) with its origin and step, the inverse concatenated 3x3 matrix, and the filter flags.
@@ -34,7 +34,7 @@ Scouted facts (2026-10-20; re-check at promotion):
   - verify: the test's kernel-level cases (a uniform field, an affine field, and each filter) match the CPU `resampleRowFromCoords` within 1e-5 absolute. They run on RADV at the phase build.
   - size: L
 
-- [ ] M150.P1.T2 — Wire the GPU path into SplineWarp
+- [x] M150.P1.T2 — Wire the GPU path into SplineWarp
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Tests/Native/NativeSplineWarpGpu_Test.cpp`
   - approach:
     - Implement the Custom-kind GPU hooks: build the field on the CPU, upload it, and dispatch.
@@ -49,6 +49,7 @@ Scouted facts (2026-10-20; re-check at promotion):
 
 ## Decisions
 
+- 2026-11-02 — Audit: both tasks landed in 8647427ff (kernel plus node wiring), pushed, with M149 merged in; no uncommitted work, no PR. The only remote build (40664599902, at 7d6fd72a2) failed; the tip b06eba1ae is unbuilt and has never run on RADV. The branch is 23 commits behind main.
 - 2026-10-28: Implemented (build pending). The field goes to the GPU as a storage buffer of grid points and Jacobians (not a 2-channel texture), interpolated in two-float precision so it equals the CPU getRow() including the unfiltered copy of untouched pixels. Fields over the scratch limit decline to the CPU. GPU weight = gpuSizeScaledWeight of the largest link displacement, halved per mip level; weight uses cached samples only (sampleWarp()). PM call: like CornerPin/Transform/Reformat, SplineWarp declines the GPU when its input is concatenated (the framework doesn't pass the upstream matrix to renderOpGpu); the kernel supports a matrix for when it does. No motion-blur decline yet (M151).
 - 2026-10-20 — **A GPU kernel is in scope (user).**
 - 2026-10-20 — **Field built on the CPU, sampled on the GPU (planner):** one solver implementation, and the GPU only does the per-pixel work.

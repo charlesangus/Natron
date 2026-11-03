@@ -35,6 +35,7 @@ Scouted facts (2026-10-25): node drag runs through `NodeGraph::moveSelectedNodes
 
 ## Decisions
 
+- 2026-11-02 — Audit: all tasks committed and pushed (24e8ed59d, fixes 12fd42f63, e147ed41b, 8c804e426). No build/ctest gate or screenshot sign-off is recorded. The branch still carries M193 - Pipe Hint Highlight Colour's pre-squash commits (M193 is on main as #147) and is 25 behind main.
 - 2026-10-25 — kiss-modifier: Ctrl (user's suggestion) rather than Shift; Ctrl stays free of other node-drag meanings except the backdrop-carry flag, which keeps working.
 - 2026-10-25 — kiss-commit: releasing Ctrl commits each kiss immediately, so the user can aim, commit, and keep dragging.
 - 2026-10-25 — kiss-input-choice: only unconnected inputs are eligible; the nearest arrow tip wins.
@@ -43,7 +44,7 @@ Scouted facts (2026-10-25): node drag runs through `NodeGraph::moveSelectedNodes
 
 ## Phase 194.1: Kiss planning
 
-- [ ] M194.P1.T1 — Pure kiss planner
+- [x] M194.P1.T1 — Pure kiss planner
   - files: `Gui/NodeGraphKiss.h` (new), `Gui/NodeGraphKiss.cpp` (new), `Gui/CMakeLists.txt`, `Tests/NodeGraphKiss_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Model on `Gui/NodeGraphSplice.h/.cpp`. `planKiss(candidates, reach)` takes plain structs (tip points of unconnected input arrows with input numbers, the output point, target node rects with free-input info) and returns the single best kiss (which end, which input, which target) or none; nearest wins, ties by input number. No Qt widgets.
   - verify: gtest cases: nearest of several inputs, connected inputs skipped, output to first free input, no free input, out of reach, tie-break.
@@ -51,19 +52,19 @@ Scouted facts (2026-10-25): node drag runs through `NodeGraph::moveSelectedNodes
 
 ## Phase 194.2: Preview and commit
 
-- [ ] M194.P2.T1 — Gather candidates and show the kiss preview while Ctrl is held
+- [x] M194.P2.T1 — Gather candidates and show the kiss preview while Ctrl is held
   - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph.cpp`, `Gui/NodeGraphKiss.cpp`
   - approach: In `moveSelectedNodesBy` (and on Ctrl key press/release during a node drag, via the key events), build the planner inputs from the selection's boundary arrows and the nodes under reach, validate each with the same checks `handleConnectionError` uses, and show one preview edge (a reusable Edge like `_hintInputEdge`, Selection colour). Suppress `checkForSpliceHint` while Ctrl is held.
   - verify: manual under Xvfb: preview appears only with Ctrl held and a target in reach; splice hint returns on Ctrl release.
   - size: L
 
-- [ ] M194.P2.T2 — Commit the kiss on Ctrl release and fold into one undo step
+- [x] M194.P2.T2 — Commit the kiss on Ctrl release and fold into one undo step
   - files: `Gui/NodeGraph15.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphUndoRedo.cpp`
   - approach: On Ctrl key release during a node drag, apply the kiss live (`ConnectCommand::doConnect`) and record a child `ConnectCommand` for the drag's parent undo command. On mouse release, attach the recorded children to the parent already built in `mouseReleaseEvent` (`:373-385`); Escape (`NodeGraph25.cpp:223-225`) undoes the live connections.
   - verify: gtest/GUI: after two kisses and a drop, one undo restores connections and position; Escape restores connections.
   - size: L
 
-- [ ] M194.P2.T3 — Snap back on Alt at release
+- [x] M194.P2.T3 — Snap back on Alt at release
   - files: `Gui/NodeGraph15.cpp`, `Gui/NodeGraphUndoRedo.cpp`
   - approach: If Alt is down at mouse release and at least one kiss was committed in the drag, move the selection back by `-_deltaSinceMousePress` before pushing `MoveMultipleNodesCommand` (so the net move is zero and the command is omitted), keeping the connect children. Alt with no kiss does nothing special.
   - verify: GUI script: node returns to pickup position with new pipes, one undo step.
@@ -71,7 +72,7 @@ Scouted facts (2026-10-25): node drag runs through `NodeGraph::moveSelectedNodes
 
 ## Phase 194.3: GUI coverage
 
-- [ ] M194.P3.T1 — GUI script for kissing
+- [x] M194.P3.T1 — GUI script for kissing
   - files: `Tests/gui/m194_kiss.py` (new)
   - approach: Use the `Tests/gui/m55_node_graph.py` helpers plus Ctrl key events. Sections: input kiss; output kiss; two kisses in one drag (inputs 1 and 2); only-unconnected eligibility; no Ctrl means no kiss; snap-back with Alt; one undo step; Escape; preview pixels use the Selection colour.
   - verify: script passes under Xvfb on a `package.sh` AppImage.

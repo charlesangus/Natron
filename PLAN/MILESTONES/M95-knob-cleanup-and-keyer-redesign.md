@@ -14,7 +14,7 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.1: Global interactive toggle
 
-- [ ] M95.P1.T1 — Expose the global "interactive updates" toggle as an action, a shortcut and a viewer button
+- [x] M95.P1.T1 — Expose the global "interactive updates" toggle as an action, a shortcut and a viewer button
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/ViewerTab.cpp`, `Gui/ViewerTabPrivate.h`, `Engine/Settings.cpp`
   - approach:
     - The toggle *is* the existing preference `renderOnEditingFinished` (`Settings.cpp:652-656`), inverted. Don't add a second setting.
@@ -25,7 +25,7 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.2: Remove per-node `hidpi`/`interactive`
 
-- [ ] M95.P2.T1 — Remove `interactive` and `hidpi` from the generator/extent knobs
+- [x] M95.P2.T1 — Remove `interactive` and `hidpi` from the generator/extent knobs
   - files: `Engine/Nodes/Image/ExtentKnobs.h`, `Engine/Nodes/Image/ExtentKnobs.cpp`, `Tests/Native/NativeConstant_Test.cpp`, `Tests/Native/NativeCrop_Test.cpp`
   - approach:
     - Delete the two knobs (`ExtentKnobs.cpp:242-258`), `_interactive`/`_hiDPI` (`.h:160-161`), their `#define`s (`.h:42-43`) and their secret toggling (`:313-314`).
@@ -35,7 +35,7 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: compiled at the gate. `ctest -R "NativeConstant|NativeCrop|RectangleOverlay"` passes. A Constant/CheckerBoard/Crop panel shows neither knob.
   - size: M
 
-- [ ] M95.P2.T2 — Remove `interactive`/`hidpi` from Transform, Position and the Roto transform page
+- [x] M95.P2.T2 — Remove `interactive`/`hidpi` from Transform, Position and the Roto transform page
   - files: `Engine/Nodes/Transform/Transform.h`, `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Transform/Position.h`, `Engine/Nodes/Transform/Position.cpp`, `Engine/RotoContextPrivate.h`
   - approach:
     - Delete `kTransformNodeParamInteractive`/`HiDPI` and their knobs (`Transform.cpp:393-409`, `.h:58-59,213-214`), and pass null at `addTransformInteract` (`:527`).
@@ -45,7 +45,7 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: compiled at the gate. `ctest -R "NativeTransform|NativePosition|Roto"` passes. P5.T1: the Transform and RotoPaint transform pages have no Interactive/HiDPI rows, and dragging obeys the global toggle.
   - size: M
 
-- [ ] M95.P2.T3 — Hide and host-drive OFX plugins' `hidpi`/`interactive` params (if Q3 = hide)
+- [x] M95.P2.T3 — Hide and host-drive OFX plugins' `hidpi`/`interactive` params (if Q3 = hide)
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/AppManager.h`, `Gui/GuiApplicationManager.cpp`, `Engine/Settings.cpp`
   - approach:
     - Beside `createUnPremultSelector` (`Node.cpp:2659-2700`, the precedent for hiding a plug-in param), add `adoptHostDrivenOverlayParams()`. For a bool OFX param named `hidpi`, `interactive`, `transformInteractive` or `rampInteractive`, it calls `setSecret(true)`, `setSecretLocked(true)` and `setIsPersistent(false)`.
@@ -56,7 +56,7 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.3: Footer below the line
 
-- [ ] M95.P3.T1 — Move clamp black/white below the line, and give OFX nodes the same footer
+- [x] M95.P3.T1 — Move clamp black/white below the line, and give OFX nodes the same footer
   - note (2026-10-19): M137 - Native Base Class Flexibility now builds the native stage-knob footer (separator → (Un)premult by → mask → Invert mask → Mix). This task adds the clamp row above "(Un)premult by" and applies the footer order to OFX nodes through `Node.cpp`. Re-scout the lines below against what M137 merged.
   - files: `Engine/Node.cpp`, `Tests/KnobFooterOrder_Test.cpp` (new), `Tests/CMakeLists.txt` (**OVERLAP: Tests/CMakeLists.txt**)
   - approach:
@@ -68,13 +68,13 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.4: Keyer redesign
 
-- [ ] M95.P4.T1 — Add a shared trapezoid matte helper with unit tests
+- [x] M95.P4.T1 — Add a shared trapezoid matte helper with unit tests
   - files: `Engine/Nodes/Keyer/KeyerMatte.h` (new), `Tests/Native/KeyerMatte_Test.cpp` (new)
   - approach: `inline float trapezoidMatte(double k, double a, double b, double c, double d)` returns 0 for k≤a or k≥d, 1 for b≤k≤c, and linear ramps between. Degenerate edges (a==b, c==d) are hard steps. It assumes a≤b≤c≤d, and `sortedTrapezoid` enforces that.
   - verify: `ctest -R KeyerMatte`: ramps, plateaus, hard edges, k at each breakpoint, and an all-equal trapezoid.
   - size: S
 
-- [ ] M95.P4.T2 — Rewrite the native Keyer as a four-value matte that outputs alpha only
+- [x] M95.P4.T2 — Rewrite the native Keyer as a four-value matte that outputs alpha only
   - files: `Engine/Nodes/Keyer/Keyer.h`, `Engine/Nodes/Keyer/Keyer.cpp`
   - approach:
     - Knobs (Q12 defaults): key source `Luminance` (with the existing `luminanceMath`) or `Colour` (dot with `keyColor`, today's `eKeyerModeColor` maths, `Keyer.cpp:~185`). Then the four values A, B, C, D, defaulting to 0, 0.1, 0.9, 1. Delete the despill, despill angle, show, source-alpha, softness/tolerance/centre, Screen and None modes, and the `Bg`, `InM` and `OutM` inputs. The host mask/mix footer stays.
@@ -84,7 +84,7 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: compiled at the gate. P4.T3's tests.
   - size: L
 
-- [ ] M95.P4.T3 — Replace the Keyer parity tests with analytic tests
+- [x] M95.P4.T3 — Replace the Keyer parity tests with analytic tests
   - files: `Tests/Native/NativeKeyer_Test.cpp`
   - approach: drop the OFX-parity cases. Add: a luminance ramp image whose alpha matches `trapezoidMatte` per pixel; RGB unchanged; Colour mode with a green key; the A≤B≤C≤D enforcement when B is dragged below A; and the host mask footer limiting the effect.
   - verify: `ctest -R NativeKeyer` passes at the gate.
@@ -96,7 +96,7 @@ Scouting (2026-10-11, `10e0accd5`):
   - verify: `ctest -R NativeChromaKeyer` with rewritten analytic cases.
   - size: L
 
-- [ ] M95.P4.T5 — Make ChromaKeyer scene-linear: no Rec.709 encoding, no clamps, base mask/mix
+- [x] M95.P4.T5 — Make ChromaKeyer scene-linear: no Rec.709 encoding, no clamps, base mask/mix
   - files: `Engine/Nodes/Keyer/ChromaKeyer.h`, `Engine/Nodes/Keyer/ChromaKeyer.cpp`, `Tests/Native/NativeChromaKeyer_Test.cpp`
   - approach:
     - Key in the scene-linear working space. Delete the Rec.709 transfer encoding and its `linearProcessing` toggle (`ChromaKeyer.cpp:169-171, 228-231, 702`).
@@ -128,6 +128,7 @@ Acceptance sketch:
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Every task but P5.T1 committed and pushed; no PR. Tests/gui/m95_knobs_keyer.py is committed (ac73f03a0); no AppImage or UAT yet. The last remote build (7ebeec39b) is green.
 - 2026-10-28: All phases implemented (build pending; goldens to re-record). Interactive Updates is a checkable global Render-menu action (Alt+U) synced via Settings::settingChanged; changing it saves the preference immediately. interactive/hidpi knobs removed from native generator/extent and transform nodes; OFX plug-ins' hidpi/interactive params are hidden and host-set. Footer-order test at Tests/Native/KnobFooterOrder_Test.cpp. Keyer and ChromaKeyer move to major 3. ChromaKeyer: fgy<0 zeroing removed (no clamps); background key bounded with boundForKeying (overflow guard, not a clamp) on CPU and GPU; sourceHasAlpha flag; "Add to Inside Mask" → "Inside Mask"; labels match script names. Keyer luminance math defaults to the working space. Keyer sublabel stays a hidden knob until M111's getSublabel() hook lands.
 - 2026-10-19 — **Native stage-knob placement moved to M137 - Native Base Class Flexibility; Keyer is redesigned on its framework** (user, M137 grill): the framework creates the premult, mask and mix knobs, so it places them. M137 migrates Keyer and ChromaKeyer unchanged first. This milestone gains a dep on M137.
 - 2026-10-11 — **Split from M69 - Minor Cleanup (user-approved).** Deps `M69, M76`.

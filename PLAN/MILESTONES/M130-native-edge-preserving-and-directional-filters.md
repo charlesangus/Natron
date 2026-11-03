@@ -56,7 +56,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 129.1: Median
 
-- [ ] M130.P1.T1 — Write the native Median node (CPU)
+- [x] M130.P1.T1 — Write the native Median node (CPU)
   - files: `Engine/Nodes/Filter/Median.h`, `Engine/Nodes/Filter/Median.cpp`, `Engine/Nodes/Filter/Median.reg.inc`
   - approach:
     - Knobs: `size` (radius, default 1) and `threshold` (relative, default 0).
@@ -69,7 +69,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeMedian` (T2) passes.
   - size: M
 
-- [ ] M130.P1.T2 — Test Median on CPU
+- [x] M130.P1.T2 — Test Median on CPU
   - files: `Tests/Native/NativeMedian_Test.cpp`
   - approach:
     - Salt-and-pepper impulses vanish at size 1.
@@ -80,7 +80,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeMedian` passes.
   - size: M
 
-- [ ] M130.P1.T3 — Median on the GPU
+- [x] M130.P1.T3 — Median on the GPU
   - files: `Engine/Gpu/Kernels/median.slang`, `Engine/Gpu/Kernels/median.cmake`, `Engine/Nodes/Filter/Median.cpp`, `Tests/Native/NativeMedianGpu_Test.cpp`
   - approach:
     - Radius ≤ 2 uses a sorting network on registers.
@@ -91,7 +91,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 129.2: Bilateral and Guided
 
-- [ ] M130.P2.T1 — Write the native Bilateral node with a Guided mode (CPU)
+- [x] M130.P2.T1 — Write the native Bilateral node with a Guided mode (CPU)
   - files: `Engine/Nodes/Filter/Bilateral.h`, `Engine/Nodes/Filter/Bilateral.cpp`, `Engine/Nodes/Filter/Bilateral.reg.inc`
   - approach:
     - Inputs: Source, plus an optional Guide.
@@ -101,7 +101,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeBilateral` (T2) passes.
   - size: L
 
-- [ ] M130.P2.T2 — Test Bilateral and Guided on CPU
+- [x] M130.P2.T2 — Test Bilateral and Guided on CPU
   - files: `Tests/Native/NativeBilateral_Test.cpp`
   - approach:
     - A flat region is smoothed.
@@ -112,7 +112,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeBilateral` passes.
   - size: M
 
-- [ ] M130.P2.T3 — Bilateral and Guided on the GPU
+- [x] M130.P2.T3 — Bilateral and Guided on the GPU
   - files: `Engine/Gpu/Kernels/bilateral.slang`, `Engine/Gpu/Kernels/bilateral.cmake`, `Engine/Nodes/Filter/Bilateral.cpp`, `Tests/Native/NativeBilateralGpu_Test.cpp`
   - approach:
     - Bilateral uses a tiled direct gather. Guided uses separable box means through `blur.slang`'s box filter plus point ops.
@@ -122,7 +122,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 129.3: DirBlur
 
-- [ ] M130.P3.T1 — Write the native DirBlur node with Directional, Radial and Zoom modes (CPU)
+- [x] M130.P3.T1 — Write the native DirBlur node with Directional, Radial and Zoom modes (CPU)
   - files: `Engine/Nodes/Filter/DirBlur.h`, `Engine/Nodes/Filter/DirBlur.cpp`, `Engine/Nodes/Filter/DirBlur.reg.inc`
   - approach:
     - Knobs: `mode`, `length` (pixels or angle for Radial), `center` (position overlay), `direction`, `samples`, `centered`, `falloff`, and `fromColor`/`toColor` for a GodRays-style tint along the accumulation.
@@ -130,7 +130,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeDirBlur` (T2) passes.
   - size: L
 
-- [ ] M130.P3.T2 — Test DirBlur on CPU
+- [x] M130.P3.T2 — Test DirBlur on CPU
   - files: `Tests/Native/NativeDirBlur_Test.cpp`
   - approach:
     - Length 0 is identity.
@@ -140,7 +140,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeDirBlur` passes.
   - size: M
 
-- [ ] M130.P3.T3 — DirBlur on the GPU
+- [x] M130.P3.T3 — DirBlur on the GPU
   - files: `Engine/Gpu/Kernels/dirblur.slang`, `Engine/Gpu/Kernels/dirblur.cmake`, `Engine/Nodes/Filter/DirBlur.cpp`, `Tests/Native/NativeDirBlurGpu_Test.cpp`
   - approach: import M85 - Native GPU Kernels's `resample.slang` and accumulate samples per pixel with the same matrices and weights the CPU uses. Reuse M85.P5.T2's motion-blur port if its interface fits.
   - verify: at the phase build, `ctest -R NativeDirBlurGpu` passes on RADV within 1e-4 relative.
@@ -165,6 +165,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Phases 1-3 committed and pushed; no PR. P4.T1 is not done: no Engine/OfxRetired markers, and the CImg Median/Bilateral, DirBlur and GodRays IDs are still in OfxEffectInstance.cpp's lists. P4.T2 is partial: docs/DirBlur.md only. There is no Xvfb GUI script for the gate yet. The last remote build (9d4e7cddc) failed ctest (legacy scheduler).
 - 2026-10-28: Phases 1–2 implemented (builds pending). Median: radius floor(size×scale.x), square in pixels; threshold keeps |in−m| ≤ t·max(|m|,1e-6); edge repeat; CPU/GPU select on float-ordered integer keys (bit-exact); GPU cap radius 16. Bilateral: log2-luminance range term (Rec.709 weights when RGB), guided = He's filter on box means with ε = rangeSigma², Guide input optional; scratch = window + halo clipped to RoD; GPU radius cap 64; Size ≤ 50, Iterations ≤ 10 (re-filtering, CImg-style). Did not reuse M209's running-sum kernels: they round by buffer position and break bit-exact tile independence (relevant to M268).
 - 2026-10-13 — **Family in scope (user, /cat-plan grill):** Median, Bilateral with Guided, and DirBlur, with GodRays folded in as a radial mode.
 - 2026-10-13 — **Scene-linear range metrics:** thresholds and range sigmas are relative or in stops, never on [0,1]. This follows from the redesign rule (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`).

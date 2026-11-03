@@ -107,13 +107,13 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Phase 233.4: UAT round 2 fixes
 
-- [ ] M233.P4.T1 — Optional headlight, off by default
+- [x] M233.P4.T1 — Optional headlight, off by default
   - files: the 3D viewport and USDRender lighting set-up that P3 removed the headlight from, viewer/USDRender knobs, scene viewport tests
   - approach: User, 2026-11-01: "headlamp maybe should be configurable/can turn it on and off (off by default)". Bring the headlight back behind a toggle, off by default: a Headlight knob on USDRender, and a toggle in the 3D viewer's display options. With it off, unlit scenes stay black as now.
   - verify: Tests render an unlit diffuse card black with the headlight off and lit with it on, in the viewport and in USDRender; the toggle saves and loads.
   - size: M
 
-- [ ] M233.P4.T2 — Emissive as its own node
+- [x] M233.P4.T2 — Emissive as its own node
   - files: `Engine/Nodes/Scene/USDMaterial.*`, a new emissive material node beside it, registration, docs, tests
   - approach: User, 2026-11-01: "the simpler emissive shader should be its own node, with one input (the emissive texture)". Move the Emissive shader mode off USDMaterial into a new node (for example USDEmissiveMaterial, label matching the script name) with exactly one Image input, the emissive texture, plus its own knobs (material path, assignment, intensity as needed). USDMaterial goes back to its lit shading modes. No backward compatibility.
   - verify: Tests: the new node's card shows the input image unchanged with no lights; USDMaterial no longer offers Emissive; the projection and live-texture GUI checks use the new node where they used Emissive.
@@ -126,9 +126,10 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Phase 233.5: Keep the data window
 
-- [ ] M233.P5.T1 — Textures keep data outside the format
+- [x] M233.P5.T1 — Textures keep data outside the format
   - files: the live-texture upload and UV mapping from P3.T1 (grep the format crop), live-texture tests
   - approach: User, 2026-11-02: "should preserve the data window (e.g. in case the object has uv coordinates outside 0-1)". UV 0–1 still maps to the format, but the uploaded texture covers the whole data window, so UVs outside 0–1 sample the overscan pixels instead of clamping or wrapping. Outside the data window, sampling follows the material's wrap mode.
   - verify: A test with overscan (data window larger than the format) and a card whose UVs extend past 0–1 shows the overscan pixels at those UVs; 0–1 still lands on the format.
   - size: M
 - 2026-11-02 — No size cap on the kept overscan: the texture covers the whole data window; managing size is the user's job (user).
+- 2026-11-02 — Audit: P4.T1–T2 at 8aaa5bf81, P5.T1 at 238b47f88 + b71a0dacd (no size cap); all committed and pushed, worktree clean, no PR yet, 23 behind origin/main. P3.T4 (NVIDIA crash) has no code change; the user reported no crash on 2026-11-01, so it needs only an NVIDIA re-check to close. M229 - 3D Viewer Guides And Display merged first (lighting mode default Auto in `Gui/SceneViewport.cpp`), so this branch owes the headlight fold: one viewer control, default off, when origin/main is merged in (audit).

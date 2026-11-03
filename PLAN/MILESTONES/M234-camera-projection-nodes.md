@@ -103,7 +103,7 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Phase 234.6: Viewer gain and gamma in 3D
 
-- [ ] M234.P6.T1 — The 3D viewport follows the viewer's gain and gamma
+- [x] M234.P6.T1 — The 3D viewport follows the viewer's gain and gamma
   - files: `Gui/SceneViewport.*`, `Gui/ViewerTab*`, `Tests/SceneViewport_Test.cpp`
   - approach: User, 2026-11-02: the 3D viewport "should follow gain and gamma too". Apply the viewer's gain (exposure, before the display transform) and gamma (after it) in the 3D viewport exactly as the 2D viewer does, including the enable toggles, refreshing when they change. Fold them into the same baked colour path as the OCIO display transform where possible.
   - verify: A test sets gain and gamma on the viewer and checks the 3D card's pixel matches the 2D viewer's maths for the same input; toggling them off restores the plain transform.
@@ -115,3 +115,4 @@ their images through M233 - Live Node Textures. Survey:
   - verify: With gain 2 the background pixel is unchanged and the card is doubled; viewport frame time is unchanged.
   - size: M
 - 2026-11-02 — The 3D viewport ignores auto-contrast; the feature itself is to be removed (user) — M307 - Remove Viewer Auto-Contrast.
+- 2026-11-02 — Audit: P6.T1 at 7f7d5b98b (gain before, gamma after the display transform, plus test fixes 5b76d198c, 26cf94ed0). P6.T2 not done: the viewport background is still graded with gain and gamma (setDisplayTransform runs it through the same processor), and no reason is recorded for leaving it. P3.T3 waits on M236 - Shared Materials And Assignment merging. Branch pushed, clean, no PR, 23 behind origin/main. It carries M233 only up to 300b0b546, so it lacks M233's P4/P5; per M233's 2026-11-02 note the projection must move to USDEmissiveMaterial once M233 is merged in (audit).

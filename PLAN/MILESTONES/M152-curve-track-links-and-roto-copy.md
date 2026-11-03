@@ -42,7 +42,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Phase 152.1: Track links
 
-- [ ] M152.P1.T1 — Track link on `BezierCP`: model, evaluation and serialization
+- [x] M152.P1.T1 — Track link on `BezierCP`: model, evaluation and serialization
   - files: `Engine/BezierCP.{h,cpp}`, `Engine/Bezier.cpp`, `Serialization/RotoSerialization.h`, `Tests/CurveTrackLink_Test.cpp` (new)
   - approach:
     - Add an optional link. `getPositionAtTime` returns `track centre(t) + offset` when it is linked, and the tangents and feather translate by the same delta.
@@ -51,13 +51,13 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
   - verify: the test covers a CP following a keyed track (1e-9), the offset being preserved, the tangent delta, serialization round-trip, and the missing-track fallback.
   - size: L
 
-- [ ] M152.P1.T2 — Track-driven invalidation
+- [x] M152.P1.T2 — Track-driven invalidation
   - files: `Engine/Bezier.cpp`, `Engine/RotoCurveContext.cpp`, `Engine/TrackMarker.cpp`, `Tests/CurveTrackLink_Test.cpp`
   - approach: fold each linked track's centre-curve hash into the curve host's content hash, and listen to the centre knob so an edit re-evaluates the host. Remove the listener on unlink and on delete.
   - verify: the test moves a track keyframe and checks that the SplineWarp's and the Roto's hashes change and that a render reflects it.
   - size: M
 
-- [ ] M152.P1.T3 — Link to Track UI and Python
+- [x] M152.P1.T3 — Link to Track UI and Python
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoUndoCommand.{h,cpp}`, `Engine/PyRoto.{h,cpp}`, `Engine/typesystem_engine.xml`
   - approach:
     - Add CP context-menu actions: Link to Track… (a chooser listing `tracker / track` across the project), Unlink, and Unlink and Bake. Each is an undo command.
@@ -68,7 +68,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Phase 152.2: Cross-node copy and paste
 
-- [ ] M152.P2.T1 — Clipboard copy and paste between curve hosts
+- [x] M152.P2.T1 — Clipboard copy and paste between curve hosts
   - files: `Gui/RotoPanel.{h,cpp}`, `Engine/RotoCurveContext.{h,cpp}`, `Engine/Nodes/Transform/SplineWarp/SplineWarpContext.cpp`, `Tests/CurveClipboard_Test.cpp` (new)
   - approach:
     - Add `RotoCurveContext::serializeItems(items)` and `pasteItems(blob, layer)`. They are virtual, so `SplineWarpContext` adds and restores the warp data.
@@ -88,6 +88,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-11-02 — Audit: all four tasks landed in a57a15d4c (track links, invalidation, UI and Python, clipboard), pushed, with M148 merged in; no uncommitted work, no PR. The latest remote build (40675510629, at the tip 2ddf84139) failed. TrackMarker.cpp is untouched; invalidation is done from the curve side. The branch is 23 commits behind main.
 - 2026-10-28: Implemented (build pending). Track-link offsets are in the curve's own coordinates; only the track centre is used. Moving a linked point keys its stored curves; Unlink and Bake keys the whole curve. Menu knobs linkToTrack, unlinkTrack, unlinkTrackAndBake (unlink only when linked). Undo snapshots whole curves. Missing-track warning: "Control points follow tracks that cannot be found and stay where they last were:". Track chooser via a new AppInstance::chooseItemDialog (QInputDialog; −1 headless). Clipboard: roto YAML with blobs inlined as application/x-natron-curves; strokes dropped and counted outside paint hosts; SplineWarp boundaries/links carried only when all named curves were copied; clashing names get _copy, _copy2…; pasted items go on top in clipboard order. Known gaps: link/bake write curves on the main thread while a render may read them; the missing-track warning can flash during load and clearing it clears other persistent messages; nested layers re-added only at top level on redo (pre-existing).
 - 2026-10-20 — **Track links and Roto copy are in scope (user).**
 - 2026-10-20 — **Both live in the geometry base (planner):** Roto gets track-linked points and cross-node paste too, at no extra cost.

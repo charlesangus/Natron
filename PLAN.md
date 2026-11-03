@@ -237,7 +237,7 @@ future core work has solid ground to build on.
 | M119 | Trackball Panel Layout | done | M56, M69 | bosley-native-nodes | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | done | - | bosley-native-nodes | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Flaky Test Fixes | done | - | bosley-native-nodes | E2 | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
-| M136 | Edge Policy Investigation | doing | M167 | bosley-native-nodes | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
+| M136 | Edge Policy Investigation | blocked | M167 | bosley-native-nodes | E3 | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
 | M137 | Native Base Class Flexibility | done | - | bosley-native-nodes | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | done | - | bosley-native-nodes | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
@@ -266,7 +266,7 @@ future core work has solid ground to build on.
 | M171 | GPU Correctness Fixes | done | - | gpu | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
 | M163 | Incremental Bezier Edits | done | - | bosley-native-nodes | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 | M164 | Viewer Node Knobs | doing | M16, M107 | bosley-native-nodes | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
-| M165 | Rich Viewer Overlays | doing | M80 | bosley-native-nodes | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
+| M165 | Rich Viewer Overlays | blocked | M80 | bosley-native-nodes | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
 | M166 | Non-Float Plane Model | todo | - |  | E14 | [M166-non-float-plane-model.md](PLAN/MILESTONES/M166-non-float-plane-model.md) |
 | M172 | GL Widget Context Loss | done | - | bosley-native-nodes | E10 | [M172-gl-widget-context-loss.md](PLAN/MILESTONES/M172-gl-widget-context-loss.md) |
 | M167 | Per-Frame Node Metadata | done | M100 |  | E14 | [M167-per-frame-node-metadata.md](PLAN/MILESTONES/M167-per-frame-node-metadata.md) |
@@ -335,11 +335,11 @@ future core work has solid ground to build on.
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
 | M266 | Expression Namespace Spike | todo | M262 |  | E14 | [M266-expression-namespace-spike.md](PLAN/MILESTONES/M266-expression-namespace-spike.md) |
 | M267 | RFVSwitch Match Choice Button | done | M72 | bosley-native-nodes | E13 | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
-| M270 | Lanczos Sinc Resampling Filters | blocked | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
+| M270 | Lanczos Sinc Resampling Filters | doing | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | doing | - | bosley-native-nodes | E14 | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
-| M274 | SplineWarp Remaining Controls | doing | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
+| M274 | SplineWarp Remaining Controls | blocked | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Upstream Reuse On Edits | todo | M260 |  | E6 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M300 | Unified Tiered Cache | todo | M276 |  | E6 | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
@@ -400,6 +400,9 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
+- M165 - Rich Viewer Overlays (bosley-native-nodes): Q1, does a node publish an overlay image through the normal render/cache path or a side buffer? Also: ship Phase 1 alone and move Phases 2–3 to a follow-up? (audit, 2026-11-02).
+- M274 - SplineWarp Remaining Controls (bosley-native-nodes): P5.T2 waits on M270 - Lanczos Sinc Resampling Filters; split it out so M274 can close? Open questions 1–4 in the milestone file are unanswered (audit, 2026-11-02).
 - **NatronRenderer and [Project] (PM, 2026-11-02):** `NatronRenderer -w Write 3-3 defocus_retime.ntpz` fails with "Could not open [Project]/../…": the Write path's [Project] is not expanded when the renderer opens an .ntpz directly (seen on the M125 branch, before M245 - Write Path Variables). Re-check once M245 is on main; if it persists, file it.
 - **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M231 - Scene Graph Panel (one-level twirl, Open Mode/Levels, USDExpandHierarchy, Follow chooser), M232 - Scene Selection To Nodes (never UAT-tested; wrap mode, prim path fill, Tab filtering), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo).
 - **M206 - Neural Raw Denoise:** remind the user later about the hand-made darktable 5 reference export (user, 2026-11-02: "remind me later").

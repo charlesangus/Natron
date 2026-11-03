@@ -29,13 +29,13 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
 
 ## Phase 160.1: Dependency and metadata
 
-- [ ] M160.P1.T1 — Add the lensfun dependency
+- [x] M160.P1.T1 — Add the lensfun dependency
   - files: `tools/ci/local/fetch-assets.sh`, `Engine/CMakeLists.txt`, `tools/license/components/README.md`, `tools/release/stage-bundle.sh` (database bundling)
   - approach: pin and build lensfun the way M80.P1.T1 builds rawspeed (the `LCMS2_REPO`/`LCMS2_REF` recipe), and bundle its database. Check the image for an existing lensfun first.
   - verify: a test binary opens the bundled database and finds a known lens entry; the licence README names lensfun and the database licence.
   - size: M
 
-- [ ] M160.P1.T2 — Lens metadata for raw files
+- [x] M160.P1.T2 — Lens metadata for raw files
   - files: `Engine/Nodes/IO/RawDecodeSupport.cpp`, `Engine/Nodes/IO/RawMetadata.h/.cpp`, `Tests/Native/RawDecodeSupport_Test.cpp`
   - approach: fill `exif/Make`, `exif/Model`, `exif/LensModel`, `exif/FocalLength`, `exif/FNumber` and `exif/SubjectDistance` (the same key names `OiioReadSupport.cpp:633` gives non-raw files) for raw files from their EXIF IFDs. Scout first: rawspeed's TIFF parser, or a small pinned exiv2. Prefer whichever adds no new dependency.
   - verify: gtest: the Bayer and X-Trans fixtures from M80 - Native RAW Support carry the expected lens keys.
@@ -43,25 +43,25 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
 
 ## Phase 160.2: LensCorrect node
 
-- [ ] M160.P2.T1 — Distortion and TCA via the coordinate sampler
+- [x] M160.P2.T1 — Distortion and TCA via the coordinate sampler
   - files: new `Engine/Nodes/Transform/LensCorrect.h/.cpp` + per-node files (`.reg.inc`, `docs/LensCorrect.md`, icon), new `Tests/Native/NativeLensCorrect_Test.cpp`
   - approach: port the geometry part of darktable `src/iop/lens.cc` at M80's `DARKTABLE_REF`. Build the inverse coordinate map from the lensfun modifier: one map, plus per-channel offsets for TCA. Sample through `resampleRowFromCoords` with the Jacobian. RoD and RoI come from the map with a bounded halo. Autofill reads `exif/*` and `raw/*`, and knobs override every field. An unknown lens passes through with a persistent message.
   - verify: gtest: a synthetic grid through a known profile lands within a sub-pixel bound; tiled equals full-frame; an unknown lens passes through with the message.
   - size: L
 
-- [ ] M160.P2.T2 — Vignetting correction
+- [x] M160.P2.T2 — Vignetting correction
   - files: `Engine/Nodes/Transform/LensCorrect.cpp`, `Tests/Native/NativeLensCorrect_Test.cpp`
   - approach: apply lensfun's vignetting model as a per-pixel radial gain in the same render, after sampling, behind its own enable knob.
   - verify: gtest: a synthetic vignetted flat field comes back flat within a bound.
   - size: M
 
-- [ ] M160.P2.T3 — GPU path
+- [x] M160.P2.T3 — GPU path
   - files: new `Engine/Gpu/Kernels/lenscorrect.slang`, `lenscorrect.cmake`, `Engine/Nodes/Transform/LensCorrect.cpp`, new `Tests/Native/NativeLensCorrectGpu_Test.cpp`
   - approach: generate the coordinate map and vignetting gain in Slang (porting darktable's `lens.cl`), then sample through `coordmap.slang`.
   - verify: GPU parity against the CPU node on the grid and flat-field cases (README "GPU parity").
   - size: L
 
-- [ ] M160.P2.T4 — Panel check under Xvfb
+- [x] M160.P2.T4 — Panel check under Xvfb
   - files: new `Tests/gui/m160_lenscorrect.py`
   - approach: open a raw fixture through Develop RAW and a JPEG with EXIF lens data, add LensCorrect, and confirm that the autofilled fields and a manual override take effect. Screenshot the panel and viewer, and share them with the user (project rule).
   - verify: the script passes under Xvfb; the user approves the screenshots.
@@ -71,5 +71,6 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Both phases committed (dc2f41b3c, d0d8d6d12) and pushed; no PR. The last remote build (d0d8d6d12) failed in its Build step; phase 1's head built green. P2.T4's screenshots still need the user's approval at the gate. The 2026-10-28 open questions (whole-Source read; makernote lens names) are unanswered.
 - 2026-10-28: Phase 2 implemented (build pending). LensCorrect reads the whole Source (lensfun gives no tighter bound); GPU kernel ports lensfun's maths; vignetting gain on the input when correcting, at the output when distorting; manual vignette exact (mask to alpha); negatives not clamped; blackOutside defaults on (darktable repeats edges); target geometry defaults to the lens's; autoscale uses every enabled correction; camera/lens are text fields (empty = from metadata); three tick-boxes replace modify_flags; GPU tolerance (2e-4, 1e-4). Open: whole-Source read acceptable?
 - 2026-10-28: Phase 1 implemented (build pending). lensfun built from source (master 052c3ec6, v2 database) by fetch-assets.sh and bundled under Resources/lensfun, not the image's lensfun 0.3.4 (database from Feb 2022). Raw lens EXIF read with rawspeed's TIFF parser from standard EXIF tags only (exif/Make, Model, LensModel, FocalLength, FNumber, SubjectDistance); makernote lens names not decoded, so some older bodies need the lens typed in LensCorrect. Open to user: decode makernote lens names (needs exiv2) in phase 2?

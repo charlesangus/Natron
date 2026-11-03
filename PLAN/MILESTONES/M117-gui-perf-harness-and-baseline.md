@@ -90,6 +90,7 @@ Two kinds of numbers, never mixed:
 
 ## Decisions
 
+- 2026-11-02 — Audit: P1 and P2.T1 are committed and pushed (4abfe234a, 3c2182152). P2.T1's baseline is still the provisional one (run 1 full, run 2 partial, no run 3), so its verify (compare.py against three runs) isn't met yet. P2.T2 waits on the user's real-host run. No build/ctest gate is recorded. The branch is 29 commits behind main.
 - 2026-10-28 — Provisional Xvfb baseline (run 1 full, run 2 partial; median spread ~6%, tol 1.0). Full baseline needs run 2 finished + run 3 in a quiet window (~6 h). Findings for M118: load/duplicate_100/paste_100 superlinear (slopes 1.4–1.8) and time out at N≥2000; hover times out at 2000–3000; **delete_1000 and undo/redo hang from ~60 nodes** (20 deletes pass, 30 hang) — a real hang, not slowness.
 - 2026-10-13 — Regression checks use local timings only, with no CI timing gate (user): GitHub runners are too noisy for wall-clock numbers. The bench runs at the gates of GUI/Engine-touching milestones per the board rule. The full rule is in `DECISIONS/2026-10-13-gui-bench-gate-rule.md`.
 - 2026-10-13 — Two kinds of numbers (user). Xvfb in the container is directionally right but much slower, so it's used only to catch regressions against its own baseline. Budgets are judged on the real host the user tests on, which the milestone does not name.

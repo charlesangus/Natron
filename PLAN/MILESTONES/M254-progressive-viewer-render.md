@@ -31,25 +31,25 @@ Selection's viewer dropdown and M251 - Cycles Rendering.
 
 ## Phase 254.1: Refinement loop
 
-- [ ] M254.P1.T1 — Refinement loop and convergence
+- [x] M254.P1.T1 — Refinement loop and convergence
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.h`
   - approach: a worker that calls render repeatedly on the viewer's engine, publishes each colour buffer, stops on `IsConverged` or the sample cap. Restart discards the accumulated state via the engine's invalidation.
   - verify: a headless test drives the loop on Cycles and sees sample count increase monotonically to the cap and stop.
   - size: L
 
-- [ ] M254.P1.T2 — Restart on edit and coalescing
+- [x] M254.P1.T2 — Restart on edit and coalescing
   - files: `Gui/SceneViewport.cpp`, `Engine/Nodes/Scene/SceneStage.cpp`
   - approach: hook the long-lived scene's change notification so any edit, camera move, resize or setting change restarts the loop; coalesce bursts to one restart.
   - verify: test edits a prim ten times in 50 ms and observes one restart; a late stale pass is not displayed.
   - size: M
 
-- [ ] M254.P1.T3 — Max Samples, Stop/Resume and counter
+- [x] M254.P1.T3 — Max Samples, Stop/Resume and counter
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`
   - approach: Max Samples knob (default from the delegate), Stop/Resume buttons, overlay text "N / Max samples".
   - verify: GUI test under Xvfb: Stop halts, Resume continues from the current count, the counter matches the engine's.
   - size: M
 
-- [ ] M254.P1.T4 — Display and responsiveness
+- [x] M254.P1.T4 — Display and responsiveness
   - files: `Gui/SceneViewport.cpp`, `Engine/Nodes/Scene/HydraHandoff.cpp`
   - approach: upload each CPU colour buffer to a viewer texture; run the refinement at lowered thread priority within the scheduler's budget; measure frame upload time at HD and 4K.
   - verify: with refinement running at 4K, the Qt event loop in the Xvfb harness stays under 33 ms per iteration (numbers recorded); screenshots shared with the user.
@@ -61,3 +61,4 @@ Selection's viewer dropdown and M251 - Cycles Rendering.
 
 - 2026-10-28: Implemented (build pending). HydraRender::ProgressiveRender runs a background refine loop for any non-Storm renderer; stops at converged + cap, or no progress for 1 s. SceneStage::sync changes → invalidate(); edits coalesced (20 ms quiet, 100 ms cap); stale passes dropped. Deviation: Max Samples is a spin box in the viewer's Renderer submenu (M248 put renderer choice there), with Stop/Resume; changing it restarts. Edits wait while stopped. Render at nice 10 on effect CPU budget − 1. Open (user): menu spin box OK instead of a knob? 4K event-loop check hard-fail or record-only?
 - 2026-10-27 — **Restart on edit, refine to a cap (user):** matches Blender and Solaris viewports; an uncapped or time-boxed schedule was rejected.
+- 2026-11-02 — Audit: all four tasks at 4cd9d8354 (ProgressiveRender_Test covers the cap, coalescing and Stop/Resume; m254_progressive_viewer.py times the event loop at the view size and 3840x2160 against 33 ms), plus 867bf876c. Pushed, clean, no PR, 23 behind origin/main; stacked on M251. The two open user questions (menu spin box instead of a knob; 4K loop check hard-fail or record-only) are unanswered (audit).

@@ -22,22 +22,22 @@ Filed 2026-10-23 at the user's request.
 
 ## Phase 165.1: Native overlay drawing
 
-- [ ] M165.P1.T1 — Overlay draw list and viewer-render query
+- [x] M165.P1.T1 — Overlay draw list and viewer-render query
   - files: Engine/OverlayDrawList.{h,cpp} (new), Engine/EffectInstance.{h,cpp}, Tests/OverlayDrawList_Test.cpp
   - approach: virtual buildOverlay(time, scale, view, OverlayDrawList*); widths in screen px, positions canonical, handles carry ids; isViewerRender() reads isRenderUserInteraction from ParallelRenderArgs.
   - verify: gtests on list building, handle hit-test maths and the flag.
   - size: M
-- [ ] M165.P1.T2 — Draw the lists in ViewerGL
+- [x] M165.P1.T2 — Draw the lists in ViewerGL
   - files: Gui/NodeOverlayRenderer.{h,cpp} (new), Gui/ViewerGL.cpp, Gui/HostOverlay.cpp
   - approach: one batched VBO per list, the host overlays' shadow pass, text via renderText.
   - verify: Xvfb screenshot of a test-built list.
   - size: L
-- [ ] M165.P1.T3 — Route pen events to handles
+- [x] M165.P1.T3 — Route pen events to handles
   - files: Engine/EffectInstance.{h,cpp}, Gui/NodeOverlayRenderer.cpp, Gui/ViewerGL.cpp
   - approach: hover highlight; handle-id callbacks whose knob edits go on the global undo stack.
   - verify: Xvfb drag moves a knob; undo reverts.
   - size: M
-- [ ] M165.P1.T4 — Test-only primitives node and GUI script
+- [x] M165.P1.T4 — Test-only primitives node and GUI script
   - files: Tests/Native/OverlayTestNode.cpp, Tests/gui/m165_overlay_primitives.py
   - approach: a test-registered node drawing every primitive type, no OFX.
   - verify: remote GUI job passes; screenshots.
@@ -95,4 +95,5 @@ Filed 2026-10-23 at the user's request.
 
 ## Decisions
 
+- 2026-11-02 — Audit: Phase 1 (P1.T1–T4) landed in 087840e1b, d79325cdb and bcccb3119, and the remote build 40673074289 at the tip passed. Deviation: the overlay test node lives in Engine/Nodes/Test/ and is registered under NATRON_GUI_TEST_NODES=1, not in Tests/Native/. Pushed, no uncommitted work, no PR. Phases 2–3 still wait on Q1, which the user has not answered. The branch is 23 commits behind main.
 - 2026-10-28: elaborated (consultant); Phase 1 can start now; phases 2–3 wait on Q1.

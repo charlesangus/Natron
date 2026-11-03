@@ -80,6 +80,7 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Decisions
 
+- 2026-11-02 — Audit: P5.T1 landed in dc7f30d6d (a viewer tab stops listening for project loads once it loses its node; the GUI check reopens through File > Open's path). The remote build 41387234910 at that tip passed. Pushed, no uncommitted work, no PR. The branch is 23 commits behind main. What remains is the gate: a new AppImage accepted by the user (UAT round 3).
 - 2026-10-28: Phase 2 implemented (build pending). One undo command records only the changed viewer knobs; drags merge (undo ID 25). Widgets follow knob changes with signals blocked and never write knobs; unknown saved layer/alpha/display values show as unlisted entries. Display channels auto-switch to alpha only when a layer is picked. Layer knob stores the entry ID. A timeline range differing from the project's after load/undo/Python counts as edited. Locked fps follows the input's rate, falling back to the project's (old behaviour; the plan said project fps — put to the user).
 - 2026-10-28: Phase 1 implemented (build pending). Upstream hashes never include the viewer, but the viewer's own hash keys its cached frames, so every viewer knob is hash-exempt. Display/view/look are text knobs (a missing OCIO name survives; empty = project default) — departs from choice-by-ID. Gain in f-stops (default 0); toolbar 1× / gamma 1 turn the enable toggle off. RB-3 names: clipToFormat, enableRegionOfInterest, enableCheckerBoard, desiredFps; downscale = enableDownscale + downscaleLevel (2–32); wipe angle in radians; wipe centre and RoI canonical. Fps/in/out default from the project at creation. Page "Viewer UI Controls". Phase 2 must stop the toolbar's refresh fallbacks overwriting a saved missing layer/display.
 - 2026-10-28: elaborated (consultant); can start before Q1–Q3.
@@ -109,7 +110,7 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Phase 164.5: UAT round 2 fixes
 
-- [ ] M164.P5.T1 — Loading a project crashes
+- [x] M164.P5.T1 — Loading a project crashes
   - files: `Gui/ViewerTab.*`, `Engine/ViewerInstance.*`, project load path, `Tests/gui/m164_*.py`
   - approach: User, 2026-11-01: opening any saved project, even a Checkerboard into a Viewer, segfaults on the main thread right after "Loading project:". The crash is in `QReadWriteLock::lockForWrite` on address 0x80, called from a queued slot fired by the File > Open action, so a lock member is reached through a null object. Find the null object (the P4 framing-after-load, Viewer panel or FPS code is the likely suspect) and fix it.
   - verify: The GUI check saves a Checkerboard → Viewer project, then reopens it through the same path File > Open uses (into a fresh window and into the current one), and the app survives and frames the image.

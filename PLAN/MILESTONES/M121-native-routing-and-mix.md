@@ -73,7 +73,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `NativeSwitch_Test` covers routing for `which` 0/1/beyond-range, an animated `which` changing the output per frame, the no-input case, and no render call (a counting test effect upstream sees exactly one render per frame).
   - size: M
 
-- [ ] M121.P1.T2 — Identity nodes don't break resident GPU regions
+- [x] M121.P1.T2 — Identity nodes don't break resident GPU regions
   - files: `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach:
     - Check how placement treats a node whose route/identity hook (M137 - Native Base Class Flexibility) routes to an input. If it splits a region, make identity-at-input a pass-through edge: its consumer reads the routed input's resident view.
@@ -83,7 +83,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 120.2: KeyMix and Difference
 
-- [ ] M121.P2.T1 — Native KeyMix
+- [x] M121.P2.T1 — Native KeyMix
   - files: `Engine/Nodes/Merge/KeyMix.h`, `Engine/Nodes/Merge/KeyMix.cpp`, `Engine/Nodes/Merge/KeyMix.reg.inc`, `Tests/Native/NativeKeyMix_Test.cpp`
   - approach:
     - A Composite op on M137's framework with `Stages{MaskMix}`: inputs B=0, A=1, Mask=2, with A and B as sources of the `StagePlan`.
@@ -94,7 +94,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers a soft mask blend, channel subsets, the identity cases, and HDR values (>1 and negative) passing through.
   - size: M
 
-- [ ] M121.P2.T2 — Native Difference
+- [x] M121.P2.T2 — Native Difference
   - files: `Engine/Nodes/Keyer/Difference.h`, `Engine/Nodes/Keyer/Difference.cpp`, `Engine/Nodes/Keyer/Difference.reg.inc`, `Tests/Native/NativeDifference_Test.cpp`
   - approach:
     - A Composite op on M137's framework. Inputs A = clean plate (1) and B = subject (0, the main input).
@@ -104,7 +104,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers known pixel pairs, a zero difference giving alpha 0, values above 1 not clamped, and the missing-input cases.
   - size: M
 
-- [ ] M121.P2.T3 — Port the deferred KeyMix tests and references
+- [x] M121.P2.T3 — Port the deferred KeyMix tests and references
   - files: `Tests/ChannelSetRender_Test.cpp`, `Tests/NodeCategory_Test.cpp`, `Engine/Node.cpp`, `Engine/NodePrivate.h`
   - approach:
     - Point `ChannelSetRender_Test.cpp:1286-1369` and `NodeCategory_Test.cpp:189-192` at the native `KeyMix` ID.
@@ -114,7 +114,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 120.3: AdjustBBox and GPU paths
 
-- [ ] M121.P3.T1 — Native AdjustBBox
+- [x] M121.P3.T1 — Native AdjustBBox
   - files: `Engine/Nodes/Transform/AdjustBBox.h`, `Engine/Nodes/Transform/AdjustBBox.cpp`, `Engine/Nodes/Transform/AdjustBBox.reg.inc`, `Tests/Native/NativeAdjustBBox_Test.cpp`
   - approach:
     - A `numpixels` (w,h) pad in canonical units, with negative values cropping, and `boundary` Black/Nearest (default Black, like Nuke).
@@ -123,7 +123,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the test covers pad, crop, both boundaries, and identity at 0.
   - size: M
 
-- [ ] M121.P3.T2 — GPU kernels for KeyMix and Difference
+- [x] M121.P3.T2 — GPU kernels for KeyMix and Difference
   - files: `Engine/Gpu/Kernels/routing.slang`, `Engine/Gpu/Kernels/routing.cmake`, `Engine/Nodes/Merge/KeyMix.cpp`, `Engine/Nodes/Keyer/Difference.cpp`
   - approach:
     - Implement both as binary pixel ops on the shape M101.P4.T1 builds (`IBinaryPixelOp`), wrapped by `pixelwrap.slang`.
@@ -131,7 +131,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `NativeKeyMixGpu_Test` and `NativeDifferenceGpu_Test` (new, on the `NativeGpuParity` harness) match the CPU within 1e-6 absolute on RADV.
   - size: M
 
-- [ ] M121.P3.T3 — GPU path for AdjustBBox
+- [x] M121.P3.T3 — GPU path for AdjustBBox
   - files: `Engine/Nodes/Transform/AdjustBBox.cpp`, `Engine/Gpu/Kernels/routing.slang`, `Tests/Native/NativeAdjustBBoxGpu_Test.cpp`
   - approach: a copy kernel with Black/Nearest boundary reads (reuse the boundary helpers in `pixelwrap.slang` if present), so AdjustBBox stays inside a region.
   - verify: at the phase build, the GPU parity test passes bit-exact on RADV.
@@ -139,7 +139,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 120.4: Retire and update users
 
-- [ ] M121.P4.T1 — Move the PyPlugs to native Switch
+- [x] M121.P4.T1 — Move the PyPlugs to native Switch
   - files: `Gui/Resources/PyPlugs/EdgeBlur.py`, `Gui/Resources/PyPlugs/Glow.py`, `Gui/Resources/PyPlugs/ZMask.py`, `Gui/Resources/PyPlugs/PIKColor.py`, `Gui/Resources/PyPlugs/LightWrap.py`
   - approach:
     - Replace each `createNode("net.sf.openfx.switchPlugin", 1, …)` with the native `Switch` ID at major 1.
@@ -148,7 +148,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, `PyPlugInstantiate_Test` passes for these PyPlugs, and `PyPlugNativeParams_Test` passes or is updated for the new knob names.
   - size: M
 
-- [ ] M121.P4.T2 — ZRemap and the retired markers
+- [x] M121.P4.T2 — ZRemap and the retired markers
   - files: `Gui/Resources/PyPlugs/ZRemap.py`, `Engine/OfxRetired/<ofx-plugin-id>` (four markers), `Engine/Nodes/Merge/docs/{Switch,KeyMix}.md`, `Engine/Nodes/Keyer/docs/Difference.md`, `Engine/Nodes/Transform/docs/AdjustBBox.md`
   - approach:
     - Same Switch swap for `ZRemap.py:289`.
@@ -159,6 +159,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Every task committed and pushed; no PR. Uncommitted in the worktree: Gui/Resources/PyPlugs/LightWrap.py swaps ShuffleCopy's inputs (constant RGB on input 0, blurred key on input 1) and the untracked Tests/Native/LightWrapRender_Test.cpp tests it (2026-10-28); review and commit both. EdgeBlur.py and Glow.py needed no change (no switchPlugin is left). The last remote build (e713f469e) is green; the GUI-check commits after it are unbuilt.
 - 2026-10-28: a native node that routes to black with nothing connected gives an empty output (identity −1, no plane), as Switch and STMap do; tests follow that. GPU parity is checked over the node's RoD (production never renders outside it).
 - 2026-10-28: implemented (build pending). Phase 1 needed tests only (identity nodes already share their input's GPU image). KeyMix gets setBBox (union/B/A, default union) as Nuke; A missing → B; no inputs → black; A reads zero outside its region. Difference changes from OFX: no A compares B with itself (alpha = max(0, −offset)); outside A's region A reads zero; the matte is not clamped above 1. AdjustBBox is a Passes op (halo pass for Nearest), numpixels in canonical units, no mask/mix (as Nuke). PyPlugs (LightWrap, PIKColor, ZMask, ZRemap) use fr.natron.Switch; its channels setup dropped (native Switch has none).
 - 2026-10-13 — Switch drops `automatic` (user): only `which` is kept, since no bundled PyPlug uses automatic.

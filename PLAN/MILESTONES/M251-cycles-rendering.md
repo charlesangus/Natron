@@ -35,19 +35,19 @@ M253 - Delegate Render Settings.
 
 ## Phase 251.1: Render path
 
-- [ ] M251.P1.T1 — Beauty and depth from Cycles
+- [x] M251.P1.T1 — Beauty and depth from Cycles
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/CyclesAovs.cpp`, `Engine/Nodes/Scene/CyclesAovs.h`
   - approach: with `Renderer = Cycles`, create the Cycles engine through M248's path, request `color` and `depth`, render to the delegate's converged state for the default sample count, read the buffers via `MappedAov`, convert depth to camera-space distance like Storm, write `rgba` and `depth.Z`.
   - verify: a unit test renders a unit cube with a fixed seed headless and gets non-black `rgba`, `depth.Z` equal to the camera distance at the centre pixel (within tolerance).
   - size: L
 
-- [ ] M251.P1.T2 — primId and normal layers
+- [x] M251.P1.T2 — primId and normal layers
   - files: `Engine/Nodes/Scene/CyclesAovs.cpp`, `Engine/LayerRegistry.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`
   - approach: request `primId` and `normal` AOVs; reuse Storm's path-hash float and hash → path metadata map for `primId.id`; register a `normal` layer with its channel names. If the delegate lacks `primId`, derive it as noted in Assumptions.
   - verify: a two-cube scene gives two distinct `primId.id` values whose metadata map names the right prims; `normal` at the centre pixel is the face normal in camera space (within tolerance).
   - size: M
 
-- [ ] M251.P1.T3 — Cancel and thread budget
+- [x] M251.P1.T3 — Cancel and thread budget
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/CyclesAovs.cpp`
   - approach: poll the Natron abort flag from the render loop and call the engine's stop; set the delegate's thread count from the scheduler's budget for the render's worker (see the task-graph scheduler decision). Verify the call names against the delegate's settings list.
   - verify: aborting a long render returns within a second and leaves no Cycles threads (checked via /proc thread count); two concurrent USDRender renders do not oversubscribe cores beyond the budget.
@@ -66,3 +66,4 @@ M253 - Delegate Render Settings.
 - 2026-10-28: Cycles rendered empty: on USD 26.08 the engine runs on scene indices and UsdGeom Cube/Sphere/Cone/Cylinder/Capsule/Plane reach the delegate as implicit surfaces; Cycles 5.2 accepts only mesh/basisCurves/points/volume and only Storm registers ImplicitSurfaceSceneIndexPlugin. CyclesAovs::registerSceneIndices() registers HdsiImplicitSurfaceSceneIndex for Cycles, called before every UsdImagingGLEngine (hdsi linked). MoonRay (M252) likely needs the same. The fixture's metersPerUnit 0.01 is irrelevant (stageMetersPerUnit scales camera and geometry together).
 - 2026-10-28: Implemented (build pending; reference image to record in the published image). Each engine sets stageMetersPerUnit 1 so Cycles depth is camera z in scene units (+inf on no hit), like Storm. Headlight is Storm-only. Normal AOV in camera space, offered only by non-Storm delegates; `normal` (X,Y,Z) registered in the layer registry and saved in projects. Cycles instance id read as stored+1. Cycles has no stop call: abort resets (deletes) the engine. Thread budget = the arena the engine is built in (fixed for its life, shared by concurrent Cycles sessions). Golden tolerances 0.08/channel, ≤1% pixels, mean ≤0.005 (per-machine CPU kernels with fast math). Not implemented: one warning per unsupported prim kind (in the edge cases but no task). Open for the user: no-light Cycles shows 0.5 grey background, not black; layer-menu refresh on renderer change needs a GUI check.
 - 2026-10-27 — **Full AOV set wanted, mechanism deferred (user):** v1 delivers rgba, depth.Z, primId.id and normal; the user chose to spike delegate-discovered AOV selection against USD RenderSettings-driven selection in M255 - Delegate Output Spikes before building the rest.
+- 2026-11-02 — Audit: T1–T3 at d635073e1 (plus 0fe1c8ae9 implicit-surface scene index, 52ca3da1b). T4 not done: USDRenderCycles_Test's MatchesReferenceRender is written but `Tests/fixtures/native-golden/USDRender/CyclesReference*.f32` is not committed, so the test fails until it is recorded in the published image. The one-warning-per-unsupported-prim-kind edge case is still unimplemented. Pushed, clean, no PR, 23 behind origin/main; carries M248's pre-squash commits and M249 (audit).

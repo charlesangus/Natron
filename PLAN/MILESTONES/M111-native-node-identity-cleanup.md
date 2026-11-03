@@ -54,7 +54,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.1: Policy
 
-- [ ] M111.P1.T1 — Rewrite the native-node policies in the README and simplify the parity harness
+- [x] M111.P1.T1 — Rewrite the native-node policies in the README and simplify the parity harness
   - files: `Engine/Nodes/README.md`, `Tests/NativeParity.{h,cpp}`
   - approach:
     - Replace the "Host knobs and script names" OFX-copy rule (`README.md:~551-554`), "IDs and versions" (`~605`), "Siblings are one class under several IDs" (`~615-621`) and the "deliberate fixes" list with the new rules:
@@ -69,7 +69,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.2: Plain IDs
 
-- [ ] M111.P2.T1 — Give every native node a plain ID at major 1
+- [x] M111.P2.T1 — Give every native node a plain ID at major 1
   - files: every native node header that defines a `PLUGINID_NATRON_*`/major macro under `Engine/Nodes/**`, plus `Engine/AppManager.cpp` (registration) and `Engine/Nodes/IO/NativeRead.h`. This is a mechanical change over many headers, kept as one coherent task.
   - approach:
     - Set each macro to the node's plain display name, without spaces (`Grade`, `ColorCorrect`, `Blur`, `EdgeDetect`, `Shuffle`, `ShuffleCopy`, `AddLayers`, `DeepMerge`, `Read`, `Write`, …), and every native major to 1.
@@ -80,13 +80,13 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - verify: `NativePluginList_Test` lists every native node by its plain ID at major 1. `git grep -E '"(net\.sf\.(openfx|cimg)|eu\.cimg|fr\.natron|fr\.inria\.built-in)\.'` finds only OFX-plugin references (openfx bundles, OFX tests).
   - size: M
 
-- [ ] M111.P2.T2 — Remove the `PLUGINID_OFX_*` aliases and point their callers at the native macros
+- [x] M111.P2.T2 — Remove the `PLUGINID_OFX_*` aliases and point their callers at the native macros
   - files: `Engine/EffectInstance.h`, `Engine/Roto*.cpp` (those still using them after M101), Tracker and Gui callers found by `git grep PLUGINID_OFX_`
   - approach: replace each `PLUGINID_OFX_X` use with `PLUGINID_NATRON_X`, delete the alias block, and set knobs by their native names. Merge's callers were already moved by M101.
   - verify: `git grep PLUGINID_OFX_` is empty. Roto and Tracker tests pass at the gate.
   - size: M
 
-- [ ] M111.P2.T3 — Move the bundled PyPlugs to plain IDs
+- [x] M111.P2.T3 — Move the bundled PyPlugs to plain IDs
   - files: `Gui/Resources/PyPlugs/*.py`, `Tests/Native/PyPlugNativeParams_Test.cpp`
   - approach:
     - Replace every native node's ID and major in `createNode` with the plain ID at 1.
@@ -95,13 +95,13 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - verify: every bundled PyPlug instantiates and renders a fixture at the gate. `PyPlugNativeParams_Test` passes.
   - size: M
 
-- [ ] M111.P2.T4 — Point the tests at the plain IDs
+- [x] M111.P2.T4 — Point the tests at the plain IDs
   - files: the `Tests/**` files found by `git grep` for the old native IDs; if there are more than about 10, split them by directory in the execution report
   - approach: a mechanical ID swap. Where a test asserted an OFX-era major or a version fallback, rewrite it for major 1.
   - verify: the full ctest passes at the gate.
   - size: M
 
-- [ ] M111.P2.T5 — Add a native sublabel hook
+- [x] M111.P2.T5 — Add a native sublabel hook
   - files: `Engine/EffectInstance.h` (or `NativeEffectBase.h`), the host code that reads `kNatronOfxParamStringSublabelName`, `Engine/Nodes/Channel/Shuffle.cpp`, `AddLayers.cpp`, `RemoveLayers.cpp`, `Engine/Nodes/Deep/DeepRemoveLayers.cpp`
   - approach: add a `virtual std::string getSublabel() const` that the node graph reads for native nodes. Native nodes stop creating the hidden OFX sublabel knob. OFX plug-ins keep the knob path. Keyer is moved by whichever of M95 or this task lands second.
   - verify: the sublabels show in the graph (GUI check at UAT). No native node declares `kNatronOfxParamStringSublabelName`.
@@ -109,7 +109,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.3: One node per feature
 
-- [ ] M111.P3.T1 — Fold TransformMasked into Transform
+- [x] M111.P3.T1 — Fold TransformMasked into Transform
   - files: `Engine/Nodes/Transform/Transform.{h,cpp}`, `Engine/AppManager.cpp`, `Tests/Native/NativeTransform_Test.cpp`
   - approach:
     - Transform gains an optional mask input and uses the base class's mask/mix. Delete its own loop at `Transform.cpp:1166-1196` and the TransformMasked ID.
@@ -123,13 +123,13 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
   - verify: tests for erode, dilate and size 0 identity, for both nodes; IErodeDilate CPU/GPU parity, including a Map ramp that crosses size 0.
   - size: M
 
-- [ ] M111.P3.T3 — Fold Solid into Constant
+- [x] M111.P3.T3 — Fold Solid into Constant
   - files: `Engine/Nodes/Generator/Constant.{h,cpp}`, `Engine/AppManager.cpp`, `Tests/Native/NativeConstant_Test.cpp`, any PyPlug that creates Solid
   - approach: delete the Solid ID and its menu entry. Constant is unchanged.
   - verify: `NativeConstant_Test` passes. No Solid in the plug-in list.
   - size: S
 
-- [ ] M111.P3.T4 — Put Dissolve on the base class's mask/mix path
+- [x] M111.P3.T4 — Put Dissolve on the base class's mask/mix path
   - files: `Engine/Nodes/Merge/Dissolve.{h,cpp}`, `Tests/Native/NativeDissolve_Test.cpp`
   - approach:
     - Use M101's multi-input point-op support and `addMaskMixKnobs`. Delete the own `maskInvert` knob and the mask blend at `Dissolve.cpp:625-651`, and gain mix.
@@ -141,13 +141,13 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.4: Dead code
 
-- [ ] M111.P4.T1 — Delete the Natron 1.x/2.x project loaders
+- [x] M111.P4.T1 — Delete the Natron 1.x/2.x project loaders
   - files: `Engine/KnobSerialization.cpp` (`:447-659` filters), `Engine/Node.cpp` (`:1762` call), `Engine/AppManager.cpp` (`getPluginBinaryFromOldID`, `:2236-2311`), `Engine/AppInstance.cpp` (`:1147`)
   - approach: delete the filters and the old-ID remap with their callers, per the clean-break decision. Keep anything M93 - Serialization Boundary's golden-XML harness still needs. Check M93's state first.
   - verify: the build and the full ctest pass at the gate. `git grep getPluginBinaryFromOldID` is empty.
   - size: M
 
-- [ ] M111.P4.T2 — Delete the dead compat knobs
+- [x] M111.P4.T2 — Delete the dead compat knobs
   - files: `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Color/ColorLookup.cpp`, `Engine/Nodes/Transform/Crop.cpp`, `Engine/Nodes/Transform/Reformat.cpp`
   - approach:
     - Delete `srcClipChanged`, `transformInteractOpen`, Transform's hidden `uniform` (keep the scale knob's fold/lock), ColorLookup's `showRamp`, Crop's `frameRange` and Reformat's `scaleUniform_separator`.
@@ -191,6 +191,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). P1, P2, P3.T1/T3/T4 and P4 committed (02fae00ea..abe6a4426) and pushed; no PR. Erode/Dilate keep their CImg IDs until P3.T2. The PLUGINID_OFX_ macros left in EffectInstance.h name real OFX plug-ins (TrackerPM, Roto, FrameHold, Retime…), not native aliases. The last remote build (abe6a4426) failed ctest in both schedulers. P3.T2 and P5.T1 wait on the user (2026-10-28 entry).
 - 2026-10-28: P3.T1 (one Transform with mask/mix; TransformMasked removed), P3.T3 (Solid → always-RGBA Constant; PyPlugs link RGB by expression), P3.T4 (Dissolve region = union of inputs), P4.T1–T2 (old-ID loaders gone; dead compat knobs removed, transformCenterChanged kept because it must persist), leftovers done. PM call: Dissolve keeps its mask input in the framework's order (variable-count input last, as Merge). Blocked on the user: P3.T2 signed IErodeDilate with opposite-sign x/y sizes; P5.T1 Read/Write knob redesign (how to store "follow project default" without the hidden Set knob; names replacing frameMode/startingTime/timeOffset).
 - 2026-10-28: Phase 1 implemented (build pending). README policies rewritten (own knobs/maths, plain IDs at major 1, one node per feature, regression fixtures). Parity harness replays recorded references only (ParityPair without ofx/live; makeParityPair(app, id, nativeMajor, maskInputLabel)). Fixture dirs stay keyed by plugin ID (git mv when Phase 2 renames IDs; no LFS cost). Kept ParityPair/setKnobOnBoth names (mechanical rename later). Merge-order note: branches calling makeParityPair with an OFX major or using pair.ofx/.live/forceReplay/expectKnobParity (M121, M128 and other native lanes) need the third argument dropped when they meet M111.
 - 2026-10-25 — **The I-variants fold too (user):** whatever merges Erode and Dilate into one node also merges IErode and IDilate into one IErodeDilate.

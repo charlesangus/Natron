@@ -139,6 +139,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Decisions
 
+- 2026-11-02 — Audit: P6.T1–T3 committed and pushed (1c7e18874, 0d1bd238e, GUI check f4e856239). The round-3 UAT AppImage (03:30) was built after the branch head.
 - 2026-10-27 — Parity also leaves out every shape's feather band (outline to feather distance): fill-color-ellipse's 21% pixel sits 0.15 px outside the outline, interior mask matches opacity exactly. Open: Natron's Roto feather reads ~0.34 at 0.15 px outside where a linear 2 px falloff gives ~0.54 — possibly a coarse feather mesh; check at UAT/visual review before calling it a Roto bug.
 - 2026-10-27 — PM: darktable rasterises path feathers with integer-snapped lines (path.c _path_falloff_roi: len+1, neighbour writes, int truncation), giving a ~1 px full-strength band biased up/left; geometry otherwise matches exactly. Parity for Bezier-path jobs excludes a band from 2 px inside to feather + 1 px outside the path outline (darktable feather lines are int(len)+1 long with neighbour writes); tolerances unchanged; documented beside the feather-falloff deviation.
 - 2026-10-27 — PM: kept darktable's behaviour for shapes above Scales+1 (no effect), cropped (not mirrored) out-of-image sources, Roto's feather falloff (differs from darktable's quadratic — documented), Max Heal Iterations visible, a Residual output; darktable's unused 'none' algorithm dropped. Source drag made undoable (one step per drag). References: 16 whole 64x48 synthetic half-float images, ~0.3 MB plain git.
@@ -169,19 +170,19 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.6: UAT round 2 fixes
 
-- [ ] M211.P6.T1 — The brush overlay stays while drawing
+- [x] M211.P6.T1 — The brush overlay stays while drawing
   - files: `Gui/RetouchInteract.*` / the retouch brush overlay drawing, `Tests/gui/m211_retouch.py`
   - approach: User, 2026-11-02: "the brush overlay disappears while drawing". Keep the brush footprint (and the in-progress stroke's outline) drawn throughout the stroke, as RotoPaint's brush cursor stays.
   - verify: The GUI check grabs the viewer mid-stroke and finds the brush outline.
   - size: M
 
-- [ ] M211.P6.T2 — Heal shapes set their source like paint strokes
+- [x] M211.P6.T2 — Heal shapes set their source like paint strokes
   - files: the RotoPaint clone/reveal source-offset logic (grep the Shift/Ctrl+click source placement and the clone offset knobs in `Engine/RotoPaint*`/`Gui/RotoGui*`), Retouch's heal/clone shapes, tests
   - approach: User, 2026-11-02: "the roto heal should have the same click-to-set-offset and other offset logic as the paint strokes". Retouch's heal (and clone) shapes reuse RotoPaint's source-offset behaviour exactly: the same click to set the offset, the same relative offset carried to the next shape, the same knobs and defaults. Share the code rather than duplicating it; keep darktable's default offset only where RotoPaint has no equivalent.
   - verify: The GUI check sets an offset by the same gesture as on a RotoPaint clone stroke and checks the heal shape's source lands at the clicked point, and the next shape keeps the offset.
   - size: M
 
-- [ ] M211.P6.T3 — Brushes use paint-stroke lifetime
+- [x] M211.P6.T3 — Brushes use paint-stroke lifetime
   - files: Retouch brush items, the RotoPaint stroke lifetime knobs and behaviour (`Engine/RotoPaint*`, `Engine/RotoStrokeItem*`, lifetime knobs), tests
   - approach: User, 2026-11-02: "brushes should have the same lifetime controls and behaviour as normal paint strokes". Retouch brushes get RotoPaint's stroke lifetime knobs, defaults and behaviour (the same default lifetime as a new RotoPaint stroke, not P5's forced All), through the shared code.
   - verify: A test compares a new Retouch brush's lifetime knobs and defaults with a new RotoPaint stroke's and checks visibility across frames for each lifetime mode.

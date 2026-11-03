@@ -27,12 +27,12 @@ Deps: M131 - Native Defocus Family.
 
 ## Phase 133.1: Kernel shaping
 
-- [ ] M133.P1.T1 — Second-aperture clip in the bokeh kernels
+- [x] M133.P1.T1 — Second-aperture clip in the bokeh kernels
   - files: Engine/Nodes/Filter/BokehKernel.{h,cpp}, Tests/Native/BokehKernel_Test.cpp
   - approach: `clipOffsetX/Y`, `clipRadius` (in radius units) in BokehShapeParams; shaped()/fromImage() multiply by the clip disc's coverage (edge-supersampled) and renormalise; empty → unclipped fallback.
   - verify: zero offset bit-equal to M131; +x offset gives a lens shape symmetric about x; area shrinks monotonically with offset.
   - size: M
-- [ ] M133.P1.T2 — Kernel textures
+- [x] M133.P1.T2 — Kernel textures
   - files: Engine/Nodes/Filter/BokehKernel.{h,cpp}, Tests/Native/BokehKernel_Test.cpp
   - approach: inner ring (size, feather, brightness), catadioptric hole size, spherical aberration weight (negative brighter centre, positive brighter edge), Gaussian-to-disc filter shape; defaults leave M131's kernels unchanged.
   - verify: radial profile gtests; defaults bit-equal.
@@ -40,17 +40,17 @@ Deps: M131 - Native Defocus Family.
 
 ## Phase 133.2: Aberrations in Defocus and ZDefocus (CPU)
 
-- [ ] M133.P2.T1 — Engine-free lens-aberration model
+- [x] M133.P2.T1 — Engine-free lens-aberration model
   - files: Engine/Nodes/Filter/LensAberration.{h,cpp} (new), Tests/Native/LensAberration_Test.cpp
   - approach: from format, render scale and knobs, return each cell's clip params (radial for cat-eye, tangential for swirl) and per-channel CoC scales 1 + amount·offset_c.
   - verify: centre cell unclipped; corner cells clip radially (tangentially for swirl); grid identical across render windows.
   - size: M
-- [ ] M133.P2.T2 — Defocus knobs and CPU path
+- [x] M133.P2.T2 — Defocus knobs and CPU path
   - files: Engine/Nodes/Filter/Defocus.{h,cpp}, Tests/Native/NativeDefocus_Test.cpp
   - approach: knobs catEye, catEyeOrientation (radial/tangential), chromaticAberration, chromaticOffset (RGB), plus the P1.T2 texture knobs; window split by cell, per-cell runs, kernels cached per cell and channel.
   - verify: centre point light = disc, corner = cat-eye; CA per-channel widths; aspectRatio 0.5 = 1:2 oval; defaults equal M131 goldens.
   - size: L
-- [ ] M133.P2.T3 — ZDefocus knobs and CPU path
+- [x] M133.P2.T3 — ZDefocus knobs and CPU path
   - files: Engine/Nodes/Filter/ZDefocus.{h,cpp}, Tests/Native/NativeZDefocus_Test.cpp
   - approach: same knobs; kernels per slice × cell × channel; with CA, coverage per channel; Lens/Manual modes unchanged.
   - verify: same cases across two depth slices; no halo on a sharp foreground; defaults equal M131 goldens.
@@ -58,17 +58,17 @@ Deps: M131 - Native Defocus Family.
 
 ## Phase 133.3: GPU and verification
 
-- [ ] M133.P3.T1 — Defocus GPU with per-cell run tables
+- [x] M133.P3.T1 — Defocus GPU with per-cell run tables
   - files: Engine/Gpu/Kernels/defocus.slang, Engine/Nodes/Filter/Defocus.cpp, Tests/Native/NativeDefocusGpu_Test.cpp
   - approach: cell/channel run offsets in a storage buffer (push constants cap at 128 B); kernels ≤256 px stay on the GPU.
   - verify: parity 1e-4 abs / 1e-3 rel on RADV and lavapipe for each P2.T2 case.
   - size: L
-- [ ] M133.P3.T2 — ZDefocus GPU with per-cell, per-channel runs
+- [x] M133.P3.T2 — ZDefocus GPU with per-cell, per-channel runs
   - files: Engine/Gpu/Kernels/zdefocus.slang, Engine/Nodes/Filter/ZDefocus.cpp, Tests/Native/NativeZDefocusGpu_Test.cpp
   - approach: metaBuf gains per-cell/channel run offsets; coverage per channel with CA.
   - verify: parity for each P2.T3 case.
   - size: L
-- [ ] M133.P3.T3 — Goldens and GUI script
+- [x] M133.P3.T3 — Goldens and GUI script
   - files: Tests/fixtures/native-golden/{Defocus,ZDefocus}/, Tests/gui/m133_lens_aberrations.py
   - approach: synthetic point-light grid with a depth ramp; crops ≤256 px half-float; GUI renders centre/edge, swirl, CA, aspect 0.5 with screenshots.
   - verify: goldens recorded and re-run clean; remote GUI job passes.
@@ -83,6 +83,7 @@ Deps: M131 - Native Defocus Family.
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Every task committed and pushed; no PR. The branch merged M131's branch before M131 was squash-merged (b59c11c92, #145), so its diff against main still shows M131's files: merge origin/main before the PR. The last remote build (247367979) is green. Q1-Q3 and the channel-group coverage question (2026-10-28) are still open.
 - 2026-10-28: Phase 3 implemented (build pending; goldens to record). GPU lens data in storage buffers with CPU-built cell column/row maps (>256 MB or over the scratch limit → CPU). ZDefocus metadata header grows to 19 words; coverage per channel group; the no-blur test uses the largest channel scale. PM call: goldens use the parity source (the golden harness feeds its own 64×48 source) rather than a point-light grid; the GUI check uses a point-light grid.
 - 2026-10-28: Phases 1–2 implemented (build pending). Clip as a BokehClip struct (infinite default; a clip containing the shape is skipped → bit-identical). Texture defaults neutral (inner brightness 1, filter shape 1, spherical 0). Textured kernels quantised to 32 levels (±1/64 of peak before renormalising) to bound run counts (~66 runs/row at r=100); GPU tolerance can't bound this — the GPU gathers the same quantised kernels. Cell grid anchored at the format centre; cat-eye = second aperture of the kernel's radius offset by amount × position (radial) or a quarter turn (tangential/swirl); bands of ≥32 cell rows + 64 MB run cache. Coverage per channel group, alpha and non-colour channels on green (open: milestone text contradicts itself). Lens path is CPU-only until phase 3.
 - 2026-10-28: elaborated (consultant); can start before Q1–Q3. Risk: the cell grid multiplies kernel builds (slices × cells × channels) — check on modest hardware.

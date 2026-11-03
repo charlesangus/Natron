@@ -33,6 +33,8 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-11-02: audit. The user's answer (next entry, option a) had been appended after the gate; moved here. It unblocks the milestone, but `## Scope` (Out: STMap, IDistort, warps, lens distortion; the Assumption that only Transform, TransformMasked, Reformat and the staged executor call interpolateSuper) and the task list still describe the old split. Before P1.T1, re-elaborate: add tasks for resampleRowFromCoords users (STMap, IDistort, IWarp, LensDistortion; coordmap.slang, iwarp.slang, resamplecore.slang) and the staged resampleRow users (CornerPin, ITransform, ICornerPin), and drop TransformMasked if M111 - Native Node Identity Cleanup lands first (it folds it into Transform). Worktree .worktrees/m270 exists with no commits.
+- 2026-11-02 — **Same filters everywhere (user):** option (a), the new kernels and Filter entries apply to every node sharing the resampler.
 - 2026-10-28: blocked on scope (PM): interpolateSuper/supersampleLevels and filterOptions() are shared by STMap, IDistort, IWarp, LensDistortion (resampleRowFromCoords; coordmap.slang/iwarp.slang use resamplecore.slang) and CornerPin/ITransform/ICornerPin (staged resampleRow), contradicting the Assumptions/Out list. Asked the user to choose replace-everywhere vs split.
 - 2026-10-28 — Scale-aware kernels replace supersampling for all filters: no backward compat in the fork (user), so existing ten need not stay bit-identical to OFX; ulp and minification goldens are re-recorded, not treated as a framework change.
 - 2026-10-28 — No Hermite entry: Hermite is the zero-tangent cubic Natron already calls Cubic, equal to Bicubic at B = 0, C = 0; adding it would duplicate an entry.
@@ -105,4 +107,3 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh release --tests` passes in full, including `ctest -R "Resampler|StagedResample|NativeTransform|NativeReformat|NativeGolden|NativeTransformGpu"` on lavapipe; the GUI bench is not required (no NodeGraph diff); the Xvfb screenshot of Transform's filter panel was shared and approved.
-- 2026-11-02 — **Same filters everywhere (user):** option (a), the new kernels and Filter entries apply to every node sharing the resampler.

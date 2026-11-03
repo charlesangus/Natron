@@ -127,7 +127,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 127.1: Shared pieces
 
-- [ ] M128.P1.T1 — Write the shared falloff library in C++ and Slang
+- [x] M128.P1.T1 — Write the shared falloff library in C++ and Slang
   - files: `Engine/Nodes/Generator/ShapeFalloff.h` (new), `Engine/Gpu/Kernels/shapefalloff.slang` (new), `Tests/Native/ShapeFalloff_Test.cpp` (new)
   - approach:
     - Pure functions shared by all three nodes:
@@ -140,7 +140,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test checks curve endpoints, monotonicity and symmetry. It compares each helper against hand values. A small GPU entry checks C++/Slang parity within 1e-6. It runs at the phase build.
   - size: M
 
-- [ ] M128.P1.T2 — Add a host ramp overlay matching the OFX one
+- [x] M128.P1.T2 — Add a host ramp overlay matching the OFX one
   - files: `Engine/HostOverlaySupport.h`, `Engine/NodeOverlay.cpp`, `Engine/Node.h`, `Gui/HostOverlay.cpp`, `Tests/gui/m127_ramp_overlay.py` (new)
   - approach:
     - Add `HostOverlayKnobsRamp { point0, point1, interactive? }` and `Node::addRampInteract(point0, point1)`.
@@ -152,7 +152,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 127.2: Nodes
 
-- [ ] M128.P2.T1 — Add the native Ramp
+- [x] M128.P2.T1 — Add the native Ramp
   - files: `Engine/Nodes/Generator/Ramp.{h,cpp}` (new), `Engine/Nodes/Generator/Ramp.reg.inc`, `Tests/Native/NativeRamp_Test.cpp` (new)
   - approach:
     - `Ramp` v1 on `NativeGenerator`.
@@ -162,7 +162,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test checks horizontal, vertical and diagonal ramps against hand values, each falloff, p0 == p1, HDR colours passing through, and render-scale invariance. It runs at the phase build.
   - size: M
 
-- [ ] M128.P2.T2 — Add the native Radial and Rectangle
+- [x] M128.P2.T2 — Add the native Radial and Rectangle
   - files: `Engine/Nodes/Generator/Radial.{h,cpp}` (new), `Engine/Nodes/Generator/Rectangle.{h,cpp}` (new), `Engine/Nodes/Generator/{Radial,Rectangle}.reg.inc`, `Tests/Native/NativeShapes_Test.cpp` (new)
   - approach:
     - Both are v1 on `NativeGenerator`, using the extent box from `ExtentKnobs` with its rectangle interact.
@@ -171,7 +171,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the test covers the softness-0 antialiased edge, softness falloff, corner radius clamping, non-square boxes, HDR colours, and render-scale invariance. It runs at the phase build.
   - size: L
 
-- [ ] M128.P2.T3 — Add the native ColorWheel, linear only
+- [x] M128.P2.T3 — Add the native ColorWheel, linear only
   - files: `Engine/Nodes/Generator/ColorWheel.{h,cpp}` (new), `Engine/Nodes/Generator/ColorWheel.reg.inc`, `Tests/Native/NativeColorWheel_Test.cpp` (new)
   - approach:
     - `ColorWheel` v1 on `NativeGenerator`.
@@ -182,7 +182,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 127.3: GPU
 
-- [ ] M128.P3.T1 — Run Ramp, Radial, Rectangle and ColorWheel on the GPU
+- [x] M128.P3.T1 — Run Ramp, Radial, Rectangle and ColorWheel on the GPU
   - files: `Engine/Gpu/Kernels/shapes.slang` (new), `Engine/Gpu/Kernels/shapes.cmake`, `Engine/Nodes/Generator/Ramp.cpp`, `Engine/Nodes/Generator/Radial.cpp`, `Engine/Nodes/Generator/Rectangle.cpp`
   - approach:
     - One Slang file with an `IPixelOp` per node, built on `shapefalloff.slang` and run through `runWrapped`, following M85 - Native GPU Kernels's `generators.slang`.
@@ -191,7 +191,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: P3.T2's parity test.
   - size: L
 
-- [ ] M128.P3.T2 — Add GPU parity tests for the shape generators, and ColorWheel's GPU hook
+- [x] M128.P3.T2 — Add GPU parity tests for the shape generators, and ColorWheel's GPU hook
   - files: `Tests/Native/NativeShapesGpu_Test.cpp` (new), `Engine/Nodes/Generator/ColorWheel.cpp`
   - approach:
     - Use the NativeGpuParity harness over P2's fixtures for all four nodes.
@@ -201,7 +201,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 127.4: Retire the OFX generators
 
-- [ ] M128.P4.T1 — Retire the OFX Ramp, Radial, Rectangle and ColorWheel and fix their references
+- [x] M128.P4.T1 — Retire the OFX Ramp, Radial, Rectangle and ColorWheel and fix their references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (four markers), `Engine/EffectInstance.h` (delete the unused `PLUGINID_OFX_RADIAL`), `Tests/LayerKnobs_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the four OFX IDs.
@@ -210,7 +210,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: a test asserts the retired IDs fail to load and the native ones do. The full ctest passes at the gate.
   - size: M
 
-- [ ] M128.P4.T2 — Move the remaining generator references to the native IDs
+- [x] M128.P4.T2 — Move the remaining generator references to the native IDs
   - files: `Tests/Metadata_Test.cpp`, `tools/bench/make_plates.py`, `tools/bench/comps/build_comps.py` (and regenerate `tools/bench/comps/{cg_multipass,keying_grade,defocus_retime}.ntp` with it)
   - approach:
     - Swap the OFX Ramp/Radial/Rectangle/ColorWheel for the native nodes and their knob names.
@@ -229,6 +229,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Every task committed and pushed, the bench comps included (3b6e98512); no PR. The last remote build (3b6e98512) is green; the GUI-check commits after it are unbuilt.
 - 2026-10-28: Phases 2–4 implemented (builds pending). Native Ramp has its own ID "Ramp" (major 1); Radial/Rectangle/ColorWheel plain IDs major 1. Pure generators per the 2026-10-13 user decision — no Source input, mask or mix (the milestone's "every node gets mask and mix" line is superseded by that decision). GPU kernels reuse the CPU per-pixel param structs. OFX versions retired with markers; their GPU cost seeds dropped (native seeds await a bench run); m134 picker test now views a native Ramp step. Gate item: regenerate the three bench comps with build_comps.sh (they still reference the OFX IDs).
 - 2026-10-28: Phase 1 implemented. Falloffs: Linear, Smooth, EaseIn, EaseOut, Quadratic (PLinear/None dropped). Softness in canonical units, fading inward from the edge; softness 0 = hard edge antialiased over one pixel. Rounded box: distance to nearest side (mitred inner contours); corner radii capped at half the shorter side; approximate ellipse distance; helpers take pixel size in canonical units (render-scale independent). Ramp overlay: host RampInteract (points, dashed orthogonal lines), no trajectories. PM calls: p0 == p1 makes the whole plane colour1; since softness fades inward, the Rectangle's RoD is its extent (not extent + softness).
 - 2026-10-13 — **Three separate pure generators (user, native-node port grill):** Ramp, Radial and Rectangle stay separate nodes with no Source input; users Merge them over a plate.

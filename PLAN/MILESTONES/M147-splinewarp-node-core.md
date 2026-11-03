@@ -97,7 +97,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Phase 147.1: Warp curve model
 
-- [ ] M147.P1.T1 — `SplineWarpContext`: roles, links, amounts and correspondences
+- [x] M147.P1.T1 — `SplineWarpContext`: roles, links, amounts and correspondences
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpContext.{h,cpp}` (new), `Engine/CMakeLists.txt`, `Tests/Native/SplineWarpModel_Test.cpp` (new)
   - approach:
     - Subclass `RotoCurveContext`. Each curve has a role: unlinked or boundary; linked is derived from link membership.
@@ -109,7 +109,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: the new test covers creating a link, a second link on the same curve refused, a boundary on an open curve refused, CP insertion keeping a correspondence at the same position (to 1e-6), deleting a curve removing its link, and the hash changing on each edit. It runs at the phase build.
   - size: L
 
-- [ ] M147.P1.T2 — Serialize SplineWarp curve data
+- [x] M147.P1.T2 — Serialize SplineWarp curve data
   - files: `Serialization/SplineWarpSerialization.h` (new), `Serialization/CMakeLists.txt` (if headers are listed), `Engine/Nodes/Transform/SplineWarp/SplineWarpContext.cpp`, `Tests/Native/SplineWarpModel_Test.cpp`
   - approach:
     - Add a struct carried alongside the base context serialization: roles, plus links by curve script-name with their alignment, amount curve and correspondence curves.
@@ -118,7 +118,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: a round-trip test saves and loads a project with two links, animated correspondences, a boundary and a single-point link, and compares the model field by field.
   - size: M
 
-- [ ] M147.P1.T3 — Auto-alignment when linking existing curves
+- [x] M147.P1.T3 — Auto-alignment when linking existing curves
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpAlign.{h,cpp}` (new), `Engine/Nodes/Transform/SplineWarp/SplineWarpContext.cpp`, `Tests/Native/SplineWarpAlign_Test.cpp` (new)
   - approach:
     - `computeAlignment(src, dst, time)`. For closed curves, try each start offset on a fine arc-length grid, both directions, and minimise the sum of squared centroid-relative distances under arc-length pairing. For open curves, choose reversed or not.
@@ -128,7 +128,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Phase 147.2: Solver and coordinate field
 
-- [ ] M147.P2.T1 — Sample links and boundaries into constraint pairs
+- [x] M147.P2.T1 — Sample links and boundaries into constraint pairs
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.{h,cpp}` (new), `Tests/Native/SplineWarpSampling_Test.cpp` (new)
   - approach:
     - At a time, emit `(dstPt, srcPt)` pairs. Each link is split at its correspondences (plus its aligned start) into spans, and each span is sampled by arc length at `curve resolution` spacing. A single-point link gives one pair.
@@ -138,7 +138,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: the test checks the counts and positions for a straight-line link, correspondences shifting the pairing, amount 0.5 halving displacement at the samples, invert, boundary pairs having zero displacement, and the merge and budget rules.
   - size: M
 
-- [ ] M147.P2.T2 — TPS solver with smoothness and degenerate fallbacks
+- [x] M147.P2.T2 — TPS solver with smoothness and degenerate fallbacks
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpTps.{h,cpp}` (new), `Engine/CMakeLists.txt` (Eigen include for Engine), `Tests/Native/SplineWarpTps_Test.cpp` (new)
   - approach:
     - Solve the 2D TPS (the `r² log r` kernel plus an affine part) with Eigen. Use a dense LU or LDLT of `K + λI` with λ from `smoothness`.
@@ -148,7 +148,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: the test covers exact interpolation at the samples with smoothness 0 (1e-6), an affine-only set reproducing the affine exactly everywhere, each fallback, smoothness above 0 reducing the bending energy, and the timing log.
   - size: L
 
-- [ ] M147.P2.T3 — Coordinate field with boundary masking and feather ramp
+- [x] M147.P2.T3 — Coordinate field with boundary masking and feather ramp
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpField.{h,cpp}` (new), `Tests/Native/SplineWarpField_Test.cpp` (new)
   - approach:
     - Evaluate the solver on a grid over the render window plus a margin. The step is `field resolution × renderScale`.
@@ -163,7 +163,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Phase 147.3: The node
 
-- [ ] M147.P3.T1 — `SplineWarp` node: knobs and CPU render
+- [x] M147.P3.T1 — `SplineWarp` node: knobs and CPU render
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.{h,cpp}` (new), `Engine/Nodes/Transform/SplineWarp.reg.inc` (new, per M120 - Native Node Port Kit), `Tests/Native/NativeSplineWarp_Test.cpp` (new)
   - approach:
     - A Custom-kind node on M137 - Native Base Class Flexibility's framework.
@@ -174,7 +174,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: the test renders a ramp through a translation link (matching a Transform of the same offset within 1e-4 away from the edges), a boundary keeping the outside bit-exact, amount 0 being bit-exact identity, and invert of a translation giving the opposite shift.
   - size: L
 
-- [ ] M147.P3.T2 — RoD, RoI and identity
+- [x] M147.P3.T2 — RoD, RoI and identity
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Tests/Native/NativeSplineWarp_Test.cpp`
   - approach:
     - RoD follows the bbox knob: the source RoD, or its union with the field's forward image of the source RoD corners and the destination curve bounds.
@@ -184,7 +184,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
   - verify: tests for the RoD under both bbox settings, an RoI that covers the sampled region (by rendering with a source cropped to the RoI and comparing), and the identity cases.
   - size: M
 
-- [ ] M147.P3.T3 — Upstream transform concatenation
+- [x] M147.P3.T3 — Upstream transform concatenation
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Tests/Native/NativeSplineWarp_Test.cpp`
   - approach:
     - Fetch the source with `&inputTransform`, as M113 - Native Warp Nodes's IDistort does.
@@ -196,7 +196,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Phase 147.4: Python
 
-- [ ] M147.P4.T1 — Python bindings for SplineWarp curve data
+- [x] M147.P4.T1 — Python bindings for SplineWarp curve data
   - files: `Engine/PySplineWarp.{h,cpp}` (new), `Engine/typesystem_engine.xml`, `Engine/CMakeLists.txt`, `Tests/Native/SplineWarpPython_Test.cpp` (new)
   - approach:
     - Expose `node.roto` (from M146 - Roto Hosting For Any Node) plus a `SplineWarp` accessor:
@@ -220,6 +220,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Decisions
 
+- 2026-11-02 — Audit: every task is committed and pushed on milestone/m147-splinewarp-node-core (19202d7d4, 926f47691, a70086e91, plus test fixes 561cefa0c, 0d2606468, ae6b9d000, 98074e933); no uncommitted work, no PR. The only remote build (40654742213, at 19202d7d4) failed; the tip is unbuilt. The branch is 23 commits behind main. The headless golden-EXR render and the solve-timing log the gate asks for are not recorded here.
 - 2026-10-28: Phases 3–4 implemented (build pending). Concatenation follows CornerPin and the shared resampler (IDistort has none). Black outside defaults on; field resolution 8. Union-mode RoD samples 33 points per edge through the forward warp (inside a boundary's feathered outline only). Python: `getLinks()`, `getCorrespondences(time)`, `addCorrespondence` (static), `setCorrespondence(i, s, d, time)`. Remove-point/curve undo snapshots and restores the warp model; Python `Layer.removeItem` goes through the context. Nuke controls not in M147 (morph, cookie-cutter, Transform tab, curve/boundary/preview resolution, Lanczos/Sinc, output mask, crop to format) filed as M274 - SplineWarp Remaining Controls.
 - 2026-10-28: Phases 1–2 implemented (builds pending). Model: a start offset is a parameter on the destination curve (open destination: offset 0, direction only); links deleted on item removal, not structure change (drag between layers removes/re-inserts); single-point curves linkable; amount = static value + Curve. Phase 2: sample budget 1000 (provisional, confirm with the timing test); collinear points fall back to a least-squares affine; smoothness measured on unit-scaled point spread; links at amount 0 still pin; boundary weights use the Roto feather fall-off (masking exact per pixel, weight interpolated on the grid); field grid anchored to canonical coordinates (cache key: warp hash, time, scale, resolution, window). Known gaps: undo of a point removal doesn't restore correspondences; Python Layer.removeItem may skip the item-removed hook.
 - 2026-10-20 — **Reuse the Roto curve stack, generalised (user):** SplineWarp curves are Roto Beziers in a geometry-only context from M146 - Roto Hosting For Any Node, so animation, undo, the panel and serialization come for free.

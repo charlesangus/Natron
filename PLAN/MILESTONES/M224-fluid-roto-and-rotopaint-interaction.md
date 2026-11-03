@@ -104,6 +104,7 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Decisions
 
+- 2026-11-02 — Audit: P7.T1 and P7.T2 landed in 58378084f (tangents grown no further than half way to their neighbours; Alt-drag edits only on a feather bar and pans elsewhere, with a gtest and m224_gestures.py coverage). The remote build 41391443666 at the tip passed. Pushed, no uncommitted work, no PR. The branch is 23 commits behind main. Still open: P5.T1 (host bench rerun) and the round-2 UAT AppImage.
 - 2026-10-28: S answered — plain S was swallowed by the global Project Settings QAction before the viewer saw it. Viewer interact keybinds now claim ShortcutOverride while the viewer has focus (ViewerTab::event / ViewerGL::event → claimShortcutOverride), so any active interact's bound key beats a global shortcut on the same key (e.g. Roto Ctrl+A); text fields still win. Python Layer.removeItem now goes through RotoCurveContext::removeItem (removed items left the selection and panel stale). Known, pre-existing, not fixed here: the interact keeps its in-progress Bezier pointer after that Bezier is removed (from Python or the panel mid-draw).
 - 2026-10-28: GUI checks found a crash: painting while the viewer is paused rendered a live stroke from a null input (renderViewer_internal → getHash on null); a paused input now returns redraw with no args before consuming stroke points (gtest APausedViewerRendersNoLiveStroke). Python createEllipse/createRectangle now evaluate the roto. Open: plain S (cycle tool group) is also the global Project Settings shortcut — check a real key press in the viewer cycles the tool.
 - 2026-10-28: Phase 224.4 implemented (build pending). Ripple range defaults 1–100, bounds in either order, red border drawn by the roto overlay. Ellipse/rectangle: Shift = square, Ctrl+Shift = from centre. Moved pivot resets on selection change, not undoable. Increase Feather (E) moves feather 10 screen px out; S cycles the current tool group; RotoPaint merge brush moved from E to D. Sketch (Ctrl+drag) keeps a point every ~12 screen px, smoothed, open shape. Ctrl during a draw drag latches for the drag. Not copied from Nuke: I (colour pick), T (onion skin; T shows the transform box), Ctrl+Shift corner pin (needs a new transform kind), B-spline tension (no B-spline tool).
@@ -184,13 +185,13 @@ Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 
 ## Phase 224.7: UAT round 2 fixes
 
-- [ ] M224.P7.T1 — Neighbour-aware feather tangent growth
+- [x] M224.P7.T1 — Neighbour-aware feather tangent growth
   - files: the feather-tangent scaling from P6 (grep the curvature scaling in `Engine/Bezier*`/`Gui/Roto*`), Roto tests
   - approach: User, 2026-11-01: "the feather tangent growth works well but would be better if they were aware of their neighbours, so closely-packed points didn't overrun their neighbours (which can't be rendered cleanly and causes 'tearing' of the shape); if that's expensive or slows down interactivity though don't bother". Clamp each grown feather tangent so it cannot reach past the neighbouring feather points (for example, cap its length at a fraction of the distance to the adjacent points along the curve) so the feather never self-intersects through growth alone. Only local neighbours count, so the cost stays O(1) per point; measure the drag cost and drop the change if it slows interaction.
   - verify: A unit test with closely spaced points shows grown tangents no longer cross their neighbours; the spread-out case is unchanged; drag latency in the bench is not worse.
   - size: M
 
-- [ ] M224.P7.T2 — Alt-drag only over a feather handle
+- [x] M224.P7.T2 — Alt-drag only over a feather handle
   - files: `Gui/RotoGui*`/the roto interact handling Alt-drag, `Tests/gui/` roto feather check
   - approach: User, 2026-11-01: "alt-drag shortcut is already used for viewer pan, so alt-drag just pans the viewer; i'm fine recycling the shortcut, the drag should be disabled when the user is hovering over a feather handle". The roto interact takes Alt-drag only when the press lands on a feather handle; anywhere else, Alt-drag falls through to the viewer pan.
   - verify: The GUI check Alt-drags on a feather handle (feather tangents keep their length) and on empty viewer space (the viewer pans, no shape changes).

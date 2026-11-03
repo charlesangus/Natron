@@ -29,25 +29,25 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 
 ## Phase 253.1: Generic and curated settings
 
-- [ ] M253.P1.T1 — Generic descriptor-to-knob builder
+- [x] M253.P1.T1 — Generic descriptor-to-knob builder
   - files: `Engine/Nodes/Scene/RenderSettingsKnobs.h`, `Engine/Nodes/Scene/RenderSettingsKnobs.cpp`, `Engine/Nodes/Scene/USDRender.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
   - approach: map VtValue types (bool, int, float, string, token, GfVec3f/4f colours) to Natron knobs; label from the key; group under "Other Settings"; rebuild on `Renderer` change. Include a dump command used by the next tasks to print each delegate's list.
   - verify: unit test builds knobs from a synthetic descriptor list of every supported type; round-trips values through save/load.
   - size: L
 
-- [ ] M253.P1.T2 — Pass settings to the engine and hash them
+- [x] M253.P1.T2 — Pass settings to the engine and hash them
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/USDRender.cpp`
   - approach: before each render call `SetRendererSetting` for every changed value; include all setting values in the render hash.
   - verify: changing a setting changes the hash and the next render uses it (a samples-count test via the delegate's reported sample count).
   - size: M
 
-- [ ] M253.P1.T3 — Curated Cycles group
+- [x] M253.P1.T3 — Curated Cycles group
   - files: `Engine/Nodes/Scene/CyclesSettings.cpp`, `Engine/Nodes/Scene/CyclesSettings.h`
   - approach: using the dump from T1, create labelled knobs for the controls listed in Scope, bound to the delegate's keys; remove them from the generated group so none appears twice.
   - verify: each curated knob changes the delegate's setting (test reads it back); a params → knob audit lists every Cycles descriptor and the knob that reaches it, with none unreachable.
   - size: M
 
-- [ ] M253.P1.T4 — Curated MoonRay group
+- [x] M253.P1.T4 — Curated MoonRay group
   - files: `Engine/Nodes/Scene/MoonRaySettings.cpp`, `Engine/Nodes/Scene/MoonRaySettings.h`
   - approach: as the previous task for MoonRay's controls.
   - verify: each curated knob changes the delegate's setting; the params → knob audit passes.
@@ -59,3 +59,4 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 
 - 2026-10-28: Implemented (build pending; waits on M250's image). Each renderer gets a curated group plus a closed "Other Settings" group with a knob for every other declared setting; only the chosen renderer's groups show. Values for missing renderers/settings kept in a hidden hash-exempt store, logged once, restored when the renderer returns. Labels drop the renderer prefix, script names keep it. Only non-default values are sent. A settings change rebuilds the engine (Cycles doesn't mark samples/time limit dirty). Storm's settings are read from a Storm delegate made without Hgi. Gaps: Cycles declares no pixel filter; MoonRay has no seed; MoonRay curated sampling uses undeclared scene-variable keys. M254's Max Samples spin box should read/write cycles:samples / moonray:sceneVariable:pixel_samples. Viewer's own copy of the settings not implemented. Open (user): OIDN in our Cycles and MoonRay builds (M249 OIDN +46 MB question)? Should unselected renderers' knobs change the node hash (they do now)?
 - 2026-10-27 — **Curated plus generic fallback (user):** hand-built groups for the two shipped delegates, generated knobs for everything else.
+- 2026-11-02 — Audit: all four tasks at c30a7cd04 (RenderSettingsKnobs, CyclesSettings, MoonRaySettings, audit output in the Cycles and MoonRay tests). Pushed, clean, no PR, 23 behind origin/main; stacked on M251 and M252, so it waits for them. The open user questions in the 2026-10-28 note are unanswered (audit).

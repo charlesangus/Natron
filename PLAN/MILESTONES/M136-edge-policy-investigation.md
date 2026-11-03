@@ -166,6 +166,7 @@ Acceptance sketch:
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). The design note is committed (4db8e9062, Engine/Nodes/docs/edge-policy.md, with its own Q1-Q4) and pushed. P1.T1 stays unticked until the user approves the note; no later phase has started.
 - 2026-10-25 — Deliverable is a design note followed by implementation: the acceptance sketch already requires working CPU and GPU behaviour.
 - 2026-10-25 — State is a per-image bit, Nuke-style: one principled place that propagates through the graph, and the only way Crop can respect its input.
 - 2026-10-25 — Sources default to stretch edge and pass-through nodes forward the input's bit: the user's choice, so a plain Read stretches when transformed.

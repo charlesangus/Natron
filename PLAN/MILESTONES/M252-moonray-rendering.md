@@ -31,25 +31,25 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
 
 ## Phase 252.1: Render path
 
-- [ ] M252.P1.T1 — Beauty and depth from MoonRay
+- [x] M252.P1.T1 — Beauty and depth from MoonRay
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/MoonRayAovs.cpp`
   - approach: share M251 - Cycles Rendering's delegate-agnostic read-back; add only MoonRay's AOV token names and its converged-state check. Route MoonRay logging to Natron's log.
   - verify: a unit test renders a unit cube headless and gets non-black `rgba` and a `depth.Z` equal to the camera distance at the centre pixel (within tolerance).
   - size: L
 
-- [ ] M252.P1.T2 — primId, normal and unsupported-prim warnings
+- [x] M252.P1.T2 — primId, normal and unsupported-prim warnings
   - files: `Engine/Nodes/Scene/MoonRayAovs.cpp`, `Engine/LayerRegistry.cpp`, `Engine/Nodes/Scene/USDRender.cpp`
   - approach: same as M251.P1.T2 for `primId.id` and `normal`; collect the delegate's unsupported prim/material notices into one persistent warning per kind.
   - verify: a two-cube scene gives two distinct `primId.id` values naming the right prims; a scene with a deliberately unsupported light type warns by name and still renders.
   - size: M
 
-- [ ] M252.P1.T3 — Cancel and thread budget
+- [x] M252.P1.T3 — Cancel and thread budget
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/MoonRayAovs.cpp`
   - approach: as M251.P1.T3 against MoonRay's thread and stop calls; verify names against the delegate's settings list.
   - verify: abort returns within a second with no MoonRay threads left; concurrent renders stay within the thread budget.
   - size: M
 
-- [ ] M252.P1.T4 — Reference render test
+- [x] M252.P1.T4 — Reference render test
   - files: `Tests/Scene/USDRenderMoonRay_Test.cpp`, committed reference scene and image under `Tests/`
   - approach: fixed seed and samples, tolerance-based comparison with its rationale in the test.
   - verify: passes in CI release; identical on rerun on the same host.
@@ -61,3 +61,4 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
 
 - 2026-10-27 — **Share the read-back with Cycles (planner):** one delegate-agnostic path, per-delegate files hold only AOV token names and quirks.
 - 2026-10-28 — **No stand-in light for MoonRay (implementer):** Natron's headlight is a Hydra simple light set on Storm's engines only; hdMoonray renders no simple light, so a MoonRay render of a stage without lights is black, with no injected light. Revisit together with M251 - Cycles Rendering's open question on its 0.5 grey no-light background.
+- 2026-11-02 — Audit: implemented at e1dc30b28 and ff10ce7a5 (MoonRayAovs, HydraRender read-back, log capture and session failure, one warning per unsupported light kind, abort and thread-budget tests). Deviation in T4: no committed reference image; USDRenderMoonRay_Test checks depth, normals and cube placement analytically and compares a rerun exactly (RerunIsIdentical). Pushed, clean, no PR, 23 behind origin/main; stacked on M250 and M251 (audit).

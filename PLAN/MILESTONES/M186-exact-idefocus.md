@@ -20,25 +20,25 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 
 ## Phase 186.1: IDefocus
 
-- [ ] M186.P1.T1 — Write the native IDefocus node (CPU)
+- [x] M186.P1.T1 — Write the native IDefocus node (CPU)
   - files: `Engine/Nodes/Filter/IDefocus.h`, `Engine/Nodes/Filter/IDefocus.cpp`, `Engine/Nodes/Filter/IDefocus.reg.inc`
   - approach: Reuse Defocus's knobs and `BokehKernel`. Per tile, read the Map with an apron of the maximum size; for each output pixel, gather over the apron the bokeh-weighted contributions of neighbours whose radius reaches it, normalised by summed weight. Register `NATRON_I_VARIANT(Defocus, IDefocus, …)`.
   - verify: at the phase build, `ctest -R NativeIDefocus` (T2) passes.
   - size: L
 
-- [ ] M186.P1.T2 — Test IDefocus on CPU
+- [x] M186.P1.T2 — Test IDefocus on CPU
   - files: `Tests/Native/NativeIDefocus_Test.cpp`
   - approach: A constant Map equals Defocus at that size within tolerance; a zero Map is identity; a half-and-half Map with a highlight on the defocused side spreads no further than the stated radius; a constant input stays constant. Record regression fixtures.
   - verify: at the phase build, `ctest -R NativeIDefocus` passes.
   - size: M
 
-- [ ] M186.P1.T3 — IDefocus on the GPU
+- [x] M186.P1.T3 — IDefocus on the GPU
   - files: `Engine/Gpu/Kernels/idefocus.slang`, `Engine/Gpu/Kernels/idefocus.cmake`, `Engine/Nodes/Filter/IDefocus.cpp`, `Tests/Native/NativeIDefocusGpu_Test.cpp`
   - approach: The same scatter-as-gather over a tile, apron sized by the Map's maximum in the tile (`MapInput::tileRange`), kernel weights in a storage buffer.
   - verify: at the phase build, `ctest -R NativeIDefocusGpu` passes on RADV within 1e-4 relative.
   - size: L
 
-- [ ] M186.P1.T4 — Icon, gpuWeight (size-scaled) and doc
+- [x] M186.P1.T4 — Icon, gpuWeight (size-scaled) and doc
   - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/IDefocus.cpp`, `Engine/Nodes/Filter/docs/IDefocus.md`
   - approach: Per the native checklist.
   - verify: `ctest -R NativePluginList` passes; doc reviewed at the gate.
@@ -46,6 +46,7 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 
 ## Decisions
 
+- 2026-11-02 — Audit: all four tasks committed and pushed in 3e23e599f (node, CPU and GPU tests, slang kernel, icon, doc). Still open from the note below: no build is recorded and the regression goldens aren't recorded. The branch carries M131 - Native Defocus Family's pre-squash commits (M131 is on main as #145) and is 24 behind main.
 - 2026-10-28: implemented (build pending; goldens to record). Map quantised to N+1 levels (N = clamp(ceil(4 × radius difference), 1, 1024)), per-level kernels cached; output Σw·v/Σw (outside-image sources add weight, not value; an untouched single-tap pixel keeps the source bit for bit). GPU: analytic kernels with halo ≤ 64; Image kernels and larger halos on the CPU. Size At Black 1-D (max 500, matching Defocus Size). XY components added for the Map input only.
 - 2026-10-25 — **Moved from M131 - Native Defocus Family (user):** IBlur went to M184 - Variable-Size Filter Kit and IDefocus here, so all I-nodes share one Map convention.
 

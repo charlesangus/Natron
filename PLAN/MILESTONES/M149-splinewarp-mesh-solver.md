@@ -35,13 +35,13 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Phase 149.1: Mesh solver
 
-- [ ] M149.P1.T1 — Vendor CDT
+- [x] M149.P1.T1 — Vendor CDT
   - files: `libs/CDT/` (new: headers, `LICENSE`, `CMakeLists.txt` interface target), `libs/CMakeLists.txt` or the top-level `CMakeLists.txt` where libs are added, `Engine/CMakeLists.txt`
   - approach: add the pinned upstream release as a header-only interface target, link it into Engine, and note the version and licence in the libs README if one exists.
   - verify: the build passes. A one-line include in P1.T2's test compiles.
   - size: M
 
-- [ ] M149.P1.T2 — Build the constrained mesh from sample pairs
+- [x] M149.P1.T2 — Build the constrained mesh from sample pairs
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.{h,cpp}` (new), `Tests/Native/SplineWarpMesh_Test.cpp` (new)
   - approach:
     - Collect the vertices: destination sample positions, with their source positions as values, and the padded RoD corners as zero-displacement vertices.
@@ -50,7 +50,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
   - verify: the test covers the triangle count and validity for a square of samples, that the constrained edges are present, the crossing-curve split, and the fallback below three vertices.
   - size: L
 
-- [ ] M149.P1.T3 — Rasterize the mesh into the coordinate field and add the solver option
+- [x] M149.P1.T3 — Rasterize the mesh into the coordinate field and add the solver option
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpField.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Tests/Native/SplineWarpMesh_Test.cpp`
   - approach:
     - Scan-convert each triangle over the field grid, writing barycentric source coordinates. Points outside every triangle are identity.
@@ -66,6 +66,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-11-02 — Audit: all three tasks landed in 8e1353687 (CDT vendored, mesh, field and solver option), pushed, with M147 merged in; no uncommitted work, no PR. Both remote builds (latest 40663678118, at 153999656) failed; the tip 7b0274b28 is unbuilt. The branch is 23 commits behind main.
 - 2026-10-28: Implemented (build pending). CDT 2.0.1 vendored header-only in libs/CDT (MPL-2.0; predicates.h BSD-3; portable_nth_element Apache-2.0 w/ LLVM exception — all compatible with Natron's GPLv2-or-later distributed as GPLv3), excluded from the format gate. Mesh box = Source full-size bounds plus all samples, padded by ¼ of the larger side (≥1 px); in the cache key and warp hash. <3 distinct or collinear destinations → TPS fallback. Crossing curves: CDT inserts a vertex taking the source of the first-inserted curve; unresolvable → unconstrained mesh → TPS. Outside the box the field is identity; folded triangles rendered as-is. Sample hash includes curve order.
 - 2026-10-20 — **Both solvers, user-selectable (user):** this milestone adds the mesh option.
 - 2026-10-20 — **CDT feeds the shared field (planner):** the GPU, motion blur and render paths stay solver-agnostic.

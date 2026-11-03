@@ -23,25 +23,25 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
 
 ## Phase 191.1: VectorBlur
 
-- [ ] M191.P1.T1 — Write the native VectorBlur node (CPU)
+- [x] M191.P1.T1 — Write the native VectorBlur node (CPU)
   - files: `Engine/Nodes/Filter/VectorBlur.h`, `Engine/Nodes/Filter/VectorBlur.cpp`, `Engine/Nodes/Filter/VectorBlur.reg.inc`
   - approach: Read the u/v channels with `Node::declareLayerKnob` on the Source input (like STMap's `kSTMapParamChannelU`). Per pixel, sample the source along `[−offset, 1−offset] · scale · v` with the chosen filter's weights, sample count adaptive to streak length; bilinear source taps. Depth-aware weighting per `## Scope`. Read `Engine/Nodes/README.md` first.
   - verify: at the phase build, `ctest -R NativeVectorBlur` (T2) passes.
   - size: L
 
-- [ ] M191.P1.T2 — Test VectorBlur on CPU
+- [x] M191.P1.T2 — Test VectorBlur on CPU
   - files: `Tests/Native/NativeVectorBlur_Test.cpp`
   - approach: Zero vectors are identity. A constant horizontal vector equals a box DirBlur of the same length within tolerance. Offset 0 and 1 streak to opposite sides of a point. Depth-aware mode keeps a static near square sharp over a moving far background. Clamping past `maxLength` warns. Record regression fixtures.
   - verify: at the phase build, `ctest -R NativeVectorBlur` passes.
   - size: M
 
-- [ ] M191.P1.T3 — VectorBlur on the GPU
+- [x] M191.P1.T3 — VectorBlur on the GPU
   - files: `Engine/Gpu/Kernels/vectorblur.slang`, `Engine/Gpu/Kernels/vectorblur.cmake`, `Engine/Nodes/Filter/VectorBlur.cpp`, `Tests/Native/NativeVectorBlurGpu_Test.cpp`
   - approach: One thread per output pixel, the same sampling; the source tile with a `maxLength` apron.
   - verify: at the phase build, `ctest -R NativeVectorBlurGpu` passes on lavapipe within 1e-4 relative.
   - size: L
 
-- [ ] M191.P1.T4 — Icon, gpuWeight (size-scaled) and doc
+- [x] M191.P1.T4 — Icon, gpuWeight (size-scaled) and doc
   - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/VectorBlur.cpp`, `Engine/Nodes/Filter/docs/VectorBlur.md`
   - approach: Per the native checklist; the doc explains `offset`, units, `maxLength` and occlusion.
   - verify: `ctest -R NativePluginList` passes; doc reviewed at the gate.
@@ -49,6 +49,7 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
 
 ## Decisions
 
+- 2026-11-02: audit (plan state caught up with the branch). Every task committed and pushed; no PR. The last remote build (e129c1291) failed ctest in both schedulers; the four commits after it (goldens, GUI check) are unbuilt.
 - 2026-10-28: implemented (build pending; goldens to record). No OFX VectorBlur exists (openfx-misc has VectorToColor only); the milestone's knob list plus Nuke's VectorBlur docs are the spec. Vectors read from a Source layer (Auto: "motion", then forward motion). Samples = min(Max Samples, max(Samples, ceil(length))), midpoint-spaced bilinear taps, black outside; Max Samples knob added (128). Occlusion: depth ≤0/non-finite = infinitely far; samples >1% nearer dropped unless their own streak passes within 1 px; all dropped → unchanged. Clamp warning posted by CPU renders only. GPU tolerance 1e-5 abs + 1e-4 rel.
 - 2026-10-25 — **One u/v layer and a continuous offset (user):** two vector passes give kinked blur; the offset knob places the streak anywhere from starting to ending at the pixel.
 - 2026-10-25 — **Depth-aware occlusion, optional (user):** plain gather by default.

@@ -30,19 +30,20 @@ Scouted facts (2026-10-25): no shake detection, cut line or dedicated disconnect
 
 ## Decisions
 
+- 2026-11-02 — Audit: all tasks committed and pushed in ff7d1d731, stacked on M194 - Kiss Connections (merged in at 323ffa840). No build/ctest gate or screenshot sign-off is recorded. 25 behind main.
 - 2026-10-28: Implemented (build pending). Shake = 3 reversals on one axis within 500 ms, each swing ≥40 scene px; re-arms only on a fresh shake (thresholds to tune at sign-off). Cuts join M194's per-drag undo command (KissConnectCommand also disconnects). Ctrl + left press on empty canvas starts a cut line (dashed, Selection colour); Ctrl-click without drag no longer deselects; Escape or focus loss cancels. Alt at release after a shake snaps back; Escape undoes shakes as well as kisses; no shakes after Escape in the same drag. Ctrl+Alt+Left pans on Linux and never cuts. Fixed: a null-source ConnectCommand disconnected the first input fed by that source rather than its own; highlighted pipes draw in the Selection colour even when their node is selected.
 - 2026-10-25 — shake-effect: disconnects all the node's pipes (inputs and output), detected by three fast reversals in about 500 ms.
 - 2026-10-25 — cut-gesture: Ctrl+drag on empty canvas, with live highlight of the pipes to be cut; chosen over Alt-drag (mapped to middle-click) and a held key.
 
 ## Phase 195.1: Shake
 
-- [ ] M195.P1.T1 — Pure shake detector
+- [x] M195.P1.T1 — Pure shake detector
   - files: `Gui/NodeGraphShake.h` (new), `Gui/NodeGraphShake.cpp` (new), `Gui/CMakeLists.txt`, `Tests/NodeGraphShake_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: A small class fed `(timestampMs, scenePos)` samples that tracks direction reversals per axis with a minimum amplitude per swing and a time window, returning true once and resetting. No Qt widgets.
   - verify: gtest: a zigzag fires; slow motion, jitter, straight lines and two reversals do not; it re-arms after firing.
   - size: M
 
-- [ ] M195.P1.T2 — Wire shake to disconnect
+- [x] M195.P1.T2 — Wire shake to disconnect
   - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraphUndoRedo.cpp`
   - approach: Feed each node-drag move into the detector in `moveSelectedNodesBy`. On fire, collect the selection's boundary pipes and apply null-source `ConnectCommand`s live, recorded as children of the drag's parent undo command, committed on mouse release like M194 - Kiss Connections' kisses (reuse its recorded-children mechanism; do not duplicate it).
   - verify: GUI script (T2 of Phase 195.3): shake disconnects all pipes; one undo restores them with the move.
@@ -50,13 +51,13 @@ Scouted facts (2026-10-25): no shake detection, cut line or dedicated disconnect
 
 ## Phase 195.2: Cut
 
-- [ ] M195.P2.T1 — Segment-versus-pipe intersection helper
+- [x] M195.P2.T1 — Segment-versus-pipe intersection helper
   - files: `Gui/EdgeGeometry.h` (new), `Gui/EdgeGeometry.cpp` (new), `Gui/CMakeLists.txt`, `Tests/EdgeGeometry_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Pure function testing a cut polyline against a pipe line segment (the pipes are straight lines between `Edge::line()` endpoints).
   - verify: gtest: crossing, parallel, touching endpoint, collinear, polyline with several segments.
   - size: S
 
-- [ ] M195.P2.T2 — Cut-line event state, drawing and disconnect
+- [x] M195.P2.T2 — Cut-line event state, drawing and disconnect
   - files: `Gui/NodeGraph10.cpp`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph25.cpp`
   - approach: Add an `eEventStateCutting`. Ctrl+left press on empty canvas enters it instead of the selection rectangle. On move, extend the polyline, draw it, and highlight crossing pipes via `Edge::setUseHighlight`. On release push one parent `QUndoCommand` of null-source `ConnectCommand`s. Escape cancels and clears the highlights.
   - verify: GUI script: cut across two pipes removes both in one undo step; Escape and an empty cut change nothing; Ctrl+Alt zoom still works.
@@ -64,7 +65,7 @@ Scouted facts (2026-10-25): no shake detection, cut line or dedicated disconnect
 
 ## Phase 195.3: GUI coverage
 
-- [ ] M195.P3.T1 — GUI script for shake and cut
+- [x] M195.P3.T1 — GUI script for shake and cut
   - files: `Tests/gui/m195_shake_cut.py` (new)
   - approach: Use the `Tests/gui/m55_node_graph.py` helpers. Shake sections: zigzag fires and disconnects, slow drag does not, multi-selection keeps internal pipes. Cut sections: crossing pipes cut and highlighted pre-release in the Selection colour, undo, Escape, plain drag still box-selects.
   - verify: script passes under Xvfb on a `package.sh` AppImage.

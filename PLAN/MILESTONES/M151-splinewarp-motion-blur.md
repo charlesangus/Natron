@@ -27,7 +27,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Phase 151.1: Motion blur
 
-- [ ] M151.P1.T1 — CPU motion blur
+- [x] M151.P1.T1 — CPU motion blur
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpField.cpp`, `Tests/Native/NativeSplineWarpMotionBlur_Test.cpp` (new)
   - approach:
     - Add the knobs, and compute the sub-frame times as Transform does.
@@ -37,7 +37,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
   - verify: the test covers a link translating linearly over the shutter matching Transform's motion blur of the same translation (1e-3), shutter 0 bit-exact, and the static-shutter skip (render count).
   - size: L
 
-- [ ] M151.P1.T2 — GPU motion blur
+- [x] M151.P1.T2 — GPU motion blur
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Gpu/Kernels/splinewarp.slang`, `Tests/Native/NativeSplineWarpGpu_Test.cpp`
   - approach: upload each sub-frame's field and dispatch accumulate-mode passes (or one pass over a field array if the executor allows it), then normalise. Remove the motion-blur decline from M150 - SplineWarp GPU Kernel.
   - verify: GPU parity with the CPU path on P1.T1's fixture within 1e-5. It runs on RADV.
@@ -50,5 +50,6 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-11-02 — Audit: both tasks landed in 75ff607a6 (CPU and GPU motion blur), pushed, with M150 merged in; no uncommitted work, no PR. The latest remote build (40674863243, at the tip 01bd52e50) failed. The branch is 23 commits behind main.
 - 2026-10-28: Implemented (build pending). Knobs motionBlur (0, 0–100), shutter (0.5), shutterOffset (Start), shutterCustomOffset (0), following CornerPin (Nuke's SplineWarp has no motion-blur controls). Sub-frames = min(64, max(13, int(40·motionBlur)/3)) at stratum centres, equal weights (Transform samples per pixel randomly). Static shutter renders once; RoD/RoI are unions over sub-frames; identity only if all are. Separate 64-entry sub-frame field cache. Motion blur stays on in draft. PM call: the upstream concatenated matrix is evaluated once at frame time (the concatenation API supplies one matrix per render), as Transform and CornerPin do — deviation from the milestone's Out note. GPU averages all sub-frames in one dispatch.
 - 2026-10-20 — **Motion blur is in scope (user).**

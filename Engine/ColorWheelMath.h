@@ -558,6 +558,23 @@ SliderRange sliderMapping(ColorSliderKindEnum kind, ColorKnobRoleEnum role, cons
  **/
 double markerToValue(const SliderRange& range, double marker);
 
+/**
+ * @brief A polar wheel's value: a hue in degrees in [0, 360), 0 on the right and
+ * counter-clockwise, and a radius.
+ **/
+struct PolarValue {
+    double hueDegrees = 0.0;
+    double radius = 0.0;
+};
+
+/**
+ * @brief One step of a polar wheel's gesture: a Trackball edit moves the point by (d1, d2), an
+ * absolute Hue sets the hue to d1 and an absolute Sat sets the radius to d1; any other edit
+ * leaves the value. The radius is clamped to [0, maxRadius], and a point that lands on the
+ * centre keeps its hue.
+ **/
+PolarValue applyPolarEdit(const PolarValue& v, const ColorEdit& edit, double maxRadius);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_COLORWHEELMATH_H

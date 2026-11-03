@@ -352,6 +352,38 @@ GuiApplicationManagerPrivate::removeKeybind(const QString& grouping,
 }
 
 void
+GuiApplicationManagerPrivate::addViewer3DMouseShortcut(const std::string& id,
+                                                       const std::string& description,
+                                                       MouseGestureEnum gesture,
+                                                       int preset)
+{
+    QString groupingStr = QString::fromUtf8(kShortcutGroupViewer3D);
+    QString idStr = QString::fromUtf8(id.c_str());
+    GroupShortcuts& group = _actionShortcuts[groupingStr];
+
+    if (group.find(idStr) != group.end()) {
+        return;
+    }
+    MouseAction* mA = new MouseAction;
+    mA->grouping = groupingStr;
+    mA->description = QString::fromUtf8(description.c_str());
+    mA->actionID = idStr;
+    mA->gesture = gesture;
+    mA->editable = true;
+    std::vector<MouseBinding> bindings;
+    getViewer3DNavigationPresetBindings(preset, idStr, &bindings);
+    mA->setBindings(bindings);
+    mA->defaultModifiers = mA->modifiers;
+    mA->defaultButtons = mA->buttons;
+    group.insert(std::make_pair(idStr, mA));
+
+    GuiAppInstance* app = dynamic_cast<GuiAppInstance*>(_publicInterface->getTopLevelInstance().get());
+    if (app) {
+        app->getGui()->addShortcut(mA);
+    }
+}
+
+void
 GuiApplicationManagerPrivate::addMouseShortcut(const std::string & grouping,
                                                const std::string & id,
                                                const std::string & description,
@@ -378,7 +410,8 @@ GuiApplicationManagerPrivate::addMouseShortcut(const std::string & grouping,
         qDebug() << "Warning: mouse shortcut " << groupingStr << '/' << description.c_str() << '(' << idStr << ')' << " uses the Alt or Meta modifier, which is reserved for three-button mouse emulation. Fix this ASAP.";
     }
     mA->modifiers.push_back(modifiers);
-    mA->button = button;
+    mA->buttons.push_back(button);
+    mA->defaultButtons.push_back(button);
 
     ///Mouse shortcuts are not editable.
     mA->editable = false;

@@ -742,6 +742,15 @@ try:
         checker = app.createNode(CHECKER_ID)
         require(checker is not None, "create a CheckerBoard", gt.plugin_problem(CHECKER_ID))
         checker.setPosition(600, 0)
+        # The source outline is a dotted line of partly covered pixels: blended over the checker's
+        # light boxes they are too grey for red_pixels, so the boxes stay at the plate's grey until
+        # the outlines are found.
+        box_colours = ["color0", "color1", "color2", "color3"]
+        textured = {}
+        for p in box_colours:
+            knob = checker.getParam(p)
+            textured[p] = tuple(knob.getValue(i) for i in range(4))
+            knob.set(0.02, 0.02, 0.02, 1.0)
 
         def textured_heal(x):
             n = app.createNode(PLUGIN_ID)
@@ -845,6 +854,15 @@ try:
         h_radius = 0.85 * RADIUS * h_scale
         report("NOTE textured heal centre (%.0f, %.0f), radius %.0f widget px" % (h_centre[0], h_centre[1], h_radius))
         require(h_radius > 3 * SAMPLE_STEP, "the textured heal is large enough on screen to sample")
+        for p in box_colours:
+            checker.getParam(p).set(*textured[p])
+
+        def light_box_shown():
+            samples = disc_samples(h_centre, h_radius, True) or []
+            return any(s is not None and s[0] > 100 for s in samples)
+
+        ok = yield ("until", light_box_shown, POLL_TIMEOUT_S)
+        require(ok, "the textured heal shows the checker's light boxes")
         before = yield from settled(lambda: disc_samples(h_centre, h_radius, True))
         require(before is not None, "the textured heal renders before the drag")
         screen_crop("retouch_heal_drag_before.png", visible_viewer())

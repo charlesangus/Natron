@@ -201,7 +201,7 @@ public:
     /**
      * @brief Makes a parameter created with one of the functions above a Reverse-Flow Variable:
      * moves it into the variables group of this node, which must have one (a
-     * ReverseFlowVariableSet node), or of the project when called on the app, where it is then
+     * RFVSet node), or of the project when called on the app, where it is then
      * declared as app.<name>. The variable's name is the parameter's script name. Raises
      * ValueError, moving nothing, when the parameter belongs elsewhere, is not a user parameter,
      * holds no value (a group, page, button or separator), is already a variable, or its name is

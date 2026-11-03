@@ -44,6 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/AppendClip.h"
 #include "Engine/Nodes/Time/FrameRange.h"
 #include "Engine/Nodes/Time/Retime.h"
 #include "Engine/Nodes/Time/TimeOffset.h"
@@ -269,7 +270,8 @@ DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
 
         if ((pluginID == PLUGINID_NATRON_RETIME)
             || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
-            || (pluginID == PLUGINID_NATRON_FRAMERANGE)) {
+            || (pluginID == PLUGINID_NATRON_FRAMERANGE)
+            || (pluginID == PLUGINID_NATRON_APPENDCLIP)) {
             return output.get();
         } else {
             Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
@@ -383,6 +385,8 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
         nodeType = eDopeSheetItemTypeTimeOffset;
     } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
         nodeType = eDopeSheetItemTypeFrameRange;
+    } else if (pluginID == PLUGINID_NATRON_APPENDCLIP) {
+        nodeType = eDopeSheetItemTypeAppendClip;
     }
 
     // Discard specific nodes

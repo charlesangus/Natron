@@ -187,6 +187,12 @@ renderContextHasLoopVariables(const RenderContextPtr& context)
     return false;
 }
 
+RenderContextName
+RenderContextName::choiceLabels(const std::string& name)
+{
+    return RenderContextName("choiceLabels", name);
+}
+
 namespace {
 U64
 bindingIdentity(const KnobIPtr& knob,

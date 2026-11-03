@@ -46,9 +46,12 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GpuContext.h"
@@ -59,10 +62,12 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "Tests/Native/NativeGpuParity.h"
@@ -570,6 +575,155 @@ TEST_F(USDRenderNodeTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
     int type = 0;
     node->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Gone"))) << message.toStdString();
+}
+
+// The stub's library is missing (Tests/fixtures/renderDelegates), so it is listed but unavailable.
+const char* const kStubRendererId = "NatronTestStubRendererPlugin";
+
+class USDRenderRendererTest
+    : public USDRenderNodeTest {
+protected:
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        USDRenderNodeTest::TearDown();
+    }
+
+    // Saves the project into tmp, resets it and loads the file back.
+    bool saveResetLoad(const QTemporaryDir& tmp)
+    {
+        ProjectPtr project = getApp()->getProject();
+        const QString dirPath = tmp.path() + QLatin1Char('/');
+        const QString fileName = QString::fromUtf8("usdrender-renderer.ntpz");
+        QString savedFilePath;
+
+        if (!project->saveProject(dirPath, fileName, &savedFilePath) || !QFile::exists(savedFilePath)) {
+            return false;
+        }
+        project->reset(false, true);
+
+        return project->loadProject(dirPath, fileName);
+    }
+
+    static KnobChoice* rendererKnob(const NodePtr& node)
+    {
+        return dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamRenderer).get());
+    }
+
+    static bool selectRenderer(KnobChoice* knob,
+                               const std::string& id)
+    {
+        const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                knob->setValue((int)i);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Renders node, which must fail, and returns the node's persistent error.
+    static std::string renderError(const NodePtr& node)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        EXPECT_FALSE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error));
+        if (!node->hasPersistentMessage()) {
+            return std::string();
+        }
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
+    }
+};
+
+TEST_F(USDRenderRendererTest, TheRendererMenuListsTheRegistryWithStormChosen)
+{
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), renderer->getActiveEntry().id);
+    const std::vector<RenderDelegates::Delegate> delegates = RenderDelegates::list();
+    const std::vector<ChoiceOption> entries = renderer->getEntries_mt_safe();
+    ASSERT_EQ(delegates.size(), entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        EXPECT_EQ(delegates[i].id, entries[i].id);
+    }
+}
+
+// An unavailable renderer stays chosen across a save and load, and every render is an error naming
+// it rather than a Storm render.
+TEST_F(USDRenderRendererTest, AnUnavailableRendererSurvivesAReloadAsANodeError)
+{
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
+    const std::size_t stormEngines = HydraRender::getEngineCount();
+    std::string message = renderError(node);
+    EXPECT_NE(std::string::npos, message.find(kStubRendererId)) << message;
+    EXPECT_EQ(stormEngines, HydraRender::getEngineCount());
+    const std::string name = node->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_TRUE(saveResetLoad(tmp));
+    NodePtr loaded = getApp()->getProject()->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    KnobChoice* loadedRenderer = rendererKnob(loaded);
+    ASSERT_TRUE(loadedRenderer);
+    EXPECT_EQ(std::string(kStubRendererId), loadedRenderer->getActiveEntry().id);
+    message = renderError(loaded);
+    EXPECT_NE(std::string::npos, message.find(kStubRendererId)) << message;
+}
+
+// A saved renderer no plug-in provides is kept, as an entry of its own, and is the node's error.
+TEST_F(USDRenderRendererTest, ARendererThatIsNotInstalledIsKeptOnLoad)
+{
+    const std::string missing = "NatronTestNoSuchRendererPlugin";
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    renderer->appendChoice(ChoiceOption(missing, missing, ""));
+    ASSERT_TRUE(selectRenderer(renderer, missing));
+    const std::string name = node->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_TRUE(saveResetLoad(tmp));
+    NodePtr loaded = getApp()->getProject()->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    KnobChoice* loadedRenderer = rendererKnob(loaded);
+    ASSERT_TRUE(loadedRenderer);
+    EXPECT_EQ(missing, loadedRenderer->getActiveEntry().id);
+    const std::vector<ChoiceOption> entries = loadedRenderer->getEntries_mt_safe();
+    const int index = loadedRenderer->getValue();
+    ASSERT_TRUE((index >= 0) && (index < (int)entries.size()));
+    EXPECT_EQ(missing, entries[index].id);
+    const std::string message = renderError(loaded);
+    EXPECT_NE(std::string::npos, message.find(missing)) << message;
+}
+
+TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
+{
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    const U64 stormHash = node->getHashValue();
+    ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
+    const U64 stubHash = node->getHashValue();
+    EXPECT_NE(stormHash, stubHash);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
+    EXPECT_EQ(stormHash, node->getHashValue());
 }
 
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool

@@ -54,6 +54,7 @@ CLANG_DIAG_ON(uninitialized)
 #include <ofxNatron.h>
 
 #include "Engine/Backdrop.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -67,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/MissingPluginNode.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -745,6 +747,13 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
+    if (closed) {
+        NodePtr closedNode = getNode();
+        EffectInstancePtr effect = closedNode ? closedNode->getEffectInstance() : EffectInstancePtr();
+        if (effect) {
+            effect->closeOverlayEditStepIfOwner();
+        }
+    }
     // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
     NodePtr node = closed ? NodePtr() : getNode();
     if (node) {
@@ -1817,6 +1826,32 @@ NodeGui::getOverlayColor(double* r,
     return true;
 }
 
+// Inspectors, such as Merge and Switch, show two inputs and unfold the rest one at a time on the
+// left. A native node with a run of numbered inputs is laid out the same way, however long the
+// run, so that its visible inputs are not spread as if every input of the run were shown.
+static bool
+unfoldsInputs(const NodePtr& node)
+{
+    if (!node) {
+        return false;
+    }
+    if (dynamic_cast<InspectorNode*>(node.get())) {
+        return true;
+    }
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    const NodeSpec* spec = native ? native->nodeSpec() : 0;
+    if (!spec) {
+        return false;
+    }
+    for (const InputSpec& input : spec->inputs) {
+        if (input.role == InputRole::Variadic) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void
 NodeGui::initializeInputsForInspector()
 {
@@ -1933,8 +1968,7 @@ NodeGui::initializeInputs()
 
     refreshDashedStateOfEdges();
 
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( node.get() );
-    if (isInspector) {
+    if (unfoldsInputs(node)) {
         initializeInputsForInspector();
     } else {
         double piDividedbyX = M_PI / (inputsCount + 1);
@@ -2039,8 +2073,7 @@ NodeGui::refreshEdgesVisility()
     }
 
     NodePtr node = getNode();
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( node.get() );
-    if (isInspector) {
+    if (unfoldsInputs(node)) {
         bool isViewer = node->isEffectViewer() != 0;
         int maxInitiallyOnTopVisibleInputs = isViewer ? 1 : 2;
         bool inputAsideDisplayed = false;
@@ -2332,7 +2365,7 @@ NodeGui::connectEdge(int edgeNumber)
     }
 
     assert(node);
-    if ( dynamic_cast<InspectorNode*>( node.get() ) ) {
+    if (unfoldsInputs(node)) {
         initializeInputsForInspector();
     }
 

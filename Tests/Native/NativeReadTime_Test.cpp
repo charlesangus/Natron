@@ -662,7 +662,8 @@ TEST_F(NativeReadTimeTest, PurgingOneReadKeepsTheHeadersOfAnother)
     EXPECT_EQ(otherBefore, OiioReadSupport::readHeader(framePath(dir, "other", 1), &error));
 }
 
-TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
+// A Read stays pinned to the file as loaded: Clear Caches does not pick up a rewrite, Reload does.
+TEST_F(NativeReadTimeTest, ClearingTheCachesKeepsARewrittenFileUntilReload)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -673,6 +674,13 @@ TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
 
     ASSERT_TRUE(writeConstantFrame(path, 0.5f, 8, 6));
     getApp()->clearOpenFXPluginsCaches();
+
+    NodeMetadataConstPtr pinned = node->getEffectInstance()->getTimeInvariantMetadata();
+    EXPECT_TRUE(!pinned || !(RectI(0, 0, 8, 6) == pinned->getOutputFormat()));
+
+    KnobButton* reload = dynamic_cast<KnobButton*>(node->getKnobByName(kNatronReadParamReload).get());
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
 
     EXPECT_TRUE(RectI(0, 0, 8, 6) == node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }

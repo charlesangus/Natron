@@ -373,7 +373,7 @@ TEST_F(SplineWarpToolsTest, ThePointToolMakesAOnePointOpenCurve)
     ASSERT_TRUE(bool(point));
     EXPECT_EQ(1, point->getControlPointsCount());
     EXPECT_TRUE(point->isOpenBezier());
-    EXPECT_TRUE(point->isCurveFinished());
+    EXPECT_FALSE(bool(ui->getBezierBeingBuild()));
     EXPECT_FALSE(SplineWarpCurveShape::isClosedCurve(*point));
     EXPECT_EQ(point, std::dynamic_pointer_cast<Bezier>(ctx->getItemByName(point->getScriptName())));
     const QPointF at = pointOf(point, 0.);

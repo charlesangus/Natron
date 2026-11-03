@@ -119,3 +119,4 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 **Verification gate:** full build and tests pass; a new AppImage is accepted by the user.
 - 2026-11-02 — main merged in (viewer knobs command compression ID → 26); CacheStress non-hashed sweep skips viewers; gate re-running (PM).
 - 2026-11-02 — Gate green on main (run 41567914674, CacheStress sweep skips viewers); AppImage rebuilt in build/appimages/Natron-m164-viewer-node-knobs.* for the round-2 crash re-test (PM).
+- 2026-11-03 — UAT approved (user).

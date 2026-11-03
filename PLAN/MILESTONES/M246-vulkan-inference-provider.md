@@ -33,3 +33,4 @@ Acceptance sketch:
 ## Decisions
 
 - 2026-10-28: claimed, elaborated by a consultant, then released to todo: M204 - AI Model Manager is still in UAT and upstream onnx-vulkan-rs has no versioned release or fp16 yet (the stub's blockers). The consultant's phases (installer, OrtLoader plugin registration, Vulkan device and Auto slot after vendor EPs, concrete-shape sessions with LRU 4, refusal fallback, per-model validation) are in the session transcript for re-use.
+- 2026-11-03 — User wants GPU inference for M207/M208 (CPU is slow); this milestone is that follow-up.

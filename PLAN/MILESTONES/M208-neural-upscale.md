@@ -63,3 +63,4 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
 ## Decisions
 
 - 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.
+- 2026-11-03 — UAT approved (user).

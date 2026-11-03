@@ -44,7 +44,10 @@ script-name prefix so the Write can share it.
   `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
-  is a Reload button on the `filename` row.
+  is a Reload button on the `filename` row. It is the panel's only reload: the
+  `filename` and `proxy` knobs are built with
+  `KnobFile::setShowsReloadButton(false)`, so they show no reload icon of their
+  own. The OCIO file nodes and USDRead do the same for their file knobs.
 - **Reload.** The node hash folds in a stamp of the file or sequence
   (`FileStampRegistry`: path, modification time, size and inode of every
   file). A file is stamped once, the first time the node is hashed in a
@@ -60,8 +63,8 @@ script-name prefix so the Write can share it.
   as it is on disk now, though, so a Read whose output is not cached can show
   new pixels under the old hash. Every other node whose file knob covers the
   same files is reloaded with it
-  (`KnobFile::reloadOtherNodesReadingTheseFiles()`). The file knob's own reload
-  (`KnobFile::reloadFile()`) does the same.
+  (`KnobFile::reloadOtherNodesReadingTheseFiles()`). The reload icon of a file
+  knob on another node (`KnobFile::reloadFile()`) does the same.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
   input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's

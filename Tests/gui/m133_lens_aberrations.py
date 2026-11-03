@@ -53,8 +53,10 @@ CHANGED_PIXELS_MIN = 40
 # The centre light's disc may move by a rounding of the display, never by a clip. Kernels are
 # picked per output cell and the disc reaches past the centre cell, so its rim is gathered with the
 # neighbouring cells' kernels, clipped by catEye * 32 px / half-diagonal (3% of the radius on HD)
-# on the side away from the light, then renormalised: a sub-pixel change at 28% zoom.
-CENTRE_CHANGED_MAX_FRACTION = 0.02
+# on the side away from the light, then renormalised: a sub-pixel change at 28% zoom. That shift
+# flips the anti-aliased rim pixels all round the disc, so the disc's outline is compared rather
+# than its pixels: each side of its lit box may move this far, where a clip cuts a side inwards.
+CENTRE_EDGE_TOLERANCE_PX = 1
 # The side of the mask isolating the centre light from the grid's centre cross.
 CENTRE_MASK_SIZE = 2.0 * LIGHT_WIDTH
 # Lit pixels the isolated centre light shows at the least, so that its check is not vacuous.
@@ -275,6 +277,22 @@ try:
                     count += 1
         return count, total
 
+    def lit_box(img):
+        """(left, top, right, bottom) of the pixels that differ from the top-left one; None if none do."""
+        if img is None or img.width() < 1 or img.height() < 1:
+            return None
+        bg = img.pixelColor(0, 0)
+        xs, ys = [], []
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > PIXEL_DIFF_MIN:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return None
+        return min(xs), min(ys), max(xs), max(ys)
+
     def fringe_pixels(img, stride=2):
         """Pixels whose red and blue differ by FRINGE_MIN or more: coloured, where grey lights are not."""
         if img is None:
@@ -351,9 +369,13 @@ try:
         moved, total = changed_pixels(crop(centre_disc, centre_rect(rect)), crop(centre_eye, centre_rect(rect)))
         lit, _ = changed_pixels(crop(centre_disc, centre_rect(rect)), crop(centre_disc, (0, 0) + tuple(centre_rect(rect)[2:])))
         check(lit >= CENTRE_LIT_MIN, "the isolated centre light is lit (%d of %d centre pixels)" % (lit, total))
-        check(0 <= moved <= CENTRE_CHANGED_MAX_FRACTION * total,
-              "the centre light keeps its disc (%d of %d centre pixels differ, limit %d)" %
-              (moved, total, int(CENTRE_CHANGED_MAX_FRACTION * total)))
+        disc_box = lit_box(crop(centre_disc, centre_rect(rect)))
+        eye_box = lit_box(crop(centre_eye, centre_rect(rect)))
+        shift = -1 if disc_box is None or eye_box is None else max(abs(a - b) for a, b in zip(disc_box, eye_box))
+        report("NOTE centre light lit box %r without the cat-eye, %r with it; %d of %d centre pixels differ"
+               % (disc_box, eye_box, moved, total))
+        check(0 <= shift <= CENTRE_EDGE_TOLERANCE_PX,
+              "the centre light keeps its disc (its outline moves %d px, limit %d)" % (shift, CENTRE_EDGE_TOLERANCE_PX))
         yield from finish_section(viewer, lights, nodes)
 
     def section_swirl():

@@ -281,8 +281,12 @@ ensureDeclared()
 }
 
 PyObject*
-getVariable(const std::string& name)
+getVariable(const std::string& name,
+            std::vector<std::string>* choiceLabels)
 {
+    if (choiceLabels) {
+        choiceLabels->clear();
+    }
     if (isEvaluating(name)) {
         Py_RETURN_NONE;
     }
@@ -329,6 +333,12 @@ getVariable(const std::string& name)
         if (const RenderContextValue* value = context->find(RenderContextName::plain(name))) {
             const RenderContextBinding* binding = std::get_if<RenderContextBinding>(value);
             if (!binding) {
+                const RenderContextValue* labels = choiceLabels ? context->find(RenderContextName::choiceLabels(name)) : NULL;
+                const std::vector<std::string>* labelList = labels ? std::get_if<std::vector<std::string>>(labels) : NULL;
+                if (labelList) {
+                    *choiceLabels = *labelList;
+                }
+
                 return toPython(*value);
             }
             // The Set's variable at this time, its expression reading the context the Set
@@ -351,6 +361,9 @@ getVariable(const std::string& name)
             }
             if (!found) {
                 Py_RETURN_NONE;
+            }
+            if (choiceLabels) {
+                *choiceLabels = RFV::getChoiceLabels(boundKnob);
             }
 
             return toPython(bound);
@@ -380,6 +393,9 @@ getVariable(const std::string& name)
     }
     if (!found) {
         Py_RETURN_NONE;
+    }
+    if (choiceLabels) {
+        *choiceLabels = RFV::getChoiceLabels(variable);
     }
 
     return toPython(value);

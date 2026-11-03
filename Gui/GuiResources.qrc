@@ -142,6 +142,7 @@
         <file>Resources/Icons/lucide/pin.svg</file>
         <file>Resources/Icons/lucide/pipette.svg</file>
         <file>Resources/Icons/lucide/play.svg</file>
+        <file>Resources/Icons/lucide/plus.svg</file>
         <file>Resources/Icons/lucide/pointer.svg</file>
         <file>Resources/Icons/lucide/puzzle.svg</file>
         <file>Resources/Icons/lucide/redo-2.svg</file>
@@ -226,6 +227,7 @@
         <file>Resources/Icons/natron/remove-feather.svg</file>
         <file>Resources/Icons/natron/remove-points.svg</file>
         <file>Resources/Icons/natron/render-scale.svg</file>
+        <file>Resources/Icons/natron/rfv.svg</file>
         <file>Resources/Icons/natron/roi.svg</file>
         <file>Resources/Icons/natron/select-curves.svg</file>
         <file>Resources/Icons/natron/select-feather.svg</file>

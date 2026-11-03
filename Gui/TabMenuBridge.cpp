@@ -96,22 +96,30 @@ pythonStringLiteral(const QString& s)
 
 namespace TabMenuBridge {
 void
-triggerAction(QAction* action)
+triggerActionInGraph(QAction* action,
+                     NodeGraph* graph,
+                     const QPointF& scenePos)
 {
     if (!action) {
         return;
     }
-    Gui* gui = g_target ? g_target->getGui() : 0;
+    Gui* gui = graph ? graph->getGui() : 0;
     GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
-    NodeCollectionPtr collection = g_target ? g_target->getGroup() : NodeCollectionPtr();
+    NodeCollectionPtr collection = graph ? graph->getGroup() : NodeCollectionPtr();
     if (!app || !collection) {
         action->trigger();
 
         return;
     }
 
-    NodeCreationContextScope scope(app, collection, g_scenePos);
+    NodeCreationContextScope scope(app, collection, scenePos);
     action->trigger();
+}
+
+void
+triggerAction(QAction* action)
+{
+    triggerActionInGraph(action, g_target.data(), g_scenePos);
 }
 
 void

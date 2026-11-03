@@ -123,7 +123,9 @@ typedef OfxRangeD RangeD;
 #define kDopeSheetEditorRightTrimCommandCompressionID 20
 #define kDopeSheetEditorTransformKeysCommandCompressionID 21
 #define kDopeSheetEditorSlipReaderCommandCompressionID 23
+#define kDopeSheetEditorTrimFrameRangeCommandCompressionID 25
 #define kNodeUndoChangeCommandCompressionID 24
+#define kColorWheelEditCommandCompressionID 25
 
 #define PY_VERSION_STRINGIZE_(major, minor) \
     # major "." # minor

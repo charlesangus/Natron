@@ -160,6 +160,49 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: either a test shows the control changes the output, or the knob is gone and the panel check passes.
   - size: M
 
+## Phase 211.8: Interactive performance (user, 2026-11-03)
+
+Analysis (consultant, 2026-11-03): ~95% of the cost is PoissonHeal's 2000 red-black SOR sweeps over every masked pixel, mostly on one thread (work split by 256 runs), rerun from scratch on every pen-motion and offset-drag event, over the full frame (no RoI, no tiles), with full-frame wavelet decomposition whenever Scales > 0. Target: < 100 ms per interactive update on a modest workstation.
+
+- [ ] M211.P8.T1 — Headless bench and render-count test
+  - files: Tests/Native/NativeRetouchBench_Test.cpp (new), NativeRetouch_Test.cpp
+  - approach: call RC::process directly on 2K/4K synthetic images: one 100 px × 800 px heal brush (horizontal and diagonal), render scale 1 and 0.5, Scales 0 and 5, clone + heal; report ms per render. Node-level test counting renders per pen-motion and per offset-drag event.
+  - verify: the bench prints per-case timings; the render-count test fails on today's code (several renders per event).
+  - size: M
+- [ ] M211.P8.T2 — Multigrid heal solver (CPU)
+  - files: Engine/Nodes/Filter/EdgeAware/PoissonHeal.{h,cpp}
+  - approach: masked multigrid V-cycles (restriction/prolongation that respect the mask, red-black smoother) solved to convergence; work split by pixel count, not run count. Departs from darktable's unconverged 2000-iteration SOR on large masks (user-approved).
+  - verify: NativeRetouch parity references hold within tolerance on small masks; a new test shows the converged residual ≤ SOR's; bench heal ≥ 20× faster.
+  - size: L
+- [ ] M211.P8.T3 — Draft heal while dragging, full heal on release
+  - files: Retouch.cpp (setShapeSourceOffset, renderOp), RetouchInteract.cpp
+  - approach: one evaluation per gesture tick (group the offset setValues inside begin/endChanges); while a stroke is painted or an offset dragged, render a draft heal (coarse multigrid level / capped cycles, warm-started from the cached previous solution); run the full solve on pen-up. (user, 2026-11-03)
+  - verify: render-count test ≤ 1 render per motion event; GUI script passes; the released result equals a fresh full render.
+  - size: M
+- [ ] M211.P8.T4 — Region of interest and tiles
+  - files: Retouch.{h,cpp} (getRegionsOfInterest, supportsTiles, renderOp)
+  - approach: RoI = render window plus each intersecting shape's source bbox, padded by the wavelet support when Scales > 0; process that crop with mirror indices against the full RoD; supportsTiles true.
+  - verify: a cropped render equals the full render within 1e-6.
+  - size: M
+- [ ] M211.P8.T5 — Wavelet decomposition only where needed
+  - files: RetouchRender.cpp, EdgeAware/Wavelets.cpp
+  - approach: skip decomposition when no shape is on scale ≥ 1 and Output is Result; otherwise compute only the affected detail layers over shape + source bbox plus padding (output = input + Σ(detail′ − detail)); scale-0/residual/merge-from shapes keep the full path.
+  - verify: existing scale and residual references hold within fp tolerance; bench Scales 5 case faster in proportion to area.
+  - size: M
+- [ ] M211.P8.T6 — Per-shape result cache and faster mask raster
+  - files: RetouchRender.cpp, Retouch.cpp
+  - approach: cache each shape's patch keyed by input hash, geometry, settings, offset and the keys of earlier overlapping shapes, so editing one shape recomputes only it and later overlapping shapes; parallelise rasterizeBrush by rows, merge sub-strokes once, cache masks by geometry hash.
+  - verify: editing shape A doesn't rerun shape B's solver (test); brush tests unchanged.
+  - size: M
+- [ ] M211.P8.T7 — GPU multigrid heal
+  - files: EdgeAware/EdgeAwareGpu.cpp, the heal Slang kernels
+  - approach: port T2's multigrid to Slang (tens of dispatches instead of 6000), sweep masked pixels only, stop at convergence; removes the 500-iteration push-descriptor CPU fallback.
+  - verify: NativeRetouchGpu within tolerance; dispatch count per heal recorded.
+  - size: L
+
+**Phase gate:** bench at 2K, render scale 0.5, < 100 ms per interactive update on CPU for the 100 × 800 heal stroke; new AppImage UAT on the user's workstation.
+
+
 ## Decisions
 
 - 2026-11-02 — Audit: P6.T1–T3 committed and pushed (1c7e18874, 0d1bd238e, GUI check f4e856239). The round-3 UAT AppImage (03:30) was built after the branch head.
@@ -215,3 +258,4 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 - 2026-11-02 — P6 at 1c7e18874. Decisions (user): the carried source offset starts at 0 like RotoPaint; Ctrl at pen down drags the offset as in RotoPaint; RotoPaint's Reset Transform button is relabelled Reset Clone Offset to match its script name.
 - 2026-11-02 — P7 at 869042367: Shift-drag brush size via the shared roto interact; click inside a brush stroke selects it, its settings then edit it (stroke points aren't editable, as in RotoPaint; no Transform tab); one Shape Settings tab (old next-shape knobs kept hidden as storage); General Color hidden — a retouch mask uses coverage only (implementer).
 - 2026-11-03 — UAT round 4: UI approved, but performance blocks shipping: a single heal stroke takes seconds to draw on the user's modest workstation (target < 100 ms), and adjusting a clone offset interactively isn't smooth even with the preview downscale. Profile and speed up before merge (user).
+- 2026-11-03 — Performance decisions (user): multigrid heal solved to convergence (departs from darktable's unconverged output on large strokes); draft heal while painting/dragging, full heal on release.

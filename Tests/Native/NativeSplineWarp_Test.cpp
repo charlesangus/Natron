@@ -780,7 +780,7 @@ TEST_F(NativeSplineWarpTest, CropToFormat)
     ASSERT_TRUE(source && warp);
     setParitySourceOrigin(source, -8, -8);
     ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterType, { (double)Resampler::eFilterImpulse }));
-    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 20., 15., 16., 3., 0.)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 20., 15., 16., 3., 0.)));
     expectRectNear(RectD(-8., -8., 56., 40.), rodOf(source), "source");
 
     expectRectNear(RectD(0., 0., 56., 40.), rodOf(warp), "cropped");

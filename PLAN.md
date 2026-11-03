@@ -307,7 +307,7 @@ future core work has solid ground to build on.
 | M205 | Object Mask To Roto | doing | M203, M204, M146 | bosley-native-nodes | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
 | M206 | Neural Raw Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | done | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
-| M208 | Neural Upscale | doing | M203, M204, M207 | bosley-native-nodes | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
+| M208 | Neural Upscale | done | M203, M204, M207 | bosley-native-nodes | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
 | M210 | Profiled Denoise | done | M209 |  | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | doing | M209, M146 | bosley-native-nodes | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |

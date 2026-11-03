@@ -41,6 +41,7 @@
 #include <QJsonValue>
 #include <QString>
 
+#include "Engine/Nodes/Filter/DenoiseProfiled.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -252,6 +253,7 @@ protected:
         NodePtr caCorrect;
         NodePtr hotPixels;
         NodePtr denoise;
+        NodePtr profiledDenoise;
 
         NodePtr forModule(const std::string& module) const
         {
@@ -273,6 +275,8 @@ protected:
                 return hotPixels;
             } else if (module == "rawdenoise") {
                 return denoise;
+            } else if (module == "denoiseprofile") {
+                return profiledDenoise;
             }
 
             return NodePtr();
@@ -280,7 +284,7 @@ protected:
 
         bool complete() const
         {
-            return chain.complete() && caCorrect && hotPixels && denoise;
+            return chain.complete() && caCorrect && hotPixels && denoise && profiledDenoise;
         }
     };
 
@@ -307,6 +311,12 @@ protected:
         result.caCorrect = insertBeforeDemosaic(result.chain, PLUGINID_NATRON_RAWCACORRECT);
         result.hotPixels = insertBeforeDemosaic(result.chain, PLUGINID_NATRON_RAWHOTPIXELS);
         result.denoise = insertBeforeDemosaic(result.chain, PLUGINID_NATRON_RAWDENOISE);
+        // darktable runs denoiseprofile between demosaic and colorin.
+        result.profiledDenoise = createNode(QString::fromUtf8(PLUGINID_NATRON_DENOISEPROFILED));
+        EXPECT_TRUE(bool(result.profiledDenoise));
+        if (result.profiledDenoise) {
+            insertAbove(result.chain.inputColor, result.profiledDenoise);
+        }
 
         return result;
     }

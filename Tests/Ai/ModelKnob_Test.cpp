@@ -223,6 +223,19 @@ TEST_F(ModelKnobTest, DeletingTheModelBringsTheErrorBack)
     EXPECT_NE(persistentError(node).find("not installed"), std::string::npos) << persistentError(node);
 }
 
+TEST_F(ModelKnobTest, FailedDownloadReasonSurvivesTheReRender)
+{
+    NodePtr node = createModelNode();
+    ASSERT_TRUE(bool(node));
+
+    Q_EMIT _downloader->finished(QString::fromLatin1(kModelA), false, QStringLiteral("the server stopped sending data"));
+    EXPECT_NE(persistentError(node).find("stopped sending data"), std::string::npos) << persistentError(node);
+
+    std::string error;
+    EXPECT_FALSE(render(node, &error));
+    EXPECT_NE(persistentError(node).find("stopped sending data"), std::string::npos) << persistentError(node);
+}
+
 TEST_F(ModelKnobTest, DisabledAiSetsTheError)
 {
     NodePtr node = createModelNode();

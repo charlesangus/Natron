@@ -54,6 +54,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
@@ -453,6 +454,7 @@ Settings::initializeKnobsRendering()
                                                                "transformations.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
     _activateTransformConcatenationSupport->setName("transformCatSupport");
     _renderingPage->addKnob(_activateTransformConcatenationSupport);
+    _renderAffectingKnobs.push_back(_activateTransformConcatenationSupport);
 }
 
 void
@@ -680,6 +682,12 @@ Settings::initializeKnobsProjectSetup()
                                            "needs AI enabled and the RawNIND Bayer model installed (Preferences > AI Models), and a "
                                            "Bayer sensor; X-Trans files always get RawDemosaic."));
     _projectsPage->addKnob(_developRawDemosaic);
+    _developRawDenoise = AppManager::createKnob<KnobBool>(this, tr("Develop RAW Denoise"));
+    _developRawDenoise->setName("developRawDenoise");
+    _developRawDenoise->setHintToolTip(tr("If checked, the Develop RAW chain also has DenoiseProfiled between RawDemosaic and "
+                                          "RawInputColor, where darktable runs its denoise (profiled), with the camera's noise "
+                                          "profile found from the file."));
+    _projectsPage->addKnob(_developRawDenoise);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
@@ -1330,6 +1338,50 @@ Settings::initializeKnobsViewers()
                                             "displayed only for the render path for the current viewer "
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
+
+    _viewer3DNavigation = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Navigation"));
+    _viewer3DNavigation->setName("viewer3DNavigation");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("nuke", "Nuke", tr("Ctrl+Left drag tumbles, Alt+Left or Middle drag pans, Alt+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("maya", "Maya", tr("Alt+Left drag tumbles, Alt+Middle drag pans, Alt+Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("blender", "Blender", tr("Middle drag tumbles, Shift+Middle drag pans, Ctrl+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("houdini", "Houdini", tr("Space or Alt held: Left drag tumbles, Middle drag pans, Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("custom", "Custom", tr("The bindings set in the shortcut editor's 3DViewer group.").toStdString()));
+        _viewer3DNavigation->populateChoices(entries);
+    }
+    _viewer3DNavigation->setHintToolTip(tr("The mouse bindings of the viewer's 3D view. In every preset the wheel dollies, "
+                                           "a left click selects, Shift adds and Ctrl toggles, and a left drag from empty space "
+                                           "draws a selection marquee. Choosing a preset rewrites the bindings in the shortcut "
+                                           "editor's 3DViewer group; editing one there switches this to Custom."));
+    _viewersTab->addKnob(_viewer3DNavigation);
+
+    _viewer3DGuideSize = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Guide Size"));
+    _viewer3DGuideSize->setName("viewer3DGuideSize");
+    _viewer3DGuideSize->setHintToolTip(tr("How long camera frustums reach and how big light icons are in the viewer's 3D view, "
+                                          "in scene units. Only the guides change: the scene's cameras and lights are not "
+                                          "edited."));
+    _viewer3DGuideSize->setMinimum(1e-3);
+    _viewer3DGuideSize->setDisplayMinimum(0.1);
+    _viewer3DGuideSize->setDisplayMaximum(100.);
+    _viewersTab->addKnob(_viewer3DGuideSize);
+    _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
+    _viewer3DTransformTarget->setName("viewer3DTransformTarget");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("owner", "Owner, Else Edit Node", tr("The translate, rotate and scale of the node that made the prim, when it is in the viewed branch; "
+                                                                            "otherwise the USDEditTransform whose panel is open and that targets the prim, or a new one.")
+                                                                             .toStdString()));
+        entries.push_back(ChoiceOption("openEdit", "Open Edit Node", tr("The USDEditTransform whose panel is open, its pattern extended to the selection; a new one "
+                                                                        "when no panel is open.")
+                                                                         .toStdString()));
+        entries.push_back(ChoiceOption("alwaysEdit", "Always Edit Node", tr("A USDEditTransform after the viewed node, reused while the selection stays the same.").toStdString()));
+        _viewer3DTransformTarget->populateChoices(entries);
+    }
+    _viewer3DTransformTarget->setHintToolTip(tr("Where a drag of the viewer's 3D transform handles writes the change. A new USDEditTransform "
+                                                "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
+                                                "undo step."));
+    _viewersTab->addKnob(_viewer3DTransformTarget);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1725,6 +1777,7 @@ Settings::setDefaultValues()
     _firstReadSetProjectFormat->setDefaultValue(true);
     _developRawOnRead->setDefaultValue(true);
     _developRawDemosaic->setDefaultValue(0);
+    _developRawDenoise->setDefaultValue(false);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -1773,6 +1826,9 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
+    _viewer3DGuideSize->setDefaultValue(3.);
+    _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2288,6 +2344,9 @@ Settings::restoreKnobsFromSettings(const std::vector<KnobI*>& knobs)
                 } else {
                     assert(false);
                 }
+            } else if (!_restoringSettings && knobs[i]->getIsPersistent()) {
+                // Never saved means the stored value is the default, so a discarded edit reverts to it.
+                knobs[i]->resetToDefaultValueWithoutSecretNessAndEnabledNess(j);
             }
         }
     }
@@ -2439,6 +2498,10 @@ Settings::onKnobValueChanged(KnobI* k,
                              ViewSpec /*view*/,
                              bool /*originatedFromMainThread*/)
 {
+    // Rewritten before settingChanged, so the shortcut editor shows the preset's bindings.
+    if ((k == _viewer3DNavigation.get()) && !_restoringSettings) {
+        appPTR->onViewer3DNavigationChanged((int)getViewer3DNavigation());
+    }
     Q_EMIT settingChanged(k);
     bool ret = true;
 
@@ -2611,6 +2674,36 @@ int
 Settings::getMaxOpenedNodesViewerContext() const
 {
     return _maximumNodeViewerUIOpened->getValue();
+}
+
+Settings::Viewer3DNavigationEnum
+Settings::getViewer3DNavigation() const
+{
+    return (Viewer3DNavigationEnum)_viewer3DNavigation->getValue();
+}
+
+double
+Settings::getViewer3DGuideSize() const
+{
+    return _viewer3DGuideSize->getValue();
+}
+
+void
+Settings::setViewer3DNavigation(Viewer3DNavigationEnum navigation)
+{
+    _viewer3DNavigation->setValue((int)navigation);
+}
+
+bool
+Settings::isViewer3DNavigationKnob(const KnobI* knob) const
+{
+    return knob == _viewer3DNavigation.get();
+}
+
+Settings::Viewer3DTransformTargetEnum
+Settings::getViewer3DTransformTarget() const
+{
+    return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
 }
 
 bool
@@ -3502,6 +3595,12 @@ Settings::isDevelopRawNeuralDemosaic() const
 }
 
 bool
+Settings::isDevelopRawDenoiseEnabled() const
+{
+    return _developRawDenoise->getValue();
+}
+
+bool
 Settings::isAiEnabled() const
 {
     return _aiEnabled->getValue();
@@ -3603,6 +3702,32 @@ bool
 Settings::areRGBPixelComponentsSupported() const
 {
     return _activateRGBSupport->getValue();
+}
+
+U64
+Settings::getRenderAffectingDigest() const
+{
+    ContentHasher h;
+
+    h.appendU64(_renderAffectingKnobs.size());
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        h.appendString(_renderAffectingKnobs[i]->getName());
+        h.appendU64(_renderAffectingKnobs[i]->getContentHash());
+    }
+
+    return h.finalize();
+}
+
+bool
+Settings::isRenderAffecting(const KnobI* knob) const
+{
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        if (_renderAffectingKnobs[i].get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool

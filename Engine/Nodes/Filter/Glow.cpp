@@ -624,10 +624,6 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
         extent.growX += 1;
         extent.growY += 1;
     }
-    if (!bloom.empty()) {
-        extent.sigma = bloom.front().sigma;
-        extent.recursive = bloom.front().recursive;
-    }
     passes->push_back(extent);
 
     passes->push_back(framePass(state, [state](const PassScratch& image, const PassScratch& frame) -> PassRowFn {
@@ -1270,6 +1266,13 @@ GlowOp::passes(const Params& params,
                const PassContext& context) const
 {
     return glowPasses(params, context);
+}
+
+std::optional<GpuWeight>
+GlowOp::gpuWeight(const Params& params,
+                  const PassContext& context) const
+{
+    return BloomKernels::gpuWeight(settingsFor(params, context));
 }
 
 Glow::Glow(NodePtr node)

@@ -76,7 +76,7 @@ that is specific to one kind of data -- see "Single hierarchy" above. What it
 does add is kind-agnostic: the spec, the `route()` identity hook, `KnobReader`
 and `bakeParams()`, and the GPU virtuals (`canRenderOnGpu()`, `renderGpu()`,
 `getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuExtraInputLayers()`,
-`getGpuStageSummary()`, `gpuCostHint()`), which refuse by default
+`getGpuStageSummary()`, `gpuWeight()`), which refuse by default
 (`getGpuExtraInputLayers()` asks for no extra layers). The engine casts to
 `NativeEffectBase` to reach them.
 
@@ -292,6 +292,145 @@ the default pass-through. Key filters are
 characters including `/`, `?` one, an empty list matching every key.
 
 
+## Reverse-Flow Variables
+
+A Reverse-Flow Variable (RFV) is a named value that flows up the graph, from a
+node towards its inputs, for parameter expressions to read. Any parameter that
+holds a value can be a variable: a boolean, an integer, a choice, a double, a
+string, or several dimensions of one of them. A variable can be animated or
+driven by an expression.
+
+Variables are set in two places:
+
+- **The project.** Variables on the project settings' Variables page are the
+  base values, seen wherever no Set node overrides them. A project variable is
+  also `app.<name>` in Python.
+- **The `RFVSet` node** (Set). It passes its input through
+  unchanged and sets its variables for everything upstream of it. Its
+  Variables tab and the Python API are documented in
+  `Engine/Nodes/RFV/docs/RFVSet.md`.
+
+The RFV nodes, `RFVSet`, `RFVSwitch` and `RFVRead`, are in the toolbar's
+Reverse Flow Variable category.
+
+A variable is a child of a group flagged as an RFV group, and its name is the
+child's script name. Only the project and the Set node carry such a group, so
+an ordinary user parameter is never a variable.
+
+### Reading a variable: the `rfv` object
+
+Expressions read variables through `rfv`. These three forms are equivalent:
+`rfv.shot`, `rfv('shot')` and `rfv['shot']`. An unset variable reads as `None`,
+so an expression can test for it. Values are Python bools, ints, floats and
+strings, and a variable with several dimensions is a list of them.
+
+For example, a Grade whose gain expression is `1 if rfv.var == 'a' else 2`,
+under a Set setting `var` to `'a'` on one branch and to `'b'` on another,
+renders with gain 1 on the first branch and gain 2 on the second
+(`Tests/RFVRender_Test.cpp`).
+
+### Per-path semantics
+
+An upstream node sees the variables of the nearest Set node below it, on the
+path that requested it. A variable that no Set on the path sets keeps the
+project's value. When one node is reached through two Sets in one render (a
+diamond), it renders once for each distinct set of values it reads.
+
+The engine finds out what a node reads by scanning its expressions for
+`rfv.<name>`, `rfv('<name>')` and `rfv['<name>']`. Any other use of `rfv`, such
+as `getattr(rfv, name)`, a computed key or passing `rfv` to a function, counts
+as reading every variable. A node's context key covers only the variables that
+it and everything upstream of it read. Nodes that read no variable have one
+context, so they render and cache exactly as they would without RFVs.
+
+### Switching on a variable: `RFVSwitch`
+
+The `RFVSwitch` node passes through the input whose pattern row (Input 0,
+Input 1, ...) first matches the value of one variable, read as `rfv` would read
+it in an expression of the switch, as text. Patterns are globs, or ECMAScript
+regular expressions after a `re:` prefix, matched against the whole value. Under
+two RFVSet nodes setting different values, one switch picks a different input on each
+path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVSwitch.md`.
+
+### Inspecting variables: `RFVRead`
+
+The `RFVRead` node passes its input through and lists, in its read-only
+Variables parameter, every variable that reaches it with its value at the
+frame it is read at for the timeline's frame, time nodes on the path moving
+that frame as they do in a render. It resolves them without rendering, along the path to the
+active viewer's displayed inputs, folding the Set nodes with the same function
+the render uses (`RFV::resolveContextAt`). Off every viewer path it lists the
+project's variables (`Tests/RFVRead_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVRead.md`.
+
+### Resolution time
+
+A variable is read at the time of the expression that reads it, not at the time
+the render passes the Set node:
+
+- An animated or expression-driven Set variable is stored in the context as a
+  binding to the Set's parameter. The binding is evaluated at the reading
+  expression's time. So a Transform whose translate reads an animated variable
+  motion-blurs, and a TimeOffset, FrameHold or TimeBlur above the Set
+  re-samples the variable at the times it shifts to. Any expression counts as
+  time-varying, even one that ignores the frame.
+- A constant Set variable is a plain value. Nodes reading it under equal values
+  share their cache entries.
+- A project variable is likewise evaluated at the reading expression's time.
+- A Set variable's own expression may read `rfv`. It sees the values set below
+  that Set, evaluated at its own time. Project values are the bottom layer.
+
+There is no option to hold a variable at the Set node's frame.
+
+### Outside a render
+
+In a parameter panel, `instanceChanged` or a Python script, `rfv` reads the
+project's values at the timeline's current frame. Editing a project variable
+re-evaluates every expression that reads it and changes the hash of the nodes
+holding those expressions, as editing any parameter an expression reads does.
+A Set node's variables are not dependencies of the expressions that read them,
+because which Set a node sees depends on the path a render takes. A parameter
+panel therefore shows the project's value.
+
+### For node authors
+
+- Expressions need nothing more than `rfv`: the scan above finds what they read.
+- A node that reads a variable outside an expression, by name in C++, as
+  RFVSwitch does, names it in `EffectInstance::getExtraContextReads()` so the
+  engine keys the node by that variable under a Set; it calls
+  `invalidateRenderContextReads()` when the name changes. Where no Set on the
+  path sets the variable the context holds nothing for it and the project's
+  value is read, which the context key leaves out. So the node also hashes the
+  project variable's content in `appendNodeContentHash()`, and
+  `RFV::appendProjectVariableReads()` adds what that variable's expression reads
+  through `rfv`. No listener links the node to the project's knob, so editing a
+  project variable calls `RFV::rehashExtraContextReaders()`, which marks the
+  hash of every node whose extra reads name it. To read the value, open a
+  `PyRFV::ExpressionScope` on one of the node's knobs and call
+  `PyRFV::getVariable()`, which can also return the option labels of the Choice
+  that supplied the value.
+- A node that sets variables for its inputs, as the Set node does, overrides
+  `EffectInstance::getInputContexts()`.
+- An input's metadata, region of definition, layers and frame range are read
+  under the context the node requests that input under, so a format or frame
+  range an expression drives from `rfv` follows the Set below the node
+  (`Tests/RFVMetadata_Test.cpp`). A node calling those actions through
+  `EffectInstance` gets this without extra code. Outside any Set, such as the
+  timeline asking a bare node, the project's values apply.
+
+### v1 limits
+
+- A Group node carries no variables of its own.
+- RFVRead lists what reaches it along the active viewer's path only, not a
+  Write's or another viewer's, and for the first view only.
+- RFVRead follows only the input a node passes through when it is an identity,
+  as asked for a one-pixel region at the frame. A node that reads a range of
+  frames counts as reading the first.
+- RFVRead does not refresh on every frame during playback. It refreshes once
+  frames stop arriving for a quarter of a second.
+
+
 ## I/O nodes
 
 Each I/O node is documented in `Engine/Nodes/IO/docs/<Node>.md`.
@@ -411,16 +550,10 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
       `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
       holds its `NATRON_I_VARIANT` line, see step 4.
-- [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
-      from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
-      and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
-      with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
-      rather than writing rows by hand. A node the tool has no rows for, such as
-      one that `Engine/GpuCostSeeds/inputs.txt` never renders, has no fragment:
-      `RenderProfileReportSelfTest` fails on any fragment the tool would not
-      write, a hand-written row-less one included. Delete
-      `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
-      supersedes, or the plug-in keeps a second seed.
+- [ ] `gpuWeight()` override, when the OpKind default is wrong for the node: cost that
+      grows with a knob such as a size (return `gpuSizeScaledWeight(...)`), or work
+      heavy enough to always want the GPU (return `GpuWeight::heavy()`). Leave it out
+      otherwise.
 - [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line
       (`Tolerance: none recorded.`, or `Tolerance:` followed by the table of
       class and test constant, as in `Color/docs/Grade.md`).
@@ -444,7 +577,7 @@ plug-in has no fragment, when two fragments share an ID, when a marker names an
 ID a native node registers, or names a replacement that is not a registered
 native plug-in. `OfxRetired_Test` fails when a marker names an ID no loaded OFX
 bundle provides (a typo), or when a retired ID is still registered as an OFX
-plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
+plug-in. Neither checks the doc, icon or kernel fragments.
 
 ## Data kinds
 
@@ -948,8 +1081,8 @@ with `bake()`/`Params` as for Point.
 point pass, over scratch slots; `Pass::lineX()`, `lineY()`, `gather()` and
 `point()` build them and say their halo and growth. `PassList::gpu` is one
 recorder for the whole list, because Blur's GPU kernels fuse their passes. An op
-may add `costHint(params, ctx)` for the GPU cost model; without it the list's
-sigma gives one. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
+with a Passes list weighs Filter by default; one whose cost follows a size
+returns `gpuSizeScaledWeight()` from `gpuWeight()`. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
 `EdgeDetect.cpp`) runs its pre-blur, derivative, combine and morphology passes
 over the same buffer the CPU passes use. A node narrows the region of definition the list gives by
 overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
@@ -958,7 +1091,10 @@ overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
 `Params` and a `RouteContext` (the time, the view and which inputs are
 connected). Any op kind may also have `route()`: the host asks it first and an
 answer other than `None` makes the node an identity of that input (Dissolve at
-an integer `which`).
+an integer `which`), and its frames needed are then that input at the time the
+route names, or none for `Black`. A route at another time than the one asked
+is how a node remaps time: the scheduler plans an identity task on the input at
+that time, and GPU placement keeps the region going through it.
 
 **Resample** has two forms, and an op has exactly one.
 
@@ -1097,10 +1233,44 @@ dependencies, form a run, and a run with a task that has no GPU path (neither
 cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
 between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
 at full scale only, and a region refuses such a node at a proxy level, so its task there is never
-a GPU candidate (`makeGpuQueryForTask()`). The raw nodes have no cost seed rows, so the cost
-model does not price them: a region of two or more connected GPU candidates with no priced member
-goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
-(`PlacementInputs::isPriced`).
+a GPU candidate (`makeGpuQueryForTask()`). Raw nodes are Custom, so they weigh Heavy by default and a
+single GPU candidate among them is placed on the GPU when its largest image reaches
+`kGpuRegionMinPixels`.
+
+### Edge-aware library
+
+`Engine/Nodes/Filter/EdgeAware/` holds darktable's edge-aware filters as plain functions over
+tightly packed, top-down, interleaved float buffers, in `namespace EdgeAware`. They are not
+nodes: node code calls them, passing a `ParallelFor` (`serialFor`, or the raw nodes' one). They
+follow darktable's C paths (release-5.6.2), GPL-3.0-or-later, and treat a non-finite sample
+as 0 where darktable would let it spread.
+
+| Function | darktable origin |
+| --- | --- |
+| `boxMean`, `boxMeanRow`, `boxMeanColumns`, `boxMeanVariance` | `src/common/box_filters.cc` |
+| `guidedFilter`, `guidedFilterGrey` | `src/common/guided_filter.c` |
+| `fastGuidedFilterGrey`, `fastSurfaceBlur`, `interpolateBilinear`, `quantize` | `src/common/fast_guided_filter.h` |
+| `recursiveGaussianBlur`, `dericheCoefficients` | `dt_gaussian_blur()` (order 0) in `src/common/gaussian.c` |
+| `eigfSurfaceBlur` | `src/common/eigf.h` |
+| `dwtDecompose`, `dwtDecomposeScales`, `dwtMaxScale`, `dwtFirstScaleVisible`, `waveletRecompose` | `src/common/dwt.c` |
+| `bsplineDecomposeScales`, `blur2DBspline`, `decompose2DBspline`, `equivalentSigmaAtStep`, `numStepsToReachEquivalentSigma` | `src/common/bspline.h` |
+| `poissonHeal` | `src/common/heal.c` |
+
+`EdgeAwareGpu.h` has a `record*` counterpart of each, except `dwtDecompose` with its per-layer
+callback and the single-line box passes. Each records into a `GpuRecordContext` over device buffers
+with the CPU function's sizes and parameters, using scratch buffers from the context's pool. The
+kernels are `Engine/Gpu/Kernels/boxfilter.slang`, `guidedfilter.slang`, `eigf.slang`,
+`wavelets.slang` and `heal.slang`. Results match the CPU to rounding, as
+`Tests/Native/EdgeAwareGpu_Test.cpp` checks (1e-4 relative, 1e-3 for the heal). A few points
+differ by design:
+
+- The colour guided filter runs as one tile. The CPU cuts images over 512 pixels into tiles,
+  which changes only the rounding.
+- `recordQuantize` at a sampling other than 0 or 1 may put a sample within a few ulps of a step on
+  the other side.
+- `recordPoissonHeal` relaxes the whole image red/black and records all `maxIter` iterations;
+  the ones after convergence return at once. On a device without push descriptors it refuses more
+  than `kPoissonHealGpuMaxIterationsWithoutPushDescriptors`.
 
 ### AI nodes
 
@@ -1143,6 +1313,15 @@ copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
 lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
+
+An op declares how much it weighs for GPU placement (`Engine/GpuWeight.h`) with an
+optional `std::optional<GpuWeight> gpuWeight(params, context) const`; without it, or
+when it returns an empty optional, the weight follows the op's `OpKind`: Point,
+Composite and Route are Point (1), Passes and Resample are Filter
+(`kGpuFilterWeight`), Custom is Heavy. A Filter whose cost follows a size returns
+`gpuSizeScaledWeight(sizeInPixelsAtTheContextScale)`, which is capped. An op that
+renders through a runtime shader, or averages several matrices per pixel, returns
+`GpuWeight::heavy()`.
 
 A runtime shader finds its source and destination by name, not by binding: its
 only storage buffers are the blocks named `Src` and `Dst`
@@ -1210,6 +1389,23 @@ declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.
+
+A node that reads an input at another time than the one rendered declares the
+times in `getFramesNeeded()` and fetches them with
+`NativeEffectBase::fetchInputAt(inputNb, time, args, layer, mapToClipPrefs,
+roiPixel)`, never with `getImage()` at a time of its own. `fetchInputAt()`
+checks the time against the declaration: a time that is not one of the frames
+a declared range plans (its min, then each whole frame up to its max) posts an
+error naming it and returns null, and the render fails instead of pulling an
+unplanned frame. A range is planned only when its bounds are whole frames or
+it is a single time, so a fractional time is declared as a range of its own.
+The scheduler prefetches at most
+`NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING` (4) frames per declared range, so a
+node needing scattered times declares one range per time; frames beyond the
+cap of one range are still fetched, but as unplanned pulls. On the GPU, the
+same declaration reaches `GpuQuery::inputTimes`, and `GpuRenderArgs` hands an
+op an input at another time than the one rendered through `inputAt(inputNb,
+time)`.
 
 ### Threading
 

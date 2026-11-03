@@ -299,8 +299,8 @@ protected:
                                       RoIMap* ret) OVERRIDE;
 
     /**
-     * @brief For a Route op, only the input route() chooses, at the time it chooses, and no
-     * input for Black; the default for every other op kind.
+     * @brief Where route() chooses an input, whatever the op kind, only that input at the time
+     * it chooses, and no input where it answers Black; the default where it answers None.
      **/
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
@@ -498,6 +498,13 @@ protected:
     StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The StagePlan render() hands a non-Composite op's renderOp() at time and view.
+     **/
+    StagePlan resolveRenderPlan(double time,
+                                ViewIdx view,
+                                const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
      * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
      * changed rod; the default changes nothing.
@@ -600,36 +607,22 @@ public:
     }
 
     /**
-     * @brief For a Passes op, the op's costHint(params, context) when it has one, else
-     * passListCostHint() of its passes, at time, view and mipmapLevel. For a Resample op, its
-     * costHint(params, context) when it has one. Empty otherwise.
+     * @brief The op's gpuWeight(params, context) when it has one and it returns a weight, else
+     * the default weight of the op's kind.
      **/
-    virtual std::optional<GpuCostHint> gpuCostHint(double time,
-                                                   ViewIdx view,
-                                                   unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bake(time, view);
-            const PassContext context = getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel));
-
-            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
-                          }) {
-                return _op.costHint(params, context);
-            } else {
-                return passListCostHint(_op.passes(params, context));
+        if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
+                          { o.gpuWeight(p, c) } -> std::same_as<std::optional<GpuWeight>>;
+                      }) {
+            if (const std::optional<GpuWeight> weight = _op.gpuWeight(bake(time, view), getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel)))) {
+                return *weight;
             }
-        } else if constexpr (PIPELINE.op == OpKind::Resample) {
-            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
-                          }) {
-                return _op.costHint(bake(time, view), getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
-            } else {
-                return std::nullopt;
-            }
-        } else {
-            return std::nullopt;
         }
+
+        return defaultGpuWeight(PIPELINE.op);
     }
 
 protected:

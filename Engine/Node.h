@@ -139,10 +139,6 @@ public:
 
     void initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName);
 
-    void loadKnob(const KnobIPtr& knob,
-                  const Serialization::NodeSerialization& serialization,
-                  bool updateKnobGui = false);
-
     ///Set values for Knobs given their serialization
     void setValuesFromSerialization(const CreateNodeArgs& args);
 
@@ -337,6 +333,15 @@ public:
     static void setHashMarkTraceForTesting(const HashMarkTrace& trace);
 
     /**
+     * @brief Called by every input edit, and by the dequeue that applies queued ones, once it has
+     * decided whether to queue (`queued`: a render holds the node) and before it applies, with
+     * render starts on `node` locked out: the hook must not start a render on that node or wait
+     * for one to start. An empty function removes it. For tests.
+     **/
+    typedef std::function<void(const Node* node, bool queued)> InputEditHook;
+    static void setInputEditHookForTesting(const InputEditHook& hook);
+
+    /**
      * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
      **/
     bool refreshHashNow();
@@ -419,12 +424,24 @@ public:
 
     /**
      * @brief True when the project frame range is part of this node's content hash: the effect
-     * reads it, or an expression on one of its knobs can.
+     * reads it, or an expression on one of its render-hashed knobs can.
      **/
     bool dependsOnProjectFrameRange() const;
 
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
+    /**
+     * @brief Takes the cache ID saved with the node unless a live node of any project holds it.
+     **/
+    void adoptSerializedCacheID(const std::string& cacheID);
+
+private:
+    static bool claimCacheID(const std::string& cacheID);
+    static void releaseCacheID(const std::string& cacheID);
+
+    void releaseOwnCacheID();
+
+public:
     /**
      * @brief Forwarded to the live effect instance
      **/
@@ -906,11 +923,10 @@ public:
     void onOpenGLEnabledKnobChangedOnProject(bool activated);
 
 private:
+    // queueWhileRendering false applies the edit to the real inputs even while a render holds the node.
+    bool replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhileRendering);
 
-    bool replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiValues);
-
-    int disconnectInputInternal(Node* input, bool useGuiInputs);
-
+    int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
 
@@ -1556,6 +1572,13 @@ public:
      * @brief Returns true if the parallel render args thread-storage is set
      **/
     bool isNodeRendering() const;
+
+    /**
+     * @brief Records that an edit was queued because the node was rendering, so a dequeue
+     * deferred by a render that still holds the node aborts the viewer renders instead of waiting
+     * for them to end on their own.
+     **/
+    void notifyActionQueued();
 
     bool hasPersistentMessage() const;
 
@@ -2322,6 +2345,12 @@ protected:
      * when each is next read. Callable from any thread.
      **/
     void computeHash();
+
+    /**
+     * @brief Runs edit with render starts of this node held off, and marks the hash before they
+     * are let in again when edit returns true.
+     **/
+    void editBeforeRenderStarts(const std::function<bool()>& edit);
 
 private:
 

@@ -52,7 +52,6 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
@@ -1180,24 +1179,16 @@ RenderScheduler::executeTask(const FramePtr& frame,
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
         const bool profiling = sink.isEnabled();
-        // Only while placement can use what the cost model learns, which is never from an identity task.
-        const bool observing = !task.isIdentity && isGpuPlacementAvailable();
-        const unsigned long long renderActionsBefore = EffectInstance::getRenderActionsOnThisThread();
-        const std::chrono::steady_clock::time_point renderStart = (profiling || observing) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+        const std::chrono::steady_clock::time_point renderStart = profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
         retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
         --_tasksRendering;
-        const long long wallNs = (profiling || observing) ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count() : 0;
         if (profiling) {
+            const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
             sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
-        }
-        // A task whose output came from the cache measured no rendering, and would teach the model that the CPU is
-        // nearly free.
-        if (observing && (retCode == EffectInstance::eRenderRoIRetCodeOk) && (EffectInstance::getRenderActionsOnThisThread() != renderActionsBefore)) {
-            GpuCostModel::session().observeCpu(task, wallNs, budget);
         }
 
         bool glPlanes = false;
@@ -1326,7 +1317,6 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             times.stagedForgotten = report.stagedForgotten;
             times.memberIntervals = std::move(report.memberIntervals);
             times.ownershipMs = report.ownershipMs;
-            times.calibrationSkipped = report.calibrationSkipped;
             times.uploads = std::move(report.uploads);
             times.downloads = std::move(report.downloads);
             times.fallback = report.cpuFallback;

@@ -59,6 +59,8 @@ OcioFileKnobs::create(KnobHolder* holder,
     file->setName(kOcioFileParamFile);
     file->setHintToolTip(fileHint.toStdString());
     file->setAnimationEnabled(false);
+    file->setShowsReloadButton(false);
+    file->setAddNewLine(false);
     ocio.addKnob(page, file);
     _file = file;
 

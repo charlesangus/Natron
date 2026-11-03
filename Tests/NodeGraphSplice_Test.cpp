@@ -184,6 +184,133 @@ TEST(NodeGraphSplice, TwoFreeEntriesIsInvalid)
     EXPECT_FALSE(plan.valid);
 }
 
+TEST(NodeGraphSplice, ConnectedPreferredInputEntersThroughFirstFreeInput)
+{
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(99);
+    inputs.push_back(-1);
+    inputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, inputs, 0, std::vector<SpliceNodeId>()));
+
+    SplicePlan plan = planSplice(selection);
+
+    ASSERT_TRUE(plan.valid);
+    EXPECT_EQ(1, plan.entryId);
+    EXPECT_EQ(1, plan.entryInput);
+    ASSERT_EQ(2u, plan.entryInputs.size());
+    EXPECT_EQ(1, plan.entryInputs[0]);
+    EXPECT_EQ(2, plan.entryInputs[1]);
+    EXPECT_EQ(1, plan.exitId);
+}
+
+TEST(NodeGraphSplice, FreePreferredInputIsTheOnlyEntryInput)
+{
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(-1);
+    inputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, inputs, 0, std::vector<SpliceNodeId>()));
+
+    SplicePlan plan = planSplice(selection);
+
+    ASSERT_TRUE(plan.valid);
+    ASSERT_EQ(1u, plan.entryInputs.size());
+    EXPECT_EQ(0, plan.entryInputs[0]);
+}
+
+TEST(NodeGraphSplice, ConnectedEntryLeavesMasksOut)
+{
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(99);
+    inputs.push_back(-1);
+    inputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, inputs, 0, std::vector<SpliceNodeId>()));
+    selection[0].inputIsMask.push_back(false);
+    selection[0].inputIsMask.push_back(true);
+    selection[0].inputIsMask.push_back(false);
+
+    SplicePlan plan = planSplice(selection);
+
+    ASSERT_TRUE(plan.valid);
+    ASSERT_EQ(1u, plan.entryInputs.size());
+    EXPECT_EQ(2, plan.entryInputs[0]);
+    EXPECT_EQ(2, plan.entryInput);
+}
+
+TEST(NodeGraphSplice, ConnectedEntryWithOnlyAMaskFreeIsInvalid)
+{
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(99);
+    inputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, inputs, 0, std::vector<SpliceNodeId>()));
+    selection[0].inputIsMask.push_back(false);
+    selection[0].inputIsMask.push_back(true);
+
+    SplicePlan plan = planSplice(selection);
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphSplice, ChainFedFromOutsideEntersItsTop)
+{
+    std::vector<SpliceNodeId> topInputs;
+    topInputs.push_back(99);
+    topInputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, topInputs, 0, std::vector<SpliceNodeId>(1, 2)));
+    selection.push_back(makeInfo(2, std::vector<SpliceNodeId>(1, 1), 0, std::vector<SpliceNodeId>()));
+
+    SplicePlan plan = planSplice(selection);
+
+    ASSERT_TRUE(plan.valid);
+    EXPECT_EQ(1, plan.entryId);
+    EXPECT_EQ(1, plan.entryInput);
+    EXPECT_EQ(2, plan.exitId);
+}
+
+TEST(NodeGraphSplice, PreferredInputFedFromInsideIsNoEntry)
+{
+    std::vector<SpliceNodeId> bottomInputs;
+    bottomInputs.push_back(1);
+    bottomInputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, std::vector<SpliceNodeId>(1, 99), 0, std::vector<SpliceNodeId>(1, 2)));
+    selection.push_back(makeInfo(2, bottomInputs, 0, std::vector<SpliceNodeId>()));
+
+    SplicePlan plan = planSplice(selection);
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphSplice, TwoConnectedEntriesIsInvalid)
+{
+    std::vector<SpliceNodeId> sideInputs;
+    sideInputs.push_back(98);
+    sideInputs.push_back(-1);
+    std::vector<SpliceNodeId> bottomInputs;
+    bottomInputs.push_back(1);
+    bottomInputs.push_back(2);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, sideInputs, 0, std::vector<SpliceNodeId>(1, 3)));
+    sideInputs[0] = 99;
+    selection.push_back(makeInfo(2, sideInputs, 0, std::vector<SpliceNodeId>(1, 3)));
+    selection.push_back(makeInfo(3, bottomInputs, 0, std::vector<SpliceNodeId>()));
+
+    SplicePlan plan = planSplice(selection);
+
+    EXPECT_FALSE(plan.valid);
+}
+
 namespace {
 SpliceNodeInfo
 makeTarget(SpliceNodeId id,
@@ -301,6 +428,19 @@ TEST(NodeGraphPasteSplice, GeneratorEntryIsInvalid)
     std::vector<SpliceNodeInfo> pasted = makePastedChain();
 
     pasted[0].isInputNode = true;
+
+    PasteSplicePlan plan = planPasteSplice(selection, pasted);
+
+    EXPECT_FALSE(plan.valid);
+}
+
+TEST(NodeGraphPasteSplice, PastedEntryWithConnectedPreferredInputIsInvalid)
+{
+    std::vector<SpliceNodeInfo> selection(1, makeTarget(1));
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(99);
+    inputs.push_back(-1);
+    std::vector<SpliceNodeInfo> pasted(1, makeInfo(10, inputs, 0, std::vector<SpliceNodeId>()));
 
     PasteSplicePlan plan = planPasteSplice(selection, pasted);
 

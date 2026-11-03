@@ -114,23 +114,27 @@ recordCreatedNode(const NodePtr& node,
     }
 }
 
-static void makeCreateNodeArgs(const AppInstancePtr& app,
-                               const QString& pluginID,
-                               int majorVersion,
-                               const NodeCollectionPtr& collection,
-                               const NodeCreationPropertyMap& props,
-                               CreateNodeArgs* args)
+static void
+makeCreateNodeArgs(const AppInstancePtr& app,
+                   const QString& pluginID,
+                   int majorVersion,
+                   const NodeCollectionPtr& collection,
+                   const NodeCreationPropertyMap& props,
+                   bool interactive,
+                   CreateNodeArgs* args)
 {
 
     args->setProperty<std::string>(kCreateNodeArgsPropPluginID, pluginID.toStdString());
     args->setProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer, collection);
     args->setProperty<int>(kCreateNodeArgsPropPluginVersion, majorVersion, 0);
 
-    args->setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
-    args->setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
-    args->setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-    args->setProperty<bool>(kCreateNodeArgsPropSilent, true);
-    args->setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true); // also load deprecated plugins
+    if (!interactive) {
+        args->setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+        args->setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+        args->setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        args->setProperty<bool>(kCreateNodeArgsPropSilent, true);
+        args->setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true); // also load deprecated plugins
+    }
 
     bool skipNoNodeGuiProp = false;
     for (NodeCreationPropertyMap::const_iterator it = props.begin(); it!=props.end(); ++it) {
@@ -177,11 +181,19 @@ App::createNode(const QString& pluginID,
                 Group* group,
                 const NodeCreationPropertyMap& props) const
 {
-    NodeCollectionPtr collection = getCollectionFromGroup(group);
+    return createNodeInCollection(pluginID, majorVersion, getCollectionFromGroup(group), props, false);
+}
 
+Effect*
+App::createNodeInCollection(const QString& pluginID,
+                            int majorVersion,
+                            const NodeCollectionPtr& collection,
+                            const NodeCreationPropertyMap& props,
+                            bool interactive) const
+{
     assert(collection);
     CreateNodeArgs args;
-    makeCreateNodeArgs(getInternalApp(), pluginID, majorVersion, collection, props, &args);
+    makeCreateNodeArgs(getInternalApp(), pluginID, majorVersion, collection, props, interactive, &args);
 
     NodePtr node = getInternalApp()->createNode(args);
     if (node) {
@@ -203,7 +215,7 @@ App::createReader(const QString& filename,
     assert(collection);
 
     CreateNodeArgs args;
-    makeCreateNodeArgs(getInternalApp(),  QString::fromUtf8(PLUGINID_NATRON_READ), -1, collection, props, &args);
+    makeCreateNodeArgs(getInternalApp(), QString::fromUtf8(PLUGINID_NATRON_READ), -1, collection, props, false, &args);
 
     NodePtr node = getInternalApp()->createReader(filename.toStdString(), args);
     if (node) {
@@ -224,7 +236,7 @@ App::createWriter(const QString& filename,
 
     assert(collection);
     CreateNodeArgs args;
-    makeCreateNodeArgs(getInternalApp(), QString::fromUtf8(PLUGINID_NATRON_WRITE), -1, collection, props, &args);
+    makeCreateNodeArgs(getInternalApp(), QString::fromUtf8(PLUGINID_NATRON_WRITE), -1, collection, props, false, &args);
     NodePtr node = getInternalApp()->createWriter(filename.toStdString(), args);
     if (node) {
         recordCreatedNode(node, args);

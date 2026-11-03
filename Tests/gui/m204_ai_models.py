@@ -111,7 +111,7 @@ try:
 
     def status(tbl, name):
         r = row_of(tbl, name)
-        return tbl.item(r, 5).text() if r >= 0 else None
+        return tbl.item(r, 4).text() if r >= 0 else None
 
     def modal(object_name):
         w = QApplication.activeModalWidget()
@@ -163,8 +163,8 @@ try:
         require(ok and tbl is not None, "the AI Models page shows its table (QTableWidget aiModelsTable)")
 
         headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
-        check(headers == ["Name", "Task", "Size", "Weights Licence", "Training-Data Licence", "Status", "Default"],
-              "the table columns are Name, Task, Size, Weights Licence, Training-Data Licence, Status, Default (got %r)" % (headers,))
+        check(headers == ["Name", "Task", "Size", "Licence", "Status", "Default"],
+              "the table columns are Name, Task, Size, Licence, Status, Default (got %r)" % (headers,))
         check(tbl.rowCount() == len(manifest["models"]),
               "the table has one row per manifest model (%d, got %d)" % (len(manifest["models"]), tbl.rowCount()))
         check(row_of(tbl, "SegNext ViT-B SAx2 HQ") >= 0, "the built-in SegNext model is listed")
@@ -173,6 +173,13 @@ try:
         check(prefs.frameGeometry().width() <= 1920 and prefs.frameGeometry().height() <= 1080,
               "the Preferences window fits 1920x1080 (got %dx%d)" % (prefs.frameGeometry().width(), prefs.frameGeometry().height()))
         check(tbl.horizontalScrollBar().maximum() == 0, "the table needs no horizontal scrolling")
+        line = tbl.fontMetrics().height()
+        tallest = max(tbl.rowHeight(r) for r in range(tbl.rowCount()))
+        check(tallest < 2 * line, "every row is one line tall (tallest %d px, line %d px)" % (tallest, line))
+        research = row_of(tbl, "Test Identity Research")
+        tip = tbl.item(research, 0).toolTip() if research >= 0 else ""
+        check("SA-1B" in tip and "Open Weights" in tip and "https://example.invalid/card" in tip,
+              "the name tooltip carries the training-data licence, OSAID class and card (got %r)" % (tip,))
         screen_crop("m204-ai-models.png", prefs)
 
         research_row = row_of(tbl, "Test Identity Research")

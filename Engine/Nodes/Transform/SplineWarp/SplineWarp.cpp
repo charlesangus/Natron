@@ -332,6 +332,8 @@ SplineWarp::initializeKnobs()
                                   "is. A channel of a layer other than the colour layer, or None. Enabled while some "
                                   "curve is a cookie cutter."));
     outputMask->setAllDimensionsEnabled(false);
+    // The channel names the layer this node produces, which the downstream layer menus list.
+    outputMask->setIsMetadataSlave(true);
     page->addKnob(outputMask);
     _outputMask = outputMask;
 
@@ -563,6 +565,7 @@ SplineWarp::initializeKnobs()
     _ui->createDisplayKnobs(page);
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
+    selectDefaultTool();
 
     RotoCurveContextPtr curveContext = getNode()->getCurveContext();
     if (curveContext) {
@@ -579,6 +582,7 @@ SplineWarp::initializeKnobs()
             syncAmountKnobs();
             syncTransformKnobs();
             updateCookieKnobsEnabled();
+            refreshOutputMaskLayer();
         });
     }
 
@@ -629,6 +633,20 @@ SplineWarp::updateCookieKnobsEnabled()
     if (outputMask) {
         outputMask->setAllDimensionsEnabled(any);
     }
+}
+
+void
+SplineWarp::refreshOutputMaskLayer()
+{
+    ImageLayerDesc layer;
+    const std::string produced = getOutputMaskLayer(getApp()->getTimeLine()->currentFrame(), ViewIdx(0), &layer) ? layer.getLayerID() : std::string();
+
+    if (produced == _outputMaskLayer) {
+        return;
+    }
+    _outputMaskLayer = produced;
+    // A role change only rehashes and renders; the layer menus downstream follow the metadata.
+    refreshMetadataSideEffects();
 }
 
 namespace {
@@ -899,7 +917,12 @@ SplineWarp::onKnobsLoaded()
     syncAmountKnobs();
     syncTransformKnobs();
     updateCookieKnobsEnabled();
+    selectDefaultTool();
+}
 
+void
+SplineWarp::selectDefaultTool()
+{
     KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
     _ui->setCurrentTool(defaultAction);
     _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());

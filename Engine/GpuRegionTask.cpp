@@ -871,11 +871,9 @@ private:
                 return fail(taskIndex, "the node has no GPU path");
             }
             std::vector<GpuTaskPlane> planes;
-            if (!task.key.node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
-                return fail(taskIndex, "a channel the node selects is missing from its input");
-            }
-            if (!makeGpuTaskPlanes(task, *_context, &planes)) {
-                return fail(taskIndex, "the node cannot render these settings on the GPU");
+            std::string refusal;
+            if (!makeGpuTaskPlanes(task, *_context, &planes, &refusal)) {
+                return fail(taskIndex, refusal.empty() ? std::string("the node cannot render these settings on the GPU") : refusal);
             }
             if ((task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
                 return fail(taskIndex, "the node renders at full scale");

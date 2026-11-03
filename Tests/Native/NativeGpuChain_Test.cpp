@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <list>
 #include <map>
 #include <string>
 #include <utility>
@@ -70,6 +71,10 @@ const char* const kPatternFixture = "flat-rgba-pattern.exr";
 const char* const kLayersFixture = "flat-three-layers.exr";
 const char* const kOtherLayer = "specular";
 
+// Frame 1 carries the layers of kLayersFixture, frame 2 RGBA only.
+const char* const kLayersSequenceFixture = "flat-seq-layers.####.exr";
+const double kFrameMissingTheLayer = 2.;
+
 struct Chain {
     NodePtr read;
     NodePtr reformat;
@@ -101,6 +106,25 @@ setLayer(const NodePtr& node,
     knob->setLayer(layerID);
 
     return true;
+}
+
+QString
+persistentMessageOf(const NodePtr& node)
+{
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+
+    return message;
+}
+
+NodesList
+channelSelectorOwners()
+{
+    NodesList owners;
+    Node::getNodesOwningChannelSelectorMessage(&owners);
+
+    return owners;
 }
 
 RectI
@@ -267,30 +291,63 @@ TEST_F(NativeGpuChainTest, ShuffleReadingAnotherLayerOfTheReadKeepsOneRegion)
     EXPECT_TRUE(greenFromLayer) << "the CPU render's green does not come from the " << kOtherLayer << " layer";
 }
 
-// A frame the region delivers retires the channel-selector error an older render posted, as renderRoI() does for a
-// frame the CPU delivers, so scrubbing back to a good frame clears the error whichever device renders it.
-TEST_F(NativeGpuChainTest, ShuffleDeliveredByTheRegionRetiresAnOlderChannelError)
+// A CPU render of frame 2, which lacks the layer the Shuffle reads, posts its missing-channel error; a later frame 1 the
+// region delivers must retire it as renderRoI() does for a frame the CPU delivers, or the error outlives every good
+// frame rendered on the GPU.
+TEST_F(NativeGpuChainTest, ShuffleDeliveredByTheRegionRetiresTheErrorOfAFrameMissingItsLayer)
 {
     Chain chain;
-    makeChain(kPatternFixture, &chain);
+    makeChain(kLayersSequenceFixture, &chain);
     if (HasFatalFailure()) {
         return;
     }
-    chain.shuffle->setChannelSelectorMessage("channel error of an older render");
-    ASSERT_TRUE(chain.shuffle->hasPersistentMessage());
+    ASSERT_TRUE(setLayer(chain.shuffle, kShuffleParamIn2, kOtherLayer));
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(chain.shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    mapping->setSource(1, 1, ShuffleSource::makeInput(2, 2));
+    std::string channelMessage;
+    ASSERT_TRUE(chain.shuffle->checkSelectedChannelsPresent(kTime, ViewIdx(0), &channelMessage)) << channelMessage;
+    ASSERT_FALSE(chain.shuffle->checkSelectedChannelsPresent(kFrameMissingTheLayer, ViewIdx(0), &channelMessage));
+    ASSERT_FALSE(chain.shuffle->hasPersistentMessage());
 
-    bool errorAfterGpuFrame = true;
-    const GpuFrameDone readError = [&]() {
-        errorAfterGpuFrame = chain.shuffle->hasPersistentMessage();
-    };
     const RectI window = windowOf(chain.shuffle);
     ASSERT_FALSE(window.isNull());
+    {
+        GpuPlacementOffGuard off;
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        EXPECT_FALSE(renderNodePlanesDirect(chain.shuffle, kFrameMissingTheLayer, ViewIdx(0), 0, window,
+                                            std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error))
+            << "frame " << kFrameMissingTheLayer << " rendered without the " << kOtherLayer << " layer";
+    }
+    ASSERT_TRUE(chain.shuffle->hasPersistentMessage()) << "the failing render posted no error";
+    const QString posted = persistentMessageOf(chain.shuffle);
+    EXPECT_TRUE(posted.contains(QString::fromUtf8(kOtherLayer))) << posted.toStdString();
+    EXPECT_EQ(NodesList(1, chain.shuffle), channelSelectorOwners()) << "another node owns a channel error, so its clear proves nothing about the Shuffle's";
+
+    // Read where each callback runs, so the CPU render renderEndToEnd() makes after the GPU frame, whose renderRoI()
+    // clears the error itself, cannot hide a GPU frame that left it.
+    QString beforeGpuFrame;
+    const GpuContextReady readBefore = [&](std::string*) {
+        beforeGpuFrame = persistentMessageOf(chain.shuffle);
+
+        return true;
+    };
+    bool errorAfterGpuFrame = true;
+    NodesList ownersAfterGpuFrame;
+    const GpuFrameDone readAfter = [&]() {
+        errorAfterGpuFrame = chain.shuffle->hasPersistentMessage();
+        ownersAfterGpuFrame = channelSelectorOwners();
+    };
     const std::vector<NodePtr> nodes({ chain.read, chain.reformat, chain.grade, chain.shuffle, chain.write });
-    const EndToEndResult result = renderEndToEnd(nodes, chain.shuffle, window, kTime, GpuContextReady(), readError);
+    const EndToEndResult result = renderEndToEnd(nodes, chain.shuffle, window, kTime, readBefore, readAfter);
     if (result.skipped) {
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(posted, beforeGpuFrame) << "the error changed before the GPU frame rendered";
+    ASSERT_TRUE(result.ranInRegion(chain.shuffle)) << "the Shuffle was placed off the GPU";
     ASSERT_EQ(1, gpuRunsOf(result, chain.shuffle)) << "the Shuffle fell back to the CPU, whose renderRoI() retires the error itself";
-    EXPECT_FALSE(errorAfterGpuFrame) << "a frame the GPU delivered left the older render's channel error";
+    EXPECT_FALSE(errorAfterGpuFrame) << "frame " << kTime << ", delivered by the GPU, left the error of frame " << kFrameMissingTheLayer;
+    EXPECT_TRUE(ownersAfterGpuFrame.empty()) << ownersAfterGpuFrame.size() << " node(s) still own a channel error";
 }

@@ -111,3 +111,4 @@ Acceptance sketch:
   - size: M
 - 2026-11-02 — Frames Before/After defaults keep the old range (2, 2) (user).
 - 2026-11-02 — P4/P5 at 3dc5f5f30: the render planner now plans a single-time range at its exact (possibly fractional) time (Engine/ParallelRenderArgs.cpp framesToRenderAhead). Known gap: Engine/EffectInstanceRenderDeep.cpp still falls back to the current frame for a fractional range, so fractional loop samples over deep images aren't planned (PM).
+- 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.

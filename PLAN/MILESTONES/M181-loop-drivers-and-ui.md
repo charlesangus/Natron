@@ -91,3 +91,4 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
   - size: M
 
 **Verification gate:** the original gate and GUI bench pass; the loop hull follows pan/zoom in the replacement AppImage.
+- 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.

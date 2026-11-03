@@ -60,3 +60,4 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 **Verification gate:** the original feedback gate passes with one and multiple LoopBegin nodes, and the shared-loop workflow is accepted in UAT.
 - 2026-11-01 — P2.T1 at f33f0eb9e: a LoopEnd pairs with every LoopBegin above it; the loop name moved to LoopEnd; each LoopBegin has a Feedback knob (default on). Rejected: a begin reached by several LoopEnds, a begin inside its own loop's body. To confirm with the user: name on LoopEnd, Feedback default on (implementer).
 - 2026-11-02 — The loop name lives on LoopBegin, which is fine (user).
+- 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.

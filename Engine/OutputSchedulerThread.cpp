@@ -200,6 +200,9 @@ struct OutputSchedulerThreadPrivate
     FrameBuffer buf; //the frames rendered by the worker threads that needs to be rendered in order by the output device
     QWaitCondition bufEmptyCondition;
     mutable QMutex bufMutex;
+    // Bumped under bufMutex with every bufEmptyCondition wake: the scheduler waits only if it is unchanged since it
+    // last examined buf, since a frame it cannot process yet keeps buf non-empty and would make it spin.
+    U64 bufWakeGeneration;
 
     //doesn't need any protection since it never changes and is set in the constructor
     OutputSchedulerThread::ProcessFrameModeEnum mode; //is the frame to be processed on the main-thread (i.e OpenGL rendering) or on the scheduler thread
@@ -269,6 +272,7 @@ struct OutputSchedulerThreadPrivate
         : buf()
         , bufEmptyCondition()
         , bufMutex()
+        , bufWakeGeneration(0)
         , mode(mode)
         , timer()
         , renderTimer()
@@ -283,7 +287,7 @@ struct OutputSchedulerThreadPrivate
         , renderThreads()
         , allRenderThreadsInactiveCond()
 #ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-        , threadPool( QThreadPool::globalInstance() )
+        , threadPool(QThreadPool::globalInstance())
 #else
         , allRenderThreadsQuitCond()
         , framesToRender()
@@ -302,6 +306,13 @@ struct OutputSchedulerThreadPrivate
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
     {
+    }
+
+    void wakeBufEmptyCondition()
+    {
+        assert(!bufMutex.tryLock());
+        ++bufWakeGeneration;
+        bufEmptyCondition.wakeOne();
     }
 
     void endIsolatedJob()
@@ -1330,9 +1341,11 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             }
         }
         bool bufferEmpty;
+        U64 bufWakeGenerationSeen;
         {
             QMutexLocker l(&_imp->bufMutex);
             bufferEmpty = _imp->buf.empty();
+            bufWakeGenerationSeen = _imp->bufWakeGeneration;
         }
         int expectedTimeToRender;
 
@@ -1373,6 +1386,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             {
                 QMutexLocker l(&_imp->bufMutex);
                 _imp->getFromBufferAndErase(expectedTimeToRender, framesToRender->frames);
+                bufWakeGenerationSeen = _imp->bufWakeGeneration;
             }
 
             ///The expected frame is not yet ready, go to sleep again
@@ -1516,6 +1530,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             {
                 QMutexLocker l(&_imp->bufMutex);
                 bufferEmpty = _imp->buf.empty();
+                bufWakeGenerationSeen = _imp->bufWakeGeneration;
             }
         } // while(!bufferEmpty)
 
@@ -1532,7 +1547,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             QMutexLocker bufLocker (&_imp->bufMutex);
             // An abort or quit raised since resolveState() wakes this condition under bufMutex only after flagging,
             // so re-checking the flags here means that wake-up is either seen now or arrives once waiting.
-            if (!isBeingAborted() && !mustQuitThread()) {
+            if (!isBeingAborted() && !mustQuitThread() && (_imp->bufWakeGeneration == bufWakeGenerationSeen)) {
                 // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
                 _imp->bufEmptyCondition.wait(bufLocker.mutex());
             }
@@ -1591,7 +1606,7 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
     ///that will not be processed anyway because the first thing it does is checking for abort
     {
         QMutexLocker l2(&_imp->bufMutex);
-        _imp->bufEmptyCondition.wakeOne();
+        _imp->wakeBufEmptyCondition();
     }
 }
 
@@ -1729,7 +1744,7 @@ OutputSchedulerThread::notifyFrameRendered(int frame,
             {
                 QMutexLocker bufLocker (&_imp->bufMutex);
                 _imp->appendBufferedFrame( 0, viewIndex, RenderStatsPtr(), BufferableObjectPtr() );
-                _imp->bufEmptyCondition.wakeOne();
+                _imp->wakeBufEmptyCondition();
             }
         } else {
             l.unlock();
@@ -1885,7 +1900,7 @@ OutputSchedulerThread::appendToBuffer_internal(double time,
         _imp->appendBufferedFrame(time, view, stats, frame);
         if (wakeThread) {
             ///Wake up the scheduler thread that an image is available if it is asleep so it can process it.
-            _imp->bufEmptyCondition.wakeOne();
+            _imp->wakeBufEmptyCondition();
         }
     }
 }

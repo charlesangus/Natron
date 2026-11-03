@@ -238,6 +238,10 @@ public:
     double _accumDelta;
     bool _detailsVisible;
     QPointF _deltaSinceMousePress; //< mouse delta since last press
+    // Where each node a drag has moved stood when the drag first moved it. Backdrop contents move
+    // only while Ctrl is up, so nodes in one drag can end up with different displacements, and
+    // the undo, Alt's snap-back and Escape all work from these rather than from one delta.
+    std::map<NodeGuiPtr, QPointF> _dragPickupPositions;
     bool _hasMovedOnce;
     ViewerTab* lastSelectedViewer;
     QPixmap unlockIcon;

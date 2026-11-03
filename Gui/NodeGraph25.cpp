@@ -288,6 +288,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         cancelSplice();
         rollBackKisses();
         _imp->_kissCancelled = true;
+        cancelNodeDrag();
         dropPickedUpArrow();
     }
 

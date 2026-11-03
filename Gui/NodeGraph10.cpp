@@ -230,6 +230,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
     _imp->_kissCancelled = false;
     _imp->_kissAiming = false;
     _imp->_deltaSinceMousePress = QPointF(0, 0);
+    _imp->_dragPickupPositions.clear();
     if ( buttonDownIsMiddle(e) ) {
         _imp->_evtState = eEventStateMovingArea;
 

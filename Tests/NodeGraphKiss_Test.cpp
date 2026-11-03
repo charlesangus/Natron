@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -231,4 +232,41 @@ TEST(NodeGraphKiss, EveryCandidateRejectedIsNoKiss)
                              [](const KissPlan&) { return false; });
 
     EXPECT_FALSE(plan.isValid());
+}
+
+TEST(NodeGraphKiss, LocalPlanMeasuresOnlyTheListedTargets)
+{
+    std::vector<KissInputTip> inputs(1, KissInputTip(kDragged, 0, 50., 32.));
+    std::vector<KissOutput> outputs(1, KissOutput(kDragged, 50., 32.));
+    std::vector<KissTarget> targets(1, makeTarget(7, 0., 0.));
+    std::vector<std::vector<std::size_t>> noneNear(1);
+
+    EXPECT_FALSE(planKiss(inputs, noneNear, outputs, noneNear, targets, kReach).isValid());
+}
+
+TEST(NodeGraphKiss, LocalPlanMatchesTheFullPlan)
+{
+    std::vector<KissInputTip> inputs;
+    inputs.push_back(KissInputTip(kDragged, 0, 50., 38.));
+    inputs.push_back(KissInputTip(kDragged, 1, 1050., 33.));
+    std::vector<KissOutput> outputs(1, KissOutput(kDragged, 2050., -5.));
+    std::vector<KissTarget> targets;
+    targets.push_back(makeTarget(7, 0., 0.));
+    targets.push_back(makeTarget(8, 1000., 0.));
+    targets.push_back(makeTarget(9, 2000., 0., 1));
+    std::vector<std::vector<std::size_t>> inputNear;
+    inputNear.push_back(std::vector<std::size_t>(1, 0));
+    inputNear.push_back(std::vector<std::size_t>(1, 1));
+    std::vector<std::vector<std::size_t>> outputNear(1, std::vector<std::size_t>(1, 2));
+
+    KissPlan full = planKiss(inputs, outputs, targets, kReach);
+    KissPlan local = planKiss(inputs, inputNear, outputs, outputNear, targets, kReach);
+
+    ASSERT_TRUE(local.isValid());
+    EXPECT_EQ(full.end, local.end);
+    EXPECT_EQ(full.targetId, local.targetId);
+    EXPECT_EQ(full.inputNb, local.inputNb);
+    EXPECT_EQ(eKissEndInput, local.end);
+    EXPECT_EQ(8, local.targetId);
+    EXPECT_EQ(1, local.inputNb);
 }

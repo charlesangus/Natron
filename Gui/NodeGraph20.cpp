@@ -31,13 +31,13 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
-#include <QPolygonF>
 #include <QToolTip>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -435,11 +435,53 @@ NodeGraph::updateKissPreview()
         }
     }
 
+    // Like an unconnected input's grab radius, the reach is kept in viewport pixels.
+    const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
+    const double reach = TO_DPIX(18.) / zoomFactor;
+
+    // Each endpoint asks the scene's index only for the nodes around it: one area spanning a spread
+    // selection would take in most of a large graph.
+    const std::size_t notATarget = static_cast<std::size_t>(-1);
+    std::vector<KissTarget> targets;
+    std::map<NodeGui*, std::size_t> targetIndices;
+    auto targetsNear = [&](const QPointF& point) {
+        std::vector<std::size_t> nearby;
+        const QRectF area(point.x() - reach, point.y() - reach, 2. * reach, 2. * reach);
+        std::set<NodeGui*> found;
+        getNodesWithinViewportRect(mapFromScene(area).boundingRect().adjusted(-1, -1, 1, 1), &found);
+        for (std::set<NodeGui*>::const_iterator it = found.begin(); it != found.end(); ++it) {
+            NodeGui* gui = *it;
+            std::map<NodeGui*, std::size_t>::const_iterator known = targetIndices.find(gui);
+            if (known != targetIndices.end()) {
+                if (known->second != notATarget) {
+                    nearby.push_back(known->second);
+                }
+                continue;
+            }
+            NodePtr node = gui->getNode();
+            if (!node || (selectedNodes.find(gui) != selectedNodes.end()) || !gui->isVisible() || dynamic_cast<BackdropGui*>(gui)) {
+                targetIndices[gui] = notATarget;
+                continue;
+            }
+            int freeInput = node->getPreferredInputForConnection();
+            if ((freeInput >= 0) && !gui->getInputArrow(freeInput)) {
+                freeInput = -1;
+            }
+            const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
+            const KissNodeId id = reinterpret_cast<KissNodeId>(gui);
+            nodesById[id] = gui->shared_from_this();
+            targetIndices[gui] = targets.size();
+            nearby.push_back(targets.size());
+            targets.push_back(KissTarget(id, body.left(), body.top(), body.right(), body.bottom(), freeInput));
+        }
+
+        return nearby;
+    };
+
     std::vector<KissInputTip> inputs;
+    std::vector<std::vector<std::size_t>> inputNear;
     std::vector<KissOutput> outputs;
-    // A QRectF of one point is null, and uniting with a null rect drops it, so the reach area is
-    // the bounding rect of the points.
-    QPolygonF reachPoints;
+    std::vector<std::vector<std::size_t>> outputNear;
     for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
         const NodeGuiPtr& gui = *it;
         NodePtr node = gui->getNode();
@@ -461,51 +503,23 @@ NodeGraph::updateKissPreview()
             }
             const QPointF tip = arrow->mapToScene(arrow->line().p2());
             inputs.push_back(KissInputTip(id, arrow->getInputNumber(), tip.x(), tip.y()));
-            reachPoints << tip;
+            inputNear.push_back(targetsNear(tip));
         }
 
         if (feedingNodes.find(gui.get()) == feedingNodes.end()) {
             const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
             const QPointF output(body.center().x(), body.bottom());
             outputs.push_back(KissOutput(id, output.x(), output.y()));
-            reachPoints << output;
+            outputNear.push_back(targetsNear(output));
         }
     }
-    if (inputs.empty() && outputs.empty()) {
+    if (targets.empty()) {
         clearKissPreview();
 
         return;
     }
 
-    // Like an unconnected input's grab radius, the reach is kept in viewport pixels.
-    const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
-    const double reach = TO_DPIX(18.) / zoomFactor;
-    const QRectF reachArea = reachPoints.boundingRect().adjusted(-reach, -reach, reach, reach);
-
-    std::set<NodeGui*> nearbyNodes;
-    getNodesWithinViewportRect(mapFromScene(reachArea).boundingRect().adjusted(-1, -1, 1, 1), &nearbyNodes);
-
-    std::vector<KissTarget> targets;
-    for (std::set<NodeGui*>::const_iterator it = nearbyNodes.begin(); it != nearbyNodes.end(); ++it) {
-        NodeGui* gui = *it;
-        if ((selectedNodes.find(gui) != selectedNodes.end()) || !gui->isVisible() || dynamic_cast<BackdropGui*>(gui)) {
-            continue;
-        }
-        NodePtr node = gui->getNode();
-        if (!node) {
-            continue;
-        }
-        int freeInput = node->getPreferredInputForConnection();
-        if ((freeInput >= 0) && !gui->getInputArrow(freeInput)) {
-            freeInput = -1;
-        }
-        const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
-        const KissNodeId id = reinterpret_cast<KissNodeId>(gui);
-        nodesById[id] = gui->shared_from_this();
-        targets.push_back(KissTarget(id, body.left(), body.top(), body.right(), body.bottom(), freeInput));
-    }
-
-    KissPlan plan = planKiss(inputs, outputs, targets, reach, [&nodesById](const KissPlan& p) {
+    KissPlan plan = planKiss(inputs, inputNear, outputs, outputNear, targets, reach, [&nodesById](const KissPlan& p) {
         NodePtr dragged = nodesById[p.draggedId]->getNode();
         NodePtr target = nodesById[p.targetId]->getNode();
         if (!dragged || !target) {
@@ -615,6 +629,62 @@ NodeGraph::takeKissCommand(NodesGuiList* touched)
 }
 
 void
+NodeGraph::cancelNodeDrag()
+{
+    if (_imp->_evtState != eEventStateDraggingNode) {
+        return;
+    }
+    for (std::map<NodeGuiPtr, QPointF>::const_iterator it = _imp->_dragPickupPositions.begin(); it != _imp->_dragPickupPositions.end(); ++it) {
+        it->first->setPosition(it->second.x(), it->second.y());
+    }
+    _imp->_dragPickupPositions.clear();
+    _imp->_deltaSinceMousePress = QPointF(0, 0);
+    _imp->_nodesWithinBDAtPenDown.clear();
+    // The button is still down, so the release that follows must find no drag to record.
+    _imp->_evtState = eEventStateNone;
+    _imp->autoScrollTimer.stop();
+    if (_imp->cursorSet) {
+        _imp->cursorSet = false;
+        unsetCursor();
+    }
+    scene()->update();
+    update();
+}
+
+QUndoCommand*
+NodeGraph::takeDragMoveCommand(QUndoCommand* parent,
+                               NodesGuiList* moved)
+{
+    std::map<std::pair<double, double>, NodesGuiList> byDisplacement;
+    for (std::map<NodeGuiPtr, QPointF>::const_iterator it = _imp->_dragPickupPositions.begin(); it != _imp->_dragPickupPositions.end(); ++it) {
+        const QPointF pos = it->first->getPos_mt_safe();
+        const double dx = pos.x() - it->second.x();
+        const double dy = pos.y() - it->second.y();
+        if ((dx == 0) && (dy == 0)) {
+            continue;
+        }
+        byDisplacement[std::make_pair(dx, dy)].push_back(it->first);
+        if (moved) {
+            moved->push_back(it->first);
+        }
+    }
+    _imp->_dragPickupPositions.clear();
+
+    if (byDisplacement.empty()) {
+        return parent;
+    }
+    if (!parent && (byDisplacement.size() == 1)) {
+        return new MoveMultipleNodesCommand(byDisplacement.begin()->second, byDisplacement.begin()->first.first, byDisplacement.begin()->first.second);
+    }
+    QUndoCommand* command = parent ? parent : new QUndoCommand(tr("Move node(s)"));
+    for (std::map<std::pair<double, double>, NodesGuiList>::const_iterator it = byDisplacement.begin(); it != byDisplacement.end(); ++it) {
+        new MoveMultipleNodesCommand(it->second, it->first.first, it->first.second, command);
+    }
+
+    return command;
+}
+
+void
 NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
                                bool controlDown,
                                const QPointF& lastMousePosScene,
@@ -662,6 +732,7 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
          it != nodesToMove.end(); ++it) {
         //The current position
         QPointF pos = (*it)->getPos_mt_safe();
+        _imp->_dragPickupPositions.insert(std::make_pair(*it, pos));
 
         //if ignoreMagnet == true, we do not snap nodes to horizontal/vertical positions
         (*it)->refreshPosition(pos.x() + dxScene, pos.y() + dyScene, ignoreMagnet, newPos);

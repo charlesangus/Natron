@@ -2,8 +2,9 @@
 input arrow tip or its output would make with a node in reach, drawn in the Preferences Selection
 colour, and releasing Ctrl makes it while the drag goes on. Covers an input kiss, an output kiss, two
 kisses in one drag, only unconnected inputs kissing, no kiss without Ctrl or out of reach, Alt at
-release snapping the node back with its new pipes, one undo step per drag, and Escape undoing the
-drag's kisses.
+release snapping the node back with its new pipes, one undo step per drag, Escape cancelling the
+whole drag (its kisses and its moves, recording nothing), and a backdrop drag whose contents stay
+put while Ctrl is held undoing every node back to its pickup position.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/m194-shots/out Tests/gui/run-gui-test.sh Tests/gui/m194_kiss.py build/fast/App/Natron
@@ -342,24 +343,85 @@ try:
         check(not inputs_from(mover, src), "alt-snap-back: one undo removes the kiss")
         check(near(mover.getPosition(), pre), "alt-snap-back: the node is still at its pickup position after undo")
 
-        # ---- Escape undoes the kisses made earlier in the drag.
+        # ---- Escape cancels the whole drag: its kisses and its moves, leaving nothing to undo.
         gt.section("escape")
         src = create("net.sf.openfx.ConstantPlugin", 6000, 0)
+        other = create("net.sf.openfx.ConstantPlugin", 6700, 0)
         mover = create("net.sf.cimg.CImgBlur", 6300, 300)
-        fresh(graph, [src, mover])
+        fresh(graph, [src, other, mover])
         yield ("sleep", SETTLE_MS)
+        other_pre = other.getPosition()
+        start = press(graph, other)
+        pos = move(graph, start, (start[0], start[1] - 100.0))
+        release(graph, pos)
+        yield ("sleep", SETTLE_MS)
+        check(not near(other.getPosition(), other_pre), "escape: a plain drag first leaves a move on the undo stack")
+        pre = mover.getPosition()
         start = press(graph, mover)
         pos = move(graph, start, below(src, mover, INPUT_GAP))
         kiss_at(graph, pos)
         check(inputs_from(mover, src) == [0], "escape: the kiss is made before Escape")
+        check(not near(mover.getPosition(), pre), "escape: the node has moved before Escape")
         key(graph, QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
         key(graph, QEvent.KeyRelease, Qt.Key_Escape, Qt.NoModifier)
         check(not inputs_from(mover, src), "escape: Escape undoes the kiss at once")
+        check(near(mover.getPosition(), pre), "escape: Escape puts the node back at its pickup position (%r vs %r)"
+              % (mover.getPosition(), pre))
+        pos = move(graph, pos, (pos[0] + 120.0, pos[1] + 80.0))
+        check(near(mover.getPosition(), pre), "escape: the rest of the drag moves nothing")
         kiss_at(graph, pos)
         check(not inputs_from(mover, src), "escape: no more kisses for the rest of the drag")
         release(graph, pos)
         yield ("sleep", SETTLE_MS)
         check(not inputs_from(mover, src), "escape: the kiss stays undone after the drop")
+        check(near(mover.getPosition(), pre), "escape: the node is still at its pickup position after the drop")
+        undo()
+        yield ("sleep", SETTLE_MS)
+        check(near(other.getPosition(), other_pre),
+              "escape: the cancelled drag recorded nothing, so undo takes back the drag before it")
+        check(near(mover.getPosition(), pre) and not inputs_from(mover, src),
+              "escape: that undo leaves the cancelled node untouched")
+
+        # ---- A backdrop's contents move only while Ctrl is up; undo puts every node back where it was.
+        gt.section("backdrop-ctrl")
+        bd = create("fr.inria.built-in.BackDrop", 7000, 0)
+        bd.setSize(300, 200)
+        inside = create("net.sf.openfx.ConstantPlugin", 7080, 80)
+        mover = create("net.sf.cimg.CImgBlur", 7450, 100)
+        src = create("net.sf.openfx.ConstantPlugin", 7900, -500)
+        fresh(graph, [bd, inside, mover, src])
+        app.selectNode(bd, True)
+        app.selectNode(mover, False)
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        bd_pre, inside_pre, mover_pre = bd.getPosition(), inside.getPosition(), mover.getPosition()
+        start = press(graph, mover)
+        pos = move(graph, start, (start[0] + 100.0, start[1]))
+        check(not near(inside.getPosition(), inside_pre), "backdrop-ctrl: without Ctrl the backdrop carries its contents")
+        ctrl_down(graph, pos)
+        inside_held = inside.getPosition()
+        pos = move(graph, pos, below(src, mover, INPUT_GAP), Qt.ControlModifier)
+        check(near(inside.getPosition(), inside_held), "backdrop-ctrl: with Ctrl held the backdrop's contents stay put")
+        ctrl_up(graph)
+        yield ("sleep", SETTLE_MS)
+        check(inputs_from(mover, src) == [0], "backdrop-ctrl: releasing Ctrl kisses the dragged node")
+        pos = move(graph, pos, (pos[0] + 200.0, pos[1]))
+        release(graph, pos)
+        yield ("sleep", SETTLE_MS)
+        shot(graph, "kiss-06-backdrop-ctrl")
+        mover_d = (mover.getPosition()[0] - mover_pre[0], mover.getPosition()[1] - mover_pre[1])
+        inside_d = (inside.getPosition()[0] - inside_pre[0], inside.getPosition()[1] - inside_pre[1])
+        check(not near(mover_d, inside_d), "backdrop-ctrl: the contents moved less than the dragged nodes (%r vs %r)"
+              % (inside_d, mover_d))
+        undo()
+        yield ("sleep", SETTLE_MS)
+        check(not inputs_from(mover, src), "backdrop-ctrl: one undo removes the kiss")
+        check(near(mover.getPosition(), mover_pre), "backdrop-ctrl: the same undo restores the dragged node (%r vs %r)"
+              % (mover.getPosition(), mover_pre))
+        check(near(bd.getPosition(), bd_pre), "backdrop-ctrl: the same undo restores the backdrop (%r vs %r)"
+              % (bd.getPosition(), bd_pre))
+        check(near(inside.getPosition(), inside_pre), "backdrop-ctrl: the same undo restores the backdrop's contents (%r vs %r)"
+              % (inside.getPosition(), inside_pre))
 
         set_selection(*default_sel)
 

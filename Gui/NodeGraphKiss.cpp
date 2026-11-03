@@ -72,6 +72,80 @@ kissDistanceToTarget(double x,
     return std::sqrt(dx * dx + dy * dy);
 }
 
+namespace {
+
+void
+addInputCandidate(const std::vector<KissInputTip>& inputs,
+                  std::size_t i,
+                  const std::vector<KissTarget>& targets,
+                  std::size_t t,
+                  double reach,
+                  std::vector<KissCandidate>* candidates)
+{
+    const KissInputTip& tip = inputs[i];
+    const KissTarget& target = targets[t];
+    if (tip.connected || (tip.nodeId == target.id)) {
+        return;
+    }
+    const double distance = kissDistanceToTarget(tip.x, tip.y, target);
+    if (distance > reach) {
+        return;
+    }
+    KissCandidate c;
+    c.plan.end = eKissEndInput;
+    c.plan.draggedId = tip.nodeId;
+    c.plan.targetId = target.id;
+    c.plan.inputNb = tip.inputNb;
+    c.plan.distance = distance;
+    c.sourceIndex = i;
+    c.targetIndex = t;
+    candidates->push_back(c);
+}
+
+void
+addOutputCandidate(const std::vector<KissOutput>& outputs,
+                   std::size_t o,
+                   const std::vector<KissTarget>& targets,
+                   std::size_t t,
+                   double reach,
+                   std::vector<KissCandidate>* candidates)
+{
+    const KissOutput& output = outputs[o];
+    const KissTarget& target = targets[t];
+    if ((target.freeInput < 0) || (output.nodeId == target.id)) {
+        return;
+    }
+    const double distance = kissDistanceToTarget(output.x, output.y, target);
+    if (distance > reach) {
+        return;
+    }
+    KissCandidate c;
+    c.plan.end = eKissEndOutput;
+    c.plan.draggedId = output.nodeId;
+    c.plan.targetId = target.id;
+    c.plan.inputNb = target.freeInput;
+    c.plan.distance = distance;
+    c.sourceIndex = o;
+    c.targetIndex = t;
+    candidates->push_back(c);
+}
+
+KissPlan
+bestValidKiss(std::vector<KissCandidate>* candidates,
+              const KissValidator& isValid)
+{
+    std::sort(candidates->begin(), candidates->end(), kissCandidateLess);
+    for (std::size_t i = 0; i < candidates->size(); ++i) {
+        if (!isValid || isValid((*candidates)[i].plan)) {
+            return (*candidates)[i].plan;
+        }
+    }
+
+    return KissPlan();
+}
+
+} // anonymous namespace
+
 KissPlan
 planKiss(const std::vector<KissInputTip>& inputs,
          const std::vector<KissOutput>& outputs,
@@ -81,59 +155,47 @@ planKiss(const std::vector<KissInputTip>& inputs,
 {
     std::vector<KissCandidate> candidates;
 
-    for (std::size_t t = 0; t < targets.size(); ++t) {
-        const KissTarget& target = targets[t];
-        for (std::size_t i = 0; i < inputs.size(); ++i) {
-            const KissInputTip& tip = inputs[i];
-            if (tip.connected || (tip.nodeId == target.id)) {
-                continue;
-            }
-            const double distance = kissDistanceToTarget(tip.x, tip.y, target);
-            if (distance > reach) {
-                continue;
-            }
-            KissCandidate c;
-            c.plan.end = eKissEndInput;
-            c.plan.draggedId = tip.nodeId;
-            c.plan.targetId = target.id;
-            c.plan.inputNb = tip.inputNb;
-            c.plan.distance = distance;
-            c.sourceIndex = i;
-            c.targetIndex = t;
-            candidates.push_back(c);
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            addInputCandidate(inputs, i, targets, t, reach, &candidates);
         }
-        if (target.freeInput < 0) {
-            continue;
-        }
-        for (std::size_t o = 0; o < outputs.size(); ++o) {
-            const KissOutput& output = outputs[o];
-            if (output.nodeId == target.id) {
-                continue;
-            }
-            const double distance = kissDistanceToTarget(output.x, output.y, target);
-            if (distance > reach) {
-                continue;
-            }
-            KissCandidate c;
-            c.plan.end = eKissEndOutput;
-            c.plan.draggedId = output.nodeId;
-            c.plan.targetId = target.id;
-            c.plan.inputNb = target.freeInput;
-            c.plan.distance = distance;
-            c.sourceIndex = o;
-            c.targetIndex = t;
-            candidates.push_back(c);
+    }
+    for (std::size_t o = 0; o < outputs.size(); ++o) {
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            addOutputCandidate(outputs, o, targets, t, reach, &candidates);
         }
     }
 
-    std::sort(candidates.begin(), candidates.end(), kissCandidateLess);
-    for (std::size_t i = 0; i < candidates.size(); ++i) {
-        if (!isValid || isValid(candidates[i].plan)) {
-            return candidates[i].plan;
+    return bestValidKiss(&candidates, isValid);
+}
+
+KissPlan
+planKiss(const std::vector<KissInputTip>& inputs,
+         const std::vector<std::vector<std::size_t>>& inputNear,
+         const std::vector<KissOutput>& outputs,
+         const std::vector<std::vector<std::size_t>>& outputNear,
+         const std::vector<KissTarget>& targets,
+         double reach,
+         const KissValidator& isValid)
+{
+    std::vector<KissCandidate> candidates;
+
+    for (std::size_t i = 0; (i < inputs.size()) && (i < inputNear.size()); ++i) {
+        for (std::size_t n = 0; n < inputNear[i].size(); ++n) {
+            if (inputNear[i][n] < targets.size()) {
+                addInputCandidate(inputs, i, targets, inputNear[i][n], reach, &candidates);
+            }
+        }
+    }
+    for (std::size_t o = 0; (o < outputs.size()) && (o < outputNear.size()); ++o) {
+        for (std::size_t n = 0; n < outputNear[o].size(); ++n) {
+            if (outputNear[o][n] < targets.size()) {
+                addOutputCandidate(outputs, o, targets, outputNear[o][n], reach, &candidates);
+            }
         }
     }
 
-    return KissPlan();
+    return bestValidKiss(&candidates, isValid);
 }
 
 NATRON_NAMESPACE_EXIT

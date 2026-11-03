@@ -268,7 +268,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.6: User answers (2026-11-02)
 
-- [ ] M274.P6.T1 — Remove the Cookie Cut Input option
+- [x] M274.P6.T1 — Remove the Cookie Cut Input option
   - files: Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp/.h, tests, docs
   - approach: delete the cookieCutInput knob and its render path (Source × cookie-cutter mask); cookie-cutter curves keep their other roles.
   - verify: the knob is gone; SplineWarp tests and the GUI check pass without it.
@@ -284,3 +284,4 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 - 2026-10-28: elaborated (consultant). PM call: morph (Destination input, output modes, morph mix, A/B Type, Duplicate in B) stays dropped under the user's M147 decision (out of scope). The consultant's morph phase was struck, and the rows are marked "dropped (user, M147)". Deps widened to M149–M151, the branch this builds on. The Lanczos/Sinc task waits on M270.
 - 2026-11-02 — P5.T2 (Lanczos/Sinc on SplineWarp) moves into M270 - Lanczos Sinc Resampling Filters, which isn't started; M274 closes without it (user).
 - 2026-11-02 — Answers (user): no separate Soft Boundary role — feathered boundaries (M147: falloff from the curve to its feather points) are the soft boundary; keep our defaults (TPS, 4 px, previewResolution 25, boundaryBBox on); Lanczos6 = Sinc with Lobes 6; names amount/layerAmount/linkAmount and Roto's skewx/skewy; do NOT offer cookieCutInput (P6.T1 removes it). P5.T2 moved to M270.
+- 2026-11-03 — P6.T1 was done in 72049653c (stale comments fixed in 36fa9da7f). Gate green (run 41588454845 at c85f22334). UAT AppImage built; this branch has M147, M149 and M150 but not M148 (viewer tools) or M151.

@@ -1473,3 +1473,49 @@ TEST(ColorWheelMath, SliderMarkerMapsOntoTheRange)
     EXPECT_NEAR(100.0, markerToValue(temp, 1.5), 1e-12);
     EXPECT_NEAR(-100.0, markerToValue(temp, -0.5), 1e-12);
 }
+
+TEST(ColorWheelMath, PolarEditMovesHueAndRadius)
+{
+    PolarValue start;
+    start.hueDegrees = 0.0;
+    start.radius = 0.1;
+
+    ColorEdit up;
+    up.axis = eColorAxisTrackball;
+    up.d1 = -0.1;
+    up.d2 = 0.1;
+    PolarValue moved = applyPolarEdit(start, up, 1.0);
+    EXPECT_NEAR(90.0, moved.hueDegrees, 1e-9);
+    EXPECT_NEAR(0.1, moved.radius, 1e-12);
+
+    ColorEdit far;
+    far.axis = eColorAxisTrackball;
+    far.d1 = 0.0;
+    far.d2 = -5.0;
+    PolarValue clamped = applyPolarEdit(start, far, 0.5);
+    EXPECT_NEAR(0.5, clamped.radius, 1e-12);
+    EXPECT_GE(clamped.hueDegrees, 0.0);
+    EXPECT_LT(clamped.hueDegrees, 360.0);
+    EXPECT_GT(clamped.hueDegrees, 270.0);
+
+    ColorEdit centre;
+    centre.axis = eColorAxisTrackball;
+    centre.d1 = -0.1;
+    PolarValue atCentre = applyPolarEdit(start, centre, 1.0);
+    EXPECT_NEAR(0.0, atCentre.radius, 1e-12);
+    EXPECT_EQ(0.0, atCentre.hueDegrees);
+
+    ColorEdit hue;
+    hue.axis = eColorAxisHue;
+    hue.absolute = true;
+    hue.d1 = -30.0;
+    PolarValue turned = applyPolarEdit(start, hue, 1.0);
+    EXPECT_NEAR(330.0, turned.hueDegrees, 1e-9);
+    EXPECT_NEAR(0.1, turned.radius, 1e-12);
+
+    ColorEdit reset;
+    reset.axis = eColorAxisSat;
+    reset.absolute = true;
+    reset.d1 = 0.0;
+    EXPECT_EQ(0.0, applyPolarEdit(start, reset, 1.0).radius);
+}

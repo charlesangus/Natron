@@ -49,7 +49,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
@@ -67,19 +67,19 @@ namespace {
 KnobGroupPtr
 variablesGroupOf(const NodePtr& node)
 {
-    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kRFVSetParamVariables));
 }
 
 KnobGroupPtr
 globalVariablesGroupOf(const NodePtr& node)
 {
-    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamGlobalVariables));
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kRFVSetParamGlobalVariables));
 }
 
 KnobChoicePtr
 existingVariableOf(const NodePtr& node)
 {
-    return std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kReverseFlowVariableSetParamExistingVariable));
+    return std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kRFVSetParamExistingVariable));
 }
 
 std::vector<std::string>
@@ -109,13 +109,13 @@ declaredNames(const std::vector<RFV::VariableDeclaration>& declarations)
 
 TEST_F(BaseTest, RFVSetNodeIsRegisteredWithAnEmptyRFVGroup)
 {
-    expectNativeIdentity(PLUGINID_NATRON_REVERSEFLOWVARIABLESET, 1, "ReverseFlowVariableSet");
+    expectNativeIdentity(PLUGINID_NATRON_RFVSET, 1, "RFVSet");
 
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(node));
-    EXPECT_EQ(std::string(PLUGINID_NATRON_REVERSEFLOWVARIABLESET), node->getPluginID());
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RFVSET), node->getPluginID());
 
-    KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(node->getKnobByName(kReverseFlowVariableSetParamPage));
+    KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(node->getKnobByName(kRFVSetParamPage));
     ASSERT_TRUE(page != nullptr);
     EXPECT_TRUE(page->isUserKnob());
 
@@ -138,7 +138,7 @@ TEST_F(BaseTest, RFVSetNodeIsRegisteredWithAnEmptyRFVGroup)
     ASSERT_TRUE(groupAt != pageChildren.end());
     ASSERT_TRUE(globalGroupAt != pageChildren.end());
     EXPECT_LT(groupAt - pageChildren.begin(), globalGroupAt - pageChildren.begin());
-    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup));
+    EXPECT_EQ(std::vector<std::string>(1, kRFVSetParamExistingVariable), childNames(globalGroup));
 
     // The drop-down is the node's own control, not a variable.
     KnobChoicePtr choice = existingVariableOf(node);
@@ -162,7 +162,7 @@ TEST_F(BaseTest, RFVSetNodePassesItsInputThroughUnchanged)
     project->setOrAddProjectFormat(Format(0, 0, 64, 48, "rfvSetNodeFormat", 1.));
 
     NodePtr checkerBoard = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(checkerBoard && setNode);
     connectNodes(checkerBoard, setNode, 0, true);
     EXPECT_EQ(eDataKindImage, setNode->getEffectiveOutputDataKind());
@@ -212,7 +212,7 @@ TEST_F(BaseTest, RFVSetNodeVariablesSurviveSaveAndLoad)
 {
     ProjectPtr project = getApp()->getProject();
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     const std::string setNodeName = setNode->getScriptName();
     EffectInstancePtr effect = setNode->getEffectInstance();
@@ -268,8 +268,8 @@ TEST_F(BaseTest, RFVSetNodeVariablesSurviveSaveAndLoad)
     KnobGroupPtr group2 = variablesGroupOf(setNode2);
     ASSERT_TRUE(group2 != nullptr);
     EXPECT_TRUE(group2->isRFVGroup());
-    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamVariables) + "2"));
-    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamPage) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kRFVSetParamVariables) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kRFVSetParamPage) + "2"));
 
     const std::vector<RFV::VariableDeclaration> declarations = RFV::getDeclaredVariables(effect2.get());
     EXPECT_EQ(savedNames, declaredNames(declarations));
@@ -317,7 +317,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromotesToTheProjectOnce)
     KnobGroupPtr projectGroup = project->getRFVGroup();
     ASSERT_TRUE(projectGroup != nullptr);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -438,7 +438,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     KnobGroupPtr projectGroup = project->getRFVGroup();
     ASSERT_TRUE(projectGroup != nullptr);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -514,7 +514,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoesAndRedoes)
     ASSERT_TRUE(command.getProjectVariable() != nullptr) << command.getError();
     expectRampCurve(command.getProjectVariable());
     EXPECT_TRUE(ramp->getParentKnob() == globalGroup);
-    EXPECT_EQ(std::string(kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup).front());
+    EXPECT_EQ(std::string(kRFVSetParamExistingVariable), childNames(globalGroup).front());
 }
 
 namespace {
@@ -582,7 +582,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     const double currentA1 = projectA->getValueAtTime(time, 1);
 
     // Another Set node declares a String.
-    NodePtr otherNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr otherNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(otherNode));
     EffectInstancePtr otherEffect = otherNode->getEffectInstance();
     KnobStringPtr otherB = otherEffect->createStringKnob("rfvExistingB", "Existing B");
@@ -591,7 +591,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     otherB->setDefaultValue(std::string("default shot"));
     otherB->setValue(std::string("sh020"));
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -607,7 +607,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     ASSERT_TRUE(choice != nullptr);
     EXPECT_TRUE(choice->getParentKnob() == globalGroup);
     EXPECT_FALSE(choice->getIsPersistent());
-    EXPECT_EQ(std::string(kReverseFlowVariableSetExistingVariablePrompt), choice->getEntry(0).id);
+    EXPECT_EQ(std::string(kRFVSetExistingVariablePrompt), choice->getEntry(0).id);
 
     // Opening the panel lists the project's and the other node's variables, project first.
     effect->onSettingsPanelOpened();
@@ -626,7 +626,7 @@ TEST_F(BaseTest, RFVSetNodeAddsAnExistingVariableFromItsDropDown)
     KnobDouble* a = dynamic_cast<KnobDouble*>(setNode->getKnobByName("rfvExistingA").get());
     ASSERT_TRUE(a != NULL);
     EXPECT_TRUE(a->getParentKnob() == globalGroup);
-    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvExistingA" };
+    const std::vector<std::string> globalChildren = { kRFVSetParamExistingVariable, "rfvExistingA" };
     EXPECT_EQ(globalChildren, childNames(globalGroup));
     EXPECT_TRUE(RFV::isNodeVariable(setNode->getKnobByName("rfvExistingA")));
     EXPECT_TRUE(a->isUserKnob());
@@ -771,7 +771,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     ASSERT_TRUE(projectGroup->addKnob(projectVariable));
     project->recreateUserKnobs(false);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -785,9 +785,9 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     ASSERT_TRUE(offers(choice, "rfvUndoAdd"));
 
     // Neither the drop-down nor its entries are saved: it is no user knob of the layout.
-    EXPECT_TRUE(userPagesName(setNode, kReverseFlowVariableSetParamGlobalVariables));
+    EXPECT_TRUE(userPagesName(setNode, kRFVSetParamGlobalVariables));
     EXPECT_TRUE(userPagesName(setNode, "rfvUndoLocal"));
-    EXPECT_FALSE(userPagesName(setNode, kReverseFlowVariableSetParamExistingVariable));
+    EXPECT_FALSE(userPagesName(setNode, kRFVSetParamExistingVariable));
 
     std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
     getApp()->setUndoRecorder(recorder);
@@ -815,8 +815,8 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
     EXPECT_TRUE(globalVariablesGroupOf(setNode) == globalGroup);
     EXPECT_TRUE(existingVariableOf(setNode) == choice);
     EXPECT_TRUE(choice->getParentKnob() == globalGroup);
-    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup));
-    EXPECT_FALSE(setNode->getKnobByName(std::string(kReverseFlowVariableSetParamExistingVariable) + "2"));
+    EXPECT_EQ(std::vector<std::string>(1, kRFVSetParamExistingVariable), childNames(globalGroup));
+    EXPECT_FALSE(setNode->getKnobByName(std::string(kRFVSetParamExistingVariable) + "2"));
     // The rebuild replaced the node's own variable with a new knob of the same name.
     KnobIPtr localAfterUndo = setNode->getKnobByName("rfvUndoLocal");
     ASSERT_TRUE(localAfterUndo != nullptr);
@@ -833,7 +833,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableAddUndoesAndRedoesAsOneStep)
         }
     }
     ASSERT_TRUE(setNode->getKnobByName("rfvUndoAdd") != nullptr);
-    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvUndoAdd" };
+    const std::vector<std::string> globalChildren = { kRFVSetParamExistingVariable, "rfvUndoAdd" };
     EXPECT_EQ(globalChildren, childNames(globalGroup));
     EXPECT_EQ(std::vector<std::string>(1, "rfvUndoLocal"), childNames(group));
     EXPECT_TRUE(existingVariableOf(setNode) == choice);
@@ -849,7 +849,7 @@ TEST_F(BaseTest, RFVSetNodeVariablesFollowTheProjectsNames)
     KnobGroupPtr projectGroup = project->getRFVGroup();
     ASSERT_TRUE(projectGroup != nullptr);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -896,11 +896,11 @@ TEST_F(BaseTest, RFVSetNodeVariablesFollowTheProjectsNames)
     KnobGroupPtr globalGroup2 = globalVariablesGroupOf(setNode2);
     ASSERT_TRUE(group2 && globalGroup2);
     EXPECT_EQ(std::vector<std::string>(1, "rfvFollowLocal"), childNames(group2));
-    const std::vector<std::string> globalChildren = { kReverseFlowVariableSetParamExistingVariable, "rfvFollowShared" };
+    const std::vector<std::string> globalChildren = { kRFVSetParamExistingVariable, "rfvFollowShared" };
     EXPECT_EQ(globalChildren, childNames(globalGroup2));
     EXPECT_TRUE(existingVariableOf(setNode2)->getParentKnob() == globalGroup2);
-    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamGlobalVariables) + "2"));
-    EXPECT_FALSE(setNode2->getKnobByName(std::string(kReverseFlowVariableSetParamExistingVariable) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kRFVSetParamGlobalVariables) + "2"));
+    EXPECT_FALSE(setNode2->getKnobByName(std::string(kRFVSetParamExistingVariable) + "2"));
     EXPECT_EQ(both, declaredNames(RFV::getDeclaredVariables(effect2.get())));
 
     // The project loses the variable: the node's moves back and stays a variable.
@@ -911,7 +911,7 @@ TEST_F(BaseTest, RFVSetNodeVariablesFollowTheProjectsNames)
     project->recreateUserKnobs(false);
     const std::vector<std::string> localChildren = { "rfvFollowLocal", "rfvFollowShared" };
     EXPECT_EQ(localChildren, childNames(group2));
-    EXPECT_EQ(std::vector<std::string>(1, kReverseFlowVariableSetParamExistingVariable), childNames(globalGroup2));
+    EXPECT_EQ(std::vector<std::string>(1, kRFVSetParamExistingVariable), childNames(globalGroup2));
     EXPECT_TRUE(RFV::isNodeVariable(setNode2->getKnobByName("rfvFollowShared")));
 }
 
@@ -923,7 +923,7 @@ TEST_F(BaseTest, RFVSetNodeExistingVariableMenuRefreshesWhenOpened)
     KnobGroupPtr projectGroup = project->getRFVGroup();
     ASSERT_TRUE(projectGroup != nullptr);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobChoicePtr choice = existingVariableOf(setNode);
@@ -956,7 +956,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoFindsTheRecreatedProjectVariable)
     KnobGroupPtr projectGroup = project->getRFVGroup();
     ASSERT_TRUE(projectGroup != nullptr);
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);
@@ -998,7 +998,7 @@ TEST_F(BaseTest, RFVSetNodeVariablePromoteUndoFindsTheRecreatedProjectVariable)
 TEST_F(BaseTest, RFVSetNodeVariablePromoteRedoKeepsLaterEditsUndoable)
 {
     ProjectPtr project = getApp()->getProject();
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
     KnobGroupPtr group = variablesGroupOf(setNode);

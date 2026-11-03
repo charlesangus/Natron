@@ -18,6 +18,13 @@ the graft when its target lies under a root the same input grafts. One that lies
 under none is dropped from the grafted property and named in a node warning,
 which clears once no such link remains.
 
+An input root named like the project's Materials Scope (Project Settings,
+default `/materials`) is not grafted: it stays at its own path, so materials
+that USDAssignMaterial placed there are shared by every prim bound to them
+rather than copied under each transform. Links into the scope, such as a
+material binding, keep pointing at it. A scope root that holds geometry still
+stays put, with a node warning.
+
 Kind sets the prim's model kind (group, assembly, component or subcomponent);
 None authors no kind.
 

@@ -23,7 +23,7 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   Selected, `app.createWriter`, the command-line render of an output file)
   names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
 - **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
-  host code look them up by name: `filename`, `overwrite`, `formatType`,
+  host code look them up by name: `filename`, `overwrite`,
   `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
   `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
   `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
@@ -32,6 +32,12 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
   and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
+- **Format.** The file always takes the input's format and pixel aspect
+  (`NativeWrite::inputFormat()`), or the input's region of definition when that
+  format is empty; there is no format choice, and a Reformat upstream changes
+  the size written. With `clipToRoD` on, formats with a display window (EXR)
+  write the input's region of definition as the data window and its format as
+  the display window; with it off the data window is the format.
 - **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
   band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
   there is no full-frame copy, and sizes, strides and offsets are 64-bit, so the

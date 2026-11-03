@@ -51,6 +51,7 @@
 #include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -686,6 +687,52 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     }
     const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
     query->draftMode = frameArgs && frameArgs->draftMode;
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
+    gpu::GpuRuntime* runtime = gpuContext ? gpuContext->runtime() : nullptr;
+    if (runtime) {
+        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(runtime->device().info().maxStorageBufferRange);
+    }
+#endif
+
+    query->inputTimes.clear();
+    if (frameView) {
+        int nOtherViews = 0;
+        for (FramesNeededMap::const_iterator input = frameView->globalData.frameViewsNeeded.begin(); input != frameView->globalData.frameViewsNeeded.end(); ++input) {
+            const FrameRangesMap::const_iterator ranges = input->second.find(task.key.view);
+            if ((input->first < 0) || (ranges == input->second.end()) || !native->getInput(input->first)) {
+                continue;
+            }
+            GpuInputTimes entry;
+            entry.inputNb = input->first;
+            for (const RangeD& range : ranges->second) {
+                if ((range.min == task.key.time) && (range.max == task.key.time)) {
+                    entry.times.push_back(task.key.time);
+                    continue;
+                }
+                // Regions take whole-frame input times only. A range with fractional bounds is either read anywhere
+                // within it, with no edge planned, or a single fractional time, which is planned but renders on the CPU.
+                if ((range.min != (int)range.min) || (range.max != (int)range.max)) {
+                    return false;
+                }
+                for (double f = range.min; f <= range.max; f += 1.) {
+                    entry.times.push_back(f);
+                }
+            }
+            std::sort(entry.times.begin(), entry.times.end());
+            entry.times.erase(std::unique(entry.times.begin(), entry.times.end()), entry.times.end());
+            if (entry.times.empty() || ((entry.times.size() == 1) && (entry.times.front() == task.key.time))) {
+                continue;
+            }
+            for (double t : entry.times) {
+                nOtherViews += (t == task.key.time) ? 0 : 1;
+            }
+            query->inputTimes.push_back(entry);
+        }
+        if (nOtherViews > kGpuMaxInputTimes) {
+            return false;
+        }
+    }
 
     query->unPremultChannel = stages.divisorChannel;
     query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);
@@ -742,9 +789,13 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 bool
 makeGpuTaskPlanes(const FrameGraph::Task& task,
                   const FrameRenderContext& context,
-                  std::vector<GpuTaskPlane>* planes)
+                  std::vector<GpuTaskPlane>* planes,
+                  std::string* refusal)
 {
     planes->clear();
+    if (refusal) {
+        refusal->clear();
+    }
     const NodePtr& node = task.key.node;
     const std::shared_ptr<FrameRequestMap>& request = context.getRequest();
     // A task under a context renders on the CPU, where its frame args carry the context.
@@ -755,6 +806,14 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
     FrameRequestMap::const_iterator nodeRequest = request->find(node);
     const FrameViewRequest* fvRequest = request->findFrameViewRequest(node, task.key.time, task.key.view);
     if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
+        return false;
+    }
+    // renderRoI() fails such a task and posts the missing channel; the GPU would render it without a word.
+    if (!node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
+        if (refusal) {
+            *refusal = "a channel the node selects is missing from its input";
+        }
+
         return false;
     }
 
@@ -778,6 +837,18 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
         if (ImageLayerDesc::findEquivalentLayer(plane, outputLayers.begin(), outputLayers.end()) != outputLayers.end()) {
             if (!makeGpuQueryForTaskPlane(task, plane, context, &entry.query) || !native->canRenderOnGpu(entry.query)) {
                 return false;
+            }
+            // A time past the request pass's pre-fetch cap has no edge, so no task would put it on the device.
+            for (const GpuInputTimes& input : entry.query.inputTimes) {
+                for (double time : input.times) {
+                    bool planned = false;
+                    for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+                        planned = planned || ((edge.inputNb == input.inputNb) && (edge.time == time) && (edge.view == task.key.view) && edge.node.lock());
+                    }
+                    if (!planned) {
+                        return false;
+                    }
+                }
             }
             for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
                 if (!edge.node.lock() || (edge.inputNb < 0) || (edge.inputNb >= nInputs)) {

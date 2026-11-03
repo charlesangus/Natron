@@ -948,7 +948,15 @@ KnobChoice::getEntries_mt_safe() const
 bool
 KnobChoice::hasModificationsForSerialization() const
 {
-    return KnobIntBase::hasModificationsForSerialization() || !isActiveEntryPresentInEntries();
+    return KnobIntBase::hasModificationsForSerialization() || isActiveEntryUnmatchedByEntries();
+}
+
+bool
+KnobChoice::isActiveEntryUnmatchedByEntries() const
+{
+    QMutexLocker k(&_entriesMutex);
+
+    return !_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0);
 }
 
 bool

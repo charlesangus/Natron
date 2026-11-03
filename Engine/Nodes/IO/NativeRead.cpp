@@ -374,7 +374,14 @@ NativeRead::initializeKnobs()
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (project) {
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this]() { _inputSpace.sourceChanged(); });
+        // A render thread can drop the last reference and destroy this effect while the project emits on the
+        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
+        std::weak_ptr<EffectInstance> self = weak_from_this();
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
+            if (EffectInstancePtr alive = self.lock()) {
+                _inputSpace.sourceChanged();
+            }
+        });
     }
 
     refreshTimeKnobState();

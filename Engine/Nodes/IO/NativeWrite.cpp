@@ -1049,7 +1049,14 @@ NativeWrite::initializeKnobs()
             refreshViewsMenu();
             _viewToKeep.clear();
         });
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this]() { _outputSpace.sourceChanged(); });
+        // A render thread can drop the last reference and destroy this effect while the project emits on the
+        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
+        std::weak_ptr<EffectInstance> self = weak_from_this();
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
+            if (EffectInstancePtr alive = self.lock()) {
+                _outputSpace.sourceChanged();
+            }
+        });
     }
 
     refreshOptions();

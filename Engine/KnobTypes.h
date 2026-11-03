@@ -691,6 +691,11 @@ public:
 
     bool isActiveEntryPresentInEntries() const;
 
+    /**
+     * @brief True when the active entry is one that loading could not match back to any entry of the menu.
+     **/
+    bool isActiveEntryUnmatchedByEntries() const;
+
     std::vector<ChoiceOption> getEntries_mt_safe() const;
     ChoiceOption getEntry(int v) const;
     ChoiceOption getActiveEntry();

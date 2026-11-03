@@ -687,7 +687,9 @@ TEST_F(RotoLayerTest, ObjectSelectPutDownLeavesNoSelection)
     EXPECT_FALSE(objectSelect->isEncoding());
     EXPECT_TRUE(objectSelect->prompts().empty());
     EXPECT_TRUE(objectSelect->previewContours().empty());
-    EXPECT_TRUE(roto->areAllProcessingThreadsQuit()) << "no encoding holds the node";
+    RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+    ASSERT_TRUE(rotoPaint != NULL);
+    EXPECT_FALSE(rotoPaint->isObjectSelectEncoding()) << "no encoding holds the node";
 
     project->reset(false, true);
 }

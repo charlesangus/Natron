@@ -250,6 +250,13 @@ public:
                          CreateNodeArgs& args,
                          int firstFrame = std::numeric_limits<int>::min(), int lastFrame = std::numeric_limits<int>::max());
 
+    /**
+     * @brief Creates a Write with no file set whose input is connected to source, as Render Selected
+     * makes for a node that is not a writer. Returns null if the Write could not be created.
+     **/
+    NodePtr createWriterFor(const NodePtr& source,
+                            CreateNodeArgs& args);
+
     NodePtr getNodeByFullySpecifiedName(const std::string & name) const;
 
     ProjectPtr getProject() const;
@@ -461,6 +468,13 @@ public:
     virtual void setLastViewerUsingTimeline(const NodePtr& /*node*/) {}
 
     virtual ViewerInstance* getLastViewerUsingTimeline() const { return 0; }
+
+    /**
+     * @brief The viewer the user works in: the last one to use the timeline, otherwise the first
+     * viewer of the project's top level, or null. The GUI prefers the viewer last clicked or typed
+     * in. Main thread.
+     **/
+    virtual NodePtr getActiveViewerNode() const;
 
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}

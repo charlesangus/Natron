@@ -43,6 +43,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Global/GlobalDefines.h"
 
 #include "Engine/Cache.h"
+#include "Engine/FrameKey.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -180,10 +181,12 @@ struct TimelineGuiPrivate
     // Every viewer cache tile signals on its own, so the cached line is rebuilt at most once per
     // interval rather than once per tile.
     QTimer cachedFramesRefreshTimer;
-    // The viewer hash and mipmap level the cached line was last built for.
+    // The viewer hash, mipmap level and lookup the cached line was last built for.
     bool cachedFramesBuilt;
     U64 cachedFramesHash;
     unsigned int cachedFramesMipmapLevel;
+    bool cachedFramesFiltered;
+    ViewerFrameFilter cachedFramesFilter;
 
     TimelineGuiPrivate(TimeLineGui* qq,
                        ViewerInstance* viewer,
@@ -217,7 +220,20 @@ struct TimelineGuiPrivate
         , cachedFramesBuilt(false)
         , cachedFramesHash(0)
         , cachedFramesMipmapLevel(0)
+        , cachedFramesFiltered(false)
+        , cachedFramesFilter()
     {
+    }
+
+    bool lookupChanged() const
+    {
+        ViewerFrameFilter now;
+        const bool filtered = viewer->getLastFullQualityLookup(&now);
+        if (filtered != cachedFramesFiltered) {
+            return true;
+        }
+
+        return filtered && (!now.settings.hasTheDisplaySettingsOf(cachedFramesFilter.settings) || (now.tiles != cachedFramesFilter.tiles));
     }
 
     void updateEditorFrameRanges()
@@ -1445,8 +1461,10 @@ TimeLineGui::refreshCachedFrames()
     }
     const U64 hash = node->getHashValue();
     const unsigned int mipmapLevel = _imp->viewer->getMipmapLevelWithoutDraft();
+    ViewerFrameFilter filter;
+    const bool filtered = _imp->viewer->getLastFullQualityLookup(&filter);
     std::map<SequenceTime, StorageModeEnum> frames;
-    appPTR->getViewerCachedFrames(node->getCacheID(), hash, mipmapLevel, &frames);
+    appPTR->getViewerCachedFrames(node->getCacheID(), hash, mipmapLevel, filtered ? &filter : NULL, &frames);
 
     CachedFrames rebuilt;
     for (std::map<SequenceTime, StorageModeEnum>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
@@ -1456,6 +1474,8 @@ TimeLineGui::refreshCachedFrames()
     _imp->cachedFramesBuilt = true;
     _imp->cachedFramesHash = hash;
     _imp->cachedFramesMipmapLevel = mipmapLevel;
+    _imp->cachedFramesFiltered = filtered;
+    _imp->cachedFramesFilter = filter;
     _imp->publishCachedFrames();
     update();
 }
@@ -1467,7 +1487,7 @@ TimeLineGui::refreshCachedFramesIfStale()
     if (!node) {
         return;
     }
-    if (!_imp->cachedFramesBuilt || (node->getHashValue() != _imp->cachedFramesHash) || (_imp->viewer->getMipmapLevelWithoutDraft() != _imp->cachedFramesMipmapLevel)) {
+    if (!_imp->cachedFramesBuilt || (node->getHashValue() != _imp->cachedFramesHash) || (_imp->viewer->getMipmapLevelWithoutDraft() != _imp->cachedFramesMipmapLevel) || _imp->lookupChanged()) {
         _imp->scheduleCachedFramesRefresh();
     }
 }

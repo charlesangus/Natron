@@ -22,7 +22,7 @@ nodes:
       skewx: 0
       skewy: 0
       skewOrder: "XY"
-      center: [0, 0]
+      center: [100, 60]
       resetTransformCenter: ~
       RotoTransformInteractive: true
       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
@@ -57,7 +57,7 @@ nodes:
                 skewx: 0
                 skewy: 0
                 skewOrder: "XY"
-                center: [0, 0]
+                center: [30, 70]
                 extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
                 brushSize: 25
                 brushSpacing: 0.1
@@ -95,7 +95,7 @@ nodes:
                     overlay: [0.85164, 0.196936, 0.196936, 1]
                     knobs:
                       opacity: 1
-                      feather: 1.5
+                      feather: 3
                       featherFallOff: 1
                       lifeTime: "All"
                       lifeTimeFrame: {value: 0, secret: true}
@@ -109,7 +109,7 @@ nodes:
                       skewx: 0
                       skewy: 0
                       skewOrder: "XY"
-                      center: [0, 0]
+                      center: [100, 60]
                       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
                       brushSize: {value: 25, enabled: false}
                       brushSpacing: {value: 0.1, enabled: false}

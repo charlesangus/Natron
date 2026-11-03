@@ -40,6 +40,8 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -81,7 +83,21 @@ void
 RotoCurveContext::onItemCreated(const RotoDrawableItemPtr& item,
                                 bool /*connectNodes*/)
 {
+    NodePtr node = getNode();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (effect) {
+        effect->onCurveItemCreated(item);
+    }
     item->observeKnobChanges();
+}
+
+void
+RotoCurveContext::addHostItemKnob(const KnobIPtr& knob)
+{
+    if (knob) {
+        _imp->knobs.push_back(knob);
+    }
 }
 
 RotoLayerPtr
@@ -1722,6 +1738,27 @@ RotoCurveContext::getNCurves() const
     std::list<RotoDrawableItemPtr> curves = getCurvesByRenderOrder();
 
     return (int)curves.size();
+}
+
+bool
+RotoCurveContext::isItemProxyKnob(const KnobIPtr& knob) const
+{
+    if (!knob) {
+        return false;
+    }
+#ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
+    // These sit in the knob list but drive the whole node, not one item.
+    if ((knob == _imp->motionBlurTypeKnob.lock()) || (knob == _imp->globalMotionBlurKnob.lock()) || (knob == _imp->globalShutterKnob.lock()) || (knob == _imp->globalShutterTypeKnob.lock()) || (knob == _imp->globalCustomOffsetKnob.lock())) {
+        return false;
+    }
+#endif
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        if (it->lock() == knob) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 RotoLayerPtr

@@ -27,6 +27,7 @@
 #include "ViewerTabPrivate.h"
 
 #include <cassert>
+#include <set>
 #include <stdexcept>
 
 #include <QDebug>
@@ -38,8 +39,12 @@
 #include <QCheckBox>
 #include <QPalette>
 
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneReparentNode.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
@@ -69,6 +74,55 @@
 
 NATRON_NAMESPACE_ENTER
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::string
+primPathOf(const NodePtr& node)
+{
+    KnobStringPtr knob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kSceneParamPrimPath));
+
+    return knob ? knob->getValue() : std::string();
+}
+
+/**
+ * @brief The USDCamera node upstream of node whose prim ends up at primPath in node's scene. A
+ * reparenting node grafts its inputs' root prims under its own Prim Path, so the path is looked
+ * for in its inputs without that prefix. Grafts renamed by Auto Rename are not followed.
+ **/
+NodePtr
+findCameraNode(const NodePtr& node,
+               const std::string& primPath,
+               std::set<Node*>* visited)
+{
+    if (!node || primPath.empty() || !visited->insert(node.get()).second) {
+        return NodePtr();
+    }
+    const bool disabled = node->isNodeDisabled();
+    std::string inputPath = primPath;
+    if (!disabled) {
+        if (node->getPluginID() == PLUGINID_NATRON_USDCAMERA) {
+            return (primPathOf(node) == primPath) ? node : NodePtr();
+        }
+        if (dynamic_cast<SceneReparentNode*>(node->getEffectInstance().get())) {
+            const std::string parent = primPathOf(node);
+            if (parent.empty() || (primPath.size() <= parent.size() + 1) || (primPath.compare(0, parent.size(), parent) != 0) || (primPath[parent.size()] != '/')) {
+                return NodePtr();
+            }
+            inputPath = primPath.substr(parent.size());
+        }
+    }
+    const int inputs = node->getNInputs();
+    for (int i = 0; i < inputs; ++i) {
+        NodePtr found = findCameraNode(node->getInput(i), inputPath, visited);
+        if (found) {
+            return found;
+        }
+    }
+
+    return NodePtr();
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static void
 makeFullyQualifiedLabel(Node* node,
@@ -1123,6 +1177,17 @@ ViewerTab::onActiveInputDataKindChanged()
 
             return NodePtr();
         });
+        _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
+            return getSceneViewedNode();
+        });
+        _imp->sceneViewport->setCameraNodeProvider([this](const std::string& primPath) -> NodePtr {
+            std::set<Node*> visited;
+
+            return findCameraNode(getSceneViewedNode(), primPath, &visited);
+        });
+        if (Gui* gui = getGui()) {
+            _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
+        }
     }
     if (!_imp->sceneViewport) {
         return;
@@ -1138,6 +1203,20 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
 } // onActiveInputDataKindChanged
+
+NodePtr
+ViewerTab::getSceneViewedNode() const
+{
+    // The scene view shows input A.
+    if (!_imp->viewerNode) {
+        return NodePtr();
+    }
+    int a = -1, b = -1;
+    _imp->viewerNode->getActiveInputs(a, b);
+    EffectInstancePtr input = (a >= 0) ? _imp->viewerNode->getInput(a) : EffectInstancePtr();
+
+    return input ? input->getNode() : NodePtr();
+}
 
 void
 ViewerTab::onSceneEvaluated(int textureIndex)

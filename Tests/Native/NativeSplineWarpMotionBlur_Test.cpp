@@ -42,6 +42,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -67,8 +68,14 @@ const double kTime = 1.;
 
 // Transform's motion blur takes each pixel's samples at its own jittered times, and SplineWarp
 // at the centres of evenly spread sub-frames: on the parity source's ramps the two means agree
-// to well under this over a few pixels of motion.
+// to well under this while Transform stays with its stratified samples.
 const double kTransformBlurTolerance = 1e-3;
+
+// Transform adds unstratified samples once a channel's variance over the shutter exceeds
+// motionBlurMinSamples() * motionBlurMaxError()^2, and their noise alone is about 1e-3. The
+// parity source's steepest ramp (blue, about 0.038 a pixel) stays under that at motion blur 3
+// only for moves under about 1.7 pixels.
+const double kParityMotion = 1.;
 
 SplineWarpContextPtr
 contextOf(const NodePtr& node)
@@ -234,7 +241,12 @@ protected:
                      int major,
                      const NodePtr& input)
     {
-        NodePtr node = createNode(QString::fromUtf8(id), major);
+        CreateNodeArgs args(id, getApp()->getProject());
+
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        NodePtr node = getApp()->createNode(args);
 
         EXPECT_TRUE(bool(node)) << id;
         if (node && input) {
@@ -311,10 +323,10 @@ TEST_F(NativeSplineWarpMotionBlurTest, LinearTranslationMatchesTransformMotionBl
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr warp = makeMovingWarp(source, 2., 0.);
+    NodePtr warp = makeMovingWarp(source, kParityMotion, 0.);
     NodePtr transform = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, source);
     ASSERT_TRUE(warp && transform);
-    ASSERT_TRUE(animateLinearly(transform, kTransformNodeParamTranslate, kTime, { 0., 0. }, kTime + 1., { 2., 0. }));
+    ASSERT_TRUE(animateLinearly(transform, kTransformNodeParamTranslate, kTime, { 0., 0. }, kTime + 1., { kParityMotion, 0. }));
     for (const NodePtr& node : { warp, transform }) {
         ASSERT_TRUE(setKnobValues(node, kSplineWarpParamMotionBlur, { 3. }));
         ASSERT_TRUE(setKnobValues(node, kSplineWarpParamShutter, { 1. }));

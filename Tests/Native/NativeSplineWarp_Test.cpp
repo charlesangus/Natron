@@ -574,13 +574,15 @@ TEST_F(NativeSplineWarpTest, BoundaryKeepsTheOutsideBitExact)
     ASSERT_TRUE(renderRGBA(warp, window, &warped));
     ASSERT_TRUE(renderRGBA(source, window, &original));
 
+    // The warp eases out across the boundary's feather, so only pixels beyond it must stay put.
+    const double feather = std::fabs(boundary->getFeatherDistance(kTime));
     std::size_t outsideWrong = 0;
     double insideDiff = 0.;
     for (int y = window.y1; y < window.y2; ++y) {
         for (int x = window.x1; x < window.x2; ++x) {
             const double cx = x + 0.5;
             const double cy = y + 0.5;
-            const bool outside = (cx < 15.) || (cx > 49.) || (cy < 11.) || (cy > 37.);
+            const bool outside = (cx < 16. - feather) || (cx > 48. + feather) || (cy < 12. - feather) || (cy > 36. + feather);
             const float* a = pixelAt(warped, x, y);
             const float* b = pixelAt(original, x, y);
             for (int c = 0; c < 4; ++c) {
@@ -689,10 +691,15 @@ TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
     ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamCenter, { 32., 24. }));
     ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamRotate, { 30. }));
     ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamScale, { 0.5, 0.5 }));
-    NodePtr dot = makeNode(PLUGINID_NATRON_DOT, -1, transform);
-    ASSERT_TRUE(bool(dot));
+    // A Dot passes a transform through, so a Crop, which cannot, makes the Transform resample itself.
+    NodePtr crop = makeNode(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, transform);
+    ASSERT_TRUE(bool(crop));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
     NodePtr warp = makeSplineWarp(transform);
-    NodePtr twice = makeSplineWarp(dot);
+    NodePtr twice = makeSplineWarp(crop);
     ASSERT_TRUE(warp && twice);
     ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 26., 18., 10., 2.5, 1.5)));
     ASSERT_TRUE(bool(linkTranslation(contextOf(twice), 26., 18., 10., 2.5, 1.5)));

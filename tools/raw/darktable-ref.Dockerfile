@@ -1,4 +1,5 @@
-# darktable-cli at one pinned revision, for tools/raw/make-reference.sh. Only what the
+# darktable-cli at one pinned revision (DARKTABLE_REF or DARKTABLE_MASTER_REF), for
+# tools/raw/make-reference.sh; options a revision lacks are ignored. Only what the
 # command-line export of a raw file to TIFF needs is built; every optional feature is off.
 FROM debian:trixie
 
@@ -32,7 +33,7 @@ RUN cmake -S /src/darktable -B /src/build -G Ninja \
         -DUSE_CAMERA_SUPPORT=OFF -DUSE_COLORD=OFF -DUSE_KWALLET=OFF -DUSE_LIBSECRET=OFF \
         -DUSE_GRAPHICSMAGICK=OFF -DUSE_IMAGEMAGICK=OFF -DUSE_PORTMIDI=OFF -DUSE_OPENJPEG=OFF \
         -DUSE_JXL=OFF -DUSE_WEBP=OFF -DUSE_AVIF=OFF -DUSE_HEIF=OFF -DUSE_XCF=OFF \
-        -DUSE_OPENEXR=OFF -DUSE_GMIC=OFF -DUSE_SDL2=OFF -DUSE_AI=OFF \
+        -DUSE_OPENEXR=OFF -DUSE_GMIC=OFF -DUSE_SDL2=OFF -DUSE_AI=OFF -DUSE_MCP=OFF -DUSE_OPENCV=OFF \
         -DBUILD_PRINT=OFF -DBUILD_CMSTEST=OFF -DBUILD_RS_IDENTIFY=OFF -DUSE_XMLLINT=OFF \
         -DBUILD_TESTING=OFF \
     && cmake --build /src/build -j "${JOBS}" \

@@ -831,19 +831,28 @@ recordPythonKnobEdit(const KnobIPtr& knob)
     if (IsolatedJob::refusesPythonWrite(knob.get())) {
         return false;
     }
+    recordKnobEdit(knob);
+
+    return true;
+}
+
+void
+recordKnobEdit(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return;
+    }
     KnobHolder* holder = knob->getHolder();
     if (!holder || !isRecordedHolder(holder)) {
-        return true;
+        return;
     }
     UndoRecorderPtr recorder = recorderFor(holder->getApp());
     if (!recorder || !recorder->claimKnob(knob)) {
-        return true;
+        return;
     }
     UndoTouched touched;
     touched.knobs.push_back(knob);
     recorder->record(std::make_shared<KnobStateCommand>(knob), touched);
-
-    return true;
 }
 
 void

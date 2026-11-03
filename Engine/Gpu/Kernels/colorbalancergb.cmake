@@ -1,0 +1,1 @@
+slang_add_kernel(colorbalancergb_wrapped Kernels/colorbalancergb.slang ENTRY colorbalancergb_wrapped REGISTRY NatronGpu)

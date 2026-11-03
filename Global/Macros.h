@@ -276,6 +276,7 @@ NATRON_VERSION_STRINGIZE__(major, minor)
 #define PLUGIN_GROUP_DEEP "Deep"
 #define PLUGIN_GROUP_METADATA "Metadata"
 #define PLUGIN_GROUP_LOOP "Loop"
+#define PLUGIN_GROUP_RFV "Reverse Flow Variable"
 #define PLUGIN_GROUP_MULTIVIEW "Views"
 #define PLUGIN_GROUP_TOOLSETS "ToolSets"
 #define PLUGIN_GROUP_OTHER "Other"

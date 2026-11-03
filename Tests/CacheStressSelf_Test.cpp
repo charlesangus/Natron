@@ -224,13 +224,23 @@ TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
     QString savedFilePath;
     ASSERT_TRUE(app->getProject()->saveProject(dirPath, fileName, &savedFilePath));
     const std::string blurName = blur->getScriptName();
+    const std::string blurCacheID = blur->getCacheID();
 
+    // Another project's node of the same name gets its own cache ID; the saved one comes back on load.
     const ProjectPtr project = app->getProject();
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(blurName) == nullptr);
+    const NodePtr namesake = createIn(app, project, PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR);
+    ASSERT_TRUE(bool(namesake));
+    ASSERT_EQ(blurName, namesake->getScriptName());
+    EXPECT_NE(blurCacheID, namesake->getCacheID());
+
     project->reset(false, true);
     ASSERT_TRUE(project->getNodeByName(blurName) == nullptr);
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
     const NodePtr loaded = project->getNodeByName(blurName);
     ASSERT_TRUE(bool(loaded));
+    EXPECT_EQ(blurCacheID, loaded->getCacheID());
 
     for (int mode = 0; mode < 2; ++mode) {
         clearEverything(app);

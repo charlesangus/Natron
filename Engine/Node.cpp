@@ -2911,6 +2911,13 @@ Node::areAllProcessingThreadsQuit() const
         }
     }
 
+    if (isRotoPaintingNode()) {
+        RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get());
+        if (rotoPaint && rotoPaint->isObjectSelectEncoding()) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -2933,6 +2940,9 @@ Node::quitAnyProcessing_non_blocking()
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(false);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -2976,6 +2986,9 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(true);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {

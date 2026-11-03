@@ -30,25 +30,24 @@
 #include <stdexcept>
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/MergingEnum.h"
 #include "Engine/RotoContext.h"
-#include "Engine/Bezier.h"
-#include "Engine/BezierCP.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/RotoStrokeItem.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/RotoDrawableItem.h"
-#include "Engine/RotoPoint.h"
-#include "Engine/RotoUndoCommand.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-
 
 #include "Global/GLIncludes.h"
 #include "Global/GlobalDefines.h"
@@ -427,7 +426,8 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(sourceType);
     addKnobToViewerUI(resetCloneOffset);
 
-    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll);
+    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
+    _imp->ui->createObjectSelectKnobs(generalPage);
 
     KnobGroupPtr paintToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamPaintBrushToolButtonLabel) );
     paintToolButton->setName(kRotoUIParamPaintBrushToolButton);
@@ -620,7 +620,7 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel) );
 
-    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
+    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect, shortcuts);
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X) );
@@ -643,6 +643,13 @@ RotoPaint::shouldDrawHostOverlay() const
         return true;
     }
     return b->getValue();
+}
+
+void
+RotoPaint::onEffectCreated(bool /*mayCreateFileDialog*/,
+                           const CreateNodeArgs& args)
+{
+    _imp->ui->onHostEffectCreated(args);
 }
 
 void
@@ -709,6 +716,7 @@ RotoPaint::onInputChanged(int inputNb)
     NodePtr inputNode = getNode()->getInput(0);
 
     getNode()->getRotoContext()->onRotoPaintInputChanged(inputNode);
+    _imp->ui->onHostInputChanged();
     EffectInstance::onInputChanged(inputNb);
 }
 
@@ -1101,6 +1109,20 @@ RotoPaintInteractPtr
 RotoPaint::getInteract() const
 {
     return _imp->ui;
+}
+
+void
+RotoPaint::abortObjectSelectEncoding(bool wait)
+{
+    if (_imp->ui && _imp->ui->objectSelect) {
+        _imp->ui->objectSelect->abortEncoding(wait);
+    }
+}
+
+bool
+RotoPaint::isObjectSelectEncoding() const
+{
+    return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
 }
 
 void

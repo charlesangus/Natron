@@ -32,6 +32,7 @@
 #include <functional>
 #include <string>
 
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -61,6 +62,13 @@ bool isCycles(const std::string& renderer) WARN_UNUSED_RETURN;
  * to call any number of times from any thread.
  **/
 void registerSceneIndices();
+
+/**
+ * @brief What Cycles renders, for DelegateSupport::warningText(): its delegate's types and render
+ * contexts, the implicit surfaces registerSceneIndices() has made meshes of, and the shader ids
+ * hdCycles builds nodes of. Its prim types are empty when Cycles cannot be loaded.
+ **/
+const DelegateSupport::Support& support();
 
 /**
  * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and

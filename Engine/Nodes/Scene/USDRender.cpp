@@ -586,7 +586,13 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    clearPersistentMessage(false);
+    // The render stands; what the delegate could not render stays on the node until a render
+    // without it.
+    if (!result.warning.empty()) {
+        setPersistentMessage(eMessageTypeWarning, result.warning);
+    } else {
+        clearPersistentMessage(false);
+    }
 
     return eStatusOK;
 } // USDRender::render

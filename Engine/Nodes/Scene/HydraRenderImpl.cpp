@@ -76,6 +76,7 @@
 #endif
 
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -134,6 +135,10 @@ struct EngineEntry {
     std::map<std::string, VtValue> settings;
     // Whether the delegate renders the normal AOV, which only some do.
     bool normal = false;
+    // What the delegate cannot render of the stage, and whether that was found since the stage or
+    // the delegate last changed.
+    std::string warning;
+    bool supportChecked = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -788,6 +793,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
     }
     const bool edited = entry.stage->sync(request.scene);
+    if (edited || rendererChanged) {
+        entry.warning.clear();
+        entry.supportChecked = false;
+    }
     std::optional<StormGLSection> section;
     enterGLSection(&section);
     // A Storm engine goes inside the section: its HgiGL garbage is shared with the main thread's.
@@ -948,6 +957,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
+        // Only Cycles is probed: making a delegate to ask it its types may start a render.
+        if (!entry.supportChecked) {
+            entry.warning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();
+            entry.supportChecked = true;
+        }
     }
 
     entry.rendered = true;
@@ -1042,6 +1056,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
         }
     }
 
+    result->warning = entry.warning;
     result->normal.clear();
     if (entry.normal) {
         // Hydra's normal AOV is in world space; the normal matrix of the view takes it to the

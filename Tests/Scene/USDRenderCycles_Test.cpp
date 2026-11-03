@@ -76,6 +76,10 @@ NATRON_NAMESPACE_USING
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
+// A mesh card filling the centre, ten units from the camera, beside two cylinder lights, which
+// Cycles 5.2's delegate does not make.
+const char* const kUnsupportedFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-unsupported.usda";
+const float kCardDistance = 10.f;
 const char* const kCamera = "/World/Cam";
 const int kSize = 64;
 // Pixels on each cube: the near one's front face fills the centre, at z = 1 nine units from the
@@ -252,7 +256,8 @@ protected:
      * The fixture read by a USDRead into a USDRender rendering it through Cycles from its camera,
      * kSize x kSize. Returns the USDRender, null after a gtest failure; *reader gets the USDRead.
      **/
-    NodePtr createGraph(NodePtr* reader = nullptr)
+    NodePtr createGraph(NodePtr* reader = nullptr,
+                        const char* fixture = kFixture)
     {
         NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
@@ -269,7 +274,7 @@ protected:
         if (!file || !renderer || !camera || !size || !par) {
             return NodePtr();
         }
-        file->setValue(std::string(kFixture));
+        file->setValue(std::string(fixture));
         if (!selectRenderer(renderer, kRenderDelegateCyclesId)) {
             ADD_FAILURE() << "the Renderer menu has no " << kRenderDelegateCyclesId;
 
@@ -416,6 +421,52 @@ TEST_F(USDRenderCyclesTest, PrimIdAndNormal)
     EXPECT_EQ(0.f, normal[corner * 3]);
     EXPECT_EQ(0.f, normal[corner * 3 + 1]);
     EXPECT_EQ(0.f, normal[corner * 3 + 2]);
+}
+
+// Two prims of a type Cycles does not make give one warning line naming the type, the rest still
+// renders, and a render of a stage without them clears it.
+TEST_F(USDRenderCyclesTest, WarnsOncePerUnsupportedPrimType)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, kUnsupportedFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error)) << error;
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(4u, planes.size());
+    ASSERT_EQ(pixels * 4, planes[0].pixels.size());
+    ASSERT_EQ(pixels, planes[1].pixels.size());
+    ASSERT_EQ(pixels, planes[2].pixels.size());
+
+    const std::size_t centre = pixelIndex(kNearX, kNearY);
+    EXPECT_NEAR(1.f, planes[0].pixels[centre * 4 + 3], 1e-3f);
+    EXPECT_NEAR(kCardDistance, planes[1].pixels[centre], 1e-3f);
+    EXPECT_EQ(bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/World/Card"))), bitsOf(planes[2].pixels[centre]));
+
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    const std::string text = message.toStdString();
+    EXPECT_EQ(std::string::npos, text.find('\n')) << text;
+    std::size_t mentions = 0;
+    for (std::size_t at = text.find("cylinderLight"); at != std::string::npos; at = text.find("cylinderLight", at + 1)) {
+        ++mentions;
+    }
+    EXPECT_EQ(1u, mentions) << text;
+    EXPECT_NE(std::string::npos, text.find("/World/LampA")) << text;
+    EXPECT_NE(std::string::npos, text.find("/World/LampB")) << text;
+    EXPECT_EQ(std::string::npos, text.find("/World/Card")) << text;
+
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    ASSERT_TRUE(file != nullptr);
+    file->setValue(std::string(kFixture));
+    ASSERT_TRUE(renderAll(node, &planes));
 }
 
 // A render that would take minutes is aborted: render() returns within a second, and once the

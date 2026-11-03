@@ -62,7 +62,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -111,7 +111,7 @@ doubleIn(const RenderContextPtr& context,
 KnobGroupPtr
 variablesGroupOf(const NodePtr& node)
 {
-    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kRFVSetParamVariables));
 }
 
 // Polls done until it holds or ten seconds pass.
@@ -156,7 +156,7 @@ protected:
                       double value,
                       KnobDoublePtr* variable = 0)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 
@@ -182,7 +182,7 @@ protected:
     NodePtr createStringSet(const std::string& name,
                             const std::string& value)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 

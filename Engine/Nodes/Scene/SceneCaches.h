@@ -47,6 +47,13 @@ void releaseIdleQueryStages();
  * hold; the next render of a node makes them again. Does not wait. MT-safe.
  **/
 void releaseRenderEngines();
+
+/**
+ * @brief Drops every USDRender node's stage and engine of a render delegate other than Storm, and
+ * with them the host memory they hold. Free GPU Memory leaves these; the purge of scene memory
+ * drops them. Does not wait. MT-safe.
+ **/
+void releaseCpuRenderEngines();
 } // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

@@ -598,20 +598,24 @@ TEST_F(NativeLoopCrossFrameTest, BeforeTheStartFrameTheInputPassesThrough)
     EXPECT_EQ(0.f, redAt(plane, 41, 11));
 }
 
-// Two LoopBegins open the trail: the one feeding back carries the frame before, the one with
-// Feedback off brings in the moving dot, so the trail matches the one-begin trail. With both
-// feeding back the dot is never added again and frame 1's image holds.
-TEST_F(NativeLoopCrossFrameTest, ALoopBeginWithFeedbackOffPassesItsInputThrough)
+// Two LoopBegins open the trail: the one feeding back carries the frame before, the one the
+// LoopEnd's Feedback LoopBegins leaves unticked brings in the moving dot, so the trail matches
+// the one-begin trail. With both feeding back the dot is never added again and frame 1's image
+// holds.
+TEST_F(NativeLoopCrossFrameTest, AnUntickedLoopBeginPassesItsInputThrough)
 {
     Trail t = createTrail(1);
     ASSERT_TRUE(bool(t.end));
     NodePtr source = createLoopBegin(t.dot);
     ASSERT_TRUE(bool(source));
-    ASSERT_TRUE(setKnobValues(source, kLoopBeginParamFeedback, { 0. }));
-    ASSERT_TRUE(t.merge->replaceInput(source, 1));
     std::shared_ptr<LoopEnd> end = loopEndOf(t.end);
     ASSERT_TRUE(bool(end));
+    end->setFeedsBack(source, false);
+    ASSERT_FALSE(end->feedsBack(source));
+    ASSERT_TRUE(t.merge->replaceInput(source, 1));
     EXPECT_EQ(2u, end->getLoopBegins().size());
+    EXPECT_FALSE(t.end->getKnobByName(kLoopEndParamPassThroughBegins)->getIsSecret());
+    EXPECT_FALSE(static_cast<const LoopBegin*>(source->getEffectInstance().get())->feedsBack());
     EXPECT_EQ(std::vector<NodePtr>({ t.begin }), end->getChainingBegins());
     EXPECT_EQ(end, LoopEnd::chainingEndOf(t.begin));
     EXPECT_FALSE(bool(LoopEnd::chainingEndOf(source)));
@@ -626,7 +630,8 @@ TEST_F(NativeLoopCrossFrameTest, ALoopBeginWithFeedbackOffPassesItsInputThrough)
     ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeTaskGraph, false, &taskGraph));
     expectSamePixels(plane, taskGraph, 0.f, "frame 10, two LoopBegins, both schedulers");
 
-    ASSERT_TRUE(setKnobValues(source, kLoopBeginParamFeedback, { 1. }));
+    end->setFeedsBack(source, true);
+    ASSERT_TRUE(end->feedsBack(source));
     EXPECT_EQ(2u, end->getChainingBegins().size());
     ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_EQ(1.f, redAt(plane, 11, 11));

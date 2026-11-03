@@ -81,6 +81,7 @@
 #define kLoopEndParamBake "bake"
 #define kLoopEndParamLoadFromCache "loadFromCache"
 #define kLoopEndParamClearCache "clearCache"
+#define kLoopEndParamPassThroughBegins "passThroughBegins"
 
 #define kLoopEndDefaultMaxIterations 1024
 #define kLoopEndMinFrameStep 0.001
@@ -140,6 +141,24 @@ public:
      * and begin feeds back: when begin may output something other than its input. Else null.
      **/
     static std::shared_ptr<LoopEnd> chainingEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopEnd paired with begin, whatever its mode.
+     **/
+    static std::shared_ptr<LoopEnd> pairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Shows or hides, on the LoopEnds whose loops render node, the knobs that depend on
+     * how many LoopBegins open the loop. Call on the main thread after node's inputs change.
+     **/
+    static void refreshLoopsOf(const NodePtr& node);
+
+    /**
+     * @brief Keeps begin's choice on its LoopEnd's Feedback LoopBegins across a rename from
+     * oldName to its current script name.
+     **/
+    static void onLoopBeginRenamed(const NodePtr& begin,
+                                   const std::string& oldName);
 
     /**
      * @brief Appends the LoopBegins that feed back in the Feedback and Cross Frame loops whose
@@ -350,6 +369,35 @@ public:
     std::vector<NodePtr> getChainingBegins() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether begin outputs the iteration before when this LoopEnd is in Feedback mode,
+     * and the frame before under Cross Frame, whatever the mode. Every LoopBegin does unless it
+     * is set to pass its input through.
+     **/
+    bool feedsBack(const NodePtr& begin) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sets whether begin feeds back, through the Feedback LoopBegins knob.
+     **/
+    void setFeedsBack(const NodePtr& begin,
+                      bool feedsBack);
+
+    /**
+     * @brief The script names the Feedback LoopBegins knob lists as passing their input through.
+     **/
+    std::vector<std::string> getPassThroughBeginNames() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sets the script names the Feedback LoopBegins knob lists as passing their input
+     * through, which may name LoopBegins not wired into the loop now.
+     **/
+    void setPassThroughBeginNames(const std::vector<std::string>& names);
+
+    /**
+     * @brief The Feedback LoopBegins knob's value listing names: sorted, one per line.
+     **/
+    static std::string encodePassThroughBeginNames(std::vector<std::string> names) WARN_UNUSED_RETURN;
+
+    /**
      * @brief base with the loop variables of the iteration the loop previews at time: Single
      * Pass Iteration, clamped to the loop's iterations. base when the loop has no iteration.
      **/
@@ -454,8 +502,9 @@ private:
                        "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
                        "before it (Over), or under them (Under); Reverse Order folds from the last "
                        "iteration to the first. Feedback feeds each iteration's output to the LoopBegins "
-                       "of the next that have Feedback on, which start from their input, and outputs the "
-                       "last; the other LoopBegins pass their input through at every iteration. "
+                       "of the next, which start from their input, and outputs the last; with several "
+                       "LoopBegins, Feedback LoopBegins chooses which do, the others passing their input "
+                       "through at every iteration. "
                        "Single Pass outputs the one iteration Single Pass Iteration names, unfolded; "
                        "under Feedback, that iteration after the ones before it. A Stop Condition, a Python expression, is evaluated "
                        "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
@@ -486,6 +535,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
+
+    virtual void onSettingsPanelOpened() OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
@@ -541,13 +592,10 @@ private:
 
     int crossFrameStart() const WARN_UNUSED_RETURN;
 
-    // The LoopEnd paired with begin, whatever its mode.
-    static std::shared_ptr<LoopEnd> pairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
-
-    // pairedEndOf(begin) when begin's Feedback is on, else null.
+    // pairedEndOf(begin) when it feeds back, else null.
     static std::shared_ptr<LoopEnd> chainingPairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
 
-    // The paired LoopBegins whose Feedback is on, whatever the mode.
+    // The paired LoopBegins that feed back, whatever the mode.
     std::vector<NodePtr> feedsBackBegins() const WARN_UNUSED_RETURN;
 
     // Under Cross Frame at a whole frame from Start Frame on: the output is the frame
@@ -723,6 +771,7 @@ private:
     KnobButtonWPtr _bake;
     KnobBoolWPtr _loadFromCache;
     KnobButtonWPtr _clearCache;
+    KnobStringWPtr _passThroughBegins;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;

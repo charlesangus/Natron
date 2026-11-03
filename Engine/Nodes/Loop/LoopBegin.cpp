@@ -111,27 +111,10 @@ LoopBegin::isLoopBegin(const NodePtr& node)
 bool
 LoopBegin::feedsBack() const
 {
-    KnobBoolPtr feedback = _feedback.lock();
+    const NodePtr self = getNode();
+    const std::shared_ptr<LoopEnd> end = LoopEnd::pairedEndOf(self);
 
-    return feedback && feedback->getValue();
-}
-
-void
-LoopBegin::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-    KnobBoolPtr feedback = createKnob<KnobBool>(tr("Feedback"));
-
-    feedback->setName(kLoopBeginParamFeedback);
-    feedback->setAnimationEnabled(false);
-    feedback->setDefaultValue(true);
-    feedback->setHintToolTip(tr("When the LoopEnd is in Feedback mode, each iteration after the first outputs the "
-                                "iteration before it rather than this node's input; with the LoopEnd's Cross Frame on, "
-                                "frames after Start Frame output the LoopEnd's frame before. Off, this node passes its "
-                                "input through at every iteration and frame, which brings an unchanging source into "
-                                "the body. Ignored in Accumulate mode without Cross Frame."));
-    page->addKnob(feedback);
-    _feedback = feedback;
+    return end && end->feedsBack(self);
 }
 
 Route
@@ -530,24 +513,6 @@ LoopBegin::refreshConformMessage(const std::string& message)
     QMutexLocker locker(&_conformMutex);
 
     refreshLoopMessage(getNode(), eMessageTypeWarning, message, &_conformPosted);
-}
-
-bool
-LoopBegin::knobChanged(KnobI* k,
-                       ValueChangedReasonEnum /*reason*/,
-                       ViewSpec /*view*/,
-                       double /*time*/,
-                       bool /*originatedFromMainThread*/)
-{
-    KnobBoolPtr feedback = _feedback.lock();
-
-    if (!feedback || (k != feedback.get())) {
-        return false;
-    }
-    // Under Feedback or Cross Frame, whether it reads its loop's variables moves with it.
-    invalidateRenderContextReads();
-
-    return true;
 }
 
 NATRON_NAMESPACE_EXIT

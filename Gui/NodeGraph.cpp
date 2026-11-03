@@ -150,11 +150,11 @@ NodeGraph::NodeGraph(Gui* gui,
     QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintInputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
+    _imp->_hintInputEdge->setIsSpliceHint(true);
     _imp->_hintInputEdge->hide();
 
     _imp->_hintOutputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintOutputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
+    _imp->_hintOutputEdge->setIsSpliceHint(true);
     _imp->_hintOutputEdge->hide();
 
     _imp->_tL = new NodeGraphTextItem(this, 0, false);
@@ -268,6 +268,9 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
 {
     if (_imp->_loopBlocks) {
         _imp->_loopBlocks->schedule(topology);
+    }
+    if (topology) {
+        Q_EMIT topologyChanged();
     }
 }
 

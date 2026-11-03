@@ -117,10 +117,15 @@ M259 - GPU Placement Under Render Contexts.
   on the loop's input, and each later iteration renders it on the output of the one before,
   which the LoopBegin outputs in place of its input. The LoopEnd outputs the last iteration.
   Five iterations of a 1 px Erode give a 5 px Erode; ten 1 px translates, a 10 px one.
-- Several LoopBegins: each LoopBegin's `feedback` (on by default) chooses whether it outputs
-  the iteration before or passes its own input through at every iteration. One LoopBegin
-  carrying the state and another, with `feedback` off, bringing in an unchanging source is the
-  usual pair; with both on, both output the iteration before.
+- With one LoopBegin, `mode` alone decides: it feeds back. With several, `passThroughBegins`
+  (Feedback LoopBegins), shown only then and only in Feedback mode or with `crossFrame` on,
+  lists the loop's LoopBegins with a tick each, all ticked by default. A ticked LoopBegin
+  outputs the iteration before; an unticked one passes its own input through at every
+  iteration, and under `crossFrame` at every frame. One LoopBegin
+  carrying the state and another, unticked, bringing in an unchanging source is the usual
+  pair; with both ticked, both output the iteration before. The knob stores the script names
+  of the unticked LoopBegins, one per line, so a LoopBegin wired in later feeds back; renaming
+  a LoopBegin of the loop keeps its choice.
 - The variables are those of Accumulate. A body that reads none of them still renders once
   per iteration: each iteration reads a different image.
 - `stopCondition` applies: the output is the last iteration before the one it is true for.
@@ -148,10 +153,10 @@ M259 - GPU Placement Under Render Contexts.
 
 ## Cross Frame
 
-- `crossFrame` feeds each output frame into the next: after `startFrame`, each LoopBegin with
-  `feedback` on outputs this LoopEnd's output at the frame before instead of its input, under
-  Accumulate at every iteration and under Feedback at the first. LoopBegins with `feedback` off
-  pass their input through, as under Feedback. At `startFrame` and before it, every LoopBegin
+- `crossFrame` feeds each output frame into the next: after `startFrame`, each LoopBegin that
+  feeds back outputs this LoopEnd's output at the frame before instead of its input, under
+  Accumulate at every iteration and under Feedback at the first. With several LoopBegins, the
+  ones `passThroughBegins` leaves unticked pass their input through, as under Feedback. At `startFrame` and before it, every LoopBegin
   outputs its input. A trail or a simulation builds up from `startFrame`, the iterations of a
   frame being its substeps: four Feedback iterations make four substeps a frame. With
   `iterateOver` Count, `subframes` places the substeps between frames: see

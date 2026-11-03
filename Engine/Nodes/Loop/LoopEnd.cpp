@@ -337,9 +337,9 @@ LoopEnd::pairedEndOf(const NodePtr& begin)
 std::shared_ptr<LoopEnd>
 LoopEnd::chainingPairedEndOf(const NodePtr& begin)
 {
-    const LoopBegin* effect = begin ? dynamic_cast<const LoopBegin*>(begin->getEffectInstance().get()) : NULL;
+    std::shared_ptr<LoopEnd> end = pairedEndOf(begin);
 
-    return (effect && effect->feedsBack()) ? pairedEndOf(begin) : std::shared_ptr<LoopEnd>();
+    return (end && end->feedsBack(begin)) ? end : std::shared_ptr<LoopEnd>();
 }
 
 std::shared_ptr<LoopEnd>
@@ -364,6 +364,21 @@ LoopEnd::chainingEndOf(const NodePtr& begin)
     std::shared_ptr<LoopEnd> end = chainingPairedEndOf(begin);
 
     return (end && (end->isFeedback() || end->isCrossFrame())) ? end : std::shared_ptr<LoopEnd>();
+}
+
+void
+LoopEnd::refreshLoopsOf(const NodePtr& node)
+{
+    if (!node || !anyExists()) {
+        return;
+    }
+    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
+    for (const NodePtr& endNode : ends) {
+        LoopEnd* end = dynamic_cast<LoopEnd*>(endNode->getEffectInstance().get());
+        if (end) {
+            end->refreshKnobVisibility();
+        }
+    }
 }
 
 void
@@ -1508,6 +1523,7 @@ LoopEnd::appendFeedbackKnobsHash(ContentHasher& h) const
         _frameStep.lock(),
         _stopCondition.lock(),
         _maxIterations.lock(),
+        _passThroughBegins.lock(),
     };
 
     for (const KnobIPtr& knob : knobs) {
@@ -1812,13 +1828,122 @@ LoopEnd::feedsBackBegins() const
     const std::vector<NodePtr> paired = findLoopBegins(&error);
 
     for (const NodePtr& node : paired) {
-        const LoopBegin* begin = dynamic_cast<const LoopBegin*>(node->getEffectInstance().get());
-        if (begin && begin->feedsBack()) {
+        if (feedsBack(node)) {
             begins.push_back(node);
         }
     }
 
     return begins;
+}
+
+std::vector<std::string>
+LoopEnd::getPassThroughBeginNames() const
+{
+    std::vector<std::string> names;
+    KnobStringPtr knob = _passThroughBegins.lock();
+
+    if (!knob) {
+        return names;
+    }
+    const std::string value = knob->getValue();
+    std::size_t from = 0;
+    while (from <= value.size()) {
+        std::size_t to = value.find('\n', from);
+        if (to == std::string::npos) {
+            to = value.size();
+        }
+        if (to > from) {
+            names.push_back(value.substr(from, to - from));
+        }
+        from = to + 1;
+    }
+
+    return names;
+}
+
+bool
+LoopEnd::feedsBack(const NodePtr& begin) const
+{
+    if (!begin) {
+        return false;
+    }
+    const std::vector<std::string> passThrough = getPassThroughBeginNames();
+
+    return std::find(passThrough.begin(), passThrough.end(), begin->getScriptName_mt_safe()) == passThrough.end();
+}
+
+std::string
+LoopEnd::encodePassThroughBeginNames(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    std::string value;
+    for (const std::string& each : names) {
+        if (each.empty()) {
+            continue;
+        }
+        if (!value.empty()) {
+            value += '\n';
+        }
+        value += each;
+    }
+
+    return value;
+}
+
+void
+LoopEnd::setPassThroughBeginNames(const std::vector<std::string>& names)
+{
+    KnobStringPtr knob = _passThroughBegins.lock();
+
+    if (!knob) {
+        return;
+    }
+    const std::string value = encodePassThroughBeginNames(names);
+    if (value != knob->getValue()) {
+        knob->setValue(value);
+    }
+}
+
+void
+LoopEnd::setFeedsBack(const NodePtr& begin,
+                      bool feedsBack)
+{
+    if (!begin) {
+        return;
+    }
+    const std::string name = begin->getScriptName_mt_safe();
+    std::vector<std::string> names = getPassThroughBeginNames();
+    const std::vector<std::string>::iterator found = std::find(names.begin(), names.end(), name);
+    if (feedsBack == (found == names.end())) {
+        return;
+    }
+    if (feedsBack) {
+        names.erase(found);
+    } else {
+        names.push_back(name);
+    }
+    setPassThroughBeginNames(names);
+}
+
+void
+LoopEnd::onLoopBeginRenamed(const NodePtr& begin,
+                            const std::string& oldName)
+{
+    if (!LoopBegin::isLoopBegin(begin) || !anyExists()) {
+        return;
+    }
+    std::shared_ptr<LoopEnd> end = pairedEndOf(begin);
+    if (!end) {
+        return;
+    }
+    std::vector<std::string> names = end->getPassThroughBeginNames();
+    const std::vector<std::string>::iterator found = std::find(names.begin(), names.end(), oldName);
+    if (found == names.end()) {
+        return;
+    }
+    *found = begin->getScriptName_mt_safe();
+    end->setPassThroughBeginNames(names);
 }
 
 std::string
@@ -1909,6 +2034,19 @@ LoopEnd::initializeKnobs()
     mode->setDefaultValue(0);
     page->addKnob(mode);
     _mode = mode;
+
+    // Shown as a list of the loop's LoopBegins to tick; it holds the ones left unticked, so a
+    // LoopBegin newly wired in feeds back.
+    KnobStringPtr passThroughBegins = createKnob<KnobString>(tr("Feedback LoopBegins"));
+    passThroughBegins->setName(kLoopEndParamPassThroughBegins);
+    passThroughBegins->setAnimationEnabled(false);
+    passThroughBegins->setDefaultValue(std::string());
+    passThroughBegins->setHintToolTip(tr("Which of the loop's LoopBegins output the iteration before under Feedback, "
+                                         "and the frame before under Cross Frame. An unticked one passes its input "
+                                         "through at every iteration and frame, which brings an unchanging source into "
+                                         "the body. Shown when several LoopBegins open the loop."));
+    page->addKnob(passThroughBegins);
+    _passThroughBegins = passThroughBegins;
 
     KnobBoolPtr singlePass = createKnob<KnobBool>(tr("Single Pass"));
     singlePass->setName(kLoopEndParamSinglePass);
@@ -2055,9 +2193,10 @@ LoopEnd::initializeKnobs()
     KnobBoolPtr crossFrame = createKnob<KnobBool>(tr("Cross Frame"));
     crossFrame->setName(kLoopEndParamCrossFrame);
     crossFrame->setAnimationEnabled(false);
-    crossFrame->setHintToolTip(tr("After Start Frame, the LoopBegins with Feedback on output this node's output at "
+    crossFrame->setHintToolTip(tr("After Start Frame, the LoopBegins that feed back output this node's output at "
                                   "the frame before instead of their input: under Accumulate at every iteration, under "
-                                  "Feedback at the first. The LoopBegins with Feedback off pass their input through. "
+                                  "Feedback at the first. With several LoopBegins, the ones Feedback LoopBegins leaves "
+                                  "unticked pass their input through. "
                                   "A trail or a simulation builds up from Start Frame, the iterations of each "
                                   "frame being its substeps. Each frame's output is kept in RAM, whole, beyond the "
                                   "format when it reaches past it; a frame not kept is rendered from the latest one "
@@ -2071,7 +2210,7 @@ LoopEnd::initializeKnobs()
     startFrame->setName(kLoopEndParamStartFrame);
     startFrame->setAnimationEnabled(false);
     startFrame->setHintToolTip(tr("The frame Cross Frame starts from: there the LoopBegins output their input, and "
-                                  "from the frame after it those with Feedback on output the frame before."));
+                                  "from the frame after it those that feed back output the frame before."));
     startFrame->setDisplayMinimum(1);
     startFrame->setDisplayMaximum(100);
     startFrame->setDefaultValue(1);
@@ -2175,6 +2314,8 @@ LoopEnd::initializeKnobs()
                                    "variable, Start, End and Easing can be edited in place. Right-click a "
                                    "parameter in the body and choose Drive from loop to add one."));
     page->addKnob(drivenKnobs);
+
+    refreshKnobVisibility();
 }
 
 std::vector<NodePtr>
@@ -2539,7 +2680,10 @@ LoopEnd::refreshKnobVisibility()
     const bool singlePass = singlePassKnob->getValue();
     const bool frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     const bool crossFrame = isCrossFrame();
+    // With one LoopBegin, Mode and Cross Frame alone say whether it feeds back.
+    const bool severalBegins = (feedback || crossFrame) && getNode() && (getLoopBegins().size() > 1);
     const std::pair<KnobIPtr, bool> visibility[] = {
+        std::make_pair(KnobIPtr(_passThroughBegins.lock()), severalBegins),
         std::make_pair(KnobIPtr(_operation.lock()), !singlePass && !feedback),
         std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass && !feedback),
         std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
@@ -2661,6 +2805,14 @@ LoopEnd::knobChanged(KnobI* k,
         _subframes.lock(),
     };
 
+    KnobStringPtr passThroughBegins = _passThroughBegins.lock();
+    if (passThroughBegins && (k == passThroughBegins.get())) {
+        // Whether each LoopBegin reads its loop's variables moves with it.
+        invalidateRenderContextReads();
+        refreshMessage(resolveAt(time));
+
+        return true;
+    }
     KnobStringPtr name = _name.lock();
     if (name && (k == name.get())) {
         // The loops.<name>.* variables the body and the LoopBegins read move with it.
@@ -2705,7 +2857,15 @@ LoopEnd::knobChanged(KnobI* k,
 void
 LoopEnd::onInputChanged(int /*inputNb*/)
 {
+    refreshKnobVisibility();
     refreshMessage(resolve());
+}
+
+void
+LoopEnd::onSettingsPanelOpened()
+{
+    // The LoopBegins may have been wired while no input of this node changed.
+    refreshKnobVisibility();
 }
 
 void
@@ -2732,6 +2892,7 @@ LoopEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
             }
         }
     }
+    refreshKnobVisibility();
 }
 
 void

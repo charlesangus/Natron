@@ -94,7 +94,7 @@ collectFramesNeededForInput(const FramesNeededMap& framesNeeded,
     for (std::size_t range = 0; range < foundView->second.size(); ++range) {
         const RangeD& r = foundView->second[range];
 
-        if ((r.min != (int)r.min) || (r.max != (int)r.max)) {
+        if (!isPlannedRange(r)) {
             times->insert(defaultTime);
             continue;
         }

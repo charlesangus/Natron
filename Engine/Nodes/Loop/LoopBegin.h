@@ -39,8 +39,6 @@
 #define PLUGINID_NATRON_LOOPBEGIN "fr.natron.LoopBegin"
 #define PLUGIN_MAJOR_NATRON_LOOPBEGIN 1
 
-#define kLoopBeginParamFeedback "feedback"
-
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kLoopBeginInputs[] = {
@@ -52,12 +50,12 @@ inline constexpr InputSpec kLoopBeginInputs[] = {
  * between it and the LoopEnd that pairs with it. Several LoopBegins may pair with one LoopEnd,
  * each bringing its own input into the body; the loop, and its name, are the LoopEnd's.
  *
- * When the LoopEnd is in Feedback mode and Feedback is on, each iteration after the first
+ * When the LoopEnd is in Feedback mode and has it feed back, each iteration after the first
  * outputs what the body output at the iteration before it instead, conformed to its input's
  * components and depth. Its hash then folds in the body's state, hashed as if every LoopBegin
  * feeding back read a fixed image, and the LoopEnd's knobs that decide the iterations: what it
  * outputs moves with them, its inputs' hashes do not. With the LoopEnd's Cross Frame on and
- * Feedback on, it outputs the LoopEnd's output at the frame before after Start Frame, and its
+ * having it feed back, it outputs the LoopEnd's output at the frame before after Start Frame, and its
  * hash folds the same body state and the Cross Frame knobs.
  **/
 class LoopBegin
@@ -73,7 +71,8 @@ public:
     static bool isLoopBegin(const NodePtr& node) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Whether it outputs the iteration before when its LoopEnd is in Feedback mode.
+     * @brief Whether its LoopEnd has it output the iteration before in Feedback mode, and the
+     * frame before under Cross Frame.
      **/
     bool feedsBack() const WARN_UNUSED_RETURN;
 
@@ -92,10 +91,11 @@ private:
                        "drivers in the body read. A body node that reads no loop variable renders only "
                        "once. Several LoopBegins may start the body of one LoopEnd, each bringing in its "
                        "own input. The image passes through LoopBegin unchanged, except when the LoopEnd "
-                       "is in Feedback mode and Feedback is on: each iteration after the first then starts "
-                       "from the output of the iteration before it. With the LoopEnd's Cross Frame on and "
-                       "Feedback on, frames after its Start Frame start from the LoopEnd's output at the "
-                       "frame before. The loop's name is the LoopEnd's.",
+                       "is in Feedback mode: each iteration after the first then starts from the output of "
+                       "the iteration before it. With the LoopEnd's Cross Frame on, frames after its Start "
+                       "Frame start from the LoopEnd's output at the frame before. With several LoopBegins, "
+                       "the LoopEnd's Feedback LoopBegins chooses which ones do. The loop and its settings "
+                       "are the LoopEnd's.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPBEGIN,
         .minorVersion = 0,
@@ -109,14 +109,6 @@ private:
 
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual bool knobChanged(KnobI* k,
-                             ValueChangedReasonEnum reason,
-                             ViewSpec view,
-                             double time,
-                             bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL;
 
@@ -162,8 +154,6 @@ private:
 
     // Shows, or clears when empty, the warning that the iteration before had other components.
     void refreshConformMessage(const std::string& message);
-
-    KnobBoolWPtr _feedback;
 
     QMutex _conformMutex;
     std::string _conformPosted;

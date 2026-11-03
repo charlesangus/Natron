@@ -417,6 +417,31 @@ protected:
         EXPECT_FALSE(m.any) << describe(m);
     }
 
+    // Sets, on end's Feedback LoopBegins, whether begin feeds back.
+    static bool setBeginFeedsBack(const NodePtr& end,
+                                  const NodePtr& begin,
+                                  bool feedsBack)
+    {
+        LoopEnd* effect = end ? dynamic_cast<LoopEnd*>(end->getEffectInstance().get()) : 0;
+
+        if (!effect || !begin) {
+            return false;
+        }
+        effect->setFeedsBack(begin, feedsBack);
+
+        return effect->feedsBack(begin) == feedsBack;
+    }
+
+    static bool isKnobSecret(const NodePtr& node,
+                             const char* name)
+    {
+        KnobIPtr knob = node ? node->getKnobByName(name) : KnobIPtr();
+
+        EXPECT_TRUE(bool(knob)) << name;
+
+        return knob && knob->getIsSecret();
+    }
+
     // Two LoopBegins, from constants 1 and 10, summed by the body into a LoopEnd of four
     // iterations in Feedback mode; only the first LoopBegin feeds back.
     struct SharedLoop {
@@ -435,7 +460,7 @@ protected:
         loop->sum = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
         loop->end = createFeedbackEnd(4);
 
-        return one && ten && loop->first && loop->second && loop->sum && loop->end && setDoubleKnob(loop->sum, "value", 0.) && setBoolKnob(loop->second, kLoopBeginParamFeedback, false) && loop->first->connectInput(one, 0) && loop->second->connectInput(ten, 0) && loop->sum->connectInput(loop->first, 0) && loop->sum->connectInput(loop->second, 1) && loop->end->connectInput(loop->sum, 0);
+        return one && ten && loop->first && loop->second && loop->sum && loop->end && setDoubleKnob(loop->sum, "value", 0.) && setBeginFeedsBack(loop->end, loop->second, false) && loop->first->connectInput(one, 0) && loop->second->connectInput(ten, 0) && loop->sum->connectInput(loop->first, 0) && loop->sum->connectInput(loop->second, 1) && loop->end->connectInput(loop->sum, 0);
     }
 
     // Asks end for its route, which posts the loop's error, and returns the message posted.
@@ -1071,7 +1096,7 @@ TEST_F(NativeLoopFeedbackTest, TwoLoopBeginsShareOneLoop)
 
     // Both feed back: 11, doubled at every iteration after the first.
     const U64 firstHash = loop.first->getContentHash();
-    ASSERT_TRUE(setBoolKnob(loop.second, kLoopBeginParamFeedback, true));
+    ASSERT_TRUE(setBeginFeedsBack(loop.end, loop.second, true));
     EXPECT_EQ(std::vector<NodePtr>({ loop.first, loop.second }), end->getFeedbackBegins());
     EXPECT_NE(firstHash, loop.first->getContentHash());
     expectValue(loop.end, 88.f, "both LoopBegins feeding back");
@@ -1083,6 +1108,88 @@ TEST_F(NativeLoopFeedbackTest, TwoLoopBeginsShareOneLoop)
     EXPECT_TRUE(end->getFeedbackBegins().empty());
     expectValue(loop.end, 44.f, "accumulated");
     expectBothWays(loop.end, countingWindow());
+}
+
+// Which LoopBegins feed back is the LoopEnd's alone: LoopBegin has no knob of its own, and a
+// LoopBegin keeps its choice across a rename.
+TEST_F(NativeLoopFeedbackTest, TheLoopEndChoosesWhichLoopBeginsFeedBack)
+{
+    SharedLoop loop;
+    ASSERT_TRUE(createSharedLoop(&loop));
+    LoopEnd* end = dynamic_cast<LoopEnd*>(loop.end->getEffectInstance().get());
+    ASSERT_TRUE(end);
+    EXPECT_FALSE(bool(loop.first->getKnobByName("feedback")));
+    LoopBegin* second = dynamic_cast<LoopBegin*>(loop.second->getEffectInstance().get());
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(second->feedsBack());
+    EXPECT_EQ(std::vector<std::string>({ loop.second->getScriptName() }), end->getPassThroughBeginNames());
+
+    ASSERT_NO_THROW(loop.second->setScriptName("RenamedSecondBegin"));
+    EXPECT_EQ(std::vector<std::string>({ std::string("RenamedSecondBegin") }), end->getPassThroughBeginNames());
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first }), end->getFeedbackBegins());
+    expectValue(loop.end, 41.f, "after renaming the LoopBegin passing through");
+
+    const U64 firstHash = loop.first->getContentHash();
+    ASSERT_TRUE(setBeginFeedsBack(loop.end, loop.second, true));
+    EXPECT_TRUE(end->getPassThroughBeginNames().empty());
+    EXPECT_TRUE(second->feedsBack());
+    EXPECT_NE(firstHash, loop.first->getContentHash());
+    expectValue(loop.end, 88.f, "both LoopBegins feeding back");
+}
+
+// The per-LoopBegin choice shows only in Feedback mode or under Cross Frame with several
+// LoopBegins wired: with one, Mode and Cross Frame alone decide.
+TEST_F(NativeLoopFeedbackTest, FeedbackLoopBeginsShowOnlyWithSeveralLoopBegins)
+{
+    NodePtr one = createConstant(1.);
+    NodePtr ten = createConstant(10.);
+    NodePtr first = createLoopBegin();
+    NodePtr second = createLoopBegin();
+    NodePtr sum = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+    NodePtr end = createFeedbackEnd(4);
+    ASSERT_TRUE(one && ten && first && second && sum && end);
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "no LoopBegin";
+
+    ASSERT_TRUE(first->connectInput(one, 0));
+    ASSERT_TRUE(second->connectInput(ten, 0));
+    ASSERT_TRUE(sum->connectInput(first, 0));
+    ASSERT_TRUE(end->connectInput(sum, 0));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "one LoopBegin";
+
+    ASSERT_TRUE(sum->connectInput(second, 1));
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "two LoopBegins";
+
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamMode, kLoopEndParamModeAccumulate));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "Accumulate";
+    ASSERT_TRUE(setBoolKnob(end, kLoopEndParamCrossFrame, true));
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "Accumulate, Cross Frame";
+    ASSERT_TRUE(setBoolKnob(end, kLoopEndParamCrossFrame, false));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "Accumulate again";
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamMode, kLoopEndParamModeFeedback));
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "Feedback again";
+
+    sum->disconnectInput(1);
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "back to one LoopBegin";
+}
+
+// A LoopEnd just created shows only the knobs of its default settings: Accumulate over a count,
+// Cross Frame off.
+TEST_F(NativeLoopFeedbackTest, AFreshLoopEndHidesInactiveKnobs)
+{
+    NodePtr end = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPEND));
+    ASSERT_TRUE(bool(end));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamFramesBefore));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamFramesAfter));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamFrameStep));
+    EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins));
+    for (const char* crossFrameKnob : { kLoopEndParamStartFrame, kLoopEndParamSubframes, kLoopEndParamCacheFile,
+                                        kLoopEndParamBakeEnd, kLoopEndParamBake, kLoopEndParamLoadFromCache,
+                                        kLoopEndParamClearCache }) {
+        EXPECT_TRUE(isKnobSecret(end, crossFrameKnob)) << crossFrameKnob;
+    }
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamIterations));
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamOperation));
+    EXPECT_FALSE(isKnobSecret(end, kLoopEndParamReverseOrder));
 }
 
 TEST_F(NativeLoopFeedbackTest, ASharedLoopSavesAndReopens)

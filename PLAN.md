@@ -164,7 +164,7 @@ future core work has solid ground to build on.
 | M228 | 3D Viewer Navigation | done | M19, M20, M226 | bosley-native-nodes | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
 | M229 | 3D Viewer Guides And Display | done | M228 | bosley-native-nodes | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | doing | M226, M229 | bosley-native-nodes | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
-| M231 | Scene Graph Panel | doing | M229 | bosley-native-nodes | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
+| M231 | Scene Graph Panel | blocked | M229 | bosley-native-nodes | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
 | M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
 | M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
@@ -400,6 +400,7 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- M231 - Scene Graph Panel (bosley-native-nodes): on hold, not to merge (user, 2026-11-02: "more thoughts trying it again"); waiting for the user's feedback. M232 - Scene Selection To Nodes is stacked on it and waits too.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
 - M165 - Rich Viewer Overlays (bosley-native-nodes): Q1, does a node publish an overlay image through the normal render/cache path or a side buffer? Also: ship Phase 1 alone and move Phases 2–3 to a follow-up? (audit, 2026-11-02).
 - M274 - SplineWarp Remaining Controls (bosley-native-nodes): P5.T2 waits on M270 - Lanczos Sinc Resampling Filters; split it out so M274 can close? Open questions 1–4 in the milestone file are unanswered (audit, 2026-11-02).

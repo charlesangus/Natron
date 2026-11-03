@@ -266,6 +266,33 @@ CompiledPatterns::firstMatch(const std::string& value) const
     return -1;
 }
 
+std::string
+patternForLabel(const std::string& label)
+{
+    const bool regexPrefixed = label.compare(0, std::strlen(kPatternRegexPrefix), kPatternRegexPrefix) == 0;
+    if (!regexPrefixed && (label.find_first_of("*?[\n\r") == std::string::npos)) {
+        return label;
+    }
+    std::string pattern = kPatternRegexPrefix;
+    for (char c : label) {
+        // A raw line break would split the pattern into several rows.
+        if (c == '\n') {
+            pattern += "\\n";
+            continue;
+        }
+        if (c == '\r') {
+            pattern += "\\r";
+            continue;
+        }
+        if ((c != '\0') && std::strchr("\\^$.|?*+()[]{}", c)) {
+            pattern += '\\';
+        }
+        pattern += c;
+    }
+
+    return pattern;
+}
+
 } // namespace RFV
 
 NATRON_NAMESPACE_EXIT

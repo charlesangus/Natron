@@ -7,7 +7,8 @@ RFVSwitch passes one of its inputs through unchanged, chosen by the value of a R
 ## Parameters
 
 - **Variable**: the name of the variable to switch on, such as `shot`.
-- **Input 0**, **Input 1**, ...: one row per pattern, up to 16. The pattern in row Input N chooses input N. The **+** button after a row inserts an empty row below it, and **-** removes its row; the rows below, and the inputs connected to them, move with them, so each pattern keeps choosing the node it chose. Removing the only row empties it instead.
+- **Match Variable**: when Variable names a Choice variable of the project, writes one row per option, in menu order, so input N follows option N. See [Rows from a Choice variable](#rows-from-a-choice-variable).
+- **Input 0**, **Input 1**, ...: one row per pattern, up to 1024. The pattern in row Input N chooses input N. The **+** button after a row inserts an empty row below it, and **-** removes its row; the rows below, and the inputs connected to them, move with them, so each pattern keeps choosing the node it chose. Removing the only row empties it instead.
 - **If No Match**: what to output when the variable is unset or matches no pattern.
   - **Error** fails the render, and the node shows the variable and its value.
   - **First Input** passes input 0 through.
@@ -42,6 +43,20 @@ Input 1: re:sh0[2-9]0
 
 the switch passes input 0 through. With `shot` set to `sh030` it passes input 1.
 
+## Rows from a Choice variable
+
+A Choice variable is matched by its option's label, so its rows can be typed by hand. **Match Variable** writes them instead. It reads the variable the project declares under the name in Variable, which is the declaration the switch matches against, and writes into row Input N the pattern matching exactly the label of option N (its id when the label is empty). Pattern Count is set to the number of options.
+
+- A label without `*`, `?` or `[` is written as it is, a glob matching only itself.
+- Globs have no escape character, so a label holding `*`, `?` or `[`, or starting with `re:`, is written as a regular expression with every special character escaped: the option `a*b` gives `re:a\*b`.
+- The rows already there are overwritten. With fewer options than rows, the surplus rows are emptied and hidden; inputs connected to them stay connected but are never chosen until a row is added back, as with **-**.
+- Inputs keep their index: nothing is reconnected. Connect input N to the node option N should show.
+- The rows stay ordinary rows. They do not follow later edits to the variable's options; press the button again to rewrite them.
+- At most 1024 options are written, one per row a switch can have. With more, the node shows a warning saying how many were left out.
+- When Variable is empty, the project declares no variable of that name, or the variable is not a Choice, nothing changes and the node shows a warning saying why. A Choice declared only by an RFVSet node is not read.
+
+The warning stays until a parameter or an input of the switch changes, unless a render posts an error.
+
 ## Which value is read
 
 The variable is read exactly as `rfv.<name>` would read it in an expression of the switch. Under an RFVSet node that sets it, the value is that RFVSet node's. An animated or expression-driven RFVSet variable is evaluated at the time the switch is rendered. Elsewhere the value is the project's.
@@ -61,10 +76,10 @@ the first RFVSet's branch shows A and the second's shows B. Only A and B render,
 
 ## Inputs
 
-Input 0 is always shown. Input i is also shown while row Input i is, or while it is connected. A chosen input that is not connected outputs black.
+The node has an input per row: 16 at first, more as rows are added, up to 1024. Input 0 is always shown. Input i is also shown while row Input i is, or while it is connected. A chosen input that is not connected outputs black.
 
 ## Errors
 
 With If No Match set to Error, a render that finds no match fails. The node's error message names the variable and the text it was matched as, or says that it is unset.
 
-Only renders post or clear the message, previews aside: a value read outside a render, under a context no render reached the switch with, never shows. The message is what the latest render reaching the switch decided. When several paths in it reach the switch, the message lists the failure of each path that failed, and it is cleared once a render reaches the switch and every path through it succeeds. Editing a project variable the switch reads, or the value an RFVSet below it sets, renders it again at once.
+Apart from the Match Variable warnings, only renders post or clear the message, previews aside: a value read outside a render, under a context no render reached the switch with, never shows. The message is what the latest render reaching the switch decided. When several paths in it reach the switch, the message lists the failure of each path that failed, and it is cleared once a render reaches the switch and every path through it succeeds. Editing a project variable the switch reads, or the value an RFVSet below it sets, renders it again at once.

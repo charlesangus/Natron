@@ -25,13 +25,16 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
@@ -50,6 +53,8 @@
 #include "Engine/RFV.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -63,6 +68,53 @@ variablesGroupOf(const NodePtr& node)
 }
 
 const RenderSchedulerModeEnum kModes[] = { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy };
+
+// Keeps what is recorded inside an open step.
+class RowsRecorder
+    : public UndoRecorderI {
+public:
+    RowsRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , commands()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    std::vector<UndoCommandPtr> commands;
+};
 
 } // namespace
 
@@ -297,6 +349,25 @@ protected:
         knob->setValue(value);
 
         return knob;
+    }
+
+    KnobChoicePtr addProjectChoice(const std::string& name,
+                                   const std::vector<ChoiceOption>& options)
+    {
+        ProjectPtr project = getApp()->getProject();
+        KnobChoicePtr knob = project->createChoiceKnob(name, name);
+        std::string error;
+        EXPECT_TRUE(RFV::addAsVariable(project.get(), knob, &error)) << error;
+        knob->populateChoices(options);
+
+        return knob;
+    }
+
+    static void pressMatchVariable(const NodePtr& node)
+    {
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(kRFVSwitchParamMatchVariable));
+        ASSERT_TRUE(bool(button));
+        button->trigger();
     }
 
     bool renderPixel(const NodePtr& root,
@@ -582,7 +653,7 @@ TEST_F(RFVSwitchTest, InputsFollowThePatternRows)
     NodePtr rfvSwitch = createSwitch("var", "");
     NodePtr a = createCounting(kTestPluginIDCounting, 10.);
     ASSERT_TRUE(rfvSwitch && a);
-    ASSERT_EQ(kRFVSwitchInputCount, rfvSwitch->getNInputs());
+    ASSERT_EQ(kRFVSwitchRowChunk, rfvSwitch->getNInputs());
     EXPECT_TRUE(rfvSwitch->isInputVisible(0));
     EXPECT_FALSE(rfvSwitch->isInputVisible(1));
     EXPECT_FALSE(patternOf(rfvSwitch, 0)->getIsSecret());
@@ -642,18 +713,35 @@ TEST_F(RFVSwitchTest, AddAndRemoveRowsMoveTheInputsWithThem)
     EXPECT_EQ(std::string(), patternsOf(rfvSwitch));
     EXPECT_EQ(a, rfvSwitch->getRealInput(0));
 
+    // Adding past the rows created makes more rows and inputs; the connected last input stays.
+    setPatterns(rfvSwitch, std::string(kRFVSwitchRowChunk - 1, '\n'));
+    connectNodes(b, rfvSwitch, kRFVSwitchRowChunk - 1, true);
+    EXPECT_FALSE(buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, kRFVSwitchRowChunk - 1)->getIsSecret());
+    EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk)));
+    buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, kRFVSwitchRowChunk - 1)->trigger();
+    EXPECT_EQ(kRFVSwitchRowChunk + 1, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(2 * kRFVSwitchRowChunk, rfvSwitch->getNInputs());
+    ASSERT_TRUE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk)));
+    EXPECT_FALSE(patternOf(rfvSwitch, kRFVSwitchRowChunk)->getIsSecret());
+    EXPECT_EQ(b, rfvSwitch->getRealInput(kRFVSwitchRowChunk - 1));
+    EXPECT_TRUE(rfvSwitch->isInputVisible(kRFVSwitchRowChunk));
+    EXPECT_FALSE(rfvSwitch->isInputVisible(kRFVSwitchRowChunk + 1));
+
     // With every row shown there is nothing to add.
-    setPatterns(rfvSwitch, std::string(kRFVSwitchInputCount - 1, '\n'));
-    EXPECT_EQ(kRFVSwitchInputCount, patternCountOf(rfvSwitch)->getValue());
+    setPatterns(rfvSwitch, std::string(kRFVSwitchMaxRows - 1, '\n'));
+    EXPECT_EQ(kRFVSwitchMaxRows, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(kRFVSwitchMaxRows, rfvSwitch->getNInputs());
     EXPECT_TRUE(buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, 0)->getIsSecret());
-    connectNodes(b, rfvSwitch, kRFVSwitchInputCount - 1, true);
+    rfvSwitch->disconnectInput(kRFVSwitchRowChunk - 1);
+    connectNodes(b, rfvSwitch, kRFVSwitchMaxRows - 1, true);
     const std::string full = patternsOf(rfvSwitch);
     buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, 0)->trigger();
-    buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, kRFVSwitchInputCount - 1)->trigger();
-    EXPECT_EQ(kRFVSwitchInputCount, patternCountOf(rfvSwitch)->getValue());
+    buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, kRFVSwitchMaxRows - 1)->trigger();
+    EXPECT_EQ(kRFVSwitchMaxRows, patternCountOf(rfvSwitch)->getValue());
     EXPECT_EQ(full, patternsOf(rfvSwitch));
     EXPECT_EQ(a, rfvSwitch->getRealInput(0));
-    EXPECT_EQ(b, rfvSwitch->getRealInput(kRFVSwitchInputCount - 1));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(kRFVSwitchMaxRows - 1));
+    EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchMaxRows)));
 }
 
 // Every variable type is matched as its text: the second row, choosing input 1, is the
@@ -892,4 +980,341 @@ TEST_F(RFVSwitchTest, SetValueEditThroughTheCacheSwitches)
         value->setValue("sh030");
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 1., false));
     }
+}
+
+// Match Variable writes one row per option of the project's Choice, a label holding a glob
+// character as an escaped regex and an empty label as its id, and leaves the inputs where they
+// are, so selecting option N passes input N.
+TEST_F(RFVSwitchTest, MatchVariableWritesOneRowPerOption)
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("plain", "Plain", ""));
+    options.push_back(ChoiceOption("star", "a*b", ""));
+    options.push_back(ChoiceOption("third", "", ""));
+    KnobChoicePtr variant = addProjectChoice("variant", options);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr b = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr c = createCounting(kTestPluginIDCounting, 30.);
+    NodePtr rfvSwitch = createSwitch("variant", "old");
+    ASSERT_TRUE(variant && a && b && c && rfvSwitch);
+    connectNodes(a, rfvSwitch, 0, true);
+    connectNodes(b, rfvSwitch, 1, true);
+    connectNodes(c, rfvSwitch, 2, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(3, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(std::string("Plain\nre:a\\*b\nthird"), patternsOf(rfvSwitch));
+    EXPECT_FALSE(patternOf(rfvSwitch, 2)->getIsSecret());
+    EXPECT_TRUE(patternOf(rfvSwitch, 3)->getIsSecret());
+    EXPECT_EQ(a, rfvSwitch->getRealInput(0));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(1));
+    EXPECT_EQ(c, rfvSwitch->getRealInput(2));
+    EXPECT_TRUE(rfvSwitch->isInputVisible(2));
+    EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
+
+    const float expected[] = { 10.f, 20.f, 30.f };
+    for (RenderSchedulerModeEnum mode : kModes) {
+        for (int option = 0; option < 3; ++option) {
+            variant->setValue(option);
+            EXPECT_EQ(expected[option], renderFirstPixel(rfvSwitch, mode)) << option;
+        }
+    }
+}
+
+// With fewer options than rows, the surplus rows are emptied and hidden; an input past them
+// stays connected.
+TEST_F(RFVSwitchTest, MatchVariableEmptiesTheSurplusRows)
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("low", "Low", ""));
+    options.push_back(ChoiceOption("high", "High", ""));
+    KnobChoicePtr quality = addProjectChoice("quality", options);
+    NodePtr d = createCounting(kTestPluginIDCounting, 40.);
+    NodePtr rfvSwitch = createSwitch("quality", "a\nb\nc\nd");
+    ASSERT_TRUE(quality && d && rfvSwitch);
+    connectNodes(d, rfvSwitch, 3, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(2, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(std::string("Low\nHigh"), patternsOf(rfvSwitch));
+    for (int row = 2; row < 4; ++row) {
+        EXPECT_EQ(std::string(), patternOf(rfvSwitch, row)->getValue()) << row;
+        EXPECT_TRUE(patternOf(rfvSwitch, row)->getIsSecret()) << row;
+    }
+    EXPECT_EQ(d, rfvSwitch->getRealInput(3));
+    EXPECT_TRUE(rfvSwitch->isInputVisible(3));
+    EXPECT_FALSE(rfvSwitch->isInputVisible(2));
+}
+
+// An empty, undeclared or non-Choice variable changes nothing and says why; the next edit takes
+// the message back.
+TEST_F(RFVSwitchTest, MatchVariableWithoutAChoiceChangesNothing)
+{
+    KnobStringPtr shot = addProjectString("shot", "sh010");
+    NodePtr rfvSwitch = createSwitch("", "keep\nme");
+    ASSERT_TRUE(shot && rfvSwitch);
+    KnobStringPtr variable = std::dynamic_pointer_cast<KnobString>(rfvSwitch->getKnobByName(kRFVSwitchParamVariable));
+    ASSERT_TRUE(bool(variable));
+
+    struct Case {
+        const char* variable;
+        const char* why;
+    };
+    const Case cases[] = {
+        { "", "no variable" },
+        { "missing", "declares no variable missing" },
+        { "shot", "shot is not a Choice" },
+    };
+    for (const Case& c : cases) {
+        variable->setValue(c.variable);
+        EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << c.variable;
+        pressMatchVariable(rfvSwitch);
+        EXPECT_EQ(2, patternCountOf(rfvSwitch)->getValue()) << c.variable;
+        EXPECT_EQ(std::string("keep\nme"), patternsOf(rfvSwitch)) << c.variable;
+        EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8(c.why))) << c.variable << ": " << messageOf(rfvSwitch).toStdString();
+    }
+    patternOf(rfvSwitch, 0)->setValue("edited");
+    EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
+}
+
+// Past the most rows a switch can have the options are left out, and the message, which a
+// successful render keeps, says how many.
+TEST_F(RFVSwitchTest, MatchVariableCapsTheRowsAtTheMaximum)
+{
+    const int optionCount = kRFVSwitchMaxRows + 6;
+    std::vector<ChoiceOption> options;
+    for (int i = 0; i < optionCount; ++i) {
+        options.push_back(ChoiceOption("id" + std::to_string(i), "o" + std::to_string(i), ""));
+    }
+    KnobChoicePtr many = addProjectChoice("many", options);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr rfvSwitch = createSwitch("many", "");
+    ASSERT_TRUE(many && a && rfvSwitch);
+    connectNodes(a, rfvSwitch, 0, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(kRFVSwitchMaxRows, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(kRFVSwitchMaxRows, rfvSwitch->getNInputs());
+    for (int row = 0; row < kRFVSwitchMaxRows; ++row) {
+        EXPECT_EQ("o" + std::to_string(row), patternOf(rfvSwitch, row)->getValue()) << row;
+    }
+    EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchMaxRows)));
+    EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 6 were left out"))) << messageOf(rfvSwitch).toStdString();
+
+    many->setValue(0);
+    for (RenderSchedulerModeEnum mode : kModes) {
+        EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
+        EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 6 were left out"))) << messageOf(rfvSwitch).toStdString();
+    }
+}
+
+// A Choice of 1024 options fills every row, with nothing left out, and its first, middle and
+// last options choose their inputs.
+TEST_F(RFVSwitchTest, MatchVariableWritesTheMostRows)
+{
+    std::vector<ChoiceOption> options;
+    for (int i = 0; i < kRFVSwitchMaxRows; ++i) {
+        options.push_back(ChoiceOption("id" + std::to_string(i), "o" + std::to_string(i), ""));
+    }
+    KnobChoicePtr many = addProjectChoice("many", options);
+    NodePtr first = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr middle = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr last = createCounting(kTestPluginIDCounting, 30.);
+    NodePtr rfvSwitch = createSwitch("many", "");
+    ASSERT_TRUE(many && first && middle && last && rfvSwitch);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
+    EXPECT_EQ(kRFVSwitchMaxRows, patternCountOf(rfvSwitch)->getValue());
+    ASSERT_EQ(kRFVSwitchMaxRows, rfvSwitch->getNInputs());
+    EXPECT_FALSE(patternOf(rfvSwitch, kRFVSwitchMaxRows - 1)->getIsSecret());
+    EXPECT_TRUE(rfvSwitch->isInputVisible(kRFVSwitchMaxRows - 1));
+
+    const int middleRow = kRFVSwitchMaxRows / 2;
+    connectNodes(first, rfvSwitch, 0, true);
+    connectNodes(middle, rfvSwitch, middleRow, true);
+    connectNodes(last, rfvSwitch, kRFVSwitchMaxRows - 1, true);
+    for (RenderSchedulerModeEnum mode : kModes) {
+        many->setValue(0);
+        EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
+        many->setValue(middleRow);
+        EXPECT_EQ(20.f, renderFirstPixel(rfvSwitch, mode));
+        many->setValue(kRFVSwitchMaxRows - 1);
+        EXPECT_EQ(30.f, renderFirstPixel(rfvSwitch, mode));
+    }
+}
+
+// A switch starts with one chunk of rows and inputs, grows to the count asked for, and never
+// past the most rows.
+TEST_F(RFVSwitchTest, PatternCountGrowsTheRowsUpToTheMaximum)
+{
+    NodePtr rfvSwitch = createSwitch("var", "");
+    ASSERT_TRUE(bool(rfvSwitch));
+    EXPECT_EQ(kRFVSwitchRowChunk, rfvSwitch->getNInputs());
+    EXPECT_TRUE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk - 1)));
+    EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk)));
+
+    patternCountOf(rfvSwitch)->setValue(kRFVSwitchRowChunk + 1);
+    EXPECT_EQ(2 * kRFVSwitchRowChunk, rfvSwitch->getNInputs());
+    ASSERT_TRUE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk)));
+    EXPECT_FALSE(patternOf(rfvSwitch, kRFVSwitchRowChunk)->getIsSecret());
+    EXPECT_TRUE(patternOf(rfvSwitch, kRFVSwitchRowChunk + 1)->getIsSecret());
+
+    patternCountOf(rfvSwitch)->setValue(2 * kRFVSwitchMaxRows);
+    EXPECT_EQ(kRFVSwitchMaxRows, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(kRFVSwitchMaxRows, rfvSwitch->getNInputs());
+    ASSERT_TRUE(bool(patternOf(rfvSwitch, kRFVSwitchMaxRows - 1)));
+    EXPECT_FALSE(patternOf(rfvSwitch, kRFVSwitchMaxRows - 1)->getIsSecret());
+    EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchMaxRows)));
+
+    // Rows once made stay, hidden, when the count drops.
+    patternCountOf(rfvSwitch)->setValue(1);
+    EXPECT_EQ(kRFVSwitchMaxRows, rfvSwitch->getNInputs());
+    EXPECT_TRUE(patternOf(rfvSwitch, 1)->getIsSecret());
+    EXPECT_FALSE(rfvSwitch->isInputVisible(1));
+}
+
+// A switch with many rows reopens with every row, its patterns and its connections, and
+// still chooses its first, middle and last inputs.
+TEST_F(RFVSwitchTest, ManyRowsSurviveSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    const int rows = 600;
+    const int middleRow = 300;
+    addProjectString("shot", "p0");
+    NodePtr first = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr middle = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr last = createCounting(kTestPluginIDCounting, 30.);
+    std::string patterns;
+    for (int i = 0; i < rows; ++i) {
+        patterns += (i ? "\n" : "") + std::string("p") + std::to_string(i);
+    }
+    NodePtr rfvSwitch = createSwitch("shot", patterns);
+    ASSERT_TRUE(first && middle && last && rfvSwitch);
+    connectNodes(first, rfvSwitch, 0, true);
+    connectNodes(middle, rfvSwitch, middleRow, true);
+    connectNodes(last, rfvSwitch, rows - 1, true);
+
+    const std::string switchName = rfvSwitch->getScriptName();
+    const std::string firstName = first->getScriptName();
+    const std::string middleName = middle->getScriptName();
+    const std::string lastName = last->getScriptName();
+    rfvSwitch.reset();
+    first.reset();
+    middle.reset();
+    last.reset();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("rfvswitch-rows.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(switchName);
+    ASSERT_TRUE(bool(loaded));
+    EXPECT_EQ(rows, patternCountOf(loaded)->getValue());
+    ASSERT_GE(loaded->getNInputs(), rows);
+    EXPECT_EQ(patterns, patternsOf(loaded));
+    EXPECT_FALSE(patternOf(loaded, rows - 1)->getIsSecret());
+    EXPECT_TRUE(patternOf(loaded, rows)->getIsSecret());
+    ASSERT_TRUE(loaded->getRealInput(0) && loaded->getRealInput(middleRow) && loaded->getRealInput(rows - 1));
+    EXPECT_EQ(firstName, loaded->getRealInput(0)->getScriptName());
+    EXPECT_EQ(middleName, loaded->getRealInput(middleRow)->getScriptName());
+    EXPECT_EQ(lastName, loaded->getRealInput(rows - 1)->getScriptName());
+    EXPECT_TRUE(loaded->isInputVisible(rows - 1));
+    EXPECT_FALSE(loaded->isInputVisible(rows));
+
+    KnobStringPtr shot = std::dynamic_pointer_cast<KnobString>(RFV::findDeclaredVariable(project.get(), "shot"));
+    ASSERT_TRUE(bool(shot));
+    for (RenderSchedulerModeEnum mode : kModes) {
+        shot->setValue("p0");
+        EXPECT_EQ(10.f, renderFirstPixel(loaded, mode));
+        shot->setValue("p" + std::to_string(middleRow));
+        EXPECT_EQ(20.f, renderFirstPixel(loaded, mode));
+        shot->setValue("p" + std::to_string(rows - 1));
+        EXPECT_EQ(30.f, renderFirstPixel(loaded, mode));
+    }
+}
+
+// Add After, Remove and Match Variable undo as one record each, rows and inputs together, and
+// redo, including a Match Variable that adds rows.
+TEST_F(RFVSwitchTest, RowEditsUndoAndRedo)
+{
+    std::vector<ChoiceOption> options;
+    const int optionCount = 200;
+    for (int i = 0; i < optionCount; ++i) {
+        options.push_back(ChoiceOption("id" + std::to_string(i), "o" + std::to_string(i), ""));
+    }
+    KnobChoicePtr many = addProjectChoice("many", options);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr b = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr rfvSwitch = createSwitch("many", "x\ny");
+    ASSERT_TRUE(many && a && b && rfvSwitch);
+    connectNodes(a, rfvSwitch, 0, true);
+    connectNodes(b, rfvSwitch, 1, true);
+
+    std::shared_ptr<RowsRecorder> recorder = std::make_shared<RowsRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    const auto press = [this](const KnobButtonPtr& button) {
+        UndoStepGuard step(getApp(), "test");
+        button->trigger();
+    };
+    const auto undoLast = [this, &recorder]() {
+        UndoReplayGuard replaying(getApp());
+        recorder->commands.back()->undo();
+    };
+    const auto redoLast = [this, &recorder]() {
+        UndoReplayGuard replaying(getApp());
+        recorder->commands.back()->redo();
+    };
+
+    press(buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, 0));
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(std::string("x\n\ny"), patternsOf(rfvSwitch));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(2));
+    undoLast();
+    EXPECT_EQ(std::string("x\ny"), patternsOf(rfvSwitch));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(1));
+    EXPECT_FALSE(bool(rfvSwitch->getRealInput(2)));
+    EXPECT_TRUE(patternOf(rfvSwitch, 2)->getIsSecret());
+    redoLast();
+    EXPECT_EQ(std::string("x\n\ny"), patternsOf(rfvSwitch));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(2));
+
+    press(buttonOf(rfvSwitch, kRFVSwitchParamRemove, 0));
+    ASSERT_EQ(2u, recorder->commands.size());
+    EXPECT_EQ(std::string("\ny"), patternsOf(rfvSwitch));
+    EXPECT_FALSE(bool(rfvSwitch->getRealInput(0)));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(1));
+    undoLast();
+    EXPECT_EQ(std::string("x\n\ny"), patternsOf(rfvSwitch));
+    EXPECT_EQ(a, rfvSwitch->getRealInput(0));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(2));
+    redoLast();
+    undoLast();
+
+    press(std::dynamic_pointer_cast<KnobButton>(rfvSwitch->getKnobByName(kRFVSwitchParamMatchVariable)));
+    ASSERT_EQ(3u, recorder->commands.size());
+    EXPECT_EQ(optionCount, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ("o" + std::to_string(optionCount - 1), patternOf(rfvSwitch, optionCount - 1)->getValue());
+    undoLast();
+    EXPECT_EQ(std::string("x\n\ny"), patternsOf(rfvSwitch));
+    EXPECT_EQ(std::string(), patternOf(rfvSwitch, optionCount - 1)->getValue());
+    EXPECT_TRUE(patternOf(rfvSwitch, 3)->getIsSecret());
+    EXPECT_EQ(a, rfvSwitch->getRealInput(0));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(2));
+    redoLast();
+    EXPECT_EQ(optionCount, patternCountOf(rfvSwitch)->getValue());
+    for (int row = 0; row < optionCount; ++row) {
+        EXPECT_EQ("o" + std::to_string(row), patternOf(rfvSwitch, row)->getValue()) << row;
+    }
+    // A press that changes nothing records nothing.
+    press(std::dynamic_pointer_cast<KnobButton>(rfvSwitch->getKnobByName(kRFVSwitchParamMatchVariable)));
+    EXPECT_EQ(3u, recorder->commands.size());
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
 }

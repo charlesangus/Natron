@@ -120,3 +120,4 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 - 2026-11-02 — main merged in (viewer knobs command compression ID → 26); CacheStress non-hashed sweep skips viewers; gate re-running (PM).
 - 2026-11-02 — Gate green on main (run 41567914674, CacheStress sweep skips viewers); AppImage rebuilt in build/appimages/Natron-m164-viewer-node-knobs.* for the round-2 crash re-test (PM).
 - 2026-11-03 — UAT approved (user).
+- 2026-11-03 — Merged to main as 7d70b33a0 (#173).

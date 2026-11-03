@@ -90,3 +90,4 @@ Deps: M131 - Native Defocus Family.
 - 2026-10-13 — **Created as a follow-up (user, /cat-plan grill):** an improved ZDefocus with aberrations, kept out of M131 - Native Defocus Family's v1.
 - 2026-11-02 — main merged in (M131 pre-squash resolved); gate green; cat-eye GUI check compares the centre disc's outline instead of counting rim pixels; GUI re-running (PM).
 - 2026-11-03 — UAT approved (user).
+- 2026-11-03 — Merged to main as 6e85ea7f1 (#174).

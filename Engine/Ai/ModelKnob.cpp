@@ -68,6 +68,11 @@ ModelKnob::ModelKnob(EffectInstance* effect,
     , _downloader(downloader)
     , _context(new QObject)
 {
+}
+
+void
+ModelKnob::connectDownloader()
+{
     // Lambdas on a context object the helper owns keep this class free of moc, and disconnect
     // themselves when the helper goes.
     QObject::connect(_downloader, &ModelDownloader::finished, _context.get(),
@@ -98,6 +103,24 @@ ModelKnob::create(EffectInstance* effect,
                   AiModelTask task,
                   ModelDownloader* downloader)
 {
+    return make(effect, page, task, downloader, false);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::createDeferred(EffectInstance* effect,
+                          const KnobPagePtr& page,
+                          AiModelTask task)
+{
+    return make(effect, page, task, nullptr, true);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::make(EffectInstance* effect,
+                const KnobPagePtr& page,
+                AiModelTask task,
+                ModelDownloader* downloader,
+                bool deferred)
+{
     if (!downloader) {
         downloader = ModelDownloader::process();
     }
@@ -110,7 +133,11 @@ ModelKnob::create(EffectInstance* effect,
                                       "with Download Model, or in Preferences > AI Models."));
     page->addKnob(model);
     helper->_model = model;
-    helper->refreshEntries();
+    if (deferred) {
+        helper->listEntriesByName();
+    } else {
+        helper->activate();
+    }
     if (const AiModelEntry* registryDefault = downloader->registry()->defaultFor(task)) {
         model->setDefaultValueFromID(registryDefault->id);
     }
@@ -318,6 +345,35 @@ ModelKnob::knobChanged(KnobI* k)
     }
 
     return true;
+}
+
+void
+ModelKnob::activate()
+{
+    if (_activated) {
+        return;
+    }
+    _activated = true;
+    connectDownloader();
+    refreshEntries();
+}
+
+void
+ModelKnob::listEntriesByName()
+{
+    KnobChoicePtr model = _model.lock();
+
+    if (!model) {
+        return;
+    }
+    const ModelRegistry& registry = *_downloader->registry();
+    std::vector<ChoiceOption> options;
+    for (const std::string& id : registry.byTask(_task)) {
+        if (const AiModelEntry* entry = registry.find(id)) {
+            options.emplace_back(id, entry->name, entry->id);
+        }
+    }
+    model->populateChoices(options);
 }
 
 void

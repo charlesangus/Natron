@@ -141,6 +141,13 @@ public:
      **/
     RotoPaintInteractPtr getInteract() const;
 
+    /**
+     * @brief Stops the Object Select tool's encoding, if one runs. With wait, returns once its
+     * thread is done with the node graph. For quitting processing; any thread.
+     **/
+    void abortObjectSelectEncoding(bool wait);
+    bool isObjectSelectEncoding() const;
+
 public Q_SLOTS:
 
     void onBreakMultiStrokeTriggered();

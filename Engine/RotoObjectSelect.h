@@ -30,6 +30,7 @@
 
 #include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -47,7 +48,7 @@
 NATRON_NAMESPACE_ENTER
 
 class RotoCurveInteract;
-// What a commit leaves behind: its prompts, the mask they gave and where it sits.
+// What a commit leaves behind: its prompts, the mask they gave at the inference resolution and where it sits.
 struct RotoObjectSelectSession;
 
 // The knobs of the object select tool, by script name.
@@ -123,7 +124,11 @@ public:
      **/
     void createKnobs(const KnobPagePtr& page);
 
-    // Shows or hides the tool's viewer knobs. Leaving the tool drops its prompts.
+    /**
+     * @brief Shows or hides the tool's viewer knobs. Picking the tool the first time lists which
+     * models are installed. Leaving it stops any encoding, drops the prompts and frees the
+     * segmenter, its encodings and the mask: picking it again encodes the Source again.
+     **/
     void setActive(bool active);
     bool isActive() const
     {
@@ -159,6 +164,14 @@ public:
     void restoreSession(const RotoObjectSelectSession& session);
     // Drops the selection being made, as a commit does.
     void endSession();
+
+    /**
+     * @brief Stops the encoding running, if any, and with wait returns only once its thread is
+     * done with the node graph. For project close and node destruction; any thread.
+     **/
+    void abortEncoding(bool wait);
+    // Whether an encoding thread is still at work. Any thread.
+    bool isEncoding() const;
 
     // The fitting tolerance, in full-resolution pixels, of a density knob value.
     static double toleranceForDensity(double density);
@@ -210,6 +223,9 @@ private:
     // Traces the current mask again.
     void retrace();
     void dropPrompts();
+    void clearMask();
+    // Aborts the running encoding and joins its thread. Main thread.
+    void stopJob();
     void setMessage(const std::string& message);
     void redraw();
     void joinWorker();
@@ -245,6 +261,8 @@ private:
     std::list<Frame> _frames;
     // The frame the mask belongs to.
     Frame _frame;
+    // The decoder's mask at the inference resolution, which an undo step keeps, and the full-resolution one traced.
+    std::vector<float> _inferenceMask;
     std::vector<float> _mask;
     // Canonical coordinates.
     std::vector<MaskTrace::Contour> _contours;
@@ -256,6 +274,8 @@ private:
     // Queued callbacks from the worker hold this weakly, so that none runs after destruction.
     std::shared_ptr<Shared> _shared;
     std::thread _worker;
+    // Written on the main thread under _runningMutex, which other threads read it under.
+    mutable std::mutex _runningMutex;
     std::shared_ptr<Job> _running;
 };
 

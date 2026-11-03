@@ -3,7 +3,9 @@ segmentation model, the mask is previewed as outlines, Return commits it as Bezi
 frame (the hole as a Stencil shape), and one undo removes them and brings the selection back to
 adjust. Object Density changes the committed shapes' point count. Object Inference Resolution
 re-runs the segmentation on a smaller image while the click stays put, and the shapes stay at full
-resolution.
+resolution; the undo step keeps that smaller mask, so committing again after the undo gives the same
+shapes. Leaving the tool drops the selection and picking it again encodes the Source again. When the
+Source cannot be encoded, the outline goes and Return commits nothing.
 
 Nothing is downloaded. The manifest is the built-in one plus two entries for the committed fake
 segmentation models (Tests/fixtures/ai/seg-*.onnx, whose mask is the image's bright pixels), and
@@ -18,6 +20,8 @@ Screenshots, in $NATRON_GUI_TEST_OUT (default build/gui-test-out/):
     m205-object-undone.png     after undo: the selection is back
     m205-object-dense.png      the selection at a high density, before the commit
     m205-object-quarter.png    the selection re-segmented at 25% inference resolution
+    m205-object-reencoded.png  the tool picked again after another tool, and clicked
+    m205-object-failed.png     the Source unreadable: no outline is left to commit
 
 Usage, in the natron-dev container:
     Tests/gui/run-gui-test.sh Tests/gui/m205_object_select.py <Natron.AppImage or release binary>
@@ -529,10 +533,65 @@ try:
         check(ok, "one undo removes the 25% commit")
         ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
         check(ok, "and brings the selection back")
+
+        # The undo step keeps the mask at the inference resolution, so the same shapes come back.
+        key(gl, Qt.Key_Return)
+        ok = yield ("until", lambda: len(shapes(roto)) >= 1, POLL_TIMEOUT_S)
+        if check(ok, "Return commits the selection the undo brought back"):
+            again_points = sorted(tuple(round(v, 3) for v in c.getControlPointPosition(i, time)[:2])
+                                  for c in shapes(roto) for i in range(c.getNumControlPoints()))
+            check(again_points == quarter_points,
+                  "the commit after the undo has the 25%% commit's shapes (%d against %d points)" % (len(again_points), len(quarter_points)))
+            undo = edit_action("undo")
+            require(undo is not None and undo.isEnabled(), "Undo is enabled after committing again")
+            undo.trigger()
+            ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+            check(ok, "undo removes the commit made after the undo")
+            ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+            check(ok, "and brings the selection back again")
         key(gl, Qt.Key_Backspace)
         ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
         check(ok, "the resolution changes kept a single click: one Backspace clears the selection")
         resolution.setValue(default_resolution)
+        QApplication.processEvents()
+
+        # Leaving the tool frees its encodings and drops the selection; picking it again re-encodes.
+        click(gl, at(30, 48))
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        require(ok, "a click previews the outline before the tool is left")
+        other = tool_action("SelectAllTool")
+        require(other is not None, "the viewer toolbar offers the Select All tool")
+        other.trigger()
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+        check(ok, "leaving the tool drops the selection's outline")
+        tool_action("ObjectSelectTool").trigger()
+        yield ("sleep", SETTLE_MS)
+        check(outline_pixels(gl, box) < 10, "picking the tool again brings no old selection back")
+        click(gl, at(30, 48))
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "a click after picking the tool again encodes the Source again and previews the outline")
+        gt.shot("m205-object-reencoded.png")
+
+        # An encoding that fails must not leave another image's outline up to be committed.
+        filename = read.getParam("filename")
+        threshold = roto.getParam("objectThreshold")
+        require(filename is not None and threshold is not None, "the Read has a filename and the Roto an objectThreshold")
+        still_name = filename.getValue()
+        default_threshold = threshold.getValue()
+        filename.setValue(os.path.join(work, "missing.png"))
+        QApplication.processEvents()
+        threshold.setValue(default_threshold + 0.05)
+        QApplication.processEvents()
+        ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+        check(ok, "when the Source cannot be encoded the outline goes (%d outline pixels)" % outline_pixels(gl, box))
+        gt.shot("m205-object-failed.png")
+        key(gl, Qt.Key_Return)
+        yield ("sleep", SETTLE_MS)
+        check(not shapes(roto), "Return commits nothing after a failed encoding")
+        filename.setValue(still_name)
+        threshold.setValue(default_threshold)
+        QApplication.processEvents()
 
     gt.run(steps())
 except Exception:

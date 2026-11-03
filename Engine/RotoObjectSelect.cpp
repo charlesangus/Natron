@@ -28,12 +28,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <exception>
+#include <mutex>
 #include <stdexcept>
 
 #include <QCoreApplication>
 #include <QMetaObject>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
@@ -48,6 +51,7 @@
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 #include "Global/GLIncludes.h"
 
@@ -126,6 +130,7 @@ struct RotoObjectSelectSession {
     std::vector<RotoObjectSelect::Prompt> prompts;
     double time = 0.;
     RotoObjectSelect::Frame frame;
+    // At frame's inference size.
     std::vector<float> mask;
 };
 
@@ -148,10 +153,45 @@ struct RotoObjectSelect::Job {
     std::string segmenterModelId;
     ProjectColorManagement::DisplayProcessorPtr display;
     std::atomic<bool> abort { false };
+    // Lets the upstream render stop part way, not only between the job's steps.
+    const AbortableRenderInfoPtr renderAbort = AbortableRenderInfo::create(true, 0);
 
     bool ok = false;
     std::string error;
     Frame frame;
+
+    void requestAbort()
+    {
+        abort = true;
+        renderAbort->setAborted();
+    }
+
+    void finish()
+    {
+        std::lock_guard<std::mutex> locker(doneMutex);
+        done = true;
+        doneCondition.notify_all();
+    }
+
+    bool isDone()
+    {
+        std::lock_guard<std::mutex> locker(doneMutex);
+
+        return done;
+    }
+
+    void waitDone()
+    {
+        std::unique_lock<std::mutex> locker(doneMutex);
+        doneCondition.wait(locker, [this]() {
+            return done;
+        });
+    }
+
+private:
+    std::mutex doneMutex;
+    std::condition_variable doneCondition;
+    bool done = false;
 };
 
 RotoObjectSelect::RotoObjectSelect(RotoCurveInteract* roto)
@@ -163,8 +203,11 @@ RotoObjectSelect::RotoObjectSelect(RotoCurveInteract* roto)
 RotoObjectSelect::~RotoObjectSelect()
 {
     _shared.reset();
-    if (_running) {
-        _running->abort = true;
+    {
+        std::lock_guard<std::mutex> locker(_runningMutex);
+        if (_running) {
+            _running->requestAbort();
+        }
     }
     joinWorker();
 }
@@ -178,11 +221,55 @@ RotoObjectSelect::joinWorker()
 }
 
 void
+RotoObjectSelect::stopJob()
+{
+    std::shared_ptr<Job> job;
+    {
+        std::lock_guard<std::mutex> locker(_runningMutex);
+        job.swap(_running);
+    }
+    if (job) {
+        job->requestAbort();
+    }
+    joinWorker();
+    if (job) {
+        if (NodePtr node = _roto->getNode()) {
+            node->setCurrentCursor(eCursorDefault);
+        }
+    }
+}
+
+void
+RotoObjectSelect::abortEncoding(bool wait)
+{
+    std::shared_ptr<Job> job;
+    {
+        std::lock_guard<std::mutex> locker(_runningMutex);
+        job = _running;
+    }
+    if (!job) {
+        return;
+    }
+    job->requestAbort();
+    if (wait) {
+        job->waitDone();
+    }
+}
+
+bool
+RotoObjectSelect::isEncoding() const
+{
+    std::lock_guard<std::mutex> locker(_runningMutex);
+
+    return _running && !_running->isDone();
+}
+
+void
 RotoObjectSelect::createKnobs(const KnobPagePtr& page)
 {
     EffectInstance* host = _roto->getHost();
 
-    _model = ModelKnob::create(host, page, AiModelTask::eMaskObject);
+    _model = ModelKnob::createDeferred(host, page, AiModelTask::eMaskObject);
     _model->setFeedsRender(false);
     std::vector<KnobIPtr> viewerKnobs;
     if (KnobChoicePtr model = _model->modelKnob()) {
@@ -339,6 +426,9 @@ RotoObjectSelect::setActive(bool active)
         return;
     }
     _active = active;
+    if (active && _model) {
+        _model->activate();
+    }
     const KnobIPtr knobs[] = {
         _model ? KnobIPtr(_model->modelKnob()) : KnobIPtr(),
         _model ? KnobIPtr(_model->downloadKnob()) : KnobIPtr(),
@@ -351,7 +441,13 @@ RotoObjectSelect::setActive(bool active)
         }
     }
     if (!active) {
+        stopJob();
         dropPrompts();
+        _segmenter.reset();
+        _segmenterModelId.clear();
+        _frames.clear();
+        _frame = Frame();
+        _hasFailed = false;
         setMessage(std::string());
     }
 }
@@ -366,8 +462,7 @@ RotoObjectSelect::onKnobChanged(KnobI* k)
         if (_model->modelKnob() && (k == _model->modelKnob().get())) {
             _hasFailed = false;
             if (_active) {
-                _mask.clear();
-                _contours.clear();
+                clearMask();
                 refreshMask();
             }
         }
@@ -570,8 +665,7 @@ void
 RotoObjectSelect::refreshMask()
 {
     if (_prompts.empty()) {
-        _mask.clear();
-        _contours.clear();
+        clearMask();
         redraw();
 
         return;
@@ -584,8 +678,7 @@ RotoObjectSelect::refreshMask()
     SegmentationKey key;
     std::optional<ModelKnob::Resolved> model;
     if (!currentKey(_promptsTime, &key, &model)) {
-        _mask.clear();
-        _contours.clear();
+        clearMask();
         redraw();
 
         return;
@@ -597,6 +690,10 @@ RotoObjectSelect::refreshMask()
     const bool cached = (frame != _frames.end()) && _segmenter && (_segmenterModelId == key.modelId) && _segmenter->select(key);
     if (!cached) {
         if (_hasFailed && (_failedKey == key)) {
+            // The outline of another key must not stay up to be committed over this image.
+            clearMask();
+            redraw();
+
             return;
         }
         requestEncoding(_promptsTime, key, *model);
@@ -634,10 +731,10 @@ RotoObjectSelect::refreshMask()
         }
     }
     try {
-        _mask = SegmentationScaling::upsampleMask(_segmenter->segment(points, boxes, (float)traceOptions().threshold),
-                                                  _frame.inferenceWidth, _frame.inferenceHeight, _frame.width, _frame.height);
+        _inferenceMask = _segmenter->segment(points, boxes, (float)traceOptions().threshold);
+        _mask = SegmentationScaling::upsampleMask(_inferenceMask, _frame.inferenceWidth, _frame.inferenceHeight, _frame.width, _frame.height);
     } catch (const std::exception& e) {
-        _mask.clear();
+        clearMask();
         setMessage(e.what());
     }
     retrace();
@@ -699,11 +796,15 @@ RotoObjectSelect::requestEncoding(double time,
     }
 
     joinWorker();
-    _running = job;
+    {
+        std::lock_guard<std::mutex> locker(_runningMutex);
+        _running = job;
+    }
     std::weak_ptr<Shared> token = _shared;
     RotoObjectSelect* self = this;
     _worker = std::thread([job, token, self]() {
         runJob(job.get());
+        job->finish();
         if (QCoreApplication::instance()) {
             QMetaObject::invokeMethod(QCoreApplication::instance(), [job, token, self]() {
                 if ( token.lock() ) {
@@ -739,7 +840,10 @@ RotoObjectSelect::runJob(Job* job)
 
         // Full resolution whatever the viewer's proxy level: the encoder sees the real image.
         RectI rendered;
-        ImagePtr image = renderNodeImage(job->source, job->time, ViewIdx(0), 0, format, ImageLayerDesc::getRGBAComponents(), &rendered);
+        ImagePtr image = renderNodeImage(job->source, job->time, ViewIdx(0), 0, format, ImageLayerDesc::getRGBAComponents(), &rendered, job->renderAbort);
+        if (job->abort) {
+            return;
+        }
         if (!image) {
             throw std::runtime_error("The Source could not be rendered at this frame.");
         }
@@ -810,6 +914,9 @@ RotoObjectSelect::runJob(Job* job)
         }
         rgba.clear();
         rgba.shrink_to_fit();
+        if (job->abort) {
+            return;
+        }
 
         if (!job->segmenter || (job->segmenterModelId != job->key.modelId)) {
             if (job->model.files.size() < 2) {
@@ -842,7 +949,12 @@ RotoObjectSelect::runJob(Job* job)
 void
 RotoObjectSelect::onJobFinished(const std::shared_ptr<Job>& job)
 {
-    if (_running == job) {
+    if (_running != job) {
+        // stopJob() already joined it and dropped what it was for.
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> locker(_runningMutex);
         _running.reset();
     }
     joinWorker();
@@ -855,6 +967,13 @@ RotoObjectSelect::onJobFinished(const std::shared_ptr<Job>& job)
         }
         _segmenter = job->segmenter;
         _segmenterModelId = job->segmenterModelId;
+    }
+    if (job->abort) {
+        clearMask();
+        setMessage("Encoding the Source was stopped: add a prompt to encode it again.");
+        redraw();
+
+        return;
     }
     if (!job->ok) {
         _hasFailed = true;
@@ -881,10 +1000,18 @@ void
 RotoObjectSelect::dropPrompts()
 {
     _prompts.clear();
-    _mask.clear();
-    _contours.clear();
+    clearMask();
     _pressed = false;
     _dragging = false;
+}
+
+void
+RotoObjectSelect::clearMask()
+{
+    // Swapped rather than cleared, so that their memory goes too.
+    std::vector<float>().swap(_inferenceMask);
+    std::vector<float>().swap(_mask);
+    _contours.clear();
 }
 
 void
@@ -992,7 +1119,10 @@ RotoObjectSelect::commit()
         return true;
     }
     if (_contours.empty()) {
-        setMessage(_prompts.empty() ? "Click on an object first." : "The selection is empty: nothing to commit.");
+        // A failed encoding's message says why there is nothing to commit.
+        if (!_hasFailed) {
+            setMessage(_prompts.empty() ? "Click on an object first." : "The selection is empty: nothing to commit.");
+        }
         redraw();
 
         return true;
@@ -1017,7 +1147,7 @@ RotoObjectSelect::session() const
     made->prompts = _prompts;
     made->time = _promptsTime;
     made->frame = _frame;
-    made->mask = _mask;
+    made->mask = _inferenceMask;
 
     return made;
 }
@@ -1030,10 +1160,23 @@ RotoObjectSelect::restoreSession(const RotoObjectSelectSession& session)
             _roto->setCurrentTool(tool);
         }
     }
+    // Ahead of the prompts, which the time change would otherwise drop.
+    EffectInstance* host = _roto->getHost();
+    if (TimeLinePtr timeline = (host && host->getApp()) ? host->getApp()->getTimeLine() : TimeLinePtr()) {
+        const SequenceTime frame = (SequenceTime)std::lround(session.time);
+        if (timeline->currentFrame() != frame) {
+            timeline->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+        }
+    }
     _prompts = session.prompts;
     _promptsTime = session.time;
     _frame = session.frame;
-    _mask = session.mask;
+    _inferenceMask = session.mask;
+    if (_inferenceMask.size() == (std::size_t)_frame.inferenceWidth * _frame.inferenceHeight) {
+        _mask = SegmentationScaling::upsampleMask(_inferenceMask, _frame.inferenceWidth, _frame.inferenceHeight, _frame.width, _frame.height);
+    } else {
+        _mask.clear();
+    }
     _pressed = false;
     _dragging = false;
     _hasFailed = false;
@@ -1074,7 +1217,6 @@ RotoObjectSelect::draw(double /*time*/)
         glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
         glEnable(GL_POINT_SMOOTH);
 
-        // The preview outlines.
         glLineWidth(2. * ratio);
         for (const MaskTrace::Contour& contour : _contours) {
             if (contour.isHole) {
@@ -1112,7 +1254,6 @@ RotoObjectSelect::draw(double /*time*/)
             glEnd();
         }
 
-        // Boxes, and the one being dragged.
         glLineWidth(1.5 * ratio);
         for (const Prompt& prompt : _prompts) {
             if (prompt.kind != Prompt::eBox) {

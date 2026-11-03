@@ -70,7 +70,21 @@ public:
                                              AiModelTask task,
                                              ModelDownloader* downloader = nullptr);
 
+    /**
+     * @brief As create(), for a tool that may never be used: the menu lists the task's models by
+     * name only, and no model file is looked at and no download followed until activate().
+     **/
+    static std::unique_ptr<ModelKnob> createDeferred(EffectInstance* effect,
+                                                     const KnobPagePtr& page,
+                                                     AiModelTask task);
+
     ~ModelKnob();
+
+    /**
+     * @brief For a helper made by createDeferred(): marks the models that are not installed and
+     * follows downloads and removals from now on. Does nothing after the first call. Main thread.
+     **/
+    void activate();
 
     /**
      * @brief The model the user made the default for task in Preferences, when the registry
@@ -127,6 +141,10 @@ public:
 private:
     ModelKnob(EffectInstance* effect, AiModelTask task, ModelDownloader* downloader);
 
+    static std::unique_ptr<ModelKnob> make(EffectInstance* effect, const KnobPagePtr& page, AiModelTask task,
+                                           ModelDownloader* downloader, bool deferred);
+    void connectDownloader();
+    void listEntriesByName();
     void refreshEntries();
     void onModelsChanged(const std::string& id);
     void postError(const std::string& message);
@@ -139,6 +157,7 @@ private:
     KnobChoiceWPtr _model;
     KnobButtonWPtr _download;
     bool _feedsRender = true;
+    bool _activated = false;
 
     mutable QMutex _mutex;
     std::optional<Resolved> _resolved;

@@ -219,18 +219,28 @@ both for now. In the viewer:
 - Backspace removes the last prompt, and Esc clears them all.
 - Return commits the outlines as Beziers keyed on the current frame, as one undo step. Holes
   become Stencil shapes.
-- Undoing a commit removes the shapes and brings the selection back (its prompts, the cached
-  encoding and the outline) to adjust and commit again. Redo commits the undone shapes again.
+- Undoing a commit removes the shapes, moves to the commit's frame and brings the selection back
+  (its prompts and the decoder's mask, kept at the inference resolution and upsampled again, so
+  the outline and a new commit match the undone one) to commit again. Adjusting it encodes the
+  Source again if its encoding is gone. Redo commits the undone shapes again.
 - The prompts belong to one frame: changing frame drops them.
+- When the Source cannot be encoded, the error is shown, the outline is cleared and Return commits
+  nothing until a prompt changes.
 - Object Inference Resolution (Full, 50%, 25%, 1K, 2K or 4K; K caps the long edge at 1024, 2048
   or 4096 pixels, and a smaller image is never enlarged) sets the size of the image the model
   segments. The viewer, the prompts, the outline and the committed shapes stay at full resolution.
   Changing it with prompts placed keeps them where they are and segments again, encoding the
   smaller image unless its encoding is cached. The default is 2K.
 
-Until the tool is picked, Roto pays nothing for it: no model file is opened, the segmenter and its
-encoding cache do not exist, and its viewer knobs are left out of the render hash. The segmenter is
-made on the first prompt, and keeps its encodings after the tool is put down.
+Until the tool is picked, Roto pays nothing for it: no model file is looked at, the model menu lists
+the models by name only and does not follow downloads, the segmenter and its encoding cache do not
+exist, and its viewer knobs are left out of the render hash. Picking the tool marks the models that
+are not installed and follows downloads from then on; a saved project keeps its model either way.
+The segmenter is made on the first prompt. Putting the tool down stops any encoding and frees the
+prompts, the segmenter, its encodings and the masks, so picking it again encodes the Source again.
+The ONNX Runtime sessions themselves may stay in the process-wide session cache
+(`InferenceSession`). Closing the project or deleting the node aborts an encoding in progress,
+including the render of the Source, and waits for its thread to let go of the node graph.
 It renders the Source on a worker thread at full resolution, then area-averages it, still scene
 linear, to square pixels at the inference resolution (`SegmentationScaling`). It converts that to
 the project's default display and view as 8-bit sRGB, not the viewer's, and encodes it. Prompts and

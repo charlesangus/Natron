@@ -30,25 +30,24 @@
 #include <stdexcept>
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/MergingEnum.h"
 #include "Engine/RotoContext.h"
-#include "Engine/Bezier.h"
-#include "Engine/BezierCP.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/RotoStrokeItem.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/RotoDrawableItem.h"
-#include "Engine/RotoPoint.h"
-#include "Engine/RotoUndoCommand.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-
 
 #include "Global/GLIncludes.h"
 #include "Global/GlobalDefines.h"
@@ -1120,6 +1119,20 @@ RotoPaintInteractPtr
 RotoPaint::getInteract() const
 {
     return _imp->ui;
+}
+
+void
+RotoPaint::abortObjectSelectEncoding(bool wait)
+{
+    if (_imp->ui && _imp->ui->objectSelect) {
+        _imp->ui->objectSelect->abortEncoding(wait);
+    }
+}
+
+bool
+RotoPaint::isObjectSelectEncoding() const
+{
+    return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
 }
 
 void

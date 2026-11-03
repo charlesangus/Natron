@@ -41,6 +41,8 @@ CLANG_DIAG_ON(deprecated)
 #include "BaseTest.h"
 #include "FlatExrReader.h"
 
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/CreateNodeArgs.h"
@@ -56,6 +58,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoObjectSelect.h"
+#include "Engine/RotoPaint.h"
+#include "Engine/RotoPaintInteract.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -568,6 +573,121 @@ TEST_F(RotoLayerTest, ObjectSelectKnobsStayOutOfTheRenderHash)
             EXPECT_TRUE(knob->isHashExempt()) << name;
         }
     }
+
+    project->reset(false, true);
+}
+
+namespace {
+
+RotoObjectSelect*
+objectSelectOf(const NodePtr& node)
+{
+    RotoPaint* rotoPaint = node ? dynamic_cast<RotoPaint*>(node->getEffectInstance().get()) : NULL;
+    RotoPaintInteractPtr interact = rotoPaint ? rotoPaint->getInteract() : RotoPaintInteractPtr();
+
+    return interact ? interact->objectSelect.get() : NULL;
+}
+
+} // namespace
+
+// Creating a Roto must not look at model files: until the tool is picked the menu names the models only.
+TEST_F(RotoLayerTest, ObjectSelectModelMenuListsInstallStateOnlyOnceThePickerIsUsed)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    const ModelRegistry& registry = *ModelDownloader::process()->registry();
+    const std::vector<std::string> ids = registry.byTask(AiModelTask::eMaskObject);
+    ASSERT_FALSE(ids.empty());
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    RotoObjectSelect* objectSelect = objectSelectOf(roto);
+    ASSERT_TRUE(objectSelect != NULL);
+
+    std::vector<ChoiceOption> options = model->getEntries_mt_safe();
+    ASSERT_EQ(ids.size(), options.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const AiModelEntry* entry = registry.find(ids[i]);
+        ASSERT_TRUE(entry != NULL) << ids[i];
+        EXPECT_EQ(ids[i], options[i].id);
+        EXPECT_EQ(entry->name, options[i].label) << "no install state before the tool is picked";
+    }
+
+    objectSelect->setActive(true);
+    options = model->getEntries_mt_safe();
+    ASSERT_EQ(ids.size(), options.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const AiModelEntry* entry = registry.find(ids[i]);
+        ASSERT_TRUE(entry != NULL) << ids[i];
+        EXPECT_EQ(ids[i], options[i].id);
+        EXPECT_EQ(0u, options[i].label.find(entry->name)) << options[i].label;
+    }
+    objectSelect->setActive(false);
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, ObjectSelectModelChoiceSurvivesSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    const ModelRegistry& registry = *ModelDownloader::process()->registry();
+    const std::vector<std::string> ids = registry.byTask(AiModelTask::eMaskObject);
+    ASSERT_LE(2u, ids.size());
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    const std::string picked = (model->getActiveEntry().id == ids.back()) ? ids.front() : ids.back();
+    model->setValueFromID(picked, 0);
+    ASSERT_EQ(picked, model->getActiveEntry().id);
+    const std::string rotoName = roto->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("object-select-model.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr restored = project->getNodeByName(rotoName);
+    ASSERT_TRUE(bool(restored));
+    KnobChoicePtr restoredModel = std::dynamic_pointer_cast<KnobChoice>(restored->getKnobByName("model"));
+    ASSERT_TRUE(bool(restoredModel));
+    EXPECT_EQ(picked, restoredModel->getActiveEntry().id);
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, ObjectSelectPutDownLeavesNoSelection)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoObjectSelect* objectSelect = objectSelectOf(roto);
+    ASSERT_TRUE(objectSelect != NULL);
+
+    objectSelect->setActive(true);
+    EXPECT_TRUE(objectSelect->isActive());
+    objectSelect->setActive(false);
+    EXPECT_FALSE(objectSelect->isActive());
+    EXPECT_FALSE(objectSelect->isEncoding());
+    EXPECT_TRUE(objectSelect->prompts().empty());
+    EXPECT_TRUE(objectSelect->previewContours().empty());
+    EXPECT_TRUE(roto->areAllProcessingThreadsQuit()) << "no encoding holds the node";
 
     project->reset(false, true);
 }

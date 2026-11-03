@@ -201,13 +201,13 @@ try:
         save_shots("m226_upaxis_z")
         z_image = crop()
         stage = read_stage(merge)
-        # A USDRead keeps its file's axis ("The scene is not converted"), and the strongest layer's
+        # A USDRead keeps its file's axis while Match Project Up Axis is off, and the strongest layer's
         # upAxis wins in a merge, so a graph fed by Y-up files stays Y under a Z project.
         check(UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y,
               "file-fed stage keeps the Y-up file's axis under a Z project, unconverted (%s)" % UsdGeom.GetStageUpAxis(stage))
         check(z_image is not None and z_image == moved_image,
               "file-fed viewport is unchanged under a Z project: the file's Y axis still shows")
-        ok = yield ("until", lambda: all("up axis is Y" in r.getPersistentMessage() and "are Z" in r.getPersistentMessage() for r in reads), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: all("up axis is Y" in r.getPersistentMessage() and "project's is Z" in r.getPersistentMessage() for r in reads), POLL_TIMEOUT_S)
         messages = [r.getPersistentMessage() for r in reads]
         report("NOTE USDRead messages %r" % (messages,))
         check(ok, "a Y-up USDRead warns naming both axes")

@@ -130,6 +130,7 @@ public:
      * one refresh of the whole project.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void purgeCachesKeepingFileStamps() OVERRIDE FINAL;
 
     /**
      * @brief Calls `hook` each time a Read has listed the files of a pattern on disk, before it

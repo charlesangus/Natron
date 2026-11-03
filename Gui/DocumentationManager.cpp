@@ -72,6 +72,7 @@ DocumentationManager::DocumentationManager(QObject *parent)
     (void)QT_TR_NOOP(PLUGIN_GROUP_3D);
     (void)QT_TR_NOOP(PLUGIN_GROUP_DEEP);
     (void)QT_TR_NOOP(PLUGIN_GROUP_METADATA);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_RFV);
     (void)QT_TR_NOOP(PLUGIN_GROUP_MULTIVIEW);
     (void)QT_TR_NOOP(PLUGIN_GROUP_MULTIVIEW "/Stereo");
     (void)QT_TR_NOOP(PLUGIN_GROUP_TOOLSETS);
@@ -397,6 +398,7 @@ DocumentationManager::handler(QHttpRequest *req,
             groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
             groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
             groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
+            groups << QString::fromUtf8(PLUGIN_GROUP_RFV);
             groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
             groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);
             groups << QString::fromUtf8("GMIC"); // openfx-gmic

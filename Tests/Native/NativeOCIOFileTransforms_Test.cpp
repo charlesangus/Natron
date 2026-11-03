@@ -268,6 +268,17 @@ TEST_F(NativeOCIOFileTransformsTest, CDLExportsACCFile)
     expectProcessed(filePair.native, filePair.source, reference(cdlTransform(kSlope, kOffset, kPower, kSaturation)), "exported");
 }
 
+TEST_F(NativeOCIOFileTransformsTest, FileKnobsLeaveReloadToTheReloadButton)
+{
+    for (const char* id : { PLUGINID_NATRON_OCIOFILETRANSFORM, PLUGINID_NATRON_OCIOCDLTRANSFORM }) {
+        NodePtr node = createNode(QString::fromUtf8(id));
+        ASSERT_TRUE(bool(node)) << id;
+        KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName(kOcioFileParamFile).get());
+        ASSERT_TRUE(file != NULL) << id;
+        EXPECT_FALSE(file->showsReloadButton()) << id;
+    }
+}
+
 TEST_F(NativeOCIOFileTransformsTest, FileMatchesFileTransform)
 {
     QTemporaryDir tmp;

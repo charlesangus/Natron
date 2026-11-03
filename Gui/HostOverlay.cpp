@@ -39,6 +39,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
 #include "Engine/Transform.h"
 #include "Engine/Utils.h"
@@ -79,13 +80,40 @@ NATRON_NAMESPACE_ENTER
 // OpenFX plugins are not affected, because instanceChanged does not pass the dimension information.
 namespace {
 
-void nonBlockingSetValues(Natron::KnobDoublePtr& knob, const double x, const double y, const ValueChangedReasonEnum reason) {
-    knob->setValue(x, ViewSpec::all(), 0, reason, nullptr);
-    knob->setValue(y, ViewSpec::all(), 1, reason, nullptr);
+// Writes a dimension as an edit in the settings panel does: an animated dimension takes a key at
+// the current frame, and the knob's prior state joins the undo step of the gesture (see
+// EffectInstance::onOverlayPenDown_public). A dimension that keeps its value is not written, so it
+// gains no key.
+void
+setOverlayKnobValue(const KnobDoublePtr& knob,
+                    const double value,
+                    const int dimension)
+{
+    if (!knob) {
+        return;
+    }
+    if (!knob->isValueChangeAtCurrentTime(value, dimension)) {
+        return;
+    }
+    recordKnobEdit(knob);
+    KeyFrame k;
+    knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, &k);
 }
 
-inline void nonBlockingSetValues(Natron::KnobDoublePtr& knob, const OfxPointD& point, const ValueChangedReasonEnum reason) {
-    nonBlockingSetValues(knob, point.x, point.y, reason);
+void
+setOverlayKnobValues(const KnobDoublePtr& knob,
+                     const double x,
+                     const double y)
+{
+    setOverlayKnobValue(knob, x, 0);
+    setOverlayKnobValue(knob, y, 1);
+}
+
+inline void
+setOverlayKnobValues(const KnobDoublePtr& knob,
+                     const OfxPointD& point)
+{
+    setOverlayKnobValues(knob, point.x, point.y);
 }
 
 }  // namespace
@@ -1802,12 +1830,8 @@ RectangleInteract::setValue(double time,
         }
     }
 
-    EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-    // Do not use setValues(x,y) (see note at the top of this file).
-    nonBlockingSetValues(btmLeftKnob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-    nonBlockingSetValues(sizeKnob, s[0], s[1], eValueChangedReasonNatronGuiEdited);
-    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    setOverlayKnobValues(btmLeftKnob, p[0], p[1]);
+    setOverlayKnobValues(sizeKnob, s[0], s[1]);
 } // RectangleInteract::setValue
 
 static void
@@ -2446,9 +2470,9 @@ PositionInteract::penMotion(double time,
                             const RenderScale& /*renderScale*/,
                             ViewIdx /*view*/,
                             const OfxPointD& pscale,
-                            const QPointF& lastPenPos,
-                            const QPointF &penPos,
-                            const QPoint & /*penPosViewport*/,
+                            const QPointF& /*lastPenPos*/,
+                            const QPointF& penPos,
+                            const QPoint& /*penPosViewport*/,
                             double /*pressure*/)
 {
     KnobDoublePtr knob = _param.lock();
@@ -2461,7 +2485,7 @@ PositionInteract::penMotion(double time,
 
     QPointF pos;
     if (_state == ePositionInteractStatePicked) {
-        pos = lastPenPos;
+        pos = penPos;
     } else {
         double p[2];
         for (int i = 0; i < 2; ++i) {
@@ -2507,19 +2531,15 @@ PositionInteract::penMotion(double time,
 
     if ( (_state != ePositionInteractStateInactive) && _interactiveDrag && valuesChanged ) {
         double p[2];
-        p[0] = fround(lastPenPos.x(), pscale.x);
-        p[1] = fround(lastPenPos.y(), pscale.y);
+        p[0] = fround(penPos.x(), pscale.x);
+        p[1] = fround(penPos.y(), pscale.y);
         for (int i = 0; i < 2; ++i) {
             if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                 p[i] = knob->normalize(i, time, p[i]);
             }
         }
 
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-        // Do not use setValues(x,y) (see note at the top of this file).
-        nonBlockingSetValues(knob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+        setOverlayKnobValues(knob, p[0], p[1]);
     }
 
     return (didSomething || valuesChanged);
@@ -2957,37 +2977,30 @@ TransformInteract::penMotion(double time,
 
     if ( (_mouseState != TransformInteract::eReleased) && _interactiveDrag && valuesChanged ) {
         // no need to redraw overlay since it is slave to the parameters
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-        KeyFrame k;
         if (centerChanged) {
             KnobDoublePtr knob = _center.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, center, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, center);
         }
         if (translateChanged) {
             KnobDoublePtr knob = _translate.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, translate, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, translate);
         }
         if (scaleChanged) {
             KnobDoublePtr knob = _scale.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, scale, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, scale);
         }
         if (rotateChanged) {
             KnobDoublePtr knob = _rotate.lock();
-            knob->setValue(rotate, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, rotate, 0);
         }
         if (skewXChanged) {
             KnobDoublePtr knob = _skewX.lock();
-            knob->setValue(skewX, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, skewX, 0);
         }
         if (skewYChanged) {
             KnobDoublePtr knob = _skewY.lock();
-            knob->setValue(skewY, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, skewY, 0);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     } else if (didSomething || valuesChanged) {
         requestRedraw();
     }
@@ -3088,20 +3101,15 @@ CornerPinInteract::penMotion(double time,
     if ( (_dragging != -1) && _interactiveDrag && valuesChanged ) {
         // no need to redraw overlay since it is slave to the parameters
 
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         if (_useFromDrag) {
             KnobDoublePtr knob = _from[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, from[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, from[_dragging]);
         } else {
             KnobDoublePtr knob = _to[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, to[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, to[_dragging]);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     }
 
     return didSomething || valuesChanged;
@@ -3154,19 +3162,15 @@ PositionInteract::penUp(double time,
         if (!_interactiveDrag) {
             KnobDoublePtr knob = _param.lock();
             double p[2];
-            p[0] = fround(lastPenPos.x(), pscale.x);
-            p[1] = fround(lastPenPos.y(), pscale.y);
+            p[0] = fround(penPos.x(), pscale.x);
+            p[1] = fround(penPos.y(), pscale.y);
             for (int i = 0; i < 2; ++i) {
                 if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                     p[i] = knob->normalize(i, time, p[i]);
                 }
             }
 
-            EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-            holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-            holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+            setOverlayKnobValues(knob, p[0], p[1]);
         }
 
         _state = ePositionInteractStateInactive;
@@ -3192,44 +3196,30 @@ TransformInteract::penUp(double /*time*/,
 
     if ( !_interactiveDrag && (_mouseState != TransformInteract::eReleased) ) {
         // no need to redraw overlay since it is slave to the parameters
-
-        /*
-           Give eValueChangedReasonPluginEdited reason so that the command uses the undo/redo stack
-           see Knob::setValue
-         */
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         {
             KnobDoublePtr knob = _center.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _centerDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _centerDrag);
         }
         {
             KnobDoublePtr knob = _translate.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _translateDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _translateDrag);
         }
         {
             KnobDoublePtr knob = _scale.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _scaleParamDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _scaleParamDrag);
         }
         {
             KnobDoublePtr knob = _rotate.lock();
-            KeyFrame k;
-            knob->setValue(_rotateDrag, ViewSpec::all(),  0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _rotateDrag, 0);
         }
         {
             KnobDoublePtr knob = _skewX.lock();
-            KeyFrame k;
-            knob->setValue(_skewXDrag, ViewSpec::all(), 0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _skewXDrag, 0);
         }
         {
             KnobDoublePtr knob = _skewY.lock();
-            KeyFrame k;
-            knob->setValue(_skewYDrag, ViewSpec::all(),  0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _skewYDrag, 0);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     } else if (_mouseState != TransformInteract::eReleased) {
         requestRedraw();
     }
@@ -3261,20 +3251,15 @@ CornerPinInteract::penUp(double /*time*/,
 
     if ( !_interactiveDrag && (_dragging != -1) ) {
         // no need to redraw overlay since it is slave to the parameters
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         if (_useFromDrag) {
             KnobDoublePtr knob = _from[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _fromDrag[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _fromDrag[_dragging]);
         } else {
             KnobDoublePtr knob = _to[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _toDrag[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _toDrag[_dragging]);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     }
     _dragging = -1;
 

@@ -139,10 +139,6 @@ public:
 
     void initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName);
 
-    void loadKnob(const KnobIPtr& knob,
-                  const Serialization::NodeSerialization& serialization,
-                  bool updateKnobGui = false);
-
     ///Set values for Knobs given their serialization
     void setValuesFromSerialization(const CreateNodeArgs& args);
 
@@ -428,12 +424,24 @@ public:
 
     /**
      * @brief True when the project frame range is part of this node's content hash: the effect
-     * reads it, or an expression on one of its knobs can.
+     * reads it, or an expression on one of its render-hashed knobs can.
      **/
     bool dependsOnProjectFrameRange() const;
 
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
+    /**
+     * @brief Takes the cache ID saved with the node unless a live node of any project holds it.
+     **/
+    void adoptSerializedCacheID(const std::string& cacheID);
+
+private:
+    static bool claimCacheID(const std::string& cacheID);
+    static void releaseCacheID(const std::string& cacheID);
+
+    void releaseOwnCacheID();
+
+public:
     /**
      * @brief Forwarded to the live effect instance
      **/
@@ -2350,6 +2358,12 @@ protected:
      * when each is next read. Callable from any thread.
      **/
     void computeHash();
+
+    /**
+     * @brief Runs edit with render starts of this node held off, and marks the hash before they
+     * are let in again when edit returns true.
+     **/
+    void editBeforeRenderStarts(const std::function<bool()>& edit);
 
 private:
 

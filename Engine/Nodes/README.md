@@ -292,6 +292,145 @@ the default pass-through. Key filters are
 characters including `/`, `?` one, an empty list matching every key.
 
 
+## Reverse-Flow Variables
+
+A Reverse-Flow Variable (RFV) is a named value that flows up the graph, from a
+node towards its inputs, for parameter expressions to read. Any parameter that
+holds a value can be a variable: a boolean, an integer, a choice, a double, a
+string, or several dimensions of one of them. A variable can be animated or
+driven by an expression.
+
+Variables are set in two places:
+
+- **The project.** Variables on the project settings' Variables page are the
+  base values, seen wherever no Set node overrides them. A project variable is
+  also `app.<name>` in Python.
+- **The `RFVSet` node** (Set). It passes its input through
+  unchanged and sets its variables for everything upstream of it. Its
+  Variables tab and the Python API are documented in
+  `Engine/Nodes/RFV/docs/RFVSet.md`.
+
+The RFV nodes, `RFVSet`, `RFVSwitch` and `RFVRead`, are in the toolbar's
+Reverse Flow Variable category.
+
+A variable is a child of a group flagged as an RFV group, and its name is the
+child's script name. Only the project and the Set node carry such a group, so
+an ordinary user parameter is never a variable.
+
+### Reading a variable: the `rfv` object
+
+Expressions read variables through `rfv`. These three forms are equivalent:
+`rfv.shot`, `rfv('shot')` and `rfv['shot']`. An unset variable reads as `None`,
+so an expression can test for it. Values are Python bools, ints, floats and
+strings, and a variable with several dimensions is a list of them.
+
+For example, a Grade whose gain expression is `1 if rfv.var == 'a' else 2`,
+under a Set setting `var` to `'a'` on one branch and to `'b'` on another,
+renders with gain 1 on the first branch and gain 2 on the second
+(`Tests/RFVRender_Test.cpp`).
+
+### Per-path semantics
+
+An upstream node sees the variables of the nearest Set node below it, on the
+path that requested it. A variable that no Set on the path sets keeps the
+project's value. When one node is reached through two Sets in one render (a
+diamond), it renders once for each distinct set of values it reads.
+
+The engine finds out what a node reads by scanning its expressions for
+`rfv.<name>`, `rfv('<name>')` and `rfv['<name>']`. Any other use of `rfv`, such
+as `getattr(rfv, name)`, a computed key or passing `rfv` to a function, counts
+as reading every variable. A node's context key covers only the variables that
+it and everything upstream of it read. Nodes that read no variable have one
+context, so they render and cache exactly as they would without RFVs.
+
+### Switching on a variable: `RFVSwitch`
+
+The `RFVSwitch` node passes through the input whose pattern row (Input 0,
+Input 1, ...) first matches the value of one variable, read as `rfv` would read
+it in an expression of the switch, as text. Patterns are globs, or ECMAScript
+regular expressions after a `re:` prefix, matched against the whole value. Under
+two RFVSet nodes setting different values, one switch picks a different input on each
+path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVSwitch.md`.
+
+### Inspecting variables: `RFVRead`
+
+The `RFVRead` node passes its input through and lists, in its read-only
+Variables parameter, every variable that reaches it with its value at the
+frame it is read at for the timeline's frame, time nodes on the path moving
+that frame as they do in a render. It resolves them without rendering, along the path to the
+active viewer's displayed inputs, folding the Set nodes with the same function
+the render uses (`RFV::resolveContextAt`). Off every viewer path it lists the
+project's variables (`Tests/RFVRead_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVRead.md`.
+
+### Resolution time
+
+A variable is read at the time of the expression that reads it, not at the time
+the render passes the Set node:
+
+- An animated or expression-driven Set variable is stored in the context as a
+  binding to the Set's parameter. The binding is evaluated at the reading
+  expression's time. So a Transform whose translate reads an animated variable
+  motion-blurs, and a TimeOffset, FrameHold or TimeBlur above the Set
+  re-samples the variable at the times it shifts to. Any expression counts as
+  time-varying, even one that ignores the frame.
+- A constant Set variable is a plain value. Nodes reading it under equal values
+  share their cache entries.
+- A project variable is likewise evaluated at the reading expression's time.
+- A Set variable's own expression may read `rfv`. It sees the values set below
+  that Set, evaluated at its own time. Project values are the bottom layer.
+
+There is no option to hold a variable at the Set node's frame.
+
+### Outside a render
+
+In a parameter panel, `instanceChanged` or a Python script, `rfv` reads the
+project's values at the timeline's current frame. Editing a project variable
+re-evaluates every expression that reads it and changes the hash of the nodes
+holding those expressions, as editing any parameter an expression reads does.
+A Set node's variables are not dependencies of the expressions that read them,
+because which Set a node sees depends on the path a render takes. A parameter
+panel therefore shows the project's value.
+
+### For node authors
+
+- Expressions need nothing more than `rfv`: the scan above finds what they read.
+- A node that reads a variable outside an expression, by name in C++, as
+  RFVSwitch does, names it in `EffectInstance::getExtraContextReads()` so the
+  engine keys the node by that variable under a Set; it calls
+  `invalidateRenderContextReads()` when the name changes. Where no Set on the
+  path sets the variable the context holds nothing for it and the project's
+  value is read, which the context key leaves out. So the node also hashes the
+  project variable's content in `appendNodeContentHash()`, and
+  `RFV::appendProjectVariableReads()` adds what that variable's expression reads
+  through `rfv`. No listener links the node to the project's knob, so editing a
+  project variable calls `RFV::rehashExtraContextReaders()`, which marks the
+  hash of every node whose extra reads name it. To read the value, open a
+  `PyRFV::ExpressionScope` on one of the node's knobs and call
+  `PyRFV::getVariable()`, which can also return the option labels of the Choice
+  that supplied the value.
+- A node that sets variables for its inputs, as the Set node does, overrides
+  `EffectInstance::getInputContexts()`.
+- An input's metadata, region of definition, layers and frame range are read
+  under the context the node requests that input under, so a format or frame
+  range an expression drives from `rfv` follows the Set below the node
+  (`Tests/RFVMetadata_Test.cpp`). A node calling those actions through
+  `EffectInstance` gets this without extra code. Outside any Set, such as the
+  timeline asking a bare node, the project's values apply.
+
+### v1 limits
+
+- A Group node carries no variables of its own.
+- RFVRead lists what reaches it along the active viewer's path only, not a
+  Write's or another viewer's, and for the first view only.
+- RFVRead follows only the input a node passes through when it is an identity,
+  as asked for a one-pixel region at the frame. A node that reads a range of
+  frames counts as reading the first.
+- RFVRead does not refresh on every frame during playback. It refreshes once
+  frames stop arriving for a quarter of a second.
+
+
 ## I/O nodes
 
 Each I/O node is documented in `Engine/Nodes/IO/docs/<Node>.md`.
@@ -952,7 +1091,10 @@ overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
 `Params` and a `RouteContext` (the time, the view and which inputs are
 connected). Any op kind may also have `route()`: the host asks it first and an
 answer other than `None` makes the node an identity of that input (Dissolve at
-an integer `which`).
+an integer `which`), and its frames needed are then that input at the time the
+route names, or none for `Black`. A route at another time than the one asked
+is how a node remaps time: the scheduler plans an identity task on the input at
+that time, and GPU placement keeps the region going through it.
 
 **Resample** has two forms, and an op has exactly one.
 
@@ -1252,6 +1394,23 @@ declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, so identities become identity tasks. No node here touches
 deep data or GL.
+
+A node that reads an input at another time than the one rendered declares the
+times in `getFramesNeeded()` and fetches them with
+`NativeEffectBase::fetchInputAt(inputNb, time, args, layer, mapToClipPrefs,
+roiPixel)`, never with `getImage()` at a time of its own. `fetchInputAt()`
+checks the time against the declaration: a time that is not one of the frames
+a declared range plans (its min, then each whole frame up to its max) posts an
+error naming it and returns null, and the render fails instead of pulling an
+unplanned frame. A range is planned only when its bounds are whole frames or
+it is a single time, so a fractional time is declared as a range of its own.
+The scheduler prefetches at most
+`NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING` (4) frames per declared range, so a
+node needing scattered times declares one range per time; frames beyond the
+cap of one range are still fetched, but as unplanned pulls. On the GPU, the
+same declaration reaches `GpuQuery::inputTimes`, and `GpuRenderArgs` hands an
+op an input at another time than the one rendered through `inputAt(inputNb,
+time)`.
 
 ### Threading
 

@@ -397,12 +397,12 @@ try:
         require(panel is not None, "the Write's panel is open")
         rows = panel_rows(panel)
         report("NOTE panel labels top to bottom: %r" % rows)
-        order = ["File", "Overwrite", "Format Type", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
+        order = ["File", "Overwrite", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
                  "Frame Increment", "Output Colorspace", "OCIO Context", "Compression", "Write Metadata",
                  "Read back file"]
         ys = [first_y(rows, n) for n in order]
         check(all(y is not None for y in ys) and ys == sorted(ys),
-              "the Controls page runs file, overwrite, format, range, increment, channels, colourspace, context, options, metadata, read back (%r)" % list(zip(order, ys)))
+              "the Controls page runs file, overwrite, clip to RoD, range, increment, channels, colourspace, context, options, metadata, read back (%r)" % list(zip(order, ys)))
         sliders = [w for w in panel.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQt" and w.isVisible()]
         fy, ly = first_y(rows, "First Frame"), first_y(rows, "Last Frame")
         near = [w for w in sliders if fy is not None and ly is not None and fy - 10 <= w.mapTo(panel, w.rect().topLeft()).y() <= ly + 30]
@@ -655,6 +655,9 @@ try:
               "the render dialog lists the new Write (%r)" % render_seen.get("writers"))
         check(created[0].getPluginID() == WRITE_ID, "the created node is a native Write (%s)" % created[0].getPluginID())
         check(str(created[0].getParam("filename").getValue()) == SELECTED, "its file is the one chosen (%r)" % created[0].getParam("filename").getValue())
+        src = created[0].getInput(0)
+        check(src is not None and src.getScriptName() == constant.getScriptName(),
+              "the created Write's input is the selected Constant (%r)" % (src.getScriptName() if src else None,))
         ok = yield ("until", lambda: os.path.isfile(SELECTED) and os.path.getsize(SELECTED) > 0, POLL_TIMEOUT_S)
         check(ok, "Render Selected wrote the file")
 

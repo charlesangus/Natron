@@ -752,6 +752,9 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
         thisGroup->removeNode(this);
     }
 
+    // A pointer that outlives the teardown must not keep a reloaded project's node off its saved ID.
+    releaseOwnCacheID();
+
 } // Node::doDestroyNodeInternalEnd
 
 

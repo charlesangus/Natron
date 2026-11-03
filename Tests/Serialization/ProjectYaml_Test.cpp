@@ -348,7 +348,7 @@ expectNodesEqual(const NodeSerialization& expected,
     EXPECT_EQ(expected.hasTrackerContext, actual.hasTrackerContext);
     EXPECT_EQ(0u, actual.knobsAge);
     EXPECT_TRUE(actual.multiInstanceParentName.empty());
-    EXPECT_TRUE(actual.cacheID.empty());
+    EXPECT_EQ(expected.cacheID, actual.cacheID);
     expectNodeListsEqual(expected.children, actual.children);
 }
 
@@ -531,6 +531,22 @@ TEST(ProjectYaml, NodeWithoutLayoutWritesNoLayoutKeys)
     EXPECT_TRUE(warnings.empty());
     const Serialization::NodeLayoutSerialization& layout = decoded.nodes.nodes.front()->layout;
     EXPECT_FALSE(layout.hasPosition || layout.hasSize || layout.hasColor || layout.hasOverlayColor);
+}
+
+TEST(ProjectYaml, ANodeCacheIDRoundTrips)
+{
+    ProjectSerialization project;
+    NodeSerializationPtr read = makeNode("Read1", "fr.inria.built-in.Read", 1, 0);
+    read->cacheID = "0b6f1d3c-6a0e-4c43-9f55-2f7e8d1a4b90";
+    project.nodes.nodes = { read };
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    ASSERT_EQ(1u, decoded.nodes.nodes.size());
+    EXPECT_EQ(read->cacheID, decoded.nodes.nodes.front()->cacheID);
 }
 
 TEST(ProjectYaml, NodeAndKeyOrderInTheFileIsCosmetic)

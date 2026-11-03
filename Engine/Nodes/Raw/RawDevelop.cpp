@@ -184,10 +184,13 @@ buildChain(const NodePtr& read)
     read->getPosition(&readX, &readY);
     read->getSize(&readW, &readH);
 
-    std::vector<const char*> ids = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, demosaicPluginID(read) };
+    const char* demosaicID = demosaicPluginID(read);
+    std::vector<const char*> ids = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, demosaicID };
     std::vector<NodePtr*> slots = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic };
     // darktable's pipe runs denoise (profiled) on camera RGB, after demosaic and before colorin.
-    if (appPTR->getCurrentSettings()->isDevelopRawDenoiseEnabled()) {
+    // RawNeuralDenoise already denoises, so a second denoise would only soften its result.
+    const bool neuralDemosaic = std::string(demosaicID) == PLUGINID_NATRON_RAWNEURALDENOISE;
+    if (!neuralDemosaic && appPTR->getCurrentSettings()->isDevelopRawDenoiseEnabled()) {
         ids.push_back(PLUGINID_NATRON_DENOISEPROFILED);
         slots.push_back(&chain.denoise);
     }

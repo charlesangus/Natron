@@ -686,7 +686,8 @@ Settings::initializeKnobsProjectSetup()
     _developRawDenoise->setName("developRawDenoise");
     _developRawDenoise->setHintToolTip(tr("If checked, the Develop RAW chain also has DenoiseProfiled between RawDemosaic and "
                                           "RawInputColor, where darktable runs its denoise (profiled), with the camera's noise "
-                                          "profile found from the file."));
+                                          "profile found from the file. It is left out when Develop RAW Demosaic uses the neural "
+                                          "denoise, which already denoises."));
     _projectsPage->addKnob(_developRawDenoise);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );

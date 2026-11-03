@@ -289,6 +289,7 @@ protected:
         }
         _models.reset();
         setNeural(false);
+        setDenoise(false);
         BaseTest::TearDown();
     }
 
@@ -297,8 +298,19 @@ protected:
         appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("developRawDemosaic")->setValue(neural ? 1 : 0);
     }
 
+    static void setDenoise(bool denoise)
+    {
+        appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("developRawDenoise")->setValue(denoise);
+    }
+
     // The plug-in in the demosaic slot of the chain built under a Read of fixture.
     std::string demosaicOf(const RawFixture& fixture)
+    {
+        return chainOf(fixture, nullptr);
+    }
+
+    // As demosaicOf(), also reporting whether the chain has a DenoiseProfiled node.
+    std::string chainOf(const RawFixture& fixture, bool* hasDenoise)
     {
         NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_READ));
         EXPECT_TRUE(bool(read));
@@ -318,6 +330,10 @@ protected:
         }
         EXPECT_EQ(chain.highlights, chain.demosaic->getInput(0)) << fixture.file;
         EXPECT_EQ(chain.demosaic, chain.inputColor->getInput(0)) << fixture.file;
+
+        if (hasDenoise) {
+            *hasDenoise = bool(chain.denoise);
+        }
 
         return chain.demosaic->getPluginID();
     }
@@ -357,4 +373,20 @@ TEST_F(RawDevelopDemosaicTest, NeuralWithoutTheModelBuildsRawDemosaic)
     setNeural(true);
     ASSERT_FALSE(_models->installed(RawNeuralDenoiseModels::kMatchGain));
     EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), demosaicOf(bayerFixture()));
+}
+
+TEST_F(RawDevelopDemosaicTest, NeuralDemosaicLeavesOutDenoiseProfiledEvenWithTheDenoisePreference)
+{
+    std::string error;
+    ASSERT_TRUE(_models->install(&error)) << error;
+    setDenoise(true);
+    bool hasDenoise = true;
+
+    setNeural(true);
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWNEURALDENOISE), chainOf(bayerFixture(), &hasDenoise));
+    EXPECT_FALSE(hasDenoise);
+
+    setNeural(false);
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), chainOf(bayerFixture(), &hasDenoise));
+    EXPECT_TRUE(hasDenoise);
 }

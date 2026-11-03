@@ -81,7 +81,7 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 
 ## Phase 232.4: UAT round 3 fixes (user, 2026-11-02)
 
-- [ ] M232.P4.T1 — The kind filter hides nodes only, never menu commands
+- [x] M232.P4.T1 — The kind filter hides nodes only, never menu commands
   - files: Gui/TabMenuBridge.cpp, Tab menu tests
   - approach: filtering by the selection's kind must leave menu items (node menu commands) in the list; only node-creation entries are filtered. Today a selection hides the commands, so the user has to click empty space first.
   - verify: Tab-menu test with a scene selection finds and runs a menu command.
@@ -91,3 +91,4 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
   - approach: selecting a prim in a scene whose up-axis differs from the project's and creating a node with Tab makes the scene snap 90° on X back to its native up-axis. Find whether the new node drops the up-axis correction (stage metadata or the correction transform) and fix it; check whether this was already logged or fixed elsewhere.
   - verify: test creates a node from a selection in a Z-up scene and checks the composed world transform is unchanged.
   - size: M
+- 2026-11-02 — P4.T1 at 70904f70c: the node-graph Tab menu keeps menu commands under a scene selection (the filter was in tabtabtab_natron.get_items). P4.T2 is not an M232 bug: every Natron edit layer authors the project up axis (M226 "Units on edit layers", kept by M241 as a user decision), so the composed stage reports Y-up below any scene node and the view, which follows the composed stage, turns 90° on X. Waiting on the user: edit layers inherit their input's metrics, the view follows the project axis, or Match Project Up Axis is the answer (PM).

@@ -367,8 +367,10 @@ try:
             shuffle.getLabel(), dict(mapping.getConnections()), in1.getLayer(), in2.getLayer(),
             out1.getLayer(), out2.getLayer()))
 
-    def lit_extent(image, stride=2):
-        """(min x, max x, min y, max y, count, sum x) of the lit pixels, or None."""
+    def lit_extent(image, stride=2, red_only=False):
+        """(min x, max x, min y, max y, count, sum x) of the lit pixels, or None.
+
+        red_only ignores green and blue, for scenes whose depth rides in rgba.G and lights the far plate."""
         if image is None:
             return None
         x0 = y0 = 10 ** 9
@@ -377,7 +379,8 @@ try:
         for y in range(0, image.height(), stride):
             for x in range(0, image.width(), stride):
                 c = image.pixelColor(x, y)
-                if max(c.red(), c.green(), c.blue()) > LIT_LEVEL:
+                level = c.red() if red_only else max(c.red(), c.green(), c.blue())
+                if level > LIT_LEVEL:
                     x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
                     n += 1
                     sx += x
@@ -388,9 +391,9 @@ try:
     def size_of(ext):
         return (0, 0) if ext is None else (ext[1] - ext[0], ext[3] - ext[2])
 
-    def measure():
+    def measure(red_only=False):
         yield ("sleep", RENDER_MS)
-        ext = lit_extent(viewer_crop())
+        ext = lit_extent(viewer_crop(), red_only=red_only)
         report("NOTE lit extent (w,h)=%r count=%r" % (size_of(ext), None if ext is None else ext[4]))
         return ext
 
@@ -496,17 +499,17 @@ try:
         show(node)
         yield ("sleep", RENDER_MS)
         set_zoom("100%")
-        sharp = yield from measure()
+        sharp = yield from measure(red_only=True)
         require(sharp is not None, "the near box is lit without blur")
         sw, sh = size_of(sharp)
 
         set_checked(node, "scale", 1.0)
         occ.setValue(0)
-        off = yield from measure()
+        off = yield from measure(red_only=True)
         gt.shot("m191-occlusion-off.png")
         off_crop = viewer_crop()
         occ.setValue(depth_aware)
-        on = yield from measure()
+        on = yield from measure(red_only=True)
         gt.shot("m191-occlusion-on.png")
         on_crop = viewer_crop()
         ow, oh = size_of(off)

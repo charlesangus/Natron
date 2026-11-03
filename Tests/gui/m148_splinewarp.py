@@ -36,7 +36,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -137,6 +137,23 @@ try:
         ys = [p[1] for p in points]
         return min(xs), min(ys), max(xs), max(ys)
 
+    def rectangle_edges(img, points, test):
+        """The left, top, right and bottom pixel lines of a drawn axis-aligned rectangle. A plain
+        bounding box of its ink also takes in the feather bars sticking out of the corners, and a
+        press at that box's corner lands on a feather bar instead of the control point."""
+        bx0, by0, bx1, by1 = bbox(points)
+        rows = {}
+        cols = {}
+        for y in range(max(0, by0 - 2), min(img.height(), by1 + 3)):
+            for x in range(max(0, bx0 - 2), min(img.width(), bx1 + 3)):
+                c = img.pixelColor(x, y)
+                if test(c.red(), c.green(), c.blue()):
+                    rows[y] = rows.get(y, 0) + 1
+                    cols[x] = cols.get(x, 0) + 1
+        long_rows = [y for y, n in rows.items() if n * 2 >= max(rows.values())]
+        long_cols = [x for x, n in cols.items() if n * 2 >= max(cols.values())]
+        return min(long_cols), min(long_rows), max(long_cols), max(long_rows)
+
     def region_difference(a, b, rect):
         """The mean absolute RGB difference of two grabs inside rect (x0, y0, x1, y1)."""
         if a is None or b is None or a.size() != b.size():
@@ -165,6 +182,19 @@ try:
             return False
         param.set(*values)
         return True
+
+    def set_output_warped(on):
+        """Output Warped is a checkable button, which Python can only trigger, not set, so its
+        viewer toolbar button is clicked."""
+        for button in QApplication.instance().allWidgets():
+            if (isinstance(button, QAbstractButton) and button.isVisible() and button.isCheckable()
+                    and "Source unwarped" in button.toolTip()):
+                if button.isChecked() != on:
+                    button.click()
+                QApplication.processEvents()
+                return button.isChecked() == on
+        report("NOTE no visible Output Warped button")
+        return False
 
     def tree_item(tree, curve):
         found = tree.findItems(curve.getLabel(), Qt.MatchExactly | Qt.MatchRecursive, 0)
@@ -295,9 +325,10 @@ try:
         blue = coloured_pixels(before, is_destination)
         report("NOTE destination grab has %d blue pixels" % len(blue))
         require(len(blue) > MIN_INK, "the destination curve is drawn blue")
-        px0, py0, px1, py1 = bbox(blue)
+        px0, py0, px1, py1 = rectangle_edges(before, blue, is_destination)
+        report("NOTE the destination rectangle spans viewer pixels (%d, %d)-(%d, %d)" % (px0, py0, px1, py1))
         # The top-right corner of the rectangle: canonical y grows upwards, viewer y downwards.
-        corner = QPoint(px1 - 2, py0 + 2)
+        corner = QPoint(px1, py0)
         target = corner + QPoint(*DRAG_BY)
         report("NOTE dragging the destination corner from viewer pixel (%d, %d)" % (corner.x(), corner.y()))
         start_pos = dest.getControlPointPosition(2, 1.0)
@@ -348,14 +379,14 @@ try:
               "Show Both draws both curves")
         gt.shot("m148-show-both.png")
         warped = img
-        require(set_param(warp, "outputWarped", False), "turned Output Warped off")
+        require(set_output_warped(False), "turned Output Warped off")
         yield ("sleep", RENDER_MS)
         unwarped = grab_viewer()
         d = region_difference(warped, unwarped, inside)
         report("NOTE Output Warped off changes the inside of the curve by %.2f" % d)
         check(d > 2.0, "Output Warped off shows the Source unwarped")
         gt.shot("m148-output-unwarped.png")
-        require(set_param(warp, "outputWarped", True), "turned Output Warped back on")
+        require(set_output_warped(True), "turned Output Warped back on")
         yield ("sleep", RENDER_MS)
         check(region_difference(warped, grab_viewer(), inside) < 2.0, "Output Warped on warps again")
 

@@ -432,7 +432,8 @@ try:
         apart from that leftover state unless it first puts another tab back in front of the
         Progress panel's pane itself. TabBar.setCurrentIndex is a slot wired to
         TabWidget::makeCurrentTab, so driving it switches the pane for real, not just the tab
-        bar's own highlight."""
+        bar's own highlight. The Node Graph shares that pane, and later sections need it in front,
+        so the tabs are stepped through until it is the one showing."""
         panels = [w for w in gt.widgets_of("ProgressPanel") if w.parentWidget() is not None]
         if panels:
             pane = panels[0].parentWidget()
@@ -442,8 +443,11 @@ try:
                 count = bar.property("count")
                 current = bar.property("currentIndex")
                 if count is not None and current is not None and count > 1:
-                    QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + 1) % count))
-                    QApplication.processEvents()
+                    for step in range(1, count):
+                        QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + step) % count))
+                        QApplication.processEvents()
+                        if not progress_panel_is_current_tab() and root_graph() is not None:
+                            break
         check(not progress_panel_is_current_tab(),
              "%s: the Progress panel is not the current tab before starting the render" % label)
 

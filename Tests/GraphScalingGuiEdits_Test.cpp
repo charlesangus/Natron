@@ -230,7 +230,7 @@ TEST_F(GraphScalingGuiEdits, BatchedNamingScansOnce)
     // A name given up inside a batch is found free again.
     {
         const NodeCollection::NamingBatch namingBatch(app->getProject());
-        batched[4]->destroyNode(false, false);
+        batched[4]->destroyNode(true, false);
         NodePtr node = createNamedNode(app, kGradePluginID, "Same");
         ASSERT_TRUE(bool(node));
         EXPECT_EQ(std::string("Same_5"), node->getScriptName());

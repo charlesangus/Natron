@@ -41,6 +41,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Ramp.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_USING
@@ -95,6 +96,8 @@ TEST_F(NativeRampTest, KnobsKeepTheOpenFxNamesAndTheRampOverlayDrivesThePoints)
     EXPECT_EQ("Point 0", point0->getLabel());
     EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kRampParamColor0))));
     EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kRampParamColor1))));
+    EXPECT_FALSE(bool(node->getKnobByName(kNativeGeneratorParamInteractive)));
+    EXPECT_FALSE(bool(node->getKnobByName(kNativeGeneratorParamHiDPI)));
 
     KnobChoicePtr falloff = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kRampParamFalloff));
     ASSERT_TRUE(bool(falloff));

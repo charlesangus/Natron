@@ -198,6 +198,9 @@ struct ColorWheelOp {
         .icon = NATRON_IMAGES_PATH "NativeNodes/ColorWheel.png",
     };
 
+    // The overlays follow the global interactive preference, so the per-node toggles are not declared.
+    static constexpr bool kInteractiveKnobs = false;
+
     static constexpr ImagePipelineSpec kPipeline = {
         .stages = {},
         .layers = LayerPolicy::targetSelect(),

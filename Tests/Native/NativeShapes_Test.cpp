@@ -187,6 +187,8 @@ TEST_F(NativeShapesTest, DefaultsAreTheSizeExtentWithItsOverlay)
         KnobBoolPtr enable = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kNativeGeneratorParamRectangleEnable));
         ASSERT_TRUE(bool(enable));
         EXPECT_TRUE(enable->getValue()) << id;
+        EXPECT_FALSE(bool(node->getKnobByName(kNativeGeneratorParamInteractive))) << id;
+        EXPECT_FALSE(bool(node->getKnobByName(kNativeGeneratorParamHiDPI))) << id;
 
         RenderedPlane plane;
         ASSERT_TRUE(renderRgba(node, frame(), &plane));

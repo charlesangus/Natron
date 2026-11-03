@@ -78,7 +78,7 @@ struct GeneratorRowChannels {
  * @brief What native image generators share, reproducing the openfx-misc Generator helper
  * (SupportExt/ofxsGenerator) knob for knob: the extent choice (Format, Size, Project, Default),
  * recenter, reformat, the host-managed format choice with its secret size and pixel aspect ratio,
- * bottomLeft/size with normalised defaults (the project extent), interactive, hidpi and
+ * bottomLeft/size with normalised defaults (the project extent), interactive and hidpi (optional) and
  * frameRange; the region of definition, output pixel aspect ratio, output format and time domain
  * they imply; and the rectangle overlay in Size extent.
  *
@@ -90,7 +90,8 @@ public:
     typedef ExtentKnobs::ExtentEnum ExtentEnum;
 
     explicit NativeGenerator(EffectInstance* effect,
-                             ExtentEnum defaultExtent = ExtentKnobs::eExtentDefault);
+                             ExtentEnum defaultExtent = ExtentKnobs::eExtentDefault,
+                             bool interactiveKnobs = true);
 
     /**
      * @brief Declares the generator knobs on page, in the openfx-misc order, with the
@@ -167,6 +168,21 @@ generatorDefaultExtent()
 }
 
 /**
+ * @brief Whether a generator over OP declares the Interactive Update and HiDPI knobs: true unless
+ * OP::kInteractiveKnobs says otherwise.
+ **/
+template <typename OP>
+constexpr bool
+generatorInteractiveKnobs()
+{
+    if constexpr (requires { OP::kInteractiveKnobs; }) {
+        return OP::kInteractiveKnobs;
+    } else {
+        return true;
+    }
+}
+
+/**
  * @brief An image generator made of an Op with no input: an ImageNode over OP and SPEC that
  * holds a NativeGenerator and answers from it the region of definition, preferred metadata,
  * output metadata and frame range. Its knobs are the generator's, then the op's, on one
@@ -189,7 +205,7 @@ public:
 
     explicit GeneratorNode(NodePtr node)
         : Base(node)
-        , _generator(this, generatorDefaultExtent<OP>())
+        , _generator(this, generatorDefaultExtent<OP>(), generatorInteractiveKnobs<OP>())
     {
         if constexpr (requires(OP& o, const NativeGenerator* g) { o.generator = g; }) {
             this->op().generator = &_generator;

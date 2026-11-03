@@ -40,7 +40,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 ExtentPolicy
-generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent)
+generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent,
+                      bool interactiveKnobs)
 {
     ExtentPolicy policy;
 
@@ -48,15 +49,17 @@ generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent)
     policy.reformatToggle = true;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = false;
+    policy.interactiveKnobs = interactiveKnobs;
 
     return policy;
 }
 } // anonymous namespace
 
 NativeGenerator::NativeGenerator(EffectInstance* effect,
-                                 ExtentEnum defaultExtent)
+                                 ExtentEnum defaultExtent,
+                                 bool interactiveKnobs)
     : _effect(effect)
-    , _extentKnobs(effect, generatorExtentPolicy(defaultExtent))
+    , _extentKnobs(effect, generatorExtentPolicy(defaultExtent, interactiveKnobs))
 {
 }
 

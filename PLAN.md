@@ -289,7 +289,7 @@ future core work has solid ground to build on.
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | doing | M182 | bosley-native-nodes | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
-| M191 | Native VectorBlur | doing | M120, M137 | bosley-native-nodes | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
+| M191 | Native VectorBlur | done | M120, M137 | bosley-native-nodes | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
 | M193 | Pipe Hint Highlight Colour | done | M176 |  | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |

@@ -331,7 +331,7 @@ protected:
         return true;
     }
 
-    // Places, as placeGraph() would without a cost model, every task of gpuNodes their effect can render on the GPU.
+    // Places, as placeGraph() would if every region were accepted, every task of gpuNodes their effect can render on the GPU.
     static void placeOnGpu(FrameRun* run,
                            const std::vector<NodePtr>& gpuNodes)
     {

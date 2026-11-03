@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ViewIdx.h"
@@ -64,8 +65,11 @@ void ensureDeclared();
 /**
  * @brief The value of the variable as rfv gives it to the expression being evaluated on this
  * thread (see ExpressionScope): a new reference, Py_None when unset. The GIL must be held.
+ * choiceLabels, when given, receives RFV::getChoiceLabels() of the knob that supplied the value:
+ * the RFVSet variable the context binds the name to, else the project's variable. It is left
+ * empty when that knob is not a Choice or the variable is unset.
  **/
-PyObject* getVariable(const std::string& name);
+PyObject* getVariable(const std::string& name, std::vector<std::string>* choiceLabels = nullptr);
 
 /**
  * @brief The context rfv reads under, on the calling thread, for an expression whose knob is not

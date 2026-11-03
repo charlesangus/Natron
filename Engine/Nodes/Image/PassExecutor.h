@@ -131,7 +131,8 @@ void readChannelRow(const Image* image,
  * @brief One output plane of a render with the images it reads. Image::getBounds() takes the
  * image's lock, which a pool thread must never ask for: behind a writer waiting on an image this
  * render holds for reading, it blocks forever. lock() reads the bounds and takes the accesses on
- * the calling thread, and the pool threads only compute pixel addresses through them.
+ * the calling thread, and the pool threads only compute pixel addresses through them. A job
+ * with no dst only reads, through fillBuffer().
  **/
 struct PlaneJob {
     ImagePtr dst;
@@ -361,9 +362,6 @@ struct Pass {
     // For Gather and Point, whether the lines are columns rather than rows, for a pass that runs
     // down the columns, such as the column sums of a summed-area table.
     bool columns = false;
-    // What gpuCostHint() reports for a list holding this pass: sigma as GpuCostHint defines it.
-    double sigma = 0.;
-    bool recursive = false;
     std::function<PassLineFn()> lineWorker;
     std::function<PassRowFn(const PassScratch&)> rowWorker;
 
@@ -408,6 +406,8 @@ struct PassGpuIO {
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
     std::vector<GpuImageView> inputs;
+    // The layers getGpuExtraInputLayers() adds, each cropped to its input's region of definition.
+    std::vector<GpuLayerInput> layerInputs;
     bool maskApplied = false;
     GpuImageView mask;
     int maskComponent = -1;
@@ -476,12 +476,6 @@ RectI passListSourceRoI(const RectI& rect, const PassList& list) WARN_UNUSED_RET
  * the grow sums, unchanged when it is empty.
  **/
 RectI passListRoD(const RectI& srcRoD, const PassList& list) WARN_UNUSED_RETURN;
-
-/**
- * @brief The largest sigma of the list's passes and whether any is recursive; empty for a list
- * with no pass reporting a sigma.
- **/
-std::optional<GpuCostHint> passListCostHint(const PassList& list) WARN_UNUSED_RETURN;
 
 bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
 

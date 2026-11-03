@@ -150,11 +150,12 @@ struct BlurOp {
                     const PassContext& context) const;
 
     /**
-     * @brief sigma = size / 2.4 of the larger axis at the context's scale, the filter and whether
-     * it is one of the IIR Gaussians, even when the blur is an identity.
+     * @brief The Filter weight of the larger axis's size at the context's scale for the filters
+     * whose cost grows with it; empty for the IIR Gaussians, whose cost does not, and so for the
+     * plain Filter weight.
      **/
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobDoubleWPtr size;
     KnobChoiceWPtr filter;

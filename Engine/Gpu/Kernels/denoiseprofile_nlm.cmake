@@ -1,0 +1,1 @@
+slang_add_kernel(denoiseprofile_nlm Kernels/denoiseprofile_nlm.slang ENTRY denoiseprofile_nlm REGISTRY NatronGpu)

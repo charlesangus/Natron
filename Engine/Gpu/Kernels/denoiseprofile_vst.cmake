@@ -1,0 +1,2 @@
+slang_add_kernel(denoiseprofile_precondition Kernels/denoiseprofile_vst.slang ENTRY denoiseprofile_precondition REGISTRY NatronGpu)
+slang_add_kernel(denoiseprofile_write Kernels/denoiseprofile_vst.slang ENTRY denoiseprofile_write REGISTRY NatronGpu)

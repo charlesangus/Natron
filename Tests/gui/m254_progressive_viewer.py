@@ -139,6 +139,8 @@ try:
         action = submenu_of(menu, "Renderer")
         if action is None:
             return None
+        # The submenu's wrapper lives only as long as the action's.
+        _held.append(action)
         sub = action.menu()
         _held.append(sub)
         menu.setActiveAction(action)
@@ -158,6 +160,8 @@ try:
         for tab in widgets_of("ViewerTab"):
             w = tab.findChild(cls, name)
             if w is not None:
+                # A child's wrapper lives only as long as its parent's.
+                _held.append(tab)
                 _held.append(w)
                 return w
         return None

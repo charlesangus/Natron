@@ -670,6 +670,7 @@ RawInputColor::deriveOutputMetadata(double time,
                                     ViewIdx view)
 {
     ImageMetadata metadata = ImageNode<RawInputColorOp>::deriveOutputMetadata(time, view);
+    RawMetadata::setInputColorApplied(&metadata);
     const std::optional<std::array<double, 3>> correction = RawMetadata::getWbLateCorrection(metadata);
     const std::optional<std::array<double, 3>> d65 = RawMetadata::getWbD65Coeffs(metadata);
 

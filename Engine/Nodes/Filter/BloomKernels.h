@@ -29,8 +29,10 @@
 #include "Global/Macros.h"
 
 #include <memory>
+#include <optional>
 #include <vector>
 
+#include "Engine/GpuWeight.h"
 #include "Engine/Nodes/Filter/BlurKernels.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 
@@ -83,6 +85,13 @@ Settings normalised(const Settings& settings) WARN_UNUSED_RETURN;
  * 0.1 for the recursive Gaussians, no FIR sample, a box of at most 1 pixel).
  **/
 bool isIdentity(const Settings& settings) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Empty for the Gaussian (FIR), whose pyramid bounds the cost, and the recursive Gaussians,
+ * whose cost does not grow with the size: the plain Filter weight. The other filters run at full
+ * resolution, so their weight scales with the largest blur's larger axis.
+ **/
+std::optional<GpuWeight> gpuWeight(const Settings& settings) WARN_UNUSED_RETURN;
 
 struct Plan;
 using PlanPtr = std::shared_ptr<const Plan>;

@@ -122,8 +122,8 @@ struct MedianOp {
     /**
      * @brief The radius in pixels at the context's scale.
      **/
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobIntWPtr size;
     KnobDoubleWPtr threshold;

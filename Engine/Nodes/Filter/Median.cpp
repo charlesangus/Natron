@@ -315,15 +315,11 @@ MedianOp::passes(const Params& params,
     return medianPasses(params, context.scale);
 }
 
-std::optional<GpuCostHint>
-MedianOp::costHint(const Params& params,
-                   const PassContext& context) const
+std::optional<GpuWeight>
+MedianOp::gpuWeight(const Params& params,
+                    const PassContext& context) const
 {
-    GpuCostHint hint;
-
-    hint.size = Median::pixelRadius(context.scale, params);
-
-    return hint;
+    return gpuSizeScaledWeight(Median::pixelRadius(context.scale, params));
 }
 
 Median::Median(NodePtr node)

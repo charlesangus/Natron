@@ -197,7 +197,6 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gui-ref)
-            shift
             if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then
                 echo "build.sh: --gui-ref needs a branch name or sha" >&2
                 usage

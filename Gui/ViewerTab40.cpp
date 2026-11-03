@@ -36,15 +36,16 @@
 #include <QCheckBox>
 #include <QToolBar>
 
-#include "Engine/Project.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h" // NodePtr
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-
 
 #include "Gui/Button.h"
 #include "Gui/ChannelsComboBox.h"
@@ -204,6 +205,21 @@ ViewerTab::onPauseViewerButtonClicked(bool clicked)
 }
 
 void
+ViewerTab::editFrameRange(const QString& text,
+                          int first,
+                          int last,
+                          quint64 gestureKey)
+{
+    if (first > last) {
+        return;
+    }
+    editViewerKnobs(text, [this, first, last]() {
+        _imp->setViewerValue<int>(kViewerParamInPoint, first);
+        _imp->setViewerValue<int>(kViewerParamOutPoint, last); }, gestureKey);
+    refreshFrameRangeFromKnobs();
+}
+
+void
 ViewerTab::onPlaybackInButtonClicked()
 {
     SequenceTime curIn, curOut;
@@ -211,9 +227,8 @@ ViewerTab::onPlaybackInButtonClicked()
     _imp->timeLineGui->getBounds(&curIn, &curOut);
     curIn = (SequenceTime)_imp->timeLineGui->getTimeline()->currentFrame();
     curIn = std::min(curIn, curOut);
-    setTimelineBounds(curIn, curOut);
+    editFrameRange(tr("In Point"), curIn, curOut, 0);
     _imp->timeLineGui->recenterOnBounds();
-    onTimelineBoundariesChanged(curIn, curOut);
 }
 
 void
@@ -224,9 +239,8 @@ ViewerTab::onPlaybackOutButtonClicked()
     _imp->timeLineGui->getBounds(&curIn, &curOut);
     curOut = (SequenceTime)_imp->timeLineGui->getTimeline()->currentFrame();
     curOut = std::max(curIn, curOut);
-    setTimelineBounds(curIn, curOut);
+    editFrameRange(tr("Out Point"), curIn, curOut, 0);
     _imp->timeLineGui->recenterOnBounds();
-    onTimelineBoundariesChanged(curIn, curOut);
 }
 
 void
@@ -237,9 +251,8 @@ ViewerTab::onPlaybackInSpinboxValueChanged(double value)
     _imp->timeLineGui->getBounds(&curIn, &curOut);
     curIn = (SequenceTime)value;
     curIn = std::min(curIn, curOut);
-    setTimelineBounds(curIn, curOut);
+    editFrameRange(tr("In Point"), curIn, curOut, _imp->playBackInputSpinbox->getGestureKey());
     _imp->timeLineGui->recenterOnBounds();
-    onTimelineBoundariesChanged(curIn, curOut);
 }
 
 void
@@ -250,9 +263,8 @@ ViewerTab::onPlaybackOutSpinboxValueChanged(double value)
     _imp->timeLineGui->getBounds(&curIn, &curOut);
     curOut = (SequenceTime)value;
     curOut = std::max(curIn, curOut);
-    setTimelineBounds(curIn, curOut);
+    editFrameRange(tr("Out Point"), curIn, curOut, _imp->playBackOutputSpinbox->getGestureKey());
     _imp->timeLineGui->recenterOnBounds();
-    onTimelineBoundariesChanged(curIn, curOut);
 }
 
 void
@@ -260,7 +272,6 @@ ViewerTab::setFrameRange(int left,
                          int right)
 {
     setTimelineBounds(left, right);
-    onTimelineBoundariesChanged(left, right);
     _imp->timeLineGui->recenterOnBounds();
 }
 
@@ -268,49 +279,40 @@ void
 ViewerTab::onTimelineBoundariesChanged(SequenceTime first,
                                        SequenceTime second)
 {
-    _imp->playBackInputSpinbox->setValue(first);
-    _imp->playBackOutputSpinbox->setValue(second);
-
-
-    abortViewersAndRefresh();
+    // A drag on the timeline is one undo entry; the timeline following the project's frame range
+    // is not an edit of its own.
+    if (_imp->timelineBoundsGesture.isOpen()) {
+        editFrameRange(tr("Frame Range"), first, second, _imp->timelineBoundsGesture.key());
+    } else {
+        setTimelineBounds(first, second);
+    }
 }
 
 void
 ViewerTab::onCanSetFPSLabelClicked(bool toggled)
 {
-    _imp->canEditFpsBox->setChecked(toggled);
     onCanSetFPSClicked(toggled);
 }
 
 void
 ViewerTab::onCanSetFPSClicked(bool toggled)
 {
-    _imp->fpsBox->setEnabled(toggled);
-    {
-        QMutexLocker l(&_imp->fpsLockedMutex);
-        _imp->fpsLocked = !toggled;
-    }
-
-    if (toggled) {
-        onSpinboxFpsChangedInternal(_imp->userFps);
-    } else {
-        refreshFPSBoxFromClipPreferences();
-    }
+    editViewerKnobs(tr("Enable Fps"), [this, toggled]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableFps, toggled);
+    });
+    refreshFpsFromKnobs();
 }
 
 void
 ViewerTab::setFPSLocked(bool fpsLocked)
 {
-    _imp->canEditFpsBox->setChecked(!fpsLocked);
-    onCanSetFPSClicked(!fpsLocked);
+    _imp->setViewerValue<bool>(kViewerParamEnableFps, !fpsLocked);
 }
 
 bool
 ViewerTab::isFPSLocked() const
 {
-    QMutexLocker k(&_imp->fpsLockedMutex);
-
-    return _imp->fpsLocked;
+    return !_imp->viewerValue<bool>(kViewerParamEnableFps, false);
 }
 
 void
@@ -677,56 +679,35 @@ ViewerTab::onPickerButtonClicked(bool clicked)
 void
 ViewerTab::onCheckerboardButtonClicked()
 {
-    {
-        QMutexLocker l(&_imp->checkerboardMutex);
-        _imp->checkerboardEnabled = !_imp->checkerboardEnabled;
-    }
-    _imp->checkerboardButton->setDown(_imp->checkerboardEnabled);
-    _imp->viewer->redraw();
+    const bool enabled = !isCheckerboardEnabled();
+
+    editViewerKnobs(tr("Enable Checkerboard"), [this, enabled]() {
+        _imp->setViewerValue<bool>(kViewerParamCheckerboard, enabled);
+    });
+    refreshFromViewerKnob(kViewerParamCheckerboard);
 }
 
 bool
 ViewerTab::isCheckerboardEnabled() const
 {
-    QMutexLocker l(&_imp->checkerboardMutex);
-
-    return _imp->checkerboardEnabled;
+    return _imp->viewerValue<bool>(kViewerParamCheckerboard, false);
 }
 
 void
 ViewerTab::setCheckerboardEnabled(bool enabled)
 {
-    {
-        QMutexLocker l(&_imp->checkerboardMutex);
-        _imp->checkerboardEnabled = enabled;
-    }
-    _imp->checkerboardButton->setDown(enabled);
-    _imp->checkerboardButton->setChecked(enabled);
-}
-
-void
-ViewerTab::onSpinboxFpsChangedInternal(double fps)
-{
-    if ( !getGui() ) {
-        //might be caled from a focus out event when leaving gui
-        return;
-    }
-    _imp->fpsBox->setValue(fps);
-    _imp->viewerNode->getRenderEngine()->setDesiredFPS(fps);
-    {
-        QMutexLocker k(&_imp->fpsMutex);
-        _imp->fps = fps;
-    }
+    _imp->setViewerValue<bool>(kViewerParamCheckerboard, enabled);
 }
 
 void
 ViewerTab::onSpinboxFpsChanged(double fps)
 {
-    {
-        QMutexLocker k(&_imp->fpsMutex);
-        _imp->userFps = fps;
+    if ( !getGui() ) {
+        // A focus out event can reach the box while the gui is closing.
+        return;
     }
-    onSpinboxFpsChangedInternal(fps);
+    editViewerKnobs(tr("Desired Fps"), [this, fps]() { _imp->setViewerValue<double>(kViewerParamFps, fps); }, _imp->fpsBox->getGestureKey());
+    refreshFpsFromKnobs();
 }
 
 double
@@ -740,13 +721,7 @@ ViewerTab::getDesiredFps() const
 void
 ViewerTab::setDesiredFps(double fps)
 {
-    {
-        QMutexLocker l(&_imp->fpsMutex);
-        _imp->fps = fps;
-        _imp->userFps = fps;
-    }
-    _imp->fpsBox->setValue(fps);
-    _imp->viewerNode->getRenderEngine()->setDesiredFPS(fps);
+    _imp->setViewerValue<double>(kViewerParamFps, fps);
 }
 
 void
@@ -800,7 +775,11 @@ void
 ViewerTab::setTimelineBounds(int left,
                              int right)
 {
-    _imp->timeLineGui->setBoundaries(left, right);
+    if (left > right) {
+        return;
+    }
+    _imp->setViewerValue<int>(kViewerParamInPoint, left);
+    _imp->setViewerValue<int>(kViewerParamOutPoint, right);
 }
 
 void
@@ -875,15 +854,6 @@ viewerLayerChoiceOption(const ImageLayerDesc& layer)
     return layer.getLayerOption();
 }
 
-static const ImageLayerDesc&
-viewerLayerToStorage(const ImageLayerDesc& chosen,
-                     const ImageLayerDesc& storageColorLayer)
-{
-    // The combo lists colour views for display; the viewer node itself only knows the storage
-    // plane they alias (its render path fetches by storage ID).
-    return chosen.isColorLayer() ? storageColorLayer : chosen;
-}
-
 // The alpha menu entry, counting the leading "-", of layer's last channel. A colour view's channel
 // is listed under the one view the alpha menu keeps for the stream's layout, and is absent when
 // that layout lacks it.
@@ -911,202 +881,146 @@ viewerAlphaMenuIndexOfLastChannel(const ImageLayerDesc& layer,
     return -1;
 }
 
-// The alpha menu label of the entry carrying the same logical colour channel as label, or label
-// unchanged when it names no colour channel or the stream's layout has no entry on that channel.
-static QString
-viewerListedAlphaLabel(const QString& label,
-                       const std::list<ImageLayerDesc>& alphaComponents)
+// The alpha menu entry, counting the leading "-", whose channel ID is alphaID. A colour channel saved
+// under another view (rgba.R after the stream became RGB) is the entry for the same logical channel.
+// -1 when the menu lists no such channel.
+static int
+viewerAlphaMenuIndexOfID(const std::string& alphaID,
+                         const std::list<ImageLayerDesc>& alphaComponents)
 {
-    const std::string text = label.toStdString();
-    const std::string::size_type dot = text.rfind('.');
-    if (dot == std::string::npos) {
-        return label;
+    int index = 1;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
+        for (int i = 0; i < (int)it->getChannels().size(); ++i, ++index) {
+            if (it->getChannelOption(i).id == alphaID) {
+                return index;
+            }
+        }
     }
-    const std::string viewID = text.substr(0, dot);
+
+    const std::string::size_type dot = alphaID.rfind('.');
+    if (dot == std::string::npos) {
+        return -1;
+    }
+    const std::string viewID = alphaID.substr(0, dot);
     if (!ImageLayerDesc::isColorViewID(viewID)) {
-        return label;
+        return -1;
     }
     const std::vector<std::string>& viewChannels = ImageLayerDesc::getColorView(viewID).getChannels();
-    const std::vector<std::string>::const_iterator found = std::find(viewChannels.begin(), viewChannels.end(), text.substr(dot + 1));
+    const std::vector<std::string>::const_iterator found = std::find(viewChannels.begin(), viewChannels.end(), alphaID.substr(dot + 1));
     if (found == viewChannels.end()) {
-        return label;
+        return -1;
     }
     const int bit = ImageLayerDesc::colorViewChannelBit(viewID, (int)(found - viewChannels.begin()));
 
+    index = 1;
     for (std::list<ImageLayerDesc>::const_iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
-        if (!it->isColorLayer()) {
-            continue;
+        if (it->isColorLayer()) {
+            const int channel = ImageLayerDesc::colorViewChannelIndex(it->getLayerID(), bit);
+
+            return (channel == -1) ? -1 : (index + channel);
         }
-        const int channel = ImageLayerDesc::colorViewChannelIndex(it->getLayerID(), bit);
-        if (channel != -1) {
-            return QString::fromUtf8(it->getChannelOption(channel).label.c_str());
-        }
+        index += (int)it->getChannels().size();
     }
 
-    return label;
+    return -1;
+}
+
+// The channel ID of an alpha menu entry, counting the leading "-"; empty for "-" or past the end.
+static std::string
+viewerAlphaIDAtMenuIndex(int menuIndex,
+                         const std::list<ImageLayerDesc>& alphaComponents)
+{
+    int index = 1;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
+        const int count = (int)it->getChannels().size();
+        if (menuIndex < index + count) {
+            return (menuIndex >= index) ? it->getChannelOption(menuIndex - index).id : std::string();
+        }
+        index += count;
+    }
+
+    return std::string();
 }
 
 void
 ViewerTab::autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen)
 {
     if (chosen.getNumComponents() == 1) {
-        _imp->viewerChannels->setCurrentIndex_no_emit(5);
-        setDisplayChannels(5, true);
+        writeDisplayChannels(5, true);
         _imp->viewerChannelsAutoswitchedToAlpha = true;
-    } else if (_imp->viewerChannelsAutoswitchedToAlpha && (chosen.getNumComponents() > 1) && (_imp->viewerChannels->activeIndex() == 5)) {
-        _imp->viewerChannels->setCurrentIndex_no_emit(1);
-        setDisplayChannels(1, true);
+    } else if (_imp->viewerChannelsAutoswitchedToAlpha && (chosen.getNumComponents() > 1) && (_imp->viewerValue<int>(kViewerParamDisplayChannels, 1) == 5)) {
+        writeDisplayChannels(1, true);
+        _imp->viewerChannelsAutoswitchedToAlpha = false;
     }
 }
 
 void
-ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
+ViewerTab::refreshLayerAndAlphaChannelComboBox()
 {
     TimeLinePtr timeline = getTimeLine();
 
-    refreshLayerAndAlphaChannelComboBoxAtTime(timeline ? timeline->currentFrame() : 0., keepAbsentSelection);
+    refreshLayerAndAlphaChannelComboBoxAtTime(timeline ? timeline->currentFrame() : 0.);
 }
 
 void
-ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
-                                                     bool keepAbsentSelection)
+ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time)
 {
-    if (!_imp->viewerNode) {
+    KnobLayerSelectPtr layerKnob = _imp->viewerKnob<KnobLayerSelect>(kViewerParamLayer);
+    KnobChannelSelectPtr alphaKnob = _imp->viewerKnob<KnobChannelSelect>(kViewerParamAlphaChannel);
+    if (!layerKnob || !alphaKnob) {
         return;
     }
 
-    QString layerCurChoice = _imp->layerChoice->getCurrentIndexText();
-    QString alphaCurChoice = _imp->alphaChannelChoice->getCurrentIndexText();
     _imp->layerMenuTime = time;
     _imp->layerMenuView = _imp->viewerNode->getViewerCurrentView();
     std::list<ImageLayerDesc> components;
     std::list<ImageLayerDesc> alphaComponents;
-    ImageLayerDesc storageColorLayer;
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, &storageColorLayer);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, NULL);
 
-    // A colour channel picked under another view (rgba.R after the stream became RGB) is the
-    // listed entry for the same channel, not an absent selection.
-    alphaCurChoice = viewerListedAlphaLabel(alphaCurChoice, alphaComponents);
-    const QString alphaChoiceBefore = alphaCurChoice;
-
+    const QString noChoice = QString::fromUtf8("-");
     _imp->layerChoice->clear();
     _imp->alphaChannelChoice->clear();
+    _imp->layerChoice->addItem(noChoice);
+    _imp->alphaChannelChoice->addItem(noChoice);
 
-    _imp->layerChoice->addItem( QString::fromUtf8("-") );
-    _imp->alphaChannelChoice->addItem( QString::fromUtf8("-") );
-
-    std::list<ImageLayerDesc>::iterator foundColorIt = components.end();
-    std::list<ImageLayerDesc>::iterator foundOtherIt = components.end();
-    std::list<ImageLayerDesc>::iterator foundCurIt = components.end();
-    std::list<ImageLayerDesc>::iterator foundAlphaColorIt = alphaComponents.end();
-    std::list<ImageLayerDesc>::iterator foundCurAlphaIt = alphaComponents.end();
-    std::string foundAlphaChannel;
-
-    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
-
-        ChoiceOption option = viewerLayerChoiceOption(*it);
-        _imp->layerChoice->addItem(QString::fromUtf8(option.label.c_str()));
-
-        if (option.label == layerCurChoice.toStdString()) {
-            foundCurIt = it;
+    // The menus show what the knobs hold and never write them: a saved layer or channel the input
+    // lacks stays in the knob, shown as an unlisted entry, while the viewer renders without it.
+    const std::string layerID = layerKnob->getLayer();
+    int layerIndex = layerID.empty() ? 0 : -1;
+    int firstColorIndex = -1;
+    int index = 1;
+    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++index) {
+        _imp->layerChoice->addItem(QString::fromUtf8(viewerLayerChoiceOption(*it).label.c_str()));
+        if ((layerIndex == -1) && (it->getLayerID() == layerID)) {
+            layerIndex = index;
         }
-
-        if (it->isColorLayer()) {
-            // The colour views are always inserted rgba, rgb, alpha, (xy): keep the first (rgba)
-            // as the fallback default, not whichever one this loop reaches last.
-            if (foundColorIt == components.end()) {
-                foundColorIt = it;
-            }
-        } else {
-            foundOtherIt = it;
+        if (it->isColorLayer() && (firstColorIndex == -1)) {
+            firstColorIndex = index;
         }
+    }
+    // A colour view always resolves to the stream's colour plane, whatever views the stream lists.
+    if ((layerIndex == -1) && ImageLayerDesc::isColorViewID(layerID)) {
+        layerIndex = firstColorIndex;
+    }
+    if (layerIndex != -1) {
+        _imp->layerChoice->setCurrentIndex_no_emit(layerIndex);
+    } else {
+        _imp->layerChoice->setCurrentText_no_emit(QString::fromUtf8(layerID.c_str()));
     }
 
     for (std::list<ImageLayerDesc>::iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
-        if (it->isColorLayer() && (foundAlphaColorIt == alphaComponents.end())) {
-            foundAlphaColorIt = it;
-        }
-
-        const std::vector<std::string>& channels = it->getChannels();
-        for (U32 i = 0; i < channels.size(); ++i) {
-            ChoiceOption chanOpt = it->getChannelOption(i);
-
-            if (chanOpt.label == alphaCurChoice.toStdString()) {
-                foundCurAlphaIt = it;
-                foundAlphaChannel = channels[i];
-            }
-            _imp->alphaChannelChoice->addItem(QString::fromUtf8(chanOpt.label.c_str()));
+        for (int i = 0; i < (int)it->getChannels().size(); ++i) {
+            _imp->alphaChannelChoice->addItem(QString::fromUtf8(it->getChannelOption(i).label.c_str()));
         }
     }
-
-    const QString noChoice = QString::fromUtf8("-");
-    const bool keepLayer = keepAbsentSelection && (foundCurIt == components.end()) && !layerCurChoice.isEmpty() && (layerCurChoice != noChoice);
-    const bool keepAlpha = keepAbsentSelection && (foundCurAlphaIt == alphaComponents.end()) && !alphaChoiceBefore.isEmpty() && (alphaChoiceBefore != noChoice);
-
-    if (keepLayer) {
-        _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
+    const std::string alphaID = alphaKnob->get();
+    const int alphaIndex = alphaID.empty() ? 0 : viewerAlphaMenuIndexOfID(alphaID, alphaComponents);
+    if (alphaIndex != -1) {
+        _imp->alphaChannelChoice->setCurrentIndex_no_emit(alphaIndex);
     } else {
-        if ((layerCurChoice == QString::fromUtf8("-")) || layerCurChoice.isEmpty() || (foundCurIt == components.end())) {
-            // Try to find color layer, otherwise fallback on any other layer
-            if (foundColorIt != components.end()) {
-                layerCurChoice = QString::fromUtf8(viewerLayerChoiceOption(*foundColorIt).label.c_str());
-                foundCurIt = foundColorIt;
-            } else if (foundOtherIt != components.end()) {
-                layerCurChoice = QString::fromUtf8(viewerLayerChoiceOption(*foundOtherIt).label.c_str());
-                foundCurIt = foundOtherIt;
-            } else {
-                layerCurChoice = QString::fromUtf8("-");
-                foundCurIt = components.end();
-            }
-        }
-
-        if (foundCurIt == components.end()) {
-            _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
-            _imp->viewerNode->setActiveLayer(ImageLayerDesc::getNoneComponents(), false);
-        } else {
-            int layerIdx = _imp->layerChoice->itemIndex(layerCurChoice);
-            assert(layerIdx != -1);
-            _imp->layerChoice->setCurrentIndex_no_emit(layerIdx);
-            autoSwitchDisplayChannelsForLayer(*foundCurIt);
-            _imp->viewerNode->setActiveLayer(viewerLayerToStorage(*foundCurIt, storageColorLayer), false);
-        }
-    }
-
-    if (keepAlpha) {
-        alphaCurChoice = alphaChoiceBefore;
-        _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
-    } else {
-        if ((alphaCurChoice == QString::fromUtf8("-")) || alphaCurChoice.isEmpty() || (foundCurAlphaIt == alphaComponents.end())) {
-            /// Try to find color layer, otherwise fallback on any other layer
-            if ((foundAlphaColorIt != alphaComponents.end()) && ((foundAlphaColorIt->getChannels().size() == 4) || (foundAlphaColorIt->getChannels().size() == 1))) {
-                std::size_t lastComp = foundAlphaColorIt->getChannels().size() - 1;
-
-                alphaCurChoice = QString::fromUtf8(foundAlphaColorIt->getLayerLabel().c_str())
-                    + QLatin1Char('.') + QString::fromUtf8(foundAlphaColorIt->getChannels()[lastComp].c_str());
-                foundAlphaChannel = foundAlphaColorIt->getChannels()[lastComp];
-                foundCurAlphaIt = foundAlphaColorIt;
-            } else {
-                alphaCurChoice = QString::fromUtf8("-");
-                foundCurAlphaIt = alphaComponents.end();
-            }
-        }
-
-        if ((foundCurAlphaIt == alphaComponents.end()) || foundAlphaChannel.empty()) {
-            _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
-            _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), false);
-        } else {
-            int layerIdx = _imp->alphaChannelChoice->itemIndex(alphaCurChoice);
-            assert(layerIdx != -1);
-            _imp->alphaChannelChoice->setCurrentIndex_no_emit(layerIdx);
-
-            _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*foundCurAlphaIt, storageColorLayer), foundAlphaChannel, false);
-        }
-    }
-
-    {
-        QMutexLocker k(&_imp->currentLayerMutex);
-        _imp->currentLayerChoice = layerCurChoice;
-        _imp->currentAlphaLayerChoice = alphaCurChoice;
+        _imp->alphaChannelChoice->setCurrentText_no_emit(QString::fromUtf8(alphaID.c_str()));
     }
 } // ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime
 
@@ -1114,202 +1028,143 @@ void
 ViewerTab::onAlphaChannelComboChanged(int index)
 {
     std::list<ImageLayerDesc> components;
-    ImageLayerDesc storageColorLayer;
 
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, NULL, &components, &storageColorLayer);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, NULL, &components, NULL);
+    const std::string alphaID = viewerAlphaIDAtMenuIndex(index, components);
 
-    {
-        QMutexLocker k(&_imp->currentLayerMutex);
-        _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();
-    }
-    int i = 1; // because of the "-" choice
-    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
-        const std::vector<std::string>& channels = it->getChannels();
-        if ( index >= ( (int)channels.size() + i ) ) {
-            i += channels.size();
-        } else {
-            for (U32 j = 0; j < channels.size(); ++j, ++i) {
-                if (i == index) {
-                    _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*it, storageColorLayer), channels[j], true);
-
-                    return;
-                }
-            }
+    editViewerKnobs(tr("Alpha Channel"), [this, alphaID]() {
+        KnobChannelSelectPtr knob = _imp->viewerKnob<KnobChannelSelect>(kViewerParamAlphaChannel);
+        if (knob && (knob->get() != alphaID)) {
+            knob->set(alphaID);
         }
-    }
-    _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), true);
+    });
+    refreshLayerAndAlphaChannelComboBox();
 }
 
 void
 ViewerTab::onLayerComboChanged(int index)
 {
     std::list<ImageLayerDesc> components;
-    ImageLayerDesc storageColorLayer;
-
     std::list<ImageLayerDesc> alphaComponents;
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, &storageColorLayer);
-    {
-        QMutexLocker k(&_imp->currentLayerMutex);
-        _imp->currentLayerChoice = _imp->layerChoice->getCurrentIndexText();
-    }
+
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, NULL);
     if ( ( index >= (int)(components.size() + 1) ) || (index < 0) ) {
         qDebug() << "ViewerTab::onLayerComboChanged: invalid index";
 
         return;
     }
-    int i = 1; // because of the "-" choice
-    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++i) {
-        if (i == index) {
-            const ImageLayerDesc& storage = viewerLayerToStorage(*it, storageColorLayer);
-            const std::vector<std::string>& channels = it->getChannels();
+    std::list<ImageLayerDesc>::iterator chosen = components.begin();
+    std::advance(chosen, std::max(index - 1, 0));
+    const bool none = (index == 0);
 
-            // A single-channel layer is shown through the A display, which reads the alpha menu's
-            // channel rather than the layer's: point the alpha menu at that one channel too, or
-            // picking the alpha view would keep showing the colour image.
-            const int alphaIndex = ((channels.size() == 4) || (channels.size() == 1)) ? viewerAlphaMenuIndexOfLastChannel(*it, alphaComponents) : -1;
-            if (alphaIndex != -1) {
-                _imp->alphaChannelChoice->setCurrentIndex_no_emit(alphaIndex);
-                {
-                    QMutexLocker k(&_imp->currentLayerMutex);
-                    _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();
-                }
-                _imp->viewerNode->setAlphaChannel(storage, channels.back(), true);
-            } else if (ImageLayerDesc::isColorViewID(it->getLayerID()) && (storage.getNumComponents() > 0) && !channels.empty()) {
-                // The stream lacks this view's last channel. Requesting it by name makes the
-                // viewer resolve it to no channel and read zero; the menu shows it unlisted.
-                const QString absentLabel = QString::fromUtf8(it->getChannelOption((int)channels.size() - 1).label.c_str());
-                _imp->alphaChannelChoice->setCurrentText_no_emit(absentLabel);
-                {
-                    QMutexLocker k(&_imp->currentLayerMutex);
-                    _imp->currentAlphaLayerChoice = absentLabel;
-                }
-                _imp->viewerNode->setAlphaChannel(storage, channels.back(), true);
+    editViewerKnobs(tr("Layer"), [&]() {
+        KnobLayerSelectPtr layerKnob = _imp->viewerKnob<KnobLayerSelect>(kViewerParamLayer);
+        KnobChannelSelectPtr alphaKnob = _imp->viewerKnob<KnobChannelSelect>(kViewerParamAlphaChannel);
+        if (!layerKnob || !alphaKnob) {
+            return;
+        }
+        if (none) {
+            if (!layerKnob->getLayer().empty()) {
+                layerKnob->setLayer(std::string());
             }
-            autoSwitchDisplayChannelsForLayer(*it);
-            _imp->viewerNode->setActiveLayer(storage, true);
+            if (!alphaKnob->get().empty()) {
+                alphaKnob->setNone();
+            }
 
             return;
         }
-    }
-
-    _imp->alphaChannelChoice->setCurrentIndex_no_emit(0);
-    _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), false);
-    _imp->viewerNode->setActiveLayer(ImageLayerDesc::getNoneComponents(), true);
-}
-
-QString
-ViewerTab::getCurrentLayerName() const
-{
-    QMutexLocker k(&_imp->currentLayerMutex);
-
-    return _imp->currentLayerChoice;
-}
-
-QString
-ViewerTab::getCurrentAlphaLayerName() const
-{
-    QMutexLocker k(&_imp->currentLayerMutex);
-
-    return _imp->currentAlphaLayerChoice;
-}
-
-void
-ViewerTab::setCurrentLayers(const QString& layer,
-                            const QString& alphaLayer)
-{
-    _imp->layerChoice->setCurrentText_no_emit(layer);
-    _imp->alphaChannelChoice->setCurrentText_no_emit(alphaLayer);
+        const std::vector<std::string>& channels = chosen->getChannels();
+        // A single-channel layer is shown through the A display, which reads the alpha channel
+        // rather than the layer: point the alpha channel at that one channel too, or picking the
+        // alpha view would keep showing the colour image. When the stream lacks a colour view's
+        // last channel, the alpha channel names it anyway and the viewer reads zero.
+        std::string alphaID;
+        if ((channels.size() == 4) || (channels.size() == 1)) {
+            const int alphaIndex = viewerAlphaMenuIndexOfLastChannel(*chosen, alphaComponents);
+            if (alphaIndex != -1) {
+                alphaID = viewerAlphaIDAtMenuIndex(alphaIndex, alphaComponents);
+            }
+        }
+        if (alphaID.empty() && ImageLayerDesc::isColorViewID(chosen->getLayerID()) && !channels.empty()) {
+            alphaID = chosen->getChannelOption((int)channels.size() - 1).id;
+        }
+        if (!alphaID.empty() && (alphaKnob->get() != alphaID)) {
+            alphaKnob->set(alphaID);
+        }
+        autoSwitchDisplayChannelsForLayer(*chosen);
+        if (layerKnob->getLayer() != chosen->getLayerID()) {
+            layerKnob->setLayer(chosen->getLayerID());
+        }
+    });
     refreshLayerAndAlphaChannelComboBox();
 }
 
 void
 ViewerTab::onGainToggled(bool clicked)
 {
-    double value;
+    editViewerKnobs(tr("Enable Gain"), [this, clicked]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableGain, clicked);
+    });
+    // The click toggled the button; the knob may have refused the change.
+    refreshColorControlsFromKnobs();
+}
 
-    if (clicked) {
-        value = _imp->lastFstopValue;
-    } else {
-        value = 0;
-    }
-    _imp->toggleGainButton->setDown(clicked);
-    _imp->gainBox->setValue(value);
-    _imp->gainSlider->seekScalePosition(value);
-
-    double gain = std::pow(2, value);
-    _imp->viewer->setGain(gain);
-    _imp->viewerNode->onGainChanged(gain);
+void
+ViewerTab::setGainFromToolbar(double fstop,
+                              quint64 gestureKey)
+{
+    // 0 f-stops switches gain off and keeps the knob's value for re-enabling.
+    editViewerKnobs(tr("Gain"), [this, fstop]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableGain, fstop != 0.);
+        if (fstop != 0.) {
+            _imp->setViewerValue<double>(kViewerParamGain, fstop);
+        } }, gestureKey);
+    refreshColorControlsFromKnobs();
 }
 
 void
 ViewerTab::onGainSliderChanged(double v)
 {
-    if ( !_imp->toggleGainButton->isChecked() ) {
-        _imp->toggleGainButton->setChecked(true);
-        _imp->toggleGainButton->setDown(true);
-    }
-    _imp->gainBox->setValue(v);
-    double gain = std::pow(2, v);
-    _imp->viewer->setGain(gain);
-    _imp->viewerNode->onGainChanged(gain);
-    _imp->lastFstopValue = v;
+    setGainFromToolbar(v, _imp->gainSlider->getGestureKey());
 }
 
 void
 ViewerTab::onGainSpinBoxValueChanged(double v)
 {
-    if ( !_imp->toggleGainButton->isChecked() ) {
-        _imp->toggleGainButton->setChecked(true);
-        _imp->toggleGainButton->setDown(true);
-    }
-    _imp->gainSlider->seekScalePosition(v);
-    double gain = std::pow(2, v);
-    _imp->viewer->setGain(gain);
-    _imp->viewerNode->onGainChanged(gain);
-    _imp->lastFstopValue = v;
+    setGainFromToolbar(v, _imp->gainBox->getGestureKey());
 }
 
 void
 ViewerTab::onGammaToggled(bool clicked)
 {
-    double value;
+    editViewerKnobs(tr("Enable Gamma"), [this, clicked]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableGamma, clicked);
+    });
+    refreshColorControlsFromKnobs();
+}
 
-    if (clicked) {
-        value = _imp->lastGammaValue;
-    } else {
-        value = 1.;
-    }
-    _imp->toggleGammaButton->setDown(clicked);
-    _imp->gammaBox->setValue(value);
-    _imp->gammaSlider->seekScalePosition(value);
-    _imp->viewer->setGamma(value);
-    _imp->viewerNode->onGammaChanged(value);
+void
+ViewerTab::setGammaFromToolbar(double gamma,
+                               quint64 gestureKey)
+{
+    editViewerKnobs(tr("Gamma"), [this, gamma]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableGamma, gamma != 1.);
+        if (gamma != 1.) {
+            _imp->setViewerValue<double>(kViewerParamGamma, gamma);
+        } }, gestureKey);
+    refreshColorControlsFromKnobs();
 }
 
 void
 ViewerTab::onGammaSliderValueChanged(double value)
 {
-    if ( !_imp->toggleGammaButton->isChecked() ) {
-        _imp->toggleGammaButton->setChecked(true);
-        _imp->toggleGammaButton->setDown(true);
-    }
-    _imp->gammaBox->setValue(value);
-    _imp->viewer->setGamma(value);
-    _imp->viewerNode->onGammaChanged(value);
-    _imp->lastGammaValue = value;
+    setGammaFromToolbar(value, _imp->gammaSlider->getGestureKey());
 }
 
 void
 ViewerTab::onGammaSpinBoxValueChanged(double value)
 {
-    if ( !_imp->toggleGammaButton->isChecked() ) {
-        _imp->toggleGammaButton->setChecked(true);
-        _imp->toggleGammaButton->setDown(true);
-    }
-    _imp->gammaSlider->seekScalePosition(value);
-    _imp->viewer->setGamma(value);
-    _imp->viewerNode->onGammaChanged(value);
-    _imp->lastGammaValue = value;
+    setGammaFromToolbar(value, _imp->gammaBox->getGestureKey());
 }
 
 void

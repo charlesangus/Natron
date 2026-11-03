@@ -1069,21 +1069,19 @@ Bilateral::opPassesInputRoI(int inputNb,
     return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
 }
 
-std::optional<GpuCostHint>
-Bilateral::gpuCostHint(double time,
-                       ViewIdx view,
-                       unsigned int mipmapLevel) const
+GpuWeight
+Bilateral::gpuWeight(double time,
+                     ViewIdx view,
+                     unsigned int mipmapLevel) const
 {
     const BilateralParams params = getParams(time, view);
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
     const int radius = (params.mode == eBilateralModeGuided) ? guidedRadius(scale, params) : bilateralRadius(scale, params);
     if ((radius <= 0) || (params.iterations <= 0)) {
-        return std::nullopt;
+        return GpuWeight::filter();
     }
-    GpuCostHint hint;
-    hint.size = radius * params.iterations;
 
-    return hint;
+    return gpuSizeScaledWeight(radius * params.iterations);
 }
 
 bool

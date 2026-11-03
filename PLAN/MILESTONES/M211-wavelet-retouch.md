@@ -164,22 +164,22 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 Analysis (consultant, 2026-11-03): ~95% of the cost is PoissonHeal's 2000 red-black SOR sweeps over every masked pixel, mostly on one thread (work split by 256 runs), rerun from scratch on every pen-motion and offset-drag event, over the full frame (no RoI, no tiles), with full-frame wavelet decomposition whenever Scales > 0. Target: < 100 ms per interactive update on a modest workstation.
 
-- [ ] M211.P8.T1 — Headless bench and render-count test
+- [x] M211.P8.T1 — Headless bench and render-count test
   - files: Tests/Native/NativeRetouchBench_Test.cpp (new), NativeRetouch_Test.cpp
   - approach: call RC::process directly on 2K/4K synthetic images: one 100 px × 800 px heal brush (horizontal and diagonal), render scale 1 and 0.5, Scales 0 and 5, clone + heal; report ms per render. Node-level test counting renders per pen-motion and per offset-drag event.
   - verify: the bench prints per-case timings; the render-count test fails on today's code (several renders per event).
   - size: M
-- [ ] M211.P8.T2 — Multigrid heal solver (CPU)
+- [x] M211.P8.T2 — Multigrid heal solver (CPU)
   - files: Engine/Nodes/Filter/EdgeAware/PoissonHeal.{h,cpp}
   - approach: masked multigrid V-cycles (restriction/prolongation that respect the mask, red-black smoother) solved to convergence; work split by pixel count, not run count. Departs from darktable's unconverged 2000-iteration SOR on large masks (user-approved).
   - verify: NativeRetouch parity references hold within tolerance on small masks; a new test shows the converged residual ≤ SOR's; bench heal ≥ 20× faster.
   - size: L
-- [ ] M211.P8.T3 — Draft heal while dragging, full heal on release
+- [x] M211.P8.T3 — Draft heal while dragging, full heal on release
   - files: Retouch.cpp (setShapeSourceOffset, renderOp), RetouchInteract.cpp
   - approach: one evaluation per gesture tick (group the offset setValues inside begin/endChanges); while a stroke is painted or an offset dragged, render a draft heal (coarse multigrid level / capped cycles, warm-started from the cached previous solution); run the full solve on pen-up. (user, 2026-11-03)
   - verify: render-count test ≤ 1 render per motion event; GUI script passes; the released result equals a fresh full render.
   - size: M
-- [ ] M211.P8.T4 — Region of interest and tiles
+- [x] M211.P8.T4 — Region of interest and tiles
   - files: Retouch.{h,cpp} (getRegionsOfInterest, supportsTiles, renderOp)
   - approach: RoI = render window plus each intersecting shape's source bbox, padded by the wavelet support when Scales > 0; process that crop with mirror indices against the full RoD; supportsTiles true.
   - verify: a cropped render equals the full render within 1e-6.
@@ -259,3 +259,4 @@ Analysis (consultant, 2026-11-03): ~95% of the cost is PoissonHeal's 2000 red-bl
 - 2026-11-02 — P7 at 869042367: Shift-drag brush size via the shared roto interact; click inside a brush stroke selects it, its settings then edit it (stroke points aren't editable, as in RotoPaint; no Transform tab); one Shape Settings tab (old next-shape knobs kept hidden as storage); General Color hidden — a retouch mask uses coverage only (implementer).
 - 2026-11-03 — UAT round 4: UI approved, but performance blocks shipping: a single heal stroke takes seconds to draw on the user's modest workstation (target < 100 ms), and adjusting a clone offset interactively isn't smooth even with the preview downscale. Profile and speed up before merge (user).
 - 2026-11-03 — Performance decisions (user): multigrid heal solved to convergence (departs from darktable's unconverged output on large strokes); draft heal while painting/dragging, full heal on release.
+- 2026-11-03 — P8.T1–T4 committed 9df7cf93f: multigrid-preconditioned CG heal (29.9x vs SOR on a 1000x300 stroke), draft heal while dragging, one render per motion, cropped processing with tiles, bench test. Open: the draft flag is read at render time rather than captured in the hash; the GPU still runs SOR on the whole image; Scales 5 decomposition now dominates (T5).

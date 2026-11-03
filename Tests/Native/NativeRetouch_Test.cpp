@@ -495,7 +495,7 @@ TEST_F(NativeRetouchTest, KnobsMatchDarktableParams)
     expectDouble(node->getKnobByName(kRetouchShapeParamBrushSize), "Shape Brush Size", 100., 1., 4000.);
     expectDouble(node->getKnobByName(kRetouchShapeParamBrushHardness), "Shape Brush Hardness", 0.66, RC::kBrushHardnessMin, 1.);
     expectDouble(node->getKnobByName(kRetouchShapeParamBrushDensity), "Shape Brush Density", 1., 0., 1.);
-    // The Selected Shape group carries a brush's knobs; a Bezier has none of its own.
+    // The node's Shape Settings carry a brush's knobs; a Bezier has none of its own.
     expectChoice(node->getKnobByName(kRetouchShapeParamBrushPressure), "Shape Brush Pressure", (int)RC::eBrushPressureOff, pressures);
     EXPECT_FALSE(bool(shape->getKnobByName(kRetouchShapeParamBrushSize)));
 
@@ -1268,6 +1268,133 @@ TEST_F(NativeRetouchTest, BrushShapeTakesTheNodeSettingsAndRasterizes)
     EXPECT_FLOAT_EQ(0.f, at(12, (int)(y / 2) + 2));
 }
 
+// The node has one set of shape knobs: with nothing selected they set what the next shape gets,
+// with a shape selected they show and edit that shape alone, and deselecting brings the next
+// shape's settings back. The General tab's Roto Color, which a retouch mask ignores, is hidden.
+TEST_F(NativeRetouchTest, ShapeSettingsEditTheSelectionOrTheNextShape)
+{
+    NodePtr node = makeRetouch(makeSource(false), 2);
+    ASSERT_TRUE(bool(node));
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    ASSERT_TRUE(bool(context->getColorKnob()));
+    EXPECT_TRUE(context->getColorKnob()->getIsSecret());
+    const char* const nextShapeKnobs[] = {
+        kRetouchParamAlgorithm,
+        kRetouchParamBlurType,
+        kRetouchParamBlurRadius,
+        kRetouchParamFillMode,
+        kRetouchParamFillColor,
+        kRetouchParamFillBrightness,
+        kRetouchParamBrushSize,
+        kRetouchParamBrushHardness,
+        kRetouchParamBrushDensity,
+        kRetouchParamBrushPressure,
+    };
+    for (const char* name : nextShapeKnobs) {
+        KnobIPtr knob = node->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_TRUE(knob->getIsSecret()) << name;
+    }
+
+    KnobChoicePtr shownAlgorithm = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kRetouchShapeParamAlgorithm));
+    KnobDoublePtr shownSize = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchShapeParamBrushSize));
+    KnobChoicePtr nextAlgorithm = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kRetouchParamAlgorithm));
+    KnobDoublePtr nextSize = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchParamBrushSize));
+    KnobIPtr shownScale = node->getKnobByName(kRetouchShapeParamScale);
+    ASSERT_TRUE(shownAlgorithm && shownSize && nextAlgorithm && nextSize && shownScale);
+    EXPECT_FALSE(shownAlgorithm->getIsSecret());
+    EXPECT_TRUE(shownAlgorithm->isEnabled(0));
+    EXPECT_TRUE(shownSize->isEnabled(0));
+    EXPECT_FALSE(shownScale->isEnabled(0));
+
+    shownAlgorithm->setValue((int)RC::eAlgorithmBlur);
+    shownSize->setValue(12.);
+    EXPECT_EQ((int)RC::eAlgorithmBlur, nextAlgorithm->getValue());
+    EXPECT_DOUBLE_EQ(12., nextSize->getValue());
+    RotoStrokeItemPtr first = makeBrushShape(node, { QPointF(10., 24.), QPointF(25., 24.), QPointF(40., 24.) });
+    ASSERT_TRUE(bool(first));
+    KnobChoicePtr firstAlgorithm = RetouchTest::shapeKnob<KnobChoice>(first, kRetouchShapeParamAlgorithm);
+    KnobDoublePtr firstSize = RetouchTest::shapeKnob<KnobDouble>(first, kRetouchShapeParamBrushSize);
+    ASSERT_TRUE(firstAlgorithm && firstSize);
+    EXPECT_EQ((int)RC::eAlgorithmBlur, firstAlgorithm->getValue());
+    EXPECT_DOUBLE_EQ(12., firstSize->getValue());
+
+    shownAlgorithm->setValue((int)RC::eAlgorithmFill);
+    shownSize->setValue(30.);
+    RotoStrokeItemPtr second = makeBrushShape(node, { QPointF(10., 60.), QPointF(40., 60.) });
+    ASSERT_TRUE(bool(second));
+    KnobDoublePtr secondSize = RetouchTest::shapeKnob<KnobDouble>(second, kRetouchShapeParamBrushSize);
+    ASSERT_TRUE(bool(secondSize));
+    EXPECT_DOUBLE_EQ(30., secondSize->getValue());
+
+    // A brush size gesture writes the next shape's size, which the shown knob follows.
+    nextSize->setValue(35.);
+    EXPECT_DOUBLE_EQ(35., shownSize->getValue());
+
+    context->select(first, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ((int)RC::eAlgorithmBlur, shownAlgorithm->getValue());
+    EXPECT_DOUBLE_EQ(12., shownSize->getValue());
+    EXPECT_TRUE(shownSize->isEnabled(0));
+    EXPECT_TRUE(shownScale->isEnabled(0));
+    shownSize->setValue(20.);
+    EXPECT_DOUBLE_EQ(20., firstSize->getValue());
+    EXPECT_DOUBLE_EQ(30., secondSize->getValue());
+    EXPECT_DOUBLE_EQ(35., nextSize->getValue());
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    EXPECT_EQ((int)RC::eAlgorithmFill, shownAlgorithm->getValue());
+    EXPECT_DOUBLE_EQ(35., shownSize->getValue());
+    EXPECT_TRUE(shownSize->isEnabled(0));
+    EXPECT_FALSE(shownScale->isEnabled(0));
+    EXPECT_DOUBLE_EQ(20., firstSize->getValue());
+}
+
+// A click inside a painted brush's footprint with the select tool selects the brush, which a
+// Shift+click adds to; a click on empty space past every shape selects nothing new.
+TEST_F(NativeRetouchTest, ClickInsideABrushSelectsIt)
+{
+    NodePtr node = makeRetouch(makeSource(false), 2);
+    ASSERT_TRUE(bool(node));
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamBrushSize, { 10. }));
+    RotoStrokeItemPtr heal = makeBrushShape(node, { QPointF(10., 24.), QPointF(40., 24.) });
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamAlgorithm, { (double)RC::eAlgorithmBlur }));
+    RotoStrokeItemPtr blur = makeBrushShape(node, { QPointF(10., 60.), QPointF(40., 60.) });
+    ASSERT_TRUE(heal && blur);
+    EXPECT_TRUE(context->getSelectedCurves().empty());
+
+    const RenderScale scale = RenderScale::identity;
+    auto click = [&](const QPointF& p) {
+        const bool ret = effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), p, p, 1., 0., ePenTypeLMB);
+        effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), p, p, 1., 1.);
+
+        return ret;
+    };
+    EXPECT_TRUE(click(QPointF(25., 61.)));
+    std::list<RotoDrawableItemPtr> selected = context->getSelectedCurves();
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(blur.get(), selected.front().get());
+
+    // The Heal brush's source sits on it: the click selects the brush and leaves its source put.
+    EXPECT_TRUE(click(QPointF(25., 23.)));
+    selected = context->getSelectedCurves();
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(heal.get(), selected.front().get());
+    double dx = 1., dy = 1.;
+    Retouch::readShapeSourceOffset(heal, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(0., dx);
+    EXPECT_DOUBLE_EQ(0., dy);
+
+    effect->getInteract()->shiftDown = true;
+    EXPECT_TRUE(click(QPointF(30., 60.)));
+    effect->getInteract()->shiftDown = false;
+    EXPECT_EQ(2u, context->getSelectedCurves().size());
+}
+
 // A brush shape's points and settings survive a save and load.
 TEST_F(NativeRetouchTest, BrushSaveLoadRoundTrip)
 {
@@ -1421,6 +1548,46 @@ TEST_F(NativeRetouchTest, CtrlDragSetsTheCarriedSourceOffset)
     ctrlDragSource(effect, QPointF(70., 50.), QPointF(30., 20.));
     EXPECT_DOUBLE_EQ(40., ui->cloneOffset.first);
     EXPECT_DOUBLE_EQ(30., ui->cloneOffset.second);
+}
+
+// RotoPaint's brush size gesture: Shift+drag with the brush adds half the pen's move right plus up
+// to the next brush's size, rounded to a hundredth and at least 1, and paints nothing.
+TEST_F(NativeRetouchTest, ShiftDragSizesTheBrush)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    const RetouchInteractPtr& ui = effect->getInteract();
+    ASSERT_TRUE(bool(ui));
+    ui->setCurrentTool(ui->drawBrushAction.lock());
+    ASSERT_EQ(eRotoToolSolidBrush, ui->getSelectedTool());
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchParamBrushSize));
+    KnobDoublePtr shownSize = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchShapeParamBrushSize));
+    ASSERT_TRUE(size && shownSize);
+    ASSERT_DOUBLE_EQ(100., size->getValue());
+
+    const RenderScale scale = RenderScale::identity;
+    auto shiftDrag = [&](const QPointF& from, const QPointF& to) {
+        ui->shiftDown = 1;
+        EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), from, from, 1., 0., ePenTypeLMB));
+        EXPECT_EQ(eEventStateDraggingBrushSize, ui->state);
+        const QPointF mid((from.x() + to.x()) / 2., (from.y() + to.y()) / 2.);
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), mid, mid, 1., 1.));
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), to, to, 1., 2.));
+        effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), to, to, 1., 3.);
+        EXPECT_EQ(eEventStateNone, ui->state);
+        ui->shiftDown = 0;
+    };
+    shiftDrag(QPointF(40., 30.), QPointF(60., 40.));
+    EXPECT_DOUBLE_EQ(115., size->getValue());
+    EXPECT_DOUBLE_EQ(115., shownSize->getValue());
+    EXPECT_TRUE(context->getCurvesByRenderOrder(false).empty());
+
+    shiftDrag(QPointF(60., 40.), QPointF(-400., -40.));
+    EXPECT_DOUBLE_EQ(1., size->getValue());
+    EXPECT_TRUE(context->getCurvesByRenderOrder(false).empty());
 }
 
 // A Retouch brush gets a new RotoPaint stroke's lifetime knobs, defaults and visibility.

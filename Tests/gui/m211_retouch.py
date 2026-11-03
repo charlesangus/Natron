@@ -14,7 +14,12 @@ Brush Size, drawn with its dashed source line, and that the brush outline stays 
 pen in the middle of the stroke. Sets a small carried offset with a Ctrl+drag before the brush stroke so its source line is visible, presses Reset Clone Offset later, then sets the source offset as on a
 RotoPaint clone stroke: Ctrl held, the pen dragged from S to D with the Ellipse Tool. Draws an
 ellipse and checks its Source Offset is S - D, so a shape drawn from D takes its source at the
-clicked S, then draws a second ellipse and checks it keeps the offset. Screenshots of the panel and
+clicked S, then draws a second ellipse and checks it keeps the offset. Checks the General tab's
+Color is hidden. With nothing selected, Shift+drags with the brush and checks the brush size grows
+by half the move right plus up and nothing is painted; sets the shape settings to a Color fill and
+paints a second brush that takes them and renders filled. Clicks inside Brush1 with the select tool
+and checks it is selected with its own settings loaded, edits them and checks Brush1 alone changes
+and renders filled, then deselects and checks the next shape's settings come back. Screenshots of the panel and
 the viewer at each step go to $NATRON_GUI_TEST_OUT.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -60,6 +65,20 @@ MIN_OUTLINE_ANGLES = 0.6  # the share of directions around the pen where the bru
 OFFSET_FROM = (1500.0, 800.0)
 OFFSET_TO = (1200.0, 700.0)
 ELLIPSE_DRAGS = (((1100.0, 650.0), (1180.0, 600.0)), ((1600.0, 300.0), (1680.0, 250.0)))
+# The Shift+drag that sizes the brush, in widget pixels (x right, y down), and where it starts in
+# canonical pixels, clear of every shape.
+SIZE_DRAG = (40, -20)
+SIZE_DRAG_FROM = (300.0, 950.0)
+# The second brush, painted with the shape settings set while nothing is selected.
+BRUSH2_FROM = (300.0, 850.0)
+BRUSH2_TO = (800.0, 850.0)
+BRUSH2_SIZE = 40.0
+BRUSH1_EDIT_SIZE = 80.0
+ALGORITHM_HEAL = 1
+ALGORITHM_FILL = 3
+FILL_MODE_COLOR = 1
+FILL_GREY = 0.9
+MIN_FILLED_GREEN = 120  # the viewer's green over a Fill Color stroke of FILL_GREY, on the 0.02 plate
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -593,6 +612,120 @@ try:
                 check(abs(got[0] - want[0]) <= tol and abs(got[1] - want[1]) <= tol,
                       "the next shape keeps the offset")
         screen_crop("retouch_viewer_source_offset.png", visible_viewer())
+
+        gt.section("general-color")
+        color = node.getParam("color")
+        check(color is not None and not color.getIsVisible(),
+              "the General tab's Color, which a retouch mask ignores, is hidden")
+        screen_crop("retouch_panel_shape_settings.png", panel_of(node))
+
+        def deselect_all():
+            t = curve_tree(panel_of(node))
+            require(t is not None, "found the curve list")
+            t.selectionModel().select(QModelIndex(), QItemSelectionModel.Clear)
+            QApplication.processEvents()
+
+        def green_at(p):
+            """The median green in a 5x5 box: the overlay's red has little green, the plate less."""
+            img = grab_viewer()
+            if img is None:
+                return -1
+            values = sorted(img.pixelColor(int(p[0]) + i, int(p[1]) + j).green()
+                            for i in range(-2, 3) for j in range(-2, 3))
+            return values[len(values) // 2]
+
+        gt.section("brush-size")
+        deselect_all()
+        yield ("sleep", SETTLE_MS)
+        check(not node.getParam("shapeScale").getIsEnabled(0),
+              "with nothing selected, Shape Scale, which belongs to a shape, is disabled")
+        node.getParam("DrawBrushTool").trigger()
+        yield ("sleep", SETTLE_MS)
+        w = visible_viewer()
+        size_before = node.getParam("brushSize").getValue()
+        names_before = item_names(ctx)
+        from_w = to_widget(SIZE_DRAG_FROM)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyPress, Qt.Key_Shift, Qt.ShiftModifier))
+        drag(w, from_w, (from_w[0] + SIZE_DRAG[0], from_w[1] + SIZE_DRAG[1]), Qt.ShiftModifier)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyRelease, Qt.Key_Shift, Qt.NoModifier))
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        size_after = node.getParam("brushSize").getValue()
+        # Half the pen's move right plus up, in canonical pixels.
+        want = size_before + (SIZE_DRAG[0] - SIZE_DRAG[1]) / scale / 2.0
+        report("NOTE brush size %r -> %r, expected %r" % (size_before, size_after, want))
+        check(abs(size_after - want) <= 1.0 / scale, "Shift+drag with the brush sizes the brush, as in RotoPaint")
+        check(abs(node.getParam("shapeBrushSize").getValue() - size_after) <= 1e-6,
+              "the Shape Brush Size shows the new size")
+        check(item_names(ctx) == names_before, "the Shift+drag paints nothing")
+
+        gt.section("shape-settings")
+        node.getParam("currentScale").setValue(0)
+        node.getParam("shapeBrushSize").setValue(BRUSH2_SIZE)
+        node.getParam("shapeAlgorithm").setValue(ALGORITHM_FILL)
+        node.getParam("shapeFillMode").setValue(FILL_MODE_COLOR)
+        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY)
+        yield ("sleep", SETTLE_MS)
+        names_before = item_names(ctx)
+        drag(visible_viewer(), to_widget(BRUSH2_FROM), to_widget(BRUSH2_TO), Qt.NoModifier, 16)
+        yield ("sleep", 2 * SETTLE_MS)
+        made = sorted(item_names(ctx) - names_before)
+        report("NOTE the second stroke made %r" % (made,))
+        require(len(made) == 1, "the second stroke makes one brush")
+        brush2 = ctx.getItemByName(made[0])
+        require(brush2 is not None, "the second brush has a Python wrapper")
+        check(brush2.getParam("shapeBrushSize").getValue() == BRUSH2_SIZE
+              and brush2.getParam("shapeAlgorithm").getValue() == ALGORITHM_FILL
+              and brush2.getParam("shapeScale").getValue() == 0,
+              "with nothing selected, the shape settings apply to the new stroke")
+        brush2_mid = to_widget(((BRUSH2_FROM[0] + BRUSH2_TO[0]) / 2.0, BRUSH2_FROM[1]))
+        ok = yield ("until", lambda: green_at(brush2_mid) >= MIN_FILLED_GREEN, POLL_TIMEOUT_S)
+        check(ok, "the second brush fills with its colour (green %d)" % green_at(brush2_mid))
+
+        node.getParam("SelectAllTool").trigger()
+        yield ("sleep", SETTLE_MS)
+        brush1 = ctx.getItemByName("Brush1")
+        require(brush1 is not None, "Brush1 has a Python wrapper")
+        mid1 = to_widget(((BRUSH_FROM[0] + BRUSH_TO[0]) / 2.0, (BRUSH_FROM[1] + BRUSH_TO[1]) / 2.0))
+        # The stroke bowed 5 widget pixels up in its middle.
+        mid1 = (mid1[0], mid1[1] - 5.0)
+        green_before = green_at(mid1)
+        w = visible_viewer()
+        send_mouse(w, QEvent.MouseButtonPress, mid1, Qt.LeftButton, Qt.LeftButton)
+        send_mouse(w, QEvent.MouseButtonRelease, mid1, Qt.LeftButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(node.getParam("shapeScale").getIsEnabled(0), "a click inside Brush1 selects it")
+        check(node.getParam("shapeAlgorithm").getValue() == ALGORITHM_HEAL
+              and node.getParam("shapeBrushSize").getValue() == BRUSH_SIZE,
+              "selecting the stroke loads its settings (%r, %r)"
+              % (node.getParam("shapeAlgorithm").getValue(), node.getParam("shapeBrushSize").getValue()))
+        screen_crop("retouch_panel_brush_selected.png", panel_of(node))
+
+        node.getParam("shapeBrushSize").setValue(BRUSH1_EDIT_SIZE)
+        node.getParam("shapeAlgorithm").setValue(ALGORITHM_FILL)
+        node.getParam("shapeFillMode").setValue(FILL_MODE_COLOR)
+        node.getParam("shapeFillColor").set(FILL_GREY, FILL_GREY, FILL_GREY)
+        node.getParam("shapeScale").setValue(0)
+        yield ("sleep", SETTLE_MS)
+        check(brush1.getParam("shapeBrushSize").getValue() == BRUSH1_EDIT_SIZE
+              and brush1.getParam("shapeAlgorithm").getValue() == ALGORITHM_FILL,
+              "editing the shape settings changes the selected stroke")
+        check(brush2.getParam("shapeBrushSize").getValue() == BRUSH2_SIZE,
+              "editing them leaves the other stroke alone")
+        check(node.getParam("brushSize").getValue() == BRUSH2_SIZE,
+              "editing them leaves the next shape's settings alone")
+        ok = yield ("until", lambda: green_at(mid1) >= MIN_FILLED_GREEN, POLL_TIMEOUT_S)
+        report("NOTE green inside Brush1 %d before the edit, %d after" % (green_before, green_at(mid1)))
+        check(ok, "the edited stroke renders its new settings")
+        screen_crop("retouch_viewer_brush_edited.png", visible_viewer())
+
+        deselect_all()
+        yield ("sleep", SETTLE_MS)
+        check(node.getParam("shapeBrushSize").getValue() == BRUSH2_SIZE
+              and not node.getParam("shapeScale").getIsEnabled(0),
+              "deselecting brings back the next shape's settings")
+        check(brush1.getParam("shapeBrushSize").getValue() == BRUSH1_EDIT_SIZE,
+              "the stroke keeps its edit after the deselection")
 
         faulthandler.cancel_dump_traceback_later()
 

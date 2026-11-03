@@ -73,6 +73,7 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , ctrlDown(0)
     , altDown(0)
     , cloneOffset(0., 0.)
+    , mouseCenterOnSizeChange()
     , _host(host)
 {
 }
@@ -315,6 +316,38 @@ RotoCurveInteract::dragCloneOffset(double dx,
     }
     cloneOffset.first -= dx;
     cloneOffset.second -= dy;
+
+    return true;
+}
+
+bool
+RotoCurveInteract::isBrushSizeDragModifier() const
+{
+    return shiftDown && !ctrlDown && !altDown;
+}
+
+void
+RotoCurveInteract::startBrushSizeDrag(const QPointF& pos)
+{
+    state = eEventStateDraggingBrushSize;
+    mouseCenterOnSizeChange = pos;
+}
+
+bool
+RotoCurveInteract::dragBrushSize(const KnobDoublePtr& size,
+                                 double dx,
+                                 double dy)
+{
+    if (state != eEventStateDraggingBrushSize) {
+        return false;
+    }
+    if (!size) {
+        return true;
+    }
+    double value = size->getValue() + ((dx + dy) / 2.);
+    const double step = 0.01;
+    value = std::floor(value / step + 0.5) * step;
+    size->setValue(std::max(1., value));
 
     return true;
 }
@@ -1549,6 +1582,12 @@ RotoCurveInteract::getSelectedCpsBBOXCenter()
 
 void
 RotoCurveInteract::handleBezierSelection(const BezierPtr& curve)
+{
+    handleItemSelection(curve);
+}
+
+void
+RotoCurveInteract::handleItemSelection(const RotoDrawableItemPtr& curve)
 {
     /// find out if the bezier is already selected.
     bool found = false;

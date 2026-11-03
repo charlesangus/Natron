@@ -189,7 +189,9 @@ RetouchInteract::drawPaintToolOverlay(double screenPixelRatio,
     // While painting the footprint follows the pen, as RotoPaint's does, since the viewer may not
     // have moved its cursor yet.
     QPointF centre;
-    if (building || (state == eEventStateDraggingCloneOffset)) {
+    if (state == eEventStateDraggingBrushSize) {
+        centre = mouseCenterOnSizeChange;
+    } else if (building || (state == eEventStateDraggingCloneOffset)) {
         centre = lastMousePos;
     } else {
         double x, y;
@@ -240,6 +242,11 @@ RetouchInteract::onPaintToolPenDown(double /*time*/,
     if (selectedTool != eRotoToolSolidBrush) {
         return false;
     }
+    if (isBrushSizeDragModifier()) {
+        startBrushSizeDrag(pos);
+
+        return true;
+    }
     RotoCurveContextPtr context = getCurveContext();
     if (!context) {
         return false;
@@ -280,9 +287,12 @@ bool
 RetouchInteract::onPaintStatePenMotion(const QPointF& pos,
                                        double pressure,
                                        double timestamp,
-                                       double /*dx*/,
-                                       double /*dy*/)
+                                       double dx,
+                                       double dy)
 {
+    if (dragBrushSize(brushSizeKnob.lock(), dx, dy)) {
+        return true;
+    }
     if ((state != eEventStateBuildingStroke) || !_stroke) {
         return false;
     }

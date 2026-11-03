@@ -16,8 +16,10 @@ Merge From, when above 0, merges the scales from it up into one before the shape
 on any of them works on the merged layer.
 
 The shapes are the node's Roto shapes (Beziers, ellipses, rectangles), drawn in the viewer with
-the Roto tools, and brush shapes, drawn with the Brush tool (N). Each carries its own settings,
-under the Selected Shape group for the selected one:
+the Roto tools, and brush shapes, drawn with the Brush tool (N). Each carries its own settings.
+The node's Shape Settings tab is one set of them: with shapes selected it shows the selected
+shapes' settings and edits them, as RotoPaint's controls do for its selected strokes; with none
+selected it sets what the next shape gets.
 
 | Knob | Label | Default | Range |
 | --- | --- | --- | --- |
@@ -34,10 +36,16 @@ under the Selected Shape group for the selected one:
 | `shapeBrushDensity` | Shape Brush Density | 1 | 0 .. 1 |
 | `shapeBrushPressure` | Shape Brush Pressure | Off | Off, Hardness (Relative), Hardness (Absolute), Opacity (Relative), Opacity (Absolute), Brush Size (Relative) |
 
-The brush knobs only change brush shapes. The shape's Roto opacity is darktable's form opacity and its Roto feather the form's feather
-(border). A new shape takes the node's Algorithm, Blur and Fill settings, and the Current Scale;
-a new brush shape also takes the node's Brush Size, Brush Hardness, Brush Density and Brush
-Pressure.
+The brush knobs only change brush shapes. Shape Scale and Source Offset belong to a shape and are
+disabled with none selected: a new shape goes on the Current Scale and takes its source as below.
+The shape's Roto opacity is darktable's form opacity and its Roto feather the form's feather
+(border). The General tab's Roto Color is hidden: a retouch mask has coverage, no colour.
+
+With the brush tool, Shift+drag in the viewer sizes the brush as in RotoPaint: half the pen's move
+right plus up is added to the next shape's brush size, and the footprint stays where the drag
+started. A painted brush shape stays editable: a click inside its footprint with a select tool
+selects it (Shift adds it to the selection), as does its row in the panel, and the Shape Settings
+then edit it. Its points are not editable, as a RotoPaint stroke's are not.
 
 A brush shape is darktable's brush form (`src/develop/masks/brush.c`): a freehand stroke, its mask
 the stroke's centre line swept by a disc of the Brush Size (a diameter, in canonical pixels),
@@ -79,27 +87,20 @@ shapes, or the shapes themselves, on the Current Scale, as one undoable step.
 
 | Knob | Label | Default | Range |
 | --- | --- | --- | --- |
-| `algorithm` | Algorithm | Heal | Clone, Heal, Blur, Fill |
 | `scales` | Scales | 0 | 0 .. 15 |
 | `currentScale` | Current Scale | 0 | 0 .. 16 |
 | `mergeFrom` | Merge From | 0 | 0 .. 15 |
 | `output` | Output | Result | Result, Current Scale, Residual |
 | `previewLevels` | Preview Levels | -3, 0, 3 | -3 .. 3 |
-| `blurType` | Blur Type | Gaussian | Gaussian, Bilateral |
-| `blurRadius` | Blur Radius | 10 | 0.1 .. 200 |
-| `fillMode` | Fill Mode | Erase | Erase, Color |
-| `fillColor` | Fill Color | 0, 0, 0 | |
-| `fillBrightness` | Fill Brightness | 0 | -1 .. 1 |
 | `maxHealIterations` | Max Heal Iterations | 2000 | 1 .. 100000 |
-| `brushSize` | Brush Size | 100 | 1 .. 4000 |
-| `brushHardness` | Brush Hardness | 0.66 | 0.0005 .. 1 |
-| `brushDensity` | Brush Density | 1 | 0 .. 1 |
-| `brushPressure` | Brush Pressure | Off | as Shape Brush Pressure |
 
 Output shows the result, or the Current Scale's detail through the Preview Levels (black, grey and
 white points, darktable's wavelet preview), or the residual. darktable's "display wavelet scale"
 toggle and auto levels are GUI state; here they are the Output choice and the Preview Levels knob.
-darktable's unused (NONE) algorithm has no option. Max Heal Iterations is darktable's
+darktable's unused (NONE) algorithm has no option. The hidden `algorithm`, `blurType`,
+`blurRadius`, `fillMode`, `fillColor`, `fillBrightness`, `brushSize`, `brushHardness`,
+`brushDensity` and `brushPressure` knobs keep the next shape's settings, with the Shape Settings
+defaults, while shapes are selected; scripts set the next shape's settings through them. Max Heal Iterations is darktable's
 `max_heal_iter`, which it does not show.
 
 The whole source is processed in every render: the node does not tile, and its region of interest

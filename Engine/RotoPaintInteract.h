@@ -242,7 +242,6 @@ public:
     int strokeBeingPaintedTimelineFrame; // the frame at which we painted the last brush stroke
     KnobButtonWPtr lastPaintToolAction;
     bool lastTabletDownTriggeredEraser;
-    QPointF mouseCenterOnSizeChange;
 
     //////// Toolbar
     KnobGroupWPtr paintBrushToolGroup;

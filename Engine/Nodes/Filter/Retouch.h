@@ -67,9 +67,10 @@
 #define kRetouchParamBrushDensity "brushDensity"
 #define kRetouchParamBrushPressure "brushPressure"
 #define kRetouchParamMaxHealIterations "maxHealIterations"
-#define kRetouchParamSelectedShape "selectedShape"
+#define kRetouchParamShapeSettings "shapeSettings"
 
-// Per-shape knobs, on every shape and, for the selected shapes, on the node.
+// Per-shape knobs, on every shape and on the node. On the node they show and edit the selected
+// shapes, or with none selected the settings the next shape gets.
 #define kRetouchShapeParamAlgorithm "shapeAlgorithm"
 #define kRetouchShapeParamScale "shapeScale"
 #define kRetouchShapeParamSourceOffset "sourceOffset"
@@ -116,8 +117,9 @@ inline constexpr NodeSpec kRetouchNodeSpec = {
                    "copies it and matches it to the surroundings, Blur blurs under the shape and Fill paints a colour. "
                    "Clone and Heal take their source at the shape's Source Offset, which the viewer shows as a "
                    "dashed outline to drag.\n"
-                   "New shapes take the node's Algorithm, Current Scale, blur and fill settings; the selected shapes' "
-                   "own settings are under Selected Shape. Output shows the result, the current scale or the residual.\n"
+                   "Shape Settings shows the selected shapes' settings and edits them; with no shape selected it sets "
+                   "what the next shape gets, which goes on Current Scale. Output shows the result, the current scale "
+                   "or the residual.\n"
                    "The whole image is decomposed at once, so the scales follow the image size.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_RETOUCH,
@@ -189,7 +191,7 @@ public:
 
     /**
      * @brief Sets a shape's source offset at time, keyframed when auto-keying is on or the knob is
-     * already animated. Writes the node's Selected Shape knob when the shape is selected.
+     * already animated. Writes the node's Source Offset knob when the shape is selected.
      **/
     void setShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double dx, double dy);
 
@@ -307,6 +309,20 @@ private:
     // The shape whose source outline is under pos, if any.
     RotoDrawableItemPtr pickSource(double time, const QPointF& pos) const;
 
+    // The topmost finished brush shape whose footprint is under pos, if any.
+    RotoDrawableItemPtr pickBrush(double time, const QPointF& pos) const;
+
+    bool hasSelectedShapes() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief With no shape selected, the node's shape knobs show the next shape's settings again
+     * and stay editable; Shape Scale and Source Offset belong to a shape and are disabled.
+     **/
+    void onShapeSelectionChanged();
+
+    // The node's shape knob of a next-shape knob, or the next-shape knob of a node's shape knob.
+    KnobIPtr counterpartOfShapeKnob(const KnobI* knob) const;
+
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,
@@ -356,6 +372,11 @@ private:
     KnobDoubleWPtr _brushHardness;
     KnobDoubleWPtr _brushDensity;
     KnobChoiceWPtr _brushPressure;
+
+    // The node's shape knobs paired with the hidden knobs that keep what the next shape gets.
+    std::vector<std::pair<KnobIWPtr, KnobIWPtr>> _shapeKnobDefaults;
+    KnobIWPtr _shapeScaleKnob;
+    KnobIWPtr _shapeSourceOffsetKnob;
 
     struct NewShape {
         RotoDrawableItemWPtr item;

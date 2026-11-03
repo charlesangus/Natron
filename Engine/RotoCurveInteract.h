@@ -355,6 +355,8 @@ public:
     // From the pen to the point a clone brush, or a Retouch shape, takes its source from, canonical.
     // Ctrl+drag moves it and every later stroke or shape carries it.
     std::pair<double, double> cloneOffset;
+    // Where a Shift+drag of the brush size started: the brush outline stays there during the drag.
+    QPointF mouseCenterOnSizeChange;
     // Open from pen down to pen up. The drag commands pushed in between carry its key, so one drag
     // is one undo step and the next drag, even of the same points, is another.
     UndoGesture undoGesture;
@@ -546,6 +548,18 @@ public:
      **/
     bool dragCloneOffset(double dx, double dy);
 
+    /// Shift+drag, with no other modifier: the gesture that sizes the brush.
+    bool isBrushSizeDragModifier() const;
+
+    /// Starts a Shift+drag of the brush size with the pen at pos.
+    void startBrushSizeDrag(const QPointF& pos);
+
+    /**
+     * @brief Grows size by the pen's move (dx, dy) during a Shift+drag of the brush size, rounded
+     * to a hundredth and at least 1. False when no such drag is under way.
+     **/
+    bool dragBrushSize(const KnobDoublePtr& size, double dx, double dy);
+
     /**
      * @brief Draws where a stroke painted from centre takes its source: a cross and a circle of
      * radius around centre moved by offset, shadowed, and while cloneOffset is dragged a line
@@ -562,6 +576,9 @@ public:
     void startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item);
 
     void handleBezierSelection(const BezierPtr& curve);
+
+    /// Selects item as a click on it does, adding to the selection when Shift is held.
+    void handleItemSelection(const RotoDrawableItemPtr& item);
 
     void handleControlPointSelection(const std::pair<BezierCPPtr, BezierCPPtr>& p);
 

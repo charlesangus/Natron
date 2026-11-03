@@ -647,20 +647,60 @@ Retouch::initializeKnobs()
     page->addKnob(brushPressure);
     _brushPressure = brushPressure;
 
-    // The selected shapes' own settings, slaved to them by the curve context.
-    KnobGroupPtr selectedShape = createKnob<KnobGroup>(tr("Selected Shape"));
-    selectedShape->setName(kRetouchParamSelectedShape);
-    selectedShape->setAsTab();
-    page->addKnob(selectedShape);
+    // The curve context slaves these to the selected shapes. With none selected they edit the
+    // next-shape knobs above, which keep those settings while a shape is selected and so are hidden.
+    KnobGroupPtr shapeSettings = createKnob<KnobGroup>(tr("Shape Settings"));
+    shapeSettings->setName(kRetouchParamShapeSettings);
+    shapeSettings->setHintToolTip(tr("The selected shapes' settings. With no shape selected, the settings the next shape gets."));
+    shapeSettings->setAsTab();
+    page->addKnob(shapeSettings);
     RotoCurveContextPtr context = getNode()->getCurveContext();
     const std::vector<KnobIPtr> shapeKnobs = createShapeKnobs(this, true);
     for (std::vector<KnobIPtr>::const_iterator it = shapeKnobs.begin(); it != shapeKnobs.end(); ++it) {
-        (*it)->setDefaultAllDimensionsEnabled(false);
+        const std::string& name = (*it)->getName();
+        if (name == kRetouchShapeParamScale) {
+            _shapeScaleKnob = *it;
+            (*it)->setDefaultAllDimensionsEnabled(false);
+        } else if (name == kRetouchShapeParamSourceOffset) {
+            _shapeSourceOffsetKnob = *it;
+            (*it)->setDefaultAllDimensionsEnabled(false);
+        }
         (*it)->setIsPersistent(false);
-        selectedShape->addKnob(*it);
+        shapeSettings->addKnob(*it);
         if (context) {
             context->addHostItemKnob(*it);
         }
+    }
+    const std::pair<const char*, KnobIPtr> nextShapeKnobs[] = {
+        { kRetouchShapeParamAlgorithm, algorithm },
+        { kRetouchShapeParamBlurType, blurType },
+        { kRetouchShapeParamBlurRadius, blurRadius },
+        { kRetouchShapeParamFillMode, fillMode },
+        { kRetouchShapeParamFillColor, fillColor },
+        { kRetouchShapeParamFillBrightness, fillBrightness },
+        { kRetouchShapeParamBrushSize, brushSize },
+        { kRetouchShapeParamBrushHardness, brushHardness },
+        { kRetouchShapeParamBrushDensity, brushDensity },
+        { kRetouchShapeParamBrushPressure, brushPressure },
+    };
+    for (const std::pair<const char*, KnobIPtr>& next : nextShapeKnobs) {
+        for (std::vector<KnobIPtr>::const_iterator it = shapeKnobs.begin(); it != shapeKnobs.end(); ++it) {
+            if ((*it)->getName() == next.first) {
+                next.second->setSecretByDefault(true);
+                _shapeKnobDefaults.push_back(std::make_pair(KnobIWPtr(*it), KnobIWPtr(next.second)));
+                break;
+            }
+        }
+    }
+    if (context) {
+        // The General tab's Color is a Roto shape's paint colour; a retouch mask has none.
+        KnobColorPtr color = context->getColorKnob();
+        if (color) {
+            color->setSecretByDefault(true);
+        }
+        QObject::connect(context.get(), &RotoCurveContext::selectionChanged, this, [this](int) {
+            onShapeSelectionChanged();
+        });
     }
 
     addStageKnobs(page);
@@ -1168,6 +1208,56 @@ Retouch::onKnobsLoaded()
     _ui->setCurrentTool(defaultAction);
     _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
     _ui->onToolChangedInternal(defaultAction);
+    onShapeSelectionChanged();
+}
+
+bool
+Retouch::hasSelectedShapes() const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+
+    return context && !context->getSelectedCurves().empty();
+}
+
+void
+Retouch::onShapeSelectionChanged()
+{
+    const bool selected = hasSelectedShapes();
+    for (const std::pair<KnobIWPtr, KnobIWPtr>& pair : _shapeKnobDefaults) {
+        KnobIPtr shown = pair.first.lock();
+        KnobIPtr next = pair.second.lock();
+        if (!shown || !next) {
+            continue;
+        }
+        if (!selected) {
+            shown->cloneAndUpdateGui(next.get());
+        }
+        // Deselecting a shape disables every knob the curve context slaves.
+        shown->setAllDimensionsEnabled(true);
+    }
+    const KnobIPtr shapeOnly[] = { _shapeScaleKnob.lock(), _shapeSourceOffsetKnob.lock() };
+    for (const KnobIPtr& k : shapeOnly) {
+        if (k) {
+            k->setAllDimensionsEnabled(selected);
+        }
+    }
+}
+
+KnobIPtr
+Retouch::counterpartOfShapeKnob(const KnobI* knob) const
+{
+    for (const std::pair<KnobIWPtr, KnobIWPtr>& pair : _shapeKnobDefaults) {
+        KnobIPtr shown = pair.first.lock();
+        KnobIPtr next = pair.second.lock();
+        if (knob && (shown.get() == knob)) {
+            return next;
+        }
+        if (knob && (next.get() == knob)) {
+            return shown;
+        }
+    }
+
+    return KnobIPtr();
 }
 
 bool
@@ -1181,6 +1271,12 @@ Retouch::knobChanged(KnobI* k,
 
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
+    }
+    KnobIPtr counterpart = counterpartOfShapeKnob(k);
+    // Changes to either side reach the other: the shown knob while nothing is selected, the
+    // next-shape knob from the brush size gesture.
+    if (counterpart && !hasSelectedShapes()) {
+        counterpart->cloneAndUpdateGui(k);
     }
     if (k && (k == _ui->resetCloneOffsetButton.lock().get())) {
         _ui->cloneOffset = std::make_pair(0., 0.);
@@ -1264,6 +1360,29 @@ Retouch::pickSource(double time,
         std::list<ParametricPoint> points;
         bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, NULL);
         if (pointInPolygon(points, dx, dy, pos)) {
+            return *it;
+        }
+    }
+
+    return RotoDrawableItemPtr();
+}
+
+RotoDrawableItemPtr
+Retouch::pickBrush(double time,
+                   const QPointF& pos) const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (!context) {
+        return RotoDrawableItemPtr();
+    }
+    const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder();
+    const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
+    for (std::list<RotoDrawableItemPtr>::const_reverse_iterator it = curves.rbegin(); it != curves.rend(); ++it) {
+        if (!isRetouchShape(*it) || std::dynamic_pointer_cast<Bezier>(*it) || (*it)->isLockedRecursive()
+            || !isShapeFinished(*it, painting)) {
+            continue;
+        }
+        if (brushSourceContains(*it, time, 0., 0., pos)) {
             return *it;
         }
     }
@@ -1416,7 +1535,27 @@ Retouch::onOverlayPenDown(double time,
         return true;
     }
     if ((tool == eRotoToolSelectAll) || (tool == eRotoToolSelectCurves) || (tool == eRotoToolSelectPoints)) {
+        // A brush stroke has no outline for the curve interact to pick, so a click inside its
+        // footprint selects it, unless a Bezier outline is close enough to claim the click.
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        bool nearBezier = false;
+        if (context) {
+            const std::pair<double, double> pixelScale = _ui->getPixelScale();
+            int cpIndex;
+            double t;
+            bool isFeather;
+            nearBezier = bool(context->isNearbyBezier(pos.x(), pos.y(), kBezierSelectionTolerance * pixelScale.first, &cpIndex, &t, &isFeather));
+        }
+        const RotoDrawableItemPtr brush = nearBezier ? RotoDrawableItemPtr() : pickBrush(time, pos);
         RotoDrawableItemPtr item = pickSource(time, pos);
+        // Grabbing a brush's source selects the brush too: a Heal or Clone brush's source starts on
+        // the brush itself, so the source would otherwise take every click on it.
+        if (item && !std::dynamic_pointer_cast<Bezier>(item) && !nearBezier) {
+            if (!_ui->shiftDown) {
+                _ui->clearCPSSelection();
+            }
+            _ui->handleItemSelection(item);
+        }
         if (item) {
             _draggedSource = item;
             _dragPressPos = pos;
@@ -1424,6 +1563,16 @@ Retouch::onOverlayPenDown(double time,
             readShapeSourceOffset(item, time, &_dragStart[0], &_dragStart[1]);
             _dragEnd[0] = _dragStart[0];
             _dragEnd[1] = _dragStart[1];
+            redrawOverlayInteract();
+
+            return true;
+        }
+        if (brush) {
+            if (!_ui->shiftDown) {
+                _ui->clearCPSSelection();
+            }
+            _ui->handleItemSelection(brush);
+            _ui->lastMousePos = pos;
             redrawOverlayInteract();
 
             return true;

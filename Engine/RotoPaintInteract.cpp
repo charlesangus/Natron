@@ -63,7 +63,6 @@ RotoPaintInteract::RotoPaintInteract(RotoPaintPrivate* p)
     , strokeBeingPaintedTimelineFrame(0)
     , lastPaintToolAction()
     , lastTabletDownTriggeredEraser(false)
-    , mouseCenterOnSizeChange()
 {
 }
 
@@ -560,9 +559,8 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
     case eRotoToolBurn: {
         if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && isCloneOffsetDragModifier()) {
             startCloneOffsetDrag(pos);
-        } else if (shiftDown && !ctrlDown && !altDown) {
-            state = eEventStateDraggingBrushSize;
-            mouseCenterOnSizeChange = pos;
+        } else if (isBrushSizeDragModifier()) {
+            startBrushSizeDrag(pos);
         } else if (ctrlDown && shiftDown) {
             state = eEventStateDraggingBrushOpacity;
             mouseCenterOnSizeChange = pos;
@@ -676,17 +674,7 @@ RotoPaintInteract::onPaintStatePenMotion(const QPointF& pos,
         break;
     }
     case eEventStateDraggingBrushSize: {
-        KnobDoublePtr sizeSb = sizeSpinbox.lock();
-        double size = 0;
-        if (sizeSb) {
-            size = sizeSb->getValue();
-        }
-        size += ((dx + dy) / 2.);
-        const double scale = 0.01; // i.e. round to nearest one-hundreth
-        size = std::floor(size / scale + 0.5) * scale;
-        if (sizeSb) {
-            sizeSb->setValue(std::max(1., size));
-        }
+        dragBrushSize(sizeSpinbox.lock(), dx, dy);
         onBreakMultiStrokeTriggered();
         didSomething = true;
         break;

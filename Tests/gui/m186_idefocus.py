@@ -1,9 +1,13 @@
 """GUI check: IDefocus in the GUI.
 
-Fixture: two bright 16 px squares on black, one on the left of the frame and one on the right, built from a
-Constant, two Crops and a Merge. The Map is a Roto ellipse around the right square, so the Map is 1 there and 0
-at the left square. Size At Black is 0 and Size 40, so the left square must come out exactly as it went in and the
-right one must spread into the bokeh.
+Fixture: two bright 16 px squares over a full-format black Constant, one left of the format centre and one right
+of it, built from Constants, two Crops and two Merges. The Map is a Roto ellipse around the right square, so the
+Map is 1 there and 0 at the left square. Size At Black is 0 and Size 40, so the left square must come out exactly
+as it went in and the right one must spread into the bokeh.
+
+The viewer shows the Un-tone-mapped view at 100% around the format centre. The black background keeps the
+source's region of definition at the format, so the region-of-definition box (which IDefocus grows by half the
+Size) and its corner labels stay outside the viewer and every sampled difference comes from the image.
 
 For each kernel (the default disc, a 6-blade aperture, and an Image kernel from a small square into the Kernel
 input) the script compares the viewer against the source: the left half must not change, the right half must, and
@@ -27,6 +31,8 @@ RENDER_TIMEOUT_S = 90.0
 WATCHDOG_S = 600
 SETTLE_MS = 500
 RENDER_MS = 2500
+VIEW_NAME = "Un-tone-mapped"
+LIT_LEVEL = 60
 PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
 PLUGIN_CROP = "net.sf.openfx.CropPlugin"
 PLUGIN_MERGE = "Merge"
@@ -34,10 +40,10 @@ PLUGIN_IDEFOCUS = "IDefocus"
 INPUT_SOURCE, INPUT_KERNEL, INPUT_MAP = 0, 2, 3
 SQUARE = 16
 SQUARE_BOTTOM = 532
-LEFT_SQUARE_X = 352
-RIGHT_SQUARE_X = 1552
+LEFT_SQUARE_X = 710
+RIGHT_SQUARE_X = 1194
 KERNEL_SQUARE = 48
-ELLIPSE_X, ELLIPSE_Y, ELLIPSE_DIAMETER = 1560.0, 540.0, 500.0
+ELLIPSE_X, ELLIPSE_Y, ELLIPSE_DIAMETER = 1202.0, 540.0, 200.0
 SIZE = 40.0
 PIXEL_DIFF_MIN = 24
 UNCHANGED_MAX = 4
@@ -48,7 +54,7 @@ try:
     import faulthandler
 
     import NatronEngine
-    from PySide6.QtCore import QMetaObject
+    from PySide6.QtCore import Q_ARG, QMetaObject
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
@@ -140,6 +146,50 @@ try:
             QMetaObject.invokeMethod(views[0], "centerViewer")
         QApplication.processEvents()
 
+    def choose_view():
+        """Switches the viewer's View menu to Un-tone-mapped; returns whether it was found."""
+        for w in gt.widgets_of("ComboBox"):
+            try:
+                if not w.isVisible():
+                    continue
+                items = [str(i) for i in (w.property("natronItems") or [])]
+                if VIEW_NAME in items:
+                    _held.append(w)
+                    QMetaObject.invokeMethod(w, "setCurrentIndex", Q_ARG(int, items.index(VIEW_NAME)))
+                    QApplication.processEvents()
+                    return str(w.property("natronCurrentText")) == VIEW_NAME
+            except RuntimeError:
+                continue
+        return False
+
+    def set_zoom(text):
+        """Picks text ("100%", "Fit"...) in the viewer's zoom menu; the viewer zooms about its centre."""
+        for combo in gt.widgets_of("ComboBox"):
+            try:
+                if not combo.isVisible() or "Zoom:" not in (combo.toolTip() or ""):
+                    continue
+                items = [str(i).strip() for i in (combo.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            if text in items:
+                _held.append(combo)
+                QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, items.index(text)))
+                QApplication.processEvents()
+                return True
+            return False
+        return False
+
+    def lit_pixels(image, x0, x1, stride=2):
+        if image is None:
+            return -1
+        count = 0
+        for y in range(0, image.height(), stride):
+            for x in range(x0, x1, stride):
+                c = image.pixelColor(x, y)
+                if max(c.red(), c.green(), c.blue()) > LIT_LEVEL:
+                    count += 1
+        return count
+
     def changed_pixels(a, b, x0, x1, stride=2):
         """Sampled pixels in columns [x0, x1) whose RGB differs between a and b by more than PIXEL_DIFF_MIN."""
         if a is None or b is None or a.size() != b.size():
@@ -224,8 +274,13 @@ try:
         param(plate, "color").set(30.0, 30.0, 30.0, 1.0)
         left_sq = crop_box(plate, LEFT_SQUARE_X, SQUARE_BOTTOM, SQUARE, SQUARE, 0, 100)
         right_sq = crop_box(plate, RIGHT_SQUARE_X, SQUARE_BOTTOM, SQUARE, SQUARE, 150, 100)
-        source = create(PLUGIN_MERGE, 75, 200)
-        connect(source, 0, left_sq)
+        background = create(PLUGIN_CONSTANT, -150, 0)
+        param(background, "color").set(0.0, 0.0, 0.0, 1.0)
+        with_left = create(PLUGIN_MERGE, 0, 200)
+        connect(with_left, 0, background)
+        connect(with_left, 1, left_sq)
+        source = create(PLUGIN_MERGE, 75, 275)
+        connect(source, 0, with_left)
         connect(source, 1, right_sq)
 
         roto = create("fr.inria.built-in.Roto", 400, 100)
@@ -248,15 +303,27 @@ try:
 
         show(source)
         fit_viewer()
+        require(set_zoom("100%"), "the viewer's zoom menu offers 100%")
+        yield ("sleep", RENDER_MS)
+        check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
+
+        def both_squares_lit():
+            image = viewer_crop()
+            if image is None:
+                return False
+            mid = image.width() // 2
+            return lit_pixels(image, 0, mid) > 0 and lit_pixels(image, mid, image.width()) > 0
+
+        ok = yield ("until", both_squares_lit, RENDER_TIMEOUT_S)
+        require(ok, "the source shows a square on each side of the viewer centre")
         reference = yield from settled_crop("the source")
         require(reference is not None, "the viewer is visible")
         half = reference.width() // 2
-        lit_left = changed_pixels(reference, reference, 0, half)
-        check(lit_left == 0, "the viewer is stable against itself")
+        report("NOTE source lit samples left %d right %d"
+               % (lit_pixels(reference, 0, half), lit_pixels(reference, half, reference.width())))
         save_viewer(reference, "m186-idefocus-source.png")
 
         show(node)
-        fit_viewer()
         results = {}
         for key, shot_name in (("disc", "m186-idefocus-disc.png"),
                                ("blades", "m186-idefocus-blades.png"),

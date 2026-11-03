@@ -8074,6 +8074,7 @@ Node::dequeueActions()
     // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
     // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
+    bool outputsCommitted = false;
     {
         bool rendering;
         std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
@@ -8095,6 +8096,11 @@ Node::dequeueActions()
             }
             {
                 QMutexLocker k(&_imp->outputsMutex);
+                outputsCommitted = (_imp->outputs.size() != _imp->guiOutputs.size());
+                NodesWList::const_iterator gui = _imp->guiOutputs.begin();
+                for (NodesWList::const_iterator it = _imp->outputs.begin(); !outputsCommitted && it != _imp->outputs.end(); ++it, ++gui) {
+                    outputsCommitted = (it->lock() != gui->lock());
+                }
                 _imp->outputs = _imp->guiOutputs;
             }
         }
@@ -8107,6 +8113,9 @@ Node::dequeueActions()
             onInputChanged(*it);
         }
         endInputEdition(true);
+    }
+    if (!inputChanges.empty() || outputsCommitted) {
+        Q_EMIT connectionsCommitted();
     }
     if (hasChanged) {
         computeHash();

@@ -428,6 +428,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(deactivated(bool)), this, SLOT(deactivate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
+    QObject::connect(internalNode.get(), SIGNAL(connectionsCommitted()), this, SLOT(onConnectionsCommitted()));
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
@@ -2287,6 +2288,14 @@ NodeGui::findConnectedEdge(NodeGui* parent)
     }
 
     return NULL;
+}
+
+void
+NodeGui::onConnectionsCommitted()
+{
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
+    }
 }
 
 bool

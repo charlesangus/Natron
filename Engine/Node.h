@@ -2278,6 +2278,12 @@ Q_SIGNALS:
      */
     void inputChanged(int);
 
+    /**
+     * @brief Emitted once inputs or outputs changed during a render take effect, so getInput()
+     * and getOutputs_mt_safe() now match what inputChanged announced.
+     **/
+    void connectionsCommitted();
+
     void outputsChanged();
 
     void activated(bool triggerRender);

@@ -33,6 +33,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QtCore/QEvent>
 #include <QtCore/QMetaObject>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -41,11 +42,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/KnobDriverRow.h"
+#include "Gui/NodeGraph.h"
 #include "Gui/SpinBox.h"
 
 NATRON_NAMESPACE_ENTER
@@ -96,6 +99,7 @@ LoopDriverTable::LoopDriverTable(KnobIPtr knob,
     , _table(0)
     , _entries()
     , _watched()
+    , _graph()
     , _rebuildPending(false)
 {
 }
@@ -124,14 +128,45 @@ LoopDriverTable::createWidget(QHBoxLayout* layout)
     _table->setSelectionMode(QAbstractItemView::NoSelection);
     _table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     _table->setMinimumHeight(TO_DPIY(120));
+    _table->installEventFilter(this);
     layout->addWidget(_table);
     rebuild();
+}
+
+bool
+LoopDriverTable::eventFilter(QObject* watched,
+                             QEvent* event)
+{
+    if ((watched == _table) && (event->type() == QEvent::Show)) {
+        scheduleRebuild();
+    }
+
+    return KnobGui::eventFilter(watched, event);
+}
+
+void
+LoopDriverTable::watchGraph()
+{
+    if (_graph) {
+        return;
+    }
+    LoopEnd* end = loopEndOf(_knob.lock());
+    const NodePtr node = end ? end->getNode() : NodePtr();
+    const NodeCollectionPtr group = node ? node->getGroup() : NodeCollectionPtr();
+    _graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : 0;
+    if (_graph) {
+        QObject::connect(_graph.data(), SIGNAL(topologyChanged()), this, SLOT(scheduleRebuild()));
+    }
 }
 
 void
 LoopDriverTable::removeSpecificGui()
 {
     disconnectWatched();
+    if (_graph) {
+        QObject::disconnect(_graph.data(), 0, this, 0);
+        _graph = 0;
+    }
     if (_table) {
         _table->deleteLater();
         _table = 0;
@@ -187,6 +222,7 @@ LoopDriverTable::rebuild()
         return;
     }
     disconnectWatched();
+    watchGraph();
     const std::vector<Entry> previous = _entries;
     _entries.clear();
 

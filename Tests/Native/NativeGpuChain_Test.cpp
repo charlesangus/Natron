@@ -56,6 +56,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -126,6 +127,29 @@ channelSelectorOwners()
 
     return owners;
 }
+
+class TimelineParkedAt {
+public:
+    TimelineParkedAt(const TimeLinePtr& timeline,
+                     SequenceTime frame)
+        : _timeline(timeline)
+        , _saved(timeline->currentFrame())
+    {
+        _timeline->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+    }
+
+    ~TimelineParkedAt()
+    {
+        _timeline->seekFrame(_saved, false, NULL, eTimelineChangeReasonOtherSeek);
+    }
+
+    TimelineParkedAt(const TimelineParkedAt&) = delete;
+    TimelineParkedAt& operator=(const TimelineParkedAt&) = delete;
+
+private:
+    TimeLinePtr _timeline;
+    SequenceTime _saved;
+};
 
 RectI
 windowOf(const NodePtr& node)
@@ -312,6 +336,13 @@ TEST_F(NativeGpuChainTest, ShuffleDeliveredByTheRegionRetiresTheErrorOfAFrameMis
 
     const RectI window = windowOf(chain.shuffle);
     ASSERT_FALSE(window.isNull());
+
+    // Every clearAllCaches() refreshes each node's channel selectors, which retires a missing-channel error the
+    // timeline's frame has the channels for. renderNodePlanesDirect() clears the caches after its render and
+    // renderEndToEnd() before its GPU frame, so with the timeline on frame 1 the error would be gone before the GPU
+    // frame could retire it. Parked on the failing frame, as a user looking at the error is, only a delivered render
+    // retires it.
+    const TimelineParkedAt parked(getApp()->getTimeLine(), static_cast<SequenceTime>(kFrameMissingTheLayer));
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;

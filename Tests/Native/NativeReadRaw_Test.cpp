@@ -195,7 +195,7 @@ TEST_F(NativeReadRawTest, ColourKnobsAreHiddenAndProxyDisabledForARawFile)
     NodePtr read = createRead(std::string(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png"));
     ASSERT_TRUE(bool(read));
     EXPECT_FALSE(isSecret(read, kNatronReadParamColorspace));
-    EXPECT_FALSE(isSecret(read, kNatronIoParamOCIOContext));
+    EXPECT_FALSE(isSecret(read, kNatronOcioParamContext));
     KnobIPtr proxy = read->getKnobByName(kOfxImageEffectProxyParamName);
     ASSERT_TRUE(bool(proxy));
     EXPECT_TRUE(proxy->isEnabled(0));
@@ -204,7 +204,7 @@ TEST_F(NativeReadRawTest, ColourKnobsAreHiddenAndProxyDisabledForARawFile)
     ASSERT_TRUE(file != NULL);
     file->setValue(bayerFixture().path());
     EXPECT_TRUE(isSecret(read, kNatronReadParamColorspace));
-    EXPECT_TRUE(isSecret(read, kNatronIoParamOCIOContext));
+    EXPECT_TRUE(isSecret(read, kNatronOcioParamContext));
     EXPECT_FALSE(proxy->isEnabled(0));
     EXPECT_NE(std::string::npos, proxy->getHintToolTip().find("raw"));
 

@@ -47,8 +47,8 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
 - **Colour.** Rows go from the working space to the output space through the
   project's OCIO config, in the band callback. The default output space is
   from the config's file rules, then the project's file default for the pixel
-  depth. The `colorspace` menu's first entry, `projectDefault` ("Project
-  default"), follows that chain live, as on the Read, and the resolved space is
+  depth. The `colorspace` menu's first entry, `projectDefault`, labelled
+  with the space it currently stands for, follows that chain live, as on the Read, and the resolved space is
   part of the output hash. The file is tagged with `oiio:ColorSpace`, set to the space's Color
   Interop ID when the config has one, else to the space name
   (`IoColorSpace::fileTag()`).

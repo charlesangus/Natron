@@ -72,8 +72,8 @@ script-name prefix so the Write can share it.
   count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
   or alias of that name (`embeddedColorSpace()`), then the project's file
   default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). The
-  `colorspace` menu's first entry, `projectDefault` ("Project default"), follows
-  that chain live: it re-resolves when the file, the config or the project's
+  `colorspace` menu's first entry, `projectDefault`, labelled with the space it
+  currently stands for ("Project default (sRGB - Texture)"), follows that chain live: it re-resolves when the file, the config or the project's
   file defaults change (`Project::fileColorSpacesChanged`), and the resolved
   space is part of the node's hash. Any other entry overrides it. The
   non-empty `contextKey`/`contextValue` pairs are set as OCIO context variables when the

@@ -117,13 +117,13 @@ NODES = {
     "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
     "merge": ("Merge", {"operation": "over"}, False),
     "merge_plus": ("Merge", {"operation": "plus"}, False),
-    "ocio_colorspace": ("OCIOColorSpace", {"in_colorspace": "ACES2065-1", "out_colorspace": "ACEScg"}, False),
-    "ocio_display": ("OCIODisplay", {"in_colorspace": "ACEScg", "display": "sRGB - Display",
+    "ocio_colorspace": ("OCIOColorSpace", {"inputColorspace": "ACES2065-1", "outputColorspace": "ACEScg"}, False),
+    "ocio_display": ("OCIODisplay", {"inputColorspace": "ACEScg", "display": "sRGB - Display",
                                      "view": "ACES 2.0 - SDR 100 nits (Rec.709)", "gain": 1.1}, False),
     "ocio_cdl": ("OCIOCDLTransform", {"slope": (1.1, 0.9, 1.0), "offset": (0.01, 0.0, -0.01),
                                       "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
     "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
-    "ocio_look": ("OCIOLookTransform", {"in_colorspace": "ACEScg", "out_colorspace": "ACEScg",
+    "ocio_look": ("OCIOLookTransform", {"inputColorspace": "ACEScg", "outputColorspace": "ACEScg",
                                         "single_look": True, "look": "@LOOK@"}, False),
 }
 

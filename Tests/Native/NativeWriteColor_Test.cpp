@@ -324,6 +324,9 @@ TEST_F(NativeWriteColorTest, AnEightBitPngTakesTheProjectEightBitDefault)
     EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(_writer));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(_writer, kWorkingSpaceKnob));
     EXPECT_FALSE(userSet(_writer));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(_writer->getKnobByName(kOutputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kSRGBSpace) + ")", menu->getEntry(0).label);
 }
 
 TEST_F(NativeWriteColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
@@ -449,6 +452,10 @@ TEST_F(NativeWriteColorTest, AWriteOnProjectDefaultFollowsADefaultChangeAcrossRe
     setProjectSpace("colorSpace8Bit", kGamma22Space);
     EXPECT_EQ(std::string(kGamma22Space), fileSpace(_writer));
     EXPECT_NE(before, _writer->getEffectInstance()->getHash());
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(_writer->getKnobByName(kOutputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kGamma22Space) + ")", menu->getEntry(0).label);
+    EXPECT_EQ("Project default (" + std::string(kGamma22Space) + ")", menu->getActiveEntry().label);
 
     saveResetAndLoad("keep.ntpz");
 

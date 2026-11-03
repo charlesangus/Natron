@@ -57,7 +57,7 @@ public:
     OcioFileKnobs();
 
     /**
-     * @brief Creates the knobs on \p page, through \p ocio so they go before its Context group.
+     * @brief Creates the knobs on \p page, through \p ocio so they go before its ocioContext group, if any.
      **/
     void create(KnobHolder* holder,
                 const KnobPagePtr& page,

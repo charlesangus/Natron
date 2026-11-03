@@ -37,9 +37,9 @@ RETIRED_IDS = ("fr.inria.openfx.OCIOCDLTransform", "fr.inria.openfx.OCIOColorSpa
                "fr.inria.openfx.OCIOLogConvert", "fr.inria.openfx.OCIOLookTransform")
 
 CONFIG_PARAM = "ocioConfig"
-IN_SPACE = "in_colorspace"
-OUT_SPACE = "out_colorspace"
-IN_SPACE_MENU = "in_colorspaceIndex"
+IN_SPACE = "inputColorspace"
+OUT_SPACE = "outputColorspace"
+IN_SPACE_MENU = IN_SPACE
 SPACE_A = "ACES2065-1"
 SPACE_B = "ACEScg"
 
@@ -241,7 +241,7 @@ try:
         node = create(PLUGIN_COLORSPACE, 0, 0, panel=True)
         yield ("sleep", SETTLE_MS * 2)
         before = menu_options(node, IN_SPACE_MENU)
-        check(len(before) > 10, "the default config fills the in_colorspace menu (%d entries)" % len(before))
+        check(len(before) > 10, "the default config fills the inputColorspace menu (%d entries)" % len(before))
         check(has_option(before, SPACE_A) and has_option(before, SPACE_B),
               "the default config's menu lists %s and %s" % (SPACE_A, SPACE_B))
         gt.shot("ocio-menu-default.png")
@@ -251,13 +251,13 @@ try:
         check(current_config_label() != default_label, "the project config changed (%r)" % current_config_label())
         yield ("sleep", SETTLE_MS * 2)
         after = menu_options(node, IN_SPACE_MENU)
-        check(after != before, "the in_colorspace menu changed with the config (%d entries before, %d after)" %
+        check(after != before, "the inputColorspace menu changed with the config (%d entries before, %d after)" %
               (len(before), len(after)))
         check(len(after) > 10, "the new config fills the menu (%d entries)" % len(after))
         check(has_option(after, SPACE_A) and has_option(after, SPACE_B),
               "the new config's menu lists %s and %s" % (SPACE_A, SPACE_B))
-        out_after = menu_options(node, OUT_SPACE + "Index")
-        check(out_after == after, "the out_colorspace menu holds the same entries as in_colorspace")
+        out_after = menu_options(node, OUT_SPACE)
+        check(out_after == after, "the outputColorspace menu holds the same entries as inputColorspace")
 
         seen = open_menu_and_shoot("ocio-menu-aces.png")
         check(seen is not None, "a colour-space menu is on the settings panel")
@@ -283,9 +283,10 @@ try:
 
         param(space, IN_SPACE).set(SPACE_A)
         param(space, OUT_SPACE).set(SPACE_B)
-        check(str(param(space, IN_SPACE).get()) == SPACE_A and str(param(space, OUT_SPACE).get()) == SPACE_B,
-              "OCIOColorSpace converts %s to %s (got %r, %r)" %
-              (SPACE_A, SPACE_B, param(space, IN_SPACE).get(), param(space, OUT_SPACE).get()))
+        chosen_in = str(param(space, IN_SPACE).getOption(param(space, IN_SPACE).get()))
+        chosen_out = str(param(space, OUT_SPACE).getOption(param(space, OUT_SPACE).get()))
+        check(chosen_in == SPACE_A and chosen_out == SPACE_B,
+              "OCIOColorSpace converts %s to %s (got %r, %r)" % (SPACE_A, SPACE_B, chosen_in, chosen_out))
         displays = menu_options(display, "display")
         views = menu_options(display, "view")
         check(len(displays) > 0 and len(views) > 0,

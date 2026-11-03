@@ -903,18 +903,15 @@ NativeWrite::initializeKnobs()
     page->addKnob(frameIncr);
 
     OcioSpaceKnobs::Description outputSpace;
-    outputSpace.prefix = kNatronWriteParamColorspace;
+    outputSpace.name = kNatronWriteParamColorspace;
     outputSpace.label = tr("Colorspace");
-    outputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
-                              "working space. Project default takes the colorspace the config's file rules give the file "
-                              "name, else the project's default for files of its kind, and follows them as they change. "
-                              "The config's default rule does not count.");
-    outputSpace.projectDefault = true;
-    outputSpace.contextName = kNatronIoParamOCIOContext;
-    outputSpace.contextKeyPrefix = "contextKey";
-    outputSpace.contextValuePrefix = "contextValue";
-    outputSpace.contextKeyLabel = tr("Context Key %1");
-    outputSpace.contextValueLabel = tr("Context Value %1");
+    outputSpace.hint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
+                          "working space. Project default takes the colorspace the config's file rules give the file "
+                          "name, else the project's default for files of its kind, and follows them as they change; "
+                          "its label shows the colorspace it currently stands for. The config's default rule does not "
+                          "count.");
+    outputSpace.defaultHint = tr("The colorspace the config's file rules give the file name, else the project's default "
+                                 "for files of its kind, following them as they change.");
     _outputSpace.create(this, page, outputSpace, [this]() { return automaticOutputSpace(); });
 
     KnobChoicePtr bitDepth = createKnob<KnobChoice>(tr("Bit Depth"));

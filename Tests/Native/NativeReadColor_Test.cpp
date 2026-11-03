@@ -365,6 +365,10 @@ TEST_F(NativeReadColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
     EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(node));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(node, kWorkingSpaceKnob));
     EXPECT_FALSE(userSet(node));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kInputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kOtherWorkingSpace) + ")", menu->getEntry(0).label);
+    EXPECT_EQ("Project default (" + std::string(kOtherWorkingSpace) + ")", menu->getActiveEntry().label);
 
     RenderedPlane plane;
     renderFile(node, OiioReadSupport::dataWindowOf(ref.spec), 3, &plane);

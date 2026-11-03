@@ -31,6 +31,7 @@
 #include <exception>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/FloatingPointExceptions.h"
 
@@ -313,6 +314,22 @@ OcioNodeKnobs::addSpace(KnobHolder* holder,
     _spaces.push_back(std::move(knobs));
 }
 
+void
+OcioNodeKnobs::addWorkingSpace(KnobHolder* holder,
+                               const KnobPagePtr& page,
+                               const std::string& name,
+                               const QString& label,
+                               const QString& hint,
+                               const OcioSpaceKnobs::ChoiceMade& choiceMade)
+{
+    OcioSpaceKnobs::Description description;
+    description.name = name;
+    description.label = label;
+    description.hint = hint;
+    description.defaultHint = tr("The project's working colorspace, following it as it changes.");
+    addSpace(holder, page, description, [this]() { return std::optional<std::string>(workingSpace()); }, choiceMade);
+}
+
 std::size_t
 OcioNodeKnobs::spaceCount() const
 {
@@ -390,8 +407,25 @@ OcioNodeKnobs::refreshMenus()
     for (std::size_t i = 0; i < _spaces.size(); ++i) {
         _spaces[i]->refreshMenu();
     }
+    refreshProjectDefaults();
     for (std::size_t i = 0; i < _menuRefreshers.size(); ++i) {
         _menuRefreshers[i]();
+    }
+}
+
+void
+OcioNodeKnobs::refreshProjectDefaults()
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->refreshProjectDefault();
+    }
+}
+
+void
+OcioNodeKnobs::appendHash(ContentHasher& h) const
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->appendHash(h);
     }
 }
 

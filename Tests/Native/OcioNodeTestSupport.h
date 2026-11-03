@@ -215,6 +215,17 @@ stringValue(const NodePtr& node,
     return knob ? knob->getValue() : std::string();
 }
 
+inline std::string
+choiceID(const NodePtr& node,
+         const char* name)
+{
+    KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(name));
+
+    EXPECT_TRUE(bool(knob)) << name;
+
+    return knob ? knob->getActiveEntry().id : std::string();
+}
+
 inline QString
 persistentMessage(const NodePtr& node)
 {

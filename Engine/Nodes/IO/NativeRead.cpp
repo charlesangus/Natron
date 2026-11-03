@@ -361,18 +361,15 @@ NativeRead::initializeKnobs()
     _availableViews = availableViews;
 
     OcioSpaceKnobs::Description inputSpace;
-    inputSpace.prefix = kNatronReadParamColorspace;
+    inputSpace.name = kNatronReadParamColorspace;
     inputSpace.label = tr("Colorspace");
-    inputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
-                             "working space. Project default takes the colorspace the config's file rules give the file, "
-                             "else the colorspace tagged in the file, else the project's default for files of its kind, "
-                             "and follows them as they change. The config's default rule does not count.");
-    inputSpace.projectDefault = true;
-    inputSpace.contextName = kNatronIoParamOCIOContext;
-    inputSpace.contextKeyPrefix = "contextKey";
-    inputSpace.contextValuePrefix = "contextValue";
-    inputSpace.contextKeyLabel = tr("Context Key %1");
-    inputSpace.contextValueLabel = tr("Context Value %1");
+    inputSpace.hint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                         "working space. Project default takes the colorspace the config's file rules give the file, "
+                         "else the colorspace tagged in the file, else the project's default for files of its kind, "
+                         "and follows them as they change; its label shows the colorspace it currently stands for. "
+                         "The config's default rule does not count.");
+    inputSpace.defaultHint = tr("The colorspace the config's file rules give the file, else the colorspace tagged in the "
+                                "file, else the project's default for files of its kind, following them as they change.");
     _inputSpace.create(this, page, inputSpace, [this]() { return automaticInputSpace(); });
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();

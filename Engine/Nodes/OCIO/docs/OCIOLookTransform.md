@@ -7,8 +7,9 @@ Tolerance:
 | OCIOLookTransform | transcendental | `expectRender()`'s default, 1e-5 | against OpenColorIO's `LookTransform` |
 
 `OCIOLookTransform` (`OCIOLookTransform.h`, plug-in ID `OCIOLookTransform`) applies looks of the
-project's config to RGB on the way from `in_colorspace` to `out_colorspace`, with the Context
-variables; empty spaces are the working space. `direction` inverse undoes the looks from the
+project's config to RGB on the way from `inputColorspace` to `outputColorspace`, with the
+context variables of the `ocioContext` group; each space menu's first entry, `projectDefault`,
+is the working space, labelled with the space it stands for. `direction` inverse undoes the looks from the
 output back to the input. Alpha is left as it is.
 
 - **Looks.** With `single_look` checked, the `look` menu (the config's looks) is the one applied.

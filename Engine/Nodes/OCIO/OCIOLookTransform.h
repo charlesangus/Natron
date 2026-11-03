@@ -36,8 +36,8 @@
 #define PLUGINID_NATRON_OCIOLOOKTRANSFORM "OCIOLookTransform"
 #define PLUGIN_MAJOR_NATRON_OCIOLOOKTRANSFORM 1
 
-#define kOCIOLookTransformParamInputSpace "in_colorspace"
-#define kOCIOLookTransformParamOutputSpace "out_colorspace"
+#define kOCIOLookTransformParamInputSpace "inputColorspace"
+#define kOCIOLookTransformParamOutputSpace "outputColorspace"
 #define kOCIOLookTransformParamLook "look"
 #define kOCIOLookTransformParamAppend "append"
 #define kOCIOLookTransformParamSingleLook "single_look"
@@ -53,7 +53,7 @@ inline constexpr InputSpec kOCIOLookTransformInputs[] = {
 
 /**
  * @brief OCIOLookTransform: applies one look of the project's config, or a combination of them,
- * on the way from an input to an output colourspace, empty ones being the working space. The
+ * on the way from an input to an output colourspace, Project default being the working space. The
  * inverse undoes the looks from the output back to the input, as OCIOLookTransform did.
  **/
 struct OCIOLookTransformOp

@@ -102,3 +102,4 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 - 2026-11-02 — main merged in (materialsScope added to SceneLayerMemo::Key ==); gate running (PM).
 - 2026-11-03 — Screenshots OK, proceed (user).
 - 2026-11-03 — PR #172 Codex review: 8 findings (identifier collision, O(n²) matching, empty-scene validation, 4 comment nits) fixed in 8e8adada4 and replied.
+- 2026-11-03 — Merged to main as ea498d866 (#172).

@@ -169,7 +169,7 @@ future core work has solid ground to build on.
 | M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
-| M236 | Shared Materials And Assignment | doing | M226 | bosley-native-nodes | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
+| M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
 | M238 | EdgeExtend Options | blocked | M123 | bosley-native-nodes | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |

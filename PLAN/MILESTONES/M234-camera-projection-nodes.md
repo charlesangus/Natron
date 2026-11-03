@@ -68,22 +68,22 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Phase 234.7: UAT round 3 fixes (user, 2026-11-02)
 
-- [ ] M234.P7.T1 — Crop outside the frame is transparent black
+- [x] M234.P7.T1 — Crop outside the frame is transparent black
   - files: USDProject3D / projection shader and its crop path, projection tests
   - approach: the "crop" setting must give alpha 0 (and black RGB) outside the projected frame; today alpha is 1 there.
   - verify: a test projects with crop on and reads alpha 0 outside the frame, 1 inside.
   - size: M
-- [ ] M234.P7.T2 — Camera Path resolves lazily on the composed stage
+- [x] M234.P7.T2 — Camera Path resolves lazily on the composed stage
   - files: USDProject3D camera lookup, the material/shader binding that consumes it, projection tests
   - approach: per the spec, the camera path is resolved when the stage the viewer/render sees is composed, not in the projection node's own upstream scene. Texture → USDProject3D (Camera Path /USDCamera1) → USDCard, merged in USDMerge with USDCamera1, viewed downstream: must project cleanly with no "(missing)", no node warning. Only warn when the final composed stage lacks the prim.
   - verify: a test builds exactly that chain and checks the projection renders the texture (not black/white-alpha) and the node carries no warning.
   - size: L
-- [ ] M234.P7.T3 — A disabled node feeding a live texture still projects
+- [x] M234.P7.T3 — A disabled node feeding a live texture still projects
   - files: live-texture source resolution (shared with M233), projection tests
   - approach: when the node directly above USDProject3D (or any live-texture consumer) is disabled, follow the disabled node's pass-through input as the render does instead of failing.
   - verify: a test disables the node above the projection and checks the projected texture equals its input's image.
   - size: M
-- [ ] M234.P7.T4 — No edge stretching outside the data window
+- [x] M234.P7.T4 — No edge stretching outside the data window
   - files: live-texture upload (data window / format handling), projection shader sampling, tests
   - approach: checkerboard → Crop (black outside) → Transform y 250 (black outside) → USDProject3D shows a black border at the bottom in 2D, but in 3D the checker edge stretches: the texture is clamp-to-edge sampled or the data window is dropped. Upload/sample so pixels outside the data window are black (clamp-to-border transparent), consistent with the 2D viewer.
   - verify: a test renders that chain in 3D and reads black in the band the 2D viewer shows black.
@@ -139,3 +139,4 @@ their images through M233 - Live Node Textures. Survey:
   - size: M
 - 2026-11-02 — The 3D viewport ignores auto-contrast; the feature itself is to be removed (user) — M307 - Remove Viewer Auto-Contrast.
 - 2026-11-02 — Audit: P6.T1 at 7f7d5b98b (gain before, gamma after the display transform, plus test fixes 5b76d198c, 26cf94ed0). P6.T2 not done: the viewport background is still graded with gain and gamma (setDisplayTransform runs it through the same processor), and no reason is recorded for leaving it. P3.T3 waits on M236 - Shared Materials And Assignment merging. Branch pushed, clean, no PR, 23 behind origin/main. It carries M233 only up to 300b0b546, so it lacks M233's P4/P5; per M233's 2026-11-02 note the projection must move to USDEmissiveMaterial once M233 is merged in (audit).
+- 2026-11-02 — P7 at 438c14d81: transparent black outside the frame (Crop) and beyond the data window (wrap 'black', was clamp); Camera Path resolved on the composed stage in SceneStage::sync and SceneOps::compose (new SceneProjectionCameras), USDRender warns only when the final stage lacks the camera; disabled source passes through in getLiveTextureSource (same fix as M233's LiveTextureStore — reconcile when M233 merges in). Goldens StormProject3DWorld/GeometryHeld/Overscan need re-recording (alpha outside the frame now 0). A layered USDWrite export keeps the unresolved path; flattened export is resolved. USDProjectUV still reads its camera from its input only (implementer).

@@ -35,12 +35,13 @@
 
 #include <QString>
 
+// ofxhClip.h is not self-contained: ofxhImageEffectAPI.h (via ofxhImageEffect.h) has to pull in the property headers first.
 // clang-format off
 CLANG_DIAG_OFF(unknown-pragmas)
 CLANG_DIAG_OFF(tautological-undefined-compare)
-#include <ofxhClip.h>
 #include <ofxhPluginCache.h>
 #include <ofxhImageEffectAPI.h>
+#include <ofxhClip.h>
 CLANG_DIAG_ON(tautological-undefined-compare)
 CLANG_DIAG_ON(unknown-pragmas)
 // clang-format on

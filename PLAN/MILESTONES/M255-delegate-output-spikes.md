@@ -47,19 +47,19 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
 
 - [ ] M255.P2.T1 — Cycles in-process deep
   - files: throwaway branch only; report
-  - approach: apply Blender PR #154410 / `feature/cycles-deep` to our pinned Cycles on a scratch build, render a deep test scene, and find how to hand the sample buffers to host code through the delegate instead of writing an EXR. Measure bytes per pixel and time against flat. State what a delegate patch would look like.
+  - approach: apply Blender PR #154410 / `feature/cycles-deep` to our pinned Cycles on a scratch build, render a deep test scene, and establish whether hdCycles can fill M286's `HydraDeepBuffer` (returned from `HdRenderBuffer::GetResource()`) in-process, and the patch that needs. Measure bytes per pixel and time against flat. State what a delegate patch would look like.
   - verify: report includes a picture of a flattened result and sample-count statistics for the test scene, build logs of the scratch patch, and the patch size.
   - size: L
 
 - [ ] M255.P2.T2 — MoonRay in-process deep
   - files: throwaway branch only; report
-  - approach: inspect MoonRay's deep output (source citations); render a deep test scene through its API or delegate, and find whether the sample buffers are reachable in-process. Same measurements as the Cycles task.
+  - approach: inspect MoonRay's deep output (source citations); render a deep test scene through its API or delegate, and establish whether MoonRay's DeepBuffer can fill M286's `HydraDeepBuffer` in-process, and the patch that needs. Same measurements as the Cycles task.
   - verify: report with sample statistics and the answer to "reachable in-process without a file", with source citations.
   - size: L
 
 - [ ] M255.P2.T3 — Findings and decision drafts
   - files: report only
-  - approach: combine the four reports into one comparison and a recommended transport for deep (delegate-side sample-list buffer, render-buffer extension or file route), the AOV mechanism, and elaborated task lists for the three stubs. Name the user decisions needed.
+  - approach: combine the four reports into one comparison: per delegate, whether it can fill `HydraDeepBuffer` and the patch size; the AOV mechanism (checking how each candidate carries per-AOV metadata such as Cryptomatte manifests, for M285 - Utility Renderer AOVs); and elaborated task lists for the three stubs. Name the user decisions needed.
   - verify: the report answers each Scope question in one line and recommends one option per fork.
   - size: M
 
@@ -67,6 +67,7 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
 
 ## Decisions
 
+- 2026-11-03 — **Deep transport is decided (user, 2026-11-01, `PLAN/DECISIONS/2026-11-01-natron-utility-renderer.md`):** M286 - Utility Renderer Deep Output defines it — a delegate's `HdRenderBuffer::GetResource()` returns a host-defined `HydraDeepBuffer` (per-pixel counts, offsets, named float channels) that USDRender converts into `DeepImage`. P2.T1/T2 now only establish whether Cycles and MoonRay can fill it in-process and the patch each needs; P2.T3 no longer recommends a transport. The AOV spike is unchanged; M256 - Delegate AOV Selection now has Natron Utility as its first full client (M285).
 - 2026-10-28: Source findings (no renders yet). Cycles 5.2.0 hdCycles offers only color, depth, normal, primId, instanceId (elementId gets a descriptor but no pass; other names dropped with "Unknown pass"); no LPEs; ~60 core pass types unmapped (would need a delegate patch). Cycles registers no renderSettings Bprim, so RenderSettings-driven AOVs would mean Natron mapping RenderVars itself. Cycles 5.2.0 has no deep output. MoonRay accepts named AOVs, lpe:<expr>, primvars:/shader: and parameters:moonray:* aovSettings; its core has an in-memory DeepBuffer but only writes deep EXR, and the bundled hd_moonray renders out-of-process via Arras (flat frames only) — in-process deep needs hd_moonray_debug (in-process RndrRenderer, currently not bundled) plus a patch exposing DeepBuffer samples. Blocked on the user: run the spikes as real builds (patched Cycles image, scratch branch)? access to Blender PR #154410 / Niik-l cycles branch? accept switching MoonRay to in-process rendering for deep?
 - 2026-10-27 — **Spike deep transport and AOV mechanism first (user):** deep transport is not decided in advance, and for AOV selection the user asked to spike the delegate-discovered checklist and the USD RenderSettings route before choosing.
 - 2026-11-02 — Audit: no spike code or report committed. The local branch has no upstream and points at M252's tip (73190fc59), with no M255 commits. Only the source-level findings in the 2026-10-28 note exist; no task's verify is met. Still blocked on that note's three user questions (audit).

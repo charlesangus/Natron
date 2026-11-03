@@ -61,3 +61,4 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 - 2026-10-27 — **Curated plus generic fallback (user):** hand-built groups for the two shipped delegates, generated knobs for everything else.
 - 2026-11-02 — Audit: all four tasks at c30a7cd04 (RenderSettingsKnobs, CyclesSettings, MoonRaySettings, audit output in the Cycles and MoonRay tests). Pushed, clean, no PR, 23 behind origin/main; stacked on M251 and M252, so it waits for them. The open user questions in the 2026-10-28 note are unanswered (audit).
 - 2026-11-02 — OIDN is bundled (user).
+- 2026-11-03 — User on the hash question: hidden renderers' settings must not change the hash, and probably should not be editable at all ("why would we show knobs that aren't relevant?"). The user also questions whether one USDRender node is the right shape and asked how Solaris, Katana and Gaffer handle several renderers; a consultant is researching before this is re-asked. Blocked on that design question.

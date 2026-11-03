@@ -172,6 +172,20 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
     EXPECT_EQ("Read1", grade->inputs.at("Mask"));
 }
 
+TEST(ClipboardYaml, ACopiedNodeLeavesItsCacheIDBehind)
+{
+    ClipboardSerialization clipboard;
+    NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur");
+    blur->cacheID = "0b6f1d3c-6a0e-4c43-9f55-2f7e8d1a4b90";
+    clipboard.nodes = { blur };
+    const std::string text = Serialization::encodeClipboardYaml(clipboard);
+    EXPECT_EQ(std::string::npos, text.find("cacheID")) << text;
+
+    const ClipboardSerialization decoded = Serialization::decodeClipboardYaml(text);
+    ASSERT_EQ(1u, decoded.nodes.size());
+    EXPECT_TRUE(decoded.nodes.front()->cacheID.empty());
+}
+
 TEST(ClipboardYaml, AWeightedKeyKeepsItsWeights)
 {
     ClipboardSerialization clipboard = blurIntoGrade();

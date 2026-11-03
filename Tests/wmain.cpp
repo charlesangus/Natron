@@ -10,10 +10,12 @@
 #include "Engine/CLArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -212,6 +214,15 @@ registerCacheStressTestPlugins()
     registerTestBuiltInPlugin<StaleMemoTestEffect>();
     // A filter whose knob edits queue under a render, for the queued-edit tests.
     registerTestBuiltInPlugin<QueuedEditTestEffect>();
+    // A filter that stores an actions-cache answer from onInputChanged().
+    registerTestBuiltInPlugin<InputChangedTestEffect>();
+}
+
+void
+registerAiTestPlugins()
+{
+    // A constant generator that carries a model knob, for the ModelKnob tests.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
 }
 }
 
@@ -229,6 +240,9 @@ GTEST_API_ int main(int argc, char **argv)
         return RUN_ALL_TESTS();
     }
     PerProcessUserDirs userDirs;
+    // A renderer whose library is missing, for the tests of unavailable delegates. Hydra
+    // discovers its renderers once, so it is registered before anything can ask for them.
+    RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/renderDelegates");
     appendTestOfxPluginDir();
     applyTestRetiredOfxIds();
     applyTestPlaneChoiceTakeOvers();
@@ -265,6 +279,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerCacheStressTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

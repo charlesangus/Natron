@@ -680,6 +680,8 @@ PrecompNodePrivate::refreshReadNodeInput()
     //This is a blocking call so that we are sure there's no old image laying around in the cache after this call
     copyWriterSpaceToReadNode(readNode);
     readNode->removeAllImagesFromCache(true);
+    // The precomp just rewrote the files, so this is a Reload, not a cache purge.
+    readNode->getEffectInstance()->purgeCaches();
     readNode->purgeAllInstancesCaches();
 
     //Force the reader to reload the sequence/video

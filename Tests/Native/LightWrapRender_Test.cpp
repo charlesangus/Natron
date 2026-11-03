@@ -222,7 +222,11 @@ protected:
         connectNodes(fg, crop, 0, true);
         connectNodes(crop, _wrap, 0, true);
         connectNodes(bg, _wrap, 1, true);
-        connectNodes(_wrap, _out, 0, true);
+        // Not connectNodes: its check reads getInput, which resolves a group input to the node
+        // feeding the group's Output, so it never equals the group itself.
+        EXPECT_TRUE(getApp()->getProject()->connectNodes(0, _wrap, _out));
+        EXPECT_EQ(_wrap, _out->getRealInput(0));
+        EXPECT_EQ(inner("Dot4"), _out->getInput(0));
 
         setDoubles(_wrap, "intensity", { 10. });
         setDoubles(_wrap, "fgblur", { 4., 4. });

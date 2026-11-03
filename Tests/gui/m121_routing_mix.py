@@ -308,9 +308,12 @@ try:
         use_constant = param(wrap, "useConstant")
         disable_luma = param(wrap, "disableLuma")
         # Intensity defaults to 0 (as in Nuke), which multiplies the wrap away; Generate Wrap Only
-        # keeps the plus-merged foreground from clamping the differences out.
-        param(wrap, "intensity").setValue(1.0)
-        param(wrap, "diffuse").set(60.0, 60.0)
+        # keeps the plus-merged foreground from clamping the differences out. The band's brightness
+        # scales with FGBlur over Diffuse: the default 1px FGBlur under a wide Diffuse leaves it
+        # below one 8-bit step, so both blurs are wide and equal and the intensity is high.
+        param(wrap, "intensity").setValue(20.0)
+        param(wrap, "fgblur").set(30.0, 30.0)
+        param(wrap, "diffuse").set(30.0, 30.0)
         param(wrap, "onlyWrap").setValue(True)
         yield ("sleep", SETTLE_MS * 4)
         base = viewer_crop()

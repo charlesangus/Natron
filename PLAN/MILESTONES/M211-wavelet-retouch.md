@@ -184,17 +184,17 @@ Analysis (consultant, 2026-11-03): ~95% of the cost is PoissonHeal's 2000 red-bl
   - approach: RoI = render window plus each intersecting shape's source bbox, padded by the wavelet support when Scales > 0; process that crop with mirror indices against the full RoD; supportsTiles true.
   - verify: a cropped render equals the full render within 1e-6.
   - size: M
-- [ ] M211.P8.T5 — Wavelet decomposition only where needed
+- [x] M211.P8.T5 — Wavelet decomposition only where needed
   - files: RetouchRender.cpp, EdgeAware/Wavelets.cpp
   - approach: skip decomposition when no shape is on scale ≥ 1 and Output is Result; otherwise compute only the affected detail layers over shape + source bbox plus padding (output = input + Σ(detail′ − detail)); scale-0/residual/merge-from shapes keep the full path.
   - verify: existing scale and residual references hold within fp tolerance; bench Scales 5 case faster in proportion to area.
   - size: M
-- [ ] M211.P8.T6 — Per-shape result cache and faster mask raster
+- [x] M211.P8.T6 — Per-shape result cache and faster mask raster
   - files: RetouchRender.cpp, Retouch.cpp
   - approach: cache each shape's patch keyed by input hash, geometry, settings, offset and the keys of earlier overlapping shapes, so editing one shape recomputes only it and later overlapping shapes; parallelise rasterizeBrush by rows, merge sub-strokes once, cache masks by geometry hash.
   - verify: editing shape A doesn't rerun shape B's solver (test); brush tests unchanged.
   - size: M
-- [ ] M211.P8.T7 — GPU multigrid heal
+- [x] M211.P8.T7 — GPU multigrid heal
   - files: EdgeAware/EdgeAwareGpu.cpp, the heal Slang kernels
   - approach: port T2's multigrid to Slang (tens of dispatches instead of 6000), sweep masked pixels only, stop at convergence; removes the 500-iteration push-descriptor CPU fallback.
   - verify: NativeRetouchGpu within tolerance; dispatch count per heal recorded.
@@ -260,3 +260,4 @@ Analysis (consultant, 2026-11-03): ~95% of the cost is PoissonHeal's 2000 red-bl
 - 2026-11-03 — UAT round 4: UI approved, but performance blocks shipping: a single heal stroke takes seconds to draw on the user's modest workstation (target < 100 ms), and adjusting a clone offset interactively isn't smooth even with the preview downscale. Profile and speed up before merge (user).
 - 2026-11-03 — Performance decisions (user): multigrid heal solved to convergence (departs from darktable's unconverged output on large strokes); draft heal while painting/dragging, full heal on release.
 - 2026-11-03 — P8.T1–T4 committed 9df7cf93f: multigrid-preconditioned CG heal (29.9x vs SOR on a 1000x300 stroke), draft heal while dragging, one render per motion, cropped processing with tiles, bench test. Open: the draft flag is read at render time rather than captured in the hash; the GPU still runs SOR on the whole image; Scales 5 decomposition now dominates (T5).
+- 2026-11-03 — P8.T5–T7 committed d67843119. 2K, 5 scales: clone 147→7.6 ms, heal 203→59 ms (shape on scale 0); half-res heal 87→19 ms; brush raster 18.9→7.2 ms; GPU multigrid matches CPU within 1e-5 in emulation (unrun on a device). Open: descriptor-pool size without push descriptors on long heals; GPU input RoI still the full input.

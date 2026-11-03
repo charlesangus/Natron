@@ -443,6 +443,27 @@ public:
         }
     }
 
+    /**
+     * Drops every Cycles engine unless they were all made under threads. A Cycles session sizes
+     * its CPU device once, when it is made, from TaskScheduler::max_concurrency(), which is the
+     * TBB arena concurrency the first live session was made in for as long as any session lives;
+     * nothing changes it afterwards. So a session follows a new budget only if it is made when no
+     * other lives. The engines keep their stages, and the next render of each makes it again.
+     **/
+    void dropCyclesEnginesUnlessMadeFor(int threads)
+    {
+        if (threads == _cyclesThreads) {
+            return;
+        }
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && CyclesAovs::isCycles(it->second.renderer)) {
+                it->second.engine.reset();
+                it->second.rendered = false;
+            }
+        }
+        _cyclesThreads = threads;
+    }
+
     // Drops the least recently used engines other than keep's while they hold more than the budget.
     void enforceBudget(const void* keep)
     {
@@ -642,6 +663,8 @@ private:
     HgiUniquePtr _hgi;
     std::map<const void*, EngineEntry> _engines;
     std::atomic<std::size_t> _engineCount { 0 };
+    // The thread budget every live Cycles engine was made under; see dropCyclesEnginesUnlessMadeFor().
+    int _cyclesThreads = 0;
     GLuint _framebuffer = 0;
     GLuint _renderbuffers[2] = { 0, 0 };
     std::uint64_t _renderSerial = 0;
@@ -811,6 +834,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         headlight = !hasSceneLight(stage);
     }
     const RendererSettings settings = rendererSettings(renderer);
+    if (CyclesAovs::isCycles(renderer)) {
+        dropCyclesEnginesUnlessMadeFor(request.threads);
+    }
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
     // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
     // when they change, so an engine is made again under new ones too.

@@ -554,6 +554,45 @@ TEST_F(USDRenderCyclesTest, RendersWithinTheThreadBudget)
     EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
 }
 
+// A render under a budget of 2 renders on 2 threads although another owner's Cycles engine, made
+// under all the cores, is alive: Cycles would size the new session's device from that one's.
+TEST_F(USDRenderCyclesTest, LaterEngineFollowsASmallerThreadBudget)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const int budget = 2;
+    const unsigned cores = std::thread::hardware_concurrency();
+    if (cores <= (unsigned)budget + 1) {
+        std::printf("[  SKIPPED ] %u cores cannot tell a budget of %d from all of them\n", cores, budget);
+
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader);
+    ASSERT_TRUE(bool(node));
+    static const int wide = 0;
+    static const int narrow = 1;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &wide, &request));
+    request.threads = (int)cores;
+    HydraRender::Result result;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixedSampling(2000));
+    request.owner = &narrow;
+    request.threads = budget;
+    const double cpuBefore = processCpuSeconds();
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const double cpu = processCpuSeconds() - cpuBefore;
+    ASSERT_GT(wall, 0.);
+    EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
+}
+
 // The fixture's rgba against the reference, within the tolerances above, and a second render on
 // this host bit for bit equal to the first.
 TEST_F(USDRenderCyclesTest, MatchesReferenceRender)

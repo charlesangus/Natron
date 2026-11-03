@@ -105,6 +105,8 @@ public:
 
     explicit USDAssignMaterial(NodePtr node);
 
+    static std::string getBindingName(const std::string& fullyQualifiedName);
+
     virtual ~USDAssignMaterial();
 
 private:
@@ -116,7 +118,6 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Greys Material Path out while the Material input is connected.
     void refreshMaterialPathEnabled();
 
     KnobStringWPtr _primPattern;

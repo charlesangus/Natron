@@ -798,7 +798,6 @@ namespace {
         return !slot.passThroughRoot.empty() && (slot.rootNames[rootIndex] == slot.passThroughRoot);
     }
 
-    // Where slot's root rootIndex lands: under destination, or at its own path when passed through.
     PXR_NS::SdfPath
     graftedRootOf(const GraftSlot& slot,
                   const PXR_NS::SdfPath& destination,
@@ -811,7 +810,6 @@ namespace {
         return destination.AppendChild(PXR_NS::TfToken(slot.childNames[rootIndex]));
     }
 
-    // Whether the root prim name of input's stage holds a gprim, read through SceneQueryPool.
     bool
     rootHoldsGprim(const ScenePayload& input,
                    const std::string& name,

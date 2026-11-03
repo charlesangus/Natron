@@ -40,10 +40,12 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -210,7 +212,9 @@ protected:
         }
         setString(node, kUSDAssignMaterialParamPrimPattern, pattern);
         setString(node, kUSDAssignMaterialParamMaterialPath, materialPath);
-        EXPECT_TRUE(node->connectInput(scene, kUSDAssignMaterialInputScene));
+        if (scene) {
+            EXPECT_TRUE(node->connectInput(scene, kUSDAssignMaterialInputScene));
+        }
         if (materialInput) {
             EXPECT_TRUE(node->connectInput(materialInput, kUSDAssignMaterialInputMaterial));
         }
@@ -235,6 +239,34 @@ protected:
         return node;
     }
 
+    NodePtr createGroup(const char* name)
+    {
+        CreateNodeArgs args(PLUGINID_NATRON_GROUP, getApp()->getProject());
+        args.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        NodePtr group = getApp()->createNode(args);
+
+        EXPECT_TRUE(bool(group));
+        if (group) {
+            group->setScriptName(name);
+        }
+
+        return group;
+    }
+
+    NodePtr createInside(const NodePtr& group,
+                         const char* pluginID)
+    {
+        NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+        if (!collection) {
+            return NodePtr();
+        }
+        CreateNodeArgs args(pluginID, collection);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
+    }
+
     QTemporaryDir _dir;
 };
 
@@ -254,7 +286,7 @@ TEST_F(USDAssignMaterialTest, ItBindsAMaterialInTheSceneAndTheBindingFollowsARep
     // One collection and one binding for the root's two matches.
     const std::vector<PXR_NS::TfToken> bindings = SceneNodeAuthoring::getCollectionBindingNames(stage->GetPrimAtPath(PXR_NS::SdfPath("/Asset")));
     ASSERT_EQ(1u, bindings.size());
-    EXPECT_EQ("material:binding:collection:" + node->getFullyQualifiedName(), bindings[0].GetString());
+    EXPECT_EQ("material:binding:collection:" + USDAssignMaterial::getBindingName(node->getFullyQualifiedName()), bindings[0].GetString());
 
     NodePtr moved = reparent(PLUGINID_NATRON_USDXFORMPRIM, "/T1", node);
     ASSERT_TRUE(bool(moved));
@@ -458,4 +490,55 @@ TEST_F(USDAssignMaterialTest, MaterialPathIsGreyedWhileTheMaterialInputIsConnect
     EXPECT_FALSE(materialPath->isEnabled(0));
     node->disconnectInput(kUSDAssignMaterialInputMaterial);
     EXPECT_TRUE(materialPath->isEnabled(0));
+}
+
+TEST_F(USDAssignMaterialTest, NodesWhoseNamesCollideAsIdentifiersKeepTheirOwnBindings)
+{
+    NodePtr reader = asset();
+    NodePtr group = createGroup("Group");
+    ASSERT_TRUE(reader && group);
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr inner = createInside(group, PLUGINID_NATRON_USDASSIGNMATERIAL);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && inner && groupOutput);
+    inner->setScriptName("Assign");
+    setString(inner, kUSDAssignMaterialParamPrimPattern, "/Asset/geo/a");
+    setString(inner, kUSDAssignMaterialParamMaterialPath, "/materials/M");
+    ASSERT_TRUE(inner->connectInput(groupInput, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(groupOutput->connectInput(inner, 0));
+    ASSERT_TRUE(group->connectInput(reader, 0));
+
+    NodePtr outer = assign(group, "/Asset/geo/b", "/materials/N");
+    ASSERT_TRUE(bool(outer));
+    outer->setScriptName("Group_Assign");
+    ASSERT_EQ("Group.Assign", inner->getFullyQualifiedName());
+    ASSERT_EQ("Group_Assign", outer->getFullyQualifiedName());
+    EXPECT_NE(USDAssignMaterial::getBindingName(inner->getFullyQualifiedName()),
+              USDAssignMaterial::getBindingName(outer->getFullyQualifiedName()));
+
+    PXR_NS::UsdStageRefPtr stage = compose(outer);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/Asset/geo/a"));
+    EXPECT_EQ("/materials/N", boundMaterial(stage, "/Asset/geo/b"));
+    EXPECT_EQ(2u, SceneNodeAuthoring::getCollectionBindingNames(stage->GetPrimAtPath(PXR_NS::SdfPath("/Asset"))).size());
+}
+
+TEST_F(USDAssignMaterialTest, AnEmptySceneStillValidatesThePatternAndWarnsOfNoMatch)
+{
+    NodePtr invalid = assign(NodePtr(), "relative", "/materials/M");
+    ASSERT_TRUE(bool(invalid));
+    ScenePayload payload;
+    std::string error;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk,
+              invalid->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+    EXPECT_FALSE(error.empty());
+
+    NodePtr unmatched = assign(NodePtr(), "/Nothing", "/materials/M");
+    ASSERT_TRUE(bool(unmatched));
+    EXPECT_TRUE(evaluate(unmatched).isEmpty());
+    ASSERT_TRUE(unmatched->hasPersistentMessage());
+    int type = 0;
+    const QString message = getMessage(unmatched, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("matches no prim"))) << message.toStdString();
 }

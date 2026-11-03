@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -406,10 +407,11 @@ namespace {
     collectMatches(const PXR_NS::UsdPrim& parent,
                    const std::vector<std::string>& names,
                    std::size_t depth,
-                   std::vector<PXR_NS::SdfPath>* paths)
+                   std::vector<PXR_NS::SdfPath>* paths,
+                   std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash>* seen)
     {
         if (depth == names.size()) {
-            if (isMatchablePrim(parent) && (std::find(paths->begin(), paths->end(), parent.GetPath()) == paths->end())) {
+            if (isMatchablePrim(parent) && seen->insert(parent.GetPath()).second) {
                 paths->push_back(parent.GetPath());
             }
 
@@ -419,14 +421,14 @@ namespace {
         if (name.find_first_of("*?") == std::string::npos) {
             const PXR_NS::UsdPrim child = parent.GetChild(PXR_NS::TfToken(name));
             if (isMatchablePrim(child)) {
-                collectMatches(child, names, depth + 1, paths);
+                collectMatches(child, names, depth + 1, paths, seen);
             }
 
             return;
         }
         for (const PXR_NS::UsdPrim& child : parent.GetChildren()) {
             if (isMatchablePrim(child) && matchesGlob(child.GetName().GetString(), name)) {
-                collectMatches(child, names, depth + 1, paths);
+                collectMatches(child, names, depth + 1, paths, seen);
             }
         }
     }
@@ -477,15 +479,15 @@ matchPrims(const PXR_NS::UsdStageRefPtr& stage,
     if (!stage) {
         return true;
     }
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> seen;
     for (const std::vector<std::string>& names : entries) {
-        collectMatches(stage->GetPseudoRoot(), names, 0, paths);
+        collectMatches(stage->GetPseudoRoot(), names, 0, paths, &seen);
     }
 
     return true;
 } // matchPrims
 
 namespace {
-    // Grafts material per args into graft, finding where its first material landed.
     bool
     graftMaterial(const ScenePayload& material,
                   const SceneReparentArgs& args,

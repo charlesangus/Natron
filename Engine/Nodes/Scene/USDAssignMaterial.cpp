@@ -25,7 +25,10 @@
 
 #include "USDAssignMaterial.h"
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <QStringList>
@@ -43,12 +46,26 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The matches under one root prim, which gets one collection and binding for them.
 struct RootMatches {
     PXR_NS::SdfPath root;
     std::vector<PXR_NS::SdfPath> paths;
     std::vector<PXR_NS::TfToken> existingBindings;
 };
+
+std::string
+hexSuffix(const std::string& text)
+{
+    // FNV-1a, so the name is the same in every process and every session.
+    std::uint64_t hash = 1469598103934665603ULL;
+
+    for (const char c : text) {
+        hash = (hash ^ (std::uint64_t)(unsigned char)c) * 1099511628211ULL;
+    }
+    char buffer[17];
+    std::snprintf(buffer, sizeof(buffer), "%016llx", (unsigned long long)hash);
+
+    return std::string(buffer);
+}
 
 bool
 isBlank(const std::string& text)
@@ -190,7 +207,6 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     const bool materialConnected = args.inputScenes.count(kUSDAssignMaterialInputMaterial) > 0;
     QStringList warnings;
 
-    // The scene the binding layer stacks on: the input, plus the grafted material when there is one.
     ScenePayload base = upstream;
     std::string materialPath;
     if (materialConnected) {
@@ -232,16 +248,20 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     }
 
     std::vector<RootMatches> roots;
-    if (!upstream.isEmpty() && !isBlank(pattern)) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
-        PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = tr("USD could not compose the input scene.").toStdString();
-            }
-            setPersistentMessage(eMessageTypeError, *errorMessage);
+    if (!isBlank(pattern)) {
+        SceneQueryPool::Lease lease;
+        PXR_NS::UsdStageRefPtr stage;
+        if (!upstream.isEmpty()) {
+            lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+            stage = lease.getStage();
+            if (!stage) {
+                if (errorMessage->empty()) {
+                    *errorMessage = tr("USD could not compose the input scene.").toStdString();
+                }
+                setPersistentMessage(eMessageTypeError, *errorMessage);
 
-            return eStatusFailed;
+                return eStatusFailed;
+            }
         }
         std::vector<PXR_NS::SdfPath> found;
         if (!SceneNodeAuthoring::matchPrims(stage, pattern, &found, errorMessage)) {
@@ -249,6 +269,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
+        std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> rootIndices;
         QStringList skipped;
         for (const PXR_NS::SdfPath& path : found) {
             const PXR_NS::SdfPath root = getRootPrim(path);
@@ -256,17 +277,14 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 skipped += QString::fromStdString(path.GetString());
                 continue;
             }
-            std::vector<RootMatches>::iterator it = roots.begin();
-            while ((it != roots.end()) && (it->root != root)) {
-                ++it;
-            }
-            if (it == roots.end()) {
+            const std::pair<std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash>::iterator, bool> inserted = rootIndices.emplace(root, roots.size());
+            if (inserted.second) {
                 RootMatches matches;
                 matches.root = root;
                 matches.existingBindings = SceneNodeAuthoring::getCollectionBindingNames(stage->GetPrimAtPath(root));
-                it = roots.insert(roots.end(), matches);
+                roots.push_back(matches);
             }
-            it->paths.push_back(path);
+            roots[inserted.first->second].paths.push_back(path);
         }
         if (!skipped.isEmpty()) {
             warnings += tr("These matches lie inside the Materials Scope /%1 and are skipped: %2")
@@ -281,7 +299,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             warnings += tr("There is no material to bind: connect the Material input or set Material Path. The scene is "
                            "passed through unchanged.");
             roots.clear();
-        } else if (!materialConnected) {
+        } else if (!materialConnected && stage) {
             const PXR_NS::UsdPrim materialPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath));
             if (!materialPrim || !materialPrim.IsA<PXR_NS::UsdShadeMaterial>()) {
                 warnings += tr("%1 is not a material in the input scene; the binding is authored anyway.").arg(QString::fromStdString(materialPath));
@@ -302,7 +320,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
     SceneNodeAuthoring::SceneCollectionBinding binding;
     binding.materialPath = materialPath;
-    binding.bindingName = PXR_NS::TfMakeValidIdentifier(getFullyQualifiedName());
+    binding.bindingName = getBindingName(getFullyQualifiedName());
     switch (purposeKnob->getValue()) {
     case ePurposeFull:
         binding.purpose = PXR_NS::UsdShadeTokens->full;
@@ -373,5 +391,13 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
     return eStatusOK;
 } // USDAssignMaterial::renderScene
+
+// TfMakeValidIdentifier maps "A.B" and "A_B" to one name; the hash of the original keeps the
+// bindings of such nodes apart.
+std::string
+USDAssignMaterial::getBindingName(const std::string& fullyQualifiedName)
+{
+    return PXR_NS::TfMakeValidIdentifier(fullyQualifiedName) + "_" + hexSuffix(fullyQualifiedName);
+}
 
 NATRON_NAMESPACE_EXIT

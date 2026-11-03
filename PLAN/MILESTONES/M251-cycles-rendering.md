@@ -53,7 +53,7 @@ M253 - Delegate Render Settings.
   - verify: aborting a long render returns within a second and leaves no Cycles threads (checked via /proc thread count); two concurrent USDRender renders do not oversubscribe cores beyond the budget.
   - size: M
 
-- [ ] M251.P1.T4 — Reference render test
+- [x] M251.P1.T4 — Reference render test (03271dd7d: polygonal meshes without smooth normals render faceted, as in USD and Storm; reference recorded; release gate green)
   - files: `Tests/Scene/USDRenderCycles_Test.cpp`, a committed reference scene and image under `Tests/`
   - approach: fixed seed and samples; compares within a documented tolerance, not bit-exact (Cycles' sampling differs across CPUs); records the tolerance rationale in the test.
   - verify: passes on the strict runner and in CI release; rerun produces identical output on the same host.

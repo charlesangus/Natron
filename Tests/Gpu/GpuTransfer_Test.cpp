@@ -732,6 +732,7 @@ GPU_TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
         StreamOptions up;
         up.handoff = ComputeHandoff::None;
         up.path = &path;
+        up.cacheImport = true;
         TimelineValue uploaded;
         GpuStatus s = t->upload({ p, kBytes }, buf, 0, uploaded, up);
         EXPECT_TRUE(s.ok()) << s.message;
@@ -739,6 +740,7 @@ GPU_TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
         StreamOptions down;
         down.handoff = ComputeHandoff::None;
         down.waits = { &uploaded, 1 };
+        down.cacheImport = true;
         TimelineValue downloaded;
         s = t->download(buf, 0, { dst, kBytes }, downloaded, down);
         EXPECT_TRUE(s.ok()) << s.message;
@@ -1154,6 +1156,7 @@ GPU_TEST_F(GpuTransferTest, UploadOfAForgottenRangeCountsForgotten)
 
     StreamOptions so;
     so.handoff = ComputeHandoff::None;
+    so.cacheImport = true;
     TransferPath path = TransferPath::HostImport;
     so.path = &path;
     GpuStatus status;
@@ -1179,5 +1182,56 @@ GPU_TEST_F(GpuTransferTest, UploadOfAForgottenRangeCountsForgotten)
     const StagedReasonCounts c = t->stagedReasons();
     EXPECT_EQ(c.forgotten, 1u);
     EXPECT_EQ(c.total(), 1u);
+    munmap(p, kBytes);
+}
+
+GPU_TEST_F(GpuTransferTest, UploadWithoutCacheImportLeavesNoCachedImport)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(2) << 20;
+    void* p = mapImportable(kBytes, t->hostImportAlignment());
+    if (!p) {
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    uint8_t* dst = dsts_[4].get();
+
+    // Memory nobody calls forgetHostAllocation() for: the address is reused below without one.
+    auto roundTrip = [&](uint32_t seed) {
+        fillFrame(static_cast<uint8_t*>(p), kBytes, seed);
+        std::memset(dst, 0, kBytes);
+        TransferPath path = TransferPath::Staging;
+        StreamOptions up;
+        up.handoff = ComputeHandoff::None;
+        up.path = &path;
+        TimelineValue uploaded;
+        GpuStatus s = t->upload({ p, kBytes }, buf, 0, uploaded, up);
+        EXPECT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(path, TransferPath::HostImport);
+        StreamOptions down;
+        down.handoff = ComputeHandoff::None;
+        down.waits = { &uploaded, 1 };
+        TimelineValue downloaded;
+        s = t->download(buf, 0, { dst, kBytes }, downloaded, down);
+        EXPECT_TRUE(s.ok()) << s.message;
+        EXPECT_TRUE(t->wait(downloaded).ok());
+        expectSame(p, dst, kBytes, seed);
+    };
+
+    const HostImportStats before = t->hostImportStats();
+    roundTrip(31);
+    EXPECT_EQ(t->hostImportStats().cached, before.cached) << "an upload without cacheImport cached its import";
+
+    void* q = mmap(p, kBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT_EQ(q, p);
+    roundTrip(32);
+    EXPECT_EQ(t->hostImportStats().cached, before.cached);
     munmap(p, kBytes);
 }

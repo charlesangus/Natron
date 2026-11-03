@@ -463,6 +463,10 @@ ProjectPrivate::autoSetProjectDirectory(const QString& path)
     if (env != newEnv) {
         if ( appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled() ) {
             _publicInterface->fixRelativeFilePaths(NATRON_PROJECT_ENV_VAR_NAME, pathCpy, false);
+            // A loaded project's variables follow the project to its new folder, as its nodes do.
+            if (!_publicInterface->isLoadingProject()) {
+                _publicInterface->fixRelativePathVariables(NATRON_PROJECT_ENV_VAR_NAME, pathCpy);
+            }
         }
         envVars->setValue(newEnv);
     }

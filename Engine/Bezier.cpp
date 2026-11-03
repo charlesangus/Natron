@@ -60,8 +60,6 @@
 #include "Engine/ViewerInstance.h"
 
 #define kBlurCImgParamSize "size"
-#define kTimeOffsetParamOffset "timeOffset"
-#define kFrameHoldParamFirstFrame "firstFrame"
 
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
@@ -1249,11 +1247,13 @@ Bezier::addControlPoint(double x,
     BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
     assert(this_shared);
     bool autoKeying = getContext()->isAutoKeyingEnabled();
+    bool createdKeyframe = false;
     {
         QMutexLocker l(&itemMutex);
         assert(!_imp->finished);
         if ( _imp->points.empty() ) {
             keyframeTime = time;
+            createdKeyframe = autoKeying;
         } else {
             keyframeTime = _imp->points.front()->getKeyframeTime(useGuiCurve, 0);
             if (keyframeTime == std::numeric_limits<int>::max()) {
@@ -1302,6 +1302,10 @@ Bezier::addControlPoint(double x,
     }
 
     invalidateContentHash();
+
+    if (createdKeyframe) {
+        Q_EMIT keyframeSet(keyframeTime);
+    }
 
     return p;
 } // Bezier::addControlPoint
@@ -2377,6 +2381,95 @@ Bezier::setPointAtIndex(bool feather,
                         double ry)
 {
     setPointAtIndexInternal(true, true, true, feather, false, index, time, x, y, lx, ly, rx, ry);
+}
+
+bool
+Bezier::setPointPositionAtKeyframe(int index,
+                                   double time,
+                                   double x,
+                                   double y)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    bool useGuiCurve = !canSetInternalPoints();
+    bool featherLink = getContext()->isFeatherLinkEnabled();
+    bool useFeather = useFeatherPoints();
+    BezierCPPtr cp, fp;
+
+    {
+        QMutexLocker l(&itemMutex);
+        if ((index < 0) || (index >= (int)_imp->points.size())) {
+            return false;
+        }
+        BezierCPs::iterator cpIt = _imp->points.begin();
+        std::advance(cpIt, index);
+        cp = *cpIt;
+        if (!cp->hasKeyFrameAtTime(useGuiCurve, time)) {
+            return false;
+        }
+        if (useFeather && (index < (int)_imp->featherPoints.size())) {
+            BezierCPs::iterator fpIt = _imp->featherPoints.begin();
+            std::advance(fpIt, index);
+            fp = *fpIt;
+        }
+        // Decided before the move, which would separate them.
+        bool moveFeather = fp && (featherLink || cp->equalsAtTime(useGuiCurve, time, ViewIdx(0), *fp));
+
+        double px, py;
+        cp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &px, &py);
+        const double dx = x - px;
+        const double dy = y - py;
+
+        BezierCP* toMove[2] = { cp.get(), moveFeather ? fp.get() : 0 };
+        for (int i = 0; i < 2; ++i) {
+            BezierCP* p = toMove[i];
+            if (!p) {
+                continue;
+            }
+            double ox, oy, lx, ly, rx, ry;
+            p->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &ox, &oy);
+            p->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &lx, &ly);
+            p->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rx, &ry);
+            p->setPositionAtTime(useGuiCurve, time, ox + dx, oy + dy);
+            p->setLeftBezierPointAtTime(useGuiCurve, time, lx + dx, ly + dy);
+            p->setRightBezierPointAtTime(useGuiCurve, time, rx + dx, ry + dy);
+        }
+        if (!moveFeather) {
+            fp.reset();
+        }
+    }
+
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, false, false);
+
+    return true;
+} // setPointPositionAtKeyframe
+
+bool
+Bezier::getPointPositionForEdit(int index,
+                                double time,
+                                double* x,
+                                double* y) const
+{
+    const bool useGuiCurve = !canSetInternalPoints();
+    QMutexLocker l(&itemMutex);
+
+    if ((index < 0) || (index >= (int)_imp->points.size())) {
+        return false;
+    }
+    BezierCPs::const_iterator cpIt = _imp->points.begin();
+    std::advance(cpIt, index);
+    (*cpIt)->getPositionAtTime(useGuiCurve, time, ViewIdx(0), x, y);
+
+    return true;
+}
+
+void
+Bezier::requestPointsInCurveEditor(const std::list<BezierCPPtr>& points,
+                                   bool show)
+{
+    Q_EMIT curveEditorPointsRequested(points, show);
 }
 
 void
@@ -3734,19 +3827,37 @@ void
 Bezier::setKeyFrameInterpolation(KeyframeTypeEnum interp,
                                  int index)
 {
-    QMutexLocker l(&itemMutex);
-    bool useFeather = useFeatherPoints();
-    BezierCPs::iterator fp = _imp->featherPoints.begin();
+    double time = 0.;
+    bool hasTime = false;
+    {
+        QMutexLocker l(&itemMutex);
+        bool useFeather = useFeatherPoints();
+        BezierCPs::iterator fp = _imp->featherPoints.begin();
 
-    for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
-        (*it)->setKeyFrameInterpolation(false, interp, index);
+        if (!_imp->points.empty()) {
+            time = _imp->points.front()->getKeyframeTime(false, index);
+            hasTime = time != std::numeric_limits<int>::max();
+        }
+        // The viewer overlay draws the GUI curves, and later edits copy key tangents from the
+        // internal curves to them, so both must carry the same interpolation.
+        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+            (*it)->setKeyFrameInterpolation(false, interp, index);
+            (*it)->setKeyFrameInterpolation(true, interp, index);
 
-        if (useFeather) {
-            (*fp)->setKeyFrameInterpolation(false, interp, index);
-            ++fp;
+            if (useFeather) {
+                (*fp)->setKeyFrameInterpolation(false, interp, index);
+                (*fp)->setKeyFrameInterpolation(true, interp, index);
+                ++fp;
+            }
         }
     }
     invalidateContentHash();
+    if (hasTime) {
+        invalidatePolygonOrientation(false, time);
+        invalidatePolygonOrientation(true, time);
+    } else {
+        invalidatePolygonOrientation();
+    }
 }
 
 void

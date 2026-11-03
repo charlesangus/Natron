@@ -121,6 +121,37 @@ outputRange(const Settings& settings)
     return range;
 }
 
+RangeTime
+mapIntoRange(double time, int first, int last, BeforeAfter before, BeforeAfter after)
+{
+    RangeTime out;
+    if (!std::isfinite(time) || std::fabs(time) > 1e9) {
+        out.kind = RangeTime::eError;
+        return out;
+    }
+    Settings settings;
+    settings.firstFrame = first;
+    settings.lastFrame = last;
+    settings.before = before;
+    settings.after = after;
+    settings.frameMode = eFrameModeTimeOffset;
+    settings.timeOffset = 0;
+    const Mapped mapped = mapToSequenceTime(time, settings);
+    switch (mapped.placement) {
+    case Placement::eWithin:
+        out.kind = RangeTime::eWithin;
+        out.time = mapped.sequenceTime;
+        break;
+    case Placement::eBlack:
+        out.kind = RangeTime::eBlack;
+        break;
+    case Placement::eError:
+        out.kind = RangeTime::eError;
+        break;
+    }
+    return out;
+}
+
 Result
 resolve(double time, const Settings& settings, const std::set<int>& framesOnDisk)
 {

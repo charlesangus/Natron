@@ -42,6 +42,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -1675,6 +1676,9 @@ Node::onInputChanged(int inputNb,
         ///Don't do clip preferences while loading a project, they will be refreshed globally once the project is loaded.
         _imp->effect->onInputChanged(inputNb);
         _imp->inputsModified.insert(inputNb);
+
+        // A LoopBegin wired into or out of a loop body changes what its LoopEnd shows.
+        LoopEnd::refreshLoopsOf(shared_from_this());
 
         // If the effect has render clones, kill them as the plug-in might have changed its internal state
         _imp->effect->clearRenderInstances();

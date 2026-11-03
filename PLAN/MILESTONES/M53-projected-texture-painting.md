@@ -1,15 +1,48 @@
 # M53 - Projected Texture Painting
 
-Full title: Projected texture painting — UV bake, ProjectTexture, live textures
+Full title: Mari-style texture painting in the Viewer's 3D view
 
-Stage 2 of the 3D roadmap (`PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`,
-Question 2, "Texture painting"). Mari-style projection painting built from
-Natron's existing 2D tools: a CPU rasterizer that bakes a prim's UV space
-to world positions, a `ProjectTexture` node that projects any image
-through a camera into that UV space with occlusion, and an in-process
-`Ar`/`Hio` plugin so `USDMaterial` can bind a node's output as a live
-texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
-`USDMaterial`, the Viewer's 3D view, `USDWrite`). The live-texture half (resolver, Hio plugin, `USDMaterial` image inputs, viewer refresh, export) moved to M233 - Live Node Textures on 2026-10-26; this milestone keeps the UV bake, `ProjectTexture` and the paint preset, and builds on M233. Read `StageCache` below as M19's `SceneQueryPool`.
+Redesigned in the 2026-11-02 grill (user: "painting in the 3d viewport, mari-style, not some kind of 2d to 3d bridge"). M53 delivers a `TexturePaint` image node: you paint directly on meshes in the Viewer's 3D view with RotoPaint's brushes. Strokes land in a screen-space paint buffer, and navigating (or a Bake key) projects the buffer into the node's UDIM textures with occlusion. The UV bake (`SceneRaster`) and the projection logic (`ProjectTexture`, now internal) from Phases 53.1–53.2 are the bake engine. The common workflow: project plates onto geo with M234 - Camera Projection Nodes, then clean up in 3D. Live textures are M233 - Live Node Textures; the multi-tile URI is the new UDIM Live Textures stub, which M53 depends on. Read `StageCache` below as M19's `SceneQueryPool`.
+
+## Scope
+
+**In:**
+- `TexturePaint` image node: Scene input (meshes via Prim Pattern; all matches share one UDIM texture set), output a multi-layer UDIM texture image that feeds M233's `USDMaterial` image inputs.
+- Mari paint buffer in the Viewer's 3D view: strokes are stored in normalized view coordinates with the view camera they were painted through; the buffer has its own Buffer Resolution knob, independent of window size.
+- Bake on orbit/pan/zoom/tool switch, plus a Bake key; the bake is async and never blocks navigation (unbaked strokes stay drawn until the textures update, progress shown, new strokes queue behind).
+- All RotoPaint brush types (Solid, Eraser, Clone, Reveal, Blur, Sharpen, Smear, Dodge, Burn) via the Roto stroke engine.
+- Natron's layer/channel system, as in RotoPaint: each stroke targets a layer and channels. The layer→material-purpose mapping travels as stream metadata (M74 - Native Metadata Core); TexturePaint writes it and downstream nodes may read it.
+- Strokes are the truth, with a pixel cache. Internal bake engine: **Bake Inputs** freezes the upstream look (bound material channels, including USDProject3D projections) into one set of UDIM files as the paint base; **Bake Output** flattens strokes so far into a second set, a cache that freezes those strokes and a hand-off.
+- Tile Resolution knob (1K/2K/4K/8K, default 4K).
+- Static/Animated texture mode: in Animated mode strokes have RotoPaint lifetimes, caches are per frame and the output is a texture sequence. Animated cameras are supported.
+- Undo per stroke and per bake.
+- `ProjectTexture` folds into internals and is no longer a user node.
+
+**Out:**
+- UDIM token on live-texture URIs and `USDMaterial`: new stub "UDIM Live Textures" (M53 depends on it).
+- Paint layered over an existing material (mix per channel; UsdPreviewSurface/glslfx now, MaterialX later): new stub "USDLayerMaterial".
+- Standalone bake node that writes UDIM files, sharing M53's bake engine, plus M234 - Camera Projection Nodes' USDWrite bake for meshes that aren't card-like: new stub "USDBakeTextures".
+- Paint-through 2D inputs, Screen or Camera mode per input, including plates through animated cameras: new stub "Paint-Through Inputs".
+- Direct texel (raycast splat) painting: new stub "Direct Texel Painting".
+- Baking render-delegate renders (e.g. Cycles) onto UVs: new stub "Delegate UV Baking"; the bake engine keeps a pluggable backend for it.
+- Deforming geometry: none (geometry is static).
+- The 2D-paint `PaintThroughCamera` preset: none (cancelled, wrong shape).
+
+**Edge cases:**
+- Matched meshes whose UVs overlap: a node warning naming the clashing prims; use one TexturePaint per object.
+- A base texture of a different size than Tile Resolution: resampled, with a warning.
+- A stroke started while a bake runs: queued behind it.
+- Undoing a Bake Output: those strokes become live again, and the cache is discarded and rebuilt from strokes.
+- Animated camera or plate in Animated mode: baked per frame.
+
+**Assumptions:**
+- Unconfirmed: bake file paths are knobs with a `<UDIM>` token (and a frame token in Animated mode), defaulting to project-relative paths.
+- Unconfirmed: a matched mesh without the UV primvar gives a node error naming the prim (as ProjectTexture does).
+- Unconfirmed: the paint tool is active in the 3D view while a TexturePaint node's panel is open, with RotoPaint's toolbars.
+- Unconfirmed: pen pressure behaves as in RotoPaint.
+- Unconfirmed: Clone/Reveal sample a CPU unlit textured view of the base plus baked textures through the session camera (deterministic, no GL in ctest), not a readback of Storm's lit frame.
+- Unconfirmed: until UDIM Live Textures lands, the output shows one tile chosen by an Output Tile knob (default 1001).
+- A native node can host a RotoContext and get Roto serialization and toolbars; M53.P5.T1 and M53.P6.T2 check this.
 
 ## Phase 53.1: CPU raster substrate
 
@@ -59,19 +92,105 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 
 ## Phase 53.3: Paint workflow
 
-- [ ] M53.P3.T1 — `PaintThroughCamera` preset group
+- [ ] ~~M53.P3.T1 — `PaintThroughCamera` preset group~~ — cancelled 2026-11-02: 2D-to-3D bridge, replaced by painting in the 3D view (Phases 53.4–53.6).
   - files: a shipped PyPlug/preset under the existing built-in presets location, `Gui/` only if the preset loader needs a menu entry, brief usage notes in `Engine/Nodes/Scene/README.md` (create if absent)
   - approach: a group node wiring `USDRender`(camera) → `RotoPaint` → `ProjectTexture`(same camera, same prim) → 2D `Merge` over an optional existing-texture input → output image, with the camera path and prim selector promoted to the group. Its output feeds `USDMaterial`'s diffuse input. Multi-angle painting is several of these merged in 2D; say so in the notes.
   - verify: manual on real hardware — paint a stroke in the 2D viewer on the rendered view; the stroke shows on the model in the Viewer's 3D view from a different angle, correctly occluded where another prim was in front.
   - size: M
 
-- [ ] M53.P3.T2 — Paint pipeline integration test in CI
+- [ ] ~~M53.P3.T2 — Paint pipeline integration test in CI~~ — cancelled 2026-11-02: superseded by the TexturePaint gtests and M53.P6.T3.
   - files: `Tests/ProjectTexture_Test.cpp` (extend), reference `.usda` with a UV-mapped quad and an occluder
   - approach: headless graph — `USDRead` + `USDCamera` + `Constant` → `ProjectTexture` → assert coverage and occlusion; `ProjectTexture` → `USDMaterial`(live) → `USDWrite`(export textures) → assert the exported `.exr` matches the `ProjectTexture` output. No GL involved (`SceneRaster` is CPU).
   - verify: test green in `build-and-test`.
   - size: M
 
-**Verification gate:** CI green including M53.P3.T2; on real hardware the `PaintThroughCamera` round trip works end to end with occlusion; `USDWrite` exports a portable USD + textures that `usdview` displays with the painted texture; packaging still builds with the `Ar`/`Hio` plugin discoverable; pre-existing ctest suite green.
+## Phase 53.4: Paint substrate
+
+Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD Layer-Stack Completion and M234 - Camera Projection Nodes into this branch: `PrimSelector`, `LiveTextureStore` and `USDProject3D` are not on main.
+
+- [ ] M53.P4.T1 — `SceneRaster`: render through an arbitrary view camera and output UV per pixel
+  - files: `Engine/Nodes/Scene/SceneRaster.h`/`.cpp`, `Tests/Scene/SceneRaster_Test.cpp`
+  - approach: `CameraArgs` only accepts `cameraPath` (SceneRaster.h:53). Add an optional explicit camera (camera-to-world as a Gf row-major matrix, view height, aspect, orthographic flag, clip range). It mirrors main's `SceneViewportRenderer::CameraPose` but lives in Engine, since Engine must not include Gui. Add an optional `st` + UDIM-tile buffer to `CameraBuffers` for the CPU unlit textured view.
+  - verify: gtest — a camera given as a matrix gives the same depth/primIndex as the same `UsdGeomCamera` given by path; the UV buffer at a quad's corners matches its authored `st`.
+  - size: M
+
+- [ ] M53.P4.T2 — Fold ProjectTexture into an internal `TextureProjection` helper and unregister the node
+  - files: `Engine/Nodes/Scene/TextureProjection.h`/`.cpp` (new), delete `Engine/Nodes/Scene/ProjectTexture.{h,cpp,reg.inc}`, `Tests/Scene/ProjectTexture_Test.cpp` → `Tests/Scene/TextureProjection_Test.cpp`
+  - approach: move the private `ProjectTexture::renderTexture` logic into a free function. It takes a float buffer + the M53.P4.T1 camera + one mesh + `st` name + UDIM tile + resolution, and returns RGBA + coverage, keeping occlusion, depth bias, back faces and edge dilation. Deleting the `.reg.inc` unregisters it (Engine/CMakeLists.txt globs `Nodes/*.reg.inc`).
+  - verify: the existing red-quad and half-occluder cases, ported to the helper, give identical results; `ProjectTexture` is missing from the plug-in list.
+  - size: L
+
+- [ ] M53.P4.T3 — Let the Roto stroke tree run on a node other than RotoPaint, with a host-supplied source
+  - files: `Engine/RotoDrawableItem.cpp`, `Engine/RotoContext.h`/`.cpp`, `Engine/EffectInstance.h`/`.cpp`, `Tests/RotoLayer_Test.cpp`
+  - approach: `refreshNodesConnections` hard-codes the host's input 0 as the bottom of the tree (RotoDrawableItem.cpp, `getContext()->getNode()->getInput(0)`). Add `virtual NodePtr EffectInstance::getPaintTreeSource()`, defaulting to input 0. Host nodes opt in through `getCurveContextKind()` returning `eCurveContextKindPaint` (EffectInstance.cpp checks the plug-in ID only), and `RotoContext`'s `isDefaultPaintNode` must accept them too.
+  - verify: the Roto gtests pass unchanged; a new gtest has a test effect whose source is a `Constant`, and its Solid stroke merges over that constant, not over input 0.
+  - size: M
+
+## Phase 53.5: TexturePaint node
+
+- [ ] M53.P5.T1 — `TexturePaint` node: knobs, a hosted RotoContext, paint sessions, save/load
+  - files: `Engine/Nodes/Scene/TexturePaint.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Scene/docs/TexturePaint.md`, `Tests/Scene/TexturePaint_Test.cpp`, `Tests/CMakeLists.txt`
+  - approach: Scene input; `PrimSelector` Prim Pattern (all matched meshes share one UDIM set); UV Primvar; Tile Resolution 1K/2K/4K/8K (default 4K); Buffer Resolution; Static/Animated mode; Bake Inputs / Bake Output paths with a `<UDIM>` token. A *session* is the set of strokes painted through one view camera: a `RotoLayer` carrying the M53.P4.T1 camera plus a frozen flag, all serialized. Knob labels match script names. Check that hosting a RotoContext gets Roto serialization.
+  - verify: gtest — create the node, add a session with two strokes, save the project and load it; strokes, camera matrices, frozen flags and knob values all round-trip.
+  - size: L
+
+- [ ] M53.P5.T2 — Render a session's strokes into the paint buffer, all nine stroke types
+  - files: `Engine/Nodes/Scene/TexturePaint.cpp`, `Engine/Nodes/Scene/TexturePaintView.h`/`.cpp` (new), `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: `TexturePaintView` is an internal image source: the CPU unlit textured view through the session camera at Buffer Resolution, M53.P4.T1's UV buffer sampled from the current base plus the baked textures. It is returned from `getPaintTreeSource()` (M53.P4.T3), so Clone/Reveal/Blur/Sharpen/Smear/Dodge/Burn sample the 3D view. Strokes are stored in normalized view coordinates and rasterized at Buffer Resolution; each targets a layer and channels as RotoPaint's do.
+  - verify: gtest — a Solid stroke fills the expected buffer pixels; Eraser removes them; Clone copies view pixels by the offset; a stroke on `rgba` leaves another layer untouched; the buffer size does not change with the viewer size.
+  - size: L
+
+- [ ] M53.P5.T3 — Bake sessions into UDIM tiles; multi-layer output with layer→material-purpose metadata; overlapping-UV warning
+  - files: `Engine/Nodes/Scene/TexturePaint.cpp`, `Engine/Nodes/Scene/TexturePaintCache.h`/`.cpp` (new), `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: for each matched mesh and covered tile, `TextureProjection` (M53.P4.T2) projects each session buffer into a per-tile pixel cache, base under strokes. Lazy, per tile, half-float on disk (an 8K float RGBA tile is about 1 GB per layer). Until UDIM Live Textures lands, the output image is one tile chosen by an Output Tile knob (default 1001), as multiple planes via `getComponentsNeededAndProduced`. Override `deriveOutputMetadata` to write keys such as `natron/texturePaint/purpose/rgba = diffuseColor`. Meshes whose UVs overlap get a node warning naming both prims.
+  - verify: gtest — stroke → buffer → tile 1001 shows paint only on the visible half (occluder case) and none on back faces; the metadata keys are present downstream of a `ViewMetadata`; two overlapping quads produce the warning text.
+  - size: L
+
+- [ ] M53.P5.T4 — Bake Inputs: freeze the bound material's look into UDIM base files
+  - files: `Engine/Nodes/Scene/MaterialBake.h`/`.cpp` (new), `Engine/Nodes/Scene/TexturePaint.cpp`, `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: evaluate on the CPU at each texel from `SceneRaster::bakeUV`: UsdPreviewSurface constants, `UsdUVTexture` files (OiioReadSupport), `natron://` (M233 `LiveTextureStore`), and USDProject3D's projection, which reimplements M234's `natronProject3D.glslfx` with `TextureProjection`. Keep the evaluator behind an interface so USDBakeTextures, MaterialX and delegate backends can plug in later. Write one half-float EXR per tile per purpose (OiioWriteSupport); a base of a different size is resampled to Tile Resolution with a warning.
+  - verify: gtest — a material with constant red diffuse bakes red into `<UDIM>`=1001; a 1K file texture at 2K resamples and warns; a USDProject3D card bakes its plate; a deleted base file reloads as missing with an error.
+  - size: L
+
+- [ ] M53.P5.T5 — Bake Output, freezing, and undo per stroke and per bake
+  - files: `Engine/Nodes/Scene/TexturePaint.cpp`, `Engine/Nodes/Scene/TexturePaintUndo.h`/`.cpp` (new), `Engine/RotoUndoCommand.h` (reuse), `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: Bake Output writes base plus all sessions so far to the output files and marks those sessions frozen; frozen strokes are not re-rendered and come from the files. A stroke is undone through RotoPaint's own undo commands; a bake through a new command that unfreezes the sessions, discards the cache and rebuilds it from strokes. Strokes stay the truth.
+  - verify: gtest — after Bake Output the files match the output; a new stroke leaves frozen sessions untouched; undoing the bake brings them back live with pixels identical to the pre-bake output; undoing a stroke restores the previous tile.
+  - size: L
+
+- [ ] M53.P5.T6 — Async bake scheduler with queued strokes and progress
+  - files: `Engine/Nodes/Scene/TexturePaintBaker.h`/`.cpp` (new), `Engine/Nodes/Scene/TexturePaint.cpp`, `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: subclass `GenericSchedulerThread`, as `TrackScheduler` does (TrackerContext.h). Bake requests queue, and new strokes queue behind a bake in progress; a rate-limited progress/finished signal bumps the node hash. Never take the viewer lock. Abort when the node is deleted.
+  - verify: gtest — three queued session bakes finish in order; enqueue never blocks the main thread more than 50 ms; deleting the node mid-bake exits cleanly.
+  - size: M
+
+- [ ] M53.P5.T7 — Animated mode: stroke lifetimes, per-frame caches, texture sequences
+  - files: `Engine/Nodes/Scene/TexturePaint.cpp`, `Engine/Nodes/Scene/TexturePaintCache.cpp`, `Tests/Scene/TexturePaint_Test.cpp`
+  - approach: use the RotoDrawableItem lifetime knobs; key the cache by frame; bake file paths take a frame token next to `<UDIM>`; the output reports itself as frame-varying, and an animated session camera bakes per frame. Geometry stays static.
+  - verify: gtest — a stroke with lifetime 5–7 shows at frames 5–7 only; Bake Output writes one file per frame; Static mode ignores lifetimes.
+  - size: M
+
+## Phase 53.6: Viewer 3D paint
+
+- [ ] M53.P6.T1 — 3D-view paint hook: pen events to TexturePaint; navigation and the Bake key trigger bakes
+  - files: `Gui/SceneViewport.h`/`.cpp`, `Gui/ViewerTab.cpp`, `Engine/Nodes/Scene/TexturePaintInteract.h`/`.cpp` (new)
+  - approach: add `setPaintNodeProvider`, modelled on `setTransformNodeProvider` (ViewerTab.cpp): a TexturePaint node with its panel open. `mousePressEvent`/`mouseMoveEvent` send normalized view coordinates plus the `CameraPose` to the interact, which drives `RotoPaintInteract`'s stroke building, with pen pressure. Orbit/pan/zoom/tool switch closes the session and queues a bake; a Bake key in `keyPressEvent` does the same.
+  - verify: gtest — a test that drives the interact directly with synthetic poses gets one session per pose, with a camera change ending the session.
+  - size: L
+
+- [ ] M53.P6.T2 — Draw the unbaked buffer, brush cursor, progress and paint toolbar in the 3D view
+  - files: `Gui/SceneViewport.cpp`, `Gui/ViewerTab.cpp`, `Gui/ViewerTab20.cpp`
+  - approach: in `paintGL`, composite the live buffer as a screen-aligned textured quad until its bake finishes, then draw a brush ring and a progress line. Show the RotoPaint tool and brush toolbars when the 3D view is active; the layout fits 1920x1080.
+  - verify: under Xvfb at 1920x1080, with a TexturePaint panel open and an injected unbaked session, a screenshot shows the buffer quad, brush ring and paint toolbar; after the bake finishes the quad is gone.
+  - size: M
+
+- [ ] M53.P6.T3 — Xvfb GUI script: paint in 3D, orbit, check the texture
+  - files: `Tests/gui/m53_texture_paint.py`, a fixture `.usda` under `Tests/Scene/`
+  - approach: run through `build.sh --gui`. Paint a Solid stroke on a UV quad, orbit, and wait for the `natronTexturePaintBaked` property. Check tile 1001's pixels and a screenshot from the new angle; undo a Bake Output and check the strokes are live again.
+  - verify: the script passes remotely; screenshots shared for sign-off.
+  - size: M
+
+**Verification gate:** all M53 gtests (stroke → buffer → UDIM bake, occlusion, Bake Inputs/Output files and cache invalidation, Animated mode, save/load) and `Tests/gui/m53_texture_paint.py` pass remotely with screenshots shared before sign-off, alongside the pre-existing ctest suite; an AppImage UAT on real hardware cleans up a USDProject3D projection by painting in 3D.
 
 ## Decisions
 
@@ -79,3 +198,14 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** Drop "the viewport re-composes on stack hash": the viewer keeps one long-lived stage, and a `?v=` texture path change is a plain property/asset-path invalidation. Check that the `natron://` resolver never renders synchronously from inside Hydra on the GUI thread (deadlock risk).
 - 2026-10-26 — **Live textures split out (user, M19/M20 UAT grill):** M53.P2.T2–T5 move to M233 - Live Node Textures, which ships first in the 3D MVP; `ProjectTexture` and the paint preset bind their output through M233's `USDMaterial` image inputs. Live camera projection is M234 - Camera Projection Nodes; this milestone's bake remains the occlusion-aware and export path.
 - 2026-11-02 — Audit: P1.T1–T2 at 27eebf91f and P2.T1 at 030f17ce0 are committed and pushed; P3 is not started. The branch merged M233 before M233 was rewritten (it holds 4ad6edf36… where M233 now has 206267031…) and M52 before its last GUI-check commit, so it needs a re-merge of the current M233 and M52 tips. Worktree clean, no PR, 23 behind origin/main. The 2026-10-28 open questions to the user are unanswered (audit).
+- 2026-11-02 — **Redesign: paint in the 3D view, Mari-style (user, /cat-grill; answers the 13:25 inbox change-request):** the 2D-paint-then-project shape (PaintThroughCamera preset, M53.P3.T1–T2) was wrong. M53 is a `TexturePaint` node painting directly in the Viewer's 3D view. Phases 53.1–53.2 stay as its bake engine.
+- 2026-11-02 — Paint model: Mari paint buffer first; direct texel splat becomes its own later milestone (user: "both, buffer first").
+- 2026-11-02 — Persistence: strokes are the truth plus a pixel cache (user). Bake trigger: auto on navigate/tool switch plus a Bake key (user). Brushes: all RotoPaint stroke types (user).
+- 2026-11-02 — Layers: Natron's layer/channel system, as in RotoPaint (user). The layer→material-purpose mapping lives in stream metadata: a node that sets it writes it, and downstream nodes may read it (user; M74's native metadata carries arbitrary keys).
+- 2026-11-02 — UDIM: extend live textures with a `<UDIM>` token in a new UDIM Live Textures milestone, which M53 depends on (user). Base and layering: paint overlays the existing material via a new USDLayerMaterial node, with Bake Down to UV textures as well (user: "both"). The common case is projecting plates with M234 and cleaning up in 3D; plan for MaterialX later (user).
+- 2026-11-02 — Baking is internal to TexturePaint: Bake Inputs → one file set (frozen base), Bake Output → another (frozen-stroke cache that keeps painting fast, and a hand-off). This is a deliberate exception to one-node-one-job, because it is key to fluid painting (user). A standalone USDBakeTextures node, whose main job is writing files, shares the engine, which keeps a pluggable backend for future render-delegate UV bakes (user).
+- 2026-11-02 — Paint-through 2D inputs, Screen or Camera mode per input, are a separate stub (user). One texture set per node; overlapping UVs warn (user). ProjectTexture folds into internals and is unregistered (user).
+- 2026-11-02 — Split: M53 is TexturePaint core; new E9 stubs are UDIM Live Textures, USDLayerMaterial, USDBakeTextures (+ M234's non-card USDWrite bake), Paint-Through Inputs, Direct Texel Painting and Delegate UV Baking. UDIM Live Textures comes first, layering after (user).
+- 2026-11-02 — Undo per stroke and per bake (user). Geometry is static. Textures can animate behind a Static/Animated switch with Roto-style lifetimes, in M53, and animated cameras are supported (user: "this is comp, animated image sequences are kind of the whole game"). Tile Resolution knob, default 4K; the buffer has its own resolution, independent of the screen (user). The bake is async and never blocks (user). Gate: ctest + Xvfb GUI script with screenshots + AppImage UAT (user).
+- 2026-11-02 — The 2026-10-28 open items (Camera input vs menu, Project On, occlusion modes) are moot: TexturePaint paints through the view camera, and camera projection belongs to the Paint-Through Inputs stub.
+- 2026-11-02 — Branch state at the redesign (audit): phases 53.1–53.2 committed and pushed on milestone/m53-projected-texture-painting (14 ahead of main); the branch merged an M233 - Live Node Textures that has since been rewritten and an older M52 - USD Layer-Stack Completion, so it needs both re-merged before Phase 53.4 (PM).

@@ -248,7 +248,12 @@ if grep -q 'not found' <<<"$raw"; then
     echo "build-moonray: unresolved dependency" >&2
     exit 1
 fi
-deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u)"
+# ldd prints the path as the RUNPATH spelled it, so one file can appear as lib64/x.so and
+# rdl2dso/../lib64/x.so. Canonicalise each path first: the same file then collapses, while two
+# distinct files for one soname still stay apart and fail the check below.
+deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u | while read -r soname path; do
+    echo "${soname} $(realpath -e "$path" 2>/dev/null || echo "$path")"
+done | sort -u)"
 split="$(awk '{ print $1 }' <<<"$deps" | uniq -d)"
 if [ -n "$split" ]; then
     echo "build-moonray: resolved to more than one file: ${split}" >&2

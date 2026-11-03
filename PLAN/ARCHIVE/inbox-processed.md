@@ -505,3 +505,7 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
 - 2026-11-02 — The 2026-10-28 open items (Camera input vs menu, Project On, occlusion modes) are moot: TexturePaint paints through the view camera, and camera projection belongs to the Paint-Through Inputs stub.
 ````
 - applied: 2026-11-03 by bosley-native-nodes (milestone file replaced; plan-scoped stubs/Deps entry left pending for /cat-plan)
+
+### 2026-11-02T02:05:34-05:00 — change-request
+- refs: M260
+- New bug, found by the gpu PM's RADV gate for M240 - Float Trap And Denormal Audit: `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader` fails 3/3 at `Tests/Gpu/CacheStressGpu_Test.cpp:800` on any host with two or more Vulkan devices (RADV R9700 + lavapipe). The test expects `gpu::glslCompileCountForTesting()` to rise by 1 when the broken shader is retried on the second device, but `compileGlsl` (`Engine/Gpu/GpuShaderCompiler.cpp:122-177`) memoises results, failures included, in a process-global map keyed by stage/entry/source with no device, so the retry is a cache hit and the counter stays flat. Per-device rejection is still recorded (`Engine/Nodes/Image/StagePlan.cpp:1667`). Test assumption, not production behaviour; PR CI's lavapipe-only runner skips the switch half (lines 792-796). Likely fix: assert on `gate.isRejected(second, shader)` and the device-B `pipelines().stats_.compiles` (`GpuPipelineCache.cpp:332`) instead of the global glslang counter. Please file as a small milestone (or fold into an open cache/CI-flake milestone).

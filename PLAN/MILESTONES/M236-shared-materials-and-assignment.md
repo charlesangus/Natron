@@ -101,3 +101,4 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 - 2026-11-02 — Audit: every task is committed (b43efa307, d4c087957, cc0bfcc9f, GUI fixes a586048a7/0d5565a82, golden 010e6fcd4) and pushed; worktree clean; no PR; 25 behind origin/main. The gate's screenshot OK from the user is not recorded here. Merge note: USDAssignMaterial's Prim Pattern uses USDEditTransform's glob matching, which M52 - USD Layer-Stack Completion moves onto PrimSelector; whichever merges second migrates it (audit).
 - 2026-11-02 — main merged in (materialsScope added to SceneLayerMemo::Key ==); gate running (PM).
 - 2026-11-03 — Screenshots OK, proceed (user).
+- 2026-11-03 — PR #172 Codex review: 8 findings (identifier collision, O(n²) matching, empty-scene validation, 4 comment nits) fixed in 8e8adada4 and replied.

@@ -213,3 +213,4 @@ Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 **Verification gate:** Roto GUI tests pass; a new AppImage is accepted by the user.
 - 2026-11-01 — UAT round 2: tangent growth and handle interactivity accepted; P7 for neighbour-aware growth and Alt-drag only on feather handles (Alt+E question settled: Alt-drag is recycled); render speed follow-up M299 - Roto Render Performance (user).
 - 2026-11-02 — P8 at 159abcfd8: Alt-press claims feather points and tangents (it only took the bar); modifiers resync at each press so a lost Alt release can't stick (the 'clicks deselect' state was not reproduced — recheck in UAT); Shift+E resets only the selected points' feather, all feathers of the selected shapes otherwise (PM).
+- 2026-11-03 — Run 41563874245 green after the GpuResidency flake re-run; round 4 UAT AppImage built from 159abcfd8 (steps: Round 4).

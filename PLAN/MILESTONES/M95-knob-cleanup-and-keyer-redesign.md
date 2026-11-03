@@ -126,6 +126,22 @@ Acceptance sketch:
 - No node has `hidpi` or `interactive` knobs; DPI is app-level and interactive is one global toggle with a shortcut.
 - "(Un)premult by" and clamp black/white sit below the line with mask and mix.
 
+## Phase 95.6: UAT round 1 fixes (user, 2026-11-02)
+
+- [ ] M95.P6.T1 — Keyer uses HSVKeyer's luma range widget
+  - files: Engine/Nodes/Keyer/Keyer.*, the widget HSVKeyer uses for its four-point luma/range control (Engine/Nodes/Keyer/HSVKeyer.cpp and the Gui widget it registers), Keyer tests and GUI script
+  - approach: replace Keyer's four separate A/B/C/D knobs' presentation with the same interactive trapezoid widget HSVKeyer uses for its luma range, sharing the code (move it to a common place if it is HSVKeyer-local). Keep the A ≤ B ≤ C ≤ D behaviour and the trapezoidMatte maths.
+  - verify: Keyer tests pass; the GUI check drags the widget's points and reads the knobs and the matte change.
+  - size: M
+- [ ] M95.P6.T2 — Key source: Luminance, Red, Green, Blue
+  - files: Engine/Nodes/Keyer/Keyer.*, NativeKeyer tests, docs
+  - approach: replace the Luminance/Colour key source with Luminance, Red, Green, Blue (single-channel key values); drop the key-colour knob and the colour dot-product mode.
+  - verify: NativeKeyer analytic tests cover each source; the panel shows the four options.
+  - size: M
+
+ChromaKeyer: works poorly but stays as is for M95 (user, 2026-11-02); a proper traditional keyer is M317 - Traditional Keyer.
+
+
 ## Decisions
 
 - 2026-11-02: audit (plan state caught up with the branch). Every task but P5.T1 committed and pushed; no PR. Tests/gui/m95_knobs_keyer.py is committed (ac73f03a0); no AppImage or UAT yet. The last remote build (7ebeec39b) is green.

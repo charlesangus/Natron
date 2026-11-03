@@ -382,6 +382,7 @@ future core work has solid ground to build on.
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |
 | M315 | Direct Texel Painting | todo | M53 |  | E9 | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
+| M317 | Traditional Keyer | todo | M95 |  | E3 | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
 
 # Epics
 

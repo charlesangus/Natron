@@ -336,14 +336,14 @@ MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
 CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
 ARENA_OFX="${PLUGINS_TARGET}/Arena.ofx.bundle/Contents/Linux-x86-64/Arena.ofx"
 
-# An older assets directory or CI cache can still hold the OpenFX metadata
-# example bundles the native metadata nodes replace; one left under Plugins/
-# would ship.
-rm -rf "${PLUGINS_TARGET}/metadataCompare.ofx.bundle" \
-       "${PLUGINS_TARGET}/metadataContribute.ofx.bundle" \
-       "${PLUGINS_TARGET}/metadataTimeCode.ofx.bundle" \
+# A cached assets directory can still hold any OpenFX metadata example bundle
+# (Compare, Contribute, TimeCode, Print, Copy, Modify, View, ...) and the
+# TestPlugins directory that used to hold them. The native metadata nodes
+# replace them, and a leftover bundle would load beside them and ship. This runs
+# before the stamp check so the fast path cleans too.
+rm -rf "${PLUGINS_TARGET:?}"/metadata*.ofx.bundle \
        "${ASSETS_DIR:?}/TestPlugins" \
-       "${PLUGINS_SRC_DIR}/openfx-metadata"
+       "${PLUGINS_SRC_DIR:?}/openfx-metadata"
 
 if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."

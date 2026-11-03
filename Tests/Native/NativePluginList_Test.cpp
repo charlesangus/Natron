@@ -297,7 +297,7 @@ TEST_F(NativePluginListTest, RFVNodesShareTheReverseFlowVariableGroup)
     EXPECT_TRUE(plugins.find("ReverseFlowVariableSet") == plugins.end());
 }
 
-// CompareMetadata, ContributeMetadata and TimeCodeMetadata replaced these OpenFX examples.
+// A second registration under the same label would show twice in the node menu.
 TEST_F(NativePluginListTest, ReplacedOfxMetadataExamplesAreNotRegistered)
 {
     const char* const ids[] = {

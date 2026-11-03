@@ -36,6 +36,11 @@ NATRON_NAMESPACE_ENTER
 
 namespace MoonRayRuntime {
 /**
+ * @brief Whether the CPU has every instruction set extension MoonRay's -march=core-avx2 code uses.
+ **/
+bool cpuRunsMoonRay();
+
+/**
  * @brief Makes the MoonRay install the process ships with usable: registers its Hydra plug-ins
  * with USD and points MoonRay's run-time search paths at it (RDL2_DSO_PATH for the scene object
  * DSOs, ARRAS_SESSION_PATH for the session definitions, PATH for the execComp render process).
@@ -43,7 +48,7 @@ namespace MoonRayRuntime {
  * The install is the bundle's moonray/ next to applicationDirPath's parent, else the one the build
  * was configured with. USD reads PXR_PLUGINPATH_NAME once, when libusd_plug.so is loaded, so the
  * plug-ins are registered directly instead; call this before anything lists Hydra renderers. Does
- * nothing when there is no install, or when the CPU lacks the AVX2 code MoonRay is compiled to.
+ * nothing when there is no install, or when cpuRunsMoonRay() is false.
  * Returns the install used, empty if none.
  **/
 std::string setUp(const std::string& applicationDirPath);

@@ -79,3 +79,13 @@ if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
                         "update the suite name or it would silently lose its properties.")
 endif()
 set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
+
+# MoonRayDelegate skips when the MoonRay plug-in is missing, which would hide a bundling or plug-in
+# discovery regression in a build that does carry MoonRay.
+if(NATRON_MOONRAY_BUNDLED)
+    if(NOT "MoonRayDelegate" IN_LIST NATRON_GTEST_SUITE_TESTS)
+        message(FATAL_ERROR "SuiteProperties.cmake: 'MoonRayDelegate' is not a registered test; "
+                            "update the suite name or it would silently lose its properties.")
+    endif()
+    set_tests_properties(MoonRayDelegate PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_MOONRAY=1")
+endif()

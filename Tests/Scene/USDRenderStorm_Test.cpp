@@ -643,8 +643,13 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
             double u = 0., v = 0.;
             planeToPlate(localX, Y, &u, &v);
             const ProjectedColourEnum expected = expectedProjection(u, v, margin);
-            // Storm's translucent pass writes no depth where the projection is transparent.
+            // Storm's translucent pass writes depth only where the projection is opaque. Within the
+            // margin of the frame's edge, filtering may leave a pixel partly transparent, or
+            // transparent, either way.
             if (!std::isfinite(depth[i])) {
+                if (expected == eProjectedUnsure) {
+                    continue;
+                }
                 if ((expected == eProjectedTransparent) && (classifyColour(&rgba[i * 4]) == eProjectedTransparent)) {
                     ++checked;
                     ++counts[eProjectedTransparent];
@@ -1483,19 +1488,21 @@ TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
     color->setValue(0., ViewSpec::all(), 2);
     color->setValue(1., ViewSpec::all(), 3);
 
-    const Coverage inverted = renderCard(render, 1.);
-    ASSERT_GT(inverted.count, 500);
-    EXPECT_NEAR(0., inverted.rgb[0], 0.03) << "inverted " << inverted.rgb[0] << ", " << inverted.rgb[1] << ", " << inverted.rgb[2];
-    EXPECT_NEAR(1., inverted.rgb[1], 0.03);
-    EXPECT_NEAR(1., inverted.rgb[2], 0.03);
+    // The centre, not the card's mean: the mean takes in the antialiased edges, which pull a full
+    // channel about 3% below 1.
+    double inverted[4];
+    centreOf(renderColour(render, 1.), inverted);
+    EXPECT_NEAR(0., inverted[0], 0.03) << "inverted " << inverted[0] << ", " << inverted[1] << ", " << inverted[2];
+    EXPECT_NEAR(1., inverted[1], 0.03);
+    EXPECT_NEAR(1., inverted[2], 0.03);
 
     invert->setNodeDisabled(true);
-    const Coverage passed = renderCard(render, 1.);
-    ASSERT_GT(passed.count, 500);
+    double passed[4];
+    centreOf(renderColour(render, 1.), passed);
     EXPECT_FALSE(render->hasPersistentMessage());
-    EXPECT_NEAR(1., passed.rgb[0], 0.03) << "disabled " << passed.rgb[0] << ", " << passed.rgb[1] << ", " << passed.rgb[2];
-    EXPECT_NEAR(0., passed.rgb[1], 0.03);
-    EXPECT_NEAR(0., passed.rgb[2], 0.03);
+    EXPECT_NEAR(1., passed[0], 0.03) << "disabled " << passed[0] << ", " << passed[1] << ", " << passed[2];
+    EXPECT_NEAR(0., passed[1], 0.03);
+    EXPECT_NEAR(0., passed[2], 0.03);
 }
 
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test

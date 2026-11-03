@@ -476,9 +476,9 @@ TEST_F(SceneViewportStorm, PicksThePrimDrawnAtAPixel)
 }
 
 // The projection's material is translucent, drawn in Storm's blended pass, which writes no prim
-// ids; the pick runs its own id pass over every material tag and discards only fragments whose
-// alpha is below its threshold, so the projected card picks wherever it shows and not where it
-// is transparent.
+// ids; the pick runs its own id pass over every material tag, which applies no alpha threshold
+// to translucent materials, and the projection discards the fragments where it is transparent,
+// so the projected card picks wherever it shows and not where it is transparent.
 TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
 {
     if (_skip) {

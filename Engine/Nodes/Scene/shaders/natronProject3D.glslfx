@@ -147,12 +147,14 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
         return natronProject3DOutside();
     }
     // The image is transparent black beyond its format when cropped and beyond its data window
-    // always, as the 2D viewer shows it.
+    // always, as the 2D viewer shows it. Where nothing shows the fragment is discarded rather than
+    // drawn transparent: Storm's pick applies no alpha threshold to translucent materials, so a
+    // transparent fragment would still pick the prim and take its selection highlight.
     if (crop && (any(lessThan(frame, vec2(0.0))) || any(greaterThan(frame, vec2(1.0))))) {
-        return ApplyColorOverrides(vec4(0.0));
+        discard;
     }
-    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-        return ApplyColorOverrides(vec4(0.0));
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))) || (plate.a <= 0.0)) {
+        discard;
     }
 
     return ApplyColorOverrides(vec4(plate.rgb * plate.a, plate.a));

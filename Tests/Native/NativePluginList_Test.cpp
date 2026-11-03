@@ -53,6 +53,9 @@
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/RFV/RFVRead.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
+#include "Engine/Nodes/RFV/RFVSwitch.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/OfxRetired.h"
 #include "Engine/Plugin.h"
@@ -260,6 +263,30 @@ TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
         ASSERT_TRUE(bool(node)) << id;
         EXPECT_FALSE(node->getPluginDescription().empty()) << id;
     }
+}
+
+TEST_F(NativePluginListTest, RFVNodesShareTheReverseFlowVariableGroup)
+{
+    const char* const ids[] = {
+        PLUGINID_NATRON_RFVSET,
+        PLUGINID_NATRON_RFVSWITCH,
+        PLUGINID_NATRON_RFVREAD,
+    };
+    const PluginsMap& plugins = appPTR->getPluginsList();
+
+    for (const char* id : ids) {
+        const PluginsMap::const_iterator it = plugins.find(id);
+        ASSERT_TRUE(it != plugins.end()) << id;
+        ASSERT_FALSE(it->second.empty()) << id;
+
+        const Plugin* plugin = *it->second.begin();
+        const QStringList grouping = plugin->getGrouping();
+        ASSERT_EQ(1, grouping.size()) << id;
+        EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_RFV), grouping.front()) << id;
+        EXPECT_EQ(QString::fromUtf8(id), plugin->getPluginLabel()) << id;
+        EXPECT_FALSE(plugin->getIconFilePath().isEmpty()) << id;
+    }
+    EXPECT_TRUE(plugins.find("ReverseFlowVariableSet") == plugins.end());
 }
 
 TEST_F(NativePluginListTest, OfxMetadataNodesAreGroupedWithTheNativeOnes)

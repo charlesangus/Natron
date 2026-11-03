@@ -385,6 +385,7 @@ future core work has solid ground to build on.
 | M317 | Traditional Keyer | todo | M95 |  | E3 | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
 | M318 | LensCorrect Bounded Input Region | todo | M160 |  | E3 | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
 | M319 | Group Node Direct Render | todo | - |  | E14 | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
+| M320 | Write All Input Metadata | todo | - |  | E3 | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
 
 # Epics
 

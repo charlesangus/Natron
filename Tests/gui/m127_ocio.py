@@ -346,8 +346,8 @@ try:
         check(all(abs(v - 1.0) < 1e-9 for v in defaults), "slope starts at 1 (%s)" % defaults)
 
         param(cdl, "file").set(path)
-        param(cdl, "cccid").set("natron_test_cdl")
-        param(cdl, "read_from_file").set(True)
+        param(cdl, "cccId").set("natron_test_cdl")
+        param(cdl, "readFromFile").set(True)
         yield ("sleep", SETTLE_MS * 2)
 
         # In file mode the knobs hold the file's values, which are shown and locked.
@@ -361,7 +361,7 @@ try:
 
         ok = yield ("until", knobs_match, POLL_TIMEOUT_S)
         check(ok, "the slope, offset, power and saturation knobs show the file's values")
-        check(str(param(cdl, "cccid").get()) == "natron_test_cdl", "the cccid knob holds the id")
+        check(str(param(cdl, "cccId").get()) == "natron_test_cdl", "the cccId knob holds the id")
 
         connect(viewer, 0, checker)
         yield ("sleep", SETTLE_MS * 2)
@@ -380,7 +380,7 @@ try:
 
         # With the file off, the node applies its own knobs, which are the identity again or the
         # values just shown; either way the picture must not be the file's grade unless the knobs equal it.
-        param(cdl, "read_from_file").set(False)
+        param(cdl, "readFromFile").set(False)
         yield ("sleep", SETTLE_MS * 2)
         param(cdl, "slope").set(1.0, 1.0, 1.0, 1.0)
         param(cdl, "offset").set(0.0, 0.0, 0.0, 1.0)

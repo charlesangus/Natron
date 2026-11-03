@@ -12,8 +12,8 @@ context variables of the `ocioContext` group; each space menu's first entry, `pr
 is the working space, labelled with the space it stands for. `direction` inverse undoes the looks from the
 output back to the input. Alpha is left as it is.
 
-- **Looks.** With `single_look` checked, the `look` menu (the config's looks) is the one applied.
-  Otherwise `look_combination` is: looks in order, separated by commas, a `-` prefix inverting
+- **Looks.** With `singleLook` checked, the `look` menu (the config's looks) is the one applied.
+  Otherwise `lookCombination` is: looks in order, separated by commas, a `-` prefix inverting
   one and `|` separating alternatives. `append` adds the selected look to its end.
 - **Errors.** A transform OpenColorIO cannot build, such as from a space or look the config
   lacks, is a persistent error, and the input passes through.

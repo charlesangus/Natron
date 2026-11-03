@@ -41,7 +41,7 @@
 #define kOCIODisplayParamView "view"
 #define kOCIODisplayParamGain "gain"
 #define kOCIODisplayParamGamma "gamma"
-#define kOCIODisplayParamChannel "channel_selector"
+#define kOCIODisplayParamChannel "channelSelector"
 
 NATRON_NAMESPACE_ENTER
 

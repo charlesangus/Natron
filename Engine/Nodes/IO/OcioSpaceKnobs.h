@@ -107,6 +107,13 @@ public:
                 const ChoiceMade& choiceMade = ChoiceMade());
 
     /**
+     * @brief Creates only the context group, for a node that has no space to convert with but
+     * reads the variables for a transform of its own.
+     **/
+    void createContextOnly(KnobHolder* holder,
+                           const KnobPagePtr& page);
+
+    /**
      * @brief As create(), for a further space of a node whose knobs \p first created: this takes
      * first's hidden ocioConfigFile and ocioWorkingSpace and its context group instead of
      * creating its own, and its menu goes on \p page before that group.
@@ -180,6 +187,9 @@ public:
 
 private:
     ProjectPtr project() const;
+
+    void createContext(KnobHolder* holder,
+                       const KnobPagePtr& page);
 
     /**
      * @brief Creates the menu on \p page at \p index, or appended when \p index is negative.

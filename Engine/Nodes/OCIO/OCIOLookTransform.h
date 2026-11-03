@@ -40,8 +40,8 @@
 #define kOCIOLookTransformParamOutputSpace "outputColorspace"
 #define kOCIOLookTransformParamLook "look"
 #define kOCIOLookTransformParamAppend "append"
-#define kOCIOLookTransformParamSingleLook "single_look"
-#define kOCIOLookTransformParamLookCombination "look_combination"
+#define kOCIOLookTransformParamSingleLook "singleLook"
+#define kOCIOLookTransformParamLookCombination "lookCombination"
 #define kOCIOLookTransformParamDirection "direction"
 
 NATRON_NAMESPACE_ENTER
@@ -85,7 +85,7 @@ struct OCIOLookTransformOp
     void appendLook();
 
     /**
-     * @brief Enables the combination while single_look is off.
+     * @brief Enables the combination while singleLook is off.
      **/
     void refreshSingleLook();
 

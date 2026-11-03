@@ -279,6 +279,7 @@ OcioNodeKnobs::gpu(const OcioProcessor& processor,
 OcioNodeKnobs::OcioNodeKnobs()
     : _holder(nullptr)
     , _spaces()
+    , _contextOnly()
     , _menuRefreshers()
     , _watched()
     , _watchId(-1)
@@ -312,6 +313,15 @@ OcioNodeKnobs::addSpace(KnobHolder* holder,
         knobs->createSharing(*_spaces.front(), holder, page, description, automaticSpace, choiceMade);
     }
     _spaces.push_back(std::move(knobs));
+}
+
+void
+OcioNodeKnobs::addContext(KnobHolder* holder,
+                          const KnobPagePtr& page)
+{
+    _holder = holder;
+    _contextOnly.reset(new OcioSpaceKnobs());
+    _contextOnly->createContextOnly(holder, page);
 }
 
 void
@@ -354,7 +364,12 @@ void
 OcioNodeKnobs::addKnob(const KnobPagePtr& page,
                        const KnobIPtr& knob)
 {
-    KnobGroupPtr context = _spaces.empty() ? KnobGroupPtr() : _spaces.front()->contextGroup();
+    KnobGroupPtr context;
+    if (!_spaces.empty()) {
+        context = _spaces.front()->contextGroup();
+    } else if (_contextOnly) {
+        context = _contextOnly->contextGroup();
+    }
     if (context) {
         const std::vector<KnobIPtr> children = page->getChildren();
         for (std::size_t i = 0; i < children.size(); ++i) {
@@ -382,7 +397,11 @@ OcioNodeKnobs::workingSpace() const
 std::vector<std::pair<std::string, std::string>>
 OcioNodeKnobs::contextVariables(double time) const
 {
-    return _spaces.empty() ? std::vector<std::pair<std::string, std::string>>() : _spaces.front()->contextVariables(time);
+    if (!_spaces.empty()) {
+        return _spaces.front()->contextVariables(time);
+    }
+
+    return _contextOnly ? _contextOnly->contextVariables(time) : std::vector<std::pair<std::string, std::string>>();
 }
 
 bool

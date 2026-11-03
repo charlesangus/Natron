@@ -301,6 +301,33 @@ TEST_F(NativeOCIOFileTransformsTest, FileMatchesFileTransform)
     expectProcessed(pair.native, pair.source, reference(fileTransform(path), OCIO_NAMESPACE::TRANSFORM_DIR_INVERSE), "inverse");
 }
 
+// The file name holds a context variable, so the processor is the one of whichever file the variable names.
+TEST_F(NativeOCIOFileTransformsTest, ContextVariableReachesTheFileProcessor)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string half = tmp.path().toStdString() + "/lut_half.cube";
+    const std::string quarter = tmp.path().toStdString() + "/lut_quarter.cube";
+    ASSERT_TRUE(writeScaleLut(half, 0.5));
+    ASSERT_TRUE(writeScaleLut(quarter, 0.25));
+
+    ParityPair pair = makePair(PLUGINID_NATRON_OCIOFILETRANSFORM, PLUGIN_MAJOR_NATRON_OCIOFILETRANSFORM);
+    ASSERT_TRUE(bool(pair.native));
+    EXPECT_TRUE(dynamic_cast<KnobGroup*>(pair.native->getKnobByName("ocioContext").get()) != NULL);
+    for (int i = 1; i <= 4; ++i) {
+        EXPECT_TRUE(bool(pair.native->getKnobByName("contextKey" + std::to_string(i)))) << i;
+        EXPECT_TRUE(bool(pair.native->getKnobByName("contextValue" + std::to_string(i)))) << i;
+    }
+
+    ASSERT_TRUE(setKnobValue(pair.native, kOcioFileParamFile, tmp.path().toStdString() + "/lut_$LOOK.cube"));
+    ASSERT_TRUE(setKnobValue(pair.native, "contextKey1", "LOOK"));
+    ASSERT_TRUE(setKnobValue(pair.native, "contextValue1", "half"));
+    expectProcessed(pair.native, pair.source, reference(fileTransform(half)), "half");
+
+    ASSERT_TRUE(setKnobValue(pair.native, "contextValue1", "quarter"));
+    expectProcessed(pair.native, pair.source, reference(fileTransform(quarter)), "quarter");
+}
+
 TEST_F(NativeOCIOFileTransformsTest, MissingFileIsAnErrorAndPassesThrough)
 {
     QTemporaryDir tmp;

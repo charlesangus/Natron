@@ -103,6 +103,23 @@ OcioSpaceKnobs::create(KnobHolder* holder,
 
     createMenu(holder, page, description, -1);
 
+    createContext(holder, page);
+
+    refreshMenu();
+}
+
+void
+OcioSpaceKnobs::createContextOnly(KnobHolder* holder,
+                                  const KnobPagePtr& page)
+{
+    _holder = holder;
+    createContext(holder, page);
+}
+
+void
+OcioSpaceKnobs::createContext(KnobHolder* holder,
+                              const KnobPagePtr& page)
+{
     const QString contextHint = tr("OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"
                                    "Here you can specify the context name (key) and its corresponding value.\n"
                                    "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n"
@@ -128,8 +145,6 @@ OcioSpaceKnobs::create(KnobHolder* holder,
         context->addKnob(value);
         _contextValues[i] = value;
     }
-
-    refreshMenu();
 }
 
 void

@@ -37,8 +37,8 @@
 #include "Global/Enums.h"
 
 #define kOcioFileParamFile "file"
-#define kOcioFileParamCCCId "cccid"
-#define kOcioFileParamCCCIdMenu "cccid_menu"
+#define kOcioFileParamCCCId "cccId"
+#define kOcioFileParamCCCIdMenu "cccIdMenu"
 #define kOcioFileParamReload "reload"
 
 NATRON_NAMESPACE_ENTER

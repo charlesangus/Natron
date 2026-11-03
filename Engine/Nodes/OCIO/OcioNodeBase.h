@@ -98,6 +98,13 @@ public:
     void attach(KnobHolder* holder);
 
     /**
+     * @brief Adds the ocioContext group alone, last on \p page, for a node with no space whose
+     * transform still reads the context variables.
+     **/
+    void addContext(KnobHolder* holder,
+                    const KnobPagePtr& page);
+
+    /**
      * @brief Adds a space on \p page. The first creates the hidden config pair and the ocioContext
      * group; a later one shares them and goes before that group.
      **/
@@ -239,6 +246,7 @@ private:
 
     KnobHolder* _holder;
     std::vector<std::unique_ptr<OcioSpaceKnobs>> _spaces;
+    std::unique_ptr<OcioSpaceKnobs> _contextOnly;
     std::vector<std::function<void()>> _menuRefreshers;
     std::weak_ptr<ProjectColorManagement> _watched;
     int _watchId;

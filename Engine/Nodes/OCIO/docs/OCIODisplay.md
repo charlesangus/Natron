@@ -7,7 +7,7 @@ Tolerance:
 | OCIODisplay | 1e-4 | `kDisplayTolerance` | the reference asks OpenColorIO for the display processor another way |
 
 `OCIODisplay` (`OCIODisplay.h`, plug-in ID `OCIODisplay`) renders RGB as a display of the
-project's config shows it, the way the viewer does: `gain` on the input, the `channel_selector`
+project's config shows it, the way the viewer does: `gain` on the input, the `channelSelector`
 view, the display and view transform from `inputColorspace` with the context variables of the
 `ocioContext` group, then `gamma`. Alpha is left as it is. The `inputColorspace` menu's first
 entry, `projectDefault`, is the project's working space, its label showing the space it stands

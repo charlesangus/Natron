@@ -124,7 +124,7 @@ NODES = {
                                       "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
     "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
     "ocio_look": ("OCIOLookTransform", {"inputColorspace": "ACEScg", "outputColorspace": "ACEScg",
-                                        "single_look": True, "look": "@LOOK@"}, False),
+                                        "singleLook": True, "look": "@LOOK@"}, False),
 }
 
 

@@ -95,7 +95,7 @@ OCIODisplayOp::createKnobs(KnobHolder* holder,
     ocio.addKnob(page, gammaKnob);
     gamma = gammaKnob;
 
-    KnobChoicePtr channelKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Channel View").toStdString());
+    KnobChoicePtr channelKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Channel Selector").toStdString());
     channelKnob->setName(kOCIODisplayParamChannel);
     channelKnob->setHintToolTip(EffectInstance::tr("The channels to view, taken after the gain and before the display transform. "
                                                    "A single channel or the luminance is shown in R, G and B.")

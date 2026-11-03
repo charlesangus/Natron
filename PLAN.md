@@ -13,6 +13,8 @@ future core work has solid ground to build on.
 
 # Context and constraints
 
+- **Licence: GPLv3-or-later (user, 2026-11-03).** Natron moves to GPLv3-or-later before release, so Apache-2.0 and GPLv3 code may be integrated (bundled Cycles with Blender's GPL deep files, darktable ports, etc.).
+
 - **Mind the Git LFS quota (user, 2026-10-27):** reference images store only the compared region (≤256 px crops, half-float, zip-compressed); prefer small synthetic sources; no new camera raws without asking.
 
 - **Six lanes, same-file rule waived (user, 2026-10-27):** bosley-native-nodes runs six parallel lanes across E13, E9, E3, E10, E15, E16, E17 plus M224, M163 and M242; lanes may overlap files and accept rebases. M64 - Tiled Rendering gates nothing. A milestone blocked on user feedback pauses and its lane takes the next one.

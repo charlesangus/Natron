@@ -3423,6 +3423,12 @@ public:
     U64 getKnobsContentGeneration() const;
 
     /**
+     * @brief Moves whenever a knob is added to or removed from getKnobs(), and on nothing else:
+     * reordering and value changes leave it alone. MT-safe.
+     **/
+    U64 getKnobListGeneration() const;
+
+    /**
      * @brief The Reverse-Flow Variables the holder declares, as RFV::refreshDeclarationSnapshot()
      * last took them; null before it first ran. Render threads read declarations here rather than
      * walk the groups' children, which the main thread edits. MT-safe.

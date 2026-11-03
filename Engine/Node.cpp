@@ -2713,6 +2713,10 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     // Loading a knob may add or delete knobs (a node whose knobs follow a choice), so this walks
     // copies of the list, skips knobs deleted meanwhile, and goes again over the knobs added.
     std::set<KnobIPtr> loaded;
+    // Addresses of the knobs in the list as of liveGeneration; only compared, never dereferenced.
+    std::unordered_set<const KnobI*> live;
+    bool liveValid = false;
+    U64 liveGeneration = 0;
     for (;;) {
         const std::vector<KnobIPtr> nodeKnobs = getKnobs();
         bool loadedAny = false;
@@ -2720,8 +2724,17 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
             if (loaded.count(knob)) {
                 continue;
             }
-            const std::vector<KnobIPtr>& current = getKnobs();
-            if (std::find(current.begin(), current.end(), knob) == current.end()) {
+            // The value-change generation would move on every knob loaded and force a rebuild each time.
+            const U64 generation = _imp->effect->getKnobListGeneration();
+            if (!liveValid || generation != liveGeneration) {
+                live.clear();
+                for (const KnobIPtr& k : getKnobs()) {
+                    live.insert(k.get());
+                }
+                liveGeneration = generation;
+                liveValid = true;
+            }
+            if (!live.count(knob.get())) {
                 continue;
             }
             loaded.insert(knob);

@@ -7665,6 +7665,7 @@ struct KnobHolder::KnobHolderPrivate
     bool knobsFrozen;
     DockablePanelI* settingsPanel;
     std::atomic<U64> knobsContentGeneration { 0 };
+    std::atomic<U64> knobListGeneration { 0 };
     mutable QMutex rfvDeclarationsMutex; // protects rfvDeclarations
     RFVDeclarationsConstPtr rfvDeclarations;
 
@@ -7813,6 +7814,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
 }
@@ -7837,6 +7839,7 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
 }
@@ -7849,6 +7852,7 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
     for (KnobsVec::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         if (it->get() == knob) {
             _imp->knobs.erase(it);
+            _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
             bumpKnobsContentGeneration(knob);
             KnobHelper::moveHashedMetadataSourcesGeneration();
 
@@ -7861,6 +7865,12 @@ U64
 KnobHolder::getKnobsContentGeneration() const
 {
     return _imp->knobsContentGeneration.load(std::memory_order_acquire);
+}
+
+U64
+KnobHolder::getKnobListGeneration() const
+{
+    return _imp->knobListGeneration.load(std::memory_order_acquire);
 }
 
 void
@@ -7959,6 +7969,7 @@ KnobHolder::deleteKnob(KnobI* knob,
         for (KnobsVec::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
             if (it2->get() == knob) {
                 _imp->knobs.erase(it2);
+                _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
                 break;
             }
         }

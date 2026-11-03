@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -142,6 +143,14 @@ struct SharpenOp {
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
+
+    /**
+     * @brief The Filter weight of the larger axis's size at the context's scale for the filters
+     * whose cost grows with it; empty for the recursive Gaussians, whose cost does not, and so for
+     * the plain Filter weight.
+     **/
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobChoiceWPtr mode;
     KnobDoubleWPtr size;

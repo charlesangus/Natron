@@ -232,6 +232,15 @@ int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);
 PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
                                          SceneRotateOrderEnum rotateOrder);
 
+/**
+ * @brief The rotate values (degrees, indexed by axis) that composeRotationMatrix() turns into
+ * rotation in rotateOrder. rotation's upper 3x3 must be a rotation. Of the equivalent values,
+ * the ones closest to hint are returned, so that a value edited a little at a time does not jump.
+ **/
+PXR_NS::GfVec3d decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                                        SceneRotateOrderEnum rotateOrder,
+                                        const PXR_NS::GfVec3d& hint);
+
 } // namespace SceneNodeAuthoring
 
 NATRON_NAMESPACE_EXIT

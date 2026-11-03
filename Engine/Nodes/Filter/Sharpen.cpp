@@ -506,15 +506,11 @@ sharpenPasses(const SharpenParams& params,
 
     Pass passX = Pass::lineX(haloX, 0, lineWorker(filterX, false));
     passX.tapsPerSample = taps[0];
-    passX.sigma = s.x / 2.4;
-    passX.recursive = isGaussianFamily(filter) && !filterX->isIdentity();
     // The FIR Gaussian takes the columns a block of adjacent ones at a time, so it reads the
     // plane row by row.
     Pass passY = Pass::lineY(haloY, 0, lineWorker(filterY, fir));
     passY.tapsPerSample = taps[1];
     passY.columnBlock = fir ? BlurKernels::LineFilter::kColumnBlock : 1;
-    passY.sigma = s.y / 2.4;
-    passY.recursive = isGaussianFamily(filter) && !filterY->isIdentity();
     list.passes.push_back(Pass::point(true, copyWorker()));
     list.passes.push_back(atSlot(passX, kSlotBlur));
     list.passes.push_back(atSlot(passY, kSlotBlur));
@@ -654,6 +650,18 @@ SharpenOp::passes(const Params& params,
                   const PassContext& context) const
 {
     return sharpenPasses(params, pixelSizes(params, context));
+}
+
+std::optional<GpuWeight>
+SharpenOp::gpuWeight(const Params& params,
+                     const PassContext& context) const
+{
+    if (isGaussianFamily(params.filter)) {
+        return std::nullopt;
+    }
+    const PixelSizes sizes = pixelSizes(params, context);
+
+    return gpuSizeScaledWeight(std::max(sizes.x, sizes.y));
 }
 
 Sharpen::Sharpen(NodePtr node)

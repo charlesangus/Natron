@@ -64,13 +64,8 @@
 #define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
 #define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
 #define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CONSTANT     "net.sf.openfx.ConstantPlugin"
-#define PLUGINID_OFX_TIMEOFFSET   "net.sf.openfx.timeOffset"
-#define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
-#define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
-#define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
+#define PLUGINID_OFX_CONSTANT "net.sf.openfx.ConstantPlugin"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
-#define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
@@ -537,6 +532,15 @@ public:
     virtual RotoCurvePanelHook* getCurvePanelHook() const WARN_UNUSED_RETURN
     {
         return 0;
+    }
+
+    /**
+     * @brief Called by a geometry curve context when item is built, before it is cloned, loaded
+     * or inserted: the host may add per-item knobs with RotoDrawableItem::addHostKnob(), which
+     * are then saved, copied and hashed with the item's own. Main thread.
+     **/
+    virtual void onCurveItemCreated(const RotoDrawableItemPtr& /*item*/)
+    {
     }
 
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
@@ -1129,12 +1133,6 @@ public:
      **/
     static void noteFrameStoreHit();
     static void noteUnplannedPull();
-
-    /**
-     * @brief How many render actions the calling thread started so far. A renderRoI call that leaves it unchanged on
-     * its thread took its output from the cache, or rendered it on other threads.
-     **/
-    static unsigned long long getRenderActionsOnThisThread();
 
     /**
      * @brief Whether input belongs to the internal tree of a RotoPaint node of the frame installed on this thread. The
@@ -2038,6 +2036,26 @@ public:
     virtual void purgeCaches()
     {
     };
+
+    /**
+     * @brief Clear All Caches: drops what the node decoded, but the files it reads stay pinned as
+     * they were loaded or reloaded, so a file changed on disk since fails until Reload.
+     **/
+    virtual void purgeCachesKeepingFileStamps()
+    {
+        purgeCaches();
+    }
+
+    /**
+     * @brief Called after files were reloaded and their stamps dropped, for an effect none of whose
+     * file knobs names them: one reading any of paths through another file re-keys on their new
+     * stamps, drops what it read from them, and returns true; the caller then marks its hash.
+     * Main thread only.
+     **/
+    virtual bool refreshFileDependencies(const std::vector<std::string>& /*paths*/)
+    {
+        return false;
+    }
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();
@@ -2486,6 +2504,8 @@ public:
 
     bool onOverlayPenUp_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 
+    bool onOverlayWheel_public(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double delta, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
+
     bool onOverlayKeyDown_public(double time, const RenderScale & renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
 
     bool onOverlayKeyUp_public(double time, const RenderScale & renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
@@ -2495,6 +2515,19 @@ public:
     bool onOverlayFocusGained_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
+     * Every Viewer release calls it, so a release that does not reach the owner of the step, or
+     * reaches no overlay at all, still ends it. Main thread only.
+     **/
+    static void closeOverlayEditStep();
+
+    /**
+     * @brief closeOverlayEditStep() when the open step belongs to this effect, for instance when
+     * its settings panel closes mid-gesture. Main thread only.
+     **/
+    void closeOverlayEditStepIfOwner() const;
 
     void setInteractColourPicker_public(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 
@@ -3123,6 +3156,21 @@ protected:
                                 const QPointF & /*pos*/,
                                 double /*pressure*/,
                                 double /*timestamp*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief A mouse wheel turn over the viewer, delta in notches, positive away from the user.
+     * Returning true consumes it, so the viewer does not zoom. OpenFX has no wheel action.
+     **/
+    virtual bool onOverlayWheel(double /*time*/,
+                                const RenderScale& /*renderScale*/,
+                                ViewIdx /*view*/,
+                                const QPointF& /*viewportPos*/,
+                                const QPointF& /*pos*/,
+                                double /*delta*/,
+                                KeyboardModifiers /*modifiers*/) WARN_UNUSED_RETURN
     {
         return false;
     }

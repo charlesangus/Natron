@@ -84,9 +84,8 @@ on by default), 1 when none is, or one minus that with `invert`. Alpha is the ke
 replaced by it (**Matte**). The output is RGBA whatever the source. Mask and mix blend the result
 with the source.
 
-## GPU and cost
+## GPU
 
 The kernel (`HSVKeyerOp` in `Engine/Gpu/Kernels/hue.slang`) follows the CPU statement for
-statement with `precise` arithmetic (`Tests/Native/NativeHueGpu_Test.cpp`). The cost seed in
-`HSVKeyer.costseed.inc` is HueKeyer's measurement, which predates the OkLCh model, the luma term
-and the output modes; it is to be re-measured.
+statement with `precise` arithmetic (`Tests/Native/NativeHueGpu_Test.cpp`). It weighs as a Point
+op, the default for its op kind.

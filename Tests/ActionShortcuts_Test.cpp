@@ -328,7 +328,7 @@ TEST(Viewer3DNavigationPresetTest, ResetGivesTheCurrentPresetsBinding)
 TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
 {
     const std::vector<Viewer3DKeyBinding>& keys = getViewer3DDefaultKeyBindings();
-    ASSERT_EQ(std::size_t(10), keys.size());
+    ASSERT_EQ(std::size_t(15), keys.size());
     for (std::size_t i = 0; i < keys.size(); ++i) {
         EXPECT_NE(nullptr, keys[i].description) << keys[i].actionID;
         for (std::size_t j = i + 1; j < keys.size(); ++j) {

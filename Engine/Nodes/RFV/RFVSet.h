@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_RFV_ReverseFlowVariableSet_h
-#define Engine_Nodes_RFV_ReverseFlowVariableSet_h
+#ifndef Engine_Nodes_RFV_RFVSet_h
+#define Engine_Nodes_RFV_RFVSet_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -34,25 +34,25 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_REVERSEFLOWVARIABLESET "ReverseFlowVariableSet"
+#define PLUGINID_NATRON_RFVSET "RFVSet"
 
-#define kReverseFlowVariableSetParamPage "rfvPage"
-#define kReverseFlowVariableSetParamPageLabel "Variables"
-#define kReverseFlowVariableSetParamVariables "rfvVariables"
-#define kReverseFlowVariableSetParamVariablesLabel "Variables"
-#define kReverseFlowVariableSetParamGlobalVariables "rfvGlobalVariables"
-#define kReverseFlowVariableSetParamGlobalVariablesLabel "Global Variables"
-#define kReverseFlowVariableSetParamExistingVariable "rfvExistingVariable"
-#define kReverseFlowVariableSetParamExistingVariableLabel "Existing variable"
-#define kReverseFlowVariableSetParamExistingVariableHint "Adds to this node a variable declared on the project or on another ReverseFlowVariableSet "           \
-                                                         "node, with the same type, dimensions and default, starting from its current value. It is not linked " \
-                                                         "to the one it was taken from. It goes in this group when the project declares its name, and in the "  \
-                                                         "Variables group otherwise."
-#define kReverseFlowVariableSetExistingVariablePrompt "Add existing variable..."
+#define kRFVSetParamPage "rfvPage"
+#define kRFVSetParamPageLabel "Variables"
+#define kRFVSetParamVariables "rfvVariables"
+#define kRFVSetParamVariablesLabel "Variables"
+#define kRFVSetParamGlobalVariables "rfvGlobalVariables"
+#define kRFVSetParamGlobalVariablesLabel "Global Variables"
+#define kRFVSetParamExistingVariable "rfvExistingVariable"
+#define kRFVSetParamExistingVariableLabel "Existing variable"
+#define kRFVSetParamExistingVariableHint "Adds to this node a variable declared on the project or on another RFVSet "                           \
+                                         "node, with the same type, dimensions and default, starting from its current value. It is not linked " \
+                                         "to the one it was taken from. It goes in this group when the project declares its name, and in the "  \
+                                         "Variables group otherwise."
+#define kRFVSetExistingVariablePrompt "Add existing variable..."
 
 NATRON_NAMESPACE_ENTER
 
-inline constexpr InputSpec kReverseFlowVariableSetInputs[] = {
+inline constexpr InputSpec kRFVSetInputs[] = {
     InputSpec { .label = "Source", .kind = eDataKindPolymorphic },
 };
 
@@ -63,15 +63,15 @@ inline constexpr InputSpec kReverseFlowVariableSetInputs[] = {
  * also declares, after the drop-down that adds an existing variable; the Variables group holds the
  * others. The node forwards its input unchanged, whatever its data kind.
  **/
-class ReverseFlowVariableSet
+class RFVSet
     : public NativeEffectBase {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ReverseFlowVariableSet(node);
+        return new RFVSet(node);
     }
 
-    explicit ReverseFlowVariableSet(NodePtr node)
+    explicit RFVSet(NodePtr node)
         : NativeEffectBase(node)
         , _variables()
         , _globalVariables()
@@ -101,16 +101,17 @@ private:
     void addExistingVariableNow(const std::string& name);
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_REVERSEFLOWVARIABLESET,
-        .label = "ReverseFlowVariableSet",
+        .id = PLUGINID_NATRON_RFVSET,
+        .label = "RFVSet",
         .description = "Sets Reverse-Flow Variables for the nodes upstream of it. Each parameter in its "
                        "Variables and Global Variables groups is one variable, named by the parameter's script name. "
                        "The node passes its input through unchanged.",
-        .grouping = PLUGIN_GROUP_OTHER,
+        .grouping = PLUGIN_GROUP_RFV,
         .majorVersion = 1,
         .minorVersion = 0,
+        .icon = NATRON_ICONS_PATH "natron/rfv.svg",
         .outputKind = eDataKindPolymorphic,
-        .inputs = kReverseFlowVariableSetInputs,
+        .inputs = kRFVSetInputs,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -159,4 +160,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_RFV_ReverseFlowVariableSet_h
+#endif // Engine_Nodes_RFV_RFVSet_h

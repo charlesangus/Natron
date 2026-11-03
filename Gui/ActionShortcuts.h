@@ -404,6 +404,21 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DLockView "lockView"
 #define kShortcutDescActionViewer3DLockView "Lock View to Camera"
 
+#define kShortcutIDActionViewer3DWireframe "wireframe"
+#define kShortcutDescActionViewer3DWireframe "Wireframe"
+
+#define kShortcutIDActionViewer3DShaded "shaded"
+#define kShortcutDescActionViewer3DShaded "Shaded"
+
+#define kShortcutIDActionViewer3DUnshaded "unshaded"
+#define kShortcutDescActionViewer3DUnshaded "Unshaded"
+
+#define kShortcutIDActionViewer3DShowGrid "showGrid"
+#define kShortcutDescActionViewer3DShowGrid "Show Grid"
+
+#define kShortcutIDActionViewer3DShowGuides "showGuides"
+#define kShortcutDescActionViewer3DShowGuides "Show Guides"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

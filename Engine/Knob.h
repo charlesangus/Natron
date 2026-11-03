@@ -2174,10 +2174,11 @@ protected:
     }
 
     /**
-     * @brief Appends the static value of the dimension and anything else the value type keeps
-     * per dimension, as stored by this knob (never through a master).
+     * @brief Appends the static value of the dimension, unless withStaticValue is false, and
+     * anything else the value type keeps per dimension, as stored by this knob (never through a
+     * master).
      **/
-    virtual void appendValueContentHash(ContentHasher& h, int dimension) const = 0;
+    virtual void appendValueContentHash(ContentHasher& h, int dimension, bool withStaticValue) const = 0;
 
     /**
      * @brief Appends the data a derived knob keeps for the dimension beside its value, curve
@@ -2800,7 +2801,7 @@ protected:
 
     virtual void resetExtraToDefaultValue(int /*dimension*/) {}
 
-    virtual void appendValueContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+    virtual void appendValueContentHash(ContentHasher& h, int dimension, bool withStaticValue) const OVERRIDE FINAL;
 
 private:
 

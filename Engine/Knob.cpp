@@ -7534,9 +7534,12 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
             hashes[i] = h.finalize();
             continue;
         }
-        appendValueContentHash(h, i);
-
+        // An animated dimension reads its curve, never its static value, and a project saves the
+        // curve's value in place of the static one, so hashing it would change the hash on reload.
         CurvePtr curve = _imp->curves[i];
+        const bool animated = curve && curve->isAnimated();
+        appendValueContentHash(h, i, !animated);
+
         h.appendBool(bool(curve));
         if (curve) {
             curve->appendContentHash(h);

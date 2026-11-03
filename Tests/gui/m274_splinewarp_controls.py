@@ -92,6 +92,16 @@ try:
                 parent = parent.parentWidget()
         return None
 
+    def scroll_area_of(widget):
+        """The nearest QScrollArea holding widget. Node panel pages have none of their own: the
+        Properties bin's scroll area scrolls every open panel."""
+        w = widget.parentWidget()
+        while w is not None:
+            if isinstance(w, QScrollArea):
+                return w
+            w = w.parentWidget()
+        return None
+
     def page_tabs(panel):
         for tabs in panel.findChildren(QTabWidget):
             names = [tabs.tabText(i) for i in range(tabs.count())]
@@ -326,9 +336,9 @@ try:
             tabs.setCurrentIndex(index)
             yield ("sleep", SETTLE_MS)
             page = hold(tabs.widget(index))
-            areas = [page] if isinstance(page, QScrollArea) else [a for a in page.findChildren(QScrollArea) if a.isVisible()]
-            require(len(areas) > 0, "the %s page scrolls in a scroll area" % name)
-            area = hold(areas[0])
+            area = scroll_area_of(page)
+            require(area is not None, "the %s page sits in the Properties scroll area" % name)
+            area = hold(area)
             vmax = area.verticalScrollBar().maximum()
             hmax = area.horizontalScrollBar().maximum()
             report("NOTE %s page: viewport %dx%d, scroll ranges v %d h %d" % (

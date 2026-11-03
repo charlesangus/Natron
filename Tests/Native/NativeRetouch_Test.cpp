@@ -743,6 +743,94 @@ TEST_F(NativeRetouchTest, SourceDragOfASelectedShapeMovesTheNodeOffset)
     EXPECT_DOUBLE_EQ(20., dy);
 }
 
+// Each motion of a source drag asks for one render at most, of a draft heal, and the release
+// renders the heal a fresh render of the final offset gives.
+TEST_F(NativeRetouchTest, SourceDragRendersOncePerMotionAndHealsFullyOnRelease)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(node));
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    ShapeSpec spec;
+    spec.algorithm = RC::eAlgorithmHeal;
+    spec.sourceX = 30.;
+    spec.sourceY = 0.;
+    BezierPtr shape = RetouchTest::makeShape(node, spec, kTime);
+    ASSERT_TRUE(bool(shape));
+    context->select(shape, RotoItem::eSelectionReasonOther);
+
+    // The source outline is the ellipse at (24, 24) moved by the offset: centred on (54, 24).
+    const RenderScale scale = RenderScale::identity;
+    const QPointF start(54., 24.);
+    const QPointF end(46., 30.);
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
+    for (int i = 1; i <= 4; ++i) {
+        const double f = i / 4.;
+        const QPointF p(start.x() + f * (end.x() - start.x()), start.y() + f * (end.y() - start.y()));
+        const int before = effect->getRenderRequestCount();
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., i));
+        EXPECT_LE(effect->getRenderRequestCount() - before, 1) << "motion " << i;
+        EXPECT_TRUE(effect->isInteractiveDraft()) << "motion " << i;
+        RenderedPlane draft;
+        ASSERT_TRUE(renderRGBA(node, &draft));
+    }
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 5.));
+    EXPECT_FALSE(effect->isInteractiveDraft());
+    double dx = 0., dy = 0.;
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(22., dx);
+    EXPECT_DOUBLE_EQ(6., dy);
+    RenderedPlane released;
+    ASSERT_TRUE(renderRGBA(node, &released));
+
+    resetProject();
+    NodePtr fresh = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(fresh));
+    spec.sourceX = dx;
+    spec.sourceY = dy;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(fresh, spec, kTime)));
+    RenderedPlane expected;
+    ASSERT_TRUE(renderRGBA(fresh, &expected));
+    ASSERT_EQ(expected.pixels.size(), released.pixels.size());
+    double worst = 0.;
+    for (std::size_t i = 0; i < expected.pixels.size(); ++i) {
+        worst = std::max(worst, (double)std::fabs(expected.pixels[i] - released.pixels[i]));
+    }
+    EXPECT_LE(worst, 1e-6);
+}
+
+// Painting a brush asks for one render per pen motion, drafts while the pen is down, and stops
+// drafting when it is lifted.
+TEST_F(NativeRetouchTest, BrushPaintRendersOncePerMotion)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(node));
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    const RetouchInteractPtr& ui = effect->getInteract();
+    ASSERT_TRUE(bool(ui));
+    ui->setCurrentTool(ui->drawBrushAction.lock());
+
+    const RenderScale scale = RenderScale::identity;
+    const QPointF start(10., 20.);
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
+    EXPECT_TRUE(effect->isInteractiveDraft());
+    const int first = effect->getRenderRequestCount();
+    for (int i = 1; i <= 4; ++i) {
+        const QPointF p(start.x() + 5. * i, start.y() + i);
+        const int before = effect->getRenderRequestCount();
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., 0.));
+        EXPECT_LE(effect->getRenderRequestCount() - before, 1) << "motion " << i;
+        EXPECT_TRUE(effect->isInteractiveDraft()) << "motion " << i;
+    }
+    EXPECT_GE(effect->getRenderRequestCount() - first, 1);
+    const QPointF end(start.x() + 20., start.y() + 4.);
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 0.));
+    EXPECT_FALSE(effect->isInteractiveDraft());
+}
+
 // Smooth (Z) on the cusp corners of a square: each point's handles become collinear and equal, along
 // the bisector of its chords and as long as a circle's through the four corners, so the square becomes
 // that circle. Smoothing again changes nothing, and one undo puts the cusps back.
@@ -925,6 +1013,165 @@ TEST_F(NativeRetouchTest, DecomposeRecomposeIsIdentity)
             }
         }
         EXPECT_LE(worst, 1e-6) << scales << " scales";
+    }
+}
+
+namespace {
+// A brush shape from (x0, y0) to (x1, y1) of the given border, in full-image pixels, top-down.
+RC::Shape
+brushShape(RC::AlgorithmEnum algorithm,
+           int scale,
+           float x0,
+           float y0,
+           float x1,
+           float y1,
+           float radius,
+           float dx,
+           float dy)
+{
+    RC::BrushPoint a, b;
+    a.x = x0;
+    a.y = y0;
+    a.radius = radius;
+    a.hardness = 0.6f;
+    b = a;
+    b.x = x1;
+    b.y = y1;
+    RC::Shape shape;
+    shape.settings.algorithm = algorithm;
+    shape.settings.scale = scale;
+    shape.settings.blurRadius = 3.f;
+    shape.settings.fillMode = RC::eFillModeColor;
+    shape.settings.fillColor[0] = 0.8f;
+    shape.maskRoi = RC::brushBounds({ a, b });
+    RC::rasterizeBrush({ a, b }, shape.maskRoi, &shape.mask);
+    shape.dx = dx;
+    shape.dy = dy;
+
+    return shape;
+}
+
+// A textured test image, width x height x 4.
+std::vector<float>
+texturedImage(int width,
+              int height)
+{
+    std::vector<float> image((std::size_t)width * height * 4);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                image[((std::size_t)y * width + x) * 4 + c] = 0.3f + 0.2f * std::sin(0.11f * x + 0.7f * c) * std::cos(0.07f * y) + 0.05f * std::sin(1.3f * x * y + c);
+            }
+        }
+    }
+
+    return image;
+}
+} // anon namespace
+
+// Processing the crop processRegion() asks for gives the full image's result inside the window,
+// for shapes of every kind on the image, a detail scale and the residual.
+TEST_F(NativeRetouchTest, CroppedProcessMatchesTheFullImage)
+{
+    const int width = 200;
+    const int height = 150;
+    const std::vector<float> image = texturedImage(width, height);
+    std::vector<RC::Shape> shapes;
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 0, 30.f, 40.f, 70.f, 50.f, 8.f, -50.f, 60.f));
+    shapes.push_back(brushShape(RC::eAlgorithmClone, 2, 120.f, 20.f, 150.f, 60.f, 6.f, 40.f, 70.f));
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 1, 150.f, 110.f, 185.f, 120.f, 7.f, 120.f, 10.f));
+    shapes.push_back(brushShape(RC::eAlgorithmBlur, 4, 60.f, 120.f, 90.f, 135.f, 5.f, 0.f, 0.f));
+    shapes.push_back(brushShape(RC::eAlgorithmFill, 0, 10.f, 140.f, 20.f, 145.f, 4.f, 0.f, 0.f));
+    const RC::Region windows[] = {
+        { 0, 0, 40, 30 },
+        { 100, 60, 30, 20 },
+        { 160, 100, 40, 50 },
+        { 55, 115, 20, 10 },
+        { -10, -10, 300, 300 },
+    };
+
+    for (int scales : { 0, 3 }) {
+        RC::Params params;
+        params.numScales = scales;
+        params.maxHealIterations = 100;
+        std::vector<float> full = image;
+        RC::process(full.data(), width, height, params, shapes, EdgeAware::serialFor);
+        for (const RC::Region& window : windows) {
+            const RC::Region crop = RC::processRegion(window, shapes, params, width, height);
+            ASSERT_GT(crop.width, 0);
+            ASSERT_GT(crop.height, 0);
+            ASSERT_GE(crop.x, 0);
+            ASSERT_GE(crop.y, 0);
+            ASSERT_LE(crop.x + crop.width, width);
+            ASSERT_LE(crop.y + crop.height, height);
+            std::vector<float> part((std::size_t)crop.width * crop.height * 4);
+            for (int y = 0; y < crop.height; ++y) {
+                std::copy(&image[((std::size_t)(y + crop.y) * width + crop.x) * 4], &image[((std::size_t)(y + crop.y) * width + crop.x + crop.width) * 4],
+                          &part[(std::size_t)y * crop.width * 4]);
+            }
+            RC::Params cropParams = params;
+            cropParams.originX = crop.x;
+            cropParams.originY = crop.y;
+            cropParams.fullWidth = width;
+            cropParams.fullHeight = height;
+            RC::process(part.data(), crop.width, crop.height, cropParams, shapes, EdgeAware::serialFor);
+            double worst = 0.;
+            const int x1 = std::max(window.x, 0), x2 = std::min(window.x + window.width, width);
+            const int y1 = std::max(window.y, 0), y2 = std::min(window.y + window.height, height);
+            for (int y = y1; y < y2; ++y) {
+                for (int x = x1; x < x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        const float a = full[((std::size_t)y * width + x) * 4 + c];
+                        const float b = part[((std::size_t)(y - crop.y) * crop.width + (x - crop.x)) * 4 + c];
+                        worst = std::max(worst, (double)std::fabs(a - b));
+                    }
+                }
+            }
+            EXPECT_LE(worst, 1e-6) << scales << " scales, window " << window.x << "," << window.y << " " << window.width << "x" << window.height;
+        }
+    }
+}
+
+// The node renders a part of its output as it renders that part of the whole.
+TEST_F(NativeRetouchTest, RenderingAWindowMatchesTheFullRender)
+{
+    NodePtr node = makeRetouch(makeSource(true), 2);
+    ASSERT_TRUE(bool(node));
+    ShapeSpec spec;
+    spec.algorithm = RC::eAlgorithmHeal;
+    spec.cx = 16.;
+    spec.cy = 14.;
+    spec.diameter = 10.;
+    spec.sourceX = 28.;
+    spec.sourceY = 20.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+    spec.algorithm = RC::eAlgorithmClone;
+    spec.cx = 50.;
+    spec.cy = 36.;
+    spec.scale = 1;
+    spec.sourceX = -30.;
+    spec.sourceY = 0.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+
+    RenderedPlane full;
+    ASSERT_TRUE(renderRGBA(node, &full));
+    const RectI windows[] = { RectI(0, 0, 24, 20), RectI(40, 28, 64, 48), RectI(20, 10, 36, 30) };
+    for (const RectI& window : windows) {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true)) << error;
+        ASSERT_EQ(1u, planes.size());
+        double worst = 0.;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float a = full.pixels[((std::size_t)(y - full.window.y1) * full.window.width() + (x - full.window.x1)) * 4 + c];
+                    const float b = planes[0].pixels[((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4 + c];
+                    worst = std::max(worst, (double)std::fabs(a - b));
+                }
+            }
+        }
+        EXPECT_LE(worst, 1e-6) << window.x1 << "," << window.y1;
     }
 }
 

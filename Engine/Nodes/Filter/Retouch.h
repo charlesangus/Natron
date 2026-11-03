@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -152,7 +155,7 @@ public:
 
     virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return false;
+        return true;
     }
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -234,6 +237,32 @@ public:
         return _ui;
     }
 
+    /**
+     * @brief Starts or ends an interactive edit, a stroke being painted or a source being
+     * dragged, during which renders are drafts: a Heal shape refines its previous solve for a few
+     * cycles instead of solving afresh. Drafts hash apart from final renders, so the render
+     * that follows the end is a full one. Returns whether a draft was on.
+     **/
+    bool setInteractiveDraft(bool draft);
+
+    bool isInteractiveDraft() const
+    {
+        return _draft.load();
+    }
+
+    /// Asks the viewers for a render of the stroke being painted.
+    void requestStrokeRender();
+
+    /// The renders asked for since the node was made: evaluations and stroke renders.
+    int getRenderRequestCount() const
+    {
+        return _renderRequests.load();
+    }
+
+    virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE;
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
@@ -296,9 +325,24 @@ private:
 
     /**
      * @brief The shapes of a render at time and scale over full, the source's pixels, top-down,
-     * rasterised, in render order.
+     * in render order; rasterised unless rasterize is false, which leaves their masks empty.
      **/
-    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full) const;
+    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full, bool rasterize = true) const;
+
+    /**
+     * @brief What a render of window (pixels at scale) processes: the source's pixel extent
+     * full, the crop of it RetouchCore::processRegion() asks for, and the parameters and shapes,
+     * rasterised when rasterize is true. False when there is no source.
+     **/
+    bool processPlan(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     const RectI& window,
+                     bool rasterize,
+                     RectI* full,
+                     RectI* crop,
+                     RetouchCore::Params* params,
+                     std::vector<RetouchCore::Shape>* shapes) const WARN_UNUSED_RETURN;
 
     // The finished shapes of a new drawing get the carried source offset.
     void applyNewShapeSourceOffsets();
@@ -393,6 +437,12 @@ private:
     double _dragTime = 0.;
     double _dragStart[2] = { 0., 0. };
     double _dragEnd[2] = { 0., 0. };
+
+    std::atomic<bool> _draft { false };
+    std::atomic<int> _renderRequests { 0 };
+    // The Heal shapes' warm starts while a draft is on, by script name.
+    mutable std::mutex _warmStartsMutex;
+    mutable std::map<std::string, std::shared_ptr<RetouchCore::HealWarmStart>> _warmStarts;
 };
 
 NATRON_NAMESPACE_EXIT

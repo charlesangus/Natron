@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
+#include <mutex>
 #include <vector>
 
 #include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
@@ -94,10 +96,23 @@ struct ShapeSettings {
 };
 
 /**
+ * @brief A heal shape's last solved dest - src over region, in the pixels of the full image
+ * (top-down), on wavelet layer scale of a render at renderScale. A draft heal starts from it.
+ **/
+struct HealWarmStart {
+    std::mutex mutex;
+    Region region;
+    float renderScale = 0.f;
+    int scale = -1;
+    std::vector<float> difference;
+};
+
+/**
  * @brief One shape for one render. mask covers maskRoi (row 0 its top row) and is 0 outside the
  * shape and its feather; maskRoi is the shape's bounding box with feather, darktable's form mask
- * area, and may reach outside the image. dx, dy go from the source to the shape, in render-scale
- * pixels, x right and y down.
+ * area, and may reach outside the image. maskRoi is in the pixels of the full image, not of the
+ * processed crop. dx, dy go from the source to the shape, in render-scale pixels, x right and y
+ * down. A heal shape with a warmStart stores each solve there, and a draft solve starts from it.
  **/
 struct Shape {
     ShapeSettings settings;
@@ -105,6 +120,7 @@ struct Shape {
     std::vector<float> mask;
     float dx = 0.f;
     float dy = 0.f;
+    std::shared_ptr<HealWarmStart> warmStart;
 };
 
 struct Params {
@@ -113,9 +129,20 @@ struct Params {
     /// 0 for the result, 1 to numScales for a detail scale, numScales + 1 for the residual.
     int returnLayer = 0;
     float previewLevels[3] = { kPreviewLevelMin, 0.f, kPreviewLevelMax };
+    /// The most multigrid cycles a heal runs.
     int maxHealIterations = 2000;
     /// The render scale: the wavelet preview scale and the blur radius factor.
     float renderScale = 1.f;
+    /// Above 0, a heal shape with a warm start for this render stops after this many cycles.
+    int draftHealCycles = 0;
+    /**
+     * Where the processed image sits in the full image, top-down, and the full image's extent,
+     * which caps the wavelet scales; a 0 extent makes the processed image the full one.
+     **/
+    int originX = 0;
+    int originY = 0;
+    int fullWidth = 0;
+    int fullHeight = 0;
 };
 
 /// What pen pressure changes on a brush stroke: darktable's pressure_sensitivity preference.
@@ -174,7 +201,9 @@ bool shapeScaleProcessed(int shapeScale, int numScales);
 /**
  * @brief Runs the retouch on image (width x height x 4) in place: darktable's process() and
  * rt_process_forms(), without the darkroom's mask display. The output is the recomposed image
- * or the layer returnLayer asks for, a detail scale shown through the preview levels.
+ * or the layer returnLayer asks for, a detail scale shown through the preview levels. image is
+ * the full image or, with params' full extent set, the crop of it at params' origin; a crop of
+ * processRegion() gives the full image's result inside its window.
  **/
 void process(float* image,
              int width,
@@ -182,6 +211,15 @@ void process(float* image,
              const Params& params,
              const std::vector<Shape>& shapes,
              const EdgeAware::ParallelFor& parallel);
+
+/**
+ * @brief The region process() must be given, in the pixels of the full image (fullWidth x
+ * fullHeight, top-down), for its result to match the full image's over window: the shapes that
+ * reach window, directly or through the sources of other shapes, with their sources, grown by
+ * the wavelet scales' support and clipped to the full image. Only the shapes' maskRoi, offsets
+ * and settings are read.
+ **/
+Region processRegion(const Region& window, const std::vector<Shape>& shapes, const Params& params, int fullWidth, int fullHeight);
 
 /**
  * @brief Applies the shapes on scale to layer, one wavelet layer of an image (width x height x 4),

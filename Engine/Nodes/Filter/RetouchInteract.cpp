@@ -28,6 +28,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Filter/Retouch.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoCurveContext.h"
@@ -265,7 +266,13 @@ RetouchInteract::onPaintToolPenDown(double /*time*/,
     lastMousePos = pos;
     state = eEventStateBuildingStroke;
     getHost()->setCurrentCursor(eCursorBlank);
-    context->evaluateChange_noIncrement();
+    Retouch* retouch = dynamic_cast<Retouch*>(getHost());
+    if (retouch) {
+        retouch->setInteractiveDraft(true);
+        retouch->requestStrokeRender();
+    } else {
+        context->evaluateChange_noIncrement();
+    }
 
     return true;
 }
@@ -298,7 +305,12 @@ RetouchInteract::onPaintStatePenMotion(const QPointF& pos,
     }
     if (_stroke->appendPoint(false, RotoPoint(pos.x(), pos.y(), pressure, timestamp))) {
         lastMousePos = pos;
-        getCurveContext()->evaluateChange_noIncrement();
+        Retouch* retouch = dynamic_cast<Retouch*>(getHost());
+        if (retouch) {
+            retouch->requestStrokeRender();
+        } else {
+            getCurveContext()->evaluateChange_noIncrement();
+        }
     }
 
     return true;
@@ -317,6 +329,10 @@ RetouchInteract::onPaintStatePenUp()
         pushUndoCommand(new RetouchAddBrushCommand(shared_from_this(), stroke));
     }
     getHost()->setCurrentCursor(eCursorCross);
+    Retouch* retouch = dynamic_cast<Retouch*>(getHost());
+    if (retouch) {
+        retouch->setInteractiveDraft(false);
+    }
     getCurveContext()->evaluateChange();
 
     return true;

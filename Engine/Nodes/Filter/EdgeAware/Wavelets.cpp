@@ -235,7 +235,10 @@ namespace {
 int
 dwtMaxScale(const DwtParams& params)
 {
-    return getMaxScale((int)(params.width / params.previewScale), (int)(params.height / params.previewScale), params.previewScale);
+    const int width = (params.capWidth > 0) ? params.capWidth : params.width;
+    const int height = (params.capHeight > 0) ? params.capHeight : params.height;
+
+    return getMaxScale((int)(width / params.previewScale), (int)(height / params.previewScale), params.previewScale);
 }
 
 int

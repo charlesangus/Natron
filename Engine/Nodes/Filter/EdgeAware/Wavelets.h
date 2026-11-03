@@ -66,6 +66,12 @@ struct DwtParams {
     int returnLayer = 0;
     int mergeFromScale = 0;
     float previewScale = 1.f;
+    /**
+     * When the image is a crop of a larger one, that image's extent, which caps the scales as
+     * it does for the whole image; 0 for the image's own extent.
+     **/
+    int capWidth = 0;
+    int capHeight = 0;
 };
 
 /**

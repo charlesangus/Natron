@@ -58,6 +58,35 @@ void poissonHeal(const float* src,
                  int height,
                  int maxIter,
                  const ParallelFor& parallel);
+
+/**
+ * @brief poissonHeal()'s equation solved to convergence: conjugate gradients preconditioned by a
+ * multigrid V-cycle (2x2 aggregation with the Galerkin operator, red/black Gauss-Seidel
+ * smoothing), stopped once the residual has fallen by kMultigridTolerance against the boundary
+ * terms or after maxCycles cycles. Unlike darktable's capped SOR, large masks converge.
+ *
+ * guess, when not null (width x height x 4), is a starting dest - src inside the mask, such as a
+ * previous solve's, which a capped draft solve refines. The work is split by masked pixel count,
+ * and the result does not depend on how parallel orders it. Returns the cycles run.
+ **/
+int poissonHealMultigrid(const float* src,
+                         float* dest,
+                         const float* mask,
+                         int width,
+                         int height,
+                         int maxCycles,
+                         const ParallelFor& parallel,
+                         const float* guess = nullptr);
+
+/**
+ * @brief The L2 norm over the masked pixels and the four channels of the Laplacian of dest - src,
+ * with the neighbours poissonHeal() uses: 0 for an exact heal.
+ **/
+double poissonHealResidual(const float* src,
+                           const float* dest,
+                           const float* mask,
+                           int width,
+                           int height);
 } // namespace EdgeAware
 
 NATRON_NAMESPACE_EXIT

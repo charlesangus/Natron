@@ -251,7 +251,11 @@ try:
         check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
         yield from expect_colour("red", "without a Mask A covers everywhere, red")
         connect(keymix, 2, white)
-        check(param(keymix, "enableMask_Mask").getValue(), "connecting the Mask enables it")
+        # A connection made while the node renders is queued until the render ends, and the mask
+        # enable follows the connection when it is applied.
+        enable_mask = param(keymix, "enableMask_Mask")
+        ok = yield ("until", lambda: enable_mask.getValue(), POLL_TIMEOUT_S)
+        check(ok, "connecting the Mask enables it")
         yield from expect_colour("red", "a white Mask shows A, red")
         gt.shot("m121-keymix.png")
         # The mask reads rgba.A (as in Nuke), so black means alpha 0 too.

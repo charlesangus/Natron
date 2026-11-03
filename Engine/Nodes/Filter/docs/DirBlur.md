@@ -112,7 +112,7 @@ The page has the blur controls, then the Filter row, then three groups: Tint (op
 | `skewOrder` | Skew Order | XY | Order the skews apply in |
 | `transformAmount` | Transform Amount | 1 | Share of the transform the last copy takes |
 | `invert` | Invert | off | Invert the transform |
-| `interactive` | Interactive | off | Update the values while dragging the Viewer handles, else on release |
+| `interactive` | Interactive | on | Update the values while dragging the Viewer handles, else on release |
 | `holdoutChannel` | Holdout Channel | `rgba.A` | The Holdout input's channel |
 
 The Viewer shows the Transform node's handle (centre, translate, rotate, scale, skew) and a Target

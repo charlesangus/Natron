@@ -107,3 +107,4 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh release --tests` passes in full, including `ctest -R "Resampler|StagedResample|NativeTransform|NativeReformat|NativeGolden|NativeTransformGpu"` on lavapipe; the GUI bench is not required (no NodeGraph diff); the Xvfb screenshot of Transform's filter panel was shared and approved.
+- 2026-11-02 — Takes over M274.P5.T2: SplineWarp gets the new Lanczos/Sinc filters too (user). Add it when re-elaborating.

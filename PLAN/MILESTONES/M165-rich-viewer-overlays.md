@@ -97,3 +97,4 @@ Filed 2026-10-23 at the user's request.
 
 - 2026-11-02 — Audit: Phase 1 (P1.T1–T4) landed in 087840e1b, d79325cdb and bcccb3119, and the remote build 40673074289 at the tip passed. Deviation: the overlay test node lives in Engine/Nodes/Test/ and is registered under NATRON_GUI_TEST_NODES=1, not in Tests/Native/. Pushed, no uncommitted work, no PR. Phases 2–3 still wait on Q1, which the user has not answered. The branch is 23 commits behind main.
 - 2026-10-28: elaborated (consultant); Phase 1 can start now; phases 2–3 wait on Q1.
+- 2026-11-02 — Q1: overlay images come from a side buffer filled during the viewer render; they serve interactive widgets and need no caching (user).

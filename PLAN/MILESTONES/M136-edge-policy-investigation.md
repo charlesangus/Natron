@@ -179,3 +179,4 @@ Acceptance sketch:
 - 2026-10-25 — Verification gate is a per-node CPU/GPU parity matrix over both bit values, plus a Crop-larger-than-source case and an Xvfb GUI check of the tri-state knobs with screenshots.
 - 2026-10-25 — Edge state is visible only in the metadata/info readout: no new graph decoration.
 - 2026-10-25 — Elaborated after a code survey: the warp, lens-distortion, Sharpen, Glow and Defocus nodes were not found in this tree at planning time, so the survey task re-lists the nodes that sample outside their source when the milestone is claimed, and each gets a task then.
+- 2026-11-02 — Q4: filters default to Input (they follow the input's edge bit); goldens re-recorded once (user).

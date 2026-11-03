@@ -164,7 +164,7 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (_infinite) {
-            rod->setupInfinity();
+            *rod = RectD(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
         } else {
             *rod = RectD(_rod.x1, _rod.y1, _rod.x2, _rod.y2);
         }

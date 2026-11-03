@@ -309,11 +309,11 @@ setUpRegionToneEqualizer(const NodePtr& node,
 // not (linear blending).
 const DetailsEnum kRegionDetails[] = { eDetailsNone, eDetailsAveragedGuided, eDetailsGuided, eDetailsAveragedEigf, eDetailsEigf };
 
-class ToneEqualizerRegionTest
+class ToneEqualizerGpuRegionTest
     : public RegionIndependenceTest {
 };
 
-TEST_F(ToneEqualizerRegionTest, RegionIndependentGpu)
+TEST_F(ToneEqualizerGpuRegionTest, RegionIndependentGpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {

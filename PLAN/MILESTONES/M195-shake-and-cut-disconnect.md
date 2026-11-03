@@ -73,3 +73,4 @@ Scouted facts (2026-10-25): no shake detection, cut line or dedicated disconnect
 
 **Verification gate:** the full build and `ctest` pass, `Tests/gui/m195_shake_cut.py` and `Tests/gui/m55_node_graph.py` pass under Xvfb on a `package.sh` AppImage, and screenshots of the cut highlight are shared with the user before sign-off. The GUI bench rule applies.
 - 2026-11-02 — main and M194 merged in; gate green; m195_shake_cut and m55 GUI checks pass (PM).
+- 2026-11-03 — Merged to main as 7d91ed9b6 (#170).

@@ -294,7 +294,7 @@ future core work has solid ground to build on.
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
 | M193 | Pipe Hint Highlight Colour | done | M176 |  | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
 | M194 | Kiss Connections | done | M192, M193 | bosley-native-nodes | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
-| M195 | Shake And Cut Disconnect | doing | M194 | bosley-native-nodes | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
+| M195 | Shake And Cut Disconnect | done | M194 | bosley-native-nodes | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | doing | M156 | gpu | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
 | M197 | Python Undo Step API | todo | M114 |  | E7 | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
 | M198 | RenderEngine On Node | todo | M177 |  | E14 | [M198-renderengine-on-node.md](PLAN/MILESTONES/M198-renderengine-on-node.md) |

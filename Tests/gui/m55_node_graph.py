@@ -120,7 +120,9 @@ try:
     def point_in_box(px, py, bx, by, bw, bh, pad=3.0):
         return (bx - pad) <= px <= (bx + bw + pad) and (by - pad) <= py <= (by + bh + pad)
 
-    def frame(graph, nodes, margin=MARGIN, max_zoom=MAX_ZOOM):
+    # Not called "frame": setting an expression runs "frame=0" and "view=0" in the globals this
+    # script runs in, which would replace a helper of either name with an int.
+    def frame_nodes(graph, nodes, margin=MARGIN, max_zoom=MAX_ZOOM):
         if graph is None or not nodes:
             return
         xs, ys, xe, ye = [], [], [], []
@@ -433,7 +435,8 @@ try:
         Progress panel's pane itself. TabBar.setCurrentIndex is a slot wired to
         TabWidget::makeCurrentTab, so driving it switches the pane for real, not just the tab
         bar's own highlight. The Node Graph shares that pane, and later sections need it in front,
-        so the tabs are stepped through until it is the one showing."""
+        so the tabs are stepped through until it is the one showing; a pane already showing it is
+        left alone, since stepping on from there would wrap round to the Progress panel."""
         panels = [w for w in gt.widgets_of("ProgressPanel") if w.parentWidget() is not None]
         if panels:
             pane = panels[0].parentWidget()
@@ -443,9 +446,10 @@ try:
                 count = bar.property("count")
                 current = bar.property("currentIndex")
                 if count is not None and current is not None and count > 1:
-                    for step in range(1, count):
-                        QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + step) % count))
-                        QApplication.processEvents()
+                    for step in range(count):
+                        if step:
+                            QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + step) % count))
+                            QApplication.processEvents()
                         if not progress_panel_is_current_tab() and root_graph() is not None:
                             break
         check(not progress_panel_is_current_tab(),
@@ -481,7 +485,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_v = root_graph()
-        frame(graph_v, [src_v, dst_v, mover_v])
+        frame_nodes(graph_v, [src_v, dst_v, mover_v])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_v = (0.0, 0.0, 400.0, 450.0)
@@ -544,7 +548,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_d = root_graph()
-        frame(graph_d, [src_d, dst_d, mover_d])
+        frame_nodes(graph_d, [src_d, dst_d, mover_d])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_d = (900.0, 0.0, 1300.0, 400.0)
@@ -581,7 +585,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_c = root_graph()
-        frame(graph_c, [src_c, dst_c, chain_entry, chain_exit])
+        frame_nodes(graph_c, [src_c, dst_c, chain_entry, chain_exit])
         yield ("sleep", SETTLE_MS)
 
         app.setSelection([chain_entry, chain_exit])
@@ -641,7 +645,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_n = root_graph()
-        frame(graph_n, [src_n1, mid_n, src_n2, dst_n2])
+        frame_nodes(graph_n, [src_n1, mid_n, src_n2, dst_n2])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_n2 = (box(src_n2)[0], box(src_n2)[1],
@@ -680,7 +684,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_f = root_graph()
-        frame(graph_f, [src_f1, full_f, src_f2, dst_f2])
+        frame_nodes(graph_f, [src_f1, full_f, src_f2, dst_f2])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_f2 = (box(src_f2)[0], box(src_f2)[1],
@@ -712,7 +716,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_ctrl = root_graph()
-        frame(graph_ctrl, [src_ctrl, dst_ctrl, mover_ctrl])
+        frame_nodes(graph_ctrl, [src_ctrl, dst_ctrl, mover_ctrl])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_ctrl = (3800.0, 0.0, 4200.0, 450.0)
@@ -1039,7 +1043,7 @@ try:
         nav_b = create("net.sf.cimg.CImgBlur", 6600, 1500)
         app.clearSelection()
         graph_n = root_graph()
-        frame(graph_n, [nav_a])
+        frame_nodes(graph_n, [nav_a])
         yield ("sleep", NAVIGATOR_SETTLE_MS)
 
         def navigator_region():
@@ -1072,7 +1076,7 @@ try:
         size_b = nav_b.getParam("size")
         set_ok = size_b is not None and size_b.setExpression("%s.size.get()[0]" % nav_a.getScriptName(), False, 0)
         if check(bool(set_ok), "badge-tooltip: an expression on another node's parameter is set"):
-            frame(graph_n, [nav_b])
+            frame_nodes(graph_n, [nav_b])
             yield ("sleep", SETTLE_MS)
             graph_shot(graph_n, "badge-01-expression")
             bx, by, bw, _bh = box(nav_b)

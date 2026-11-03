@@ -338,6 +338,13 @@ OCIODisplayOp::row(const Params& params,
     }
 }
 
+std::optional<GpuWeight>
+OCIODisplayOp::gpuWeight(const Params& /*params*/,
+                         const PassContext& /*context*/) const
+{
+    return GpuWeight::heavy();
+}
+
 GpuOpRef
 OCIODisplayOp::gpu(const Params& params) const
 {

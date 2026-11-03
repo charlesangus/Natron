@@ -750,18 +750,10 @@ public:
     virtual bool isExpressionValid(int dimension, std::string* error) const = 0;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) = 0;
 
-
     /**
-     * @brief For each dimension, try to find in the expression, if set, the node name "oldName" and replace
-     * it by "newName"
-     **/
-    virtual void replaceNodeNameInExpression(int dimension,
-                                             const std::string& oldName,
-                                             const std::string& newName) = 0;
-
-    /**
-     * @brief Like replaceNodeNameInExpression(), but only replaces "oldName" where the expression
-     * names it in code: whole identifiers, outside string literals and comments.
+     * @brief Replaces the node name "oldName" by "newName" in the expression of dimension, if set,
+     * where the expression names it in code: whole identifiers and node paths, outside string
+     * literals and comments.
      **/
     virtual void replaceNodeNameInExpressionCode(int dimension,
                                                  const std::string& oldName,
@@ -1683,6 +1675,34 @@ private:
     int _refused;
 };
 
+/**
+ * @brief While alive, collects the knobs this thread reads through getValue() and
+ * getValueAtTime(), so that an expression's reads the parser cannot see (a node found by getattr,
+ * a parameter picked in a loop) become its dependencies. Scopes nest: a read lands in the innermost.
+ **/
+class ExpressionReadRecorder {
+public:
+    typedef std::vector<std::pair<KnobIWPtr, int>> Reads;
+
+    explicit ExpressionReadRecorder(const KnobI* evaluating);
+    ~ExpressionReadRecorder();
+
+    static void record(KnobI* knob, int dimension);
+
+    const Reads& getReads() const
+    {
+        return _reads;
+    }
+
+private:
+    ExpressionReadRecorder(const ExpressionReadRecorder&);
+    ExpressionReadRecorder& operator=(const ExpressionReadRecorder&);
+
+    ExpressionReadRecorder* _outer;
+    const KnobI* _evaluating;
+    Reads _reads;
+};
+
 ///Skins the API of KnobI by implementing most of the functions in a non templated manner.
 struct KnobHelperPrivate;
 class KnobHelper
@@ -1864,13 +1884,8 @@ public:
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
 
 protected:
-
 public:
-
     virtual void setExpressionInternal(int dimension, const std::string& expression, bool hasRetVariable, bool clearResults, bool failIfInvalid) OVERRIDE FINAL;
-    virtual void replaceNodeNameInExpression(int dimension,
-                                             const std::string& oldName,
-                                             const std::string& newName) OVERRIDE FINAL;
     virtual void replaceNodeNameInExpressionCode(int dimension,
                                                  const std::string& oldName,
                                                  const std::string& newName) OVERRIDE FINAL;
@@ -2291,6 +2306,13 @@ protected:
     /// The Python GIL must be held before calling this, so the the PyObject remains valid.
     bool executeExpression(double time, ViewIdx view, int dimension, PyObject** ret, std::string* error) const;
 
+    /**
+     * @brief Makes the reads an evaluation of the expression of `dimension` recorded, and that are
+     * not yet its dependencies, into dependencies. Off the main thread, or when `deferred`, this is
+     * queued to the main thread, and dropped there if the expression has changed since.
+     **/
+    void registerExpressionReads(int dimension, const ExpressionReadRecorder::Reads& reads, bool deferred);
+
 public:
 
     /// The return value must be Py_DECRREF
@@ -2516,6 +2538,14 @@ public:
      * but this should be the only knob which should ever need to overload it.
      **/
     T getValueAtTime(double time, int dimension = 0, ViewSpec view = ViewSpec::current(), bool clampToMinMax = true, bool byPassMaster = false)  WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether setValue(value) on dimension at the current time would change it as the GUI
+     * shows it. While a render queues writes, the value the render reads is stale, so a dimension
+     * with a queued write counts as changing: skipping the write would let the queued value land
+     * after it. Main thread only.
+     **/
+    bool isValueChangeAtCurrentTime(const T& value, int dimension = 0) WARN_UNUSED_RETURN;
 
     virtual double getRawCurveValueAt(double time, ViewSpec view,  int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual double getValueAtWithExpression(double time, ViewSpec view, int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -3220,6 +3250,11 @@ public:
     virtual void abortAllRendersReadingThis() { }
 
     /**
+     * @brief Called when a value set while the holder renders is queued instead of applied.
+     **/
+    virtual void notifyValueQueued() { }
+
+    /**
      * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
      * outermost begin/endChanges bracket when the change is made inside a nested one.
      **/
@@ -3233,19 +3268,11 @@ public:
     bool isDequeueingValuesSet() const;
 
     /**
-     * @brief Returns true if at least a parameter is animated
+     * @brief Returns true if a parameter can take another value at another time: it has
+     * keyframes or an expression, or it is slaved to a parameter that does. Computed from the
+     * live parameters on every call, so the answer never depends on the edit history.
      **/
     bool getHasAnimation() const;
-
-    /**
-     * @brief Set the hasAnimation flag
-     **/
-    void setHasAnimation(bool hasAnimation);
-
-    /**
-     * @brief Auto-compute the animation flag by checking the animation state of all curves of all parameters held
-     **/
-    void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
     /**

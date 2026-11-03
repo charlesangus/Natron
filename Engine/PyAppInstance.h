@@ -362,6 +362,16 @@ protected:
                         const std::list<int>& frameSteps);
 
     NodeCollectionPtr getCollectionFromGroup(Group* group) const;
+
+    /**
+     * @brief Creates the node in collection. A script creation is silent, unconnected and has no undo
+     * command of its own; an interactive one keeps the defaults a node graph creation has.
+     **/
+    Effect* createNodeInCollection(const QString& pluginID,
+                                   int majorVersion,
+                                   const NodeCollectionPtr& collection,
+                                   const NodeCreationPropertyMap& props,
+                                   bool interactive) const;
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

@@ -52,6 +52,7 @@
 #include <QFile>
 #include <QReadWriteLock>
 #include <QTextStream>
+#include <QUuid>
 #include <QWaitCondition>
 
 #include <SequenceParsing.h>
@@ -218,12 +219,43 @@ isSkippedByHashInputs(const Node& node)
 }
 } // anonymous namespace
 
+namespace {
+// Cache IDs held by live nodes of every project in the process: the caches are shared.
+std::mutex liveCacheIDsMutex;
+std::set<std::string> liveCacheIDs;
+} // anon namespace
+
+bool
+Node::claimCacheID(const std::string& cacheID)
+{
+    if (cacheID.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(liveCacheIDsMutex);
+
+    return liveCacheIDs.insert(cacheID).second;
+}
+
+void
+Node::releaseCacheID(const std::string& cacheID)
+{
+    if (cacheID.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> l(liveCacheIDsMutex);
+    liveCacheIDs.erase(cacheID);
+}
+
 Node::Node(const AppInstancePtr& app,
            const NodeCollectionPtr& group,
            Plugin* plugin)
     : QObject()
     , _imp( new Implementation(this, app, group, plugin) )
 {
+    do {
+        _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    } while (!claimCacheID(_imp->cacheID));
+    _imp->cacheIDClaimed = true;
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -836,6 +868,40 @@ Node::getHashValueIfUpToDate(U64* hash) const
     return true;
 }
 
+void
+Node::adoptSerializedCacheID(const std::string& cacheID)
+{
+    // A paste or a second open of the same project keeps the fresh ID.
+    if (!claimCacheID(cacheID)) {
+        return;
+    }
+    std::string previous;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        if (_imp->cacheIDClaimed) {
+            previous = _imp->cacheID;
+        }
+        _imp->cacheID = cacheID;
+        _imp->cacheIDClaimed = true;
+    }
+    releaseCacheID(previous);
+}
+
+void
+Node::releaseOwnCacheID()
+{
+    std::string id;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        if (!_imp->cacheIDClaimed) {
+            return;
+        }
+        id = _imp->cacheID;
+        _imp->cacheIDClaimed = false;
+    }
+    releaseCacheID(id);
+}
+
 std::string
 Node::getCacheID() const
 {
@@ -1056,19 +1122,12 @@ Node::dependsOnProjectFrameRange() const
     if (_imp->effect->dependsOnProjectFrameRange()) {
         return true;
     }
-    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if (!*it) {
-            continue;
-        }
-        for (int d = 0; d < (*it)->getDimension(); ++d) {
-            if (!(*it)->getExpression(d).empty()) {
-                return true;
-            }
-        }
-    }
+    // The predicate computeContentHash() folds the range under: an expression on a knob that
+    // does not key renders cannot change one.
+    bool hasExpression = false;
+    (void)getKnobsContentDigest(&hasExpression);
 
-    return false;
+    return hasExpression;
 }
 
 void
@@ -1452,6 +1511,52 @@ Node::setHashMarkTraceForTesting(const HashMarkTrace& trace)
 
     slot.trace = trace;
     hashMarkTraceOn.store(bool(trace));
+}
+
+namespace {
+std::atomic<bool> inputEditHookOn(false);
+
+struct InputEditHookSlot {
+    std::mutex mutex;
+    Node::InputEditHook hook;
+};
+
+InputEditHookSlot&
+inputEditHookSlot()
+{
+    static InputEditHookSlot* slot = new InputEditHookSlot;
+
+    return *slot;
+}
+} // anonymous namespace
+
+void
+Node::setInputEditHookForTesting(const InputEditHook& hook)
+{
+    InputEditHookSlot& slot = inputEditHookSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.hook = hook;
+    inputEditHookOn.store(bool(hook));
+}
+
+std::unique_lock<QMutex>
+Node::Implementation::lockRenderStarts(bool* rendering)
+{
+    std::unique_lock<QMutex> renderStarts(nodeIsDequeuingMutex);
+    {
+        QMutexLocker k(&nodeIsRenderingMutex);
+        *rendering = nodeIsRendering > 0;
+    }
+    if (inputEditHookOn.load(std::memory_order_relaxed)) {
+        InputEditHookSlot& slot = inputEditHookSlot();
+        std::lock_guard<std::mutex> l(slot.mutex);
+        if (slot.hook) {
+            slot.hook(_publicInterface, *rendering);
+        }
+    }
+
+    return renderStarts;
 }
 
 void
@@ -1862,6 +1967,8 @@ Node::onMetadataChangedUnderSameHash()
         if (effect) {
             effect->dropCachedOutputMetadata();
             effect->dropCachedMetadata();
+            // RoD, identity and the other action results are keyed by the unmoved hash too.
+            effect->clearActionsCache();
         }
         output->_imp->metadataRevision.fetch_add(1);
         output->refreshMetadataReaders(true);
@@ -1869,6 +1976,7 @@ Node::onMetadataChangedUnderSameHash()
     }
     if (_imp->effect) {
         _imp->effect->dropCachedMetadata();
+        _imp->effect->clearActionsCache();
     }
     _imp->metadataRevision.fetch_add(1);
     refreshMetadataReaders(true);
@@ -2593,11 +2701,30 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->knobsInitialized);
 
+    Q_UNUSED(updateKnobGui);
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
 
-    ///for all knobs of the node
+    // Looked up by name, as a node can have thousands of knobs (an RFVSwitch with 1024 rows).
+    std::unordered_map<std::string, std::vector<const Serialization::KnobSerialization*>> savedByName;
+    for (const Serialization::KnobSerialization& saved : serialization.knobs) {
+        savedByName[NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name)].push_back(&saved);
+    }
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        loadKnob(nodeKnobs[j], serialization, updateKnobGui);
+        const KnobIPtr& knob = nodeKnobs[j];
+        const auto found = savedByName.find(knob->getName());
+        if (found == savedByName.end()) {
+            continue;
+        }
+        for (const Serialization::KnobSerialization* saved : found->second) {
+            // A knob might change its type between versions: fromSerialization() then loads nothing.
+            if (!knob->fromSerialization(*saved)) {
+                continue;
+            }
+            if (knob->getName() == kOfxImageEffectFileParamName) {
+                computeFrameRangeForReader(knob.get());
+            }
+            break;
+        }
     }
 
     ///now restore the roto context if the node has a roto context
@@ -2659,36 +2786,6 @@ Node::restoreSublabel()
         }
     }
 }
-
-void
-Node::loadKnob(const KnobIPtr& knob,
-               const Serialization::NodeSerialization& serialization,
-               bool /*updateKnobGui*/)
-{
-
-    const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
-
-    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-
-        if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) != knob->getName()) {
-            continue;
-        }
-
-        // Non persistent knobs are loaded too when the project saved a value for them.
-        // A knob might change its type between versions: fromSerialization() then loads nothing.
-        if (!knob->fromSerialization(*it)) {
-            continue;
-        }
-
-        if (knob->getName() == kOfxImageEffectFileParamName) {
-            computeFrameRangeForReader( knob.get() );
-        }
-
-        break;
-    }
-
-} // Node::loadKnob
-
 
 void
 Node::setPagesOrder(const std::list<std::string>& pages)
@@ -2938,6 +3035,7 @@ std::map<const Node*, NodeWPtr> channelSelectorOwners;
 Node::~Node()
 {
     destroyNode(true, false);
+    releaseOwnCacheID();
 
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);
@@ -3841,6 +3939,11 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         return;
     }
 
+    // Disable, lifetime, caching, preview and the info page act on an image a node outputs; a
+    // viewer outputs none, so its panel holds its own knobs and the label.
+    if (dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+        return;
+    }
 
     ///find in all knobs a page param to set this param into
     const KnobsVec & knobs = _imp->effect->getKnobs();
@@ -5833,7 +5936,7 @@ Node::purgeAllInstancesCaches()
     ///Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->effect);
-    _imp->effect->purgeCaches();
+    _imp->effect->purgeCachesKeepingFileStamps();
     // Native effects leave purgeCaches() empty, and their ActionsCache is keyed by content hash
     // and never dropped on a hash change, so the only thing that empties it is this.
     _imp->effect->clearActionsCache();
@@ -5845,7 +5948,7 @@ Node::purgeAllInstancesCaches()
         for (NodesList::const_iterator it = tree.begin(); it != tree.end(); ++it) {
             const EffectInstancePtr treeEffect = (*it)->getEffectInstance();
             if (treeEffect) {
-                treeEffect->purgeCaches();
+                treeEffect->purgeCachesKeepingFileStamps();
                 treeEffect->clearActionsCache();
             }
         }
@@ -7889,20 +7992,18 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         }
     }
 
-    ///Wait for the main-thread to be done dequeuing the connect actions queue
-    if ( QThread::currentThread() != qApp->thread() ) {
-        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        while ( _imp->nodeIsDequeuing && !aborted() ) {
-            _imp->nodeIsDequeuingCond.wait(k.mutex());
-        }
-    }
-
-    ///Increment the node is rendering counter
+    // The count goes up under the dequeuing lock, so dequeueActions either sees this render and
+    // defers, or finishes applying the queue before the render starts.
     {
+        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+        if (QThread::currentThread() != qApp->thread()) {
+            while (_imp->nodeIsDequeuing && !aborted()) {
+                _imp->nodeIsDequeuingCond.wait(k.mutex());
+            }
+        }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
         ++_imp->nodeIsRendering;
     }
-
 
     ///mark this
     markedNodes.push_back( shared_from_this() );
@@ -7957,8 +8058,8 @@ Node::unsetNodeIsRendering()
         }
         nodeIsRendering = _imp->nodeIsRendering;
 
-
-        mustDequeue = nodeIsRendering == 0 && !appPTR->isBackground();
+        // Background renders dequeue too, or an edit queued during one would never apply.
+        mustDequeue = nodeIsRendering == 0;
     }
 
     if (mustDequeue) {
@@ -7975,19 +8076,51 @@ Node::isNodeRendering() const
 }
 
 void
+Node::notifyActionQueued()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    _imp->actionsQueued = true;
+}
+
+void
 Node::dequeueActions()
 {
     assert( QThread::currentThread() == qApp->thread() );
 
-    ///Flag that the node is dequeuing.
+    // A render that started after mustDequeueActions was emitted still holds the node: its hash
+    // names the inputs it started with, so the queue waits. Its unsetNodeIsRendering emits again.
+    bool held;
+    bool abortHolders;
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        assert(!_imp->nodeIsDequeuing);
-        _imp->nodeIsDequeuing = true;
+        if (_imp->nodeIsDequeuing) {
+            return;
+        }
+        {
+            QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+            held = _imp->nodeIsRendering > 0;
+        }
+        abortHolders = held && _imp->actionsQueued;
+        if (!held) {
+            _imp->nodeIsDequeuing = true;
+            _imp->actionsQueued = false;
+        }
+    }
+    if (held) {
+        // During playback the frames overlap and a new one may start before this slot runs, so
+        // without an abort a queued edit could wait until playback stops. The aborted renders end
+        // quickly, the last one emits again, and the edit's own render restarts playback.
+        if (abortHolders && _imp->effect) {
+            _imp->effect->abortViewerRendersForEdit();
+        }
+
+        return;
     }
     bool hasChanged = false;
+    bool valuesChanged = false;
     if (_imp->effect) {
-        hasChanged |= _imp->effect->dequeueValuesSet();
+        valuesChanged |= _imp->effect->dequeueValuesSet();
         NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
         if (isGroup) {
             isGroup->dequeueConnexions();
@@ -7997,23 +8130,38 @@ Node::dequeueActions()
         _imp->curveContext->dequeueGuiActions();
     }
 
+    // The value changes above run callbacks on this thread, and a render started from one (a
+    // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
+    // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
     {
-        QMutexLocker k(&_imp->inputsMutex);
-        assert( _imp->guiInputs.size() == _imp->inputs.size() );
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        if (rendering) {
+            _imp->actionsQueued = true;
+        } else {
+            {
+                QMutexLocker k(&_imp->inputsMutex);
+                assert(_imp->guiInputs.size() == _imp->inputs.size());
 
-        for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
-            NodePtr inp = _imp->inputs[i].lock();
-            NodePtr guiInp = _imp->guiInputs[i].lock();
-            if (inp != guiInp) {
-                inputChanges.insert(i);
-                _imp->inputs[i] = guiInp;
+                for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
+                    NodePtr inp = _imp->inputs[i].lock();
+                    NodePtr guiInp = _imp->guiInputs[i].lock();
+                    if (inp != guiInp) {
+                        inputChanges.insert(i);
+                        _imp->inputs[i] = guiInp;
+                    }
+                }
+            }
+            {
+                QMutexLocker k(&_imp->outputsMutex);
+                _imp->outputs = _imp->guiOutputs;
+            }
+            // Before a render can start, as in connectInput().
+            if (!inputChanges.empty()) {
+                markHashDirty();
             }
         }
-    }
-    {
-        QMutexLocker k(&_imp->outputsMutex);
-        _imp->outputs = _imp->guiOutputs;
     }
 
     if ( !inputChanges.empty() ) {
@@ -8024,8 +8172,10 @@ Node::dequeueActions()
         }
         endInputEdition(true);
     }
-    if (hasChanged) {
+    if (valuesChanged) {
         computeHash();
+    }
+    if (hasChanged || valuesChanged) {
         refreshIdentityState();
     }
 
@@ -8169,6 +8319,10 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     {
         std::list<const Node*> markedNodes;
         addIdentityNodesRecursively(this, this, time, view, &outputs, &markedNodes);
+    }
+    // A viewer without the GUI never pulls images, so it does not count as a reference.
+    if (appPTR->isBackground()) {
+        outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
     }
     std::size_t sz = outputs.size();
 

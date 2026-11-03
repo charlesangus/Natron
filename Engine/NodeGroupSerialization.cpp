@@ -151,11 +151,6 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = serializedNodes.begin(); it != serializedNodes.end(); ++it) {
         std::string pluginID = (*it)->pluginID;
 
-        if ( appPTR->isBackground() && ( (pluginID == PLUGINID_NATRON_VIEWER) || (pluginID == "Viewer") ) ) {
-            //if the node is a viewer, don't try to load it in background mode
-            continue;
-        }
-
         ///If the node is a multiinstance child find in all the serialized nodes if the parent exists.
         ///If not, create it
 
@@ -386,11 +381,6 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
 
     /// Connect the nodes together
     for (std::map<NodePtr, Serialization::NodeSerializationPtr>::const_iterator it = createdNodes.begin(); it != createdNodes.end(); ++it) {
-        if ( appPTR->isBackground() && ( it->first->isEffectViewer() ) ) {
-            //ignore viewers on background mode
-            continue;
-        }
-
         ///for all nodes that are part of a multi-instance, fetch the main instance node pointer
         const std::string& parentName = it->second->multiInstanceParentName;
         if ( !parentName.empty() ) {
@@ -411,10 +401,6 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
     {
         std::map<std::string, std::string> oldNewScriptNamesMapping;
         for (std::map<NodePtr, Serialization::NodeSerializationPtr>::const_iterator it = createdNodes.begin(); it != createdNodes.end(); ++it) {
-            if ( appPTR->isBackground() && ( it->first->isEffectViewer() ) ) {
-                //ignore viewers on background mode
-                continue;
-            }
             it->first->storeKnobsLinks(*it->second, oldNewScriptNamesMapping);
             // restoreKnobsLinks() is called on all nodes at the end of ProjectPrivate::restoreFromSerialization()
         }

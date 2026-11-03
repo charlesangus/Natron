@@ -243,13 +243,6 @@ public:
      **/
     void fixRelativeFilePaths(const std::string& projectPathName, const std::string& newProjectPath, bool blockEval);
 
-
-    /**
-     * @brief For all active nodes, if it has a file-path parameter using the oldName of a variable, it will turn it into the
-     * newName.
-     **/
-    void fixPathName(const std::string& oldName, const std::string& newName);
-
     /**
      * @brief Get a list of all active nodes
      **/
@@ -284,11 +277,6 @@ public:
      * @brief Get all Writers in the group and sub groups
      **/
     void getWriters(std::list<OutputEffectInstance*>* writers) const;
-
-    /**
-     * @brief Checks if a node in the project already has this cacheID
-     **/
-    bool isCacheIDAlreadyTaken(const std::string& name) const;
 
 public:
 

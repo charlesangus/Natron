@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -40,6 +41,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
+#include <QElapsedTimer>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPixmapItem>
@@ -55,6 +57,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeGraphPickUp.h"
+#include "Gui/NodeGraphShake.h"
 #include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 
 #include "Serialization/SerializationFwd.h"
@@ -74,8 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-enum EventStateEnum
-{
+enum EventStateEnum {
     eEventStateNone,
     eEventStateMovingArea,
     eEventStateZoomingArea,
@@ -84,6 +86,7 @@ enum EventStateEnum
     eEventStateDraggingNode,
     eEventStateResizingBackdrop,
     eEventStateSelectionRect,
+    eEventStateCutting,
 };
 
 // A list of nodes in insertion order that finds and removes a node in constant time. A node is
@@ -271,12 +274,33 @@ public:
     bool _splicePlanBuilt = false;
     NodesGuiList _splicePlanSelection;
     NodeGuiPtr _spliceEntry;
+    // The entry's inputs the plan allows, best first, and the one the hinted pipe goes into.
+    std::vector<int> _spliceEntryInputs;
     int _spliceEntryInput = -1;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
     // Set by Escape or focus loss, and cleared by the next press, so that the rest of the drag
     // does not rebuild the plan that was just dismissed.
     bool _spliceCancelled = false;
+
+    // While Ctrl is held during a node drag the nearest kiss is previewed, and releasing Ctrl makes
+    // it. Each kiss, like each pipe a shake cuts, is made at once, as a child of _kissCommand, which
+    // is pushed with the move on release so that the drag stays one undo step. Escape undoes the
+    // drag's kisses and shakes and, like _spliceCancelled, keeps the rest of the drag from making
+    // more.
+    bool _kissAiming = false;
+    bool _kissCancelled = false;
+    NodeGuiPtr _kissDragged;
+    NodeGuiPtr _kissTarget;
+    int _kissInput = -1;
+    bool _kissFromOutput = false;
+    Edge* _kissPreviewEdge = nullptr;
+    QUndoCommand* _kissCommand = nullptr;
+    NodesGuiList _kissTouched;
+
+    // Fed the cursor's scene position on every move of a node drag, timed from the press.
+    NodeGraphShakeDetector _shakeDetector;
+    QElapsedTimer _dragClock;
 
     // An arrow picked up by a click and following the cursor: an input arrow, or a node's output
     // stub. It is kept apart from _evtState so that panning and zooming still run while it is
@@ -295,11 +319,21 @@ public:
     bool cursorSet;
     std::map<NodeGuiPtr, NodesGuiList> _nodesWithinBDAtPenDown;
     QRectF _selectionRect;
+
+    // eEventStateCutting: the cut line drawn so far, in _root's coordinates so that panning keeps
+    // it on the pipes, and the pipes it crosses by destination and input, highlighted until the
+    // cut ends.
+    std::vector<QPointF> _cutLine;
+    std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>> _cutPipes;
     bool _bendPointsVisible;
     bool _knobLinksVisible;
     double _accumDelta;
     bool _detailsVisible;
     QPointF _deltaSinceMousePress; //< mouse delta since last press
+    // Where each node a drag has moved stood when the drag first moved it. Backdrop contents move
+    // only while Ctrl is up, so nodes in one drag can end up with different displacements, and
+    // the undo, Alt's snap-back and Escape all work from these rather than from one delta.
+    std::map<NodeGuiPtr, QPointF> _dragPickupPositions;
     bool _hasMovedOnce;
     ViewerTab* lastSelectedViewer;
     QPixmap unlockIcon;

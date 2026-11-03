@@ -28,12 +28,19 @@
 
 #include <algorithm> // min, max
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <locale>
 #include <map>
 #include <set>
 #include <stdexcept>
 #include <vector>
+
+CLANG_DIAG_OFF(deprecated)
+CLANG_DIAG_OFF(uninitialized)
+#include <QPolygonF>
+CLANG_DIAG_ON(deprecated)
+CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Backdrop.h"
 #include "Engine/CreateNodeArgs.h"
@@ -154,12 +161,19 @@ NodeGraph::NodeGraph(Gui* gui,
     QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintInputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
+    _imp->_hintInputEdge->setIsSpliceHint(true);
     _imp->_hintInputEdge->hide();
 
     _imp->_hintOutputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
-    _imp->_hintOutputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
+    _imp->_hintOutputEdge->setIsSpliceHint(true);
     _imp->_hintOutputEdge->hide();
+
+    _imp->_kissPreviewEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
+    _imp->_kissPreviewEdge->setUseHighlight(true);
+    // Above the other pipes, which share z 15 and would otherwise paint over it in creation order
+    // (the dragged node's own free input arrow lies along the preview), but still under the nodes.
+    _imp->_kissPreviewEdge->setZValue(16);
+    _imp->_kissPreviewEdge->hide();
 
     _imp->_tL = new NodeGraphTextItem(this, 0, false);
     _imp->_tL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
@@ -218,7 +232,17 @@ NodeGraph::~NodeGraph()
         }
         _imp->_hintOutputEdge->setParentItem(NULL);
         delete _imp->_hintOutputEdge;
+
+        scene = _imp->_kissPreviewEdge->scene();
+        if (scene) {
+            scene->removeItem(_imp->_kissPreviewEdge);
+        }
+        _imp->_kissPreviewEdge->setParentItem(NULL);
+        delete _imp->_kissPreviewEdge;
     }
+
+    delete _imp->_kissCommand;
+    _imp->_kissCommand = nullptr;
 
     QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_nodeCreationShortcutEnabled = false;
@@ -414,6 +438,20 @@ NodeGraph::paintEvent(QPaintEvent* e)
         double w = p.pen().widthF();
         p.fillRect(QRect(r.x() + w, r.y() + w, r.width() - w, r.height() - w), color);
     }
+
+    if ((_imp->_evtState == eEventStateCutting) && (_imp->_cutLine.size() > 1) && !isDoingNavigatorRender()) {
+        QPainter p(viewport());
+        p.setRenderHint(QPainter::Antialiasing);
+        QPen pen(Edge::selectionColorWithAlpha());
+        pen.setWidthF(TO_DPIX(2.));
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        QPolygonF line;
+        for (std::size_t i = 0; i < _imp->_cutLine.size(); ++i) {
+            line << mapFromScene(_imp->_root->mapToScene(_imp->_cutLine[i]));
+        }
+        p.drawPolyline(line);
+    }
 } // NodeGraph::paintEvent
 
 QRectF
@@ -487,8 +525,10 @@ NodeGraph::createNodeGUI(const NodePtr & node,
 
     Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
 
-    // A Dot is a routing aid created in passing, so its panel only opens when asked for.
-    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot;
+    // A Dot is a routing aid created in passing, and every project starts with a Viewer, so their
+    // panels only open when asked for.
+    bool isViewer = node->isEffectViewer() != 0;
+    bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot && !isViewer;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
         node_ui->ensurePanelCreated();
     }

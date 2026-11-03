@@ -82,7 +82,6 @@ std::atomic<U64> gNodeNameScans { 0 };
 enum NodeNameKindEnum {
     eNodeNameKindScriptName = 0,
     eNodeNameKindLabel,
-    eNodeNameKindCacheID,
     eNodeNameKindCount
 };
 
@@ -100,10 +99,8 @@ getNodeName(const Node* node,
     switch (kind) {
     case eNodeNameKindScriptName:
         return node->getScriptName_mt_safe();
-    case eNodeNameKindLabel:
-        return node->getLabel_mt_safe();
     default:
-        return node->getCacheID();
+        return node->getLabel_mt_safe();
     }
 }
 
@@ -239,7 +236,7 @@ struct NodeCollectionPrivate
     void freeName(NodeNameKindEnum kind,
                   const std::string& name)
     {
-        if (name.empty() || (kind == eNodeNameKindCacheID)) {
+        if ( name.empty() ) {
             return;
         }
         for (int p = 0; p < eNodeNamePatternCount; ++p) {
@@ -258,8 +255,7 @@ struct NodeCollectionPrivate
         }
     }
 
-    // As the scans below: whether a node other than caller has the name, an activated one
-    // unless it is a cache ID.
+    // As the scans below: whether an activated node other than caller has the name.
     bool isNameTaken(NodeNameKindEnum kind,
                      const std::string& name,
                      const Node* caller)
@@ -279,7 +275,7 @@ struct NodeCollectionPrivate
                     candidates.pop_back();
                     continue;
                 }
-                if ((node.get() != caller) && ((kind == eNodeNameKindCacheID) || node->isActivated())) {
+                if ( (node.get() != caller) && node->isActivated() ) {
                     taken = true;
                 }
                 ++i;
@@ -293,7 +289,7 @@ struct NodeCollectionPrivate
 
         ++gNodeNameScans;
         for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            if ((it->get() != caller) && ((kind == eNodeNameKindCacheID) || (*it)->isActivated()) && (getNodeName(it->get(), kind) == name)) {
+            if ( (it->get() != caller) && (*it)->isActivated() && (getNodeName(it->get(), kind) == name) ) {
                 return true;
             }
         }
@@ -552,14 +548,6 @@ void
 NodeCollection::quitAnyProcessingForAllNodes_non_blocking()
 {
     quitAnyProcessingInternal(false);
-}
-
-bool
-NodeCollection::isCacheIDAlreadyTaken(const std::string& name) const
-{
-    QMutexLocker k(&_imp->nodesMutex);
-
-    return _imp->isNameTaken(eNodeNameKindCacheID, name, 0);
 }
 
 bool
@@ -1120,46 +1108,6 @@ NodeCollection::fixRelativeFilePaths(const std::string& projectPathName,
     }
 }
 
-void
-NodeCollection::fixPathName(const std::string& oldName,
-                            const std::string& newName)
-{
-    NodesList nodes = getNodes();
-    AppInstancePtr appInst = getApplication();
-    if (!appInst) {
-        return;
-    }
-    ProjectPtr project = appInst->getProject();
-
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isActivated() ) {
-            const KnobsVec& knobs = (*it)->getKnobs();
-            for (U32 j = 0; j < knobs.size(); ++j) {
-                KnobStringBase* isString = dynamic_cast< KnobStringBase* >( knobs[j].get() );
-                KnobString* isStringKnob = dynamic_cast<KnobString*>(isString);
-                if ( !isString || isStringKnob || ( knobs[j] == project->getEnvVarKnob() ) ) {
-                    continue;
-                }
-
-                std::string filepath = isString->getValue();
-
-                if ( ( filepath.size() >= (oldName.size() + 2) ) &&
-                     ( filepath[0] == '[') &&
-                     ( filepath[oldName.size() + 1] == ']') &&
-                     ( filepath.substr( 1, oldName.size() ) == oldName) ) {
-                    filepath.replace(1, oldName.size(), newName);
-                    isString->setValue(filepath);
-                }
-            }
-
-            NodeGroup* isGrp = (*it)->isEffectGroup();
-            if (isGrp) {
-                isGrp->fixPathName(oldName, newName);
-            }
-        }
-    }
-}
-
 bool
 NodeCollection::checkIfNodeLabelExists(const std::string & n,
                                        const Node* caller) const
@@ -1590,6 +1538,7 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
         QMutexLocker k(&_imp->nodesLock);
         GroupInput* isInput = dynamic_cast<GroupInput*>( node->getEffectInstance().get() );
         if (isInput) {
+            bool found = false;
             for (U32 i = 0; i < _imp->inputs.size(); ++i) {
                 NodePtr input = _imp->inputs[i].lock();
                 if (node == input) {
@@ -1600,12 +1549,13 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
 
                     _imp->inputs.erase(_imp->inputs.begin() + i);
                     thisNode->initializeInputs();
-
-                    return;
+                    found = true;
+                    break;
                 }
             }
             ///The input must have been tracked before
-            assert(false);
+            assert(found);
+            (void)found;
         }
         GroupOutput* isOutput = dynamic_cast<GroupOutput*>( node->getEffectInstance().get() );
         if (isOutput) {

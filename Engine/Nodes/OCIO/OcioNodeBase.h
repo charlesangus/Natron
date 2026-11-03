@@ -142,6 +142,12 @@ public:
     void refreshMenus();
 
     /**
+     * @brief The automatic default of every space may have changed: each takes it unless the user
+     * chose one (OcioSpaceKnobs::sourceChanged()).
+     **/
+    void sourceChanged();
+
+    /**
      * @brief Adds \p refresher, for menus of the node's own that list the project's config.
      **/
     void addMenuRefresher(const std::function<void()>& refresher);
@@ -264,6 +270,12 @@ struct OcioOp {
     GpuOpRef gpu(const Params& params) const
     {
         return ocio.gpu(params.ocio);
+    }
+
+    std::optional<GpuWeight> gpuWeight(const Params& /*params*/,
+                                       const PassContext& /*context*/) const
+    {
+        return GpuWeight::heavy();
     }
 
     OcioNodeKnobs ocio;

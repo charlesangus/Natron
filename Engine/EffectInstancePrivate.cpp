@@ -167,8 +167,9 @@ bool
 ActionsCache::getIdentityResult(U64 hash,
                                 double time,
                                 ViewIdx view,
+                                unsigned int mipmapLevel,
                                 int* inputNbIdentity,
-                                ViewIdx *inputView,
+                                ViewIdx* inputView,
                                 double* identityTime)
 {
     QMutexLocker l(&_cacheMutex);
@@ -180,7 +181,7 @@ ActionsCache::getIdentityResult(U64 hash,
     ActionKey key;
     key.time = time;
     key.view = view;
-    key.mipmapLevel = 0;
+    key.mipmapLevel = mipmapLevel;
 
     IdentityCacheMap::const_iterator found = cache->_identityCache.find(key);
     if (found == cache->_identityCache.end()) {
@@ -197,6 +198,7 @@ void
 ActionsCache::setIdentityResult(U64 hash,
                                 double time,
                                 ViewIdx view,
+                                unsigned int mipmapLevel,
                                 int inputNbIdentity,
                                 ViewIdx inputView,
                                 double identityTime)
@@ -207,7 +209,7 @@ ActionsCache::setIdentityResult(U64 hash,
 
     key.time = time;
     key.view = view;
-    key.mipmapLevel = 0;
+    key.mipmapLevel = mipmapLevel;
 
     IdentityResults & v = cache._identityCache[key];
     v.inputIdentityNb = inputNbIdentity;

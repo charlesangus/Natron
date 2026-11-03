@@ -45,6 +45,7 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/Settings.h"
 #include "Engine/ThreadPool.h"
@@ -826,10 +827,11 @@ Node::connectInput(const NodePtr & input,
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return false;
     }
-    bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
 
+    bool useGuiInputs;
     {
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&useGuiInputs);
         ///Check for invalid index
         QMutexLocker l(&_imp->inputsMutex);
         if ( (inputNumber < 0) ||
@@ -845,9 +847,13 @@ Node::connectInput(const NodePtr & input,
             _imp->guiInputs[inputNumber] = input;
         } else {
             _imp->guiInputs[inputNumber] = input;
+            _imp->actionsQueued = true;
         }
-        input->connectOutput( useGuiInputs, shared_from_this() );
+        // Marked before a render can start: one starting once the lock is released must not find
+        // the new inputs under the old hash, and onInputChanged() below must read the new hash.
+        markHashDirty();
     }
+    input->connectOutput(useGuiInputs, shared_from_this());
 
     {
         std::set<std::string> names;
@@ -870,8 +876,6 @@ Node::connectInput(const NodePtr & input,
         onInputChanged(inputNumber);
     }
 
-    computeHash();
-
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
@@ -885,7 +889,7 @@ Node::connectInput(const NodePtr & input,
 } // Node::connectInput
 
 bool
-Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInputs)
+Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhileRendering)
 {
     assert(_imp->inputsInitialized);
     assert(input);
@@ -917,31 +921,38 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
     }
 
     NodePtr detachedInput;
+    NodePtr curIn;
+    bool useGuiInputs;
     {
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        useGuiInputs = queueWhileRendering && rendering;
         QMutexLocker l(&_imp->inputsMutex);
+        if (inputNumber >= (int)_imp->inputs.size()) {
+            return false;
+        }
         ///Set the input
 
         if (!useGuiInputs) {
-            NodePtr curIn = _imp->inputs[inputNumber].lock();
-            if (curIn) {
-                QObject::connect( curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
-                curIn->disconnectOutput(useGuiInputs, this);
-                if (curIn != input) {
-                    detachedInput = curIn;
-                }
+            curIn = _imp->inputs[inputNumber].lock();
+            if (curIn && (curIn != input)) {
+                detachedInput = curIn;
             }
             _imp->inputs[inputNumber] = input;
             _imp->guiInputs[inputNumber] = input;
         } else {
-            NodePtr curIn = _imp->guiInputs[inputNumber].lock();
-            if (curIn) {
-                QObject::connect( curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
-                curIn->disconnectOutput(useGuiInputs, this);
-            }
+            curIn = _imp->guiInputs[inputNumber].lock();
             _imp->guiInputs[inputNumber] = input;
+            _imp->actionsQueued = true;
         }
-        input->connectOutput( useGuiInputs, shared_from_this() );
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
+    if (curIn) {
+        QObject::connect(curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+        curIn->disconnectOutput(useGuiInputs, this);
+    }
+    input->connectOutput(useGuiInputs, shared_from_this());
 
     ///Get notified when the input name has changed
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
@@ -956,8 +967,6 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiInp
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(detachedInput);
     }
-
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -979,9 +988,8 @@ Node::replaceInput(const NodePtr& input,
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return false;
     }
-    bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
-    return replaceInputInternal(input, inputNumber, useGuiInputs);
+    return replaceInputInternal(input, inputNumber, true);
 } // Node::replaceInput
 
 void
@@ -1030,10 +1038,11 @@ Node::switchInput0And1()
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return;
     }
-    bool useGuiInputs = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
 
+    bool useGuiInputs;
     {
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&useGuiInputs);
         QMutexLocker l(&_imp->inputsMutex);
         assert( inputAIndex < (int)_imp->inputs.size() && inputBIndex < (int)_imp->inputs.size() );
         NodePtr input0;
@@ -1048,7 +1057,10 @@ Node::switchInput0And1()
             input0 = _imp->guiInputs[inputAIndex].lock();
             _imp->guiInputs[inputAIndex] = _imp->guiInputs[inputBIndex];
             _imp->guiInputs[inputBIndex] = input0;
+            _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
     Q_EMIT inputChanged(inputAIndex);
     Q_EMIT inputChanged(inputBIndex);
@@ -1059,7 +1071,6 @@ Node::switchInput0And1()
         onInputChanged(inputAIndex);
         onInputChanged(inputBIndex);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1124,7 +1135,6 @@ Node::disconnectInput(int inputNumber)
     assert(_imp->inputsInitialized);
 
     NodePtr inputShared;
-    bool useGuiValues = isNodeRendering();
     bool destroyed;
     {
         QMutexLocker k(&_imp->isBeingDestroyedMutex);
@@ -1137,30 +1147,27 @@ Node::disconnectInput(int inputNumber)
         _imp->effect->abortViewerRendersForEdit();
     }
 
+    bool useGuiValues;
     {
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&useGuiValues);
         QMutexLocker l(&_imp->inputsMutex);
-        if ( (inputNumber < 0) ||
-             ( inputNumber > (int)_imp->inputs.size() ) ||
-             ( !useGuiValues && !_imp->inputs[inputNumber].lock() ) ||
-             ( useGuiValues && !_imp->guiInputs[inputNumber].lock() ) ) {
+        if ((inputNumber < 0) || (inputNumber >= (int)_imp->inputs.size()) || (!useGuiValues && !_imp->inputs[inputNumber].lock()) || (useGuiValues && !_imp->guiInputs[inputNumber].lock())) {
             return -1;
         }
         inputShared = useGuiValues ? _imp->guiInputs[inputNumber].lock() : _imp->inputs[inputNumber].lock();
-    }
-
-
-    QObject::disconnect( inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
-    inputShared->disconnectOutput(useGuiValues, this);
-
-    {
-        QMutexLocker l(&_imp->inputsMutex);
         if (!useGuiValues) {
             _imp->inputs[inputNumber].reset();
             _imp->guiInputs[inputNumber].reset();
         } else {
             _imp->guiInputs[inputNumber].reset();
+            _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
+
+    QObject::disconnect(inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+    inputShared->disconnectOutput(useGuiValues, this);
 
     {
         QMutexLocker k(&_imp->isBeingDestroyedMutex);
@@ -1177,7 +1184,6 @@ Node::disconnectInput(int inputNumber)
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(inputShared);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1191,7 +1197,7 @@ Node::disconnectInput(int inputNumber)
 } // Node::disconnectInput
 
 int
-Node::disconnectInputInternal(Node* input, bool useGuiValues)
+Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
 {
     assert(_imp->inputsInitialized);
     assert(input);
@@ -1200,7 +1206,11 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
     }
     int found = -1;
     NodePtr inputShared;
+    bool useGuiValues;
     {
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        useGuiValues = queueWhileRendering && rendering;
         QMutexLocker l(&_imp->inputsMutex);
         if (!useGuiValues) {
             for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
@@ -1221,17 +1231,19 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
                 }
             }
         }
-    }
-    if (found != -1) {
-        {
-            QMutexLocker l(&_imp->inputsMutex);
+        if (found != -1) {
             if (!useGuiValues) {
                 _imp->inputs[found].reset();
                 _imp->guiInputs[found].reset();
             } else {
                 _imp->guiInputs[found].reset();
+                _imp->actionsQueued = true;
             }
+            // Under the render-start lock, as in connectInput().
+            markHashDirty();
         }
+    }
+    if (found != -1) {
         input->disconnectOutput(useGuiValues, this);
         Q_EMIT inputChanged(found);
         bool mustCallEnd = false;
@@ -1241,7 +1253,6 @@ Node::disconnectInputInternal(Node* input, bool useGuiValues)
             onInputChanged(found);
             invalidateDetachedInputDataKind(inputShared);
         }
-        computeHash();
 
         std::string inputChangedCB = getInputChangedCallback();
         if ( !inputChangedCB.empty() ) {
@@ -1264,9 +1275,8 @@ Node::disconnectInput(Node* input)
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return -1;
     }
-    bool useGuiValues = isNodeRendering();
     _imp->effect->abortViewerRendersForEdit();
-    return disconnectInputInternal(input, useGuiValues);
+    return disconnectInputInternal(input, true);
 } // Node::disconnectInput
 
 int
@@ -1640,6 +1650,8 @@ Node::onInputChanged(int inputNb,
     if (isInspector) {
         isInspector->refreshActiveInputs(inputNb, isInputA);
     }
+    // The path from an RFVRead to the viewer may run through this connection.
+    RFV::scheduleReaderRefresh(app);
 
     bool shouldDoInputChanged = ( !getApp()->getProject()->isProjectClosing() && !getApp()->isCreatingNodeTree() ) ||
                                 _imp->effect->isRotoPaintNode();
@@ -1839,6 +1851,19 @@ InspectorNode::connectInput(const NodePtr& input,
 }
 
 void
+Node::editBeforeRenderStarts(const std::function<bool()>& edit)
+{
+    bool rendering;
+    std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+
+    // Marked outside the edit's own locks: the mark can let a hash read through, and that read
+    // may take them.
+    if (edit()) {
+        markHashDirty();
+    }
+}
+
+void
 InspectorNode::setActiveInputAndRefresh(int inputNb,
                                         bool isASide)
 {
@@ -1849,8 +1874,7 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    computeHash();
-
+    // refreshActiveInputs() marks the hash, so the rest of onInputChanged() reads the new one.
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);
 
@@ -1872,8 +1896,12 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
 {
     assert( QThread::currentThread() == qApp->thread() );
     NodePtr inputNode = getRealInput(inputNbChanged);
-    {
+    // The viewer's content hash folds the active inputs: a render starting once they changed must
+    // find the hash marked, and so must the rest of onInputChanged().
+    bool bSideSet = false;
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
+        const int before[2] = { _activeInputs[0], _activeInputs[1] };
         if (!inputNode) {
             ///check if the input was one of the active ones if so set to -1
             if (_activeInputs[0] == inputNbChanged) {
@@ -1883,16 +1911,7 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
             }
         } else {
             if ( !isASide && (_activeInputs[0] != -1) ) {
-                ViewerInstance* isViewer = isEffectViewer();
-                if (isViewer) {
-                    OpenGLViewerI* viewerUI = isViewer->getUiContext();
-                    if (viewerUI) {
-                        ViewerCompositingOperatorEnum op = viewerUI->getCompositingOperator();
-                        if (op == eViewerCompositingOperatorNone) {
-                            viewerUI->setCompositingOperator(eViewerCompositingOperatorWipeUnder);
-                        }
-                    }
-                }
+                bSideSet = true;
                 _activeInputs[1] = inputNbChanged;
             } else {
                 _activeInputs[0] = inputNbChanged;
@@ -1900,6 +1919,14 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
                     _activeInputs[1] = inputNbChanged;
                 }
             }
+        }
+        return (before[0] != _activeInputs[0]) || (before[1] != _activeInputs[1]);
+    });
+    if (bSideSet) {
+        ViewerInstance* isViewer = isEffectViewer();
+        OpenGLViewerI* viewerUI = isViewer ? isViewer->getUiContext() : 0;
+        if (viewerUI && (viewerUI->getCompositingOperator() == eViewerCompositingOperatorNone)) {
+            viewerUI->setCompositingOperator(eViewerCompositingOperatorWipeUnder);
         }
     }
     Q_EMIT activeInputsChanged();
@@ -1982,22 +2009,30 @@ void
 InspectorNode::setInputA(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
-    {
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
+        const bool changed = _activeInputs[0] != inputNb;
         _activeInputs[0] = inputNb;
-    }
+
+        return changed;
+    });
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 void
 InspectorNode::setInputB(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
-    {
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
+        const bool changed = _activeInputs[1] != inputNb;
         _activeInputs[1] = inputNb;
-    }
+
+        return changed;
+    });
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 RenderContextReadSet

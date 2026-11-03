@@ -10,10 +10,12 @@
 #include "Engine/CLArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
+#include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
@@ -89,9 +91,6 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
-    // The background AppManager does not register the Viewer, and the Viewer is the one image input
-    // that takes raw, so ViewerRaw_Test.cpp needs it registered by hand.
-    registerTestBuiltInPlugin<ViewerInstance>();
 }
 
 void
@@ -200,6 +199,25 @@ registerNativeParityTestPlugins()
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
 }
+
+void
+registerCacheStressTestPlugins()
+{
+    // A source whose render remembers a knob value outside every engine cache, so the cache
+    // stress self-test can plant a hole the harness must catch.
+    registerTestBuiltInPlugin<StaleMemoTestEffect>();
+    // A filter whose knob edits queue under a render, for the queued-edit tests.
+    registerTestBuiltInPlugin<QueuedEditTestEffect>();
+    // A filter that stores an actions-cache answer from onInputChanged().
+    registerTestBuiltInPlugin<InputChangedTestEffect>();
+}
+
+void
+registerAiTestPlugins()
+{
+    // A constant generator that carries a model knob, for the ModelKnob tests.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -216,6 +234,9 @@ GTEST_API_ int main(int argc, char **argv)
         return RUN_ALL_TESTS();
     }
     PerProcessUserDirs userDirs;
+    // A renderer whose library is missing, for the tests of unavailable delegates. Hydra
+    // discovers its renderers once, so it is registered before anything can ask for them.
+    RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/renderDelegates");
     appendTestOfxPluginDir();
     applyTestRetiredOfxIds();
     applyTestPlaneChoiceTakeOvers();
@@ -251,6 +272,8 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerCacheStressTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

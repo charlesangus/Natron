@@ -90,6 +90,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/UndoRecorder.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -346,6 +347,25 @@ AppInstance::getNodesBeingCreated() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_creatingNodeQueue;
+}
+
+NodePtr
+AppInstance::getActiveViewerNode() const
+{
+    ViewerInstance* last = getLastViewerUsingTimeline();
+    NodePtr node = last ? last->getNode() : NodePtr();
+    if (node) {
+        return node;
+    }
+    ProjectPtr project = getProject();
+    const NodesList nodes = project ? project->getNodes() : NodesList();
+    for (const NodePtr& candidate : nodes) {
+        if (candidate && candidate->isEffectViewer() && candidate->isActivated()) {
+            return candidate;
+        }
+    }
+
+    return NodePtr();
 }
 
 bool
@@ -628,6 +648,10 @@ AppInstance::getWritersWorkForCL(const CLArgs& cl,
                 if ( !writerNode->isOutputNode() ) {
                     QString s = tr("%1 is not an output node! It cannot render anything.").arg(it->name);
                     throw std::invalid_argument( s.toStdString() );
+                }
+                if (writerNode->isEffectViewer()) {
+                    QString s = tr("%1 is a Viewer, which cannot render without the GUI.").arg(it->name);
+                    throw std::invalid_argument(s.toStdString());
                 }
             }
 
@@ -1171,6 +1195,19 @@ AppInstance::createWriter(const std::string& filename,
     }
 
     return createNode(args);
+}
+
+NodePtr
+AppInstance::createWriterFor(const NodePtr& source,
+                             CreateNodeArgs& args)
+{
+    NodePtr writer = createWriter(std::string(), args);
+
+    if (writer && source) {
+        writer->connectInput(source, 0);
+    }
+
+    return writer;
 }
 
 static std::string removeTrailingDigits(const std::string& str)
@@ -1721,6 +1758,7 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
         groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
+        groups << QString::fromUtf8(PLUGIN_GROUP_RFV);
         groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
         groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);
         groups << QString::fromUtf8("Extra"); // openfx-arena
@@ -1975,9 +2013,10 @@ AppInstance::startWritersRenderingFromNames(bool enableRenderStats,
                     exc.append( tr(" is not an output node! It cannot render anything.").toStdString() );
                     throw std::invalid_argument(exc);
                 }
-                ViewerInstance* isViewer = node->isEffectViewer();
-                if (isViewer) {
-                    throw std::invalid_argument("Internal issue with the project loader...viewers should have been evicted from the project.");
+                if (node->isEffectViewer()) {
+                    std::string exc(writerName);
+                    exc.append(tr(" is a Viewer, which cannot render without the GUI.").toStdString());
+                    throw std::invalid_argument(exc);
                 }
 
                 if (node->isNodeDisabledAtAllTimes() || !node->isActivated()) {

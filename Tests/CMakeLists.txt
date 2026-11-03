@@ -20,13 +20,17 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    CacheStress.cpp
+    CacheStress_Test.cpp
+    CacheStressConcurrent_Test.cpp
+    CacheStressSelf_Test.cpp
     AbortableRenderInfo_Test.cpp
     BlockingRenderIdle_Test.cpp
     ChannelSetRender_Test.cpp
@@ -52,6 +56,7 @@ set(Tests_SOURCES
     DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
     DefaultChannelSet_Test.cpp
+    ExpressionFrameVarying_Test.cpp
     FileSystemModel_Test.cpp
     FrameGraphBuild_Test.cpp
     FrameRenderContext_Test.cpp
@@ -63,6 +68,7 @@ set(Tests_SOURCES
     GpuPlacement_Test.cpp
     GpuRegionFallback_Test.cpp
     GpuResidency_Test.cpp
+    GpuWeight_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingGuiEdits_Test.cpp
@@ -80,12 +86,16 @@ set(Tests_SOURCES
     KnobContentHash_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
+    KnobQueuedValueChange_Test.cpp
     LazyHash_Test.cpp
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    BezierEditScaling_Test.cpp
+    BezierGuiCopyEquivalence_Test.cpp
+    BezierIncrementalCopy_Test.cpp
     RotoUndoGesture_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
@@ -98,11 +108,15 @@ set(Tests_SOURCES
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
+    Gpu/CacheStressGpu_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
+    Ai/ModelRegistry_Test.cpp
+    Ai/ModelDownloader_Test.cpp
+    Ai/ModelKnob_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -116,7 +130,9 @@ set(Tests_SOURCES
     PoolSharing_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
+    QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
@@ -130,9 +146,13 @@ set(Tests_SOURCES
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
+    RFVMetadata_Test.cpp
+    RFVPatternMatch_Test.cpp
     RFVPython_Test.cpp
+    RFVRead_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp
+    RFVSwitch_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
@@ -192,6 +212,7 @@ target_link_libraries(Tests
         NatronEngine
         Qt::Core
         Qt::Concurrent
+        Qt::Network
         Python3::Python
         openMVG
         rawspeed::rawspeed
@@ -255,6 +276,7 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ActionShortcuts_Test.cpp
     ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
     ColorKnobUndoMerge_Test.cpp
@@ -268,6 +290,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
+    EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
@@ -278,11 +301,15 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
+    NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
+    SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     StallMonitor_Test.cpp
@@ -295,7 +322,7 @@ set(GuiTests_SOURCES
 )
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui

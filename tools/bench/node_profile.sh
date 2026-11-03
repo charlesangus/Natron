@@ -7,7 +7,7 @@
 #   tools/bench/node_profile.sh serial CHAIN node...   release build, GPU off, noRenderThreads=1
 #
 # The GPU tag is gpu<CHAIN>; a CPU run's tag is its mode. Summarise with node_profile_summary.py.
-# A gpu run needs CHAIN 2 or more (see node_profile.py), and fails when any profiled node rendered on the CPU,
+# A gpu run needs a CHAIN heavy enough for the GPU (see node_profile.py), and fails when any profiled node rendered on the CPU,
 # since its profile would then hold CPU times under a GPU tag.
 #
 # NODE_PROFILE_BINARY=<path to a NatronRenderer> (cpu and serial modes only) runs that binary directly on the

@@ -1212,12 +1212,6 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
         keyframeRemoved_virtual(dimension, *it);
     }
 
-
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
-
     ValueChangedReasonEnum reason = eValueChangedReasonNatronInternalEdited;
 
     if (!useGuiCurve) {
@@ -1285,12 +1279,6 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
 
     //virtual portion
     keyframeRemoved_virtual(dimension, time);
-
-
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
 
     ValueChangedReasonEnum reason = eValueChangedReasonNatronInternalEdited;
 
@@ -1827,11 +1815,6 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
 
     animationRemoved_virtual(dimension);
 
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
-
     if (!useGuiCurve) {
         //virtual portion
         evaluateValueChange(dimension, getCurrentTime(), view, reason);
@@ -1888,11 +1871,9 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
         return;
     }
 
-    bool hasChanged = false;
     QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
     for (int i = 0; i < getDimension(); ++i) {
         if (_imp->mustCloneGuiCurves[i]) {
-            hasChanged = true;
             CurvePtr curve = _imp->curves[i];
             assert(curve);
             KnobGuiIPtr hasGui = getKnobGuiPointer();
@@ -1910,9 +1891,6 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
             _imp->guiCurveChangedOutsideLink[i] = false;
             modifiedDimensions.insert(std::make_pair(i, reason));
         }
-    }
-    if (hasChanged && _imp->holder) {
-        _imp->holder->updateHasAnimation();
     }
 }
 
@@ -1970,6 +1948,10 @@ KnobHelper::setGuiCurveHasChanged(ViewSpec /*view*/,
         _imp->guiCurveChangedOutsideLink[dimension] = false;
     } else if (_imp->linkCurveWriter != QThread::currentThread()) {
         _imp->guiCurveChangedOutsideLink[dimension] = true;
+    }
+    k.unlock();
+    if (changed && _imp->holder && !_imp->holder->isSetValueCurrentlyPossible()) {
+        _imp->holder->notifyValueQueued();
     }
 }
 
@@ -3073,6 +3055,109 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
     return ss.str();
 } // KnobHelperPrivate::declarePythonVariables
 
+namespace {
+thread_local ExpressionReadRecorder* innermostExpressionReadRecorder = NULL;
+} // anon namespace
+
+ExpressionReadRecorder::ExpressionReadRecorder(const KnobI* evaluating)
+    : _outer(innermostExpressionReadRecorder)
+    , _evaluating(evaluating)
+    , _reads()
+{
+    innermostExpressionReadRecorder = this;
+}
+
+ExpressionReadRecorder::~ExpressionReadRecorder()
+{
+    innermostExpressionReadRecorder = _outer;
+}
+
+void
+ExpressionReadRecorder::record(KnobI* knob,
+                               int dimension)
+{
+    ExpressionReadRecorder* recorder = innermostExpressionReadRecorder;
+    if (!recorder || !knob || (knob == recorder->_evaluating)) {
+        return;
+    }
+    for (const std::pair<KnobIWPtr, int>& read : recorder->_reads) {
+        if ((read.second == dimension) && (read.first.lock().get() == knob)) {
+            return;
+        }
+    }
+    KnobIWPtr weak = knob->weak_from_this();
+    if (weak.expired()) {
+        return;
+    }
+    recorder->_reads.push_back(std::make_pair(weak, dimension));
+}
+
+void
+KnobHelper::registerExpressionReads(int dimension,
+                                    const ExpressionReadRecorder::Reads& reads,
+                                    bool deferred)
+{
+    if (reads.empty() || (dimension < 0) || (dimension >= _imp->dimension)) {
+        return;
+    }
+    // Most evaluations read only known dependencies; those queue nothing.
+    ExpressionReadRecorder::Reads unknown;
+    std::string expression;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& expr = _imp->expressions[dimension];
+        expression = expr.originalExpression;
+        for (const std::pair<KnobIWPtr, int>& read : reads) {
+            const KnobIPtr source = read.first.lock();
+            if (!source) {
+                continue;
+            }
+            bool known = false;
+            for (const std::pair<KnobIWPtr, int>& dependency : expr.dependencies) {
+                if ((dependency.first.lock() == source) && ((dependency.second == read.second) || (dependency.second == -1))) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                unknown.push_back(read);
+            }
+        }
+    }
+    if (unknown.empty() || expression.empty()) {
+        return;
+    }
+
+    QCoreApplication* app = QCoreApplication::instance();
+    const bool onMainThread = app && (QThread::currentThread() == app->thread());
+    if (deferred || !onMainThread) {
+        if (!app) {
+            return;
+        }
+        const KnobIWPtr weakThis = weak_from_this();
+        QMetaObject::invokeMethod(app, [weakThis, dimension, unknown, expression]() {
+            const KnobIPtr knob = weakThis.lock();
+            KnobHelper* helper = dynamic_cast<KnobHelper*>( knob.get() );
+            if ( !helper || (helper->getExpression(dimension) != expression) ) {
+                return;
+            }
+            helper->registerExpressionReads(dimension, unknown, false);
+            helper->invalidateContentHash(); }, Qt::QueuedConnection);
+
+        return;
+    }
+
+    const KnobIPtr thisKnob = shared_from_this();
+    for (const std::pair<KnobIWPtr, int>& read : unknown) {
+        const KnobIPtr source = read.first.lock();
+        if (!source || (source == thisKnob)) {
+            continue;
+        }
+        const int sourceDimension = (read.second >= 0) && (read.second < source->getDimension()) ? read.second : -1;
+        source->addListener(true, dimension, sourceDimension, thisKnob);
+    }
+}
+
 void
 KnobHelperPrivate::registerRFVListeners(int dimension,
                                         const std::string& expression)
@@ -3649,6 +3734,7 @@ KnobHelper::setExpressionInternal(int dimension,
     std::string exprInvalid;
     PyObject* function = 0;
     const U64 functionGeneration = gExpressionFunctionsGeneration.load();
+    ExpressionReadRecorder validationReads(this);
     try {
         exprCpy = validateExpressionInternal(expression, dimension, hasRetVariable, &exprResult, &function);
     } catch (const std::exception &e) {
@@ -3681,6 +3767,7 @@ KnobHelper::setExpressionInternal(int dimension,
                 EXPR_RECURSION_LEVEL();
                 _imp->parseListenersFromExpression(dimension);
             }
+            registerExpressionReads(dimension, validationReads.getReads(), false);
             std::string metadataCycle;
             {
                 QMutexLocker k(&_imp->expressionMutex);
@@ -3705,39 +3792,6 @@ KnobHelper::setExpressionInternal(int dimension,
     //Notify the expr. has changed
     expressionChanged(dimension);
 } // KnobHelper::setExpressionInternal
-
-void
-KnobHelper::replaceNodeNameInExpression(int dimension,
-                                        const std::string& oldName,
-                                        const std::string& newName)
-{
-    assert(dimension >= 0 && dimension < _imp->dimension);
-    KnobHolder* holder = getHolder();
-    if (!holder) {
-        return;
-    }
-    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    if (!isEffect) {
-        return;
-    }
-
-    isEffect->beginChanges();
-    std::string hasExpr = getExpression(dimension);
-    if ( hasExpr.empty() ) {
-        return;
-    }
-    bool hasRetVar = isExpressionUsingRetVariable(dimension);
-    try {
-        //Change in expressions the script-name
-        QString estr = QString::fromUtf8( hasExpr.c_str() );
-        estr.replace( QString::fromUtf8( oldName.c_str() ), QString::fromUtf8( newName.c_str() ) );
-        hasExpr = estr.toStdString();
-        setExpression(dimension, hasExpr, hasRetVar, false);
-    } catch (...) {
-    }
-
-    isEffect->endChanges(true);
-}
 
 void
 KnobHelper::replaceNodeNameInExpressionCode(int dimension,
@@ -4098,10 +4152,6 @@ KnobHelper::expressionChanged(int dimension)
 {
     refreshRFVReads();
     invalidateContentHash();
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
     if (_signalSlotHandler) {
         _signalSlotHandler->s_expressionChanged(dimension);
     }
@@ -6463,9 +6513,6 @@ KnobHelper::writeLinkCurveFrom(KnobI* state,
         ignore_result(setKeyFrame(key, ViewSpec::all(), dimension, reason));
         changed = true;
     }
-    if (changed && _imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
 
     return changed;
 } // KnobHelper::writeLinkCurveFrom
@@ -7315,8 +7362,13 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         h.appendBool(true);
         h.appendI64(it->second);
         const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
-        h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
-                              : dep->getDimensionContentHash(it->second));
+        // -1 reads every dimension (a whole-value get(), a project variable read through rfv).
+        const int firstDim = (it->second < 0) ? 0 : it->second;
+        const int endDim = (it->second < 0) ? dep->getDimension() : (it->second + 1);
+        for (int d = firstDim; d < endDim; ++d) {
+            h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(d, path)
+                                  : dep->getDimensionContentHash(d));
+        }
     }
     // A node's metadata is a function of its hash, and of its revision when it changes under the
     // same hash. The holder's own node hash is left out: it folds this one in, and its metadata
@@ -7468,51 +7520,6 @@ KnobHelper::invalidateContentHash()
 
 namespace {
 
-/**
- * @brief Adds to reads, transitively, what the expressions of the project variables it names read
- * through rfv: such a variable is the base its readers see, so they read what its expression reads.
- * Each name is expanded once, which also ends a cycle of variables reading each other.
- **/
-void
-appendProjectVariableReads(const Project& project,
-                           RenderContextReadSet* reads)
-{
-    if (reads->readsAll()) {
-        return;
-    }
-    std::set<std::string> expanded;
-    std::vector<std::string> pending;
-    for (const RenderContextName& name : reads->names()) {
-        if (name.ns.empty()) {
-            pending.push_back(name.name);
-        }
-    }
-    while (!pending.empty()) {
-        const std::string name = pending.back();
-        pending.pop_back();
-        if (!expanded.insert(name).second) {
-            continue;
-        }
-        const KnobIPtr variable = RFV::findDeclaredVariable(&project, name);
-        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(variable.get());
-        if (!helper) {
-            continue;
-        }
-        const RenderContextReadSet variableReads = helper->getRFVReadSet();
-        if (variableReads.readsAll()) {
-            reads->setReadsAll();
-
-            return;
-        }
-        for (const RenderContextName& read : variableReads.names()) {
-            reads->add(read);
-            if (read.ns.empty()) {
-                pending.push_back(read.name);
-            }
-        }
-    }
-}
-
 // The reads of an expression scan, fixed once made, widened when asked by what the project
 // variables they name read in turn. A change of the scan replaces the source; a change of a
 // variable's expression or of the project's declarations invalidates the reads.
@@ -7531,7 +7538,7 @@ public:
         RenderContextReadSet own = _reads;
         const ProjectPtr project = _project.lock();
         if (project) {
-            appendProjectVariableReads(*project, &own);
+            RFV::appendProjectVariableReads(*project, &own);
         }
         reads->merge(own);
     }
@@ -8092,8 +8099,6 @@ struct KnobHolder::KnobHolderPrivate
     bool abortAtEndOfChanges = false;
     QMutex knobsFrozenMutex;
     bool knobsFrozen;
-    mutable QMutex hasAnimationMutex;
-    bool hasAnimation;
     DockablePanelI* settingsPanel;
     std::atomic<U64> knobsContentGeneration { 0 };
     mutable QMutex rfvDeclarationsMutex; // protects rfvDeclarations
@@ -8119,8 +8124,6 @@ struct KnobHolder::KnobHolderPrivate
         , nbChangesRequiringMetadataRefresh(0)
         , knobsFrozenMutex()
         , knobsFrozen(false)
-        , hasAnimationMutex()
-        , hasAnimation(false)
         , settingsPanel(0)
 
     {
@@ -8146,8 +8149,6 @@ struct KnobHolder::KnobHolderPrivate
         , nbChangesRequiringMetadataRefresh(0)
         , knobsFrozenMutex()
         , knobsFrozen(false)
-        , hasAnimationMutex()
-        , hasAnimation(other.hasAnimation)
         , settingsPanel(other.settingsPanel)
     {
 
@@ -9569,6 +9570,11 @@ KnobHolder::dequeueValuesSet()
     }
     bool ret = false;
     for (U32 i = 0; i < _imp->knobs.size(); ++i) {
+        // A value callback can start a render on this thread without waiting for the dequeue: the
+        // knobs not reached yet keep their queues until it ends, as they would for any other render.
+        if (!canSetValue()) {
+            break;
+        }
         ret |= _imp->knobs[i]->dequeueValuesSet(false);
     }
     {
@@ -9606,39 +9612,54 @@ KnobHolder::getPageIndex(const KnobPage* page) const
     return -1;
 }
 
+namespace {
+typedef std::set<std::pair<const KnobI*, int>> VisitedDimensions;
+
+// Walks the dimension and its masters, each (knob, dimension) once per getHasAnimation() call: a
+// chain several knobs share is walked once, and a master cycle ends.
+bool
+knobDimensionVariesWithTime(KnobIPtr knob,
+                            int dimension,
+                            VisitedDimensions* visited)
+{
+    while (knob) {
+        if (!visited->insert(std::make_pair(knob.get(), dimension)).second) {
+            return false;
+        }
+        if (!knob->getExpression(dimension).empty()) {
+            return true;
+        }
+        const std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+        // A slaved dimension reads its master's curve, which the next step inspects.
+        if (!master.second && knob->canAnimate()) {
+            const CurvePtr curve = knob->getCurve(ViewIdx(0), dimension, true);
+            if (curve && (curve->getKeyFramesCount() > 0)) {
+                return true;
+            }
+        }
+        knob = master.second;
+        dimension = master.first;
+    }
+
+    return false;
+}
+} // namespace
+
 bool
 KnobHolder::getHasAnimation() const
 {
-    QMutexLocker k(&_imp->hasAnimationMutex);
+    const KnobsVec knobs = getKnobs_mt_safe();
+    VisitedDimensions visited;
 
-    return _imp->hasAnimation;
-}
-
-void
-KnobHolder::setHasAnimation(bool hasAnimation)
-{
-    QMutexLocker k(&_imp->hasAnimationMutex);
-
-    _imp->hasAnimation = hasAnimation;
-}
-
-void
-KnobHolder::updateHasAnimation()
-{
-    bool hasAnimation = false;
-    {
-        QMutexLocker l(&_imp->knobsMutex);
-
-        for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            if ( (*it)->hasAnimation() ) {
-                hasAnimation = true;
-                break;
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int d = 0; d < (*it)->getDimension(); ++d) {
+            if (knobDimensionVariesWithTime(*it, d, &visited)) {
+                return true;
             }
         }
     }
-    QMutexLocker k(&_imp->hasAnimationMutex);
 
-    _imp->hasAnimation = hasAnimation;
+    return false;
 }
 
 /***************************STRING ANIMATION******************************************/

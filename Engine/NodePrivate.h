@@ -177,6 +177,7 @@ public:
         , scriptName()
         , label()
         , cacheID()
+        , cacheIDClaimed(false)
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -233,6 +234,7 @@ public:
         , inputIsRenderingCounter(0)
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
+        , actionsQueued(false)
         , nodeIsDequeuingMutex()
         , nodeIsDequeuingCond()
         , nodeIsRendering(0)
@@ -334,6 +336,14 @@ public:
 
     void notifyLayerReferencesChanged();
 
+    /**
+     * @brief Takes the lock render starts on this node take and reports whether a render already
+     * holds it. An input edit decided and applied under the returned lock therefore either lands
+     * before any render that could see it, or goes to the gui inputs for the renders to end. Hold
+     * it only while writing the input arrays: nothing called under it may emit or call out.
+     **/
+    std::unique_lock<QMutex> lockRenderStarts(bool* rendering);
+
     Node* _publicInterface;
     NodeCollectionWPtr group;
     PrecompNodeWPtr precomp;
@@ -365,11 +375,9 @@ public:
     std::string scriptName; //node name internally and as visible to python
     std::string label; // node label as visible in the GUI
 
-    ///The cacheID is the first script name that was given to a node
-    ///it is then used in the cache to identify images that belong to this node
-    ///In order for the cache to be persistent, the cacheID is serialized with the node
-    ///and 2 nodes cannot have the same cacheID.
+    // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
+    bool cacheIDClaimed; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;
@@ -489,6 +497,8 @@ public:
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;
+    // An edit waits in a queue for the renders holding the node to end; protected by nodeIsDequeuingMutex
+    bool actionsQueued;
     QMutex nodeIsDequeuingMutex;
     QWaitCondition nodeIsDequeuingCond;
 

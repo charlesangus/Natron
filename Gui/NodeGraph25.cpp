@@ -259,8 +259,10 @@ findNodesMenuAction(QMenu* menu,
 // Triggers the Merge menu action bound to the key event, if any. The key is matched as the
 // physical key, as the viewer's number keys are, because Shift turns Qt's ';' and '\'' into
 // Key_Colon and Key_QuoteDbl. The Qt key is matched too, so a key a user rebinds to still works.
+// The action runs with a creation context on graph at the cursor, as the tab menu runs it.
 bool
-triggerMergeShortcut(const QKeyEvent* e)
+triggerMergeShortcut(NodeGraph* graph,
+                     const QKeyEvent* e)
 {
     static const struct {
         const char* shortcutID;
@@ -284,7 +286,7 @@ triggerMergeShortcut(const QKeyEvent* e)
         QMenu* menu = appPTR->getNodesMenu();
         QAction* action = menu ? findNodesMenuAction(menu, QString::fromUtf8(ids[i].shortcutID)) : 0;
         if (action) {
-            action->trigger();
+            TabMenuBridge::triggerActionInGraph(action, graph, graph->mapToScene(graph->mapFromGlobal(QCursor::pos())));
             return true;
         }
     }
@@ -313,8 +315,21 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
+        if (_imp->_evtState == eEventStateCutting) {
+            clearCutLine();
+            _imp->_evtState = eEventStateNone;
+            update();
+        }
         cancelSplice();
+        rollBackKisses();
+        _imp->_kissCancelled = true;
+        cancelNodeDrag();
         dropPickedUpArrow();
+    }
+
+    if ((key == Qt::Key_Control) && !e->isAutoRepeat() && (_imp->_evtState == eEventStateDraggingNode)) {
+        setKissAiming(true);
+        update();
     }
 
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, modifiers, key) ) {
@@ -462,7 +477,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         } else {
             accept = false;
         }
-    } else if (triggerMergeShortcut(e)) {
+    } else if (triggerMergeShortcut(this, e)) {
         // The Merge menu's Mask, Stencil or All Layers action was triggered.
     } else {
         bool intercepted = false;

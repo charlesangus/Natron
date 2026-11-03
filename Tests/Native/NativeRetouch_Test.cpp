@@ -1071,7 +1071,8 @@ texturedImage(int width,
 } // anon namespace
 
 // Processing the crop processRegion() asks for gives the full image's result inside the window,
-// for shapes of every kind on the image, a detail scale and the residual.
+// for shapes of every kind on the image, a detail scale and the residual. A window holding only
+// the third shape's source leaves that shape's destination out of the crop.
 TEST_F(NativeRetouchTest, CroppedProcessMatchesTheFullImage)
 {
     const int width = 200;
@@ -1089,7 +1090,10 @@ TEST_F(NativeRetouchTest, CroppedProcessMatchesTheFullImage)
         { 160, 100, 40, 50 },
         { 55, 115, 20, 10 },
         { -10, -10, 300, 300 },
+        { 25, 95, 15, 8 },
     };
+    const RC::Region& sourceOnly = windows[5];
+    const RC::Region& healed = shapes[2].maskRoi;
 
     for (int scales : { 0, 3 }) {
         RC::Params params;
@@ -1105,6 +1109,11 @@ TEST_F(NativeRetouchTest, CroppedProcessMatchesTheFullImage)
             ASSERT_GE(crop.y, 0);
             ASSERT_LE(crop.x + crop.width, width);
             ASSERT_LE(crop.y + crop.height, height);
+            if (&window == &sourceOnly) {
+                const bool apart = (crop.x + crop.width <= healed.x) || (healed.x + healed.width <= crop.x) || (crop.y + crop.height <= healed.y)
+                    || (healed.y + healed.height <= crop.y);
+                EXPECT_TRUE(apart) << scales << " scales: crop " << crop.x << "," << crop.y << " " << crop.width << "x" << crop.height;
+            }
             std::vector<float> part((std::size_t)crop.width * crop.height * 4);
             for (int y = 0; y < crop.height; ++y) {
                 std::copy(&image[((std::size_t)(y + crop.y) * width + crop.x) * 4], &image[((std::size_t)(y + crop.y) * width + crop.x + crop.width) * 4],

@@ -78,7 +78,6 @@ static const uint kScalarsCheck = 3;
 static const uint kScalarsBeta = 4;
 
 static const uint kDotRz = 0;
-// Also copies z into the search direction p.
 static const uint kDotStart = 1;
 
 static const float kTolerance = 1e-5f;
@@ -142,7 +141,6 @@ void store4(RWStructuredBuffer<float> buf, uint g, float4 v)
     buf[4 * g + 3] = v.w;
 }
 
-// The index of a list dispatch's thread, and its group's.
 uint itemIndex(uint3 tid)
 {
     return tid.y * kRow + tid.x;
@@ -182,7 +180,6 @@ void writePartials(uint index, uint group, float4 a, float4 b)
     }
 }
 
-// (A v)_g on a level.
 float4 applyAt(RWStructuredBuffer<float> v, Level level, uint g)
 {
     const uint s = level.stride;
@@ -196,7 +193,6 @@ float4 applyAt(RWStructuredBuffer<float> v, Level level, uint g)
     return out;
 }
 
-// One Gauss-Seidel update of A e = b at cell g.
 void relaxAt(Level level, uint g)
 {
     const uint s = level.stride;
@@ -214,7 +210,7 @@ uint colourOf(uint k, uint stride)
     return ((k % stride) + (k / stride)) & 1;
 }
 
-// The first sweep of a cycle from e = 0: colour 0 from b alone, colour 1 zeroed.
+// With e = 0 a colour-0 cell has no neighbour terms.
 void relaxFromZeroAt(Level level, uint k)
 {
     const uint g = level.offset + k;
@@ -229,7 +225,7 @@ void relaxFromZeroAt(Level level, uint k)
     }
 }
 
-// t = b - A e on colour 0, which the last sweep left a residual; 0 on colour 1.
+// Colour 1 was swept last, so its residual is 0 and only colour 0 needs A e.
 void residualAt(Level level, uint k)
 {
     const uint g = level.offset + k;
@@ -242,7 +238,6 @@ void residualAt(Level level, uint k)
     store4(tBuf, g, v);
 }
 
-// The coarse right-hand side: the sum of the fine level's 2x2 residuals.
 void restrictAt(Level fine, Level coarse, uint kc)
 {
     const uint x = kc % coarse.stride - 1;
@@ -263,7 +258,6 @@ void prolongAt(Level fine, Level coarse, uint k)
     store4(eBuf, g, v);
 }
 
-// Zeroes every vector, then sets u to dest - src over the image, 0 where either is not finite.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_clear(uint3 tid : SV_DispatchThreadID)
@@ -298,7 +292,6 @@ void heal_setup(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// r = the boundary terms - A u, with the group sums of the squared boundary terms and of r^2.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_initial(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint index : SV_GroupIndex)
@@ -332,7 +325,6 @@ void heal_initial(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint 
     writePartials(index, groupIndex(gid), boundary2, r2);
 }
 
-// The group sums of r . z; with kDotStart, also p = z.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_dot(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint index : SV_GroupIndex)
@@ -353,7 +345,6 @@ void heal_dot(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint inde
     writePartials(index, groupIndex(gid), rz, float4(0.0f));
 }
 
-// q = A p, in t, with the group sums of p . q.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_apply(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint index : SV_GroupIndex)
@@ -373,7 +364,6 @@ void heal_apply(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint in
     writePartials(index, groupIndex(gid), pq, float4(0.0f));
 }
 
-// u += alpha p, r -= alpha q, with the group sums of r^2.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_update(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint index : SV_GroupIndex)
@@ -396,7 +386,6 @@ void heal_update(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint i
     writePartials(index, groupIndex(gid), r2, float4(0.0f));
 }
 
-// p = z + beta p.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_direction(uint3 tid : SV_DispatchThreadID)
@@ -412,7 +401,6 @@ void heal_direction(uint3 tid : SV_DispatchThreadID)
     store4(pBuf, g, p);
 }
 
-// The solve's scalars from the partial sums of params.groups groups, as params.mode says.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_scalars(uint3 tid : SV_DispatchThreadID, uint index : SV_GroupIndex)
@@ -496,8 +484,6 @@ void heal_scalars(uint3 tid : SV_DispatchThreadID, uint index : SV_GroupIndex)
         stateBuf[kStateStop] = 1.0f;
 }
 
-// On level params.level: with mode 0 a red/black sweep over params.list, with mode 1 the first
-// sweep of a cycle over all the level's cells.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_relax(uint3 tid : SV_DispatchThreadID)
@@ -516,7 +502,6 @@ void heal_relax(uint3 tid : SV_DispatchThreadID)
         relaxAt(level, level.offset + k);
 }
 
-// On level params.level, the residual of the pre-smoothed correction.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_residual(uint3 tid : SV_DispatchThreadID)
@@ -529,7 +514,6 @@ void heal_residual(uint3 tid : SV_DispatchThreadID)
     residualAt(levelAt(params.level), cellBuf[listOffset(params.level, 0) + i]);
 }
 
-// On level params.level + 1, the right-hand side restricted from level params.level.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_restrict(uint3 tid : SV_DispatchThreadID)
@@ -543,7 +527,6 @@ void heal_restrict(uint3 tid : SV_DispatchThreadID)
     restrictAt(levelAt(params.level), levelAt(l), cellBuf[listOffset(l, 0) + i]);
 }
 
-// On level params.level, the correction prolonged from level params.level + 1.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void heal_prolong(uint3 tid : SV_DispatchThreadID)
@@ -628,7 +611,6 @@ void heal_tail(uint3 tid : SV_DispatchThreadID, uint index : SV_GroupIndex)
     }
 }
 
-// dest = src + u over the masked pixels where both are finite.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void heal_finish(uint3 tid : SV_DispatchThreadID)

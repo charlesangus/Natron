@@ -907,6 +907,38 @@ TEST(EdgeAwareGpu, PoissonHealDispatchesPerCycle)
     EXPECT_EQ(many - one, perCycle * (kPoissonHealGpuMaxCycles - 1));
 }
 
+// Without push descriptors every dispatch takes a descriptor set. A 512 x 512 disc keeps three
+// levels above the tail, so the 64 recorded cycles hold 1536 heal_relax dispatches, more than one
+// of the kernel's descriptor pools has sets for.
+TEST(EdgeAwareGpu, PoissonHealLongRunWithoutPushDescriptors)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime, false)) {
+        return;
+    }
+    ASSERT_FALSE(runtime->runtime().device().info().pushDescriptor);
+    const int width = 512;
+    const int height = 512;
+    const std::vector<float> src = makeImage(width, height, 4, 1300, eImageRandom);
+    const std::vector<float> dest = makeImage(width, height, 4, 1301, eImageRandom);
+    const std::vector<float> mask = discMask(width, height);
+    std::vector<float> want = dest;
+    poissonHealMultigrid(src.data(), want.data(), mask.data(), width, height, kPoissonHealGpuMaxCycles, kSerial);
+    DeviceRun run(*runtime);
+    gpu::GpuBuffer* srcBuffer = run.upload(src);
+    gpu::GpuBuffer* destBuffer = run.upload(dest);
+    gpu::GpuBuffer* maskBuffer = run.upload(mask);
+    ASSERT_TRUE(srcBuffer && destBuffer && maskBuffer);
+    int dispatches = 0;
+    ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
+        return recordPoissonHeal(ctx, *srcBuffer, *destBuffer, *maskBuffer, mask.data(), width, height, kPoissonHealGpuMaxCycles, &dispatches);
+    }));
+    EXPECT_GT(dispatches, 1536);
+    std::vector<float> got;
+    ASSERT_TRUE(run.download(destBuffer, dest.size(), got));
+    expectMatch(want, got, kHealTolerance, "512x512 disc without push descriptors");
+}
+
 #else // NATRON_HAVE_GPU
 
 TEST(EdgeAwareGpu, BoxMean)

@@ -478,7 +478,10 @@ processRegion(const Region& window,
                 source.x -= (int)shape.dx;
                 source.y -= (int)shape.dy;
             }
-            if (isEmpty(intersect(area, reach)) && isEmpty(intersect(source, reach))) {
+            // A shape only reads its source, so a source alone in the region changes none of its
+            // pixels. The fixed point ignores shape order because scale-0 shapes run before every
+            // band's, whatever their index.
+            if (isEmpty(intersect(area, reach))) {
                 continue;
             }
             taken[i] = true;

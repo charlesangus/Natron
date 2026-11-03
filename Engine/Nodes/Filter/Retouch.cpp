@@ -2407,15 +2407,17 @@ Retouch::getOpGpuInputRoI(int inputNb,
     if (inputNb != getSourceInput()) {
         return outputRect;
     }
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
+    RectI full, crop;
+    RC::Params params;
+    std::vector<RC::Shape> shapes;
+    if (!processPlan(time, view, scale, outputRect, false, false, &full, &crop, &params, &shapes) || crop.isNull()) {
         return outputRect;
     }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
-    const RectI full = PassExec::toPixelEnclosing(rod, scale, par);
+    // retouch_store copies the source over the whole output rect, not only over the crop.
+    RectI needed = crop;
+    needed.merge(outputRect);
 
-    return full.isNull() ? outputRect : full;
+    return needed;
 }
 
 StatusEnum

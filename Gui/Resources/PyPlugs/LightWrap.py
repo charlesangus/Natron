@@ -1542,8 +1542,9 @@ def createInstance(app,group):
     groupKeyer1.connectInput(0, groupDot1)
     groupPremult1.connectInput(0, groupKeyer1)
     groupBGBlur.connectInput(0, groupPremult1)
-    groupShufflecopy1.connectInput(0, groupBGBlur)
-    groupShufflecopy1.connectInput(1, groupConstant1)
+    # Input 0 ("2") feeds in2, whose RGB is the constant; input 1 ("1") feeds in1, whose alpha is the blurred key.
+    groupShufflecopy1.connectInput(0, groupConstant1)
+    groupShufflecopy1.connectInput(1, groupBGBlur)
     groupPremult2.connectInput(0, groupShufflecopy1)
     groupDisableLuma.connectInput(0, groupPremult2)
     groupDisableLuma.connectInput(1, groupConstant1)

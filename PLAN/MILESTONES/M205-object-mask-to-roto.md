@@ -139,6 +139,12 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
   - size: M
 
 
+- [ ] M205.P3.T5 — Inference resolution choice (user, 2026-11-03)
+  - files: Engine/RotoObjectSelect.{h,cpp}, the segmenter's encoder input path (Engine/Ai/Segmentation*), tests, GUI script, Ai README
+  - approach: an "Inference Resolution" choice — Full, 50%, 25%, 1K, 2K, 4K (long edge; never upscale) — scales only the image fed to the encoder. Prompts are stored in full-res image coordinates and mapped to the inference image; the decoded mask is upscaled back to full res before tracing, so the outline and committed Beziers are full-res. Changing the choice keeps the prompts where they are and runs a new encode (cache keyed by resolution). The user always sees the full-res image.
+  - verify: a test segments the same object at Full and 25% and the traced outlines overlap closely (IoU threshold) in full-res coordinates; changing the resolution with prompts placed re-runs inference with the same prompt positions; the knob stays out of Roto's render hash.
+  - size: M
+
 ## Decisions
 
 - 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.

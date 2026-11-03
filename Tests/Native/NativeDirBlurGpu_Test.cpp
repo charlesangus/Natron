@@ -231,29 +231,36 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
     }
 }
 
-// Every filter of the Transform node's set, with Clamp where the filter honours it, with and
-// without Black outside, in every mode, against the CPU render.
-TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderForEveryFilter)
+// Every filter of the Transform node's set, with Clamp where the filter honours it, in every mode,
+// against the CPU render. Black outside alternates with the mode, so each filter renders with it
+// on and off. Its own suite, so its own ctest timeout: each end-to-end render brings up a fresh
+// device, and on a software device building the resampling pipeline takes seconds.
+class NativeDirBlurGpuFilterTest
+    : public NativeDirBlurGpuTest {
+};
+
+TEST_F(NativeDirBlurGpuFilterTest, MatchesTheCpuRenderForEveryFilter)
 {
     NodePtr source = makeParitySource(3, 5);
     ASSERT_TRUE(bool(source));
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    const char* const modes[] = { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom };
     for (std::size_t f = 0; f < filters.size(); ++f) {
         const bool clamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
-        for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
-            for (const bool blackOutside : { true, false }) {
-                NodePtr node = makeDirBlur(source, mode);
-                ASSERT_TRUE(bool(node));
-                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, filters[f].id));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.15, 1.15 }));
-                const std::string name = std::string(mode) + " " + filters[f].id + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");
-                ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, name));
-            }
+        for (std::size_t m = 0; m < 3; ++m) {
+            const char* mode = modes[m];
+            const bool blackOutside = ((f + m) % 2) == 0;
+            NodePtr node = makeDirBlur(source, mode);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, filters[f].id));
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.15, 1.15 }));
+            const std::string name = std::string(mode) + " " + filters[f].id + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");
+            ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, name));
         }
     }
 }

@@ -126,8 +126,9 @@ struct Request {
     // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
-    // calling task; any count when 0. Cycles takes it when an engine is made, so every Cycles
-    // engine made under another budget is made again.
+    // calling task; any count when 0. Every Cycles session of the process shares one count, the
+    // one asked for last (getCyclesThreads()): a change of this asks for it, and the Cycles
+    // engines made under another, the viewers' included, are made again.
     int threads = 0;
 };
 
@@ -274,6 +275,15 @@ std::size_t getCpuEngineCount();
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
+/**
+ * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
+ * process-wide, and the first live session fixes it for all. It is the count asked for last, by a
+ * USDRender render whose Request::threads changed or by a ProgressiveRender whose setThreads()
+ * budget changed; on a change every Cycles engine made under another is dropped at its holder's
+ * next render or pass and made again, and none is made while one of another count lives.
+ **/
+int getCyclesThreads();
+
 // The description of the render thread's context, making it if need be; empty if it cannot be.
 std::string contextDescription(std::string* error);
 
@@ -293,8 +303,13 @@ std::string contextDescription(std::string* error);
  * without pause still restarts several times a second. A pass that was under way when an edit came
  * is never published, and neither are the delegate's pixels from before a restart.
  *
- * The worker, and the threads the delegate starts from it, run at a lowered priority, and a Cycles
- * engine is made within setThreads()' budget (CyclesAovs::withThreadBudget).
+ * The worker, and the threads the delegate starts from it, run at a lowered priority, which is what
+ * keeps the interface responsive: a Cycles engine renders on the process' one Cycles thread count
+ * (getCyclesThreads()), which the setThreads() budget asks for but another render may have
+ * asked for since.
+ *
+ * A delegate that cannot start, or whose AOVs cannot be read, fails: Status::error says why, the
+ * engine goes, and the listener is called.
  *
  * The stage is read, and the engine renders, under the lock given at construction, the one that
  * guards the stage's edits; nothing else of the class takes that lock while holding its own.
@@ -329,6 +344,8 @@ public:
         // frames published.
         std::uint64_t restart = 0;
         std::uint64_t serial = 0;
+        // The edits made before its pass, for pick().
+        std::uint64_t generation = 0;
     };
 
     struct Status {
@@ -347,7 +364,8 @@ public:
 
     /**
      * @brief stage, called on the worker with *stageLock held, gives the stage to render, null for
-     * none. listener is called on the worker after each frame is published. background is the
+     * none. listener is called on the worker after each frame is published and when the delegate
+     * fails. background is the
      * linear grey the colour is composited over.
      **/
     ProgressiveRender(std::mutex* stageLock,
@@ -364,8 +382,11 @@ public:
      **/
     void setRenderer(const std::string& id);
 
-    // The threads a Cycles engine made from now on may render on; any count when 0.
-    void setThreads(int threads);
+    /**
+     * @brief The threads a Cycles engine of this should render on, any count for 0: called on the
+     * worker before its passes, which ask getCyclesThreads() for it when it changes.
+     **/
+    void setThreads(const std::function<int()>& threads);
 
     // Restarts when view differs from the last one set.
     void setView(const View& view);
@@ -392,10 +413,12 @@ public:
     std::uint64_t getRestartCount() const;
 
     /**
-     * @brief The path of the prim drawn at the pixel (x, y) of the last render, counted from its
-     * bottom-left pixel, or empty. Takes the stage lock.
+     * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted
+     * from its bottom-left pixel, or empty. Empty too once the render was edited since frame's pass:
+     * the engine's IDs are then of another render than the pixels frame shows. Takes the stage lock.
      **/
-    std::string pick(int x,
+    std::string pick(const Frame& frame,
+                     int x,
                      int y);
 
     // How many workers are alive in the process, for leak checks.

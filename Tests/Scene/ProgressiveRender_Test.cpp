@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -189,7 +190,7 @@ protected:
         SceneStage* stage = _stage.get();
         _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
         _render->setRenderer(kRenderDelegateCyclesId);
-        _render->setThreads(2);
+        _render->setThreads([]() { return 2; });
         _render->setView(_view);
 
         return true;
@@ -383,4 +384,76 @@ TEST_F(ProgressiveRenderTest, StopKeepsTheSamplesAndResumeContinues)
     EXPECT_FALSE(resumed.stopped);
     EXPECT_GT(resumed.samples, still.samples);
     EXPECT_EQ(still.restarts, resumed.restarts);
+}
+
+// A delegate that cannot start fails the render: the status says why, and the listener is called,
+// so that a viewer waiting for a frame repaints to show the error.
+TEST_F(ProgressiveRenderTest, AFailureReachesTheListener)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    _render.reset();
+    std::atomic<int> calls(0);
+    SceneStage* stage = _stage.get();
+    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    _render->setRenderer("NatronNoSuchRenderDelegate");
+    _render->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GT(calls.load(), 0) << "the listener was not called";
+    const ProgressiveRender::Status status = _render->getStatus();
+    EXPECT_FALSE(status.error.empty());
+    EXPECT_FALSE(status.active);
+    EXPECT_TRUE(_render->getFrame() == nullptr);
+    // It does not retry: no further call comes.
+    const int after = calls.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(after, calls.load());
+    _render.reset();
+}
+
+// Every Cycles session of the process shares one thread count, the one asked for last: a second
+// viewer asking for another has the first one's engine made again under it, and both refine.
+TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(&frames));
+    EXPECT_EQ(2, HydraRender::getCyclesThreads());
+    const U64 restartsBefore = _render->getRestartCount();
+    const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
+
+    SceneStage* stage = _stage.get();
+    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
+    second->setRenderer(kRenderDelegateCyclesId);
+    second->setThreads([]() { return 3; });
+    second->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    for (;;) {
+        const ProgressiveRender::Status a = _render->getStatus();
+        const ProgressiveRender::Status b = second->getStatus();
+        ASSERT_TRUE(a.error.empty()) << a.error;
+        ASSERT_TRUE(b.error.empty()) << b.error;
+        const std::shared_ptr<const ProgressiveRender::Frame> frameA = _render->getFrame();
+        const std::shared_ptr<const ProgressiveRender::Frame> frameB = second->getFrame();
+        const bool doneA = a.converged && frameA && frameA->converged && (frameA->restart == a.restarts) && (a.restarts > restartsBefore);
+        const bool doneB = b.converged && frameB && frameB->converged && (frameB->restart == b.restarts);
+        if (doneA && doneB) {
+            break;
+        }
+        ASSERT_TRUE(std::chrono::steady_clock::now() < end) << "the renders did not finish in " << kTimeout.count() << " s";
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(3, HydraRender::getCyclesThreads());
+    EXPECT_GE(HydraRender::getEngineBuildCount(), buildsBefore + 2) << "the first viewer's engine was not made again";
+    EXPECT_EQ(kSamples, _render->getFrame()->samples);
+    EXPECT_EQ(kSamples, second->getFrame()->samples);
+    second.reset();
 }

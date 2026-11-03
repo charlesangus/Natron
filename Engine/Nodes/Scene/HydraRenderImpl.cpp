@@ -126,6 +126,151 @@ rendererSettings(const std::string& renderer)
     return (found == gSettings.end()) ? RendererSettings() : found->second;
 }
 
+/**
+ * The one thread count every Cycles session of the process is made under. Cycles' TaskScheduler is
+ * process-wide and counted: the first session to live fixes the threads of every session made while
+ * any lives, so USDRender's engines and the viewers' progressive ones cannot each have a count.
+ *
+ * The count is the one asked for last: USDRender's thread asks for the scheduler's budget, a viewer
+ * for its CPU budget less one, each only when what it wants changes, so that an engine dropped for
+ * another's count comes back under that count instead of asking for its own again, and two holders
+ * never take turns rebuilding each other. A viewer keeps the interface responsive through its
+ * worker's low priority (kRefineNice), which the delegate's threads inherit, not through a count.
+ *
+ * A change of the count tells every holder, which drops its Cycles engines at its next boundary:
+ * USDRender's thread after the render under way, a viewer before its next pass. A session opens
+ * only while none lives under another count; until then its holder retries at its boundaries.
+ **/
+class CyclesThreads {
+public:
+    static CyclesThreads& instance()
+    {
+        static CyclesThreads* threads = new CyclesThreads;
+
+        return *threads;
+    }
+
+    // onChange runs on the thread that changed the count, and must not call back into this.
+    int addHolder(std::function<void()> onChange)
+    {
+        std::lock_guard<std::mutex> notify(_notifyMutex);
+        std::lock_guard<std::mutex> l(_mutex);
+        _holders[++_lastHolder] = std::move(onChange);
+
+        return _lastHolder;
+    }
+
+    // No onChange of id runs once this returns.
+    void removeHolder(int id)
+    {
+        std::lock_guard<std::mutex> notify(_notifyMutex);
+        std::lock_guard<std::mutex> l(_mutex);
+        _holders.erase(id);
+    }
+
+    void ask(int threads)
+    {
+        std::lock_guard<std::mutex> notify(_notifyMutex);
+        std::map<int, std::function<void()>> holders;
+        {
+            std::lock_guard<std::mutex> l(_mutex);
+            if (threads == _count) {
+                return;
+            }
+            _count = threads;
+            holders = _holders;
+        }
+        for (std::map<int, std::function<void()>>::const_iterator it = holders.begin(); it != holders.end(); ++it) {
+            it->second();
+        }
+    }
+
+    // 0 for any.
+    int count() const
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+
+        return _count;
+    }
+
+    // Counts a session about to be made under count(), which *threads gets; false, counting
+    // nothing, while one lives under another count.
+    bool open(int* threads)
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+        if ((_live > 0) && (_liveThreads != _count)) {
+            return false;
+        }
+        if (_live == 0) {
+            _liveThreads = _count;
+        }
+        ++_live;
+        *threads = _count;
+
+        return true;
+    }
+
+    void close()
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+        --_live;
+    }
+
+private:
+    // Held while holders are told, so that removeHolder() waits for a call under way.
+    std::mutex _notifyMutex;
+    mutable std::mutex _mutex;
+    int _count = 0;
+    int _live = 0;
+    int _liveThreads = 0;
+    int _lastHolder = 0;
+    std::map<int, std::function<void()>> _holders;
+};
+
+// Closes the engine's Cycles session (CyclesThreads::open()) after the engine, which ends it, goes.
+struct EngineDeleter {
+    bool cyclesSession = false;
+
+    void operator()(UsdImagingGLEngine* engine) const
+    {
+        delete engine;
+        if (cyclesSession) {
+            CyclesThreads::instance().close();
+        }
+    }
+};
+
+typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
+
+/**
+ * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
+ * so that its CPU device renders on threads threads, and closes the session when it goes.
+ **/
+EnginePtr
+newEngine(const UsdImagingGLEngine::Parameters& parameters,
+          bool cycles,
+          int threads)
+{
+    EnginePtr engine(nullptr, EngineDeleter { cycles });
+    const std::function<void()> make = [&]() { engine.reset(new UsdImagingGLEngine(parameters)); };
+
+    if (!cycles) {
+        make();
+
+        return engine;
+    }
+    try {
+        CyclesAovs::withThreadBudget(threads, make);
+    } catch (...) {
+        if (!engine) {
+            CyclesThreads::instance().close();
+        }
+        throw;
+    }
+
+    return engine;
+}
+
 struct EngineEntry {
     // The render delegate the engine was made with, and the name its errors give it.
     std::string renderer;
@@ -133,7 +278,7 @@ struct EngineEntry {
     // The stage the engine shows, for the entry's whole life; each render syncs it to the
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
-    std::unique_ptr<UsdImagingGLEngine> engine;
+    EnginePtr engine;
     // Whether the engine lights the stage with a headlight, as Storm's does when the stage has no light.
     bool headlight = false;
     // The render settings the engine was made with (setRendererSettings()).
@@ -469,6 +614,55 @@ public:
         _cyclesThreads = threads;
     }
 
+    // Asks CyclesThreads for threads if this thread last asked for another count, and drops its
+    // Cycles engines made under another count than the one in force.
+    void followCyclesThreads(int threads)
+    {
+        if (!_cyclesHolder) {
+            _cyclesHolder = CyclesThreads::instance().addHolder([this]() {
+                (void)post([this]() { dropCyclesEnginesUnlessMadeFor(CyclesThreads::instance().count()); }, false);
+            });
+        }
+        if (threads != _cyclesAsked) {
+            _cyclesAsked = threads;
+            CyclesThreads::instance().ask(threads);
+        }
+        dropCyclesEnginesUnlessMadeFor(CyclesThreads::instance().count());
+    }
+
+    /**
+     * Opens a Cycles session for an engine about to be made, under the count in force, into
+     * *threads. While another holder's sessions live under another count it waits for that holder
+     * to drop them at its next boundary, letting barrier writes through, until cancelled.
+     **/
+    bool openCyclesSession(const HydraRender::Request& request,
+                           const std::atomic<bool>* cancel,
+                           int* threads,
+                           std::string* error)
+    {
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        for (;;) {
+            dropCyclesEnginesUnlessMadeFor(CyclesThreads::instance().count());
+            if (CyclesThreads::instance().open(threads)) {
+                _cyclesThreads = *threads;
+
+                return true;
+            }
+            if (cancel && cancel->load()) {
+                *error = "The Cycles render was cancelled.";
+
+                return false;
+            }
+            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
+                *error = "Cycles' threads were not released by the other renders within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
+
+                return false;
+            }
+            yieldToBarrier();
+            std::this_thread::sleep_for(kConvergencePoll);
+        }
+    }
+
     // Drops the least recently used engines other than keep's while they hold more than the budget.
     void enforceBudget(const void* keep)
     {
@@ -670,6 +864,9 @@ private:
     std::atomic<std::size_t> _engineCount { 0 };
     // The thread budget every live Cycles engine was made under; see dropCyclesEnginesUnlessMadeFor().
     int _cyclesThreads = 0;
+    // The count this thread last asked CyclesThreads for, -1 before it asked, and its holder id.
+    int _cyclesAsked = -1;
+    int _cyclesHolder = 0;
     GLuint _framebuffer = 0;
     GLuint _renderbuffers[2] = { 0, 0 };
     std::uint64_t _renderSerial = 0;
@@ -858,8 +1055,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         headlight = !hasSceneLight(stage);
     }
     const RendererSettings settings = rendererSettings(renderer);
-    if (CyclesAovs::isCycles(renderer)) {
-        dropCyclesEnginesUnlessMadeFor(request.threads);
+    const bool cycles = CyclesAovs::isCycles(renderer);
+    if (cycles) {
+        followCyclesThreads(request.threads);
     }
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
     // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
@@ -880,10 +1078,14 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             parameters.gpuEnabled = false;
         }
         CyclesAovs::registerSceneIndices();
+        int threads = 0;
+        if (cycles && !openCyclesSession(request, cancel, &threads, error)) {
+            return nullptr;
+        }
         std::string startError;
-        const std::function<void()> make = [&]() {
+        {
             TfErrorMark mark;
-            entry.engine.reset(new UsdImagingGLEngine(parameters));
+            entry.engine = newEngine(parameters, cycles, threads);
             ++gEngineBuilds;
             // The engine reports a delegate it could not start as coding errors and renders nothing.
             if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -893,11 +1095,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 mark.Clear();
                 startError = "The renderer " + entry.rendererName + " could not be started" + startError + ".";
             }
-        };
-        if (CyclesAovs::isCycles(renderer)) {
-            CyclesAovs::withThreadBudget(request.threads, make);
-        } else {
-            make();
         }
         if (!startError.empty()) {
             *error = startError;
@@ -1950,6 +2147,12 @@ getCpuEngineCount()
     return drainedEngineCount(RenderThread::cpu());
 }
 
+int
+getCyclesThreads()
+{
+    return CyclesThreads::instance().count();
+}
+
 std::uint64_t
 getEngineBuildCount()
 {
@@ -1986,8 +2189,9 @@ namespace {
     // first edit it waits on.
     const std::chrono::milliseconds kRestartQuiet(20);
     const std::chrono::milliseconds kRestartMaxWait(100);
-    // How long a delegate whose progress shows no restart may keep showing its pixels from before one.
-    const std::chrono::milliseconds kRestartUnseen(500);
+    // How long a delegate may show no sign of a restart in its progress before its engine is made
+    // again: until it shows one its buffers may hold the render of before, which is not published.
+    const std::chrono::milliseconds kRestartUnseen(2000);
     // How long a converged delegate may hold a sample count short of the cap: an adaptive sampler
     // stops early.
     const std::chrono::milliseconds kConvergedStall(1000);
@@ -2117,7 +2321,7 @@ struct ProgressiveRender::Implementation {
     mutable std::mutex mutex;
     std::condition_variable wake;
     std::string renderer;
-    int threads = 0;
+    std::function<int()> threadsOf;
     View view;
     bool hasView = false;
     int maxSamples = 0;
@@ -2134,7 +2338,7 @@ struct ProgressiveRender::Implementation {
 
     // The worker's; engineMutex guards the engine against pick().
     std::mutex engineMutex;
-    std::unique_ptr<UsdImagingGLEngine> engine;
+    EnginePtr engine;
     std::string engineRenderer;
     std::string rendererName;
     std::string failedRenderer;
@@ -2143,6 +2347,11 @@ struct ProgressiveRender::Implementation {
     bool paused = false;
     View engineView;
     bool engineHasView = false;
+    // The count the engine's Cycles session was opened under, and the one the worker last asked
+    // CyclesThreads for, -1 before it asked.
+    int engineThreads = 0;
+    int askedThreads = -1;
+    int cyclesHolder = 0;
 
     std::thread worker;
 
@@ -2186,7 +2395,8 @@ struct ProgressiveRender::Implementation {
 
     // Makes the engine of id, on the worker; false with *error set if the delegate cannot start.
     bool makeEngine(const std::string& id,
-                    int budget,
+                    bool cycles,
+                    int threads,
                     int* defaultCap,
                     std::string* error)
     {
@@ -2196,10 +2406,10 @@ struct ProgressiveRender::Implementation {
         parameters.rendererPluginId = TfToken(id);
         parameters.gpuEnabled = false;
         CyclesAovs::registerSceneIndices();
-        std::unique_ptr<UsdImagingGLEngine> made;
-        const std::function<void()> make = [&]() {
+        EnginePtr made;
+        {
             TfErrorMark mark;
-            made.reset(new UsdImagingGLEngine(parameters));
+            made = newEngine(parameters, cycles, threads);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -2209,17 +2419,12 @@ struct ProgressiveRender::Implementation {
                 mark.Clear();
                 *error = "The renderer " + name + " could not be started" + reasons + ".";
             }
-        };
-        if (CyclesAovs::isCycles(id)) {
-            CyclesAovs::withThreadBudget(budget, make);
-        } else {
-            make();
         }
         if (!error->empty()) {
             return false;
         }
         made->SetEnablePresentation(false);
-        if (CyclesAovs::isCycles(id)) {
+        if (cycles) {
             CyclesAovs::configureEngine(made.get());
         }
         const RendererSettings settings = rendererSettings(id);
@@ -2246,6 +2451,7 @@ struct ProgressiveRender::Implementation {
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
         engineRenderer = id;
+        engineThreads = threads;
         rendererName = name;
         samplesKey = key;
         appliedCap = cap;
@@ -2326,6 +2532,17 @@ struct ProgressiveRender::Implementation {
         return true;
     } // readFrame
 
+    // Asks CyclesThreads for what threads gives when it changed since the worker last asked. Without
+    // mutex: the count's change notifies this.
+    void askThreads(const std::function<int()>& threads)
+    {
+        const int wanted = threads ? std::max(0, threads()) : 0;
+        if (wanted != askedThreads) {
+            askedThreads = wanted;
+            CyclesThreads::instance().ask(wanted);
+        }
+    }
+
     void run();
 };
 
@@ -2347,6 +2564,8 @@ ProgressiveRender::Implementation::run()
     Clock::time_point stallSince = restartTime;
     bool done = false;
     bool needRestart = true;
+    // The engine is being made again for the same render: the frame shown stays until the new one.
+    bool keepFrame = false;
 
     while (!quit) {
         const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !stageOf;
@@ -2364,29 +2583,63 @@ ProgressiveRender::Implementation::run()
                 status.error.clear();
             }
             if (idle || (renderer == failedRenderer)) {
+                keepFrame = false;
                 wake.wait(lock);
                 continue;
             }
             const std::string id = renderer;
-            const int budget = threads;
+            const std::function<int()> threadsFn = threadsOf;
             lock.unlock();
+            const bool cycles = CyclesAovs::isCycles(id);
+            int threads = 0;
+            if (cycles) {
+                askThreads(threadsFn);
+                if (!CyclesThreads::instance().open(&threads)) {
+                    // Their holders drop the sessions of another count at their next boundary.
+                    lock.lock();
+                    wake.wait_for(lock, kRefinePoll);
+                    continue;
+                }
+            }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, budget, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, &cap, &error);
             lock.lock();
             if (!made) {
                 failedRenderer = id;
                 status.error = error;
+                if (listener) {
+                    lock.unlock();
+                    listener();
+                    lock.lock();
+                }
                 continue;
             }
             failedRenderer.clear();
             status.error.clear();
             defaultMaxSamples = cap;
-            frame.reset();
+            if (!keepFrame) {
+                frame.reset();
+            }
+            keepFrame = false;
             lastSamples = -1;
             engineFresh = true;
             needRestart = true;
             continue;
+        }
+        if (CyclesAovs::isCycles(engineRenderer)) {
+            const std::function<int()> threadsFn = threadsOf;
+            lock.unlock();
+            askThreads(threadsFn);
+            const bool stale = engineThreads != CyclesThreads::instance().count();
+            if (stale) {
+                dropEngine();
+            }
+            lock.lock();
+            if (stale) {
+                keepFrame = true;
+                continue;
+            }
         }
         status.active = true;
 
@@ -2521,7 +2774,15 @@ ProgressiveRender::Implementation::run()
             const bool samplesFell = (samples >= 0) && (samplesAtRestart >= 0) && (samples < samplesAtRestart);
             const bool clockFell = (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart);
             const bool blind = (samples < 0) && (clock < 0.);
-            restartSeen = samplesFell || clockFell || blind || (now - restartTime >= kRestartUnseen);
+            restartSeen = samplesFell || clockFell || blind;
+            if (!restartSeen && (now - restartTime >= kRestartUnseen)) {
+                // A new engine has no pixels from before to mistake for the restart's.
+                lock.unlock();
+                dropEngine();
+                lock.lock();
+                keepFrame = true;
+                continue;
+            }
         }
         const bool changed = (samples != lastSamples) || (converged != status.converged);
         if (samples != lastSamples) {
@@ -2546,9 +2807,23 @@ ProgressiveRender::Implementation::run()
             if (generation != passGeneration) {
                 continue;
             }
+            if (!publish && !error.empty()) {
+                // AOVs that cannot be read now never will be: the delegate fails as one that cannot start.
+                failedRenderer = renderer;
+                status.error = error;
+                status.active = false;
+                lock.unlock();
+                dropEngine();
+                if (listener) {
+                    listener();
+                }
+                lock.lock();
+                continue;
+            }
         }
         if (publish) {
             read->samples = samples;
+            read->generation = passGeneration;
             read->maxSamples = cap;
             read->converged = converged;
             read->restart = restartIndex;
@@ -2579,6 +2854,11 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
     : _imp(new Implementation(stageLock, stage, listener, background))
 {
     ++gProgressiveLive;
+    Implementation* imp = _imp.get();
+    _imp->cyclesHolder = CyclesThreads::instance().addHolder([imp]() {
+        std::lock_guard<std::mutex> l(imp->mutex);
+        imp->wake.notify_all();
+    });
     _imp->worker = std::thread([this]() { _imp->run(); });
 }
 
@@ -2592,6 +2872,7 @@ ProgressiveRender::~ProgressiveRender()
     if (_imp->worker.joinable()) {
         _imp->worker.join();
     }
+    CyclesThreads::instance().removeHolder(_imp->cyclesHolder);
     --gProgressiveLive;
 }
 
@@ -2612,11 +2893,12 @@ ProgressiveRender::setRenderer(const std::string& id)
 }
 
 void
-ProgressiveRender::setThreads(int threads)
+ProgressiveRender::setThreads(const std::function<int()>& threads)
 {
     std::lock_guard<std::mutex> l(_imp->mutex);
 
-    _imp->threads = threads;
+    _imp->threadsOf = threads;
+    _imp->wake.notify_all();
 }
 
 void
@@ -2708,7 +2990,8 @@ ProgressiveRender::getRestartCount() const
 }
 
 std::string
-ProgressiveRender::pick(int x,
+ProgressiveRender::pick(const Frame& frame,
+                        int x,
                         int y)
 {
     std::lock_guard<std::mutex> stageGuard(*_imp->stageLock);
@@ -2718,8 +3001,19 @@ ProgressiveRender::pick(int x,
     if (!engine || !_imp->engineHasView) {
         return std::string();
     }
+    {
+        // Every edit bumps the generation before the engine sees it, and the worker changes the
+        // engine only under engineMutex: an unchanged generation means the AOVs are frame's render.
+        std::lock_guard<std::mutex> g(_imp->mutex);
+        if (frame.generation != _imp->generation) {
+            return std::string();
+        }
+    }
     const int width = _imp->engineView.width;
     const int height = _imp->engineView.height;
+    if ((width != frame.width) || (height != frame.height)) {
+        return std::string();
+    }
     if ((x < 0) || (y < 0) || (x >= width) || (y >= height)) {
         return std::string();
     }

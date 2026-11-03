@@ -254,6 +254,33 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
     GL_FRAMEBUFFER_SRGB, GL_PRIMITIVE_RESTART, GL_PRIMITIVE_RESTART_FIXED_INDEX, GL_PROGRAM_POINT_SIZE,
     GL_DEPTH_CLAMP, GL_TEXTURE_CUBE_MAP_SEAMLESS, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_RASTERIZER_DISCARD
 };
+
+/**
+ * The threads a viewer's Cycles engine asks for, on its worker: the budget the thread preferences
+ * give one effect, less a core for the interface. It is the budget with the pool idle, not
+ * getNCPUsAvailableForEffect()'s, which follows the pool's busy threads from moment to moment:
+ * each change of the count rebuilds every Cycles engine of the process.
+ **/
+int
+refineThreads()
+{
+    AppManager* app = appPTR;
+    if (!app) {
+        return 1;
+    }
+    int toRender = 0;
+    int perEffect = 0;
+    app->getNThreadsSettings(&toRender, &perEffect);
+    if (toRender == -1) {
+        return 1;
+    }
+    const int poolMax = app->getMaxThreadCount();
+    if (perEffect == 0) {
+        perEffect = std::max(1, std::min(poolMax, app->getHardwareIdealThreadCount()));
+    }
+
+    return std::max(1, AppManager::computeNCPUsAvailable(poolMax, 0, 0, perEffect) - 1);
+}
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -1180,10 +1207,14 @@ SceneViewportRenderer::SceneViewportRenderer()
         if (listener) {
             listener();
         } }, kBackgroundLinear));
+    _imp->progressive->setThreads(&refineThreads);
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
+    // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
+    // writes back for it.
+    _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
@@ -1269,8 +1300,11 @@ SceneViewportRenderer::setFrame(double frame,
 void
 SceneViewportRenderer::clearScene()
 {
-    // Keeps the stage and the engine: the next scene is synced into them.
+    // Keeps the stage and the engine: the next scene is synced into them. The refinement engine
+    // goes, as a view with no scene is not painted to let it go and its Cycles session would hold
+    // the process' Cycles thread count.
     syncScene(ScenePayload(), nullptr);
+    releaseRefinement();
 }
 
 bool
@@ -2193,8 +2227,6 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         return eRenderStatusDone;
     }
     if (_imp->refineRenderer != _imp->rendererId) {
-        // Within the scheduler's budget, less a core for the interface.
-        progressive.setThreads(std::max(1, appPTR->getNCPUsAvailableForEffect() - 1));
         progressive.setRenderer(_imp->rendererId);
         _imp->refineRenderer = _imp->rendererId;
     }
@@ -2316,7 +2348,7 @@ SceneViewportRenderer::pick(int x,
         const int fx = (int)((x + 0.5) * frame->width / width);
         const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
 
-        return _imp->progressive->pick(fx, fy);
+        return _imp->progressive->pick(*frame, fx, fy);
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
@@ -3282,6 +3314,9 @@ void
 SceneViewport::clearScene()
 {
     _imp->error.clear();
+    // A viewer showing images hides this, and a hidden view is not painted to let its refinement
+    // engine go.
+    _imp->renderer.releaseRefinement();
     requestSync(ScenePayload(), QString());
     update();
 }

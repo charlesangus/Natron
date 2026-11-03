@@ -869,7 +869,7 @@ class NatronAdapterTests(unittest.TestCase):
         h.module.launch(_FakeApp(), {"selectedKind": "deep"})
         items = h.module._plugin.get_items()
 
-        self.assertEqual(self._labels(items), ["DeepHoldout", "DeepMerge", "DeepToImage", "Dot"])
+        self.assertEqual(self._labels(items), ["DeepHoldout", "DeepMerge", "DeepToImage", "Dot", "Preferences"])
 
     def test_selected_scene_node_lists_nodes_with_a_scene_input_only(self):
         h = self._load_adapter()
@@ -878,7 +878,7 @@ class NatronAdapterTests(unittest.TestCase):
         h.module.launch(_FakeApp(), {"selectedKind": "scene"})
         items = h.module._plugin.get_items()
 
-        self.assertEqual(self._labels(items), ["Dot", "Project3D", "USDMerge", "USDPrune"])
+        self.assertEqual(self._labels(items), ["Dot", "Preferences", "Project3D", "USDMerge", "USDPrune"])
 
     def test_selected_image_node_lists_nodes_with_an_image_input_only(self):
         h = self._load_adapter()
@@ -887,7 +887,32 @@ class NatronAdapterTests(unittest.TestCase):
         h.module.launch(_FakeApp(), {"selectedKind": "image"})
         items = h.module._plugin.get_items()
 
-        self.assertEqual(self._labels(items), ["Blur", "DeepFromImage", "DeepHoldout", "Dot", "Project3D"])
+        self.assertEqual(self._labels(items), ["Blur", "DeepFromImage", "DeepHoldout", "Dot", "Preferences", "Project3D"])
+
+    def test_selected_scene_node_lists_and_runs_menu_commands(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"selectedKind": "scene"})
+        items = h.module._plugin.get_items()
+        prefs = [i for i in items if i["menupath"] == "Edit/Preferences"]
+        self.assertEqual(len(prefs), 1)
+        h.module._plugin.invoke(prefs[0])
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered[0], prefs[0]["menuobj"])
+        self.assertEqual(prefs[0]["menuobj"].trigger_calls, 1)
+
+    def test_scene_context_lists_no_menu_commands(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+
+        self.assertNotIn("Preferences", self._labels(items))
 
     def test_empty_selection_keeps_the_full_menu(self):
         h = self._load_adapter()

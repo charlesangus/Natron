@@ -240,11 +240,14 @@ class NatronPlugin(TabTabTabPlugin):
         self._storage_dir = path
 
     def get_items(self):
-        if self._context:
-            # A filtered launch lists node types only.
-            nodes = [item for item in _node_items() if _accepts(item['menuobj'], self._context)]
+        if not self._context:
+            return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
+        nodes = [item for item in _node_items() if _accepts(item['menuobj'], self._context)]
+        if self._context.get('inputKind'):
+            # This launch creates a node and fills it in once created, so a
+            # command has nothing to hand that node.
             return _make_menupaths_unique(nodes)
-        return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
+        return _make_menupaths_unique(nodes + _command_items(self.main_window()))
 
     def get_weights_file(self):
         if self._storage_dir is not None:
@@ -354,7 +357,8 @@ def launch(app, context=None):
     `context`, when given, lists only the node types that fit it, see
     _accepts(): a dict with any of 'inputKind' (a kind name such as
     "scene"), 'selectedKind' (the kind the selected nodes output) and
-    'needsPrimPathKnob'.
+    'needsPrimPathKnob'. Menu commands stay listed unless 'inputKind' is
+    set.
     """
     window = _find_natron_main_window()
     _plugin.set_app(app)

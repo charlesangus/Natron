@@ -10,7 +10,9 @@ Checks:
     prims, which are pruned (/World holds only Cam);
   - one Undo removes the USDPrune, reconnects the Viewer to the USDRead and brings the prims back;
   - Tab on the Scene Graph panel's tree opens the same filtered menu, and once it is closed with
-    no choice, a later tab menu trigger runs without its context.
+    no choice, a later tab menu trigger runs without its context;
+  - Tab on the node graph with the USDRead selected leaves out Blur but still lists the
+    Preferences menu command, and choosing it opens the Preferences panel.
 
 Shots: scene-create-from-selection-menu.png (the filtered menu) and
 scene-create-from-selection-pruned.png (after creating the USDPrune).
@@ -34,9 +36,9 @@ CAM = "/World/Cam"
 PRUNE_ID = "USDPrune"
 
 try:
-    from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
+    from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPointF, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtGui import QAction
+    from PySide6.QtGui import QAction, QEnterEvent
     from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QMainWindow, QTreeView
 
     from guitest import (FIXTURES, check, class_name, finish, menu_of, plugin_problem, report, require, run, shot,
@@ -188,6 +190,14 @@ try:
             got = [row_name(e) for e in listed(line_edit, list_view, text)]
             check(text not in got, where + ": the menu leaves out %s (got %r)" % (text, got))
 
+    def node_graph():
+        graphs = [w for w in widgets_of("NodeGraph") if w.isVisible()]
+        return hold(graphs[0]) if graphs else None
+
+    def enter_graph(graph):
+        centre = QPointF(graph.rect().center())
+        QApplication.sendEvent(graph, QEnterEvent(centre, centre, QPointF(graph.mapToGlobal(graph.rect().center()))))
+
     def connect_viewer(node):
         """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""
         viewer.disconnectInput(0)
@@ -272,6 +282,29 @@ try:
             check(got != BOX, "a trigger after the closed menu does not fill the selection in (got %r)" % (got,))
             check(input_name(viewer) == usd.getScriptName(),
                   "a trigger after the closed menu inserts nothing before the Viewer (got %r)" % (input_name(viewer),))
+
+        # A node-graph launch with a scene node selected filters node types but keeps menu commands.
+        graph = node_graph()
+        require(graph is not None, "found the node graph view")
+        app.setSelection([usd])
+        enter_graph(graph)
+        popup, line_edit, list_view = yield from open_menu(graph)
+        require(popup is not None, "Tab on the node graph with the USDRead selected opens the tab menu")
+        blur = [row_name(e) for e in listed(line_edit, list_view, "Blur")]
+        check("Blur" not in blur, "the node graph menu for a scene selection leaves out Blur (got %r)" % (blur,))
+        entries = listed(line_edit, list_view, "pref")
+        row = next((r for r, e in enumerate(entries) if row_name(e) == "Preferences..."), -1)
+        if not check(row >= 0, "the node graph menu for a scene selection lists Preferences (got %r)" % (entries,)):
+            close_menu(popup)
+            return
+        list_view.setCurrentIndex(list_view.model().index(row, 0))
+        QTest.keyClick(line_edit, Qt.Key_Return)
+        ok = yield ("until", lambda: any(w.isVisible() for w in widgets_of("PreferencesPanel")), POLL_TIMEOUT_S)
+        check(ok, "choosing Preferences from the scene-filtered menu opens the Preferences panel")
+        for w in widgets_of("PreferencesPanel"):
+            if w.isVisible():
+                w.close()
+        QApplication.processEvents()
 
     run(steps())
 except Exception:

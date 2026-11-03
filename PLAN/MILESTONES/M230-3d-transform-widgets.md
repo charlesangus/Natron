@@ -66,3 +66,4 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
 
 **Verification gate:** startup smoke tests cover Vulkan failure; 3D widget tests pass; the user can launch and exercise the replacement AppImage.
 - 2026-11-02 — Approved: no longer crashes on the user's host, cause unknown (user).
+- 2026-11-02 — Merged as c33accfef (PR #164). P3.T1 closed by the user's approval (no crash on their host, cause unknown); M231's PR retargeted to main.

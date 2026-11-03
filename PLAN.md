@@ -163,7 +163,7 @@ future core work has solid ground to build on.
 | M227 | USD Primitive Nodes | done | M226 | bosley-native-nodes | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
 | M228 | 3D Viewer Navigation | done | M19, M20, M226 | bosley-native-nodes | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
 | M229 | 3D Viewer Guides And Display | done | M228 | bosley-native-nodes | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
-| M230 | 3D Transform Widgets | doing | M226, M229 | bosley-native-nodes | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
+| M230 | 3D Transform Widgets | done | M226, M229 | bosley-native-nodes | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | blocked | M229 | bosley-native-nodes | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
 | M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
 | M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
@@ -314,7 +314,7 @@ future core work has solid ground to build on.
 | M212 | Tone Equalizer | done | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | done | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
 | M214 | Colour Balance RGB | done | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
-| M215 | Colour Equalizer | doing | M209, M214 | bosley-native-nodes | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
+| M215 | Colour Equalizer | done | M209, M214 | bosley-native-nodes | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | done | - | bosley-native-nodes | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 | M217 | VectorGenerator Node | todo | M124 |  | E18 | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
 | M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
@@ -415,7 +415,6 @@ future core work has solid ground to build on.
 - **NatronRenderer and [Project] (PM, 2026-11-02):** `NatronRenderer -w Write 3-3 defocus_retime.ntpz` fails with "Could not open [Project]/../…": the Write path's [Project] is not expanded when the renderer opens an .ntpz directly (seen on the M125 branch, before M245 - Write Path Variables). Re-check once M245 is on main; if it persists, file it.
 - **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M231 - Scene Graph Panel (one-level twirl, Open Mode/Levels, USDExpandHierarchy, Follow chooser), M232 - Scene Selection To Nodes (never UAT-tested; wrap mode, prim path fill, Tab filtering), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo).
 - **M206 - Neural Raw Denoise:** remind the user later about the hand-made darktable 5 reference export (user, 2026-11-02: "remind me later").
-- M230 - 3D Transform Widgets (bosley-native-nodes): the startup SIGSEGV on the NVIDIA host doesn't reproduce here (Mesa, GL on and compute forced unavailable starts cleanly) and isn't in the branch's diff. Needed from the user: (1) does a main-based AppImage also print "vkCreateDevice failed" on that machine now; (2) a backtrace (`coredumpctl gdb` then `bt`, or `gdb -batch -ex run -ex bt` on the unpacked AppImage's bin/Natron.bin); (3) does it still crash with `NATRON_GPU=off`, or with `NATRON_VIEWER_HANDOFF=cpu`? The next AppImage prints the VkResult. Also: M228's M228-r2-scene.ntpz and M228-r2-segfaults.txt aren't on this host.
 
 - M238 - EdgeExtend Options (bosley-native-nodes): which Nuke options to add (recommend all five), replace Size/Slices with push-pull (recommend yes), edge mask in an output channel (recommend yes). See the milestone's Open questions.
 - M79 - Layered Document Readers (bosley-native-nodes): library choice (recommend in-tree OIIO ImageInputs on ZipStore + QXmlStreamReader), layer model and XCF composite, fixture authoring. See the milestone's Open questions.

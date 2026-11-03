@@ -279,7 +279,7 @@ public:
     std::list<BezierPtr> getSoftBoundaries() const;
 
     /**
-     * @brief A cookie cutter cuts the Source to its shape and makes the output mask, whatever its
+     * @brief A cookie cutter makes the output mask, whatever its
      * role. Throws std::invalid_argument when making a cookie cutter of a curve that is open or not
      * in this context.
      **/

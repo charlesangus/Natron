@@ -100,7 +100,7 @@ At the default the field is four times as coarse and the curves are sampled half
 
 **Cookie cutters:** `outputMask` (default `SplineWarpMask.A`) is the channel the mask of the
 cookie cutter curves is written to, warped as the Source is; it can be None or a channel of a layer other than the colour layer.
-Both are disabled while no curve is a cookie cutter. A linked cookie cutter cuts with its source
+It is disabled while no curve is a cookie cutter. A linked cookie cutter uses its source
 curve's shape.
 
 **Crop To Format:** `cropToFormat` (on by default) samples the Source only inside its format,

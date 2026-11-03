@@ -114,7 +114,7 @@ public:
     void setSoftBoundary(BezierCurve* curve, bool boundary);
     bool isSoftBoundary(BezierCurve* curve) const;
 
-    // A cookie cutter, closed curves only, cuts the Source and makes the output mask.
+    // A cookie cutter, closed curves only, makes the output mask.
     void setCookieCutter(BezierCurve* curve, bool cookieCutter);
     bool isCookieCutter(BezierCurve* curve) const;
 

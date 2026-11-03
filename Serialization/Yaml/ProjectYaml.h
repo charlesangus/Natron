@@ -50,8 +50,10 @@ inline constexpr int kProjectYamlFormatVersion = 1;
  * a group its nodes under `children`; empty members are left out. Heavy roto and tracker data go
  * to sink as blob tables.
  *
+ * Each node also writes its `cacheID`, so its disk-cache entries survive a reload.
+ *
  * Not written: the creation date (it belongs to the bundle manifest, so re-saving an unchanged
- * project gives the same text), knobsAge, cacheID, the multi-instance parent and the master node.
+ * project gives the same text), knobsAge, the multi-instance parent and the master node.
  **/
 std::string encodeProjectYaml(const ProjectSerialization& project, BlobSink& sink);
 

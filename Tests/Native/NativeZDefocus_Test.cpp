@@ -270,6 +270,24 @@ TEST_F(NativeZDefocusTest, AllAtTheFocalPlaneIsBitIdentical)
     EXPECT_LT(0u, countDiffering(expected.pixels, blurred.pixels));
 }
 
+// A non-finite source pixel contributes nothing to any slice, in focus or not, so no NaN or
+// infinity reaches the output.
+TEST_F(NativeZDefocusTest, NonFiniteSourceLeavesTheOutputFinite)
+{
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceNonFinite(source, RectI(10, 8, 22, 18));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 0.5, 9.);
+    ASSERT_TRUE(bool(zdefocus));
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &plane));
+    for (float v : plane.pixels) {
+        ASSERT_TRUE(std::isfinite(v));
+    }
+}
+
 // A constant depth defocuses the whole image with one kernel: Defocus's at the same size, away
 // from the borders where ZDefocus normalises by the coverage the image leaves.
 TEST_F(NativeZDefocusTest, ConstantDepthMatchesDefocus)

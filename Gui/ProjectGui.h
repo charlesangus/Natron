@@ -103,6 +103,9 @@ public Q_SLOTS:
     // Opens the user-parameter dialog on the project's RFV group.
     void editVariables();
 
+    // Opens the dialog creating a project path, see AddPathVariableDialog.
+    void addPathVariable();
+
 private:
 
 

@@ -37,8 +37,27 @@
 
 NATRON_NAMESPACE_ENTER
 
-SplicePlan
-planSplice(const std::vector<SpliceNodeInfo>& selection)
+static std::vector<int>
+freeNonMaskInputs(const SpliceNodeInfo& info)
+{
+    std::vector<int> inputs;
+
+    for (std::size_t i = 0; i < info.inputIds.size(); ++i) {
+        if (info.inputIds[i] != -1) {
+            continue;
+        }
+        if ((i < info.inputIsMask.size()) && info.inputIsMask[i]) {
+            continue;
+        }
+        inputs.push_back((int)i);
+    }
+
+    return inputs;
+}
+
+static SplicePlan
+planSpliceInternal(const std::vector<SpliceNodeInfo>& selection,
+                   bool allowConnectedEntry)
 {
     SplicePlan plan;
 
@@ -86,6 +105,32 @@ planSplice(const std::vector<SpliceNodeInfo>& selection)
         }
     }
 
+    std::vector<int> entryInputs;
+    if (entryCount == 1) {
+        entryInputs.push_back(entryInput);
+    } else if ((entryCount == 0) && allowConnectedEntry) {
+        for (std::size_t i = 0; i < selection.size(); ++i) {
+            const SpliceNodeInfo& info = selection[i];
+            if ((info.preferredInput < 0) || (info.preferredInput >= (int)info.inputIds.size())) {
+                continue;
+            }
+            const SpliceNodeId feeder = info.inputIds[info.preferredInput];
+            if ((feeder == -1) || (selectionIds.find(feeder) != selectionIds.end())) {
+                continue;
+            }
+            std::vector<int> freeInputs = freeNonMaskInputs(info);
+            if (freeInputs.empty()) {
+                continue;
+            }
+            entryId = info.id;
+            entryInputs = freeInputs;
+            ++entryCount;
+        }
+        if (entryCount == 1) {
+            entryInput = entryInputs.front();
+        }
+    }
+
     if ((entryCount != 1) || (exitCount != 1)) {
         return plan;
     }
@@ -128,10 +173,17 @@ planSplice(const std::vector<SpliceNodeInfo>& selection)
     plan.valid = true;
     plan.entryId = entryId;
     plan.entryInput = entryInput;
+    plan.entryInputs = entryInputs;
     plan.exitId = exitId;
 
     return plan;
-} // planSplice
+} // planSpliceInternal
+
+SplicePlan
+planSplice(const std::vector<SpliceNodeInfo>& selection)
+{
+    return planSpliceInternal(selection, true);
+}
 
 static std::vector<SpliceNodeInfo>
 makeSpliceInfos(const NodesGuiList& nodes)
@@ -162,9 +214,11 @@ makeSpliceInfos(const NodesGuiList& nodes)
 
         const std::vector<NodeWPtr>& inputs = node->getGuiInputs();
         info.inputIds.reserve(inputs.size());
+        info.inputIsMask.reserve(inputs.size());
         for (std::size_t i = 0; i < inputs.size(); ++i) {
             NodePtr input = inputs[i].lock();
             info.inputIds.push_back(input ? reinterpret_cast<SpliceNodeId>(input.get()) : -1);
+            info.inputIsMask.push_back(effect && effect->isInputMask((int)i));
         }
 
         const NodesWList& outputs = node->getGuiOutputs();
@@ -208,7 +262,8 @@ planPasteSplice(const std::vector<SpliceNodeInfo>& selection,
         return plan;
     }
 
-    SplicePlan splice = planSplice(pasted);
+    // The target is connected by node creation, which only goes through the preferred input.
+    SplicePlan splice = planSpliceInternal(pasted, false);
     if (!splice.valid) {
         return plan;
     }

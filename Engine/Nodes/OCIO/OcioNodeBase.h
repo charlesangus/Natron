@@ -266,6 +266,12 @@ struct OcioOp {
         return ocio.gpu(params.ocio);
     }
 
+    std::optional<GpuWeight> gpuWeight(const Params& /*params*/,
+                                       const PassContext& /*context*/) const
+    {
+        return GpuWeight::heavy();
+    }
+
     OcioNodeKnobs ocio;
 };
 

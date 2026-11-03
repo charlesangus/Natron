@@ -55,11 +55,6 @@ const int kGpuStripMinPipelinedRows = 64;
 // device.
 const std::uint64_t kGpuStripOverlapMinBytes = std::uint64_t(32) << 20;
 
-// It also needs a predicted kernel time of at least this fraction of its predicted transfer time. Pipelined strips
-// hide no more transfer than the kernel runs, while each strip pays a fixed cost in submits, waits and smaller copies
-// that no prediction carries: a lone point op at UHD moved its 127 MB in 15-18 ms as strips against ~10 ms whole.
-const double kGpuStripOverlapMinKernelRatio = 0.25;
-
 // The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
 // processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
 // too little on a small card; on a large one the pool's budget is the tighter bound.
@@ -98,9 +93,6 @@ struct GpuStripMember {
 
     // The window of input inputNb the member reads to render outputRect.
     std::function<RectI(int inputNb, const RectI& outputRect)> inputRoI;
-
-    // The predicted kernel time of the member over its whole output slot, in milliseconds; 0 when unknown.
-    double kernelMs = 0.;
 };
 
 struct GpuStripGraph {
@@ -125,7 +117,7 @@ struct GpuStripLimits {
     std::uint64_t overlapMinBytes = std::numeric_limits<std::uint64_t>::max();
 
     // The predicted time of moving the given bytes to and from the device, in milliseconds. Unset, transfers cost
-    // nothing, so no region strips to hide them.
+    // nothing, so no region strips to hide them; nor does one whose transfer is infinite, priced by no known rate.
     std::function<double(std::uint64_t uploadBytes, std::uint64_t downloadBytes)> transferMs;
 
     // The most strips that may hold their buffers at once; budgetBytes must hold that many strips' buffers, beside
@@ -203,10 +195,8 @@ RectI gpuStripBands(const GpuStripGraph& graph);
  * single strip.
  *
  * A region that fits whole may still come back as Strips, with overlapped set, when limits.overlapMinBytes asks for it,
- * its members' kernelMs add up to at least kGpuStripOverlapMinKernelRatio of its limits.transferMs, and
- * kGpuStripMaxInFlight or more strips at least kGpuStripMinPipelinedRows tall are predicted to finish sooner than the
- * whole region. Strips of n take K' + max(0, T' - K' (n - 1) / n), with K' and T' the kernel and transfer time of
- * all of them together, halos included; the whole region takes K + T.
+ * limits.transferMs prices its bytes at a finite, nonzero time, and kGpuStripMaxInFlight or more strips at least
+ * kGpuStripMinPipelinedRows tall fit in flight together.
  **/
 GpuStripResult planGpuStrips(const GpuStripGraph& graph,
                              const GpuStripLimits& limits,

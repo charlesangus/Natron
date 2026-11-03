@@ -332,8 +332,10 @@ void zdefocus_composite(uint3 tid : SV_DispatchThreadID)
         const uint pixel = (uint(y) * params.domWidth + uint(x)) * n;
         if ((params.flags & kSharp) != 0u) {
             const float weight = sliceWeight(uint(x), uint(y));
-            for (uint c = 0; c < n && c < 4; ++c)
-                layer[c] = weight * workBuf[pixel + c];
+            for (uint c = 0; c < n && c < 4; ++c) {
+                const float v = workBuf[pixel + c];
+                layer[c] = (weight > 0.0 && isfinite(v)) ? weight * v : 0.0;
+            }
             for (uint g = 0; g < groups && g < 3; ++g)
                 cover[g] = weight;
         } else if ((params.flags & kLens) != 0u) {
@@ -351,8 +353,10 @@ void zdefocus_composite(uint3 tid : SV_DispatchThreadID)
                 if ((sharp & (1u << g)) != 0u) {
                     const float weight = sliceWeight(uint(x), uint(y));
                     for (uint c = 0; c < n && c < 4; ++c) {
-                        if ((mask & (1u << c)) != 0u)
-                            layer[c] = weight * workBuf[pixel + c];
+                        if ((mask & (1u << c)) != 0u) {
+                            const float v = workBuf[pixel + c];
+                            layer[c] = (weight > 0.0 && isfinite(v)) ? weight * v : 0.0;
+                        }
                     }
                     cover[g] = weight;
                     continue;

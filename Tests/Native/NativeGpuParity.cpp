@@ -547,8 +547,8 @@ private:
     RenderScheduler::RegionBody _saved;
 };
 
-// Puts every task of `nodes` that its effect accepts on the GPU, as placeGraph() would without a
-// cost model.
+// Puts every task of `nodes` that its effect accepts on the GPU, as placeGraph() would if every region
+// were accepted.
 void
 placeOnGpu(FrameRun* run,
            const std::vector<NodePtr>& nodes)

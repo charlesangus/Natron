@@ -253,7 +253,9 @@ PlaneJob::lock()
         divisorNComps = (int)divisor->getComponentsCount();
         divisorAccess = std::make_shared<Image::ReadAccess>(divisor.get());
     }
-    dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    if (dst) {
+        dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    }
 }
 
 MaskInput::MaskInput()
@@ -906,25 +908,6 @@ passListRoD(const RectI& srcRoD,
     const PassExtent extent = passListExtent(list);
 
     return RectI(srcRoD.x1 - extent.growX, srcRoD.y1 - extent.growY, srcRoD.x2 + extent.growX, srcRoD.y2 + extent.growY);
-}
-
-std::optional<GpuCostHint>
-passListCostHint(const PassList& list)
-{
-    std::optional<GpuCostHint> hint;
-
-    for (const Pass& pass : list.passes) {
-        if ((pass.sigma <= 0.) && !pass.recursive) {
-            continue;
-        }
-        if (!hint) {
-            hint = GpuCostHint();
-        }
-        hint->sigma = std::max(hint->sigma, pass.sigma);
-        hint->iir = hint->iir || pass.recursive;
-    }
-
-    return hint;
 }
 
 bool

@@ -50,4 +50,4 @@ GPU: `iwarp.slang` evaluates the same matrix curve from the same knots and reads
 it with `mapremap.slang` as the CPU does. Float images only, with or without a mask, never with motion or
 directional blur (`Tests/Native/NativeIWarpGpu_Test.cpp`).
 
-Cost seed: pending measurement; there is no `ITransform.costseed.inc` yet.
+It weighs as Heavy, the default for its op kind, so a region holding it always goes to the GPU.

@@ -28,7 +28,10 @@
 
 #include <algorithm>
 #include <cmath> // abs
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -50,6 +53,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/Edge.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphKiss.h"
 #include "Gui/NodeGraphSplice.h"
 #include "Gui/NodeGui.h"
 
@@ -369,6 +373,317 @@ NodeGraph::checkForSpliceHint()
     _imp->_hintOutputEdge->setVisible(true);
 } // NodeGraph::checkForSpliceHint
 
+namespace {
+
+bool
+kissConnectionIsOk(Node::CanConnectInputReturnValue ret)
+{
+    return (ret == Node::eCanConnectInput_ok) || (ret == Node::eCanConnectInput_differentPars) || (ret == Node::eCanConnectInput_differentFPS);
+}
+
+} // anonymous namespace
+
+void
+NodeGraph::setKissAiming(bool aiming)
+{
+    if (_imp->_evtState != eEventStateDraggingNode) {
+        return;
+    }
+    if (aiming) {
+        _imp->_kissAiming = true;
+        clearSpliceHint();
+        updateKissPreview();
+    } else {
+        if (_imp->_kissAiming) {
+            commitKiss();
+        }
+        checkForSpliceHint();
+    }
+}
+
+void
+NodeGraph::clearKissPreview()
+{
+    _imp->_kissDragged.reset();
+    _imp->_kissTarget.reset();
+    _imp->_kissInput = -1;
+    _imp->_kissFromOutput = false;
+    if (_imp->_kissPreviewEdge && _imp->_kissPreviewEdge->isVisible()) {
+        _imp->_kissPreviewEdge->hide();
+    }
+}
+
+void
+NodeGraph::updateKissPreview()
+{
+    if (_imp->_kissCancelled || !_imp->_kissAiming || !_imp->_hasMovedOnce || _imp->_selection.empty()) {
+        clearKissPreview();
+
+        return;
+    }
+
+    std::map<KissNodeId, NodeGuiPtr> nodesById;
+    std::set<NodeGui*> selectedNodes;
+    std::set<NodeGui*> feedingNodes;
+    for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+        selectedNodes.insert(it->get());
+        const std::vector<Edge*>& arrows = (*it)->getInputsArrows();
+        for (std::size_t i = 0; i < arrows.size(); ++i) {
+            if (arrows[i] && arrows[i]->hasSource()) {
+                feedingNodes.insert(arrows[i]->getSource().get());
+            }
+        }
+    }
+
+    // Like an unconnected input's grab radius, the reach is kept in viewport pixels.
+    const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
+    const double reach = TO_DPIX(18.) / zoomFactor;
+
+    // Each endpoint asks the scene's index only for the nodes around it: one area spanning a spread
+    // selection would take in most of a large graph.
+    const std::size_t notATarget = static_cast<std::size_t>(-1);
+    std::vector<KissTarget> targets;
+    std::map<NodeGui*, std::size_t> targetIndices;
+    auto targetsNear = [&](const QPointF& point) {
+        std::vector<std::size_t> nearby;
+        const QRectF area(point.x() - reach, point.y() - reach, 2. * reach, 2. * reach);
+        std::set<NodeGui*> found;
+        getNodesWithinViewportRect(mapFromScene(area).boundingRect().adjusted(-1, -1, 1, 1), &found);
+        for (std::set<NodeGui*>::const_iterator it = found.begin(); it != found.end(); ++it) {
+            NodeGui* gui = *it;
+            std::map<NodeGui*, std::size_t>::const_iterator known = targetIndices.find(gui);
+            if (known != targetIndices.end()) {
+                if (known->second != notATarget) {
+                    nearby.push_back(known->second);
+                }
+                continue;
+            }
+            NodePtr node = gui->getNode();
+            if (!node || (selectedNodes.find(gui) != selectedNodes.end()) || !gui->isVisible() || dynamic_cast<BackdropGui*>(gui)) {
+                targetIndices[gui] = notATarget;
+                continue;
+            }
+            int freeInput = node->getPreferredInputForConnection();
+            if ((freeInput >= 0) && !gui->getInputArrow(freeInput)) {
+                freeInput = -1;
+            }
+            const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
+            const KissNodeId id = reinterpret_cast<KissNodeId>(gui);
+            nodesById[id] = gui->shared_from_this();
+            targetIndices[gui] = targets.size();
+            nearby.push_back(targets.size());
+            targets.push_back(KissTarget(id, body.left(), body.top(), body.right(), body.bottom(), freeInput));
+        }
+
+        return nearby;
+    };
+
+    std::vector<KissInputTip> inputs;
+    std::vector<std::vector<std::size_t>> inputNear;
+    std::vector<KissOutput> outputs;
+    std::vector<std::vector<std::size_t>> outputNear;
+    for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+        const NodeGuiPtr& gui = *it;
+        NodePtr node = gui->getNode();
+        if (!node || dynamic_cast<BackdropGui*>(gui.get())) {
+            continue;
+        }
+        const KissNodeId id = reinterpret_cast<KissNodeId>(gui.get());
+        nodesById[id] = gui;
+        EffectInstancePtr effect = node->getEffectInstance();
+
+        const std::vector<Edge*>& arrows = gui->getInputsArrows();
+        for (std::size_t i = 0; i < arrows.size(); ++i) {
+            Edge* arrow = arrows[i];
+            if (!arrow || !arrow->isVisible() || arrow->hasSource()) {
+                continue;
+            }
+            if (effect && effect->isInputRotoBrush(arrow->getInputNumber())) {
+                continue;
+            }
+            const QPointF tip = arrow->mapToScene(arrow->line().p2());
+            inputs.push_back(KissInputTip(id, arrow->getInputNumber(), tip.x(), tip.y()));
+            inputNear.push_back(targetsNear(tip));
+        }
+
+        if (feedingNodes.find(gui.get()) == feedingNodes.end()) {
+            const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
+            const QPointF output(body.center().x(), body.bottom());
+            outputs.push_back(KissOutput(id, output.x(), output.y()));
+            outputNear.push_back(targetsNear(output));
+        }
+    }
+    if (targets.empty()) {
+        clearKissPreview();
+
+        return;
+    }
+
+    KissPlan plan = planKiss(inputs, inputNear, outputs, outputNear, targets, reach, [&nodesById](const KissPlan& p) {
+        NodePtr dragged = nodesById[p.draggedId]->getNode();
+        NodePtr target = nodesById[p.targetId]->getNode();
+        if (!dragged || !target) {
+            return false;
+        }
+        if (p.end == eKissEndInput) {
+            return kissConnectionIsOk(dragged->canConnectInput(target, p.inputNb));
+        }
+
+        return kissConnectionIsOk(target->canConnectInput(dragged, p.inputNb));
+    });
+    if (!plan.isValid()) {
+        clearKissPreview();
+
+        return;
+    }
+
+    NodeGuiPtr dragged = nodesById[plan.draggedId];
+    NodeGuiPtr target = nodesById[plan.targetId];
+    const bool fromOutput = (plan.end == eKissEndOutput);
+    Edge* preview = _imp->_kissPreviewEdge;
+    const bool unchanged = (_imp->_kissDragged == dragged) && (_imp->_kissTarget == target) && (_imp->_kissInput == plan.inputNb) && (_imp->_kissFromOutput == fromOutput) && preview->isVisible();
+    if (unchanged) {
+        preview->initLine();
+
+        return;
+    }
+
+    _imp->_kissDragged = dragged;
+    _imp->_kissTarget = target;
+    _imp->_kissInput = plan.inputNb;
+    _imp->_kissFromOutput = fromOutput;
+    preview->setInputNumber(plan.inputNb);
+    if (fromOutput) {
+        preview->setSourceAndDestination(dragged, target);
+    } else {
+        preview->setSourceAndDestination(target, dragged);
+    }
+    preview->setVisible(true);
+} // NodeGraph::updateKissPreview
+
+void
+NodeGraph::commitKiss()
+{
+    _imp->_kissAiming = false;
+    NodeGuiPtr dragged = _imp->_kissDragged;
+    NodeGuiPtr target = _imp->_kissTarget;
+    const int inputNb = _imp->_kissInput;
+    const bool fromOutput = _imp->_kissFromOutput;
+    clearKissPreview();
+    if (!dragged || !target || _imp->_kissCancelled) {
+        return;
+    }
+
+    NodeGuiPtr dest = fromOutput ? target : dragged;
+    NodeGuiPtr source = fromOutput ? dragged : target;
+    Edge* arrow = dest->getInputArrow(inputNb);
+    if (!arrow || arrow->hasSource()) {
+        return;
+    }
+
+    if (!_imp->_kissCommand) {
+        _imp->_kissCommand = new QUndoCommand(tr("Connect nodes"));
+    }
+    KissConnectCommand* connect = new KissConnectCommand(this, arrow, source, _imp->_kissCommand);
+    connect->applyNow();
+    _imp->_kissTouched.push_back(dest);
+    _imp->_kissTouched.push_back(source);
+
+    // The splice plan is built once per drag on the assumption that the selection's connections
+    // don't change during it.
+    resetSplicePlan();
+    scene()->update();
+    update();
+}
+
+void
+NodeGraph::rollBackKisses()
+{
+    _imp->_kissAiming = false;
+    clearKissPreview();
+    if (!_imp->_kissCommand) {
+        return;
+    }
+    _imp->_kissCommand->undo();
+    delete _imp->_kissCommand;
+    _imp->_kissCommand = nullptr;
+    _imp->_kissTouched.clear();
+    resetSplicePlan();
+    scene()->update();
+    update();
+}
+
+QUndoCommand*
+NodeGraph::takeKissCommand(NodesGuiList* touched)
+{
+    _imp->_kissAiming = false;
+    clearKissPreview();
+    QUndoCommand* command = _imp->_kissCommand;
+    _imp->_kissCommand = nullptr;
+    if (touched) {
+        touched->insert(touched->end(), _imp->_kissTouched.begin(), _imp->_kissTouched.end());
+    }
+    _imp->_kissTouched.clear();
+
+    return command;
+}
+
+void
+NodeGraph::cancelNodeDrag()
+{
+    if (_imp->_evtState != eEventStateDraggingNode) {
+        return;
+    }
+    for (std::map<NodeGuiPtr, QPointF>::const_iterator it = _imp->_dragPickupPositions.begin(); it != _imp->_dragPickupPositions.end(); ++it) {
+        it->first->setPosition(it->second.x(), it->second.y());
+    }
+    _imp->_dragPickupPositions.clear();
+    _imp->_deltaSinceMousePress = QPointF(0, 0);
+    _imp->_nodesWithinBDAtPenDown.clear();
+    // The button is still down, so the release that follows must find no drag to record.
+    _imp->_evtState = eEventStateNone;
+    _imp->autoScrollTimer.stop();
+    if (_imp->cursorSet) {
+        _imp->cursorSet = false;
+        unsetCursor();
+    }
+    scene()->update();
+    update();
+}
+
+QUndoCommand*
+NodeGraph::takeDragMoveCommand(QUndoCommand* parent,
+                               NodesGuiList* moved)
+{
+    std::map<std::pair<double, double>, NodesGuiList> byDisplacement;
+    for (std::map<NodeGuiPtr, QPointF>::const_iterator it = _imp->_dragPickupPositions.begin(); it != _imp->_dragPickupPositions.end(); ++it) {
+        const QPointF pos = it->first->getPos_mt_safe();
+        const double dx = pos.x() - it->second.x();
+        const double dy = pos.y() - it->second.y();
+        if ((dx == 0) && (dy == 0)) {
+            continue;
+        }
+        byDisplacement[std::make_pair(dx, dy)].push_back(it->first);
+        if (moved) {
+            moved->push_back(it->first);
+        }
+    }
+    _imp->_dragPickupPositions.clear();
+
+    if (byDisplacement.empty()) {
+        return parent;
+    }
+    if (!parent && (byDisplacement.size() == 1)) {
+        return new MoveMultipleNodesCommand(byDisplacement.begin()->second, byDisplacement.begin()->first.first, byDisplacement.begin()->first.second);
+    }
+    QUndoCommand* command = parent ? parent : new QUndoCommand(tr("Move node(s)"));
+    for (std::map<std::pair<double, double>, NodesGuiList>::const_iterator it = byDisplacement.begin(); it != byDisplacement.end(); ++it) {
+        new MoveMultipleNodesCommand(it->second, it->first.first, it->first.second, command);
+    }
+
+    return command;
+}
+
 void
 NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
                                bool controlDown,
@@ -417,6 +732,7 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
          it != nodesToMove.end(); ++it) {
         //The current position
         QPointF pos = (*it)->getPos_mt_safe();
+        _imp->_dragPickupPositions.insert(std::make_pair(*it, pos));
 
         //if ignoreMagnet == true, we do not snap nodes to horizontal/vertical positions
         (*it)->refreshPosition(pos.x() + dxScene, pos.y() + dyScene, ignoreMagnet, newPos);
@@ -445,7 +761,9 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
     //Start auto-scolling if nearby the edges
     checkAndStartAutoScrollTimer(newPos);
 
-    checkForSpliceHint();
+    // A move without Ctrl after one with it means Ctrl was let go, even if its key release went
+    // to another widget.
+    setKissAiming(controlDown);
 } // NodeGraph::moveSelectedNodesBy
 
 void

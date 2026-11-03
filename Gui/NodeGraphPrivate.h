@@ -202,6 +202,20 @@ public:
     // does not rebuild the plan that was just dismissed.
     bool _spliceCancelled = false;
 
+    // While Ctrl is held during a node drag the nearest kiss is previewed, and releasing Ctrl makes
+    // it. Each kiss is made at once, as a child of _kissCommand, which is pushed with the move on
+    // release so that the drag stays one undo step. Escape undoes the drag's kisses and, like
+    // _spliceCancelled, keeps the rest of the drag from making more.
+    bool _kissAiming = false;
+    bool _kissCancelled = false;
+    NodeGuiPtr _kissDragged;
+    NodeGuiPtr _kissTarget;
+    int _kissInput = -1;
+    bool _kissFromOutput = false;
+    Edge* _kissPreviewEdge = nullptr;
+    QUndoCommand* _kissCommand = nullptr;
+    NodesGuiList _kissTouched;
+
     // An arrow picked up by a click and following the cursor: an input arrow, or a node's output
     // stub. It is kept apart from _evtState so that panning and zooming still run while it is
     // held, and it is held by node and input number, or by node alone for an output stub, rather
@@ -224,6 +238,10 @@ public:
     double _accumDelta;
     bool _detailsVisible;
     QPointF _deltaSinceMousePress; //< mouse delta since last press
+    // Where each node a drag has moved stood when the drag first moved it. Backdrop contents move
+    // only while Ctrl is up, so nodes in one drag can end up with different displacements, and
+    // the undo, Alt's snap-back and Escape all work from these rather than from one delta.
+    std::map<NodeGuiPtr, QPointF> _dragPickupPositions;
     bool _hasMovedOnce;
     ViewerTab* lastSelectedViewer;
     QPixmap unlockIcon;

@@ -286,7 +286,15 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
 
     if (key == Qt::Key_Escape) {
         cancelSplice();
+        rollBackKisses();
+        _imp->_kissCancelled = true;
+        cancelNodeDrag();
         dropPickedUpArrow();
+    }
+
+    if ((key == Qt::Key_Control) && !e->isAutoRepeat() && (_imp->_evtState == eEventStateDraggingNode)) {
+        setKissAiming(true);
+        update();
     }
 
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, modifiers, key) ) {

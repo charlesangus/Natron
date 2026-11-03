@@ -68,3 +68,4 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 - 2026-10-28: elaborated (consultant). Branch stacks on M182 - Loop Feedback (feedback chain). Strip partitioning inside a fold region relies on the existing strip halving, with P2.T3's capped-budget test as proof.
 - 2026-10-30 — **UAT passed (user).** Behaviour is accepted; the 64-iteration 4K GPU-host timing remains part of the verification gate before merge.
 - 2026-11-02 — The 64-iteration 4K GPU-host timing is dropped from the gate: placement no longer uses cost seeds (user).
+- 2026-11-03 — The intermittent RenderIsolation taskgraph hang is not from the loop stack: it reproduces on main-equivalent code (render-thread count race in OutputSchedulerThread). Filed as M321 - Render Thread Count Race; it no longer blocks this milestone.

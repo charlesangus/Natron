@@ -110,3 +110,4 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 **Verification gate:** the original gate plus the mid-render edit/cancel regression passes, and the user confirms cancellation from the AppImage.
 - 2026-11-01 — P5.T1 at 86612398f: the viewer abort never cancels the oldest running render (upstream rule, keeps drag feedback), and a slow loop is always that render; LoopEnd now aborts itself when its hash moved since the frame started (abortable viewer renders, not during drags). Open: should every non-drag edit cancel the oldest render for all nodes? (implementer question, for the user).
+- 2026-11-03 — The intermittent RenderIsolation taskgraph hang is not from the loop stack: it reproduces on main-equivalent code (render-thread count race in OutputSchedulerThread). Filed as M321 - Render Thread Count Race; it no longer blocks this milestone.

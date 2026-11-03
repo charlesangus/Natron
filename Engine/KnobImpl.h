@@ -3263,20 +3263,23 @@ appendKnobValueToContentHash(ContentHasher& h,
 template <typename T>
 void
 Knob<T>::appendValueContentHash(ContentHasher& h,
-                                int dimension) const
+                                int dimension,
+                                bool withStaticValue) const
 {
-    T value;
-    {
-        QMutexLocker k(&_valueMutex);
-        value = _values[dimension];
-    }
     T mini, maxi;
     {
         QReadLocker k(&_minMaxMutex);
         mini = _minimums[dimension];
         maxi = _maximums[dimension];
     }
-    appendKnobValueToContentHash(h, value);
+    if (withStaticValue) {
+        T value;
+        {
+            QMutexLocker k(&_valueMutex);
+            value = _values[dimension];
+        }
+        appendKnobValueToContentHash(h, value);
+    }
     appendKnobValueToContentHash(h, mini);
     appendKnobValueToContentHash(h, maxi);
 }

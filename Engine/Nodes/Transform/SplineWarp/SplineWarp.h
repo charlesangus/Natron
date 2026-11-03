@@ -376,6 +376,11 @@ private:
     bool isOutputMaskPlane(const ImageLayerDesc& plane, double time, ViewIdx view) const;
     // Enables outputMask while some curve is a cookie cutter.
     void updateCookieKnobsEnabled();
+
+    // Refreshes the metadata when the layer the Output Mask produces at the current frame
+    // appears, goes or is renamed.
+    void refreshOutputMaskLayer();
+
     // The Source's region of definition at full scale, null without a Source or when it fails.
     RectD getSourceBounds(double time, ViewIdx view);
 
@@ -395,6 +400,11 @@ private:
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
 
     void updateClampEnabled(double time, ViewIdx view);
+
+    // Point moves only apply under a selected tool action, so a new node needs one as much as a
+    // loaded one.
+    void selectDefaultTool();
+
     void updateSmoothnessVisibility();
 
     // Loads layerAmount and linkAmount from the selected layers and links, and enables each when
@@ -408,10 +418,6 @@ private:
     void writeTransformKnobs();
     // Keys a transform-handle drag when auto-key is on.
     void autoKeyTransformKnob(KnobI* knob, double time);
-
-    // Point moves only apply under a selected tool action, so a new node needs one as much as a
-    // loaded one.
-    void selectDefaultTool();
 
     KnobDoubleWPtr _amount;
     KnobBoolWPtr _invert;
@@ -433,6 +439,8 @@ private:
     KnobBoolWPtr _boundaryBBox;
     KnobDoubleWPtr _boundaryCurveResolution;
     KnobChannelSelectWPtr _outputMask;
+    // The layer refreshOutputMaskLayer() last saw produced, empty for none. Main thread only.
+    std::string _outputMaskLayer;
     KnobBoolWPtr _cropToFormat;
     // While syncAmountKnobs() sets the amount knobs, which must not write back.
     bool _syncingAmounts;

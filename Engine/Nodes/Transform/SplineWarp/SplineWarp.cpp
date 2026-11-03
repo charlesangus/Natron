@@ -332,6 +332,8 @@ SplineWarp::initializeKnobs()
                                   "is. A channel of a layer other than the colour layer, or None. Enabled while some "
                                   "curve is a cookie cutter."));
     outputMask->setAllDimensionsEnabled(false);
+    // The channel names the layer this node produces, which the downstream layer menus list.
+    outputMask->setIsMetadataSlave(true);
     page->addKnob(outputMask);
     _outputMask = outputMask;
 
@@ -580,6 +582,7 @@ SplineWarp::initializeKnobs()
             syncAmountKnobs();
             syncTransformKnobs();
             updateCookieKnobsEnabled();
+            refreshOutputMaskLayer();
         });
     }
 
@@ -639,6 +642,20 @@ SplineWarp::updateCookieKnobsEnabled()
     if (outputMask) {
         outputMask->setAllDimensionsEnabled(any);
     }
+}
+
+void
+SplineWarp::refreshOutputMaskLayer()
+{
+    ImageLayerDesc layer;
+    const std::string produced = getOutputMaskLayer(getApp()->getTimeLine()->currentFrame(), ViewIdx(0), &layer) ? layer.getLayerID() : std::string();
+
+    if (produced == _outputMaskLayer) {
+        return;
+    }
+    _outputMaskLayer = produced;
+    // A role change only rehashes and renders; the layer menus downstream follow the metadata.
+    refreshMetadataSideEffects();
 }
 
 namespace {

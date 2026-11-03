@@ -5123,8 +5123,10 @@ KnobHelper::cloneOneCurve(KnobI* other,
             thisCurve->clone(*otherCurve, offset, range);
         }
     }
-    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension);
-    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension);
+    // Each side's own GUI curve, as for the internal curves: through a master, a slaved source
+    // would hand back the GUI curve being refreshed, and the clone would leave it stale.
+    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension, true);
+    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension, true);
     if (guiCurve) {
         if (otherGuiCurve) {
             if (!range) {
@@ -5186,8 +5188,8 @@ KnobHelper::cloneOneCurveAndCheckIfChanged(KnobI* other,
         cloningCurveChanged |= thisCurve->cloneAndCheckIfChanged(*otherCurve);
     }
 
-    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension);
-    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension);
+    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension, true);
+    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension, true);
     // A source with no curve at all cannot animate: the internal curve above is left as it is, and so is
     // the GUI curve, which must keep mirroring it.
     if (guiCurve) {
@@ -7534,9 +7536,12 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
             hashes[i] = h.finalize();
             continue;
         }
-        appendValueContentHash(h, i);
-
+        // An animated dimension reads its curve, never its static value, and a project saves the
+        // curve's value in place of the static one, so hashing it would change the hash on reload.
         CurvePtr curve = _imp->curves[i];
+        const bool animated = curve && curve->isAnimated();
+        appendValueContentHash(h, i, !animated);
+
         h.appendBool(bool(curve));
         if (curve) {
             curve->appendContentHash(h);

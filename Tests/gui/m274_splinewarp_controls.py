@@ -92,6 +92,16 @@ try:
                 parent = parent.parentWidget()
         return None
 
+    def scroll_area_of(widget):
+        """The nearest QScrollArea holding widget. Node panel pages have none of their own: the
+        Properties bin's scroll area scrolls every open panel."""
+        w = widget.parentWidget()
+        while w is not None:
+            if isinstance(w, QScrollArea):
+                return w
+            w = w.parentWidget()
+        return None
+
     def page_tabs(panel):
         for tabs in panel.findChildren(QTabWidget):
             names = [tabs.tabText(i) for i in range(tabs.count())]
@@ -326,9 +336,9 @@ try:
             tabs.setCurrentIndex(index)
             yield ("sleep", SETTLE_MS)
             page = hold(tabs.widget(index))
-            areas = [page] if isinstance(page, QScrollArea) else [a for a in page.findChildren(QScrollArea) if a.isVisible()]
-            require(len(areas) > 0, "the %s page scrolls in a scroll area" % name)
-            area = hold(areas[0])
+            area = scroll_area_of(page)
+            require(area is not None, "the %s page sits in the Properties scroll area" % name)
+            area = hold(area)
             vmax = area.verticalScrollBar().maximum()
             hmax = area.horizontalScrollBar().maximum()
             report("NOTE %s page: viewport %dx%d, scroll ranges v %d h %d" % (
@@ -347,6 +357,10 @@ try:
         link = hold(sw.link(source, dest))
         require(link is not None, "linked the source curve to the destination")
         require(set_param(warp, "show", SHOW_DESTINATION), "set Show to Destination")
+        # A selected curve draws feather bars past its corners in the same blue, which would
+        # stretch the measured box.
+        tree.clearSelection()
+        QApplication.processEvents()
         yield ("sleep", RENDER_MS)
         img = grab_viewer()
         blue = coloured_pixels(img, is_destination)
@@ -396,6 +410,8 @@ try:
               "moved the destination's transform centre")
         items = select_in_tree(tree, [dest])
         require(len(items) == 1, "selected the destination alone in the curve list")
+        # Host overlays draw only for knobs on the current page.
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Transform"))
         yield ("sleep", RENDER_MS)
         gt.shot("m274-overlay-shown.png")
         before = grab_viewer()
@@ -425,6 +441,7 @@ try:
         report("NOTE the drag changes the warped picture by %.2f" % d)
         check(d > 2.0, "the translated destination changes the warp")
         tree.clearSelection()
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Controls"))
         QApplication.processEvents()
         yield ("sleep", RENDER_MS)
 

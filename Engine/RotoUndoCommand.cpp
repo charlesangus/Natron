@@ -26,6 +26,7 @@
 #include "RotoUndoCommand.h"
 
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -1988,6 +1989,116 @@ MakePointCurveUndoCommand::redo()
     _firstRedoCalled = true;
     roto->evaluate(true);
     roto->setSelection(_curve, std::make_pair(CpPtr(), CpPtr()));
+}
+
+////////////////////////////
+
+TrackLinkUndoCommand::TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
+                                           const std::list<PointRef>& points,
+                                           ActionEnum action,
+                                           const TrackMarkerPtr& marker,
+                                           double time)
+    : UndoCommand()
+    , _roto(roto)
+    , _points(points)
+    , _action(action)
+    , _marker(marker)
+    , _time(time)
+    , _done(false)
+    , _curves()
+{
+    std::set<Bezier*> seen;
+    for (std::list<PointRef>::const_iterator it = _points.begin(); it != _points.end(); ++it) {
+        if (!it->first || !seen.insert(it->first.get()).second) {
+            continue;
+        }
+        CurveState state;
+        state.curve = it->first;
+        state.points = it->first->getControlPoints();
+        const BezierCPs& feathers = it->first->getFeatherPoints();
+        state.points.insert(state.points.end(), feathers.begin(), feathers.end());
+        for (std::list<BezierCPPtr>::const_iterator itP = state.points.begin(); itP != state.points.end(); ++itP) {
+            state.before.push_back(std::make_shared<BezierCP>(**itP));
+        }
+        _curves.push_back(state);
+    }
+    switch (action) {
+    case eActionLink:
+        setText(tr("Link to Track").toStdString());
+        break;
+    case eActionUnlink:
+        setText(tr("Unlink from Track").toStdString());
+        break;
+    case eActionUnlinkAndBake:
+        setText(tr("Unlink from Track and Bake").toStdString());
+        break;
+    }
+}
+
+TrackLinkUndoCommand::~TrackLinkUndoCommand()
+{
+}
+
+void
+TrackLinkUndoCommand::restore(bool after)
+{
+    std::set<RotoCurveContext*> contexts;
+    for (std::list<CurveState>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
+        const std::list<BezierCPPtr>& saved = after ? it->after : it->before;
+        std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();
+        for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end() && itSaved != saved.end(); ++itP, ++itSaved) {
+            (*itP)->clone(**itSaved);
+        }
+        it->curve->invalidateContentHash();
+        it->curve->invalidatePolygonOrientation();
+        RotoCurveContextPtr context = it->curve->getContext();
+        if (context && contexts.insert(context.get()).second) {
+            context->refreshTrackLinkListeners();
+        }
+    }
+}
+
+void
+TrackLinkUndoCommand::undo()
+{
+    restore(false);
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
+}
+
+void
+TrackLinkUndoCommand::redo()
+{
+    if (_done) {
+        restore(true);
+    } else {
+        for (std::list<PointRef>::const_iterator it = _points.begin(); it != _points.end(); ++it) {
+            if (!it->first) {
+                continue;
+            }
+            try {
+                if (_action == eActionLink) {
+                    it->first->linkPointToTrack(it->second, _marker, _time);
+                } else {
+                    it->first->unlinkPoint(it->second, _action == eActionUnlinkAndBake);
+                }
+            } catch (const std::invalid_argument& e) {
+                qDebug() << e.what();
+            }
+        }
+        for (std::list<CurveState>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
+            for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end(); ++itP) {
+                it->after.push_back(std::make_shared<BezierCP>(**itP));
+            }
+        }
+        _done = true;
+    }
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

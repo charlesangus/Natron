@@ -409,6 +409,10 @@ private:
     // Keys a transform-handle drag when auto-key is on.
     void autoKeyTransformKnob(KnobI* knob, double time);
 
+    // Point moves only apply under a selected tool action, so a new node needs one as much as a
+    // loaded one.
+    void selectDefaultTool();
+
     KnobDoubleWPtr _amount;
     KnobBoolWPtr _invert;
     KnobChoiceWPtr _solver;

@@ -152,6 +152,7 @@ public:
     FileDialogPreviewProviderPtr getPreviewProvider() const;
     virtual std::string openImageFileDialog() OVERRIDE FINAL;
     virtual std::string saveImageFileDialog() OVERRIDE FINAL;
+    virtual int chooseItemDialog(const std::string& title, const std::string& label, const std::vector<std::string>& items) OVERRIDE FINAL;
     virtual void clearViewersLastRenderedTexture() OVERRIDE FINAL;
     virtual void appendToScriptEditor(const std::string& str) OVERRIDE FINAL;
     virtual void printAutoDeclaredVariable(const std::string& str) OVERRIDE FINAL;

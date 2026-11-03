@@ -36,7 +36,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -84,6 +84,15 @@ try:
                 parent = parent.parentWidget()
         return None
 
+    def fresh_tree(node):
+        """The node's curve list, found again on every call: a tree wrapper held across a yield can
+        be invalidated, and the panel wrapper is held so the tree's wrapper outlives this call."""
+        panel = panel_of(node)
+        if panel is None:
+            return None
+        hold(panel)
+        return curve_tree(panel)
+
     def open_panel(view, node):
         app.selectNode(node, True)
         QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
@@ -128,6 +137,23 @@ try:
         ys = [p[1] for p in points]
         return min(xs), min(ys), max(xs), max(ys)
 
+    def rectangle_edges(img, points, test):
+        """The left, top, right and bottom pixel lines of a drawn axis-aligned rectangle. A plain
+        bounding box of its ink also takes in the feather bars sticking out of the corners, and a
+        press at that box's corner lands on a feather bar instead of the control point."""
+        bx0, by0, bx1, by1 = bbox(points)
+        rows = {}
+        cols = {}
+        for y in range(max(0, by0 - 2), min(img.height(), by1 + 3)):
+            for x in range(max(0, bx0 - 2), min(img.width(), bx1 + 3)):
+                c = img.pixelColor(x, y)
+                if test(c.red(), c.green(), c.blue()):
+                    rows[y] = rows.get(y, 0) + 1
+                    cols[x] = cols.get(x, 0) + 1
+        long_rows = [y for y, n in rows.items() if n * 2 >= max(rows.values())]
+        long_cols = [x for x, n in cols.items() if n * 2 >= max(cols.values())]
+        return min(long_cols), min(long_rows), max(long_cols), max(long_rows)
+
     def region_difference(a, b, rect):
         """The mean absolute RGB difference of two grabs inside rect (x0, y0, x1, y1)."""
         if a is None or b is None or a.size() != b.size():
@@ -156,6 +182,19 @@ try:
             return False
         param.set(*values)
         return True
+
+    def set_output_warped(on):
+        """Output Warped is a checkable button, which Python can only trigger, not set, so its
+        viewer toolbar button is clicked."""
+        for button in QApplication.instance().allWidgets():
+            if (isinstance(button, QAbstractButton) and button.isVisible() and button.isCheckable()
+                    and "Source unwarped" in button.toolTip()):
+                if button.isChecked() != on:
+                    button.click()
+                QApplication.processEvents()
+                return button.isChecked() == on
+        report("NOTE no visible Output Warped button")
+        return False
 
     def tree_item(tree, curve):
         found = tree.findItems(curve.getLabel(), Qt.MatchExactly | Qt.MatchRecursive, 0)
@@ -189,7 +228,11 @@ try:
             popup.close()
 
         QTimer.singleShot(MENU_MS, pick)
-        pos = tree.visualItemRect(item).center()
+        # A release on any other column of a selected row is taken as a click on that cell (activation,
+        # lock, colour) and opens no menu, so the click lands on the name column.
+        header = tree.header()
+        x = header.sectionViewportPosition(0) + header.sectionSize(0) // 2
+        pos = QPoint(x, tree.visualItemRect(item).center().y())
         send_mouse(tree.viewport(), QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
 
     def column_of(tree, header):
@@ -244,7 +287,7 @@ try:
         ok = yield ("until", lambda: visible_viewer() is not None, POLL_TIMEOUT_S)
         require(ok, "a viewer is on screen")
         yield ("sleep", RENDER_MS)
-        tree = curve_tree(panel_of(warp))
+        tree = fresh_tree(warp)
         require(tree is not None, "the settings panel holds the curve list")
 
         gt.section("panel-columns")
@@ -264,6 +307,7 @@ try:
             closed.addControlPoint(x, y)
         closed.setCurveFinished(True)
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [closed])
         require(len(items) == 1, "selected the closed curve in the curve list")
         seen = {}
@@ -274,6 +318,7 @@ try:
         link = hold(sw.getLink(closed))
         dest = hold(link.getDestination())
         check(link.getSource().getScriptName() == closed.getScriptName(), "the original is the source")
+        tree = fresh_tree(warp)
         role, partner = role_and_partner(tree, closed)
         check(role == "Source", "the original's Role is Source (%r)" % role)
         check(partner == dest.getLabel(), "the original is linked to the copy (%r)" % partner)
@@ -290,9 +335,10 @@ try:
         blue = coloured_pixels(before, is_destination)
         report("NOTE destination grab has %d blue pixels" % len(blue))
         require(len(blue) > MIN_INK, "the destination curve is drawn blue")
-        px0, py0, px1, py1 = bbox(blue)
+        px0, py0, px1, py1 = rectangle_edges(before, blue, is_destination)
+        report("NOTE the destination rectangle spans viewer pixels (%d, %d)-(%d, %d)" % (px0, py0, px1, py1))
         # The top-right corner of the rectangle: canonical y grows upwards, viewer y downwards.
-        corner = QPoint(px1 - 2, py0 + 2)
+        corner = QPoint(px1, py0)
         target = corner + QPoint(*DRAG_BY)
         report("NOTE dragging the destination corner from viewer pixel (%d, %d)" % (corner.x(), corner.y()))
         start_pos = dest.getControlPointPosition(2, 1.0)
@@ -343,14 +389,14 @@ try:
               "Show Both draws both curves")
         gt.shot("m148-show-both.png")
         warped = img
-        require(set_param(warp, "outputWarped", False), "turned Output Warped off")
+        require(set_output_warped(False), "turned Output Warped off")
         yield ("sleep", RENDER_MS)
         unwarped = grab_viewer()
         d = region_difference(warped, unwarped, inside)
         report("NOTE Output Warped off changes the inside of the curve by %.2f" % d)
         check(d > 2.0, "Output Warped off shows the Source unwarped")
         gt.shot("m148-output-unwarped.png")
-        require(set_param(warp, "outputWarped", True), "turned Output Warped back on")
+        require(set_output_warped(True), "turned Output Warped back on")
         yield ("sleep", RENDER_MS)
         check(region_difference(warped, grab_viewer(), inside) < 2.0, "Output Warped on warps again")
 
@@ -379,6 +425,7 @@ try:
         open_b.addControlPoint(600.0, 150.0)
         point = hold(roto.createBezier(1500.0, 800.0, 1.0))
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [open_a, open_b])
         require(len(items) == 2, "selected two open curves in the curve list")
         seen = {}
@@ -387,11 +434,13 @@ try:
         check(seen.get("Link", False), "the context menu enables Link for two open curves")
         check(ok, "Link linked the two open curves")
         if ok:
+            tree = fresh_tree(warp)
             role_a, partner_a = role_and_partner(tree, open_a)
             role_b, _ = role_and_partner(tree, open_b)
             check(role_a == "Source" and role_b == "Destination",
                   "the first selected is the source (%r, %r)" % (role_a, role_b))
             check(partner_a == open_b.getLabel(), "the open source is linked to the other open curve")
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [point])
         require(len(items) == 1, "selected the single point in the curve list")
         seen = {}
@@ -413,6 +462,7 @@ try:
         boundary.setCurveFinished(True)
         boundary.setFeatherDistance(60.0, 1.0)
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [boundary])
         require(len(items) == 1, "selected the boundary curve in the curve list")
         before = grab_viewer()
@@ -420,6 +470,7 @@ try:
         run_menu_action(tree, items[0], "Toggle Boundary", seen)
         ok = yield ("until", lambda: sw.isBoundary(boundary), POLL_TIMEOUT_S)
         check(ok, "Toggle Boundary made the curve a boundary")
+        tree = fresh_tree(warp)
         role, partner = role_and_partner(tree, boundary)
         check(role == "Boundary" and partner == "", "the boundary's Role is Boundary (%r, %r)" % (role, partner))
         yield ("sleep", RENDER_MS)
@@ -427,6 +478,7 @@ try:
         check(len(coloured_pixels(img, is_boundary)) > MIN_INK, "the boundary is drawn yellow")
         report("NOTE the boundary changes the picture by %.2f" % region_difference(before, img, inside))
         gt.shot("m148-boundary-feather.png")
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [closed])
         seen = {}
         run_menu_action(tree, items[0], "Toggle Boundary", seen)

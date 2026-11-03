@@ -424,6 +424,101 @@ namespace YamlDetail {
             }
         }
 
+        // Points that follow a track, by index into the control or feather points: the track's
+        // tracker and name, the offsets of the point and its tangents from the track's centre, and
+        // the centre used while the track cannot be resolved.
+        void
+        emitTrackLinks(YAML::Emitter& em,
+                       const std::vector<const BezierCPSerialization*>& points,
+                       const std::vector<const BezierCPSerialization*>& feathers)
+        {
+            bool any = false;
+            for (int set = 0; set < 2; ++set) {
+                for (const BezierCPSerialization* point : (set == 0) ? points : feathers) {
+                    any = any || point->hasTrackLink;
+                }
+            }
+            if (!any) {
+                return;
+            }
+            emitKey(em, "trackLinks");
+            em << YAML::Value << YAML::BeginSeq;
+            for (int set = 0; set < 2; ++set) {
+                const std::vector<const BezierCPSerialization*>& list = (set == 0) ? points : feathers;
+                for (std::size_t i = 0; i < list.size(); ++i) {
+                    const BezierCPSerialization& point = *list[i];
+                    if (!point.hasTrackLink) {
+                        continue;
+                    }
+                    em << YAML::BeginMap;
+                    emitKey(em, "index");
+                    em << YAML::Value;
+                    emitInt(em, static_cast<long long>(i));
+                    if (set == 1) {
+                        emitKey(em, "feather");
+                        em << YAML::Value;
+                        emitBool(em, true);
+                    }
+                    emitKey(em, "tracker");
+                    em << YAML::Value;
+                    emitString(em, point.trackLinkTracker);
+                    emitKey(em, "track");
+                    em << YAML::Value;
+                    emitString(em, point.trackLinkTrack);
+                    emitKey(em, "offsets");
+                    em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+                    const double offsets[6] = { point.trackOffsetX, point.trackOffsetY, point.trackOffsetLeftX, point.trackOffsetLeftY, point.trackOffsetRightX, point.trackOffsetRightY };
+                    for (double v : offsets) {
+                        emitDouble(em, v);
+                    }
+                    em << YAML::EndSeq;
+                    emitDoublePair(em, "frozen", point.trackFrozenX, point.trackFrozenY);
+                    em << YAML::EndMap;
+                }
+            }
+            em << YAML::EndSeq;
+        }
+
+        void
+        readTrackLinks(const YAML::Node& node,
+                       std::vector<BezierCPSerialization>* points,
+                       std::vector<BezierCPSerialization>* feathers,
+                       const std::string& context,
+                       YamlWarnings* warnings)
+        {
+            if (!node.IsSequence()) {
+                fail(node, context, "expected a sequence");
+            }
+            for (std::size_t i = 0; i < node.size(); ++i) {
+                const std::string entryContext = context + "[" + std::to_string(i) + "]";
+                MapReader reader(node[i], entryContext, warnings);
+                const int index = readInt(reader.get("index"), entryContext + ".index");
+                bool feather = false;
+                if (YAML::Node featherNode = reader.get("feather")) {
+                    feather = readBool(featherNode, entryContext + ".feather");
+                }
+                std::vector<BezierCPSerialization>* list = feather ? feathers : points;
+                if ((index < 0) || (static_cast<std::size_t>(index) >= list->size())) {
+                    fail(node[i], entryContext, "point index out of range");
+                }
+                BezierCPSerialization& point = (*list)[index];
+                point.hasTrackLink = true;
+                point.trackLinkTracker = readString(reader.get("tracker"), entryContext + ".tracker");
+                point.trackLinkTrack = readString(reader.get("track"), entryContext + ".track");
+                const std::vector<double> offsets = readDoubleVector(reader.get("offsets"), entryContext + ".offsets", 6);
+                point.trackOffsetX = offsets[0];
+                point.trackOffsetY = offsets[1];
+                point.trackOffsetLeftX = offsets[2];
+                point.trackOffsetLeftY = offsets[3];
+                point.trackOffsetRightX = offsets[4];
+                point.trackOffsetRightY = offsets[5];
+                const std::vector<double> frozen = readDoubleVector(reader.get("frozen"), entryContext + ".frozen", 2);
+                point.trackFrozenX = frozen[0];
+                point.trackFrozenY = frozen[1];
+                reader.finish();
+            }
+        }
+
         void
         emitBezier(YAML::Emitter& em,
                    const BezierSerialization& bezier,
@@ -487,6 +582,7 @@ namespace YamlDetail {
                     }
                 }
             }
+            emitTrackLinks(em, points, feathers);
             em << YAML::EndMap;
         }
 
@@ -526,6 +622,9 @@ namespace YamlDetail {
             }
             if (YAML::Node featherCurves = reader.get("featherCurves")) {
                 readPointCurves(featherCurves, &feathers, context + ".featherCurves", warnings);
+            }
+            if (YAML::Node trackLinks = reader.get("trackLinks")) {
+                readTrackLinks(trackLinks, &points, &feathers, context + ".trackLinks", warnings);
             }
             reader.finish();
             bezier->controlPoints.assign(points.begin(), points.end());

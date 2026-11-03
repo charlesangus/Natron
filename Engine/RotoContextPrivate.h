@@ -1512,6 +1512,11 @@ public:
      */
     NodesList globalMergeNodes;
 
+    // What the context watches for its track-linked points (see refreshTrackLinkListeners()),
+    // and whether it posted the missing-track warning.
+    std::list<QMetaObject::Connection> trackLinkConnections;
+    bool trackLinkWarningPosted;
+
     RotoContextPrivate(const NodePtr& n,
                        bool paintNode)
         : rotoContextMutex()
@@ -1526,6 +1531,8 @@ public:
         , doingNeatRender(false)
         , mustDoNeatRender(false)
         , globalMergeNodes()
+        , trackLinkConnections()
+        , trackLinkWarningPosted(false)
     {
         assert( n && n->getEffectInstance() );
         EffectInstancePtr effect = n->getEffectInstance();

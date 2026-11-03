@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -2039,6 +2040,30 @@ SplineWarpContext::appendHostContentHash(ContentHasher& h) const
     }
 }
 
+namespace {
+void
+layerTransformToSerialization(const std::string& layer,
+                              const SplineWarpTransform& transform,
+                              Serialization::SplineWarpLayerTransformSerialization* serialization)
+{
+    const std::vector<std::string>& names = SplineWarpTransform::knobNames();
+
+    serialization->layer = layer;
+    serialization->values.clear();
+    for (std::size_t n = 0; n < names.size(); ++n) {
+        int dimensions = 0;
+        const int index = SplineWarpTransform::indexOf(names[n], &dimensions);
+        for (int d = 0; d < dimensions; ++d) {
+            Serialization::SplineWarpTransformValueSerialization v;
+            v.knob = names[n];
+            v.dimension = d;
+            transform.value(index + d).toSerialization(&v.value);
+            serialization->values.push_back(v);
+        }
+    }
+}
+} // anonymous namespace
+
 void
 SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* serialization) const
 {
@@ -2070,25 +2095,13 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             warp.layerAmounts.push_back(s);
         }
     }
-    const std::vector<std::string>& names = SplineWarpTransform::knobNames();
     for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::const_iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
         RotoLayerPtr layer = it->first.lock();
         if (!layer) {
             continue;
         }
         Serialization::SplineWarpLayerTransformSerialization s;
-        s.layer = layer->getScriptName();
-        for (std::size_t n = 0; n < names.size(); ++n) {
-            int dimensions = 0;
-            const int index = SplineWarpTransform::indexOf(names[n], &dimensions);
-            for (int d = 0; d < dimensions; ++d) {
-                Serialization::SplineWarpTransformValueSerialization v;
-                v.knob = names[n];
-                v.dimension = d;
-                it->second.value(index + d).toSerialization(&v.value);
-                s.values.push_back(v);
-            }
-        }
+        layerTransformToSerialization(layer->getScriptName(), it->second, &s);
         warp.layerTransforms.push_back(s);
     }
     for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
@@ -2110,17 +2123,7 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             continue;
         }
         Serialization::SplineWarpLinkSerialization s;
-        s.source = source->getScriptName();
-        s.destination = destination->getScriptName();
-        s.startOffset = link._startOffset;
-        s.reversed = link._reversed;
-        link._amount.toSerialization(&s.amount);
-        for (std::size_t c = 0; c < link._correspondences.size(); ++c) {
-            Serialization::SplineWarpCorrespondenceSerialization cs;
-            link._correspondences[c].source.toSerialization(&cs.source);
-            link._correspondences[c].destination.toSerialization(&cs.destination);
-            s.correspondences.push_back(cs);
-        }
+        linkToSerialization(link, source->getScriptName(), destination->getScriptName(), &s);
         warp.links.push_back(s);
     }
 }
@@ -2140,101 +2143,282 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
     _loading = true;
     RotoCurveContext::fromSerialization(serialization);
 
+    if (serialization.hasSplineWarp) {
+        restoreWarpData(serialization.splineWarp, nullptr);
+    }
+    _loading = false;
+    warpDataChanged(false);
+    rolesChanged();
+}
+
+void
+SplineWarpContext::linkToSerialization(const SplineWarpLink& link,
+                                       const std::string& source,
+                                       const std::string& destination,
+                                       Serialization::SplineWarpLinkSerialization* serialization)
+{
+    serialization->source = source;
+    serialization->destination = destination;
+    serialization->startOffset = link._startOffset;
+    serialization->reversed = link._reversed;
+    link._amount.toSerialization(&serialization->amount);
+    serialization->correspondences.clear();
+    for (std::size_t c = 0; c < link._correspondences.size(); ++c) {
+        Serialization::SplineWarpCorrespondenceSerialization cs;
+        link._correspondences[c].source.toSerialization(&cs.source);
+        link._correspondences[c].destination.toSerialization(&cs.destination);
+        serialization->correspondences.push_back(cs);
+    }
+}
+
+void
+SplineWarpContext::restoreWarpData(const Serialization::SplineWarpSerialization& warp,
+                                   const std::map<std::string, std::string>* names)
+{
     NodePtr node = getNode();
     const QString context = node ? QString::fromUtf8(node->getLabel_mt_safe().c_str()) : QString();
     const auto logDropped = [&](const std::string& what) {
         appPTR->writeToErrorLog_mt_safe(context, QDateTime::currentDateTime(), QString::fromUtf8(what.c_str()));
     };
 
-    const Serialization::SplineWarpSerialization& warp = serialization.splineWarp;
-    if (serialization.hasSplineWarp) {
-        std::lock_guard<std::mutex> l(_warpMutex);
-        for (std::list<std::string>::const_iterator it = warp.boundaries.begin(); it != warp.boundaries.end(); ++it) {
-            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
-            if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_boundaries, curve.get())) {
-                logDropped("SplineWarp: dropped boundary " + *it + ": no closed curve has that name.");
-                continue;
-            }
-            _boundaries.push_back(curve);
+    // On paste, an entry naming an item that wasn't copied is skipped silently rather than logged.
+    const auto findItem = [&](const std::string& name, bool* skip) -> RotoItemPtr {
+        *skip = false;
+        if (!names) {
+            return getItemByName(name);
         }
-        for (std::list<std::string>::const_iterator it = warp.cookieCutters.begin(); it != warp.cookieCutters.end(); ++it) {
-            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
-            if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_cookieCutters, curve.get())) {
-                logDropped("SplineWarp: dropped cookie cutter " + *it + ": no closed curve has that name.");
-                continue;
-            }
-            _cookieCutters.push_back(curve);
+        std::map<std::string, std::string>::const_iterator found = names->find(name);
+        if (found == names->end()) {
+            *skip = true;
+
+            return RotoItemPtr();
         }
-        for (std::list<Serialization::SplineWarpLayerAmountSerialization>::const_iterator it = warp.layerAmounts.begin(); it != warp.layerAmounts.end(); ++it) {
-            RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(getItemByName(it->layer));
-            if (!layer) {
-                logDropped("SplineWarp: dropped the amount of layer " + it->layer + ": no layer has that name.");
-                continue;
-            }
-            SplineWarpAnimatedValue amount(1.);
-            amount.fromSerialization(it->amount);
-            _layerAmounts.push_back(std::make_pair(RotoLayerWPtr(layer), amount));
+
+        return getItemByName(found->second);
+    };
+    const auto findCurve = [&](const std::string& name, bool* skip) -> BezierPtr {
+        return std::dynamic_pointer_cast<Bezier>(findItem(name, skip));
+    };
+    const auto findLayer = [&](const std::string& name, bool* skip) -> RotoLayerPtr {
+        return std::dynamic_pointer_cast<RotoLayer>(findItem(name, skip));
+    };
+
+    std::lock_guard<std::mutex> l(_warpMutex);
+    for (std::list<std::string>::const_iterator it = warp.boundaries.begin(); it != warp.boundaries.end(); ++it) {
+        bool skip;
+        BezierPtr curve = findCurve(*it, &skip);
+        if (skip) {
+            continue;
         }
-        for (std::list<Serialization::SplineWarpLinkSerialization>::const_iterator it = warp.links.begin(); it != warp.links.end(); ++it) {
-            BezierPtr source = std::dynamic_pointer_cast<Bezier>(getItemByName(it->source));
-            BezierPtr destination = std::dynamic_pointer_cast<Bezier>(getItemByName(it->destination));
-            const std::string name = it->source + " -> " + it->destination;
-            if (!source || !destination) {
-                logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
-                continue;
-            }
-            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
-                logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
-                continue;
-            }
-            SplineWarpLinkPtr link = std::make_shared<SplineWarpLink>(source, destination);
-            link->_startOffset = clampToSegments(it->startOffset, SplineWarpCurveShape::segmentCountOf(*destination));
-            link->_reversed = it->reversed;
-            link->_amount.fromSerialization(it->amount);
-            for (std::list<Serialization::SplineWarpCorrespondenceSerialization>::const_iterator c = it->correspondences.begin(); c != it->correspondences.end(); ++c) {
-                SplineWarpCorrespondence corr;
-                corr.source.fromSerialization(c->source);
-                corr.destination.fromSerialization(c->destination);
-                link->_correspondences.push_back(corr);
-            }
-            _links.push_back(link);
+        if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_boundaries, curve.get()) || findLinkLocked(curve.get())) {
+            logDropped("SplineWarp: dropped boundary " + *it + ": no closed curve has that name.");
+            continue;
         }
-        for (std::list<Serialization::SplineWarpLayerTransformSerialization>::const_iterator it = warp.layerTransforms.begin(); it != warp.layerTransforms.end(); ++it) {
-            RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(getItemByName(it->layer));
-            if (!layer || findLayerTransformLocked(layer.get())) {
-                logDropped("SplineWarp: dropped the transform of layer " + it->layer + ": no other layer has that name.");
-                continue;
-            }
-            SplineWarpTransform transform;
-            for (std::list<Serialization::SplineWarpTransformValueSerialization>::const_iterator v = it->values.begin(); v != it->values.end(); ++v) {
-                int dimensions = 0;
-                const int index = SplineWarpTransform::indexOf(v->knob, &dimensions);
-                if ((index < 0) || (v->dimension < 0) || (v->dimension >= dimensions)) {
-                    logDropped("SplineWarp: dropped value " + v->knob + "." + std::to_string(v->dimension) + " of the transform of layer " + it->layer + ".");
-                    continue;
-                }
-                transform.value(index + v->dimension).fromSerialization(v->value);
-            }
-            _layerTransforms.push_back(std::make_pair(RotoLayerWPtr(layer), transform));
+        _boundaries.push_back(curve);
+    }
+    for (std::list<std::string>::const_iterator it = warp.cookieCutters.begin(); it != warp.cookieCutters.end(); ++it) {
+        bool skip;
+        BezierPtr curve = findCurve(*it, &skip);
+        if (skip) {
+            continue;
         }
-        for (std::list<Serialization::SplineWarpTransformLinkSerialization>::const_iterator it = warp.transformLinks.begin(); it != warp.transformLinks.end(); ++it) {
-            RotoItemPtr item = getItemByName(it->item);
-            RotoItemPtr target = getItemByName(it->target);
-            const std::string name = it->item + " -> " + it->target;
-            if (!ownsItem(item) || !ownsItem(target) || (item == target) || resolveTransformLinkLocked(item.get())) {
-                logDropped("SplineWarp: dropped transform link " + name + ": an item is missing or already linked.");
+        if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_cookieCutters, curve.get())) {
+            logDropped("SplineWarp: dropped cookie cutter " + *it + ": no closed curve has that name.");
+            continue;
+        }
+        _cookieCutters.push_back(curve);
+    }
+    for (std::list<Serialization::SplineWarpLayerAmountSerialization>::const_iterator it = warp.layerAmounts.begin(); it != warp.layerAmounts.end(); ++it) {
+        bool skip;
+        RotoLayerPtr layer = findLayer(it->layer, &skip);
+        if (skip) {
+            continue;
+        }
+        if (!layer) {
+            logDropped("SplineWarp: dropped the amount of layer " + it->layer + ": no layer has that name.");
+            continue;
+        }
+        SplineWarpAnimatedValue amount(1.);
+        amount.fromSerialization(it->amount);
+        _layerAmounts.push_back(std::make_pair(RotoLayerWPtr(layer), amount));
+    }
+    for (std::list<Serialization::SplineWarpLinkSerialization>::const_iterator it = warp.links.begin(); it != warp.links.end(); ++it) {
+        bool skipSource, skipDestination;
+        BezierPtr source = findCurve(it->source, &skipSource);
+        BezierPtr destination = findCurve(it->destination, &skipDestination);
+        if (skipSource || skipDestination) {
+            continue;
+        }
+        const std::string name = it->source + " -> " + it->destination;
+        if (!source || !destination) {
+            logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
+            continue;
+        }
+        if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
+            logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
+            continue;
+        }
+        SplineWarpLinkPtr link = std::make_shared<SplineWarpLink>(source, destination);
+        link->_startOffset = clampToSegments(it->startOffset, SplineWarpCurveShape::segmentCountOf(*destination));
+        link->_reversed = it->reversed;
+        link->_amount.fromSerialization(it->amount);
+        for (std::list<Serialization::SplineWarpCorrespondenceSerialization>::const_iterator c = it->correspondences.begin(); c != it->correspondences.end(); ++c) {
+            SplineWarpCorrespondence corr;
+            corr.source.fromSerialization(c->source);
+            corr.destination.fromSerialization(c->destination);
+            link->_correspondences.push_back(corr);
+        }
+        _links.push_back(link);
+    }
+    for (std::list<Serialization::SplineWarpLayerTransformSerialization>::const_iterator it = warp.layerTransforms.begin(); it != warp.layerTransforms.end(); ++it) {
+        bool skip;
+        RotoLayerPtr layer = findLayer(it->layer, &skip);
+        if (skip) {
+            continue;
+        }
+        if (!layer || findLayerTransformLocked(layer.get())) {
+            logDropped("SplineWarp: dropped the transform of layer " + it->layer + ": no other layer has that name.");
+            continue;
+        }
+        SplineWarpTransform transform;
+        for (std::list<Serialization::SplineWarpTransformValueSerialization>::const_iterator v = it->values.begin(); v != it->values.end(); ++v) {
+            int dimensions = 0;
+            const int index = SplineWarpTransform::indexOf(v->knob, &dimensions);
+            if ((index < 0) || (v->dimension < 0) || (v->dimension >= dimensions)) {
+                logDropped("SplineWarp: dropped value " + v->knob + "." + std::to_string(v->dimension) + " of the transform of layer " + it->layer + ".");
                 continue;
             }
-            if (transformLinkReachesLocked(target.get(), item.get())) {
-                logDropped("SplineWarp: dropped transform link " + name + ": it would form a cycle.");
-                continue;
-            }
-            _transformLinks.push_back(std::make_pair(std::weak_ptr<RotoItem>(item), std::weak_ptr<RotoItem>(target)));
+            transform.value(index + v->dimension).fromSerialization(v->value);
+        }
+        _layerTransforms.push_back(std::make_pair(RotoLayerWPtr(layer), transform));
+    }
+    for (std::list<Serialization::SplineWarpTransformLinkSerialization>::const_iterator it = warp.transformLinks.begin(); it != warp.transformLinks.end(); ++it) {
+        bool skipItem, skipTarget;
+        RotoItemPtr item = findItem(it->item, &skipItem);
+        RotoItemPtr target = findItem(it->target, &skipTarget);
+        if (skipItem || skipTarget) {
+            continue;
+        }
+        const std::string name = it->item + " -> " + it->target;
+        if (!ownsItem(item) || !ownsItem(target) || (item == target) || resolveTransformLinkLocked(item.get())) {
+            logDropped("SplineWarp: dropped transform link " + name + ": an item is missing or already linked.");
+            continue;
+        }
+        if (transformLinkReachesLocked(target.get(), item.get())) {
+            logDropped("SplineWarp: dropped transform link " + name + ": it would form a cycle.");
+            continue;
+        }
+        _transformLinks.push_back(std::make_pair(std::weak_ptr<RotoItem>(item), std::weak_ptr<RotoItem>(target)));
+    }
+}
+
+namespace {
+void
+collectItemNames(const Serialization::RotoLayerSerialization& layer,
+                 std::set<std::string>* names)
+{
+    for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = layer.children.begin(); it != layer.children.end(); ++it) {
+        if (it->type == Serialization::eRotoLayerChildTypeBezier) {
+            names->insert(it->bezier.name);
+        } else if (it->type == Serialization::eRotoLayerChildTypeLayer) {
+            names->insert(it->layer.name);
+            collectItemNames(it->layer, names);
         }
     }
-    _loading = false;
+}
+} // anonymous namespace
+
+std::string
+SplineWarpContext::serializeItems(const std::list<RotoItemPtr>& items) const
+{
+    Serialization::RotoContextSerialization serialization;
+
+    itemsToSerialization(items, &serialization);
+
+    std::set<std::string> copied;
+    collectItemNames(serialization.baseLayer, &copied);
+
+    Serialization::SplineWarpSerialization& warp = serialization.splineWarp;
+    serialization.hasSplineWarp = true;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<BezierWPtr>::const_iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
+            BezierPtr curve = it->lock();
+            if (curve && copied.count(curve->getScriptName())) {
+                warp.boundaries.push_back(curve->getScriptName());
+            }
+        }
+        for (std::list<BezierWPtr>::const_iterator it = _cookieCutters.begin(); it != _cookieCutters.end(); ++it) {
+            BezierPtr curve = it->lock();
+            if (curve && copied.count(curve->getScriptName())) {
+                warp.cookieCutters.push_back(curve->getScriptName());
+            }
+        }
+        for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+            RotoLayerPtr layer = it->first.lock();
+            if (layer && copied.count(layer->getScriptName())) {
+                Serialization::SplineWarpLayerAmountSerialization s;
+                s.layer = layer->getScriptName();
+                it->second.toSerialization(&s.amount);
+                warp.layerAmounts.push_back(s);
+            }
+        }
+        for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::const_iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
+            RotoLayerPtr layer = it->first.lock();
+            if (layer && copied.count(layer->getScriptName())) {
+                Serialization::SplineWarpLayerTransformSerialization s;
+                layerTransformToSerialization(layer->getScriptName(), it->second, &s);
+                warp.layerTransforms.push_back(s);
+            }
+        }
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+            RotoItemPtr item = it->first.lock();
+            RotoItemPtr target = it->second.lock();
+            if (item && target && copied.count(item->getScriptName()) && copied.count(target->getScriptName())) {
+                Serialization::SplineWarpTransformLinkSerialization s;
+                s.item = item->getScriptName();
+                s.target = target->getScriptName();
+                warp.transformLinks.push_back(s);
+            }
+        }
+        for (std::size_t i = 0; i < _links.size(); ++i) {
+            const SplineWarpLink& link = *_links[i];
+            std::lock_guard<std::mutex> ll(link._mutex);
+            BezierPtr source = link._source.lock();
+            BezierPtr destination = link._destination.lock();
+            if (!source || !destination || !copied.count(source->getScriptName()) || !copied.count(destination->getScriptName())) {
+                continue;
+            }
+            Serialization::SplineWarpLinkSerialization s;
+            linkToSerialization(link, source->getScriptName(), destination->getScriptName(), &s);
+            warp.links.push_back(s);
+        }
+    }
+
+    return encodeItems(serialization);
+}
+
+std::list<RotoItemPtr>
+SplineWarpContext::pasteItems(const std::string& blob,
+                              const RotoLayerPtr& layer,
+                              int* droppedStrokes)
+{
+    Serialization::RotoContextSerialization serialization = decodeItems(blob);
+    std::map<std::string, std::string> names;
+    std::list<RotoItemPtr> pasted = pasteSerialization(serialization, layer, &names, droppedStrokes);
+
+    if (pasted.empty()) {
+        return pasted;
+    }
+    if (serialization.hasSplineWarp) {
+        restoreWarpData(serialization.splineWarp, &names);
+    }
+    onStructureChanged();
     warpDataChanged(false);
     rolesChanged();
+    evaluateChange();
+
+    return pasted;
 }
 
 NATRON_NAMESPACE_EXIT

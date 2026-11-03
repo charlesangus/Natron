@@ -2062,6 +2062,22 @@
         </modify-function>
     </object-type>
     <object-type name="BezierCurve">
+        <modify-function signature="linkPointToTrack(int,Track*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlinkPoint(int,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
         <modify-function signature="getActivatedParam()const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

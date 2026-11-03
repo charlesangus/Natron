@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -255,6 +257,11 @@ private:
     // Posts the clamp warning, or withdraws it when this node still shows it.
     void refreshClampedWarning(bool clamped);
 
+    // The warning follows the frame being looked at. A render started before the last change to
+    // what sets the vectors' lengths (its generation) reports nothing: its answer is stale.
+    std::uint64_t clampGeneration();
+    void reportClamped(double time, std::uint64_t generation, bool coversWholeImage, bool clamped);
+
     KnobLayerSelectWPtr _uv;
     KnobDoubleWPtr _offset;
     KnobDoubleWPtr _scale;
@@ -268,6 +275,8 @@ private:
     KnobChoiceWPtr _depthUnits;
     std::mutex _warningMutex;
     bool _warningShown;
+    std::uint64_t _clampGeneration;
+    std::map<double, bool> _clampedByTime;
 };
 
 NATRON_NAMESPACE_EXIT

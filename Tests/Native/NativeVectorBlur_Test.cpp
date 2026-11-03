@@ -709,6 +709,27 @@ TEST_F(NativeVectorBlurTest, ClampingWarns)
     }
 }
 
+// A later render that clamps nothing takes the warning back without any change to the node.
+TEST_F(NativeVectorBlurTest, UnclampedRenderClearsWarning)
+{
+    NodePtr source = makeSource(eSceneSmooth, 4., 0.);
+    NodePtr node = makeVectorBlur(source);
+    ASSERT_TRUE(bool(source) && bool(node));
+    ASSERT_TRUE(setKnobValues(node, kVectorBlurParamMaxLength, { 16. }));
+    ASSERT_TRUE(setKnobValues(source, kVBSourceParamU, { 200. }));
+
+    QString message;
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(node, &plane));
+    messageOf(node, &message);
+    EXPECT_EQ(QString::fromUtf8(VectorBlur::clampedMessage().c_str()), message);
+
+    ASSERT_TRUE(setKnobValues(source, kVBSourceParamU, { 8. }));
+    ASSERT_TRUE(renderRGBA(node, &plane));
+    messageOf(node, &message);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
 // Regression fixtures on the noisy parity source, its red and green read as vectors in pixels.
 TEST_F(NativeVectorBlurTest, Golden)
 {

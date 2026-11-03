@@ -2,9 +2,10 @@
 
 The source is a small bright box at the format centre (Constant + Crop) fed through a ShuffleCopy
 whose second input is a Constant holding the motion vector in its red/green; the ShuffleCopy writes
-that into a project layer named "motion", which the node's Auto layer entry reads. The Viewer is set
+that into the built-in Forward motion layer, which the node's Auto layer entry reads. The Viewer is set
 to the Un-tone-mapped view; every comparison is relative, between renders of the same viewer region
-at 100% zoom (lit-pixel bounding box of the viewer crop).
+at 100% zoom (lit-pixel bounding box of the viewer crop; the occlusion probe measures red only,
+since the depth rides in green and lights the far bar).
 Checks: the panel fits 1920x1080 without scrolling; a horizontal vector smears the box horizontally
 (bbox wider than tall, wider than the unblurred box); a vertical vector smears vertically; Scale 2
 lengthens the streak; Offset 0 and 1 streak to opposite sides. Occlusion: a bright near static box

@@ -23,8 +23,9 @@ Smears each pixel of the Source along its own motion vector, read from a layer o
 - **Filter.** Box weighs every sample alike; Triangle weighs them by a tent peaking at the
   streak's middle.
 - **Max Length.** Vectors longer than Max Length (128 pixels by default) are shortened to it. A
-  render that shortens one posts a warning on the node; changing UV, Scale, Vector Units or Max
-  Length takes it back. Only CPU renders post it.
+  render that shortens one posts a warning on the node. A render of the whole frame that
+  shortens none takes it back, as does changing UV, Scale, Vector Units or Max Length; a partial
+  render never takes it back. Only CPU renders report it.
 - **Occlusion.** Off, or Depth-aware with Depth (default `depth.Z`) in Depth Units: a distance,
   or an inverse distance (1/z). A non-finite or non-positive depth is infinitely far. A sample
   whose nearest pixel is nearer than the centre by more than 1% is dropped, unless that pixel's

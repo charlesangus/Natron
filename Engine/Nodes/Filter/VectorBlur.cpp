@@ -332,6 +332,7 @@ VectorBlur::VectorBlur(NodePtr node)
     : StagedImageEffect(node)
     , _warningMutex()
     , _warningShown(false)
+    , _clampGeneration(0)
 {
 }
 
@@ -574,10 +575,16 @@ VectorBlur::knobChanged(KnobI* k,
 
         return true;
     }
-    // What sets the vectors' lengths changed: the next render that shortens one warns again.
+    // What sets the vectors' lengths changed: every time's answer is stale, and so is any render
+    // already under way.
     const KnobIPtr lengthKnobs[] = { _uv.lock(), _scale.lock(), _vectorUnits.lock(), _maxLength.lock() };
     for (const KnobIPtr& knob : lengthKnobs) {
         if (knob && (k == knob.get())) {
+            {
+                std::lock_guard<std::mutex> lock(_warningMutex);
+                ++_clampGeneration;
+                _clampedByTime.clear();
+            }
             refreshClampedWarning(false);
 
             return true;
@@ -614,6 +621,45 @@ VectorBlur::refreshClampedWarning(bool clamped)
     if (current == QString::fromUtf8(message.c_str())) {
         node->clearPersistentMessage(false);
     }
+}
+
+std::uint64_t
+VectorBlur::clampGeneration()
+{
+    std::lock_guard<std::mutex> lock(_warningMutex);
+
+    return _clampGeneration;
+}
+
+void
+VectorBlur::reportClamped(double time,
+                          std::uint64_t generation,
+                          bool coversWholeImage,
+                          bool clamped)
+{
+    bool show = false;
+    {
+        std::lock_guard<std::mutex> lock(_warningMutex);
+        if (generation != _clampGeneration) {
+            return;
+        }
+        // A tile that clamps nothing says nothing about the rest of the frame.
+        if (coversWholeImage || clamped) {
+            _clampedByTime[time] = clamped;
+        }
+        // Renders ahead of or behind the timeline must not change what the current frame shows.
+        double shown = time;
+        const double current = getApp()->getTimeLine()->currentFrame();
+        if (_clampedByTime.find(current) != _clampedByTime.end()) {
+            shown = current;
+        }
+        const std::map<double, bool>::const_iterator it = _clampedByTime.find(shown);
+        if (it == _clampedByTime.end()) {
+            return;
+        }
+        show = it->second;
+    }
+    refreshClampedWarning(show);
 }
 
 void
@@ -839,6 +885,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
     const int sourceInput = plan.sourceInput;
 
+    const std::uint64_t generation = clampGeneration();
     Settings settings;
     readSettings(args.time, args.view, &settings);
     Layers layers;
@@ -1083,9 +1130,14 @@ VectorBlur::renderOp(const RenderActionArgs& args,
     };
     parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
-    if (anyClamped.load()) {
-        refreshClampedWarning(true);
+    // A cancelled render has not seen every pixel, so it cannot say the frame is unclamped.
+    bool coversWholeImage = !cancel.check();
+    for (const std::unique_ptr<Plane>& plane : planes) {
+        if (plane->dst && !roi.contains(plane->dst->getBounds())) {
+            coversWholeImage = false;
+        }
     }
+    reportClamped(args.time, generation, coversWholeImage, anyClamped.load());
 
     return eStatusOK;
 } // VectorBlur::renderOp

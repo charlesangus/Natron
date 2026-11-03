@@ -361,6 +361,17 @@ natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
 natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
+# SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
+# from the configure step is written to an include that ctest runs just before it.
+# A build configured with a MoonRay install bundles it, so MoonRayDelegate must fail, not skip, if
+# the plug-in is not registered (the test itself skips on a CPU the runtime gate refuses).
+if(NATRON_MOONRAY_PREFIX)
+    set(NATRON_MOONRAY_BUNDLED ON)
+else()
+    set(NATRON_MOONRAY_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)

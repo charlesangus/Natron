@@ -52,9 +52,9 @@ namespace {
 const char* const kMoonRayPluginId = "HdMoonrayRendererPlugin";
 
 // The MoonRay delegate comes from the build image (tools/ci/local/build-moonray.sh), and
-// AppManager registers it only on a CPU with AVX2, so a build in an older image or on an older
+// AppManager registers it only on a CPU that runs it, so a build in an older image or on an older
 // CPU has none. The bundled gtest has no GTEST_SKIP, so the test returns early on false;
-// NATRON_TEST_REQUIRE_MOONRAY=1 turns that skip into a failure.
+// NATRON_TEST_REQUIRE_MOONRAY=1 turns that skip into a failure on a CPU that runs MoonRay.
 bool
 moonRayOrSkip()
 {
@@ -62,9 +62,11 @@ moonRayOrSkip()
         return true;
     }
     const char* reason = "OpenUSD has no hd_moonray plug-in registered; this build image predates the "
-                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks AVX2";
+                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks an instruction set MoonRay needs (MoonRayRuntime::cpuRunsMoonRay)";
+    // A CPU the runtime gate refuses leaves the delegate unregistered by design, so it is only a
+    // failure where MoonRay can run.
     const char* require = std::getenv("NATRON_TEST_REQUIRE_MOONRAY");
-    if (require && (std::strcmp(require, "1") == 0)) {
+    if (require && (std::strcmp(require, "1") == 0) && MoonRayRuntime::cpuRunsMoonRay()) {
         ADD_FAILURE() << "NATRON_TEST_REQUIRE_MOONRAY=1 but " << reason;
     } else {
         std::printf("[  SKIPPED ] %s\n", reason);

@@ -115,6 +115,30 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
 - Screenshots of the prompt preview and the committed Beziers on a real plate are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
 
+## Phase 205.3: UAT round 1 fixes (user, 2026-11-02)
+
+- [ ] M205.P3.T1 — Interactive point density while the outline is shown
+  - files: the object-select interact and the mask-to-Bezier tracer, GUI script
+  - approach: before commit, the traced outline is shown as the Bezier it will become, and a density control (a slider in the viewer toolbar and/or a modifier+drag/scroll) re-traces it live with more or fewer points; Enter commits at the chosen density. Remember the last density for the next shape.
+  - verify: the GUI check changes density before commit and reads a different point count on the committed shape; one undo step for the commit.
+  - size: M
+- [ ] M205.P3.T2 — Undoing a committed shape returns to the segmentation
+  - files: object-select interact, commit undo command
+  - approach: undoing the commit removes the Beziers and restores the segmentation session (prompts, embedding, live outline) so the user can adjust and commit again; redo re-commits.
+  - verify: GUI check: commit, undo → prompts and outline are back and editable; adjust, commit again; redo after undo restores the first commit.
+  - size: M
+- [ ] M205.P3.T3 — Corner points may break their tangents
+  - files: mask-to-Bezier tracer (fitting), tracer tests
+  - approach: let the fitter mark corner points (high curvature change / angle threshold) with broken (independent) tangents instead of forcing smooth ones, so fewer points follow sharp silhouettes; smooth points stay smooth.
+  - verify: a tracer test on a mask with sharp corners (e.g. a star or a square with rounded sides) gets lower max distance to the mask edge at the same point count than smooth-only fitting, and corner points have unequal/independent tangents.
+  - size: M
+- [ ] M205.P3.T4 — No cost for Roto/RotoPaint when the tool isn't used
+  - files: object-select integration points (interact registration, overlays, per-frame/per-render hooks, model loading), tools/bench roto bench, GUI perf harness (M117)
+  - approach: audit every hook M205 adds on the Roto/RotoPaint/curve-host paths (draw, pen events, knob changes, renders, project load) and make each a no-op unless an object-select session is active; never load a model or allocate the embedding cache until the tool is chosen. Then measure: the roto/paint bench (tools/bench, as M224 uses) and the GUI perf harness on main vs this branch, Roto and RotoPaint with many shapes and strokes, interactive drag and render.
+  - verify: bench numbers on main vs branch within noise (record them in this file); no model file is opened in a session that never picks the tool.
+  - size: M
+
+
 ## Decisions
 
 - 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.

@@ -720,6 +720,13 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         }
     }
 
+    if (_imp->slider && !spinBoxesGrid && !_imp->dimensionSwitchButton) {
+        // A knob without a display range keeps its slider hidden, and the row would then spread
+        // its fixed-size spinboxes across the width; this keeps them packed left. A shown
+        // slider's stretch factor outweighs this one's.
+        containerLayout->addStretch(0);
+    }
+
     addExtraWidgets(containerLayout);
 
     if (_imp->dimensionLines) {

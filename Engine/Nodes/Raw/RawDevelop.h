@@ -56,6 +56,8 @@ struct Chain {
     NodePtr temperature;
     NodePtr highlights;
     NodePtr demosaic;
+    // DenoiseProfiled, only with the developRawDenoise preference on.
+    NodePtr denoise;
     NodePtr inputColor;
     NodePtr colorCalibration;
     NodePtr backdrop;

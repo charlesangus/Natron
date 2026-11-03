@@ -141,6 +141,9 @@ public:
 
     const QString& getExportDocsPath() const;
 
+    bool isListModels() const;
+    const QString& getDownloadModelId() const;
+
 private:
 
     std::unique_ptr<CLArgsPrivate> _imp;

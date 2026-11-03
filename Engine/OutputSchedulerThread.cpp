@@ -501,6 +501,41 @@ struct OutputSchedulerThreadPrivate
     }
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    int getNLiveRenderThreads() const
+    {
+        assert(!renderThreadsMutex.tryLock());
+        int ret = 0;
+        for (RenderThreads::const_iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
+            if (!it->thread->mustQuit()) {
+                ++ret;
+            }
+        }
+
+        return ret;
+    }
+
+    // 0 flags every thread. Otherwise the last live thread is kept, because a quitting thread leaves the queued
+    // frames to the others and the render would wait forever for them.
+    void flagRenderThreadsToQuit(int nThreadsToStop)
+    {
+        assert(!renderThreadsMutex.tryLock());
+        int toStop = nThreadsToStop;
+        if (nThreadsToStop > 0) {
+            toStop = std::min(nThreadsToStop, getNLiveRenderThreads() - 1);
+            if (toStop <= 0) {
+                return;
+            }
+        }
+        int i = 0;
+        for (RenderThreads::iterator it = renderThreads.begin();
+             it != renderThreads.end() && (nThreadsToStop == 0 || i < toStop); ++it) {
+            if (!it->thread->mustQuit()) {
+                it->thread->scheduleForRemoval();
+                ++i;
+            }
+        }
+    }
+
     void removeQuitRenderThreadsInternal()
     {
         for (;; ) {
@@ -1495,8 +1530,12 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
         if (!renderFinished) {
             assert(state == eThreadStateActive);
             QMutexLocker bufLocker (&_imp->bufMutex);
-            // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
-            _imp->bufEmptyCondition.wait(bufLocker.mutex());
+            // An abort or quit raised since resolveState() wakes this condition under bufMutex only after flagging,
+            // so re-checking the flags here means that wake-up is either seen now or arrives once waiting.
+            if (!isBeingAborted() && !mustQuitThread()) {
+                // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
+                _imp->bufEmptyCondition.wait(bufLocker.mutex());
+            }
         } else {
             if ( !_imp->engine->isPlaybackAutoRestartEnabled() ) {
                 //Move the timeline to the last rendered frame to keep it in sync with what is displayed
@@ -1570,72 +1609,73 @@ void
 OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
                                              int *lastNThreads)
 {
-    ///////////
-    /////If we were analysing the CPU activity, now set the appropriate number of threads to render.
-    int optimalNThreads;
-
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
 
-    ///How many current threads are used by THIS renderer
-    int currentParallelRenders = getNRenderThreads();
-
-    *lastNThreads = currentParallelRenders;
+    // The load is read before renderThreadsMutex is taken so that this lock is never held while the
+    // RenderScheduler's is. Counting and creating or flagging under one lock keeps two finishing frame
+    // threads from both acting on the same count.
+    QThreadPool* pool = QThreadPool::globalInstance();
+    const int poolActive = pool->activeThreadCount();
+    bool stoppedOne = false;
 
     if (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph) {
         // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
         // frame is opened only while the work already queued cannot keep every pool thread busy.
-        QThreadPool* pool = QThreadPool::globalInstance();
         const int poolMax = std::max(1, pool->maxThreadCount());
         const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
         int schedulerRunning = 0;
         int schedulerReady = 0;
         appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
+        const bool loadAllowsMore = (schedulerRunning + schedulerReady < poolMax) && (poolActive < poolMax);
 
-        if ((currentParallelRenders == 0) || ((currentParallelRenders < cap) && (schedulerRunning + schedulerReady < poolMax) && (pool->activeThreadCount() < poolMax))) {
-            QMutexLocker l(&_imp->renderThreadsMutex);
-
-            _imp->appendRunnable(createRunnable());
-            *newNThreads = currentParallelRenders + 1;
-        } else if (currentParallelRenders > cap) {
-            stopRenderThreads(1);
-            *newNThreads = currentParallelRenders - 1;
-        } else {
-            *newNThreads = currentParallelRenders;
-        }
-
-        return;
-    }
-
-    /// How many threads are running in the application
-    int runningThreads = appPTR->getNRunningThreads() + QThreadPool::globalInstance()->activeThreadCount();
-
-    if (userSettingParallelThreads == 0) {
-        ///User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
-        ///as there are cores
-        optimalNThreads = appPTR->getHardwareIdealThreadCount();
-    } else {
-        optimalNThreads = userSettingParallelThreads;
-    }
-    optimalNThreads = std::max(1, optimalNThreads);
-
-
-    if ( ( (runningThreads < optimalNThreads) && (currentParallelRenders < optimalNThreads) ) || (currentParallelRenders == 0) ) {
-        ////////
-        ///Launch 1 thread
         QMutexLocker l(&_imp->renderThreadsMutex);
-
-        _imp->appendRunnable( createRunnable() );
-        *newNThreads = currentParallelRenders +  1;
-    } else if ( (runningThreads > optimalNThreads) && (currentParallelRenders > optimalNThreads) ) {
-        ////////
-        ///Stop 1 thread
-        stopRenderThreads(1);
-        *newNThreads = currentParallelRenders - 1;
+        const int live = _imp->getNLiveRenderThreads();
+        *lastNThreads = live;
+        if ((live == 0) || ((live < cap) && loadAllowsMore)) {
+            _imp->appendRunnable(createRunnable());
+            *newNThreads = live + 1;
+        } else if (live > cap) {
+            _imp->flagRenderThreadsToQuit(1);
+            _imp->removeAllQuitRenderThreads();
+            *newNThreads = live - 1;
+            stoppedOne = true;
+        } else {
+            *newNThreads = live;
+        }
     } else {
-        /////////
-        ///Keep the current count
-        *newNThreads = std::max(1, currentParallelRenders);
+        /// How many threads are running in the application
+        const int runningThreads = appPTR->getNRunningThreads() + poolActive;
+
+        int optimalNThreads;
+        if (userSettingParallelThreads == 0) {
+            /// User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
+            /// as there are cores
+            optimalNThreads = appPTR->getHardwareIdealThreadCount();
+        } else {
+            optimalNThreads = userSettingParallelThreads;
+        }
+        optimalNThreads = std::max(1, optimalNThreads);
+
+        QMutexLocker l(&_imp->renderThreadsMutex);
+        const int live = _imp->getNLiveRenderThreads();
+        *lastNThreads = live;
+        if (((runningThreads < optimalNThreads) && (live < optimalNThreads)) || (live == 0)) {
+            _imp->appendRunnable(createRunnable());
+            *newNThreads = live + 1;
+        } else if ((runningThreads > optimalNThreads) && (live > optimalNThreads)) {
+            _imp->flagRenderThreadsToQuit(1);
+            _imp->removeAllQuitRenderThreads();
+            *newNThreads = live - 1;
+            stoppedOne = true;
+        } else {
+            *newNThreads = std::max(1, live);
+        }
+    }
+
+    if (stoppedOne) {
+        QMutexLocker framesLocker(&_imp->framesToRenderMutex);
+        _imp->framesToRenderNotEmptyCond.wakeAll();
     }
 }
 
@@ -1986,7 +2026,11 @@ OutputSchedulerThread::getNRenderThreads() const
 {
     QMutexLocker l(&_imp->renderThreadsMutex);
 
+#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    return _imp->getNLiveRenderThreads();
+#else
     return (int)_imp->renderThreads.size();
+#endif
 }
 
 int
@@ -2002,21 +2046,12 @@ OutputSchedulerThread::stopRenderThreads(int nThreadsToStop)
 {
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     {
-        ///First flag the number of threads to stop
         QMutexLocker l(&_imp->renderThreadsMutex);
-        int i = 0;
-        for (RenderThreads::iterator it = _imp->renderThreads.begin();
-             it != _imp->renderThreads.end() && (i < nThreadsToStop || nThreadsToStop == 0); ++it) {
-            if ( !it->thread->mustQuit() ) {
-                it->thread->scheduleForRemoval();
-                ++i;
-            }
-        }
+        _imp->flagRenderThreadsToQuit(nThreadsToStop);
 
         ///Clean-up remaining zombie threads that are no longer useful
         _imp->removeAllQuitRenderThreads();
     }
-
 
     ///Wake-up all threads to make sure that they are notified that they must quit
     {

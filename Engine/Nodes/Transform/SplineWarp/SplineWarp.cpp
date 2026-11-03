@@ -312,9 +312,19 @@ SplineWarp::initializeKnobs()
     _ui->createDisplayKnobs(page);
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
+    selectDefaultTool();
 
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // SplineWarp::initializeKnobs
+
+void
+SplineWarp::selectDefaultTool()
+{
+    KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
+    _ui->setCurrentTool(defaultAction);
+    _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
+    _ui->onToolChangedInternal(defaultAction);
+}
 
 void
 SplineWarp::updateClampEnabled(double time,
@@ -333,11 +343,7 @@ void
 SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
-
-    KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
-    _ui->setCurrentTool(defaultAction);
-    _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
-    _ui->onToolChangedInternal(defaultAction);
+    selectDefaultTool();
 }
 
 bool

@@ -337,9 +337,9 @@ struct SizeCase {
     double y;
 };
 
-// Sizes 1, 2, 6 and 40 alone, of both signs on one axis or across the two, which also orders a
-// vertical pass before a horizontal one; 46 and 63 make lines no longer than halfWidth + 2 on the
-// 64x48 source, and at a half scale size -1 is no pass at all without being identity.
+// Sizes 1, 2, 6 and 40 alone, of both signs on one axis or across the two; 46 and 63 make lines
+// no longer than halfWidth + 2 on the 64x48 source, and at a half scale size -1 is no pass at all
+// without being identity.
 const SizeCase kSizes[] = {
     { 1., 1. },
     { 2., 2. },
@@ -683,24 +683,21 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
                         }
                     }
                 }
-                const int halves[2][2] = {
-                    { std::max(0, (int)size.x), std::max(0, (int)size.y) },
-                    { std::max(0, -(int)size.x), std::max(0, -(int)size.y) },
-                };
+                // The knob's signs: negative dilates. The x pass runs before the y pass whatever
+                // their signs.
+                const int knobX = dilate ? -(int)size.x : (int)size.x;
+                const int knobY = dilate ? -(int)size.y : (int)size.y;
                 ErodeDilateKernels::LineScratch scratch;
-                for (int ph = 0; ph < 2; ++ph) {
-                    const bool takeMax = (ph == 0) ? dilate : !dilate;
-                    for (int c = 0; c < 4; ++c) {
-                        float* plane = &planes[(std::size_t)c * bw * bh];
-                        if (halves[ph][0] > 0) {
-                            for (int row = 0; row < bh; ++row) {
-                                ErodeDilateKernels::filterLine(plane + (std::size_t)row * bw, bw, 1, halves[ph][0], takeMax, scratch);
-                            }
+                for (int c = 0; c < 4; ++c) {
+                    float* plane = &planes[(std::size_t)c * bw * bh];
+                    if (knobX != 0) {
+                        for (int row = 0; row < bh; ++row) {
+                            ErodeDilateKernels::filterLine(plane + (std::size_t)row * bw, bw, 1, std::abs(knobX), knobX < 0, scratch);
                         }
-                        if (halves[ph][1] > 0) {
-                            for (int column = 0; column < bw; ++column) {
-                                ErodeDilateKernels::filterLine(plane + column, bh, bw, halves[ph][1], takeMax, scratch);
-                            }
+                    }
+                    if (knobY != 0) {
+                        for (int column = 0; column < bw; ++column) {
+                            ErodeDilateKernels::filterLine(plane + column, bh, bw, std::abs(knobY), knobY < 0, scratch);
                         }
                     }
                 }

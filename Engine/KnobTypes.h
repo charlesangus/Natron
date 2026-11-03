@@ -670,6 +670,11 @@ public:
     }
 
     /**
+     * @brief Also true while the active entry is one the menu lacks, which only its saved id keeps.
+     **/
+    virtual bool hasModificationsForSerialization() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief Fills-up the menu with the given entries and optionnally their tooltip.
      * @param entriesHelp Can either be empty, meaning no-tooltip or must be of the size of the entries.
      * @param mergingFunctor If not set, the internal menu will be completely reset and replaced with the given entries.

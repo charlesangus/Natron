@@ -651,20 +651,26 @@ TEST_F(NativeReadColorTest, ALoadedNodeKeepsItsPickAndFollowsTheDefaultOtherwise
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
+    // The PNG fixtures are tagged sRGB, which outranks the project default, so the guess reads
+    // an untagged DPX.
+    setProjectSpace("colorSpace16Bit", kSRGBSpace);
+    const std::string untagged = writeImage(tmp, "ten-bit.dpx", OIIO::TypeDesc::UINT16, 10, false);
+    ASSERT_FALSE(untagged.empty());
+
     NodePtr picked = createRead();
     setFile(picked, fixture("png-8bit.png"));
     userPicksInputSpace(picked, kLinearRec709Space);
     NodePtr guessed = createRead();
-    setFile(guessed, fixture("png-8bit.png"));
+    setFile(guessed, untagged);
     ASSERT_EQ(std::string(kSRGBSpace), fileSpace(guessed));
     const std::string pickedName = picked->getScriptName();
     const std::string guessedName = guessed->getScriptName();
 
-    setProjectSpace("colorSpace8Bit", kGamma22Space);
+    setProjectSpace("colorSpace16Bit", kGamma22Space);
 
     saveResetAndLoad(tmp, "native-read-colour.ntpz");
 
-    ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
+    ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory16Bit));
     picked = project()->getNodeByName(pickedName);
     guessed = project()->getNodeByName(guessedName);
     ASSERT_TRUE(bool(picked));

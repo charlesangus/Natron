@@ -946,6 +946,12 @@ KnobChoice::getEntries_mt_safe() const
 }
 
 bool
+KnobChoice::hasModificationsForSerialization() const
+{
+    return KnobIntBase::hasModificationsForSerialization() || !isActiveEntryPresentInEntries();
+}
+
+bool
 KnobChoice::isActiveEntryPresentInEntries() const
 {
     QMutexLocker k(&_entriesMutex);
@@ -1349,7 +1355,7 @@ KnobChoice::choiceRestoration(KnobChoice* knob,
             // we found a reasonable id
             _currentEntry = _entries[id]; // avoid numerous warnings in the GUI
         } else {
-            _currentEntry.id = optionID;
+            _currentEntry = ChoiceOption(optionID, optionID, std::string());
         }
     }
     invalidateContentHash();

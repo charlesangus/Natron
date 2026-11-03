@@ -25,8 +25,8 @@ gets the missing-plug-in node, like any absent plug-in.
 - `OfxRetired_Test` fails when a marker names an ID that no loaded bundle provides (a typo).
 - `NativePluginList_Test` fails when a marker names a replacement that is not a registered
   native plug-in.
-- `NativePluginList_Test` also fails when a retired ID is itself a native plug-in ID. Many
-  native nodes kept the ID of the OFX plug-in they replaced (`net.sf.openfx.GradePlugin`, for
-  one). The native registration already takes that ID's place, and `NativePluginList_Test`
-  checks that no OFX version of it is left, so a marker for it would hide nothing. Only an OFX
-  ID that no native node took over needs a marker.
+- `NativePluginList_Test` also fails when a retired ID is itself a native plug-in ID, since that
+  marker would retire the native node. No native node keeps the ID of the OFX plug-in it
+  replaces: native IDs are plain (`Grade`, not `net.sf.openfx.GradePlugin`) at major version 1,
+  which `NativePluginList_Test` checks too. Nothing maps an old OFX ID to its native
+  replacement.

@@ -595,6 +595,11 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         if ((index >= 0) && (index < (int)choiceData.entries.size())) {
             optionID = choiceData.entries[index];
         }
+        // An entry the menu lacks, such as a colourspace of another OCIO config, is kept by name
+        // so that a menu which has it again restores it.
+        if (!isChoice->isActiveEntryPresentInEntries()) {
+            optionID = isChoice->getActiveEntry().id;
+        }
         serialization->choiceOptionID = optionID;
         serialization->extraData = choiceData;
     }

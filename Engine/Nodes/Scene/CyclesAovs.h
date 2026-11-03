@@ -32,6 +32,7 @@
 #include <functional>
 #include <string>
 
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -40,6 +41,8 @@ PXR_NAMESPACE_CLOSE_SCOPE
 
 // Cycles' HdRendererPlugin type name.
 #define kRenderDelegateCyclesId "HdCyclesPlugin"
+// Cycles' HdRendererPlugin display name, which Hydra's scene index plug-in registry is keyed by.
+#define kRenderDelegateCyclesDisplayName "Cycles"
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,6 +52,23 @@ NATRON_NAMESPACE_ENTER
  **/
 namespace CyclesAovs {
 bool isCycles(const std::string& renderer) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Has Hydra tessellate the implicit surfaces (UsdGeom's Cube, Sphere, Cone, Cylinder,
+ * Capsule and Plane) into meshes for every Cycles engine made after it. The engine hands a
+ * delegate those prims as implicit-surface rprims, which Cycles does not take, and only Storm
+ * registers the scene index that turns them into meshes, so Cycles would render none of them.
+ * Must run before the engine is made: its render index builds its scene index chain once. Safe
+ * to call any number of times from any thread.
+ **/
+void registerSceneIndices();
+
+/**
+ * @brief What Cycles renders, for DelegateSupport::warningText(): its delegate's types and render
+ * contexts, the implicit surfaces registerSceneIndices() has made meshes of, and the shader ids
+ * hdCycles builds nodes of. Its prim types are empty when Cycles cannot be loaded.
+ **/
+const DelegateSupport::Support& support();
 
 /**
  * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and

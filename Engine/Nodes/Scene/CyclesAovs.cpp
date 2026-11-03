@@ -26,9 +26,17 @@
 #include "CyclesAovs.h"
 
 #include <limits>
+#include <mutex>
+#include <set>
+#include <vector>
 
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/retainedDataSource.h>
+#include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
+#include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
+#include <pxr/usd/sdr/registry.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
 #include <tbb/task_arena.h>
@@ -42,6 +50,70 @@ bool
 isCycles(const std::string& renderer)
 {
     return renderer == kRenderDelegateCyclesId;
+}
+
+namespace {
+    const TfTokenVector&
+    tessellatedTypes()
+    {
+        static const TfTokenVector types = { HdPrimTypeTokens->cube, HdPrimTypeTokens->sphere, HdPrimTypeTokens->cone, HdPrimTypeTokens->cylinder, HdPrimTypeTokens->capsule, HdPrimTypeTokens->plane };
+
+        return types;
+    }
+
+    // hdCycles builds a node of an id that names a Cycles node, bare or after "cycles_" or "cycles:",
+    // and maps these of UsdPreviewSurface's set; of the rest, an id Sdr knows is another renderer's or
+    // another part of that set, and one it does not cannot be told from a bare Cycles node name.
+    bool
+    takesShader(const TfToken& id)
+    {
+        static const std::set<TfToken> mapped = { TfToken("UsdPreviewSurface"), TfToken("UsdUVTexture"), TfToken("UsdPrimvarReader_float"), TfToken("UsdPrimvarReader_float2"), TfToken("UsdPrimvarReader_float3"), TfToken("UsdPrimvarReader_float4"), TfToken("UsdPrimvarReader_int") };
+        static const std::set<TfToken> known = [] {
+            const SdrIdentifierVec ids = SdrRegistry::GetInstance().GetShaderNodeIdentifiers();
+
+            return std::set<TfToken>(ids.begin(), ids.end());
+        }();
+
+        if ((id.GetString().rfind("cycles", 0) == 0) || mapped.count(id)) {
+            return true;
+        }
+
+        return !known.count(id);
+    }
+} // anon namespace
+
+void
+registerSceneIndices()
+{
+    static std::once_flag once;
+    std::call_once(once, []() {
+        const TfTokenVector& types = tessellatedTypes();
+        const std::size_t count = types.size();
+        const HdDataSourceBaseHandle toMesh = HdRetainedTypedSampledDataSource<TfToken>::New(HdsiImplicitSurfaceSceneIndexTokens->toMesh);
+        const std::vector<HdDataSourceBaseHandle> modes(count, toMesh);
+        HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
+            kRenderDelegateCyclesDisplayName,
+            [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
+                return HdsiImplicitSurfaceSceneIndex::New(input, args);
+            },
+            HdRetainedContainerDataSource::New(count, types.data(), modes.data()),
+            0,
+            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    });
+}
+
+const DelegateSupport::Support&
+support()
+{
+    static const DelegateSupport::Support cycles = [] {
+        DelegateSupport::Support probed = DelegateSupport::probe(kRenderDelegateCyclesId);
+        probed.tessellated = tessellatedTypes();
+        probed.takesShader = takesShader;
+
+        return probed;
+    }();
+
+    return cycles;
 }
 
 void

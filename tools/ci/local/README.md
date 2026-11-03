@@ -149,15 +149,22 @@ content-hash tag then changes and the next CI run publishes a new image.
 ### Cycles layer
 
 The image carries the Cycles Hydra render delegate, CPU devices only.
-`tools/ci/local/build-cycles.sh` fetches the upstream standalone Cycles release
-(`blender/cycles`, Apache-2.0) at the tag and SHA-256 the `Dockerfile`'s
-`ARG NATRON_CYCLES_VERSION` / `NATRON_CYCLES_SHA256` pin, builds only the
+`tools/ci/local/build-cycles.sh` fetches the project's Cycles fork,
+`charlesangus/cycles` branch `natron/deep-5.2` (upstream `blender/cycles`
+v5.2.0 plus the deep EXR output and traced-lens camera commits first published
+at `Niik-l/cycles`), at the repository, commit and SHA-256 of the
+`Dockerfile`'s `ARG NATRON_CYCLES_REPO` / `NATRON_CYCLES_COMMIT` /
+`NATRON_CYCLES_SHA256` pin, builds only the
 `hdCycles` target against the image's own USD, OpenImageIO, OpenEXR, TBB,
 Embree and OpenImageDenoise, and installs it into USD's plug-in directory:
 
 - `/usr/local/plugin/usd/hdCycles.so`
 - `/usr/local/plugin/usd/hdCycles/resources/plugInfo.json`
 - `/usr/local/plugin/usd/hdCycles/LICENSE`
+- `/usr/local/plugin/usd/hdCycles/SOURCE` (repository, commit and licences)
+
+Cycles is Apache-2.0. The branch's two deep-sample headers from Blender
+(`src/session/IMB_deep_sample*.hh`) are GPL-2.0-or-later. `SOURCE` records both.
 
 USD discovers it there like `hdStorm`, so neither Natron nor its tests set
 `PXR_PLUGINPATH_NAME`, and `tools/release/stage-bundle.sh` ships it with the
@@ -170,8 +177,9 @@ layer cache, but a CI runner without that cache rebuilds it with every image.
 `NATRON_CYCLES_OIDN=OFF` builds without the OpenImageDenoise denoiser, which
 removes OpenImageDenoise (about 45 MB compressed) from the AppImage.
 
-To bump Cycles, set the new tag, then the SHA-256 of
-`https://github.com/blender/cycles/archive/refs/tags/<tag>.tar.gz`.
+To bump Cycles, push the new commit to the fork's branch, set it as
+`NATRON_CYCLES_COMMIT`, then set the SHA-256 of
+`<NATRON_CYCLES_REPO>/archive/<commit>.tar.gz`.
 
 ### If the pull fails partway through
 

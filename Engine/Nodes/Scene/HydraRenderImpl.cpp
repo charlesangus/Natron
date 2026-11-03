@@ -76,6 +76,7 @@
 #endif
 
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
@@ -138,6 +139,10 @@ struct EngineEntry {
     TfToken depthAov;
     bool normal = false;
     bool normalInCameraSpace = false;
+    // What DelegateSupport finds the delegate cannot render of the stage, and whether that was
+    // found since the stage or the delegate last changed.
+    std::string supportWarning;
+    bool supportChecked = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -147,8 +152,8 @@ struct EngineEntry {
     bool rendered = false;
     std::uint64_t serial = 0;
     U64 writeCount = 0;
-    // What the delegate could not render of that render's stage, and the errors it logged naming
-    // no prim of it; empty for a delegate that reports neither.
+    // What the delegate could not render of that render's stage, by DelegateSupport and by its
+    // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
     UsdTimeCode time;
@@ -796,6 +801,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
     }
     const bool edited = entry.stage->sync(request.scene);
+    if (edited || rendererChanged) {
+        entry.supportWarning.clear();
+        entry.supportChecked = false;
+    }
     std::optional<StormGLSection> section;
     enterGLSection(&section);
     // A Storm engine goes inside the section: its HgiGL garbage is shared with the main thread's.
@@ -829,6 +838,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // touches GL.
             parameters.gpuEnabled = false;
         }
+        CyclesAovs::registerSceneIndices();
         std::string startError;
         const std::function<void()> make = [&]() {
             TfErrorMark mark;
@@ -987,11 +997,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
-        entry.warning.clear();
+        // Only Cycles is probed: making a delegate to ask it its types may start a render.
+        if (!entry.supportChecked) {
+            entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();
+            entry.supportChecked = true;
+        }
+        entry.warning = entry.supportWarning;
         entry.errors.clear();
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
-            entry.warning = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
+            const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
+            if (!logged.empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + logged;
+            }
             entry.errors = MoonRayAovs::errorText(stage, notices);
         }
     }

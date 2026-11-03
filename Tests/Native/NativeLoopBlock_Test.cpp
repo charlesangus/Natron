@@ -64,7 +64,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -1488,11 +1488,11 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsContextVariablesFromASetBelow)
     NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
-    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(constant && begin && body && end && set);
     EffectInstancePtr setEffect = set->getEffectInstance();
     KnobDoublePtr variable = setEffect->createDoubleKnob("n", "n", 1);
-    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
     ASSERT_TRUE(bool(variables));
     ASSERT_TRUE(variables->addKnob(variable));
     setEffect->recreateUserKnobs(false);

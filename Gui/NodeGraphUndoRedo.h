@@ -213,7 +213,8 @@ private:
 };
 
 /*
- * @brief Connects an unconnected input to newSrc. applyNow() makes the connection while a node
+ * @brief Changes an input's source from oldSrc to newSrc, either of which may be null: a kiss
+ * connects an unconnected input, a shake disconnects one. applyNow() makes the change while a node
  * drag is still under way; the first redo(), when the drag's command is pushed, then does nothing.
  */
 class KissConnectCommand
@@ -223,6 +224,7 @@ class KissConnectCommand
 public:
     KissConnectCommand(NodeGraph* graph,
                        Edge* edge,
+                       const NodeGuiPtr& oldSrc,
                        const NodeGuiPtr& newSrc,
                        QUndoCommand* parent = 0);
 

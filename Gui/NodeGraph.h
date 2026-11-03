@@ -298,6 +298,14 @@ private:
 
     QUndoCommand* takeKissCommand(NodesGuiList* touched);
 
+    void disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken, const std::set<NodeGuiPtr>& moving);
+
+    void extendCutLine(const QPointF& scenePos);
+
+    void clearCutLine();
+
+    void commitCut();
+
     void cancelNodeDrag();
 
     QUndoCommand* takeDragMoveCommand(QUndoCommand* parent, NodesGuiList* moved);

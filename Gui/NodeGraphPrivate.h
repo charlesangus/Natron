@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -38,6 +39,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
+#include <QElapsedTimer>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPixmapItem>
@@ -52,6 +54,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeGraphPickUp.h"
+#include "Gui/NodeGraphShake.h"
 #include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 
 #include "Serialization/SerializationFwd.h"
@@ -68,8 +71,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-enum EventStateEnum
-{
+enum EventStateEnum {
     eEventStateNone,
     eEventStateMovingArea,
     eEventStateZoomingArea,
@@ -78,6 +80,7 @@ enum EventStateEnum
     eEventStateDraggingNode,
     eEventStateResizingBackdrop,
     eEventStateSelectionRect,
+    eEventStateCutting,
 };
 
 class Navigator
@@ -203,9 +206,10 @@ public:
     bool _spliceCancelled = false;
 
     // While Ctrl is held during a node drag the nearest kiss is previewed, and releasing Ctrl makes
-    // it. Each kiss is made at once, as a child of _kissCommand, which is pushed with the move on
-    // release so that the drag stays one undo step. Escape undoes the drag's kisses and, like
-    // _spliceCancelled, keeps the rest of the drag from making more.
+    // it. Each kiss, like each pipe a shake cuts, is made at once, as a child of _kissCommand, which
+    // is pushed with the move on release so that the drag stays one undo step. Escape undoes the
+    // drag's kisses and shakes and, like _spliceCancelled, keeps the rest of the drag from making
+    // more.
     bool _kissAiming = false;
     bool _kissCancelled = false;
     NodeGuiPtr _kissDragged;
@@ -215,6 +219,10 @@ public:
     Edge* _kissPreviewEdge = nullptr;
     QUndoCommand* _kissCommand = nullptr;
     NodesGuiList _kissTouched;
+
+    // Fed the cursor's scene position on every move of a node drag, timed from the press.
+    NodeGraphShakeDetector _shakeDetector;
+    QElapsedTimer _dragClock;
 
     // An arrow picked up by a click and following the cursor: an input arrow, or a node's output
     // stub. It is kept apart from _evtState so that panning and zooming still run while it is
@@ -233,6 +241,12 @@ public:
     bool cursorSet;
     std::map<NodeGuiPtr, NodesGuiList> _nodesWithinBDAtPenDown;
     QRectF _selectionRect;
+
+    // eEventStateCutting: the cut line drawn so far, in _root's coordinates so that panning keeps
+    // it on the pipes, and the pipes it crosses by destination and input, highlighted until the
+    // cut ends.
+    std::vector<QPointF> _cutLine;
+    std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>> _cutPipes;
     bool _bendPointsVisible;
     bool _knobLinksVisible;
     double _accumDelta;

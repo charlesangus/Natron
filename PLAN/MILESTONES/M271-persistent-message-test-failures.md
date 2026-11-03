@@ -21,7 +21,7 @@ Two tests fail 5 times out of 5 on main after M178 - Render Context Core merged,
 
 ## Phase 271.1: Diagnose
 
-- [ ] M271.P1.T1 — Reproduce and find the cause
+- [x] M271.P1.T1 — Reproduce and find the cause
   - files: `Tests/PersistentMessage_Test.cpp`, `Tests/ShuffleRender_Test.cpp`, `Engine/Node.cpp` (read only), this milestone file
   - approach: Build main in debug and run both tests 5 times under ctest, with and without `NATRON_DEV_GPU=1`; then check out the commit before M178 and compare. Print which message source and text `hasPersistentMessage()` reports at the failing line. Confirm or refute `contextCountWarningMessage`. Record the cause, and whether lavapipe PR CI also fails, under `## Decisions`.
   - verify: the cause names a source line and the evidence (message text, bisect commit) is recorded.
@@ -29,7 +29,7 @@ Two tests fail 5 times out of 5 on main after M178 - Render Context Core merged,
 
 ## Phase 271.2: Fix
 
-- [ ] M271.P2.T1 — Fix the cause and guard it
+- [x] M271.P2.T1 — Fix the cause and guard it
   - files: the file named by P1.T1 (likely `Engine/Node.cpp`), `Tests/PersistentMessage_Test.cpp`, `Tests/ShuffleRender_Test.cpp`
   - approach: Fix at the source: clear or never raise the message where the premise says it must not exist, rather than loosening the assertions. If the tests' premise is wrong, fix the tests and record why. Keep M178's own tests passing.
   - verify: both tests pass 5 of 5 runs in a debug build with `NATRON_DEV_GPU=1` and without it; `ctest -R "PersistentMessage|ShuffleRender|RenderContext"` passes.
@@ -41,3 +41,4 @@ Two tests fail 5 times out of 5 on main after M178 - Render Context Core merged,
 
 - 2026-10-28: cause (by code reading; RADV confirmation pending): a node delivered by a GPU region never ran renderRoI's clear of a stale missing-channel error (EffectInstanceRenderRoI.cpp:1823), so a CPU render's error stuck after a later GPU render of the same Shuffle. contextCountWarningMessage ruled out (needs fan-outs). Fix: runGpuRegion retires channel-selector messages on success (retireChannelSelectorMessages); makeGpuTaskPlanes refuses nodes failing Node::checkSelectedChannelsPresent so the CPU posts the error. Regression tests in NativeGpuChain and GpuRegionFallback (GPU-forced, skip without a GPU). Why the tests passed just before M178 is not established.
 - 2026-11-02 — Codex review: the regression now drives the real CPU-failure → GPU-region sequence; duplicate channel check removed (e2324dab8, milestone/m271-persistent-message-test-failures). RADV 5/5 can't run on either host (Intel here, NVIDIA on the gpu host); PR CI's lavapipe legs stand in, and the pre-M178 bisect was not done (PM).
+- 2026-11-02 — Merged (PR #142) after the Codex review round; PR CI (lavapipe, both schedulers, debug) green. RADV 5/5 not run (no AMD host); pre-M178 bisect not done (PM).

@@ -675,7 +675,7 @@ LensCorrect::lookup(double time,
                         }
                     }
                     if (!searched.empty() || fixedLens) {
-                        found.lens = std::make_shared<const lfLens>(*lenses[index]);
+                        found.lens = LensfunRuntime::copyLens(*lenses[index]);
                         found.lensFound = mlstr(lenses[index]->Maker) + " " + mlstr(lenses[index]->Model);
                     }
                     lf_free(lenses);

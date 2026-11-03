@@ -91,7 +91,7 @@ findLens(const char* maker,
     std::shared_ptr<lfLens> lens;
     const lfLens** lenses = db->FindLenses(cameras[0], nullptr, lensName);
     if (lenses) {
-        lens = std::make_shared<lfLens>(*lenses[0]);
+        lens = LensfunRuntime::copyLens(*lenses[0]);
         lf_free(lenses);
     }
     lf_free(cameras);
@@ -621,7 +621,10 @@ TEST_F(NativeLensCorrectTest, FixedLensCameraNeedsNoLensName)
     LensCorrect* effect = lensCorrectOf(node);
     ASSERT_TRUE(effect != nullptr);
     const LensCorrect::Lookup found = effect->lookup(kTime, ViewIdx(0));
-    EXPECT_NE(std::string::npos, found.lensFound.find("G12")) << found.lensFound;
+    // lensfun's English name for every compact's lens is "fixed lens"; its untranslated model names
+    // the camera.
+    ASSERT_TRUE(bool(found.lens)) << found.lensFound;
+    EXPECT_NE(std::string::npos, std::string(found.lens->Model).find("G12")) << found.lensFound;
     EXPECT_EQ(std::string("lens"), found.focalFrom);
     EXPECT_TRUE(found.warning.empty()) << found.warning;
 }

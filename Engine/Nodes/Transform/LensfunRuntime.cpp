@@ -119,6 +119,17 @@ queryMutex()
 
     return mutex;
 }
+
+std::shared_ptr<lfLens>
+copyLens(const lfLens& lens)
+{
+    std::shared_ptr<lfLens> copy = std::make_shared<lfLens>(lens);
+
+    copy->CenterX = lens.CenterX;
+    copy->CenterY = lens.CenterY;
+
+    return copy;
+}
 } // namespace LensfunRuntime
 
 NATRON_NAMESPACE_EXIT

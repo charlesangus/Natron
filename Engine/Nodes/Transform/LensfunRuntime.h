@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <mutex>
 #include <string>
 
 struct lfDatabase;
+struct lfLens;
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,6 +65,12 @@ const lfDatabase* database(std::string* error = nullptr);
  * database's own entries while it searches.
  **/
 std::mutex& queryMutex();
+
+/**
+ * @brief A copy of a database lens that outlives its query. lensfun's copy constructor leaves the
+ * lens's CenterX and CenterY uninitialised, so they are copied here.
+ **/
+std::shared_ptr<lfLens> copyLens(const lfLens& lens);
 } // namespace LensfunRuntime
 
 NATRON_NAMESPACE_EXIT

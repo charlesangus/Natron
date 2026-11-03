@@ -124,6 +124,13 @@ float nanValue()
     return asfloat(0x7fc00000u);
 }
 
+// Vulkan only bounds asin by this atan2 form, and Mesa lowers asin to a short polynomial about 1e-4
+// radian off, which moves a fisheye's edge pixels by hundredths of a pixel.
+float accurateAsin(float u)
+{
+    return atan2(u, sqrt(max(0.0, (1.0 - u) * (1.0 + u))));
+}
+
 void erectWrap(inout float x, inout float theta)
 {
     if (theta < 0.0)
@@ -306,14 +313,14 @@ float2 applyCoord(uint op, uint base, float2 p)
         const float r = sqrt(x * x + y * y);
         float theta;
         if (op == kGeomOrthographicERect)
-            theta = (r < 1.0) ? asin(r) : kPi / 2.0;
+            theta = (r < 1.0) ? accurateAsin(r) : kPi / 2.0;
         else if (op == kGeomEquisolidERect)
-            theta = (r < 2.0) ? 2.0 * asin(r / 2.0) : kPi / 2.0;
+            theta = (r < 2.0) ? 2.0 * accurateAsin(r / 2.0) : kPi / 2.0;
         else
         {
             if (r > kThobyK1)
                 return float2(kHuge, kHuge);
-            theta = asin(r / kThobyK1) / kThobyK2;
+            theta = accurateAsin(r / kThobyK1) / kThobyK2;
         }
         const float phi = atan2(y, x);
         const float s = (theta == 0.0) ? 1.0 : (sin(theta) / theta);
@@ -343,7 +350,7 @@ float2 applyCoord(uint op, uint base, float2 p)
         const float cosc = cos(c);
         if (abs(rh) <= kEpsilon)
             return float2(0.0, kHuge);
-        const float lat = asin(y * sinc / rh);
+        const float lat = accurateAsin(y * sinc / rh);
         if (abs(cosc) >= kEpsilon || abs(x) >= kEpsilon)
             return float2(atan2(x * sinc, cosc * rh), lat);
         return float2(kHuge, lat);

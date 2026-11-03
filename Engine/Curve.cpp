@@ -29,6 +29,7 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -54,23 +55,6 @@ struct KeyFrameCloner
     {
         return KeyFrame(kf);
     }
-};
-
-class KeyFrameTimePredicate
-{
-public:
-    KeyFrameTimePredicate(double t)
-        : _t(t)
-    {
-    };
-
-    bool operator()(const KeyFrame & f)
-    {
-        return f.getTime() == _t;
-    }
-
-private:
-    double _t;
 };
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -493,6 +477,48 @@ Curve::cloneAndCheckIfChanged(const Curve& other)
 }
 
 void
+Curve::copyKeyFrameFrom(const Curve& other,
+                        double time)
+{
+    if (&other == this) {
+        return;
+    }
+    // The first and last keys of a periodic curve are each other's neighbours.
+    if (other.isCurvePeriodic() || isCurvePeriodic()) {
+        clone(other);
+
+        return;
+    }
+
+    KnobContentWrite write;
+    std::vector<KeyFrame> span;
+    {
+        QMutexLocker l(&other._imp->_lock);
+        const KeyFrameSet& keys = other._imp->keyFrames;
+        const KeyFrame probe(time, 0.);
+        KeyFrameSet::const_iterator first = keys.lower_bound(probe);
+        if (first != keys.begin()) {
+            --first;
+        }
+        KeyFrameSet::const_iterator last = keys.upper_bound(probe);
+        if (last != keys.end()) {
+            ++last;
+        }
+        span.assign(first, last);
+    }
+
+    const double spanStart = span.empty() ? time : std::min(time, span.front().getTime());
+    const double spanEnd = span.empty() ? time : std::max(time, span.back().getTime());
+
+    QMutexLocker l(&_imp->_lock);
+    KeyFrameSet::iterator eraseStart = _imp->keyFrames.lower_bound(KeyFrame(spanStart, 0.));
+    KeyFrameSet::iterator eraseEnd = _imp->keyFrames.upper_bound(KeyFrame(spanEnd, 0.));
+    _imp->keyFrames.erase(eraseStart, eraseEnd);
+    _imp->keyFrames.insert(span.begin(), span.end());
+    onCurveChanged();
+}
+
+void
 Curve::clone(const Curve & other,
              SequenceTime offset,
              const RangeD* range)
@@ -864,6 +890,37 @@ Curve::getPreviousKeyframeTime(double time,
         *k = *upper;
 
         return true;
+    }
+}
+
+void
+Curve::getKeyFrameTimesAround(double time,
+                              int reach,
+                              double* before,
+                              double* after) const
+{
+    assert(reach > 0);
+    *before = -std::numeric_limits<double>::infinity();
+    *after = std::numeric_limits<double>::infinity();
+
+    QMutexLocker l(&_imp->_lock);
+    const KeyFrameSet& keys = _imp->keyFrames;
+    const KeyFrame probe(time, 0.);
+    KeyFrameSet::const_iterator lo = keys.lower_bound(probe);
+    int n = 0;
+    while ((n < reach) && (lo != keys.begin())) {
+        --lo;
+        ++n;
+    }
+    if (n == reach) {
+        *before = lo->getTime();
+    }
+    KeyFrameSet::const_iterator hi = keys.upper_bound(probe);
+    for (n = 1; (n < reach) && (hi != keys.end()); ++n) {
+        ++hi;
+    }
+    if (hi != keys.end()) {
+        *after = hi->getTime();
     }
 }
 
@@ -1925,7 +1982,7 @@ KeyFrameSet::const_iterator
 Curve::findWithTime(const KeyFrameSet& keys,
                     double time)
 {
-    return std::find_if( keys.begin(), keys.end(), KeyFrameTimePredicate(time) );
+    return keys.find(KeyFrame(time, 0.));
 }
 
 KeyFrameSet::const_iterator

@@ -1,0 +1,5 @@
+slang_add_kernel(wav_hat_v Kernels/wavelets.slang ENTRY wav_hat_v REGISTRY NatronGpu)
+slang_add_kernel(wav_hat_h Kernels/wavelets.slang ENTRY wav_hat_h REGISTRY NatronGpu)
+slang_add_kernel(wav_bspline_v Kernels/wavelets.slang ENTRY wav_bspline_v REGISTRY NatronGpu)
+slang_add_kernel(wav_bspline_h Kernels/wavelets.slang ENTRY wav_bspline_h REGISTRY NatronGpu)
+slang_add_kernel(wav_add Kernels/wavelets.slang ENTRY wav_add REGISTRY NatronGpu)

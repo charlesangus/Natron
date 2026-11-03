@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,43 @@ readReference(const std::string& path,
 
     return true;
 }
+
+/**
+ * Half the spacing of half floats around v: how far a reference stored as half float may sit
+ * from the float darktable exported.
+ **/
+inline double
+halfFloatRounding(double v)
+{
+    const double a = std::fabs(v);
+
+    // Below 2^-14 half floats are subnormal, 2^-24 apart.
+    if (a < std::ldexp(1., -14)) {
+        return std::ldexp(1., -25);
+    }
+    int exponent = 0;
+    (void)std::frexp(a, &exponent);
+
+    // a is in [2^(exponent - 1), 2^exponent), where half floats are 2^(exponent - 11) apart.
+    return std::ldexp(1., exponent - 12);
+}
+
+/**
+ * The error of got against a sample of a half float reference, beyond the reference's own
+ * rounding, so the storage format does not count against a tolerance.
+ **/
+inline double
+halfFloatError(double got,
+               double want)
+{
+    if (got == want) {
+        return 0.;
+    }
+    if (!std::isfinite(got) || !std::isfinite(want)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::max(0., std::fabs(got - want) - halfFloatRounding(want));
+}
 } // namespace RawReference
 
 /**
@@ -265,12 +303,15 @@ protected:
     /**
      * Renders site's crop of output, converts it to linear Rec. 709 and compares it with
      * reference, printing the mean and largest errors relative to the reference's mean level.
+     * Without byPassCache the caches are kept, so jobs that vary only a node below an unchanged
+     * chain decode and develop the file once.
      **/
     void compareCrop(const char* name,
                      const RawReference::CropSite& site,
                      const NodePtr& output,
                      const char* reference,
-                     const RawReference::Tolerance& tolerance)
+                     const RawReference::Tolerance& tolerance,
+                     bool byPassCache = true)
     {
         using namespace RawReference;
 
@@ -293,7 +334,7 @@ protected:
         const int y1 = (int)rod.y2 - site.top - kCropSize;
         const RectI window((int)rod.x1 + site.left, y1, (int)rod.x1 + site.left + kCropSize, y1 + kCropSize);
         RenderedPlane plane;
-        ASSERT_TRUE(renderRawTestPlane(output, window, &plane, &error)) << name << ": " << error;
+        ASSERT_TRUE(renderRawTestPlane(output, window, &plane, &error, byPassCache)) << name << ": " << error;
         ASSERT_GE(plane.channels.size(), 3u) << name;
 
         const RawColorMath::Mat3 toRec709 = workingToRec709();

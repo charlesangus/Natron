@@ -319,7 +319,6 @@ struct RenderStatsPrivate
     std::atomic<int> gpuStripHalvings;
     std::atomic<int> gpuStripPipelinesSerialized;
     std::atomic<int> gpuPipelinedRegions;
-    std::atomic<int> gpuCalibrationSkipped;
     std::atomic<unsigned long long> peakDeviceBytes;
 
     // All guarded by lock.
@@ -352,7 +351,6 @@ struct RenderStatsPrivate
         , gpuStripHalvings(0)
         , gpuStripPipelinesSerialized(0)
         , gpuPipelinedRegions(0)
-        , gpuCalibrationSkipped(0)
         , peakDeviceBytes(0)
         , gpuTasksPerNode()
         , cpuFallbackReasons()
@@ -638,12 +636,6 @@ RenderStats::noteGpuPipelinedRegion(double transferHiddenMs,
 }
 
 void
-RenderStats::noteGpuCalibrationSkipped(int members)
-{
-    _imp->gpuCalibrationSkipped += members;
-}
-
-void
 RenderStats::noteCpuFallback(const std::string& reason)
 {
     QMutexLocker k(&_imp->lock);
@@ -717,12 +709,6 @@ int
 RenderStats::getGpuPipelinedRegions() const
 {
     return _imp->gpuPipelinedRegions.load();
-}
-
-int
-RenderStats::getGpuCalibrationSkipped() const
-{
-    return _imp->gpuCalibrationSkipped.load();
 }
 
 double
@@ -880,10 +866,6 @@ formatRegionRecord(unsigned long long frameSequence,
     }
     if (times.ownershipMs > 0.) {
         std::snprintf(num, sizeof(num), ",\"ownershipMs\":%.6f", times.ownershipMs);
-        line.append(num);
-    }
-    if (times.calibrationSkipped != 0) {
-        std::snprintf(num, sizeof(num), ",\"calibrationSkipped\":%d", times.calibrationSkipped);
         line.append(num);
     }
     if (!times.memberIntervals.empty()) {

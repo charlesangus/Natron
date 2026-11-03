@@ -110,6 +110,11 @@ RenderMismatch renderBothWaysDirect(const NodePtr& node,
 
 std::string describe(const RenderMismatch& m);
 
+// The error renderNodePlanesDirect() and renderNodePlanesInMode() give when the render succeeded
+// but produced no plane: an empty output, such as black routed from nothing connected or an empty
+// region of definition, rather than a failed render.
+extern const char kRenderProducedNoPlane[];
+
 // One plane read back by renderNodePlanesDirect(). `pixels` is row-major over `window` from its
 // bottom row, with the values of one pixel interleaved as listed in `channels`.
 struct RenderedPlane {

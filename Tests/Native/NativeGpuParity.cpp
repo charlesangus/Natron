@@ -547,8 +547,8 @@ private:
     RenderScheduler::RegionBody _saved;
 };
 
-// Puts every task of `nodes` that its effect accepts on the GPU, as placeGraph() would without a
-// cost model.
+// Puts every task of `nodes` that its effect accepts on the GPU, as placeGraph() would if every region
+// were accepted.
 void
 placeOnGpu(FrameRun* run,
            const std::vector<NodePtr>& nodes)
@@ -587,7 +587,8 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                const NodePtr& root,
                const RectI& window,
                double time,
-               const GpuContextReady& onGpuContext)
+               const GpuContextReady& onGpuContext,
+               const GpuFrameDone& onGpuFrame)
 {
     EndToEndResult result;
     result.window = window;
@@ -645,10 +646,22 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
 
             return result;
         }
-        result.gpu = readRgba(rootPlanes.begin()->second, window);
+        // The colour plane, which the CPU render below asks for. A root that passes its input's other layers
+        // through also returns them, and a layer ID such as "spec" sorts before the colour plane's.
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.begin();
+        for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
+            if (it->first.isColorLayer()) {
+                colour = it;
+                break;
+            }
+        }
+        result.gpu = readRgba(colour->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
+    }
+    if (onGpuFrame) {
+        onGpuFrame();
     }
 
     appPTR->clearAllCaches();

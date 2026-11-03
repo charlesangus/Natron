@@ -66,10 +66,10 @@
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
@@ -436,7 +436,7 @@ protected:
         return true;
     }
 
-    // Every task of gpuNodes whose effect can render it on the GPU, placed as placeGraph() does without a cost model.
+    // Every task of gpuNodes whose effect can render it on the GPU, placed as placeGraph() does if every region is accepted.
     static PlacementInputs gpuOnly(const FrameRenderContextPtr& context,
                                    const std::vector<NodePtr>& gpuNodes)
     {
@@ -663,67 +663,9 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(0.f, worstDiff(readRgba(ramRoot, window), readRgba(planes.begin()->second, window)));
 }
 
-// With the root's download charged, the transfer outweighs what the GPU saves and placement leaves the chain on the
-// CPU; kept on the device, the same chain at the same size goes to the GPU whole.
+// Three light nodes weigh under kGpuRegionMinWeight, so the weight rule sends the region to the GPU only when it moves
+// no image: with every input already on the device that holds once the root stays there, and not while it downloads.
 TEST_F(ViewerRootOnDevice, PlacementAcceptsTheRegionOnceTheRootStaysOnTheDevice)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    ASSERT_TRUE(makeChain());
-    FrameRun run;
-    std::string error;
-    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
-    const FrameGraph base = run.graph;
-    const int gradeTask = taskOf(base, _grade);
-    const int blurTask = taskOf(base, _blur);
-    const int colorCorrectTask = taskOf(base, _colorCorrect);
-    ASSERT_TRUE(gradeTask >= 0 && blurTask >= 0 && colorCorrectTask >= 0);
-
-    GpuCostModel model;
-    model.setThreadCount(1);
-    for (const NodePtr& node : { _grade, _blur, _colorCorrect }) {
-        model.setCpuSeed(node->getPluginID(), 1000., 1.);
-        model.setGpuSeed(node->getPluginID(), 1.);
-    }
-    GpuTransferRates rates;
-    rates.uploadBytesPerSecond = 1e15;
-    rates.downloadBytesPerSecond = 1e9;
-    model.setTransferRates(rates);
-
-    const PlacementInputs gpu = gpuOnly(run.context, { _grade, _blur, _colorCorrect });
-    FrameGraph whole = base;
-    placeGraph(whole, gpu);
-    ASSERT_EQ(1u, whole.regions.size());
-    const double kept = model.regionGainMs(whole, whole.regions[0], true);
-    const double downloaded = model.regionGainMs(whole, whole.regions[0], false);
-    ASSERT_GT(kept, 0.);
-    ASSERT_LT(downloaded, kept);
-    // The root's download now costs twice what the region gains without it.
-    rates.downloadBytesPerSecond *= (kept - downloaded) / (2. * kept);
-    model.setTransferRates(rates);
-    EXPECT_NEAR(kept, model.regionGainMs(whole, whole.regions[0], true), kept * 1e-9);
-    EXPECT_NEAR(-kept, model.regionGainMs(whole, whole.regions[0], false), kept * 1e-6);
-
-    for (int rootOnDevice = 0; rootOnDevice < 2; ++rootOnDevice) {
-        SCOPED_TRACE(rootOnDevice ? "root kept on the device" : "root downloaded");
-        PlacementInputs inputs = gpu;
-        inputs.regionGain = [&model, rootOnDevice](const FrameGraph& g, const FrameGraph::Region& region) {
-            return model.regionGainMs(g, region, rootOnDevice != 0);
-        };
-        FrameGraph placed = base;
-        placeGraph(placed, inputs);
-        const FrameGraph::Device expected = rootOnDevice ? FrameGraph::Device::Gpu : FrameGraph::Device::Cpu;
-        EXPECT_EQ(expected, placed.tasks[gradeTask].device);
-        EXPECT_EQ(expected, placed.tasks[blurTask].device);
-        EXPECT_EQ(expected, placed.tasks[colorCorrectTask].device);
-        EXPECT_EQ(rootOnDevice ? 1u : 0u, placed.regions.size());
-    }
-}
-
-// The placement a render uses reads the frame's flag: the gain with the root kept on the device is the gain with it
-// downloaded plus the root's download time.
-TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
 {
     if (!gpuOrSkip()) {
         return;
@@ -735,38 +677,53 @@ TEST_F(ViewerRootOnDevice, RenderPlacementChargesTheRootOnlyWhenItIsDownloaded)
     FrameGraph whole = run.graph;
     placeGraph(whole, gpuOnly(run.context, { _grade, _blur, _colorCorrect }));
     ASSERT_EQ(1u, whole.regions.size());
-    const int colorCorrectTask = taskOf(whole, _colorCorrect);
-    ASSERT_TRUE(colorCorrectTask >= 0);
+    const FrameGraph::Region region = whole.regions[0];
+    ASSERT_GE(taskPixelCount(whole.tasks[taskOf(whole, _colorCorrect)]), kGpuRegionMinPixels);
+    ASSERT_FALSE(region.externalInputs.empty());
+    for (int e : region.externalInputs) {
+        whole.tasks[e].device = FrameGraph::Device::Gpu;
+    }
 
-    GpuCostModel& session = GpuCostModel::session();
-    const GpuTransferRates saved = session.transferRates();
-    const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
-    ASSERT_TRUE(bool(inputs.regionGain));
-    struct RatesBack {
-        GpuCostModel& model;
-        GpuTransferRates rates;
-        ~RatesBack()
-        {
-            model.setTransferRates(rates);
-        }
-    } ratesBack { session, saved };
-    GpuTransferRates rates;
-    rates.uploadBytesPerSecond = 1e9;
-    rates.downloadBytesPerSecond = 1e9;
-    session.setTransferRates(rates);
-
-    run.context->setWantsRootOnDevice(false);
-    const double downloaded = inputs.regionGain(whole, whole.regions[0]);
-    run.context->setWantsRootOnDevice(true);
-    const double kept = inputs.regionGain(whole, whole.regions[0]);
-    ASSERT_TRUE(std::isfinite(downloaded) && std::isfinite(kept));
-    const double rootMs = session.transferMs(0., (double)whole.tasks[colorCorrectTask].estimatedBytes);
-    ASSERT_GT(rootMs, 0.);
-    EXPECT_NEAR(rootMs, kept - downloaded, rootMs * 1e-6);
+    const auto light = [](const FrameGraph::Task&) {
+        return GpuWeight::filter(0.5);
+    };
+    EXPECT_TRUE(regionTransfersAreFree(whole, region, true));
+    EXPECT_FALSE(regionTransfersAreFree(whole, region, false));
+    EXPECT_GT(regionWeightGain(whole, region, light, true), 0.);
+    EXPECT_LT(regionWeightGain(whole, region, light, false), 0.);
 }
 
-// A lone Grade over a UHD frame, seeded heavy enough that its downloaded root would run as overlapped strips, stays
-// whole once the root is kept on the device: stripping would only download it.
+// The placement a render uses reads the frame's flag and weighs its tasks: a region whose only output is the root has
+// free transfers when the root is kept on the device and does not when it is downloaded.
+TEST_F(ViewerRootOnDevice, RenderPlacementTreatsAKeptRootAsFree)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+    FrameGraph whole = run.graph;
+    placeGraph(whole, gpuOnly(run.context, { _grade, _blur, _colorCorrect }));
+    ASSERT_EQ(1u, whole.regions.size());
+    const FrameGraph::Region region = whole.regions[0];
+    for (int e : region.externalInputs) {
+        whole.tasks[e].device = FrameGraph::Device::Gpu;
+    }
+
+    for (int wantsRootOnDevice = 0; wantsRootOnDevice < 2; ++wantsRootOnDevice) {
+        SCOPED_TRACE(wantsRootOnDevice ? "root kept on the device" : "root downloaded");
+        run.context->setWantsRootOnDevice(wantsRootOnDevice != 0);
+        const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
+        ASSERT_TRUE(bool(inputs.taskWeight));
+        EXPECT_EQ(wantsRootOnDevice != 0, inputs.rootOnDevice);
+        EXPECT_EQ(wantsRootOnDevice != 0, regionTransfersAreFree(whole, region, inputs.rootOnDevice));
+    }
+}
+
+// A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once
+// the root is kept on the device: stripping would only download it.
 TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
 {
     if (!gpuOrSkip()) {
@@ -790,27 +747,19 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
     connectNodes(source, grade, 0, true);
     const RectI window(0, 0, width, height);
 
-    GpuCostModel& session = GpuCostModel::session();
-    const GpuTransferRates savedRates = session.transferRates();
-    const double savedKernel = session.gpuMs(GpuTaskTraits(grade->getPluginID()), 1.);
-    struct CostBack {
-        GpuCostModel& model;
+    GpuTransferModel& session = GpuTransferModel::session();
+    struct RatesBack {
+        GpuTransferModel& model;
         GpuTransferRates rates;
-        std::string pluginId;
-        double kernelMsPerMpx;
-        ~CostBack()
+        ~RatesBack()
         {
             model.setTransferRates(rates);
-            if (std::isfinite(kernelMsPerMpx)) {
-                model.setGpuSeed(pluginId, kernelMsPerMpx);
-            }
         }
-    } costBack { session, savedRates, grade->getPluginID(), savedKernel };
+    } ratesBack { session, session.transferRates() };
     GpuTransferRates rates;
     rates.uploadBytesPerSecond = 10e9;
     rates.downloadBytesPerSecond = 10e9;
     session.setTransferRates(rates);
-    session.setGpuSeed(grade->getPluginID(), 40.);
     setGpuStripPipeliningForTests(GpuStripPipelining::On);
 
     std::vector<float> stripped;

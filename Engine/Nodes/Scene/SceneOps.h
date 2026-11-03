@@ -55,6 +55,8 @@ struct SceneLayerEdit {
     // The project's scene units, which the layer authors as its stage metadata.
     SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
     double metersPerUnit = 1.;
+    // The project's shared materials root prim name, empty when off.
+    std::string materialsScope;
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;
@@ -75,6 +77,11 @@ struct SceneReparentArgs {
     std::string destinationType;
     std::string ancestorType;
     bool autoRename = false;
+    // A root prim name, such as the project's materials scope, that every input defining it keeps
+    // at its own path, /<name>, instead of grafting it: never renamed, and the relationships and
+    // connections into it re-pointed there. Inputs sharing it compose, the later one stronger.
+    // Empty grafts every root.
+    std::string passThroughRoot;
     // Optional: authors the destination's own opinions, such as its transform, into a layer of its
     // own, memoized on overridesKey. It may only author "over" specs, so an edit of it changes
     // properties without resyncing the grafted subtree. Handed no upstream: the key cannot see it.
@@ -93,6 +100,10 @@ struct SceneRootGraft {
     std::size_t inputIndex = 0;
     std::string sourcePath;
     std::string graftedPath;
+    // Whether the root is the args' passThroughRoot, left at its own path.
+    bool passedThrough = false;
+    // Whether, passed through, it holds a UsdGeomGprim, which a materials scope should not.
+    bool holdsGprim = false;
 };
 
 /**
@@ -106,6 +117,21 @@ struct SceneUnmappedLink {
     std::string propertyPath;
     // The target as the input names it.
     std::string targetPath;
+};
+
+/**
+ * @brief What SceneOps::authorMetricsCorrection converts a source scene from and to, and which of
+ * the two aspects it converts.
+ **/
+struct SceneMetricsCorrection {
+    SceneMetadata::UpAxisEnum fromUpAxis = SceneMetadata::eUpAxisY;
+    double fromMetersPerUnit = 0.01;
+    SceneMetadata::UpAxisEnum toUpAxis = SceneMetadata::eUpAxisY;
+    double toMetersPerUnit = 1.;
+    bool correctUpAxis = false;
+    bool correctUnits = false;
+    // Maps the source stage's times to the target layer's, for the time samples it rescales.
+    PXR_NS::SdfLayerOffset sourceToLayer;
 };
 
 /**
@@ -187,9 +213,13 @@ ScenePayload appendEntry(const ScenePayload& base,
  * property's grafted path, each target moved to where its root was grafted from the same input.
  * Targets under no root of that input are left out and listed in unmappedLinks, when given.
  *
+ * A root named args.passThroughRoot is defined at its own path instead, referencing the same
+ * root of the wrapper, and maps to itself, so links into it from grafted roots are re-pointed
+ * there; it may be the destination itself.
+ *
  * When grafts is given, it receives where each input root landed. Returns false with
  * *errorMessage set, keeping memo's layers, when the destination is not an absolute prim path, an
- * input root is the destination itself, or authoring fails.
+ * input root other than a passed-through one is the destination itself, or authoring fails.
  **/
 bool reparentRoots(const SceneReparentArgs& args,
                    SceneGraftMemo* memo,
@@ -248,10 +278,12 @@ PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
  * @brief The file layers layer composes: layer itself when it is backed by a file, then every
  * layer its sublayers, references and payloads name, recursively, each once. Asset paths resolve
  * relative to the layer naming them. Files that cannot be opened are skipped, without posting
- * errors to the caller's TfErrorMark. Opens the layers not yet open, and the returned references
- * keep them open.
+ * errors to the caller's TfErrorMark, and their anchored asset paths are appended to
+ * *missingPaths when it is given, each once. Opens the layers not yet open, and the returned
+ * references keep them open.
  **/
-std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer);
+std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
+                                                        std::vector<std::string>* missingPaths = nullptr);
 
 /**
  * @brief Reloads the file layers among layers in place (SdfLayer::ReloadLayers: only those whose
@@ -279,6 +311,35 @@ std::uint64_t getFileLayerReloadCount();
 double frameToTimeCode(const ScenePayload& payload,
                        double frame,
                        double framesPerSecond);
+
+/**
+ * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up
+ * axis: +90 for Y to Z, -90 for Z to Y, 0 when the axes match or correctUpAxis is off.
+ **/
+double getMetricsCorrectionAngle(const SceneMetricsCorrection& correction);
+
+/**
+ * @brief The uniform scale fromMetersPerUnit / toMetersPerUnit, or 1 when the two are equal
+ * within UsdGeomLinearUnitsAre()'s tolerance or correctUnits is off.
+ **/
+double getMetricsCorrectionScale(const SceneMetricsCorrection& correction);
+
+/**
+ * @brief Authors into layer the "over"s that convert source, a composed stage that layer is
+ * stronger than, from correction's metrics to its target ones, without reparenting anything.
+ *
+ * The topmost xformable prims under source's defined, non-abstract roots (the root itself, or the
+ * first xformables under a Scope or a typeless prim), and every xformable below them whose op
+ * stack resets, each get xformOp:rotateX:upAxisCorrection and/or xformOp:scale:unitsCorrection
+ * prepended to their composed xformOpOrder, after a leading !resetXformStack!. A name the prim
+ * already has takes the first free "_<n>" suffix. Under a scale, every camera's lengths the
+ * transform does not reach (clippingRange, focusDistance, the focal length and apertures, the
+ * clipping planes' distances) are rescaled, its default and every time sample. Authors nothing
+ * when neither aspect converts anything. Returns the number of prims given corrective ops.
+ **/
+std::size_t authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
+                                    const PXR_NS::UsdStageRefPtr& source,
+                                    const SceneMetricsCorrection& correction);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

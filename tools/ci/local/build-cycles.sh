@@ -2,9 +2,13 @@
 # Builds the Cycles Hydra render delegate (hdCycles) against the image's own OpenUSD and installs it
 # into USD's plug-in directory, next to hdStorm. Run by tools/ci/local/Dockerfile.
 #
-# Cycles comes from the upstream standalone repository (https://projects.blender.org/blender/cycles,
-# mirrored at github.com/blender/cycles), Apache-2.0. Only the hdCycles target is built: no
-# standalone app, no tests. CPU devices only; every GPU backend is off.
+# Cycles comes from the project's fork, https://github.com/charlesangus/cycles, branch
+# natron/deep-5.2: the upstream standalone repository (https://projects.blender.org/blender/cycles,
+# mirrored at github.com/blender/cycles) at v5.2.0 plus the deep EXR output and traced-lens camera
+# commits first published at https://github.com/Niik-l/cycles (feature/cycles-deep). Cycles is
+# Apache-2.0; the two deep-sample headers taken from Blender (src/session/IMB_deep_sample*.hh) are
+# GPL-2.0-or-later. Only the hdCycles target is built: no standalone app, no tests. CPU devices
+# only; every GPU backend is off.
 #
 # Cycles' FindUSDPixar.cmake takes TBB, OpenSubdiv, OpenVDB, OpenColorIO, OpenEXR and OpenImageIO
 # from the directory USD's libraries live in, which here is /usr/local/lib, and Embree,
@@ -13,16 +17,17 @@
 # blender/lib-* precompiled library submodules are never fetched (the archive does not carry them),
 # which is what puts Cycles on that system-library path.
 #
-# Required environment: NATRON_CYCLES_VERSION (an upstream tag, e.g. v5.2.0), NATRON_CYCLES_SHA256
-# (of the GitHub tag archive). Optional: NATRON_CYCLES_OIDN (ON/OFF, default ON) for the
-# OpenImageDenoise denoiser.
+# Required environment: NATRON_CYCLES_REPO (the GitHub repository's https URL, no trailing slash),
+# NATRON_CYCLES_COMMIT (a full commit SHA), NATRON_CYCLES_SHA256 (of the GitHub commit archive).
+# Optional: NATRON_CYCLES_OIDN (ON/OFF, default ON) for the OpenImageDenoise denoiser.
 
 set -euo pipefail
 
-version="${NATRON_CYCLES_VERSION:?}"
+repo="${NATRON_CYCLES_REPO:?}"
+commit="${NATRON_CYCLES_COMMIT:?}"
 sha256="${NATRON_CYCLES_SHA256:?}"
 oidn="${NATRON_CYCLES_OIDN:-ON}"
-url="https://github.com/blender/cycles/archive/refs/tags/${version}.tar.gz"
+url="${repo}/archive/${commit}.tar.gz"
 
 usd_prefix=/usr/local
 plugin_dir="${usd_prefix}/plugin/usd"
@@ -42,7 +47,7 @@ test -f "${src}/src/hydra/plugInfo.json"
 
 # OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool),
 # which Cycles v5.2.0 still marks override; the method is never called, so it just loses the
-# keyword. Applied only when present, so a tag that has caught up builds unpatched.
+# keyword. Applied only when present, so a source that has caught up builds unpatched.
 plugin_h="${src}/src/hydra/plugin.h"
 if grep -q 'bool IsSupported(bool gpuEnabled) const override;' "$plugin_h" &&
     grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
@@ -133,6 +138,13 @@ install -m 0755 "${build}/src/hydra/hdCycles.so" "$delegate"
 install -d "${plugin_dir}/hdCycles/resources"
 install -m 0644 "${build}/src/hydra/resources/plugInfo.json" "${plugin_dir}/hdCycles/resources/plugInfo.json"
 install -m 0644 "${src}/LICENSE" "${plugin_dir}/hdCycles/LICENSE"
+cat >"${plugin_dir}/hdCycles/SOURCE" <<EOF
+hdCycles is built from ${repo}, commit ${commit}
+(${url}, SHA-256 ${sha256}), with the build-time patches in Natron's tools/ci/local/build-cycles.sh.
+Cycles is licensed under the Apache License 2.0 (LICENSE). src/session/IMB_deep_sample.hh and
+src/session/IMB_deep_sample_merge.hh are Blender code under the GNU GPL version 2 or later.
+EOF
+chmod 0644 "${plugin_dir}/hdCycles/SOURCE"
 grep -q '"LibraryPath": "../hdCycles.so"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 grep -q '"HdCyclesPlugin"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 grep -q '"priority": 99' "${plugin_dir}/hdCycles/resources/plugInfo.json"

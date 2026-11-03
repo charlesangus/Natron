@@ -253,7 +253,9 @@ PlaneJob::lock()
         divisorNComps = (int)divisor->getComponentsCount();
         divisorAccess = std::make_shared<Image::ReadAccess>(divisor.get());
     }
-    dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    if (dst) {
+        dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    }
 }
 
 MaskInput::MaskInput()
@@ -1300,6 +1302,24 @@ recordPassesGpu(EffectInstance& effect,
         RectI otherValid;
         intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(i)), &otherValid);
         io.inputs[i] = cropGpuView(in, otherValid);
+    }
+    for (const GpuLayerInput& layerInput : args.layerInputs) {
+        const int i = layerInput.inputNb;
+        EffectInstancePtr other = effect.getInput(i);
+        if (!other || !layerInput.view.buffer || (layerInput.view.nComps <= 0)) {
+            continue;
+        }
+        const RenderScale otherScale = other->supportsRenderScale() ? scale : RenderScale::identity;
+        RectD otherRoD;
+        bool otherIsProjectFormat = false;
+        if (other->getRegionOfDefinition_public(other->getRenderHash(), time, otherScale, view, &otherRoD, &otherIsProjectFormat) == eStatusFailed) {
+            return eStatusFailed;
+        }
+        RectI otherValid;
+        intersectRects(layerInput.view.bounds, toPixelEnclosing(otherRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(i)), &otherValid);
+        GpuLayerInput cropped = layerInput;
+        cropped.view = cropGpuView(layerInput.view, otherValid);
+        io.layerInputs.push_back(cropped);
     }
     if (list.opMask) {
         StagePlan maskPlan = plan;

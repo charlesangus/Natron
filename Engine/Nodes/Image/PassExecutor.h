@@ -131,7 +131,8 @@ void readChannelRow(const Image* image,
  * @brief One output plane of a render with the images it reads. Image::getBounds() takes the
  * image's lock, which a pool thread must never ask for: behind a writer waiting on an image this
  * render holds for reading, it blocks forever. lock() reads the bounds and takes the accesses on
- * the calling thread, and the pool threads only compute pixel addresses through them.
+ * the calling thread, and the pool threads only compute pixel addresses through them. A job
+ * with no dst only reads, through fillBuffer().
  **/
 struct PlaneJob {
     ImagePtr dst;
@@ -405,6 +406,8 @@ struct PassGpuIO {
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
     std::vector<GpuImageView> inputs;
+    // The layers getGpuExtraInputLayers() adds, each cropped to its input's region of definition.
+    std::vector<GpuLayerInput> layerInputs;
     bool maskApplied = false;
     GpuImageView mask;
     int maskComponent = -1;

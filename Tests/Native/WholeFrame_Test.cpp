@@ -93,6 +93,7 @@ TEST_F(WholeFrameTest, FiniteRegionPassesUnchanged)
 
 TEST_F(WholeFrameTest, InfiniteRegionIsClampedToTheFormat)
 {
+    getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
     getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, 181, 137, "wholeFrame181x137", 1.));
     NodePtr source = createRegionSource(RectI(0, 0, 16, 16), true);
     NodePtr grade = createAfter(PLUGINID_NATRON_GRADE, source);

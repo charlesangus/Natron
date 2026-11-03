@@ -637,6 +637,7 @@ public:
     {
         const RectI& f = options.format;
 
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
         getApp()->getProject()->setOrAddProjectFormat(Format(f.x1, f.y1, f.x2, f.y2, "regionIndependenceFormat", 1.));
         for (unsigned level : options.mipmapLevels) {
             const RenderScale scale = RenderScale::fromMipmapLevel(level);

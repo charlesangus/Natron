@@ -53,6 +53,14 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 
 **Verification gate:** CI green; the image and the AppImage contain a Cycles delegate that the registry lists and instantiates; no duplicate library versions are loaded; image-size and build-time deltas are reported to the user.
 
+## Phase 249.2: Deep-capable Cycles source (user, 2026-11-03)
+
+- [ ] M249.P2.T1 — Build Cycles from Niik-l/cycles feature/cycles-deep
+  - files: tools/ci/local/build-cycles.sh, tools/ci/local/Dockerfile, tools/ci/local/dev-image-tag.sh (hash input), licence notes
+  - approach: replace the blender/cycles v5.2.0 tag archive with a pinned commit archive of https://github.com/Niik-l/cycles branch feature/cycles-deep (3a20cc0b at 2026-10-24); new sha256; confirm both build-time patches (IsSupported override, plugInfo priority 99) still apply; confirm the base Cycles version and that it builds hdCycles against USD 26.08, OIIO, OpenEXR, TBB, Embree, OIDN (kept, user); record the fork's licence (Apache 2.0 upstream) in the bundle notes.
+  - verify: the dev image builds on CI with the new pin; the Cycles delegate tests (M249, M251) pass; the startup check registers hdCycles.
+  - size: M
+
 ## Decisions
 
 - 2026-10-28: Storm tests failed with Cycles installed: the GL engine path never set rendererPluginId, so USD picked its default, and Cycles (priority 0, name sorts before HdStormRendererPlugin) won the tie. Every Hydra engine now names its renderer; Cycles' plugInfo priority patched 0 → 99 (USD defaults to the LOWEST priority); a test checks Storm leads the renderer list.

@@ -269,6 +269,9 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
     if (_imp->_loopBlocks) {
         _imp->_loopBlocks->schedule(topology);
     }
+    if (topology) {
+        Q_EMIT topologyChanged();
+    }
 }
 
 void

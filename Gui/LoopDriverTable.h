@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QObject>
 #include <QtCore/QPoint>
+#include <QtCore/QPointer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -98,6 +99,9 @@ private Q_SLOTS:
     void onStartMenuRequested(const QPoint& pos);
     void onEndMenuRequested(const QPoint& pos);
 
+protected:
+    virtual bool eventFilter(QObject* watched, QEvent* event) OVERRIDE;
+
 private:
     virtual bool shouldAddStretch() const OVERRIDE FINAL { return false; }
 
@@ -135,10 +139,15 @@ private:
 
     void disconnectWatched();
 
+    // Rebuilds whenever the graph holding the loop gains or loses a node or a connection, which
+    // can move nodes into or out of the body.
+    void watchGraph();
+
     KnobIWPtr _knob;
     QTableWidget* _table;
     std::vector<Entry> _entries;
     std::vector<KnobIWPtr> _watched;
+    QPointer<NodeGraph> _graph;
     bool _rebuildPending;
 };
 

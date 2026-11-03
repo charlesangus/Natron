@@ -48,7 +48,10 @@ input, or on Emissive Color when Diffuse Color has none, drives the shader's
 Where the image is transparent the surface shows what is behind it, at the ratio
 of the alpha, as the image composited over it; the emission and the specular
 fade with it. Live textures are served with their colour divided by their alpha,
-as USD expects of a texture, and the renderer multiplies it back. A surface with
+as USD expects of a texture, and the renderer multiplies it back. Where the
+alpha is 0, up to 8 pixels from pixels with an alpha, the colour is that of the
+nearest of them, so the texture's filtering blends no black into soft edges;
+farther out it is left as rendered. A surface with
 an opacity is drawn in Storm's translucent pass, which writes no depth or prim
 id. With Use Alpha off, no opacity is written and the surface is opaque.
 

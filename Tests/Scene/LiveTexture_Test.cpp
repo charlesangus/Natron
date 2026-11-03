@@ -378,8 +378,8 @@ TEST_F(LiveTextureTest, ADisabledSourceShowsItsPassThroughInput)
 }
 
 // A Constant whose rectangle covers the left half of the format and as much again outside it: the
-// texture holds the format and that overscan, coloured where the image is and transparent black over
-// the format it does not cover, and texture coordinates 0 to 1 span the format inside it.
+// texture holds the format and that overscan, coloured where the image is and transparent over the
+// format it does not cover, and texture coordinates 0 to 1 span the format inside it.
 TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
 {
     Format format;
@@ -444,9 +444,7 @@ TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
         EXPECT_NEAR(1., pixel[3], 1e-5);
     }
     const float* outside = buffer->getRow(y) + 4 * (2 * half + (buffer->getWidth() - 2 * half) / 2);
-    for (int c = 0; c < 4; ++c) {
-        EXPECT_EQ(0.f, outside[c]) << "channel " << c << " of the format the image does not cover";
-    }
+    EXPECT_EQ(0.f, outside[3]) << "the format the image does not cover is transparent";
 
     // A recorded window is the one rendered, whatever the image's own.
     LiveTextureStore::instance().clear();
@@ -458,6 +456,79 @@ TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
     ASSERT_TRUE(bool(formatOnly));
     EXPECT_EQ(format.width(), formatOnly->getWidth());
     EXPECT_EQ(format.height(), formatOnly->getHeight());
+}
+
+// Storm filters the straight colour, so a black colour where the alpha is 0 would darken the edge
+// texels it blends into: a Constant of red over the left half of the format gives the transparent
+// texels of the right half within the fill band the red's colour, leaves those beyond it black,
+// where a surface drawn without its alpha shows nothing, and its own texels as rendered.
+TEST_F(LiveTextureTest, TransparentTexelsTakeTheColourOfTheNearestCoveredOnes)
+{
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    const int band = LiveTextureBuffer::kTransparentFillBand;
+    ASSERT_GT(format.width(), 4 * band);
+    ASSERT_GT(format.height(), 8);
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName(kNativeGeneratorParamExtent).get());
+    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(color && extent && bottomLeft && size);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+    source.windows.assign(1, LiveTextureWindow());
+    source.windows[0].format = RectI(format.x1, format.y1, format.x2, format.y2);
+    source.windows[0].window = source.windows[0].format;
+    const std::string uri = source.getUri(1.);
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.)) << LiveTextureStore::instance().getFailure(uri);
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(uri);
+    ASSERT_TRUE(bool(buffer));
+    ASSERT_EQ(format.width(), buffer->getWidth());
+    ASSERT_EQ(format.height(), buffer->getHeight());
+
+    for (int y : { 0, buffer->getHeight() / 2, buffer->getHeight() - 1 }) {
+        const float* row = buffer->getRow(y);
+        for (int x : { 0, half - 1 }) {
+            const float* opaque = row + 4 * x;
+            EXPECT_EQ(1.f, opaque[0]) << "opaque texel " << x << ", " << y;
+            EXPECT_EQ(0.f, opaque[1]) << "opaque texel " << x << ", " << y;
+            EXPECT_EQ(0.f, opaque[2]) << "opaque texel " << x << ", " << y;
+            EXPECT_EQ(1.f, opaque[3]) << "opaque texel " << x << ", " << y;
+        }
+        for (int x : { half, half + 1, half + band - 1 }) {
+            const float* filled = row + 4 * x;
+            EXPECT_NEAR(1., filled[0], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_NEAR(0., filled[1], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_NEAR(0., filled[2], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_EQ(0.f, filled[3]) << "transparent texel in the band " << x << ", " << y;
+        }
+        for (int x : { half + band, half + 2 * band, buffer->getWidth() - 1 }) {
+            const float* beyond = row + 4 * x;
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(0.f, beyond[c]) << "transparent texel beyond the band " << x << ", " << y << ", channel " << c;
+            }
+        }
+    }
 }
 
 // An image far larger than its format is held whole.

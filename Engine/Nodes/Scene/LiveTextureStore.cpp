@@ -34,6 +34,7 @@
 #include <new>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QThread>
@@ -102,6 +103,107 @@ copyRow(const Image::ReadAccess& access,
         }
     }
 }
+
+/**
+ * Straight colour is undefined where the alpha is 0, and Storm's bilinear and mipmap filtering
+ * blends it into the edge texels it averages with: left black, it darkens every soft or
+ * antialiased edge. Texels with no alpha within kTransparentFillBand texels (counting diagonal
+ * steps as one, as a mip level's square footprint does) of one with an alpha take the colour of
+ * their neighbours one step nearer, weighted by alpha next to the covered texels, in time linear in
+ * the texels. Farther texels, texels with an alpha, and every alpha are left as rendered.
+ **/
+void
+fillTransparentColour(LiveTextureBuffer& buffer)
+{
+    const int width = buffer.getWidth();
+    const int height = buffer.getHeight();
+    const unsigned char unreached = std::numeric_limits<unsigned char>::max();
+    std::vector<unsigned char> distance(std::size_t(width) * std::size_t(height), unreached);
+    bool anyTransparent = false;
+
+    for (int y = 0; y < height; ++y) {
+        const float* row = buffer.getRow(y);
+        for (int x = 0; x < width; ++x) {
+            if (row[4 * x + 3] > 0.f) {
+                distance[std::size_t(y) * std::size_t(width) + std::size_t(x)] = 0;
+            } else {
+                anyTransparent = true;
+            }
+        }
+    }
+    if (!anyTransparent) {
+        return;
+    }
+
+    const auto texelAt = [&](std::size_t i) {
+        return buffer.getRow(int(i / std::size_t(width))) + 4 * (i % std::size_t(width));
+    };
+    std::vector<std::size_t> frontier;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t i = std::size_t(y) * std::size_t(width) + std::size_t(x);
+            if (distance[i] != 0) {
+                continue;
+            }
+            bool bordersTransparent = false;
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1) && !bordersTransparent; ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    if (distance[std::size_t(ny) * std::size_t(width) + std::size_t(nx)] == unreached) {
+                        bordersTransparent = true;
+                        break;
+                    }
+                }
+            }
+            if (bordersTransparent) {
+                frontier.push_back(i);
+            }
+        }
+    }
+
+    std::vector<std::size_t> next;
+    for (int d = 1; (d <= LiveTextureBuffer::kTransparentFillBand) && !frontier.empty(); ++d) {
+        next.clear();
+        for (std::size_t i : frontier) {
+            const int x = int(i % std::size_t(width));
+            const int y = int(i / std::size_t(width));
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1); ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    const std::size_t n = std::size_t(ny) * std::size_t(width) + std::size_t(nx);
+                    if (distance[n] == unreached) {
+                        distance[n] = (unsigned char)d;
+                        next.push_back(n);
+                    }
+                }
+            }
+        }
+        for (std::size_t n : next) {
+            const int x = int(n % std::size_t(width));
+            const int y = int(n / std::size_t(width));
+            float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1); ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    const std::size_t i = std::size_t(ny) * std::size_t(width) + std::size_t(nx);
+                    if (distance[i] != d - 1) {
+                        continue;
+                    }
+                    const float* nearer = texelAt(i);
+                    const float weight = (d == 1) ? nearer[3] : 1.f;
+                    sum[0] += nearer[0] * weight;
+                    sum[1] += nearer[1] * weight;
+                    sum[2] += nearer[2] * weight;
+                    sum[3] += weight;
+                }
+            }
+            if (sum[3] > 0.f) {
+                float* texel = texelAt(n);
+                texel[0] = sum[0] / sum[3];
+                texel[1] = sum[1] / sum[3];
+                texel[2] = sum[2] / sum[3];
+            }
+        }
+        frontier.swap(next);
+    }
+} // fillTransparentColour
 
 LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
@@ -173,6 +275,10 @@ renderSource(const LiveTextureSource& source,
 
             return LiveTextureBufferConstPtr();
         }
+    }
+    // Only RGBA colour is unpremultiplied, and an alpha-only image's colour is its alpha.
+    if (numComps >= 4) {
+        fillTransparentColour(*buffer);
     }
 
     return buffer;

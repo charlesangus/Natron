@@ -2353,6 +2353,13 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool ret = curve->addKeyFrame(key);
 
     if (!useGuiCurve) {
+        // A slaved knob writes the master's curve, but its own values and key removals stay on its own
+        // curve; a holder that mirrors the slave back into the master (the roto context does, for the
+        // selected item) would otherwise copy back a curve missing this key.
+        CurvePtr ownCurve = getCurve(view, dimension, true);
+        if (ownCurve && (ownCurve != curve)) {
+            ownCurve->addKeyFrame(key);
+        }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
     }

@@ -388,7 +388,7 @@ future core work has solid ground to build on.
 | M318 | LensCorrect Bounded Input Region | todo | M160 |  | E3 | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
 | M319 | Group Node Direct Render | todo | - |  | E14 | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
 | M320 | Write All Input Metadata | todo | - |  | E3 | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
-| M321 | Render Thread Count Race | doing | - | bosley-native-nodes | E2 | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |
+| M321 | Render Thread Count Race | done | - | bosley-native-nodes | E2 | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |
 
 # Epics
 

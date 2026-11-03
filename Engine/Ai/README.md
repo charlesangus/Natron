@@ -204,11 +204,21 @@ both for now. In the viewer:
 
 - A click adds a point on the object, and a Shift-click adds a point to leave out.
 - A drag draws a box (SAM models only).
-- The outline preview follows each prompt.
+- The outline preview follows each prompt and shows the Beziers a commit makes, control points
+  included.
+- Object Density, a slider in the viewer toolbar, sets how many control points they get, and
+  re-traces the preview as it moves. The value stays for the next shape. Corners where the outline
+  turns sharply get broken tangents, so few points follow a sharp silhouette.
 - Backspace removes the last prompt, and Esc clears them all.
 - Return commits the outlines as Beziers keyed on the current frame, as one undo step. Holes
   become Stencil shapes.
+- Undoing a commit removes the shapes and brings the selection back (its prompts, the cached
+  encoding and the outline) to adjust and commit again. Redo commits the undone shapes again.
 - The prompts belong to one frame: changing frame drops them.
+
+Until the tool is picked, Roto pays nothing for it: no model file is opened, the segmenter and its
+encoding cache do not exist, and its viewer knobs are left out of the render hash. The segmenter is
+made on the first prompt, and keeps its encodings after the tool is put down.
 It renders the Source on a worker thread at full resolution and converts it to the project's
 default display and view as 8-bit sRGB, not the viewer's. Then it resamples it to square pixels
 and encodes it. Prompts and decoding run on the main thread.

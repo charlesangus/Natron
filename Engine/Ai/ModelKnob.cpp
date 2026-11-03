@@ -329,7 +329,22 @@ ModelKnob::onModelsChanged(const std::string& id)
         _resolved.reset();
     }
     refreshEntries();
-    _effect->incrHashAndEvaluate(true, false);
+    if (_feedsRender) {
+        _effect->incrHashAndEvaluate(true, false);
+    }
+}
+
+void
+ModelKnob::setFeedsRender(bool feeds)
+{
+    _feedsRender = feeds;
+    if (KnobChoicePtr model = _model.lock()) {
+        model->setEvaluateOnChange(feeds);
+        model->setHashExempt(!feeds);
+    }
+    if (KnobButtonPtr download = _download.lock()) {
+        download->setHashExempt(!feeds);
+    }
 }
 
 void

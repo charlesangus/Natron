@@ -364,6 +364,187 @@ TEST(MaskTrace, CurvePointsCuspOnlyAtCorners)
     }
 }
 
+namespace {
+
+// A five-pointed star with tips at outer, as a closed polygon in mask pixels.
+std::vector<MaskTrace::Point>
+starPolygon(double cx,
+            double cy,
+            double outer,
+            double inner)
+{
+    std::vector<MaskTrace::Point> star;
+
+    for (int i = 0; i < 10; ++i) {
+        const double a = -kPi / 2. + kPi * i / 5.;
+        const double r = (i % 2 == 0) ? outer : inner;
+        MaskTrace::Point p;
+        p.x = cx + r * std::cos(a);
+        p.y = cy + r * std::sin(a);
+        star.push_back(p);
+    }
+
+    return star;
+}
+
+// Each pixel holds the share of its 8x8 sub-samples inside the polygon, as an antialiased matte does.
+std::vector<float>
+coverageMask(int width,
+             int height,
+             const std::vector<MaskTrace::Point>& shape)
+{
+    MaskTrace::Polygon polygon;
+    polygon.points = shape;
+    std::vector<float> mask((size_t)width * height);
+    const int sub = 8;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int in = 0;
+            for (int j = 0; j < sub; ++j) {
+                for (int i = 0; i < sub; ++i) {
+                    MaskTrace::Point q;
+                    q.x = x + (i + 0.5) / sub;
+                    q.y = y + (j + 0.5) / sub;
+                    in += MaskTrace::contains(polygon, q) ? 1 : 0;
+                }
+            }
+            mask[(size_t)y * width + x] = (float)in / (sub * sub);
+        }
+    }
+
+    return mask;
+}
+
+double
+distanceToPolygon(const MaskTrace::Point& p,
+                  const std::vector<MaskTrace::Point>& shape)
+{
+    double best = 1e300;
+
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+        const MaskTrace::Point& a = shape[i];
+        const MaskTrace::Point& b = shape[(i + 1) % shape.size()];
+        const double abx = b.x - a.x, aby = b.y - a.y;
+        const double t = std::min(1., std::max(0., ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby)));
+        best = std::min(best, std::hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t)));
+    }
+
+    return best;
+}
+
+// The Hausdorff distance between the traced curve and the polygon's outline.
+double
+hausdorffToPolygon(const MaskTrace::Contour& contour,
+                   const std::vector<MaskTrace::Point>& shape)
+{
+    const std::vector<MaskTrace::Point> samples = sampleContour(contour, 128);
+    double curveToShape = 0.;
+
+    for (const MaskTrace::Point& p : samples) {
+        curveToShape = std::max(curveToShape, distanceToPolygon(p, shape));
+    }
+    double shapeToCurve = 0.;
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+        const MaskTrace::Point& a = shape[i];
+        const MaskTrace::Point& b = shape[(i + 1) % shape.size()];
+        for (int s = 0; s < 64; ++s) {
+            const double t = s / 64.;
+            double nearest = 1e300;
+            for (const MaskTrace::Point& p : samples) {
+                nearest = std::min(nearest, std::hypot(p.x - (a.x + (b.x - a.x) * t), p.y - (a.y + (b.y - a.y) * t)));
+            }
+            shapeToCurve = std::max(shapeToCurve, nearest);
+        }
+    }
+
+    return std::max(curveToShape, shapeToCurve);
+}
+
+double
+handleCross(const MaskTrace::CurvePoint& p)
+{
+    const double ix = p.position.x - p.left.x, iy = p.position.y - p.left.y;
+    const double ox = p.right.x - p.position.x, oy = p.right.y - p.position.y;
+    const double li = std::hypot(ix, iy), lo = std::hypot(ox, oy);
+
+    if ((li < 1e-9) || (lo < 1e-9)) {
+        return 0.;
+    }
+
+    return (ix * oy - iy * ox) / (li * lo);
+}
+
+double
+handleDot(const MaskTrace::CurvePoint& p)
+{
+    const double ix = p.position.x - p.left.x, iy = p.position.y - p.left.y;
+    const double ox = p.right.x - p.position.x, oy = p.right.y - p.position.y;
+    const double li = std::hypot(ix, iy), lo = std::hypot(ox, oy);
+
+    if ((li < 1e-9) || (lo < 1e-9)) {
+        return 1.;
+    }
+
+    return (ix * ox + iy * oy) / (li * lo);
+}
+
+} // namespace
+
+TEST(MaskTrace, BrokenCornersFollowAStarCloserThanSmoothPoints)
+{
+    const int w = 128, h = 128;
+    const std::vector<MaskTrace::Point> star = starPolygon(64.3, 66.1, 52., 20.);
+    const std::vector<float> mask = coverageMask(w, h, star);
+
+    MaskTrace::Options cornered;
+    cornered.simplify = 1.;
+    const std::vector<MaskTrace::Contour> withCorners = MaskTrace::trace(mask, w, h, cornered);
+    ASSERT_EQ(1u, withCorners.size());
+    const MaskTrace::Contour& traced = withCorners[0];
+    const std::size_t count = traced.points.size();
+    const double cornerError = hausdorffToPolygon(traced, star);
+
+    // The five tips and the five notches are corners whose handles point different ways; every
+    // other point keeps its handles in line.
+    int cusps = 0;
+    for (const MaskTrace::CurvePoint& p : traced.points) {
+        if (p.cusp) {
+            ++cusps;
+            EXPECT_GT(std::fabs(handleCross(p)), 0.25) << "a corner at (" << p.position.x << ", " << p.position.y << ") has aligned handles";
+        } else {
+            EXPECT_LT(std::fabs(handleCross(p)), 1e-6) << "a smooth point at (" << p.position.x << ", " << p.position.y << ") has broken handles";
+            EXPECT_GE(handleDot(p), 0.);
+        }
+    }
+    EXPECT_GE(cusps, 10);
+
+    // Smooth-only fitting (no turn counts as a corner) at the closest point count not above it.
+    MaskTrace::Options smoothOnly;
+    smoothOnly.cornerAngle = 180.;
+    bool found = false;
+    std::size_t smoothCount = 0;
+    double smoothError = 0.;
+    for (double tolerance = 0.2; tolerance < 40.; tolerance *= 1.15) {
+        smoothOnly.simplify = tolerance;
+        const std::vector<MaskTrace::Contour> smooth = MaskTrace::trace(mask, w, h, smoothOnly);
+        if ((smooth.size() != 1) || (smooth[0].points.size() > count)) {
+            continue;
+        }
+        for (const MaskTrace::CurvePoint& p : smooth[0].points) {
+            EXPECT_FALSE(p.cusp);
+        }
+        if (!found || (smooth[0].points.size() > smoothCount)) {
+            found = true;
+            smoothCount = smooth[0].points.size();
+            smoothError = hausdorffToPolygon(smooth[0], star);
+        }
+    }
+    ASSERT_TRUE(found) << "no smooth-only fit has at most " << count << " points";
+    EXPECT_LT(cornerError, smoothError) << count << " points with corners against " << smoothCount << " smooth points";
+    EXPECT_LT(cornerError, 1.5);
+}
+
 TEST(MaskTrace, EmptyMaskHasNoContours)
 {
     const std::vector<float> mask((size_t)32 * 32, 0.f);

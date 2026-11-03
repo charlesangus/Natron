@@ -122,6 +122,22 @@ cubicAt(const MaskTrace::CurvePoint& a,
 struct RotoObjectSelect::Shared {
 };
 
+struct RotoObjectSelectSession {
+    std::vector<RotoObjectSelect::Prompt> prompts;
+    double time = 0.;
+    RotoObjectSelect::Frame frame;
+    std::vector<float> mask;
+};
+
+double
+RotoObjectSelect::toleranceForDensity(double density)
+{
+    // Log scale: 0 gives 20 px, the default 50 gives 1.5 px and 100 gives about 0.11 px.
+    const double d = std::min(100., std::max(0., density));
+
+    return 1.5 * std::pow(40. / 3., (50. - d) / 50.);
+}
+
 struct RotoObjectSelect::Job {
     NodePtr source;
     double time = 0.;
@@ -167,6 +183,7 @@ RotoObjectSelect::createKnobs(const KnobPagePtr& page)
     EffectInstance* host = _roto->getHost();
 
     _model = ModelKnob::create(host, page, AiModelTask::eMaskObject);
+    _model->setFeedsRender(false);
     std::vector<KnobIPtr> viewerKnobs;
     if (KnobChoicePtr model = _model->modelKnob()) {
         model->setInViewerContextLabel(QString::fromUtf8("Model"));
@@ -190,19 +207,22 @@ RotoObjectSelect::createKnobs(const KnobPagePtr& page)
     _threshold = threshold;
     viewerKnobs.push_back(threshold);
 
-    KnobDoublePtr simplify = AppManager::createKnob<KnobDouble>(host, std::string(kRotoUIParamObjectSimplifyLabel));
-    simplify->setName(kRotoUIParamObjectSimplify);
-    simplify->setInViewerContextLabel(QString::fromUtf8(kRotoUIParamObjectSimplifyLabel));
-    simplify->setHintToolTip(std::string(kRotoUIParamObjectSimplifyHint));
-    simplify->setEvaluateOnChange(false);
-    simplify->setAnimationEnabled(false);
-    simplify->setMinimum(0.1);
-    simplify->setMaximum(20.);
-    simplify->setDefaultValue(1.5);
-    simplify->disableSlider();
-    page->addKnob(simplify);
-    _simplify = simplify;
-    viewerKnobs.push_back(simplify);
+    KnobDoublePtr density = AppManager::createKnob<KnobDouble>(host, std::string(kRotoUIParamObjectDensityLabel));
+    density->setName(kRotoUIParamObjectDensity);
+    density->setInViewerContextLabel(QString::fromUtf8(kRotoUIParamObjectDensityLabel));
+    density->setHintToolTip(std::string(kRotoUIParamObjectDensityHint));
+    density->setEvaluateOnChange(false);
+    density->setAnimationEnabled(false);
+    density->setMinimum(0.);
+    density->setMaximum(100.);
+    density->setDisplayMinimum(0.);
+    density->setDisplayMaximum(100.);
+    density->setIncrement(1.);
+    density->setDecimals(0);
+    density->setDefaultValue(50.);
+    page->addKnob(density);
+    _density = density;
+    viewerKnobs.push_back(density);
 
     KnobDoublePtr minArea = AppManager::createKnob<KnobDouble>(host, std::string(kRotoUIParamObjectMinAreaLabel));
     minArea->setName(kRotoUIParamObjectMinArea);
@@ -262,11 +282,14 @@ RotoObjectSelect::createKnobs(const KnobPagePtr& page)
     _clearPrompts = clear;
     viewerKnobs.push_back(clear);
 
-    // Viewer items only: the properties panel keeps to the shapes.
+    // Viewer items only: the properties panel keeps to the shapes. The node renders the same
+    // whatever they hold, so they stay out of its render hash.
     for (const KnobIPtr& knob : viewerKnobs) {
         knob->setSecretByDefault(true);
         knob->setInViewerContextSecret(true);
+        knob->setHashExempt(true);
         host->addKnobToViewerUI(knob);
+        _ownKnobs.push_back(knob.get());
     }
     refreshSourceState();
 } // RotoObjectSelect::createKnobs
@@ -288,11 +311,14 @@ RotoObjectSelect::setToolButton(const KnobButtonPtr& button)
 void
 RotoObjectSelect::setActive(bool active)
 {
+    if (active == _active) {
+        return;
+    }
     _active = active;
     const KnobIPtr knobs[] = {
         _model ? KnobIPtr(_model->modelKnob()) : KnobIPtr(),
         _model ? KnobIPtr(_model->downloadKnob()) : KnobIPtr(),
-        _threshold.lock(), _simplify.lock(), _minArea.lock(), _holes.lock(), _smooth.lock(), _feather.lock(), _clearPrompts.lock()
+        _threshold.lock(), _density.lock(), _minArea.lock(), _holes.lock(), _smooth.lock(), _feather.lock(), _clearPrompts.lock()
     };
     for (const KnobIPtr& knob : knobs) {
         if (knob) {
@@ -308,14 +334,22 @@ RotoObjectSelect::setActive(bool active)
 bool
 RotoObjectSelect::onKnobChanged(KnobI* k)
 {
+    if (std::find(_ownKnobs.begin(), _ownKnobs.end(), k) == _ownKnobs.end()) {
+        return false;
+    }
     if (_model && _model->knobChanged(k)) {
         if (_model->modelKnob() && (k == _model->modelKnob().get())) {
             _hasFailed = false;
-            _mask.clear();
-            _contours.clear();
-            refreshMask();
+            if (_active) {
+                _mask.clear();
+                _contours.clear();
+                refreshMask();
+            }
         }
 
+        return true;
+    }
+    if (!_active) {
         return true;
     }
     if (k == _clearPrompts.lock().get()) {
@@ -328,13 +362,13 @@ RotoObjectSelect::onKnobChanged(KnobI* k)
 
         return true;
     }
-    if ((k == _simplify.lock().get()) || (k == _minArea.lock().get()) || (k == _holes.lock().get()) || (k == _smooth.lock().get())) {
+    if ((k == _density.lock().get()) || (k == _minArea.lock().get()) || (k == _holes.lock().get()) || (k == _smooth.lock().get())) {
         retrace();
 
         return true;
     }
 
-    return k == _feather.lock().get();
+    return true;
 }
 
 NodePtr
@@ -351,8 +385,14 @@ RotoObjectSelect::refreshSourceState()
     const bool connected = (bool)sourceNode();
 
     if (KnobButtonPtr button = _toolButton.lock()) {
-        button->setAllDimensionsEnabled(connected);
-        button->setHintToolTip(std::string(connected ? kRotoUIParamObjectSelectToolButtonActionHint : kRotoUIParamObjectSelectToolButtonActionNoSourceHint));
+        // Input changes come in bursts while a project loads; each knob change repaints the toolbar.
+        if (button->isEnabled(0) != connected) {
+            button->setAllDimensionsEnabled(connected);
+        }
+        const std::string hint(connected ? kRotoUIParamObjectSelectToolButtonActionHint : kRotoUIParamObjectSelectToolButtonActionNoSourceHint);
+        if (button->getHintToolTip() != hint) {
+            button->setHintToolTip(hint);
+        }
     }
     if (!connected && !_prompts.empty()) {
         dropPrompts();
@@ -364,7 +404,7 @@ RotoObjectSelect::refreshSourceState()
 void
 RotoObjectSelect::onTimeChanged(double time)
 {
-    if (_prompts.empty() || (time == _promptsTime)) {
+    if (!_active || _prompts.empty() || (time == _promptsTime)) {
         return;
     }
     dropPrompts();
@@ -380,8 +420,8 @@ RotoObjectSelect::traceOptions() const
     if (KnobDoublePtr k = _threshold.lock()) {
         options.threshold = k->getValue();
     }
-    if (KnobDoublePtr k = _simplify.lock()) {
-        options.simplify = k->getValue();
+    if (KnobDoublePtr k = _density.lock()) {
+        options.simplify = toleranceForDensity(k->getValue());
     }
     if (KnobDoublePtr k = _minArea.lock()) {
         options.minArea = k->getValue();
@@ -905,12 +945,59 @@ RotoObjectSelect::commit()
         return true;
     }
     KnobDoublePtr feather = _feather.lock();
-    _roto->pushUndoCommand(new CommitObjectMaskUndoCommand(_roto->shared_from_this(), _contours, _promptsTime, feather ? feather->getValue() : 0.));
+    std::shared_ptr<const RotoObjectSelectSession> made = session();
+    _roto->pushUndoCommand(new CommitObjectMaskUndoCommand(_roto->shared_from_this(), _contours, _promptsTime, feather ? feather->getValue() : 0., made));
     dropPrompts();
     setMessage(std::string());
     redraw();
 
     return true;
+}
+
+std::shared_ptr<const RotoObjectSelectSession>
+RotoObjectSelect::session() const
+{
+    if (_prompts.empty()) {
+        return std::shared_ptr<const RotoObjectSelectSession>();
+    }
+    std::shared_ptr<RotoObjectSelectSession> made = std::make_shared<RotoObjectSelectSession>();
+    made->prompts = _prompts;
+    made->time = _promptsTime;
+    made->frame = _frame;
+    made->mask = _mask;
+
+    return made;
+}
+
+void
+RotoObjectSelect::restoreSession(const RotoObjectSelectSession& session)
+{
+    if (!_active) {
+        if (KnobButtonPtr tool = _toolButton.lock()) {
+            _roto->setCurrentTool(tool);
+        }
+    }
+    _prompts = session.prompts;
+    _promptsTime = session.time;
+    _frame = session.frame;
+    _mask = session.mask;
+    _pressed = false;
+    _dragging = false;
+    _hasFailed = false;
+    setMessage(std::string());
+    // Re-traced rather than restored, so that settings changed since the commit apply.
+    retrace();
+}
+
+void
+RotoObjectSelect::endSession()
+{
+    if (_prompts.empty() && _contours.empty()) {
+        return;
+    }
+    dropPrompts();
+    setMessage(std::string());
+    redraw();
 }
 
 void
@@ -948,6 +1035,25 @@ RotoObjectSelect::draw(double /*time*/)
                 for (int s = 0; s < kCurveSamplesPerSegment; ++s) {
                     const MaskTrace::Point p = cubicAt(contour.points[k], contour.points[(k + 1) % n], (double)s / kCurveSamplesPerSegment);
                     glVertex2d(p.x, p.y);
+                }
+            }
+            glEnd();
+        }
+
+        // The control points the commit will make, so that the density can be judged before it.
+        for (int pass = 0; pass < 2; ++pass) {
+            glPointSize((pass == 0 ? 6. : 4.) * ratio);
+            glBegin(GL_POINTS);
+            for (const MaskTrace::Contour& contour : _contours) {
+                if (pass == 0) {
+                    glColor4f(0.f, 0.f, 0.f, 0.8f);
+                } else if (contour.isHole) {
+                    glColor4f(1.f, 0.35f, 0.9f, 1.f);
+                } else {
+                    glColor4f(1.f, 0.7f, 0.1f, 1.f);
+                }
+                for (const MaskTrace::CurvePoint& p : contour.points) {
+                    glVertex2d(p.position.x, p.position.y);
                 }
             }
             glEnd();
@@ -998,9 +1104,17 @@ RotoObjectSelect::draw(double /*time*/)
         }
     }
 
-    if (!_message.empty()) {
+    std::string text = _message;
+    if (text.empty() && !_contours.empty()) {
+        std::size_t points = 0;
+        for (const MaskTrace::Contour& contour : _contours) {
+            points += contour.points.size();
+        }
+        text = std::to_string(points) + " control points in " + std::to_string(_contours.size()) + (_contours.size() == 1 ? " shape" : " shapes") + ". Object Density sets how many; Return commits.";
+    }
+    if (!text.empty()) {
         const RectD viewport = overlay->getViewportRect();
-        overlay->renderText(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, _message, 1., 0.8, 0.3);
+        overlay->renderText(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text, 1., 0.8, 0.3);
     }
     glCheckError();
 } // RotoObjectSelect::draw

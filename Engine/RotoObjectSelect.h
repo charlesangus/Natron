@@ -47,15 +47,18 @@
 NATRON_NAMESPACE_ENTER
 
 class RotoCurveInteract;
+// What a commit leaves behind: its prompts, the mask they gave and where it sits.
+struct RotoObjectSelectSession;
 
 // The knobs of the object select tool, by script name.
 #define kRotoUIParamObjectThreshold "objectThreshold"
 #define kRotoUIParamObjectThresholdLabel "Object Threshold"
 #define kRotoUIParamObjectThresholdHint "The probability above which a pixel belongs to the object."
 
-#define kRotoUIParamObjectSimplify "objectSimplify"
-#define kRotoUIParamObjectSimplifyLabel "Object Simplify"
-#define kRotoUIParamObjectSimplifyHint "How far, in pixels, the shapes may stray from the mask's outline. Higher values give fewer control points."
+#define kRotoUIParamObjectDensity "objectDensity"
+#define kRotoUIParamObjectDensityLabel "Object Density"
+#define kRotoUIParamObjectDensityHint "How many control points the shapes get. Higher values follow the mask's outline more closely with more points; " \
+                                      "lower values give fewer points that stray further from it. The outline shown before the commit is the shape it makes."
 
 #define kRotoUIParamObjectMinArea "objectMinArea"
 #define kRotoUIParamObjectMinAreaLabel "Object Min Area"
@@ -121,6 +124,7 @@ public:
     }
 
     // Handles a change of one of the tool's knobs; returns false for any other knob.
+    // Changes do nothing while the tool is not picked.
     bool onKnobChanged(KnobI* k);
 
     // Selects the user's default model on a node the user creates.
@@ -142,6 +146,16 @@ public:
     // Turns the previewed outlines into Beziers, as one undo step. Returns false if there are none.
     bool commit();
 
+    // The prompts and mask of the selection being made, for a commit to hand back on undo.
+    std::shared_ptr<const RotoObjectSelectSession> session() const;
+    // Picks the tool and brings back a selection session() returned, re-traced at the current settings.
+    void restoreSession(const RotoObjectSelectSession& session);
+    // Drops the selection being made, as a commit does.
+    void endSession();
+
+    // The fitting tolerance, in encoded pixels, of a density knob value.
+    static double toleranceForDensity(double density);
+
     const std::vector<Prompt>& prompts() const
     {
         return _prompts;
@@ -154,6 +168,8 @@ public:
     }
 
 private:
+    friend struct RotoObjectSelectSession;
+
     // Where the encoded image sits in canonical coordinates. Encoded pixels are square, with y down.
     struct Frame {
         SegmentationKey key;
@@ -189,13 +205,15 @@ private:
     RotoCurveInteract* const _roto;
     std::unique_ptr<ModelKnob> _model;
     KnobDoubleWPtr _threshold;
-    KnobDoubleWPtr _simplify;
+    KnobDoubleWPtr _density;
     KnobDoubleWPtr _minArea;
     KnobBoolWPtr _holes;
     KnobBoolWPtr _smooth;
     KnobDoubleWPtr _feather;
     KnobButtonWPtr _clearPrompts;
     KnobButtonWPtr _toolButton;
+    // Identity only, never dereferenced: knob changes on the host test against these without locking.
+    std::vector<const KnobI*> _ownKnobs;
     bool _active = false;
 
     std::vector<Prompt> _prompts;

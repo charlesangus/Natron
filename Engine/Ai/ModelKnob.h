@@ -117,6 +117,13 @@ public:
      **/
     bool knobChanged(KnobI* k);
 
+    /**
+     * @brief For a tool whose node renders the same whatever model is picked: the knobs stay out
+     * of the node's render hash, and neither picking a model nor installing or removing one
+     * re-renders the node. Call once, right after create().
+     **/
+    void setFeedsRender(bool feeds);
+
 private:
     ModelKnob(EffectInstance* effect, AiModelTask task, ModelDownloader* downloader);
 
@@ -131,6 +138,7 @@ private:
     std::unique_ptr<QObject> _context;
     KnobChoiceWPtr _model;
     KnobButtonWPtr _download;
+    bool _feedsRender = true;
 
     mutable QMutex _mutex;
     std::optional<Resolved> _resolved;

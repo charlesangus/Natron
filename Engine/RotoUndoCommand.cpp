@@ -47,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoFeatherDrag.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoStrokeItem.h"
@@ -1924,12 +1925,14 @@ MakeRectangleUndoCommand::mergeWith(const UndoCommandPtr &other)
 CommitObjectMaskUndoCommand::CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
                                                          const std::vector<MaskTrace::Contour>& contours,
                                                          double time,
-                                                         double feather)
+                                                         double feather,
+                                                         const std::shared_ptr<const RotoObjectSelectSession>& session)
     : UndoCommand()
     , _roto(roto)
     , _contours(contours)
     , _time(time)
     , _feather(feather)
+    , _session(session)
     , _firstRedoCalled(false)
     , _shapes()
     , _placements()
@@ -1954,6 +1957,9 @@ CommitObjectMaskUndoCommand::undo()
     }
     roto->setSelection(BezierPtr(), std::make_pair(CpPtr(), CpPtr()));
     roto->evaluate(true);
+    if (_session && roto->objectSelect) {
+        roto->objectSelect->restoreSession(*_session);
+    }
 }
 
 void
@@ -1968,6 +1974,9 @@ CommitObjectMaskUndoCommand::redo()
     if (_firstRedoCalled) {
         for (std::vector<Placement>::const_iterator it = _placements.begin(); it != _placements.end(); ++it) {
             ctx->addItem(it->layer, it->index, it->shape, RotoItem::eSelectionReasonOverlayInteract);
+        }
+        if (_session && roto->objectSelect) {
+            roto->objectSelect->endSession();
         }
     } else {
         _firstRedoCalled = true;

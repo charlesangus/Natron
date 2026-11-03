@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -553,20 +554,25 @@ private:
     double _time;
 };
 
+struct RotoObjectSelectSession;
+
 /**
  * @brief Turns traced outlines into Beziers in the selected layer, keyed at time: one per outline,
- * holes with the stencil operator so that they cut what lies under them. Undo removes them all.
+ * holes with the stencil operator so that they cut what lies under them. Undo removes them all and
+ * hands session back to the object select tool, so that the selection can be adjusted and
+ * committed again; redo drops it again.
  **/
 class CommitObjectMaskUndoCommand
     : public UndoCommand {
     Q_DECLARE_TR_FUNCTIONS(CommitObjectMaskUndoCommand)
 
 public:
-    // contours are in canonical coordinates, enclosing shapes first.
+    // contours are in canonical coordinates, enclosing shapes first. session may be null.
     CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
                                 const std::vector<MaskTrace::Contour>& contours,
                                 double time,
-                                double feather);
+                                double feather,
+                                const std::shared_ptr<const RotoObjectSelectSession>& session = std::shared_ptr<const RotoObjectSelectSession>());
 
     virtual ~CommitObjectMaskUndoCommand();
 
@@ -590,6 +596,7 @@ private:
     std::vector<MaskTrace::Contour> _contours;
     double _time;
     double _feather;
+    std::shared_ptr<const RotoObjectSelectSession> _session;
     bool _firstRedoCalled;
     std::list<BezierPtr> _shapes;
     // Where each shape sat, by increasing index, so that re-inserting in this order restores it.

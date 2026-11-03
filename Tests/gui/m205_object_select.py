@@ -1,18 +1,20 @@
 """GUI test of the Roto node's Object Select tool: a click on a still in the viewer prompts a
 segmentation model, the mask is previewed as outlines, Return commits it as Beziers keyed on the
-frame (the hole as a Stencil shape), and one undo removes them.
+frame (the hole as a Stencil shape), and one undo removes them and brings the selection back to
+adjust. Object Density changes the committed shapes' point count.
 
 Nothing is downloaded. The manifest is the built-in one plus two entries for the committed fake
 segmentation models (Tests/fixtures/ai/seg-*.onnx, whose mask is the image's bright pixels), and
 the script installs them under the output folder's XDG_DATA_HOME before the Roto node is created.
-The still, a bright square with a square hole on a dark ground, is written by the script.
+The still, a bright disc with a square hole on a dark ground, is written by the script.
 
 Screenshots, in $NATRON_GUI_TEST_OUT (default build/gui-test-out/):
     m205-object-tool.png       the tool picked, its settings in the viewer's toolbar
     m205-object-preview.png    the outline preview after one click
     m205-object-box.png        a box prompt with the SAM-shaped model
     m205-object-committed.png  the committed shapes
-    m205-object-undone.png     after undo
+    m205-object-undone.png     after undo: the selection is back
+    m205-object-dense.png      the selection at a high density, before the commit
 
 Usage, in the natron-dev container:
     Tests/gui/run-gui-test.sh Tests/gui/m205_object_select.py <Natron.AppImage or release binary>
@@ -29,9 +31,10 @@ POLL_TIMEOUT_S = 30.0
 SETTLE_MS = 500
 RENDER_MS = 1500
 
-# The still, in pixels, top row first: the object and the hole cut in it.
+# The still, in pixels, top row first: the object, a disc given by its bounding box, and the
+# square hole cut in it. A curved outline is what a density change shows on.
 IMAGE_W, IMAGE_H = 128, 96
-OBJECT = (16, 8, 112, 88)
+OBJECT = (24, 8, 104, 88)
 HOLE = (52, 36, 76, 60)
 BRIGHT, DARK = 235, 20
 
@@ -97,17 +100,22 @@ try:
         image.fill(QColor(DARK, DARK, DARK))
         for y in range(IMAGE_H):
             for x in range(IMAGE_W):
-                if inside(x + 0.5, y + 0.5, OBJECT) and not inside(x + 0.5, y + 0.5, HOLE):
+                if in_disc(x + 0.5, y + 0.5) and not inside(x + 0.5, y + 0.5, HOLE):
                     image.setPixelColor(x, y, QColor(BRIGHT, BRIGHT, BRIGHT))
         return image.save(path)
 
     def inside(x, y, rect):
         return rect[0] <= x < rect[2] and rect[1] <= y < rect[3]
 
+    def in_disc(x, y):
+        cx, cy = 0.5 * (OBJECT[0] + OBJECT[2]), 0.5 * (OBJECT[1] + OBJECT[3])
+        r = 0.5 * (OBJECT[2] - OBJECT[0])
+        return (x - cx) ** 2 + (y - cy) ** 2 < r * r
+
     def truth(x, y):
         """Whether canonical (x, y), y up, is in the object."""
         row = IMAGE_H - y
-        return inside(x, row, OBJECT) and not inside(x, row, HOLE)
+        return in_disc(x, row) and not inside(x, row, HOLE)
 
     def visible_gl():
         found = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
@@ -270,6 +278,9 @@ try:
                 either += a or b
         return both / float(max(1, either))
 
+    def point_count(curves):
+        return sum(c.getNumControlPoints() for c in curves)
+
     def pick_model(roto, model_id):
         """Selects the model by its option ID; getOptions() lists IDs, not the menu labels."""
         param = roto.getParam("model")
@@ -308,7 +319,7 @@ try:
         require(roto is not None, "created a RotoPaint node", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
         roto.setPosition(0, 200)
         require(roto.getParam("model") is not None, "the Roto node has a model parameter")
-        for name in ("objectThreshold", "objectSimplify", "objectMinArea", "objectHoles", "objectSmooth",
+        for name in ("objectThreshold", "objectDensity", "objectMinArea", "objectHoles", "objectSmooth",
                      "objectFeather", "objectClearPrompts", "downloadModel"):
             check(roto.getParam(name) is not None, "the Roto node has a %s parameter" % name)
         require(pick_model(roto, SEGNEXT_ID), "picked the Test SegNext model")
@@ -391,18 +402,78 @@ try:
         yield ("sleep", RENDER_MS)
         gt.shot("m205-object-committed.png")
 
+        density = roto.getParam("objectDensity")
+        require(density is not None, "the Roto node has an objectDensity parameter")
+        default_density = density.getValue()
+        first_points = point_count(made)
+
         undo = edit_action("undo")
         require(undo is not None and undo.isEnabled(), "the Edit menu's Undo is enabled")
         undo.trigger()
         ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
         check(ok, "one undo removes every committed shape")
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "the undo brings the selection's outline back (%d outline pixels)" % outline_pixels(gl, box))
         yield ("sleep", RENDER_MS)
         gt.shot("m205-object-undone.png")
+
+        # The selection is live again: Backspace takes its click away, and a new click adds one.
+        key(gl, Qt.Key_Backspace)
+        ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+        check(ok, "Backspace removes the click the undo brought back")
+        click(gl, at(30, 48))
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "a new click previews the outline again")
+
         redo = edit_action("redo")
         if check(redo is not None and redo.isEnabled(), "the Edit menu's Redo is enabled"):
             redo.trigger()
             ok = yield ("until", lambda: len(shapes(roto)) == len(made), POLL_TIMEOUT_S)
-            check(ok, "redo brings the shapes back")
+            check(ok, "redo brings the first commit's shapes back")
+            check(point_count(shapes(roto)) == first_points,
+                  "the redone shapes have the first commit's %d points (got %d)" % (first_points, point_count(shapes(roto))))
+            undo = edit_action("undo")
+            require(undo is not None and undo.isEnabled(), "Undo is enabled after the redo")
+            undo.trigger()
+            ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+            check(ok, "undoing the redone commit removes its shapes")
+            ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+            check(ok, "and brings the selection back")
+
+        # Density re-traces the selection before the commit, and is kept for the next one.
+        for value, label, more in ((90.0, "dense", True), (10.0, "sparse", False)):
+            if shapes(roto):
+                undo = edit_action("undo")
+                require(undo is not None and undo.isEnabled(), "Undo is enabled before the %s commit" % label)
+                undo.trigger()
+                ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+                require(ok, "one undo removes the previous commit's shapes")
+            ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+            require(ok, "the selection is shown before the %s commit" % label)
+            density.setValue(value)
+            QApplication.processEvents()
+            yield ("sleep", SETTLE_MS)
+            check(outline_pixels(gl, box) > 40, "the outline is still shown at Object Density %g" % value)
+            if more:
+                gt.shot("m205-object-dense.png")
+            key(gl, Qt.Key_Return)
+            ok = yield ("until", lambda: len(shapes(roto)) >= 2, POLL_TIMEOUT_S)
+            require(ok, "Return commits the %s selection" % label)
+            n = point_count(shapes(roto))
+            if more:
+                check(n > first_points, "Object Density %g gives more points than %g (%d against %d)" % (value, default_density, n, first_points))
+            else:
+                check(n < first_points, "Object Density %g gives fewer points than %g (%d against %d)" % (value, default_density, n, first_points))
+            check(density.getValue() == value, "the density stays at %g for the next shape" % value)
+            stencil_count = sum(1 for c in shapes(roto) if c.getCompositingOperator() == stencil)
+            check(stencil_count == 1, "the %s commit still makes one Stencil shape" % label)
+
+        undo = edit_action("undo")
+        require(undo is not None and undo.isEnabled(), "Undo is enabled after the last commit")
+        undo.trigger()
+        ok = yield ("until", lambda: not shapes(roto), POLL_TIMEOUT_S)
+        check(ok, "a single undo removes every shape of the last commit")
+        density.setValue(default_density)
 
     gt.run(steps())
 except Exception:

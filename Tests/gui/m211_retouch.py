@@ -802,8 +802,14 @@ try:
                 previous = now
             return None
 
+        def show(n, what):
+            # connectInput refuses an occupied input.
+            if viewer.getInput(0) is not None:
+                viewer.disconnectInput(0)
+            require(viewer.connectInput(0, n), what)
+
         healer = textured_heal(600)
-        require(viewer.connectInput(0, healer), "the viewer shows the textured Retouch")
+        show(healer, "the viewer shows the textured Retouch")
         yield ("sleep", SETTLE_MS)
         plain = red_pixels(grab_viewer())
         app.selectNode(healer, True)
@@ -881,7 +887,7 @@ try:
         fresh = textured_heal(800)
         heal_ellipse(fresh, final_offset[0], final_offset[1])
         gt.close_all_panels()
-        require(viewer.connectInput(0, fresh), "the viewer shows the fresh Retouch")
+        show(fresh, "the viewer shows the fresh Retouch")
         reference = yield from settled(lambda: disc_samples(h_centre, 1.2 * RADIUS * h_scale))
         require(reference is not None, "the fresh render settles")
         screen_crop("retouch_heal_drag_fresh.png", visible_viewer())

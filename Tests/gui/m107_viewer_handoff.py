@@ -655,7 +655,7 @@ try:
             check(loss_at is not None, "%s: the log shows the hand-off dropping to the cpu rung on a device loss%s" %
                   (FAULT_ENV, "" if loss_at is not None else
                    " (none: the fault fires only on that device operation, which a CPU-type device such as lavapipe,"
-                   " whose regions the cost model moves to the CPU, may never reach)"))
+                   " whose light regions weight placement keeps on the CPU, may never reach)"))
             check(loss_at is not None and any(r != "cpu" for r, _ in rungs[:loss_at]),
                   "%s: a GPU rung was in use before the loss (%r)" % (FAULT_ENV, rungs[:loss_at or 0]))
             check(len(post_loss) >= POST_LOSS_SWEEP_STEPS and all(post_loss),

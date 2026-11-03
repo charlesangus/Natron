@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -119,6 +120,12 @@ struct BloomOp {
     /// recorder.
     PassList passes(const Params& params,
                     const PassContext& context) const;
+
+    /**
+     * @brief The Filter weight Bloom's filter and largest blur call for (BloomKernels::gpuWeight).
+     **/
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobDoubleWPtr size;
     KnobDoubleWPtr ratio;

@@ -103,12 +103,9 @@ public:
 
     bool isOutputEdge() const;
 
-    void setDefaultColor(const QColor & color);
+    void setIsSpliceHint(bool hint);
 
-    /**
-     * @brief The Preferences Selection colour, read live, with the given alpha.
-     **/
-    static QColor highlightColor(int alpha = 255);
+    static QColor selectionColorWithAlpha(int alpha = 255);
 
     bool isBendPointVisible() const;
 

@@ -79,6 +79,39 @@ try:
                     n += 1
         return n
 
+    GHOST_ALPHA = 100 / 255.0
+    GHOST_TOLERANCE = 20
+    GHOST_HALF = 8
+
+    def blended(img, sel):
+        bg = img.pixelColor(2, 2)
+        return tuple(int(bg_c * (1 - GHOST_ALPHA) + s_c * GHOST_ALPHA + 0.5)
+                     for bg_c, s_c in zip((bg.red(), bg.green(), bg.blue()), sel))
+
+    def count_ghost(img, rgb, rect):
+        x0, y0, x1, y1 = rect
+        n = 0
+        for y in range(max(0, y0), min(img.height(), y1)):
+            for x in range(max(0, x0), min(img.width(), x1)):
+                c = img.pixelColor(x, y)
+                if (abs(c.red() - rgb[0]) <= GHOST_TOLERANCE and abs(c.green() - rgb[1]) <= GHOST_TOLERANCE
+                        and abs(c.blue() - rgb[2]) <= GHOST_TOLERANCE):
+                    n += 1
+        return n
+
+    def check_ghosts(graph, name, sel, stale, rects):
+        img = viewport_image(graph).toImage()
+        want = blended(img, sel)
+        old = blended(img, stale) if stale else None
+        for label, rect in rects:
+            hits = count_ghost(img, want, rect)
+            check(hits > 0, "%s: the %s ghost pipe is drawn in the Selection colour at alpha 100 %s (%d px)"
+                  % (name, label, want, hits))
+            if old is not None:
+                gone = count_ghost(img, old, rect)
+                check(gone == 0, "%s: the %s ghost pipe no longer shows the previous colour %s (%d px)"
+                      % (name, label, old, gone))
+
     def snap(graph, name, rgb, rect):
         pix = viewport_image(graph)
         path = os.path.join(gt.OUT, name + ".png")
@@ -132,13 +165,23 @@ try:
             send_mouse(vp, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
 
-        snap(graph, "hint-default", selection_rgb(), band)
+        mnow = centre(mover)
+
+        def ghost_rect(a, b):
+            m = graph.mapFromScene(QPointF((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0))
+            return (m.x() - GHOST_HALF, m.y() - GHOST_HALF, m.x() + GHOST_HALF, m.y() + GHOST_HALF)
+
+        ghosts = (("input", ghost_rect(sc, mnow)), ("output", ghost_rect(mnow, dc)))
+        default_rgb = selection_rgb()
+        snap(graph, "hint-default", default_rgb, band)
+        check_ghosts(graph, "hint-default", default_rgb, None, ghosts)
         set_selection(0.1, 0.4, 1.0)
         vp.update()
         pend = graph.mapFromScene(QPointF(target[0], target[1]))
         send_mouse(vp, QEvent.MouseMove, pend, Qt.NoButton, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
         snap(graph, "hint-changed", selection_rgb(), band)
+        check_ghosts(graph, "hint-changed", selection_rgb(), default_rgb, ghosts)
         send_mouse(vp, QEvent.MouseButtonRelease, pend, Qt.LeftButton, Qt.NoButton)
         set_selection(0.95, 0.54, 0.0)
 

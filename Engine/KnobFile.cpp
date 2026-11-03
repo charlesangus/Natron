@@ -35,6 +35,7 @@
 #include <QDebug>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
@@ -54,14 +55,27 @@ NATRON_NAMESPACE_ENTER
 //using std::make_pair;
 //using std::pair;
 
+namespace {
+void
+expandProjectPath(KnobHolder* holder,
+                  std::string& path)
+{
+    if (path.empty() || !holder || !holder->getApp()) {
+        return;
+    }
+    holder->getApp()->getProject()->canonicalizePath(path);
+}
+} // anon namespace
+
 /***********************************KnobFile*****************************************/
 
 KnobFile::KnobFile(KnobHolder* holder,
-                   const std::string &description,
+                   const std::string& description,
                    int dimension,
                    bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, description, dimension, declaredByPlugin)
     , _isInputImage(false)
+    , _showsReloadButton(true)
 {
 }
 
@@ -91,40 +105,67 @@ KnobFile::reloadOtherNodesReadingTheseFiles()
     const std::string path = getResolvedPath();
     EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
 
-    if (path.empty() || !effect || !effect->getApp()) {
+    if (path.empty() || !effect) {
         return;
     }
-    // The stamp is shared per path, so every other node reading these files must re-key too, and
-    // drop the frame listing, headers and metadata it read from them.
-    NodesList nodes;
-    effect->getApp()->getProject()->getNodes_recursive(nodes, false);
-    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        EffectInstancePtr other = (*it)->getEffectInstance();
-        if (!other || other.get() == effect) {
+    reloadNodesReadingFiles(std::vector<std::string>(1, path), effect);
+}
+
+void
+KnobFile::reloadNodesReadingFiles(const std::vector<std::string>& paths,
+                                  const EffectInstance* reloader)
+{
+    if (paths.empty() || !appPTR) {
+        return;
+    }
+    // The stamps are shared per path by every project in the process, so every other node reading
+    // these files, in any of them, must re-key too, and drop the frame listing, headers and
+    // metadata it read from them: otherwise its next stamp read takes the reloaded file's identity
+    // while its stored hash still names the old one.
+    const AppInstanceVec apps = appPTR->getAppInstances();
+    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
+        if (!*app || !(*app)->getProject() || (*app)->getProject()->isProjectClosing()) {
             continue;
         }
-        const KnobsVec& knobs = other->getKnobs();
-        bool affected = false;
-        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
-            KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
-            if (otherFile && FileStampRegistry::coversSameFiles(path, otherFile->getResolvedPath())) {
-                otherFile->invalidateFileStamp();
-                affected = true;
+        NodesList nodes;
+        (*app)->getProject()->getNodes_recursive(nodes, false);
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            EffectInstancePtr other = (*it)->getEffectInstance();
+            if (!other || other.get() == reloader) {
+                continue;
+            }
+            const KnobsVec& knobs = other->getKnobs();
+            bool affected = false;
+            for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+                KnobFile* otherFile = dynamic_cast<KnobFile*>(k->get());
+                if (!otherFile) {
+                    continue;
+                }
+                const std::string otherPath = otherFile->getResolvedPath();
+                for (std::size_t i = 0; i < paths.size(); ++i) {
+                    if (FileStampRegistry::coversSameFiles(paths[i], otherPath)) {
+                        otherFile->invalidateFileStamp();
+                        affected = true;
+                        break;
+                    }
+                }
+            }
+            if (affected) {
+                other->purgeCaches();
+                other->clearActionsCache();
+                other->clearPersistentMessage(false);
+                // The file stamps were just dropped, so the stored hashes predate them.
+                (*it)->markHashDirty();
+                // The format and the rest of the metadata still describe the file as it was read
+                // before, and nodes below clip to that format.
+                other->dropCachedMetadataDownstream();
+                other->refreshMetadataSideEffects();
+            } else if (other->refreshFileDependencies(paths)) {
+                (*it)->markHashDirty();
             }
         }
-        if (affected) {
-            other->purgeCaches();
-            other->clearActionsCache();
-            other->clearPersistentMessage(false);
-            // The file stamps were just dropped, so the stored hashes predate them.
-            (*it)->markHashDirty();
-            // The format and the rest of the metadata still describe the file as it was read
-            // before, and nodes below clip to that format.
-            other->dropCachedMetadataDownstream();
-            other->refreshMetadataSideEffects();
-        }
     }
-}
+} // KnobFile::reloadNodesReadingFiles
 
 bool
 KnobFile::canAnimate() const
@@ -137,13 +178,7 @@ KnobFile::getResolvedPath()
 {
     std::string path = getValue();
 
-    if (path.empty()) {
-        return path;
-    }
-    KnobHolder* holder = getHolder();
-    if (holder && holder->getApp()) {
-        holder->getApp()->getProject()->canonicalizePath(path);
-    }
+    expandProjectPath(getHolder(), path);
 
     return path;
 }
@@ -207,7 +242,10 @@ KnobFile::getFileName(int time,
                       ViewSpec view)
 {
     if (!_isInputImage) {
-        return getValue(0, view);
+        std::string path = getValue(0, view);
+        expandProjectPath(getHolder(), path);
+
+        return path;
     } else {
         ///try to interpret the pattern and generate a filename if indexes are found
         std::vector<std::string> views;
@@ -218,19 +256,23 @@ KnobFile::getFileName(int time,
             view = ViewIdx(0);
         }
 
-        return SequenceParsing::generateFileNameFromPattern(getValue( 0, ViewIdx(0) ), views, time, view);
+        std::string pattern = getValue(0, ViewIdx(0));
+        expandProjectPath(getHolder(), pattern);
+
+        return SequenceParsing::generateFileNameFromPattern(pattern, views, time, view);
     }
 }
 
 /***********************************KnobOutputFile*****************************************/
 
 KnobOutputFile::KnobOutputFile(KnobHolder* holder,
-                               const std::string &description,
+                               const std::string& description,
                                int dimension,
                                bool declaredByPlugin)
     : KnobStringBase(holder, description, dimension, declaredByPlugin)
     , _isOutputImage(false)
     , _sequenceDialog(true)
+    , _showsRewriteButton(true)
 {
 }
 
@@ -279,7 +321,10 @@ KnobOutputFile::generateFileNameAtTime(SequenceTime time,
         view = ViewIdx(0);
     }
 
-    return QString::fromUtf8( SequenceParsing::generateFileNameFromPattern(getValue( 0, ViewIdx(0) ), views, time, view).c_str() );
+    std::string pattern = getValue(0, ViewIdx(0));
+    expandProjectPath(getHolder(), pattern);
+
+    return QString::fromUtf8(SequenceParsing::generateFileNameFromPattern(pattern, views, time, view).c_str());
 }
 
 /***********************************KnobPath*****************************************/

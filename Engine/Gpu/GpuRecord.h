@@ -101,6 +101,9 @@ public:
     // none is.
     uint64_t maxScratchBytes() const;
 
+    // maxScratchBytes() of a context on a device whose maxStorageBufferRange is deviceRange.
+    static uint64_t maxScratchBytesFor(uint64_t deviceRange);
+
     // Caps maxStorageBufferBytes() in every context, so that a test sees what a device with that limit does; 0
     // removes the cap.
     static void setMaxStorageBufferBytesForTests(uint64_t bytes);

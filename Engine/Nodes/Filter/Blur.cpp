@@ -57,27 +57,6 @@ isGaussianFamily(BlurKernels::Filter filter)
     return (filter == BlurKernels::eFilterQuasiGaussian) || (filter == BlurKernels::eFilterGaussian);
 }
 
-GpuBlurFilter
-gpuBlurFilterOf(BlurKernels::Filter filter)
-{
-    switch (filter) {
-    case BlurKernels::eFilterQuasiGaussian:
-        return GpuBlurFilter::eQuasiGaussian;
-    case BlurKernels::eFilterGaussian:
-        return GpuBlurFilter::eGaussian;
-    case BlurKernels::eFilterBox:
-        return GpuBlurFilter::eBox;
-    case BlurKernels::eFilterTriangle:
-        return GpuBlurFilter::eTriangle;
-    case BlurKernels::eFilterQuadratic:
-        return GpuBlurFilter::eQuadratic;
-    case BlurKernels::eFilterFIRGaussian:
-        return GpuBlurFilter::eFirGaussian;
-    }
-
-    return GpuBlurFilter::eAny;
-}
-
 int
 boxIterations(BlurKernels::Filter filter)
 {
@@ -285,15 +264,11 @@ blurPasses(BlurKernels::Filter filter,
 
     Pass passX = Pass::lineX(haloX, growX, lineWorker(filterX, false));
     passX.tapsPerSample = taps[0];
-    passX.sigma = s.x / 2.4;
-    passX.recursive = isGaussianFamily(filter);
     // The FIR Gaussian takes the columns a block of adjacent ones at a time, so it reads the
     // plane row by row.
     Pass passY = Pass::lineY(haloY, growY, lineWorker(filterY, fir));
     passY.tapsPerSample = taps[1];
     passY.columnBlock = fir ? BlurKernels::LineFilter::kColumnBlock : 1;
-    passY.sigma = s.y / 2.4;
-    passY.recursive = isGaussianFamily(filter);
     list.passes.push_back(passX);
     list.passes.push_back(passY);
 
@@ -387,17 +362,15 @@ BlurOp::passes(const Params& params,
     return blurPasses(params.filter, pixelSizes(params, context));
 }
 
-std::optional<GpuCostHint>
-BlurOp::costHint(const Params& params,
-                 const PassContext& context) const
+std::optional<GpuWeight>
+BlurOp::gpuWeight(const Params& params,
+                  const PassContext& context) const
 {
-    GpuCostHint hint;
+    if (isGaussianFamily(params.filter)) {
+        return std::nullopt;
+    }
 
-    hint.sigma = std::max(params.sizeX / context.pixelAspectRatio, params.sizeY) * context.scale.toOfxPointD().x / 2.4;
-    hint.iir = isGaussianFamily(params.filter);
-    hint.filter = gpuBlurFilterOf(params.filter);
-
-    return hint;
+    return gpuSizeScaledWeight(std::max(params.sizeX / context.pixelAspectRatio, params.sizeY) * context.scale.toOfxPointD().x);
 }
 
 Blur::Blur(NodePtr node)

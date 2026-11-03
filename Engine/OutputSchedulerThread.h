@@ -762,6 +762,11 @@ public:
     bool hasThreadsAlive() const;
 
     /**
+     * @brief Returns the number of live frame render threads of the scheduler, 0 if it has none.
+     **/
+    int getNRenderThreads() const;
+
+    /**
      * @brief Returns true if the scheduler is active and some render threads are doing work.
      **/
     bool hasThreadsWorking() const;

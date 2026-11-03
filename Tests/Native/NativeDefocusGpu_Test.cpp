@@ -43,6 +43,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/BokehKnobs.h"
 #include "Engine/Nodes/Filter/Defocus.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -62,6 +63,10 @@ const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 // The CPU/GPU parity bound. The CPU sums each row in double, the GPU in float within blocks of 256
 // pixels, so the gathers differ by a few float roundings of the row sums.
 const ParityTolerance kDefocusTolerance = ParityTolerance::make(1e-5, 1e-4);
+
+// The bound with lens aberrations: the cells' clipped and textured kernels have more runs of
+// smaller weights, and so more roundings, than the plain disc.
+const ParityTolerance kLensTolerance = ParityTolerance::make(1e-4, 1e-3);
 
 GpuQuery
 eligibleQuery()
@@ -144,7 +149,8 @@ protected:
     // Renders defocus on the GPU and on the CPU over the window and expects the two within the
     // tolerance with Defocus run on the device.
     void expectParity(const NodePtr& defocus,
-                      const std::string& name)
+                      const std::string& name,
+                      const ParityTolerance& tolerance = kDefocusTolerance)
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ defocus }), defocus, kWindow, kTime);
         if (result.skipped) {
@@ -155,7 +161,7 @@ protected:
         EXPECT_EQ(1u, result.gpuTasksPerNode.count(defocus->getScriptName_mt_safe())) << name << ": the region fell back to the CPU";
 
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << name;
-        const ImageDiff diff = compareImages(result.cpu, result.gpu, kDefocusTolerance);
+        const ImageDiff diff = compareImages(result.cpu, result.gpu, tolerance);
         EXPECT_GT(diff.compared, 0u) << name;
         EXPECT_EQ(0u, diff.mismatches) << name << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
     }
@@ -203,6 +209,15 @@ TEST_F(NativeDefocusGpuTest, Eligibility)
     EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "beyond the halo cap";
 
     ASSERT_TRUE(setKnobValues(defocus, kDefocusParamAspectRatio, { 1. }));
+    ASSERT_TRUE(setKnobValues(defocus, kDefocusParamSize, { 20. }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { 0.8 }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.3 }));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "lens aberrations";
+
+    // Each channel's size clamps on its own to the largest, so red's kernel stays within the cap.
+    ASSERT_TRUE(setKnobValues(defocus, kDefocusParamSize, { 500. }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.5 }));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "chromatic aberration at the largest size";
     ASSERT_TRUE(setKnobValues(defocus, kDefocusParamSize, { 20. }));
     NodePtr kernel = makeConstant(RectI(0, 0, 8, 8), { 1., 1., 1., 1. });
     ASSERT_TRUE(bool(kernel));
@@ -273,4 +288,52 @@ TEST_F(NativeDefocusGpuTest, NonFiniteSourceMatchesTheCpu)
     ASSERT_TRUE(bool(defocus));
 
     expectParity(defocus, "non-finite");
+}
+
+// Each lens case of the CPU tests, over the parity source, whose cells clip and scale the kernels
+// differently across the window.
+TEST_F(NativeDefocusGpuTest, CatEyeMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr defocus = makeDefocus(source, 7.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { 1. }));
+
+    expectParity(defocus, "cat-eye", kLensTolerance);
+
+    ASSERT_TRUE(setKnobValues(defocus, kDefocusParamAspectRatio, { 0.5 }));
+    expectParity(defocus, "cat-eye, aspect ratio 0.5", kLensTolerance);
+}
+
+TEST_F(NativeDefocusGpuTest, SwirlMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr defocus = makeDefocus(source, 7.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { 0.6 }));
+    ASSERT_TRUE(setKnobValue(defocus, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential)));
+
+    expectParity(defocus, "swirl", kLensTolerance);
+}
+
+TEST_F(NativeDefocusGpuTest, ChromaticAberrationMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr defocus = makeDefocus(source, 8.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.5 }));
+
+    expectParity(defocus, "chromatic aberration", kLensTolerance);
+}
+
+TEST_F(NativeDefocusGpuTest, CombinedLensAberrationsMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr defocus = makeDefocus(source, 13.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { 0.8 }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.3 }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamSphericalAberration, { 0.5 }));
+
+    expectParity(defocus, "cat-eye, chromatic and spherical aberrations", kLensTolerance);
 }

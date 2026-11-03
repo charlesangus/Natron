@@ -71,7 +71,7 @@ nearest-neighbour test models) matches exactly.
 
 ## darktable controls
 
-Ported from darktable master (`src/libs/neural_restore.c`, `src/common/ai/restore*.c`). Every
+Ported from darktable 5.6 (`src/libs/neural_restore.c`, `src/common/ai/restore*.c`). Every
 control of the neural restore module's upscale tab:
 
 | darktable control | Default | Natron knob | Notes |

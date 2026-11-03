@@ -137,6 +137,12 @@ public:
                                           U64 cacheBytes);
 
     /**
+     * @brief sourceRoD enlarged by factor about the origin; an infinite edge stays infinite.
+     **/
+    static RectD scaledRegionOfDefinition(const RectD& sourceRoD,
+                                          double factor);
+
+    /**
      * @brief The Lanczos-3 kernel, sinc(t) sinc(t / 3) within 3 pixels and 0 beyond.
      **/
     static double lanczos3(double t);

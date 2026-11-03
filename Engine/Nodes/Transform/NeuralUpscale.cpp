@@ -26,6 +26,7 @@
 #include "NeuralUpscale.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -107,7 +108,7 @@ taskForFactor(int factor)
     return (factor == 4) ? AiModelTask::eUpscale4x : AiModelTask::eUpscale2x;
 }
 
-// The Source's region of definition in pixels at scale.
+// The Source's region of definition in pixels at scale; false when it is empty or infinite.
 bool
 sourcePixelRoD(EffectInstance& effect,
                double time,
@@ -123,6 +124,9 @@ sourcePixelRoD(EffectInstance& effect,
     RectD canonical;
     bool isProjectFormat = false;
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &canonical, &isProjectFormat) == eStatusFailed) {
+        return false;
+    }
+    if (canonical.isInfinite()) {
         return false;
     }
     *rod = PassExec::toPixelEnclosing(canonical, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
@@ -202,58 +206,67 @@ resampleChannels(const ReadRow& readRow,
     for (int i = 0; i < width; ++i) {
         columns[i] = tapsFor(window.x1 + i, factor, filter, frame.x1, frame.x2);
     }
-    std::vector<Taps> rows(window.height());
-    int firstRow = frame.y2;
-    int endRow = frame.y1;
-    for (int j = 0; j < window.height(); ++j) {
-        rows[j] = tapsFor(window.y1 + j, factor, filter, frame.y1, frame.y2);
-        for (int k = 0; k < rows[j].count; ++k) {
-            firstRow = std::min(firstRow, rows[j].index[k]);
-            endRow = std::max(endRow, rows[j].index[k] + 1);
-        }
-    }
-    if (endRow <= firstRow) {
-        return true;
-    }
-
-    // Horizontal pass over every source row the vertical pass reads.
     std::vector<float> source((std::size_t)frame.width() * nComps);
-    std::vector<float> horizontal((std::size_t)(endRow - firstRow) * width * nChannels);
-    for (int sy = firstRow; sy < endRow; ++sy) {
-        if (aborted()) {
-            return false;
-        }
-        readRow(sy, source.data());
-        float* out = &horizontal[(std::size_t)(sy - firstRow) * width * nChannels];
-        for (int i = 0; i < width; ++i) {
-            const Taps& taps = columns[i];
-            for (int k = 0; k < nChannels; ++k) {
-                const int c = channels[k];
-                float sum = 0.f;
-                for (int t = 0; t < taps.count; ++t) {
-                    sum += taps.weight[t] * source[(std::size_t)(taps.index[t] - frame.x1) * nComps + c];
-                }
-                out[(std::size_t)i * nChannels + k] = sum;
+    // Output rows per band, so the horizontally filtered source rows held at once stay within
+    // kBandBytes however tall the window is.
+    const std::size_t outRowBytes = (std::size_t)width * nChannels * sizeof(float);
+    const int bandRows = (int)std::min<std::size_t>(std::max<std::size_t>(1, kBandBytes / outRowBytes), (std::size_t)window.height());
+    std::vector<Taps> rows(bandRows);
+    std::vector<float> horizontal;
+
+    for (int j0 = 0; j0 < window.height(); j0 += bandRows) {
+        const int nRows = std::min(bandRows, window.height() - j0);
+        int firstRow = frame.y2;
+        int endRow = frame.y1;
+        for (int j = 0; j < nRows; ++j) {
+            rows[j] = tapsFor(window.y1 + j0 + j, factor, filter, frame.y1, frame.y2);
+            for (int k = 0; k < rows[j].count; ++k) {
+                firstRow = std::min(firstRow, rows[j].index[k]);
+                endRow = std::max(endRow, rows[j].index[k] + 1);
             }
         }
-    }
-
-    for (int j = 0; j < window.height(); ++j) {
-        if (((j % 64) == 0) && aborted()) {
-            return false;
-        }
-        float* dst = dstRow(window.y1 + j);
-        if (!dst) {
+        if (endRow <= firstRow) {
             continue;
         }
-        const Taps& taps = rows[j];
-        for (int i = 0; i < width; ++i) {
-            for (int k = 0; k < nChannels; ++k) {
-                float sum = 0.f;
-                for (int t = 0; t < taps.count; ++t) {
-                    sum += taps.weight[t] * horizontal[((std::size_t)(taps.index[t] - firstRow) * width + i) * nChannels + k];
+
+        // Horizontal pass over every source row the vertical pass of this band reads.
+        horizontal.resize((std::size_t)(endRow - firstRow) * width * nChannels);
+        for (int sy = firstRow; sy < endRow; ++sy) {
+            if (aborted()) {
+                return false;
+            }
+            readRow(sy, source.data());
+            float* out = &horizontal[(std::size_t)(sy - firstRow) * width * nChannels];
+            for (int i = 0; i < width; ++i) {
+                const Taps& taps = columns[i];
+                for (int k = 0; k < nChannels; ++k) {
+                    const int c = channels[k];
+                    float sum = 0.f;
+                    for (int t = 0; t < taps.count; ++t) {
+                        sum += taps.weight[t] * source[(std::size_t)(taps.index[t] - frame.x1) * nComps + c];
+                    }
+                    out[(std::size_t)i * nChannels + k] = sum;
                 }
-                dst[(std::size_t)i * nComps + channels[k]] = sum;
+            }
+        }
+
+        for (int j = 0; j < nRows; ++j) {
+            if (((j % 64) == 0) && aborted()) {
+                return false;
+            }
+            float* dst = dstRow(window.y1 + j0 + j);
+            if (!dst) {
+                continue;
+            }
+            const Taps& taps = rows[j];
+            for (int i = 0; i < width; ++i) {
+                for (int k = 0; k < nChannels; ++k) {
+                    float sum = 0.f;
+                    for (int t = 0; t < taps.count; ++t) {
+                        sum += taps.weight[t] * horizontal[((std::size_t)(taps.index[t] - firstRow) * width + i) * nChannels + k];
+                    }
+                    dst[(std::size_t)i * nComps + channels[k]] = sum;
+                }
             }
         }
     }
@@ -261,6 +274,18 @@ resampleChannels(const ReadRow& readRow,
     return true;
 }
 } // anonymous namespace
+
+RectD
+NeuralUpscale::scaledRegionOfDefinition(const RectD& sourceRoD,
+                                        double factor)
+{
+    // Scaling a sentinel edge would turn it into a finite coordinate, or overflow it.
+    const auto scaleEdge = [factor](double edge) {
+        return ((edge <= kOfxFlagInfiniteMin) || (edge >= kOfxFlagInfiniteMax)) ? edge : edge * factor;
+    };
+
+    return RectD(scaleEdge(sourceRoD.x1), scaleEdge(sourceRoD.y1), scaleEdge(sourceRoD.x2), scaleEdge(sourceRoD.y2));
+}
 
 double
 NeuralUpscale::lanczos3(double t)
@@ -579,8 +604,7 @@ NeuralUpscale::getRegionOfDefinition(U64 /*hash*/,
     if (source->getRegionOfDefinition_public(source->getRenderHash(), time, scale, view, &sourceRoD, &isProjectFormat) == eStatusFailed) {
         return eStatusFailed;
     }
-    const double f = factor();
-    *rod = RectD(sourceRoD.x1 * f, sourceRoD.y1 * f, sourceRoD.x2 * f, sourceRoD.y2 * f);
+    *rod = scaledRegionOfDefinition(sourceRoD, factor());
 
     return eStatusOK;
 }
@@ -698,8 +722,10 @@ NeuralUpscale::renderOp(const RenderActionArgs& args,
 
     RectI sourceRoD;
     const bool haveRoD = sourcePixelRoD(*this, args.time, args.mappedScale, args.view, &sourceRoD);
-    if (haveRoD && !args.outputLayers.empty() && args.outputLayers.front().second) {
-        warnLargeOutput(RectI(sourceRoD.x1 * f, sourceRoD.y1 * f, sourceRoD.x2 * f, sourceRoD.y2 * f),
+    // At full resolution, so the output size warned about does not change with the proxy level.
+    RectI fullRoD;
+    if (!args.outputLayers.empty() && args.outputLayers.front().second && sourcePixelRoD(*this, args.time, RenderScale::identity, args.view, &fullRoD)) {
+        warnLargeOutput(RectI(fullRoD.x1 * f, fullRoD.y1 * f, fullRoD.x2 * f, fullRoD.y2 * f),
                         (int)args.outputLayers.front().second->getComponentsCount());
     }
 
@@ -830,7 +856,11 @@ NeuralUpscale::renderOp(const RenderActionArgs& args,
             continue;
         }
         const std::size_t rowBytes = (std::size_t)target.width() * f * f * 3 * sizeof(float);
-        const int bandRows = (int)std::max<std::size_t>(1, kBandBytes / std::max<std::size_t>(rowBytes, 1));
+        // A whole number of tile steps, so band edges fall on tile edges and only the one overlap
+        // per band is run twice.
+        const int tileStep = std::max(1, spec.tile - spec.overlap);
+        const int budgetRows = (int)std::min<std::size_t>(std::max<std::size_t>(1, kBandBytes / std::max<std::size_t>(rowBytes, 1)), (std::size_t)INT_MAX);
+        const int bandRows = std::max(spec.tile, (budgetRows / tileStep) * tileStep);
         for (int by = target.y1; by < target.y2; by += bandRows) {
             const RectI band(target.x1, by, target.x2, std::min(by + bandRows, target.y2));
             const RectI grown(band.x1 - spec.overlap, band.y1 - spec.overlap, band.x2 + spec.overlap, band.y2 + spec.overlap);

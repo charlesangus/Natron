@@ -419,6 +419,19 @@ TEST_F(NativeNeuralUpscaleTest, RegionOfDefinitionScalesAboutTheOrigin)
     }
 }
 
+TEST_F(NativeNeuralUpscaleTest, InfiniteEdgesOfTheSourceStayInfinite)
+{
+    const RectD inf(kOfxFlagInfiniteMin, -4., kOfxFlagInfiniteMax, 10.);
+    const RectD scaledInf = NeuralUpscale::scaledRegionOfDefinition(inf, 4.);
+
+    EXPECT_EQ((double)kOfxFlagInfiniteMin, scaledInf.x1);
+    EXPECT_EQ((double)kOfxFlagInfiniteMax, scaledInf.x2);
+    EXPECT_EQ(-16., scaledInf.y1);
+    EXPECT_EQ(40., scaledInf.y2);
+    EXPECT_TRUE(scaledInf.isInfinite());
+    EXPECT_EQ(RectD(8., -12., 24., 20.), NeuralUpscale::scaledRegionOfDefinition(RectD(4., -6., 12., 10.), 2.));
+}
+
 TEST_F(NativeNeuralUpscaleTest, RegionOfInterestMapsBackThroughTheFactorPlusTheOverlap)
 {
     ParityPair pair = makePair();

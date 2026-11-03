@@ -2124,7 +2124,7 @@ DopeSheetViewPrivate::computeReaderRange(DSNode *reader)
 
     NodePtr node = reader->getInternalNode();
 
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameStartAt).get());
     if (!startingTimeKnob) {
         return;
     }
@@ -2484,7 +2484,7 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
             if (gui) {
                 gui->setDraftRenderEnabled(true);
             }
-            KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameTimeOffset).get() );
+            KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameFrameOffset).get());
             assert(timeOffsetKnob);
 
             double newFirstFrame = std::floor(currentTime - timeOffsetKnob->getValue() + 0.5);
@@ -2499,7 +2499,7 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
             if (gui) {
                 gui->setDraftRenderEnabled(true);
             }
-            KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameTimeOffset).get() );
+            KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameFrameOffset).get());
             assert(timeOffsetKnob);
 
             double newLastFrame = std::floor(currentTime - timeOffsetKnob->getValue() + 0.5);
@@ -3393,7 +3393,7 @@ DopeSheetView::onNodeAdded(DSNode *dsNode)
         }
         KnobSignalSlotHandlerPtr lastFrameKnobHandler =  lastFrameKnob->getSignalSlotHandler();
         assert(lastFrameKnob);
-        KnobSignalSlotHandlerPtr startingTimeKnob = node->getKnobByName(kReaderParamNameStartingTime)->getSignalSlotHandler();
+        KnobSignalSlotHandlerPtr startingTimeKnob = node->getKnobByName(kReaderParamNameStartAt)->getSignalSlotHandler();
         assert(startingTimeKnob);
 
         connect( lastFrameKnobHandler.get(), SIGNAL(valueChanged(ViewSpec,int,int)),

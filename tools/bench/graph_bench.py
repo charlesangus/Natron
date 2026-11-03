@@ -234,7 +234,7 @@ def read(index):
     if node is None:
         raise RuntimeError("could not create a reader for " + pattern)
     counts["Read"] = counts.get("Read", 0) + 1
-    for name in ("before", "after"):
+    for name in ("beforeFirstFrame", "afterLastFrame"):
         if node.getParam(name) is not None:
             set_choice(node, name, "loop")
         else:
@@ -832,8 +832,7 @@ def main_session():
         writer = app.createWriter(os.path.join(RENDER_DIR, "%s_%s_####.exr" % (TOPO, RES)))
         writer.connectInput(0, root)
         working = writer.getParam("ocioWorkingSpace").get()
-        writer.getParam("ocioOutputSpace").set(working)
-        writer.getParam("ocioOutputSpaceSet").set(True)
+        writer.getParam("colorspace").set(working)
         comp_param = writer.getParam("compression")
         if comp_param is not None:
             comp_param.set("none")
@@ -897,8 +896,7 @@ def main():
     writer = app.createWriter(path)
     writer.connectInput(0, root)
     working = writer.getParam("ocioWorkingSpace").get()
-    writer.getParam("ocioOutputSpace").set(working)
-    writer.getParam("ocioOutputSpaceSet").set(True)
+    writer.getParam("colorspace").set(working)
     for name, value in (("compression", "none"),):
         p = writer.getParam(name)
         if p is not None:

@@ -289,7 +289,7 @@ try:
         require(read.getPluginID() == READ_ID, "the Read is the native Read (%s)" % read.getPluginID())
         read.setPosition(0, 0)
         read.getParam("lastFrame").set(READ_LAST_FRAME)
-        start = read.getParam("startingTime").get()
+        start = read.getParam("startAt").get()
         first = read.getParam("firstFrame").get()
         last = read.getParam("lastFrame").get()
         length = last - first + 1

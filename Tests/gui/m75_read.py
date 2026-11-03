@@ -6,7 +6,7 @@ A DPX and a TGA are written at run time with oiiotool (or OpenImageIO's Python m
 missing) under $NATRON_GUI_TEST_OUT/fixtures, so the container only needs one of the two.
 
 Screenshots (cropped): m75-read-panel.png and m75-read-panel-context.png (the Read's properties panel),
-m75-input-colorspace-menu.png, m75-colorspace-changed.png and m75-colorspace-reset.png (the Input Colorspace menu and its reset), m75-layer-menu.png (the
+m75-input-colorspace-menu.png, m75-colorspace-changed.png and m75-colorspace-reset.png (the Colorspace menu and its reset), m75-layer-menu.png (the
 viewer's layer menu open on the multilayer EXR) and m75-dpx-viewer.png (the DPX in the viewer).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m75_read.py
@@ -272,16 +272,16 @@ try:
         report("NOTE panel labels top to bottom: %r" % rows)
         labels = [t for t, _ in rows]
         check(not any("rame rate" in l or "FPS" in l for l in labels), "no frame rate or custom FPS label on the panel")
-        order = ["File", "Proxy File", "First Frame", "Last Frame", "Input Colorspace", "OCIO Context"]
+        order = ["Filename", "Proxy", "First Frame", "Last Frame", "Colorspace", "OCIO Context"]
         ys = [first_y(rows, n) for n in order]
-        check(all(y is not None for y in ys) and ys == sorted(ys), "File, Proxy File, frame range, Input Colorspace, OCIO Context run top to bottom (%r)" % list(zip(order, ys)))
+        check(all(y is not None for y in ys) and ys == sorted(ys), "Filename, Proxy, frame range, Colorspace, OCIO Context run top to bottom (%r)" % list(zip(order, ys)))
         sliders = [w for w in panel.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQt" and w.isVisible()]
         fy, ly = first_y(rows, "First Frame"), first_y(rows, "Last Frame")
         near = [w for w in sliders if fy is not None and ly is not None and fy - 10 <= w.mapTo(panel, w.rect().topLeft()).y() <= ly + 30]
         check(not near, "First Frame and Last Frame have no slider (%d slider(s) in the panel)" % len(sliders))
         screen_crop("m75-read-panel.png", global_rect(panel))
 
-        check(read.getParam("Context") is not None, "the OCIO Context group exists")
+        check(read.getParam("ocioContext") is not None, "the OCIO Context group exists")
         toggles = [w for w in panel.findChildren(QLabel) if gt.class_name(w) == "GroupBoxLabel" and w.isVisible()]
         require(len(toggles) == 1, "the panel has one group toggle (%d)" % len(toggles))
         click(toggles[0])
@@ -289,13 +289,14 @@ try:
         rows = panel_rows(panel)
         report("NOTE labels with the Context group open: %r" % rows)
         names = [t.rstrip(":") for t, _ in rows]
-        check(all(("key%d" % n) in names and ("value%d" % n) in names for n in range(1, 5)), "key1..4 and value1..4 are shown in the Context group")
+        check(all(("Context Key %d" % n) in names and ("Context Value %d" % n) in names for n in range(1, 5)), "Context Key 1..4 and Context Value 1..4 are shown in the Context group")
         screen_crop("m75-read-panel-context.png", global_rect(panel))
 
-        combo = knob_combo(panel, first_y(rows, "Input Colorspace"))
-        require(combo is not None, "the Input Colorspace menu is on screen")
+        combo = knob_combo(panel, first_y(rows, "Colorspace"))
+        require(combo is not None, "the Colorspace menu is on screen")
         items = combo_items(combo)
-        report("NOTE Input Colorspace: %d entries, current %r, first entries %r" % (len(items), combo_current(combo), items[:12]))
+        report("NOTE Colorspace: %d entries, current %r, first entries %r" % (len(items), combo_current(combo), items[:12]))
+        check(combo_current(combo) == "Project default", "a new Read follows the project default (%r)" % combo_current(combo))
 
         menu = {}
 
@@ -334,7 +335,7 @@ try:
         QTimer.singleShot(1200, grab_menu)
         click(combo)
         QApplication.processEvents()
-        check(bool(menu.get("top")), "the Input Colorspace menu opened as a popup")
+        check(bool(menu.get("top")), "the Colorspace menu opened as a popup")
         nested = [n for n, is_menu in menu.get("top", []) if is_menu]
         report("NOTE top-level menu entries: %r" % menu.get("top"))
         check(len(nested) >= 3, "the top level holds nested submenus (%r)" % nested)
@@ -408,9 +409,9 @@ try:
         require(panel is not None, "the Read's panel is open")
         buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible() and b.text() == "Reload"]
         require(len(buttons) == 1, "the panel has one Reload button (%d)" % len(buttons))
-        fy = first_y(panel_rows(panel), "File")
+        fy = first_y(panel_rows(panel), "Filename")
         check(fy is not None and abs(buttons[0].mapTo(panel, buttons[0].rect().topLeft()).y() - fy) < 16,
-              "the Reload button sits on the File row")
+              "the Reload button sits on the Filename row")
         buttons[0].click()
         ok = yield ("until", lambda: viewer_shows("blue"), POLL_TIMEOUT_S)
         check(ok, "Reload displays the rewritten file, blue (%r)" % (gt.viewer_centre_colour(),))

@@ -195,8 +195,7 @@ def pin_output_space(writer):
     working = p(writer, "ocioWorkingSpace").get()
     if not working:
         raise RuntimeError("%s has no working colourspace to pin the output to" % writer.getScriptName())
-    p(writer, "ocioOutputSpace").set(working)
-    p(writer, "ocioOutputSpaceSet").set(True)
+    p(writer, "colorspace").set(working)
 
 
 def finish(comp, root):

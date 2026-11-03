@@ -46,6 +46,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/OCIO/OCIOColorSpace.h"
 #include "Engine/Nodes/OCIO/OCIODisplay.h"
@@ -529,16 +530,16 @@ TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExisti
 
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(write, "ocioWorkingSpace")->getValue());
-    const std::string readFileSpace = stringKnob(read, "ocioInputSpace")->getValue();
-    const std::string writeFileSpace = stringKnob(write, "ocioOutputSpace")->getValue();
+    const std::string readFileSpace = dynamic_cast<NativeRead*>(read->getEffectInstance().get())->colorspace();
+    const std::string writeFileSpace = dynamic_cast<NativeWrite*>(write->getEffectInstance().get())->colorspace();
     ASSERT_FALSE(writeFileSpace.empty());
 
     setWorkingSpace("ACEScct");
 
     EXPECT_EQ(std::string("ACEScct"), stringKnob(read, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(std::string("ACEScct"), stringKnob(write, "ocioWorkingSpace")->getValue());
-    EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
-    EXPECT_EQ(writeFileSpace, stringKnob(write, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, dynamic_cast<NativeRead*>(read->getEffectInstance().get())->colorspace());
+    EXPECT_EQ(writeFileSpace, dynamic_cast<NativeWrite*>(write->getEffectInstance().get())->colorspace());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, kOCIOColorSpaceParamInputSpace)->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, kOCIOColorSpaceParamOutputSpace)->getValue());
 
@@ -546,8 +547,8 @@ TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExisti
 
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(write, "ocioWorkingSpace")->getValue());
-    EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
-    EXPECT_EQ(writeFileSpace, stringKnob(write, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, dynamic_cast<NativeRead*>(read->getEffectInstance().get())->colorspace());
+    EXPECT_EQ(writeFileSpace, dynamic_cast<NativeWrite*>(write->getEffectInstance().get())->colorspace());
 }
 
 TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheConfigInUse)

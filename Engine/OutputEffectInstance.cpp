@@ -191,11 +191,11 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
             foundViewPattern = pattern.find_first_of("%V");
         }
         if (foundViewPattern == std::string::npos) {
-            ///No view pattern
-            ///all views will be overwritten to the same file
-            ///If this is WriteOIIO, check the parameter "viewsSelector" to determine if the user wants to encode all
-            ///views to a single file or not
-            KnobIPtr viewsKnob = getKnobByName(kWriteOIIOParamViewsSelector);
+            /// No view pattern
+            /// all views will be overwritten to the same file
+            /// If this is a Write, check the parameter "views" to determine if the user wants to encode all
+            /// views to a single file or not
+            KnobIPtr viewsKnob = getKnobByName(kWriteParamViews);
             bool hasViewChoice = false;
             if ( viewsKnob && !viewsKnob->getIsSecret() ) {
                 KnobChoice* viewsChoice = dynamic_cast<KnobChoice*>( viewsKnob.get() );
@@ -241,9 +241,9 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
                 viewsToRender.push_back(mainView);
             }
         } else {
-            ///The user wants to write each view into a separate file
-            ///This will disregard the content of kWriteOIIOParamViewsSelector and the Writer
-            ///should write one view per-file.
+            /// The user wants to write each view into a separate file
+            /// This will disregard the content of kWriteParamViews and the Writer
+            /// should write one view per-file.
         }
 
     } else { // !isViewAware

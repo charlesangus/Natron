@@ -330,7 +330,7 @@ TEST_F(NativeReadMetadataTest, FrameKeysFollowTheTimeOffsetAndTheFilename)
     // Past the end of the range the last frame is held.
     EXPECT_EQ(std::optional<int>(3), metadataOf(read, 12.).getInt("ofx/frame"));
 
-    userSetInt(read, "timeOffset", 10);
+    userSetInt(read, "frameOffset", 10);
 
     ImageMetadata metadata = metadataOf(read, 12.);
     EXPECT_EQ(std::optional<int>(2), metadata.getInt("ofx/frame"));

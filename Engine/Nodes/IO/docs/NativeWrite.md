@@ -22,13 +22,13 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `PLUGINID_NATRON_WRITE` (or empty). Everything that creates a Write (Render
   Selected, `app.createWriter`, the command-line render of an output file)
   names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
-- **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
-  host code look them up by name: `filename`, `overwrite`,
-  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
+- **Knobs.** Tests, `tools/bench` and host code look them up by name:
+  `filename`, `overwrite`,
+  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncrement`,
   `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
-  `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
-  `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
-  group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
+  `zipCompressionLevel`, `tileSize`, `partSplitting`, `views`,
+  `colorspace`, the `ocioContext` group of `contextKey1`..`contextKey4` and
+  `contextValue1`..`contextValue4`, the hidden `ocioConfigFile`
   and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
   and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
@@ -47,7 +47,9 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
 - **Colour.** Rows go from the working space to the output space through the
   project's OCIO config, in the band callback. The default output space is
   from the config's file rules, then the project's file default for the pixel
-  depth. The file is tagged with `oiio:ColorSpace`, set to the space's Color
+  depth. The `colorspace` menu's first entry, `projectDefault` ("Project
+  default"), follows that chain live, as on the Read, and the resolved space is
+  part of the output hash. The file is tagged with `oiio:ColorSpace`, set to the space's Color
   Interop ID when the config has one, else to the space name
   (`IoColorSpace::fileTag()`).
 - **Metadata.** With `writeMetadata` on, the upstream metadata is written by

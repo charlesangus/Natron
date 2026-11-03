@@ -60,11 +60,10 @@ NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The script names of the spaces OcioSpaceKnobs builds on the native nodes. Each space is a
-// string knob (the name), a menu (name + "Index") and a flag (name + "Set").
+// The script names of the spaces OcioSpaceKnobs builds on the native OCIO nodes. Each space is a
+// string knob (the name), a menu (name + "Index") and a flag (name + "Set"). The native Read's
+// and Write's space is a single menu, kNatronReadParamColorspace and kNatronWriteParamColorspace.
 const char* const kOcioSpaceKnobNames[] = {
-    kNatronReadNodeOCIOParamInputSpace,
-    kNatronWriteParamOCIOOutputSpace,
     kOCIOColorSpaceParamInputSpace,
     kOCIOColorSpaceParamOutputSpace,
 };
@@ -114,6 +113,12 @@ hasRunTimeOcioOptions(const QString& pluginID,
         }
     }
     const std::string id = pluginID.toStdString();
+    if (id == PLUGINID_NATRON_READ) {
+        return knobScriptName == QString::fromUtf8(kNatronReadParamColorspace);
+    }
+    if (id == PLUGINID_NATRON_WRITE) {
+        return knobScriptName == QString::fromUtf8(kNatronWriteParamColorspace);
+    }
     if (id == PLUGINID_NATRON_OCIODISPLAY) {
         return (knobScriptName == QString::fromUtf8(kOCIODisplayParamDisplay)) || (knobScriptName == QString::fromUtf8(kOCIODisplayParamView));
     }

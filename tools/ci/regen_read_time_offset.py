@@ -35,8 +35,8 @@ def main():
     if reader.getScriptName() != "Read1":
         raise AssertionError("expected the Read to be named Read1, got %r"
                              % (reader.getScriptName(),))
-    _require(reader.getParam("frameMode"), "Read.frameMode").set(FRAME_MODE_TIME_OFFSET)
-    _require(reader.getParam("timeOffset"), "Read.timeOffset").set(TIME_OFFSET)
+    _require(reader.getParam("frameOffsetMode"), "Read.frameOffsetMode").set(FRAME_MODE_TIME_OFFSET)
+    _require(reader.getParam("frameOffset"), "Read.frameOffset").set(TIME_OFFSET)
 
     writer = _require(app.createWriter(OUTPUT_DIR_TOKEN + "/out.####.exr"),
                       "the native Write")

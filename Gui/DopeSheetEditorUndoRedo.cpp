@@ -95,7 +95,7 @@ void
 moveReader(const NodePtr &reader,
            double dt)
 {
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( reader->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(reader->getKnobByName(kReaderParamNameStartAt).get());
     assert(startingTimeKnob);
     KnobHelper::ValueChangedReturnCodeEnum s = startingTimeKnob->setValue(startingTimeKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
     Q_UNUSED(s);
@@ -1269,9 +1269,9 @@ DSSlipReaderCommand::slipReader(double dt)
     assert(firstFrameKnob);
     KnobIntBase *lastFrameKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameLastFrame).get() );
     assert(lastFrameKnob);
-    KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameTimeOffset).get() );
+    KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameFrameOffset).get());
     assert(timeOffsetKnob);
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameStartAt).get());
     assert(startingTimeKnob);
     if (!firstFrameKnob || !lastFrameKnob || !timeOffsetKnob || !startingTimeKnob) {
         return;

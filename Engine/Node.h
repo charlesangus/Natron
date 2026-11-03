@@ -84,8 +84,7 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMixParamName "mix"
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"
-#define kWriteOIIOParamViewsSelector "viewsSelector"
-
+#define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
 

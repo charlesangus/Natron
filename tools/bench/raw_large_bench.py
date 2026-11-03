@@ -67,8 +67,7 @@ def build():
     writer = app.createWriter(os.path.join(RENDER_DIR, "raw_large_####.exr"))
     writer.connectInput(0, previous)
     working = writer.getParam("ocioWorkingSpace").get()
-    writer.getParam("ocioOutputSpace").set(working)
-    writer.getParam("ocioOutputSpaceSet").set(True)
+    writer.getParam("colorspace").set(working)
     compression = writer.getParam("compression")
     if compression is not None:
         compression.set("none")

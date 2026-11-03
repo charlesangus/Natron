@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -40,28 +41,48 @@
 #include "Engine/EngineFwd.h"
 #include "Global/Enums.h"
 
+// The context group of the native Read and Write, whose pairs are contextKey1..4 and contextValue1..4.
+#define kNatronIoParamOCIOContext "ocioContext"
+
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
- * @brief The OpenColorIO file colourspace knobs a native Read or Write shares: the hidden
- * ocioConfigFile and ocioWorkingSpace the project pushes, the persistent `<prefix>` string, the
- * cascading `<prefix>Index` menu over the project's config, the `<prefix>Set` flag recording a
- * user choice, and the `Context` group of key1..4 and value1..4.
+ * @brief The OpenColorIO colourspace knobs a native node shares: the hidden ocioConfigFile and
+ * ocioWorkingSpace the project pushes, the space itself, and a context group of four key and
+ * value pairs.
  *
- * The node supplies the automatic default of its space, which the knobs take while the user has
- * not chosen one and return to on Reset to default.
+ * A space is either a persistent `<prefix>` string, a cascading `<prefix>Index` menu over the
+ * project's config and a `<prefix>Set` flag recording a user choice, the knobs taking the node's
+ * automatic default while the user has not chosen; or, with Description::projectDefault, a single
+ * persistent `<prefix>` menu whose first entry, Project default, follows the automatic default
+ * live and is all that is saved of it.
  **/
 class OcioSpaceKnobs {
     Q_DECLARE_TR_FUNCTIONS(OcioSpaceKnobs)
 
 public:
     struct Description {
-        std::string prefix; // the string knob's script name; the menu and flag append Index and Set
+        std::string prefix; // the space's script name; without projectDefault, the menu and flag append Index and Set
         QString label; // the string knob's and the menu's
         QString spaceHint;
         QString menuHint;
         QString setLabel;
+        bool projectDefault = false;
+        // The script names of the context group and of its pairs, which append 1 to 4.
+        std::string contextName = "Context";
+        std::string contextKeyPrefix = "key";
+        std::string contextValuePrefix = "value";
+        // With a %1 for the pair's number; empty labels a pair knob with its script name.
+        QString contextKeyLabel;
+        QString contextValueLabel;
     };
+
+    /**
+     * @brief The id of the Project default entry of a projectDefault menu.
+     **/
+    static const char* projectDefaultID();
 
     /**
      * @brief The node's automatic default space. No value when it cannot be told now, which keeps
@@ -108,8 +129,22 @@ public:
     /**
      * @brief The node's automatic default may have changed: takes it, unless the user chose a
      * space or the node is being loaded or pasted, which keeps the space it was saved with.
+     * With projectDefault, it is taken whatever the menu shows, and the node's hash is marked
+     * when Project default is chosen and the default moved.
      **/
     void sourceChanged();
+
+    /**
+     * @brief As sourceChanged() with projectDefault, also while the node is loaded or pasted.
+     * Does nothing without projectDefault.
+     **/
+    void refreshProjectDefault();
+
+    /**
+     * @brief Appends the space Project default stands for while it is chosen, the knobs holding
+     * no trace of it.
+     **/
+    void appendHash(ContentHasher& h) const;
 
     /**
      * @brief Clears the user choice and returns to the automatic default. Idempotent, since the
@@ -129,7 +164,13 @@ public:
      **/
     void setHidden(bool hidden);
 
+    /**
+     * @brief The space the node converts with; with projectDefault and Project default chosen,
+     * the automatic default last taken.
+     **/
     std::string space() const;
+
+    bool isProjectDefault() const;
 
     /**
      * @brief The working space the project pushed, else the project's.
@@ -150,8 +191,8 @@ private:
     ProjectPtr project() const;
 
     /**
-     * @brief Creates the string knob, the menu and the flag on \p page, inserted from \p index
-     * on, or appended when \p index is negative.
+     * @brief Creates the string knob, the menu and the flag on \p page, or the projectDefault
+     * menu alone, inserted from \p index on, or appended when \p index is negative.
      **/
     void createSpaceKnobs(KnobHolder* holder,
                           const KnobPagePtr& page,
@@ -170,6 +211,9 @@ private:
     KnobStringWPtr _contextValues[4];
     KnobGroupWPtr _context;
     bool _hidden;
+    bool _projectDefault;
+    mutable std::mutex _defaultMutex;
+    std::string _defaultSpace;
 };
 
 NATRON_NAMESPACE_EXIT

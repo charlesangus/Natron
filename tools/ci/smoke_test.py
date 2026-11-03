@@ -792,11 +792,11 @@ def _repo_root():
 def _write_time_offset_fixture_copy(dir_path, output_dir):
     fixture_path = os.path.join(_repo_root(), "Tests", "fixtures",
                                  "read-time-offset.ntpz")
-    # Read1's timeOffset knob in this fixture is 50, not 0. A first attempt
+    # Read1's frameOffset knob in this fixture is 50, not 0. A first attempt
     # at this check used the default offset of 0 and passed green against
     # the broken -i code path -- i.e. it tested nothing, since with
-    # timeOffset==0 there is nothing stale for GenericReaderPlugin's
-    # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
+    # frameOffset==0 there is nothing stale for GenericReaderPlugin's
+    # sequenceTime = t - frameOffset to get wrong. Do not "simplify" this
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
     #
@@ -821,9 +821,9 @@ def check_reader_cli_time_offset_regression():
 
     Engine/AppInstance.cpp applies -i's filename with a bare
     KnobFile::setValue(): the reader's own filename handler refreshes
-    originalFrameRange/firstFrame/lastFrame/startingTime from the new file,
-    but never timeOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
-    carries a non-zero timeOffset for exactly this reason (see
+    originalFrameRange/firstFrame/lastFrame/startAt from the new file,
+    but never frameOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
+    carries a non-zero frameOffset for exactly this reason (see
     _write_time_offset_fixture_copy() above): with the stale offset, every
     requested time maps outside the sequence domain and the reader's
     before/after hold collapses frames 1-3 onto one held input frame, so
@@ -876,7 +876,7 @@ def check_reader_cli_time_offset_regression():
         raise AssertionError(
             "rendering frames 1-3 through `%s` produced byte-identical "
             "output for %r even though the 3 input frames at %r differ. "
-            "Read1's timeOffset (50, non-zero by design -- see "
+            "Read1's frameOffset (50, non-zero by design -- see "
             "Tests/fixtures/read-time-offset.ntpz) was not refreshed when -i "
             "set a new filename, so every requested frame time maps "
             "outside the sequence domain and the reader's before/after "
@@ -884,7 +884,7 @@ def check_reader_cli_time_offset_regression():
             % (" ".join(cmd), matches, in_dir)
         )
     _mark("[smoke] OK: -i Read1 <file> rendered 3 distinct frames %r "
-          "despite a stale non-zero timeOffset" % (frame_paths,))
+          "despite a stale non-zero frameOffset" % (frame_paths,))
 
 
 def _call_capturing_native_output(func):

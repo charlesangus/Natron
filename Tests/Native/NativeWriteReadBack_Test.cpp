@@ -67,7 +67,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 const char* const kSRGBSpace = "sRGB Encoded Rec.709 (sRGB)";
-const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
+const char* const kOutputSpaceMenuKnob = "colorspace";
 
 const int kWidth = 16;
 const int kHeight = 8;

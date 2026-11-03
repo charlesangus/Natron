@@ -28,7 +28,10 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -38,8 +41,14 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const char* const kKnobOCIOConfigFile = "ocioConfigFile";
 const char* const kKnobOCIOWorkingSpace = "ocioWorkingSpace";
-const char* const kKnobOCIOContext = "Context";
+const char* const kProjectDefaultID = "projectDefault";
 } // anonymous namespace
+
+const char*
+OcioSpaceKnobs::projectDefaultID()
+{
+    return kProjectDefaultID;
+}
 
 OcioSpaceKnobs::OcioSpaceKnobs()
     : _holder(nullptr)
@@ -52,6 +61,9 @@ OcioSpaceKnobs::OcioSpaceKnobs()
     , _spaceSet()
     , _context()
     , _hidden(false)
+    , _projectDefault(false)
+    , _defaultMutex()
+    , _defaultSpace()
 {
 }
 
@@ -65,6 +77,7 @@ OcioSpaceKnobs::create(KnobHolder* holder,
     _holder = holder;
     _automaticSpace = automaticSpace;
     _choiceMade = choiceMade;
+    _projectDefault = description.projectDefault;
 
     KnobStringPtr configFile = AppManager::createKnob<KnobString>(holder, tr("OCIO Config File"));
     configFile->setName(kKnobOCIOConfigFile);
@@ -90,22 +103,24 @@ OcioSpaceKnobs::create(KnobHolder* holder,
                                    "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n"
                                    "http://opencolorio.org/userguide/contexts.html");
     KnobGroupPtr context = AppManager::createKnob<KnobGroup>(holder, tr("OCIO Context"));
-    context->setName(kKnobOCIOContext);
+    context->setName(description.contextName);
     context->setHintToolTip(contextHint);
     context->setDefaultValue(false);
     page->addKnob(context);
     _context = context;
     for (int i = 0; i < 4; ++i) {
         const std::string n = std::to_string(i + 1);
-        KnobStringPtr key = AppManager::createKnob<KnobString>(holder, "key" + n);
-        key->setName("key" + n);
+        const std::string keyName = description.contextKeyPrefix + n;
+        const std::string valueName = description.contextValuePrefix + n;
+        KnobStringPtr key = AppManager::createKnob<KnobString>(holder, description.contextKeyLabel.isEmpty() ? QString::fromStdString(keyName) : description.contextKeyLabel.arg(i + 1));
+        key->setName(keyName);
         key->setHintToolTip(contextHint);
         key->setAddNewLine(false);
         context->addKnob(key);
         _contextKeys[i] = key;
 
-        KnobStringPtr value = AppManager::createKnob<KnobString>(holder, "value" + n);
-        value->setName("value" + n);
+        KnobStringPtr value = AppManager::createKnob<KnobString>(holder, description.contextValueLabel.isEmpty() ? QString::fromStdString(valueName) : description.contextValueLabel.arg(i + 1));
+        value->setName(valueName);
         value->setHintToolTip(contextHint);
         context->addKnob(value);
         _contextValues[i] = value;
@@ -127,6 +142,20 @@ OcioSpaceKnobs::createSpaceKnobs(KnobHolder* holder,
             page->insertKnob(index++, knob);
         }
     };
+
+    if (description.projectDefault) {
+        // Persistent and evaluating: the menu alone records the choice, so it decides the render.
+        KnobChoicePtr menu = AppManager::createKnob<KnobChoice>(holder, description.label);
+        menu->setName(description.prefix);
+        menu->setHintToolTip(description.menuHint);
+        menu->setAnimationEnabled(false);
+        menu->setCascading(true);
+        menu->setDefaultValue(0);
+        add(menu);
+        _menu = menu;
+
+        return;
+    }
 
     KnobStringPtr space = AppManager::createKnob<KnobString>(holder, description.label);
     space->setName(description.prefix);
@@ -169,6 +198,7 @@ OcioSpaceKnobs::createSharing(const OcioSpaceKnobs& first,
     _holder = holder;
     _automaticSpace = automaticSpace;
     _choiceMade = choiceMade;
+    _projectDefault = description.projectDefault;
     _configFile = first._configFile;
     _workingSpace = first._workingSpace;
     _context = first._context;
@@ -203,9 +233,68 @@ OcioSpaceKnobs::project() const
 std::string
 OcioSpaceKnobs::space() const
 {
+    if (_projectDefault) {
+        KnobChoicePtr menu = _menu.lock();
+        const std::string chosen = menu ? menu->getActiveEntry().id : std::string();
+        if (!chosen.empty() && (chosen != kProjectDefaultID)) {
+            return chosen;
+        }
+        std::lock_guard<std::mutex> lock(_defaultMutex);
+
+        return _defaultSpace;
+    }
     KnobStringPtr knob = _space.lock();
 
     return knob ? knob->getValue() : std::string();
+}
+
+bool
+OcioSpaceKnobs::isProjectDefault() const
+{
+    if (!_projectDefault) {
+        return false;
+    }
+    KnobChoicePtr menu = _menu.lock();
+    const std::string chosen = menu ? menu->getActiveEntry().id : std::string();
+
+    return chosen.empty() || (chosen == kProjectDefaultID);
+}
+
+void
+OcioSpaceKnobs::appendHash(ContentHasher& h) const
+{
+    if (!isProjectDefault()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_defaultMutex);
+    h.appendString(_defaultSpace);
+}
+
+void
+OcioSpaceKnobs::refreshProjectDefault()
+{
+    if (!_projectDefault || !_automaticSpace) {
+        return;
+    }
+    const std::optional<std::string> automatic = _automaticSpace();
+    if (!automatic) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_defaultMutex);
+        if (*automatic == _defaultSpace) {
+            return;
+        }
+        _defaultSpace = *automatic;
+    }
+    if (!isProjectDefault()) {
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(_holder);
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (node) {
+        node->markHashDirty();
+    }
 }
 
 std::string
@@ -256,7 +345,21 @@ OcioSpaceKnobs::refreshMenu()
     ProjectPtr p = project();
     ProjectColorManagementPtr colorManagement = p ? p->getColorManagement() : ProjectColorManagementPtr();
 
-    if (!menu || !space || !colorManagement) {
+    if (!menu || !colorManagement) {
+        return;
+    }
+    if (_projectDefault) {
+        std::vector<ChoiceOption> options(1, ChoiceOption(kProjectDefaultID, tr("Project default").toStdString(), tr("The colorspace the config's file rules give the file, else the colorspace "
+                                                                                                                     "tagged in the file, else the project's default for files of its kind, "
+                                                                                                                     "following them as they change.")
+                                                                                                                      .toStdString()));
+        const std::vector<ChoiceOption> spaces = Project::colorSpaceOptions(*colorManagement);
+        options.insert(options.end(), spaces.begin(), spaces.end());
+        menu->populateChoices(options);
+
+        return;
+    }
+    if (!space) {
         return;
     }
     const std::vector<ChoiceOption> options = Project::colorSpaceOptions(*colorManagement);
@@ -302,6 +405,15 @@ OcioSpaceKnobs::setHidden(bool hidden)
 void
 OcioSpaceKnobs::sourceChanged()
 {
+    if (_projectDefault) {
+        AppInstancePtr app = _holder ? _holder->getApp() : AppInstancePtr();
+        const bool restoring = app && (app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject()));
+        if (!restoring) {
+            refreshProjectDefault();
+        }
+
+        return;
+    }
     KnobStringPtr space = _space.lock();
     KnobBoolPtr spaceSet = _spaceSet.lock();
 
@@ -322,6 +434,15 @@ OcioSpaceKnobs::sourceChanged()
 void
 OcioSpaceKnobs::reset()
 {
+    if (_projectDefault) {
+        KnobChoicePtr menu = _menu.lock();
+        if (menu && (menu->getValue() != 0)) {
+            menu->setValue(0);
+        }
+        refreshProjectDefault();
+
+        return;
+    }
     KnobStringPtr space = _space.lock();
     KnobBoolPtr spaceSet = _spaceSet.lock();
 
@@ -351,6 +472,32 @@ OcioSpaceKnobs::knobChanged(KnobI* k,
     KnobChoicePtr menu = _menu.lock();
     KnobBoolPtr spaceSet = _spaceSet.lock();
 
+    if (_projectDefault) {
+        if (!configFile || !workingSpace || !menu || reason == eValueChangedReasonTimeChanged) {
+            return false;
+        }
+        if (k == configFile.get() || k == workingSpace.get()) {
+            refreshMenu();
+            // The config's file rules are part of the default.
+            if (k == configFile.get()) {
+                refreshProjectDefault();
+            }
+
+            return true;
+        }
+        if (k == menu.get()) {
+            if ((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonRestoreDefault)) {
+                refreshProjectDefault();
+                if (_choiceMade) {
+                    _choiceMade();
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
     if (!configFile || !workingSpace || !space || !menu || !spaceSet || reason == eValueChangedReasonTimeChanged) {
         return false;
     }

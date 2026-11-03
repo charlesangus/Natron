@@ -272,7 +272,7 @@ try:
         return a is not None and b is not None and all(abs(p - q) <= COLOUR_TOL for p, q in zip(a, b))
 
     def read_range(read):
-        start = read.getParam("startingTime").get()
+        start = read.getParam("startAt").get()
         length = read.getParam("lastFrame").get() - read.getParam("firstFrame").get() + 1
         return start, length
 

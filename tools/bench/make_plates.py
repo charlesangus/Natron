@@ -89,8 +89,7 @@ def pin_output_space(writer):
     working = param(writer, "ocioWorkingSpace").get()
     if not working:
         raise RuntimeError("%s has no working colourspace to pin the output to" % writer.getScriptName())
-    param(writer, "ocioOutputSpace").set(working)
-    param(writer, "ocioOutputSpaceSet").set(True)
+    param(writer, "colorspace").set(working)
 
 
 def render(writer, stem, files):

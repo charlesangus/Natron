@@ -38,10 +38,16 @@
 #include <gtest/gtest.h>
 
 #include <QEventLoop>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkProxy>
+#include <QSslSocket>
 #include <QString>
+#include <QStringList>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
@@ -322,4 +328,50 @@ TEST(AiModelDownloader, ModelsOfOnePackageShareItsDownload)
     EXPECT_EQ(downloader.registry()->resolve("first").status, AiModelStatus::eInstalled);
     EXPECT_EQ(downloader.registry()->resolve("second").status, AiModelStatus::eInstalled);
     EXPECT_EQ(entries(models), (std::vector<std::string> { kFixturePackage }));
+}
+
+TEST(AiModelDownloader, TlsBackendLoads)
+{
+    // The model manifest serves every package over HTTPS, so a tree whose Qt finds no working
+    // TLS backend cannot download any model.
+    EXPECT_EQ(ModelDownloader::tlsUnavailableReason(), std::string());
+    const QStringList backends = QSslSocket::availableBackends();
+    EXPECT_TRUE(backends.contains(QStringLiteral("openssl"))) << backends.join(QStringLiteral(", ")).toStdString();
+    EXPECT_EQ(QSslSocket::activeBackend().toStdString(), "openssl");
+    EXPECT_TRUE(QSslSocket::supportsSsl());
+}
+
+TEST(AiModelDownloader, HttpErrorNamesTheStatus)
+{
+    QTcpServer server;
+    ASSERT_TRUE(server.listen(QHostAddress::LocalHost));
+    QObject::connect(&server, &QTcpServer::newConnection, [&server] {
+        while (QTcpSocket* socket = server.nextPendingConnection()) {
+            QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                socket->readAll();
+                socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                socket->disconnectFromHost();
+            });
+            QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        }
+    });
+
+    // A proxy from the environment would answer in the server's place.
+    const QNetworkProxy previousProxy = QNetworkProxy::applicationProxy();
+    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::filesystem::path models = std::filesystem::path(tmp.path().toStdString()) / "models";
+    QJsonObject entry = fixtureEntry(kFixturePackage, std::string());
+    entry[QStringLiteral("url")] = QStringLiteral("http://127.0.0.1:%1/test-identity.dtmodel").arg(server.serverPort());
+    const QJsonObject root { { QStringLiteral("schema"), 1 }, { QStringLiteral("models"), QJsonArray { entry } } };
+    ModelDownloader downloader(std::make_shared<const ModelRegistry>(QJsonDocument(root).toJson().toStdString(), models.string()));
+
+    std::string error;
+    EXPECT_FALSE(downloader.download(kFixturePackage, &error));
+    QNetworkProxy::setApplicationProxy(previousProxy);
+
+    EXPECT_NE(error.find("download failed: the server answered HTTP 404"), std::string::npos) << error;
+    EXPECT_TRUE(entries(models).empty());
 }

@@ -226,7 +226,7 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
         copyInternalPointsToGuiPoints();
     }
     invalidateContentHash();
-    refreshPolygonOrientation(false);
+    invalidatePolygonOrientation();
     RotoDrawableItem::fromSerialization(serialization);
 }
 

@@ -58,6 +58,16 @@ typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;
 
+/**
+ * @brief Whether the frames of range are walked: each whole frame of a range with whole-frame bounds, or the one
+ * time of a single-time range, fractional or not. A range with other fractional bounds is read anywhere within it.
+ **/
+inline bool
+isPlannedRange(const RangeD& range)
+{
+    return (range.min == range.max) || ((range.min == (int)range.min) && (range.max == (int)range.max));
+}
+
 struct InputMatrix
 {
     EffectInstancePtr newInputEffect;

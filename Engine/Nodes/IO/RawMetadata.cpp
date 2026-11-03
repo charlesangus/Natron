@@ -414,6 +414,20 @@ setCatApplied(ImageMetadata* metadata)
 }
 
 bool
+getInputColorApplied(const ImageMetadata& metadata)
+{
+    const std::optional<int> applied = metadata.getInt(kRawMetadataInputColorApplied);
+
+    return applied && (*applied != 0);
+}
+
+void
+setInputColorApplied(ImageMetadata* metadata)
+{
+    metadata->setInt(kRawMetadataInputColorApplied, 1);
+}
+
+bool
 getMonochrome(const ImageMetadata& metadata)
 {
     const std::optional<int> monochrome = metadata.getInt(kRawMetadataMonochrome);
@@ -464,6 +478,19 @@ setLinearResponseLimit(ImageMetadata* metadata,
                        double limit)
 {
     metadata->setDouble(kRawMetadataLinearResponseLimit, limit);
+}
+
+std::optional<double>
+getHighlightPreservation(const ImageMetadata& metadata)
+{
+    return metadata.getDouble(kRawMetadataHighlightPreservation);
+}
+
+void
+setHighlightPreservation(ImageMetadata* metadata,
+                         double ev)
+{
+    metadata->setDouble(kRawMetadataHighlightPreservation, ev);
 }
 
 std::optional<std::array<double, 9>>

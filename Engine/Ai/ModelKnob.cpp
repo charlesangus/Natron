@@ -75,9 +75,15 @@ ModelKnob::ModelKnob(EffectInstance* effect,
     QObject::connect(_downloader, &ModelDownloader::finished, _context.get(),
                      [this](const QString& id, bool ok, const QString& error) {
                          const std::string modelIdString = id.toStdString();
+                         const std::string failure = "Downloading the model " + modelIdString + " failed: " + error.toStdString();
+                         {
+                             QMutexLocker locker(&_mutex);
+                             _failedModelId = ok ? std::string() : modelIdString;
+                             _downloadFailure = ok ? std::string() : failure;
+                         }
                          onModelsChanged(modelIdString);
                          if (!ok && (modelIdString == modelId())) {
-                             postError("Downloading the model " + modelIdString + " failed: " + error.toStdString());
+                             postError(failure);
                          }
                      });
     QObject::connect(_downloader, &ModelDownloader::removed, _context.get(),
@@ -259,11 +265,24 @@ ModelKnob::resolve()
             postError("unknown model `" + id + "`: this version of Natron does not list it.");
 
             return std::nullopt;
-        case AiModelStatus::eMissing:
+        case AiModelStatus::eMissing: {
+            std::string failure;
+            {
+                QMutexLocker locker(&_mutex);
+                if (_failedModelId == id) {
+                    failure = _downloadFailure;
+                }
+            }
+            if (!failure.empty()) {
+                postError(failure);
+
+                return std::nullopt;
+            }
             postError("The model " + resolution.entry->name + " (" + id + ") is not installed. Press Download Model, "
                                                                           "or download it in Preferences > AI Models.");
 
             return std::nullopt;
+        }
         case AiModelStatus::eInstalled:
             break;
         }
@@ -313,6 +332,11 @@ ModelKnob::knobChanged(KnobI* k)
     const AppInstancePtr app = _effect->getApp();
     if (app && (app->questionDialog("Download Model", licenceNotice(*resolution.entry), true, StandardButtons(eStandardButtonYes | eStandardButtonNo), eStandardButtonNo) != eStandardButtonYes)) {
         return true;
+    }
+    {
+        QMutexLocker locker(&_mutex);
+        _failedModelId.clear();
+        _downloadFailure.clear();
     }
     std::string error;
     if (!_downloader->start(id, &error)) {

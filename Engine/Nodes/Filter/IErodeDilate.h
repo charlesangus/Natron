@@ -514,6 +514,14 @@ public:
                                double time,
                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Scaled with the larger of Size and Size At Black at the rendered scale, as Erode's
+     * and Dilate's, since a pixel's queries grow with its radius.
+     **/
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     /**
      * @brief Without Expand RoD, the source's region, unexpanded, as Dilate's.

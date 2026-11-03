@@ -28,6 +28,7 @@
 #include <bit>
 #include <cmath>
 #include <map>
+#include <tuple>
 #include <utility>
 
 NATRON_NAMESPACE_ENTER
@@ -38,6 +39,13 @@ finiteOr(double value,
          double fallback)
 {
     return std::isfinite(value) ? value : fallback;
+}
+
+// Doubles compared by their bits, an order even NaNs keep.
+uint64_t
+bitsOf(double value)
+{
+    return std::bit_cast<uint64_t>(value);
 }
 } // anonymous namespace
 
@@ -55,7 +63,8 @@ LensAberration::LensAberration(const LensAberrationParams& params,
     const double halfDiagonal = std::hypot(std::max(0, format.x2 - format.x1) * _par / 2., std::max(0, format.y2 - format.y1) / 2.);
     _halfDiagonal = (halfDiagonal > 0.) ? halfDiagonal : 1.;
     _amount = std::max(0., finiteOr(params.catEye, 0.));
-    _catEye = _amount > 0.;
+    // Without a format no position is known, and every cell but the centre would be past the corners.
+    _catEye = (_amount > 0.) && (halfDiagonal > 0.);
     _orientation = params.catEyeOrientation;
 
     for (int c = 0; c < 3; ++c) {
@@ -90,6 +99,18 @@ int
 LensAberration::groupOf(int c) const
 {
     return _groupOfChannel[((c >= 0) && (c < 3)) ? c : 1];
+}
+
+unsigned
+LensAberration::groupsOf(const int* channelBits,
+                         int n) const
+{
+    unsigned bits = 0;
+    for (int p = 0; p < n; ++p) {
+        bits |= 1u << groupOf(channelBits[p]);
+    }
+
+    return bits;
 }
 
 double
@@ -229,42 +250,146 @@ LensAberration::clip(int i,
     return clip;
 }
 
+bool
+BokehRunCache::KeyLess::operator()(const Key& a,
+                                   const Key& b) const
+{
+    const auto tie = [](const Key& k) {
+        const BokehShapeParams& s = k.shape;
+
+        return std::make_tuple((int)s.shape, s.blades, bitsOf(s.rotation), bitsOf(s.roundness), bitsOf(s.clip.offsetX), bitsOf(s.clip.offsetY), bitsOf(s.clip.radius),
+                               bitsOf(s.innerSize), bitsOf(s.innerFeather), bitsOf(s.innerBrightness), s.catadioptric, bitsOf(s.catadioptricSize),
+                               bitsOf(s.sphericalAberration), bitsOf(s.filterShape), k.image, k.imageHash, k.imageWidth, k.imageHeight,
+                               bitsOf(k.radiusX), bitsOf(k.radiusY));
+    };
+
+    return tie(a) < tie(b);
+}
+
+std::size_t
+BokehRunCache::entryBytes(const std::vector<BokehRun>& runs)
+{
+    return runs.size() * sizeof(BokehRun) + sizeof(Entry) + sizeof(Key);
+}
+
+BokehRunCache::Runs
+BokehRunCache::lookup(const Key& key,
+                      const std::function<std::vector<BokehRun>()>& build)
+{
+    {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        const auto found = _index.find(key);
+        if (found != _index.end()) {
+            _entries.splice(_entries.begin(), _entries, found->second);
+
+            return found->second->runs;
+        }
+    }
+    const Runs built = std::make_shared<const std::vector<BokehRun>>(build());
+    const std::size_t bytes = entryBytes(*built);
+
+    const std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _index.find(key);
+    if (found != _index.end()) {
+        _entries.splice(_entries.begin(), _entries, found->second);
+
+        return found->second->runs;
+    }
+    if (bytes > _budget) {
+        return built;
+    }
+    while (!_entries.empty() && (_bytes + bytes > _budget)) {
+        _bytes -= _entries.back().bytes;
+        _index.erase(_entries.back().key);
+        _entries.pop_back();
+    }
+    Entry entry;
+    entry.key = key;
+    entry.runs = built;
+    entry.bytes = bytes;
+    _entries.push_front(entry);
+    _index.emplace(key, _entries.begin());
+    _bytes += bytes;
+
+    return built;
+}
+
 BokehRunCache::Runs
 BokehRunCache::runs(const BokehShapeParams& shape,
                     double radiusX,
                     double radiusY)
 {
-    BokehShapeParams base = shape;
-    base.clip = BokehClip();
-    const Key key(radiusX, radiusY, shape.clip.offsetX, shape.clip.offsetY, shape.clip.radius);
-    {
-        const std::lock_guard<std::mutex> lock(_mutex);
-        if (base != _shape) {
-            _runs.clear();
-            _bytes = 0;
-            _shape = base;
-        }
-        const std::map<Key, Runs>::const_iterator found = _runs.find(key);
-        if (found != _runs.end()) {
-            return found->second;
-        }
-    }
-    const Runs built = std::make_shared<const std::vector<BokehRun>>(BokehKernel::gatherKernel(shape, radiusX, radiusY).runs());
-    const std::size_t bytes = built->size() * sizeof(BokehRun) + sizeof(Key) + sizeof(Runs);
+    Key key;
+    key.shape = shape;
+    key.radiusX = radiusX;
+    key.radiusY = radiusY;
 
+    return lookup(key, [&shape, radiusX, radiusY]() {
+        return BokehKernel::gatherKernel(shape, radiusX, radiusY).runs();
+    });
+}
+
+BokehRunCache::Runs
+BokehRunCache::imageRuns(const float* values,
+                         int width,
+                         int height,
+                         uint64_t hash,
+                         double radiusX,
+                         double radiusY,
+                         const BokehClip& clip)
+{
+    Key key;
+    key.shape.shape = BokehShape::Image;
+    key.shape.clip = clip;
+    key.image = true;
+    key.imageHash = hash;
+    key.imageWidth = width;
+    key.imageHeight = height;
+    key.radiusX = radiusX;
+    key.radiusY = radiusY;
+
+    return lookup(key, [values, width, height, radiusX, radiusY, &clip]() {
+        return BokehKernel::fromImage(values, width, height, radiusX, radiusY, nullptr, clip).runs();
+    });
+}
+
+uint64_t
+BokehRunCache::imageHash(const float* values,
+                         int width,
+                         int height)
+{
+    // FNV-1a over the size and the values' bits.
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](uint32_t word) {
+        for (int b = 0; b < 4; ++b) {
+            hash ^= (word >> (8 * b)) & 0xffu;
+            hash *= 1099511628211ull;
+        }
+    };
+    mix((uint32_t)width);
+    mix((uint32_t)height);
+    const std::size_t count = (std::size_t)std::max(0, width) * (std::size_t)std::max(0, height);
+    for (std::size_t i = 0; i < count; ++i) {
+        mix(std::bit_cast<uint32_t>(values[i]));
+    }
+
+    return hash;
+}
+
+void
+LensRunTally::add(std::size_t table,
+                  const BokehRunCache::Runs& kernel)
+{
+    if (!kernel || kernel->empty()) {
+        return;
+    }
     const std::lock_guard<std::mutex> lock(_mutex);
-    if ((base != _shape) || (bytes > _budget)) {
-        return built;
+    if (_stored.emplace(table, kernel.get()).second) {
+        _bytes += (uint64_t)kernel->size() * 4 * sizeof(uint32_t);
+        if (_bytes > _limit) {
+            _over.store(true, std::memory_order_relaxed);
+        }
     }
-    if (_bytes + bytes > _budget) {
-        _runs.clear();
-        _bytes = 0;
-    }
-    if (_runs.emplace(key, built).second) {
-        _bytes += bytes;
-    }
-
-    return built;
 }
 
 void

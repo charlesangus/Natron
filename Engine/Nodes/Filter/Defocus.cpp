@@ -260,8 +260,9 @@ lensBuildWorker(const DefocusLensStatePtr& state,
     return [state, b](const PassScratch& scratch) -> PassRowFn {
         DefocusLensState* s = state.get();
         const int nLines = scratch.height;
+        const unsigned used = s->lens.groupsOf(scratch.channelBits.data(), scratch.nPlanes);
 
-        return [s, b, nLines](int line) {
+        return [s, b, nLines, used](int line) {
             std::size_t first = 0;
             std::size_t end = 0;
             spreadItems(line, nLines, s->band.size(b), &first, &end);
@@ -270,7 +271,7 @@ lensBuildWorker(const DefocusLensStatePtr& state,
                 int i = 0;
                 int j = 0;
                 s->band.item(b, k, &group, &i, &j);
-                s->band.runs[k] = s->kernel(group, s->lens.clip(i, j));
+                s->band.runs[k] = (used & (1u << group)) ? s->kernel(group, s->lens.clip(i, j)) : BokehRunCache::Runs();
             }
         };
     };
@@ -969,17 +970,37 @@ Defocus::recordPassesGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
     kernels.runs.assign(count, BokehRunCache::Runs());
+    int channelBits[4] = { 0, 0, 0, 0 };
+    const int nChannels = std::clamp(io.nComps, 0, 4);
+    for (int c = 0; c < nChannels; ++c) {
+        channelBits[c] = pixelKernelChannelBit(io.nComps, c);
+    }
+    const unsigned used = lens.groupsOf(channelBits, nChannels);
+    // The cell table and the cell maps, then the runs as they are built, so that an upload that
+    // cannot fit stops the build rather than waiting for all of it.
+    const uint64_t limit = std::min<uint64_t>(kGpuMaxLensBytes, io.context.maxScratchBytes());
+    LensRunTally tally(((uint64_t)2 * count + (uint64_t)io.output.width() + (uint64_t)io.output.height()) * sizeof(uint32_t), limit);
     const BokehShapeParams shape = params.shape;
     parallelForOnGlobalPool((int)count, appPTR->getNCPUsAvailableForEffect(), [&](int k) {
+        if (tally.over()) {
+            return;
+        }
         int group = 0;
         int i = 0;
         int j = 0;
         kernels.item(all, (std::size_t)k, &group, &i, &j);
+        if (!(used & (1u << group))) {
+            return;
+        }
         BokehShapeParams clipped = shape;
         clipped.clip = lens.clip(i, j);
         const std::pair<double, double>& r = groupRadii[group];
         kernels.runs[k] = cache ? cache->runs(clipped, r.first, r.second) : std::make_shared<const std::vector<BokehRun>>(BokehKernel::gatherKernel(clipped, r.first, r.second).runs());
+        tally.add(0, kernels.runs[k]);
     });
+    if (tally.over()) {
+        return eStatusFailed;
+    }
 
     std::vector<uint32_t> packed;
     std::size_t table = 0;
@@ -1262,15 +1283,15 @@ Defocus::renderOp(const RenderActionArgs& args,
         radii(params, context, lens.groupScale(g), &groupRadii[g].first, &groupRadii[g].second);
     }
     std::function<BokehRunCache::Runs(int, const BokehClip&)> build;
+    const std::shared_ptr<BokehRunCache> cache = _runCache;
     if (params.shape.shape == BokehShape::Image) {
-        build = [kernelImage, groupRadii](int group, const BokehClip& clip) -> BokehRunCache::Runs {
+        const uint64_t hash = BokehRunCache::imageHash(kernelImage->values.data(), kernelImage->width, kernelImage->height);
+        build = [cache, kernelImage, hash, groupRadii](int group, const BokehClip& clip) -> BokehRunCache::Runs {
             const DefocusKernelImage& image = *kernelImage;
-            const BokehKernel k = BokehKernel::fromImage(image.values.data(), image.width, image.height, groupRadii[group].first, groupRadii[group].second, nullptr, clip);
 
-            return std::make_shared<const std::vector<BokehRun>>(k.runs());
+            return cache->imageRuns(image.values.data(), image.width, image.height, hash, groupRadii[group].first, groupRadii[group].second, clip);
         };
     } else {
-        const std::shared_ptr<BokehRunCache> cache = _runCache;
         const BokehShapeParams shape = params.shape;
         build = [cache, shape, groupRadii](int group, const BokehClip& clip) -> BokehRunCache::Runs {
             BokehShapeParams clipped = shape;

@@ -292,3 +292,152 @@ TEST(LensAberration, ChromaticScales)
     EXPECT_EQ(shared.groupOf(0), shared.groupOf(1));
     EXPECT_EQ(shared.channelScale(2), 0.);
 }
+
+// Without a format there is no position to clip by: every kernel stays whole.
+TEST(LensAberration, EmptyFormatLeavesKernelsWhole)
+{
+    const LensAberration lens(catEye(1.), RectI(), 1., 1., 1.);
+
+    EXPECT_FALSE(lens.hasCatEye());
+    for (int j = -3; j <= 3; ++j) {
+        for (int i = -3; i <= 3; ++i) {
+            EXPECT_FALSE(clips(lens.clip(i, j)));
+        }
+    }
+    const LensCells cells = lens.cells(RectI(-100, -100, 100, 100));
+    EXPECT_EQ(cells.columns * cells.rows, 1);
+}
+
+TEST(LensAberration, GroupsOfPlanes)
+{
+    LensAberrationParams params;
+
+    params.chromaticAberration = 0.25;
+    const LensAberration lens(params, kHd, 1., 1., 1.);
+    const int alpha[1] = { 3 };
+    EXPECT_EQ(lens.groupsOf(alpha, 1), 1u << lens.groupOf(1));
+    const int rgba[4] = { 0, 1, 2, 3 };
+    EXPECT_EQ(lens.groupsOf(rgba, 4), 7u);
+    const int red[1] = { 0 };
+    EXPECT_EQ(lens.groupsOf(red, 1), 1u << lens.groupOf(0));
+    EXPECT_EQ(lens.groupsOf(rgba, 0), 0u);
+}
+
+namespace {
+
+bool
+sameRuns(const std::vector<BokehRun>& a,
+         const std::vector<BokehRun>& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if ((a[i].dy != b[i].dy) || (a[i].dx0 != b[i].dx0) || (a[i].length != b[i].length) || (a[i].weight != b[i].weight)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+BokehShapeParams
+blades(int count)
+{
+    BokehShapeParams shape;
+
+    shape.shape = BokehShape::Blades;
+    shape.blades = count;
+
+    return shape;
+}
+
+} // anonymous namespace
+
+// Alternating shapes, as two nodes or two frames of an animated shape do, keep each other's runs.
+TEST(BokehRunCache, KeepsEveryShape)
+{
+    BokehRunCache cache;
+    const BokehShapeParams disc;
+    const BokehShapeParams hexagon = blades(6);
+
+    const BokehRunCache::Runs a = cache.runs(disc, 6., 6.);
+    const BokehRunCache::Runs b = cache.runs(hexagon, 6., 6.);
+    ASSERT_TRUE(bool(a) && bool(b));
+    EXPECT_EQ(a.get(), cache.runs(disc, 6., 6.).get());
+    EXPECT_EQ(b.get(), cache.runs(hexagon, 6., 6.).get());
+    EXPECT_TRUE(sameRuns(*a, BokehKernel::gatherKernel(disc, 6., 6.).runs()));
+    EXPECT_TRUE(sameRuns(*b, BokehKernel::gatherKernel(hexagon, 6., 6.).runs()));
+
+    BokehShapeParams clipped = disc;
+    clipped.clip.offsetX = 0.5;
+    clipped.clip.radius = 1.;
+    const BokehRunCache::Runs c = cache.runs(clipped, 6., 6.);
+    EXPECT_NE(a.get(), c.get());
+    EXPECT_TRUE(sameRuns(*c, BokehKernel::gatherKernel(clipped, 6., 6.).runs()));
+}
+
+// Past its budget the cache drops the least recently used entry, and only it.
+TEST(BokehRunCache, EvictsTheLeastRecentlyUsed)
+{
+    const BokehShapeParams a;
+    const BokehShapeParams b = blades(5);
+    const BokehShapeParams c = blades(7);
+    const std::size_t budget = BokehRunCache::entryBytes(BokehKernel::gatherKernel(a, 5., 5.).runs())
+        + BokehRunCache::entryBytes(BokehKernel::gatherKernel(b, 5., 5.).runs())
+        + BokehRunCache::entryBytes(BokehKernel::gatherKernel(c, 5., 5.).runs()) - 1;
+    BokehRunCache cache(budget);
+
+    const BokehRunCache::Runs first = cache.runs(a, 5., 5.);
+    const BokehRunCache::Runs second = cache.runs(b, 5., 5.);
+    EXPECT_EQ(first.get(), cache.runs(a, 5., 5.).get());
+    const BokehRunCache::Runs third = cache.runs(c, 5., 5.);
+    EXPECT_EQ(first.get(), cache.runs(a, 5., 5.).get());
+    EXPECT_EQ(third.get(), cache.runs(c, 5., 5.).get());
+    EXPECT_NE(second.get(), cache.runs(b, 5., 5.).get());
+}
+
+// An entry larger than the whole budget is built but never kept.
+TEST(BokehRunCache, KeepsNothingPastTheBudget)
+{
+    BokehRunCache cache(1);
+    const BokehShapeParams disc;
+
+    const BokehRunCache::Runs a = cache.runs(disc, 4., 4.);
+    ASSERT_TRUE(bool(a));
+    EXPECT_NE(a.get(), cache.runs(disc, 4., 4.).get());
+}
+
+// Image kernels are kept by their values, size, radii and clip.
+TEST(BokehRunCache, KeepsImageKernels)
+{
+    std::vector<float> ring(8 * 8, 0.f);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            const double d = std::hypot(x - 3.5, y - 3.5);
+            ring[(std::size_t)y * 8 + x] = ((d > 2.) && (d < 4.)) ? 1.f : 0.f;
+        }
+    }
+    std::vector<float> dot(8 * 8, 0.f);
+    dot[3 * 8 + 3] = 1.f;
+    const uint64_t ringHash = BokehRunCache::imageHash(ring.data(), 8, 8);
+    const uint64_t dotHash = BokehRunCache::imageHash(dot.data(), 8, 8);
+    EXPECT_NE(ringHash, dotHash);
+    EXPECT_NE(ringHash, BokehRunCache::imageHash(ring.data(), 4, 16));
+
+    BokehClip clip;
+    clip.offsetX = 0.6;
+    clip.radius = 1.;
+    BokehRunCache cache;
+    const BokehRunCache::Runs a = cache.imageRuns(ring.data(), 8, 8, ringHash, 7., 7., clip);
+    ASSERT_TRUE(bool(a));
+    EXPECT_TRUE(sameRuns(*a, BokehKernel::fromImage(ring.data(), 8, 8, 7., 7., nullptr, clip).runs()));
+    EXPECT_EQ(a.get(), cache.imageRuns(ring.data(), 8, 8, ringHash, 7., 7., clip).get());
+    EXPECT_NE(a.get(), cache.imageRuns(ring.data(), 8, 8, ringHash, 7., 7., BokehClip()).get());
+    EXPECT_NE(a.get(), cache.imageRuns(ring.data(), 8, 8, ringHash, 6., 7., clip).get());
+    const BokehRunCache::Runs d = cache.imageRuns(dot.data(), 8, 8, dotHash, 7., 7., clip);
+    EXPECT_NE(a.get(), d.get());
+    EXPECT_TRUE(sameRuns(*d, BokehKernel::fromImage(dot.data(), 8, 8, 7., 7., nullptr, clip).runs()));
+    // A disc of the same radii is not the image's kernel.
+    EXPECT_NE(a.get(), cache.runs(BokehShapeParams(), 7., 7.).get());
+}

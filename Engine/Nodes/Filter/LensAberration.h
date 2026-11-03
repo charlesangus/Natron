@@ -29,13 +29,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <tuple>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Filter/BokehKernel.h"
@@ -204,6 +208,9 @@ public:
     int groupOf(int c) const WARN_UNUSED_RETURN;
     double groupScale(int group) const WARN_UNUSED_RETURN;
 
+    /// A bit per group that one of the n channel bits reads.
+    unsigned groupsOf(const int* channelBits, int n) const WARN_UNUSED_RETURN;
+
     /// The grid's column and row of the pixel at x, y at the render's scale.
     int cellColumn(int x) const WARN_UNUSED_RETURN;
     int cellRow(int y) const WARN_UNUSED_RETURN;
@@ -279,9 +286,10 @@ private:
 };
 
 /**
- * @brief The runs of BokehKernel::gatherKernel() for one shape by radii and clip, kept across
- * renders. Past budget bytes of runs it starts over, so that a frame needing more kernels than
- * that rebuilds them rather than holding them all.
+ * @brief The runs of BokehKernel::gatherKernel() by shape, radii and clip, and of
+ * BokehKernel::fromImage() by image, radii and clip, kept across renders. Past budget bytes of
+ * runs it drops the least recently used, so that a frame needing more kernels than that rebuilds
+ * them rather than holding them all, and renders of different shapes keep each other's.
  **/
 class BokehRunCache {
 public:
@@ -297,15 +305,55 @@ public:
     /// The runs of shape's gatherKernel() at the radii, built on a miss outside the lock.
     Runs runs(const BokehShapeParams& shape, double radiusX, double radiusY) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The runs of fromImage() of the width x height values at the radii with clip, built on
+     * a miss outside the lock. hash is imageHash() of the values: with the size, what tells
+     * images apart.
+     **/
+    Runs imageRuns(const float* values,
+                   int width,
+                   int height,
+                   uint64_t hash,
+                   double radiusX,
+                   double radiusY,
+                   const BokehClip& clip) WARN_UNUSED_RETURN;
+
+    /// A hash of the bits of width x height values.
+    static uint64_t imageHash(const float* values, int width, int height) WARN_UNUSED_RETURN;
+
+    /// The bytes an entry of runs counts against the budget.
+    static std::size_t entryBytes(const std::vector<BokehRun>& runs) WARN_UNUSED_RETURN;
+
 private:
-    using Key = std::tuple<double, double, double, double, double>;
+    struct Key {
+        // An image kernel's shape is BokehShape::Image with every other parameter at its default.
+        BokehShapeParams shape;
+        bool image = false;
+        uint64_t imageHash = 0;
+        int imageWidth = 0;
+        int imageHeight = 0;
+        double radiusX = 0.;
+        double radiusY = 0.;
+    };
+
+    struct KeyLess {
+        bool operator()(const Key& a, const Key& b) const;
+    };
+
+    struct Entry {
+        Key key;
+        Runs runs;
+        std::size_t bytes = 0;
+    };
+
+    Runs lookup(const Key& key, const std::function<std::vector<BokehRun>()>& build);
 
     std::mutex _mutex;
     std::size_t _budget;
     std::size_t _bytes = 0;
-    // The shape with its clip at the default, which every entry shares.
-    BokehShapeParams _shape;
-    std::map<Key, Runs> _runs;
+    // Most recently used first.
+    std::list<Entry> _entries;
+    std::map<Key, std::list<Entry>::iterator, KeyLess> _index;
 };
 
 /**
@@ -367,6 +415,38 @@ void appendLensRunTable(const LensBandRuns& runs,
                         const LensBand& band,
                         std::vector<uint32_t>* words,
                         std::size_t* table);
+
+/**
+ * @brief The bytes of a GPU upload of run tables, tallied while their kernels are built on several
+ * threads: from bytes outside the runs, plus each kernel's runs once per table, as
+ * appendLensRunTable() stores them. Once the tally passes limit the upload cannot fit, and the
+ * build can stop.
+ **/
+class LensRunTally {
+public:
+    LensRunTally(uint64_t bytes,
+                 uint64_t limit)
+        : _bytes(bytes)
+        , _limit(limit)
+        , _over(bytes > limit)
+    {
+    }
+
+    /// Counts kernel in table.
+    void add(std::size_t table, const BokehRunCache::Runs& kernel);
+
+    bool over() const
+    {
+        return _over.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::mutex _mutex;
+    std::set<std::pair<std::size_t, const std::vector<BokehRun>*>> _stored;
+    uint64_t _bytes;
+    uint64_t _limit;
+    std::atomic<bool> _over;
+};
 
 /**
  * @brief Appends to words, from *columnMap, the column of cells of each pixel column of output,

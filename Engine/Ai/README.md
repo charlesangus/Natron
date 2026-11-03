@@ -16,6 +16,11 @@ AI node runs on the CPU as far as the scheduler is concerned (see "AI nodes" in
 | `InferenceSession.*` | sessions, the session cache, execution provider selection, per-device concurrency, abort, error classes |
 | `Tensor.h` | the float32 NCHW `Tensor`, and the float16 conversions |
 | `TiledInference.*` | `runTiled()`: an image model run over a region in overlapping tiles |
+| `ModelRegistry.*` | the model manifest, models by task, and where a model is installed |
+| `ModelPackage.*` | `.dtmodel` unpacking, `config.json` parsing into `ModelConfig`, sha256 |
+| `ModelDownloader.*` | downloading, checking and installing a model's package |
+| `ModelKnob.*` | the node-side `model` menu, Download Model button and model resolution |
+| `data/ai_models.json` | the pinned manifest, compiled in as `:/Ai/ai_models.json` |
 
 ## Loading the library
 
@@ -47,8 +52,9 @@ out. The Preferences "AI Detected Providers" line shows the result.
 
 `AiSessionOptions` carries the device (Auto, CPU, CUDA, MIGraphX, ROCm or OpenVINO), the GPU index,
 the CPU thread count and a graph optimisation level. `fromPreferences()` fills in the first three,
-and the environment variable `NATRON_AI_DEVICE` overrides the device. The optimisation level comes
-from the model's manifest.
+and the environment variable `NATRON_AI_DEVICE` overrides the device. The optimisation level is the
+caller's, as in darktable: the node passes it to `fromPreferences()`, and neither the manifest nor
+`config.json` carries one.
 
 `InferenceSession::providerOrder()` turns the requested device into a list of EPs to try, and the
 list always ends with the CPU:
@@ -151,11 +157,55 @@ must be padded to, the output scale and the channel counts.
   Each step is logged.
 - **Other failures** throw `AiError`, whose message names the model.
 
+## Models
+
+Models are downloaded on demand from the `.dtmodel` release assets of
+[darktable-ai](https://github.com/darktable-org/darktable-ai), never bundled. `data/ai_models.json`
+pins one release: its tag is under `source`, and each model has its task, the package (asset) it
+comes from, the package files it runs, the asset's URL, sha256 and size, its weight and
+training-data licences, darktable-ai's OSAID classification, and a link to its model card.
+`tools/ai/update-manifest.py` regenerates the file from a release tag; run with no arguments, it
+reproduces the committed file. It refuses a model whose weight licence is not GPL-3-compatible.
+
+A package can hold several models: RealPLKSR and BSRGAN each ship their 2x and 4x models in one,
+and RawNIND its Bayer and linear models. The manifest lists each model on its own, so a node picks
+by task, and the models of a package share its download and its install folder,
+`<user data dir>/models/<package>/`. `ModelRegistry::resolve()` reports a model installed when that
+folder holds `config.json` and every file of the model.
+
+`ModelDownloader` streams a package into `models/.tmp-<package>/`, checks its size and sha256,
+unpacks it, parses `config.json` for each model of the package, and renames the result into place.
+A failure at any step deletes the temporary folder and leaves what was installed untouched. A second
+request for a package being downloaded joins the first.
+
+Packages come over HTTPS, which needs Qt's OpenSSL TLS backend (`plugins/tls/libqopensslbackend.so`,
+linking OpenSSL 3). The bundle stages it, and `tools/release/check-startup.sh` checks that the
+packaged Natron loads it and OpenSSL from inside the bundle. When no backend works,
+`ModelDownloader::start()` refuses an HTTPS package with `tlsUnavailableReason()`, which names the
+backends found and the folders searched. A failed download says whether the certificate was refused,
+the TLS handshake failed or the server answered with an HTTP error.
+
+`config.json` is darktable-ai's: `ModelConfig` takes the task, tiling, input sizes (the tile size),
+input kind and colour space from it, looking up a model's attributes by its file stem
+(`model_x4`) over the package-wide ones. Tensor names and shapes are not in it; the session reads
+them from the model.
+
+A node picks its model with `ModelKnob::create()`, which takes one task or a list of them. The
+`model` menu lists the models of each task in the order given, so a node that runs both
+`denoise-linear` and `denoise` models shows the linear ones first. The default is the Preferences
+default of the first task that has one, else the registry's default for the first task that lists
+a model. The menu refreshes when a model of any of its tasks is installed or removed.
+`ModelKnob::resolve()` returns the selected model's files and `ModelConfig`, or posts why it
+can't and returns nothing.
+
 ## Testing
 
 `Tests/Ai` runs these classes against the real ORT that `fetch-assets.sh` unpacks into the build
 tree (`NATRON_TESTS_ONNXRUNTIME_DIR`). The tests use the tiny models in `Tests/fixtures/ai`, which
-`tools/ai/make-test-models.py` generates.
+`tools/ai/make-test-models.py` generates. The downloader tests install `identity.dtmodel`, which
+`tools/ai/make-test-dtmodel.py` packs, through a `file://` URL in a manifest they write, so they never
+touch the network. The HTTP error test serves a 404 from a local `QTcpServer`, and the TLS test
+asserts the tree's Qt has a working OpenSSL backend.
 
 `InferenceSession::setFailureInjectorForTesting()` makes chosen runs fail with a given ORT message.
 With it, the tests drive the out-of-memory and error paths without a device that actually fails.

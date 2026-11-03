@@ -29,12 +29,10 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <set>
-#include <system_error>
 #include <vector>
 
 #include <ofxMetadata.h>
@@ -61,8 +59,7 @@ namespace {
     }
 
     struct CacheEntry {
-        std::filesystem::file_time_type mtime;
-        std::uintmax_t size = 0;
+        FileIdentity identity;
         std::shared_ptr<const Header> header;
     };
 
@@ -75,7 +72,7 @@ namespace {
     std::mutex g_cacheMutex;
     std::map<std::string, CacheEntry> g_cache;
     // A header parsed across an eviction may describe the file as it was before it, under the same
-    // modification time and size as the file now, so it is only cached if no eviction intervened.
+    // identity as the file now, so it is only cached if no eviction intervened.
     std::uint64_t g_evictions = 0;
 
     std::mutex g_headerParsedHookMutex;
@@ -137,68 +134,96 @@ namespace {
     };
 } // anonymous namespace
 
+namespace {
+    // The header and the identity of the file it was parsed from.
+    std::shared_ptr<const Header>
+    readHeaderOf(const std::string& path,
+                 FilePin pin,
+                 FileIdentity* identity,
+                 std::string* error)
+    {
+        FileIdentity expected;
+        if (pin == FilePin::eStamp) {
+            if (!FileStampRegistry::instance().matchesDisk(path, &expected)) {
+                fail(error, FileStampRegistry::changedOnDiskMessage(path));
+
+                return std::shared_ptr<const Header>();
+            }
+        } else {
+            expected = FileStampRegistry::statNow(path);
+        }
+        if (!expected.exists) {
+            fail(error, "Could not read " + path);
+
+            return std::shared_ptr<const Header>();
+        }
+        *identity = expected;
+
+        std::uint64_t evictions = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_cacheMutex);
+            const std::map<std::string, CacheEntry>::const_iterator it = g_cache.find(path);
+            if (it != g_cache.end() && it->second.identity == expected) {
+                return it->second.header;
+            }
+            evictions = g_evictions;
+        }
+
+        OIIO::ImageInput::unique_ptr input = openInput(path);
+        if (!input) {
+            fail(error, openError(path));
+
+            return std::shared_ptr<const Header>();
+        }
+
+        std::shared_ptr<Header> header = std::make_shared<Header>();
+        header->subimages.push_back(input->spec());
+        for (int s = 1; input->seek_subimage(s, 0); ++s) {
+            header->subimages.push_back(input->spec());
+        }
+        input->close();
+
+        // A file rewritten or replaced while it was parsed may have given a header of either.
+        if (FileStampRegistry::statNow(path) != expected) {
+            fail(error, pin == FilePin::eStamp ? FileStampRegistry::changedOnDiskMessage(path) : path + " changed on disk while it was read");
+
+            return std::shared_ptr<const Header>();
+        }
+
+        std::function<void(const std::string&)> hook;
+        {
+            std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
+            hook = g_headerParsedHook;
+        }
+        if (hook) {
+            hook(path);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_cacheMutex);
+            if (evictions != g_evictions) {
+                return header;
+            }
+            if (g_cache.size() >= kMaxCachedHeaders && g_cache.find(path) == g_cache.end()) {
+                g_cache.clear();
+            }
+            CacheEntry& entry = g_cache[path];
+            entry.identity = expected;
+            entry.header = header;
+        }
+
+        return header;
+    } // readHeaderOf
+} // anonymous namespace
+
 std::shared_ptr<const Header>
 readHeader(const std::string& path,
-           std::string* error)
+           std::string* error,
+           FilePin pin)
 {
-    std::error_code ec;
-    const std::filesystem::path fsPath = std::filesystem::path(path);
-    const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(fsPath, ec);
-    const std::uintmax_t size = ec ? 0 : std::filesystem::file_size(fsPath, ec);
-    if (ec) {
-        fail(error, "Could not read " + path + ": " + ec.message());
+    FileIdentity identity;
 
-        return std::shared_ptr<const Header>();
-    }
-
-    std::uint64_t evictions = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_cacheMutex);
-        const std::map<std::string, CacheEntry>::const_iterator it = g_cache.find(path);
-        if (it != g_cache.end() && it->second.mtime == mtime && it->second.size == size) {
-            return it->second.header;
-        }
-        evictions = g_evictions;
-    }
-
-    OIIO::ImageInput::unique_ptr input = openInput(path);
-    if (!input) {
-        fail(error, openError(path));
-
-        return std::shared_ptr<const Header>();
-    }
-
-    std::shared_ptr<Header> header = std::make_shared<Header>();
-    header->subimages.push_back(input->spec());
-    for (int s = 1; input->seek_subimage(s, 0); ++s) {
-        header->subimages.push_back(input->spec());
-    }
-    input->close();
-
-    std::function<void(const std::string&)> hook;
-    {
-        std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
-        hook = g_headerParsedHook;
-    }
-    if (hook) {
-        hook(path);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_cacheMutex);
-        if (evictions != g_evictions) {
-            return header;
-        }
-        if (g_cache.size() >= kMaxCachedHeaders && g_cache.find(path) == g_cache.end()) {
-            g_cache.clear();
-        }
-        CacheEntry& entry = g_cache[path];
-        entry.mtime = mtime;
-        entry.size = size;
-        entry.header = header;
-    }
-
-    return header;
+    return readHeaderOf(path, pin, &identity, error);
 }
 
 void
@@ -539,9 +564,11 @@ decode(const std::string& path,
        const RectI& window,
        float* dst,
        std::size_t rowStride,
-       std::string* error)
+       std::string* error,
+       FilePin pin)
 {
-    const std::shared_ptr<const Header> header = readHeader(path, error);
+    FileIdentity identity;
+    const std::shared_ptr<const Header> header = readHeaderOf(path, pin, &identity, error);
     if (!header) {
         return false;
     }
@@ -584,6 +611,12 @@ decode(const std::string& path,
     sink.windowFileTop = displayTop - window.y2;
     sink.windowFileBottom = displayTop - window.y1;
 
+    const auto changedError = [&path, pin]() {
+        return pin == FilePin::eStamp ? FileStampRegistry::changedOnDiskMessage(path) : path + " changed on disk while it was read";
+    };
+    if (FileStampRegistry::statNow(path) != identity) {
+        return fail(error, changedError());
+    }
     OIIO::ImageInput::unique_ptr input = openInput(path);
     if (!input) {
         return fail(error, openError(path));
@@ -624,6 +657,9 @@ decode(const std::string& path,
         }
     }
     input->close();
+    if (FileStampRegistry::statNow(path) != identity) {
+        return fail(error, changedError());
+    }
 
     return true;
 }

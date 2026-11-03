@@ -27,7 +27,7 @@ for comp in $COMPS; do
         sleep 60
     done
     echo "host load before $comp$TAG: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$OUT/host.log"
-    rm -f "$OUT/$comp$TAG.jsonl".* "$OUT/out/$comp".*.exr
+    rm -f "$OUT/$comp$TAG.jsonl".* "$OUT/out/$comp".*.exr "$OUT/out/.$comp".*.tmp-*
     start=$(date +%s.%N)
     docker exec -e REPO="$REPO" -e COMP="$comp" -e FIRST="$FIRST" -e LAST="$LAST" -e RENDERER_ARGS="$RENDERER_ARGS" \
         -e NATRON_RENDER_PROFILE="$OUT/$comp$TAG.jsonl" -e OFX_PLUGIN_PATH="$REPO/build/assets/Plugins" natron-dev bash -lc \
@@ -44,5 +44,5 @@ with open(src) as f, open(base + ".steady.jsonl", "w") as out:
     first = min(json.loads(line)["frame"] for line in lines)
     out.writelines(line for line in lines if json.loads(line)["frame"] != first)
 PY
-    rm -f "$OUT/out/$comp".*.exr
+    rm -f "$OUT/out/$comp".*.exr "$OUT/out/.$comp".*.tmp-*
 done

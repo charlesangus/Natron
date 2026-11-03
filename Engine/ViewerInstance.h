@@ -64,6 +64,8 @@
 #define kViewerParamActiveView "activeView"
 #define kViewerParamEnableFps "enableFps"
 #define kViewerParamFps "desiredFps"
+// The playback timer divides by the frame rate; 0.1 is the fps box's smallest step.
+#define kViewerMinimumFps 0.1
 #define kViewerParamInPoint "inPoint"
 #define kViewerParamOutPoint "outPoint"
 #define kViewerParamEnableUserRoI "enableRegionOfInterest"
@@ -480,6 +482,13 @@ public:
      **/
     unsigned int getKnobRenderRequestCount() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Knob edits made between these ask for one render at the outermost endKnobEdits()
+     * instead of one per changed knob or dimension. Main thread only.
+     **/
+    void beginKnobEdits();
+    void endKnobEdits();
+
 public Q_SLOTS:
 
 
@@ -508,6 +517,9 @@ private Q_SLOTS:
     // Keeps the aInput/bInput knobs equal to the inspector's active inputs, which input
     // connections also move.
     void onInspectorActiveInputsChanged();
+
+    // Applies the saved aInput/bInput knobs to the inspector once a load has restored every input.
+    void onProjectLoaded();
 
 Q_SIGNALS:
 

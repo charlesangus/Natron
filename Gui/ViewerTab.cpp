@@ -177,6 +177,27 @@ writeViewerKnob(const KnobIPtr& knob,
     }
 }
 
+class ViewerKnobEdits {
+public:
+    explicit ViewerKnobEdits(const NodePtr& node)
+        : _viewer(node ? dynamic_cast<ViewerInstance*>(node->getEffectInstance().get()) : 0)
+    {
+        if (_viewer) {
+            _viewer->beginKnobEdits();
+        }
+    }
+
+    ~ViewerKnobEdits()
+    {
+        if (_viewer) {
+            _viewer->endKnobEdits();
+        }
+    }
+
+private:
+    ViewerInstance* _viewer;
+};
+
 /**
  * @brief An edit of the viewer's knobs from its toolbar. The first redo runs the edit and keeps
  * the before and after values of every viewer knob it changed; undo and redo write those back.
@@ -224,7 +245,10 @@ public:
             KnobIPtr knob = node->getKnobByName(kViewerKnobNames[i]);
             before.push_back(knob ? readViewerKnob(knob) : ViewerKnobValues());
         }
-        apply();
+        {
+            ViewerKnobEdits edits(node);
+            apply();
+        }
         for (std::size_t i = 0; i < before.size(); ++i) {
             KnobIPtr knob = node->getKnobByName(kViewerKnobNames[i]);
             if (!knob) {
@@ -272,6 +296,7 @@ private:
         if (!node) {
             return;
         }
+        ViewerKnobEdits edits(node);
         for (Changes::const_iterator it = _changes.begin(); it != _changes.end(); ++it) {
             KnobIPtr knob = node->getKnobByName(kViewerKnobNames[it->first]);
             if (knob) {
@@ -1039,6 +1064,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->fpsBox = new SpinBox(_imp->playerButtonsContainer, SpinBox::eSpinBoxTypeDouble);
     _imp->fpsBox->decimals(1);
     _imp->fpsBox->setIncrement(0.1);
+    _imp->fpsBox->setMinimum(kViewerMinimumFps);
     _imp->fpsBox->setToolTip( QString::fromUtf8("<p><b>") + tr("fps:") + QString::fromUtf8("</b></p>") + tr(
                                   "Viewer playback framerate, in frames per second.") );
 
@@ -1652,7 +1678,7 @@ ViewerTab::refreshFpsFromKnobs()
 {
     const bool userFps = _imp->viewerValue<bool>(kViewerParamEnableFps, false);
     // A locked fps follows the input's, or the project's without one.
-    const double fps = userFps ? _imp->viewerValue<double>(kViewerParamFps, 24.) : getLockedFps();
+    const double fps = std::max(userFps ? _imp->viewerValue<double>(kViewerParamFps, 24.) : getLockedFps(), kViewerMinimumFps);
 
     {
         QSignalBlocker b0(_imp->canEditFpsBox), b1(_imp->fpsBox);

@@ -230,10 +230,15 @@ ViewerTab::setUserRoI(const RectD & r)
 void
 ViewerTab::writeUserRoIKnobs(const RectD& r)
 {
+    if (!_imp->viewerNode) {
+        return;
+    }
+    _imp->viewerNode->beginKnobEdits();
     _imp->setViewerValue<double>(kViewerParamUserRoIBottomLeft, r.x1, 0);
     _imp->setViewerValue<double>(kViewerParamUserRoIBottomLeft, r.y1, 1);
     _imp->setViewerValue<double>(kViewerParamUserRoISize, r.width(), 0);
     _imp->setViewerValue<double>(kViewerParamUserRoISize, r.height(), 1);
+    _imp->viewerNode->endKnobEdits();
 }
 
 void

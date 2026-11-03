@@ -623,6 +623,7 @@ ViewerInstance::initializeKnobs()
         if (ProjectPtr project = app->getProject()) {
             projectFps = project->getProjectFrameRate();
             project->getFrameRange(&projectFirst, &projectLast);
+            QObject::connect(project.get(), SIGNAL(loaded()), this, SLOT(onProjectLoaded()), Qt::UniqueConnection);
         }
     }
 
@@ -632,9 +633,9 @@ ViewerInstance::initializeKnobs()
 
     KnobDoublePtr fps = createViewerKnob<KnobDouble>(this, page, tr("Desired Fps"), kViewerParamFps,
                                                      tr("The playback frame rate, in frames per second, while Enable Fps is on."));
-    fps->setDefaultValue(projectFps);
-    fps->setMinimum(0.);
-    fps->setDisplayMinimum(0.);
+    fps->setDefaultValue(std::max(projectFps, kViewerMinimumFps));
+    fps->setMinimum(kViewerMinimumFps);
+    fps->setDisplayMinimum(kViewerMinimumFps);
     fps->setDisplayMaximum(120.);
     k.fps = fps;
 
@@ -740,8 +741,32 @@ ViewerInstance::getKnobRenderRequestCount() const
 }
 
 void
+ViewerInstance::beginKnobEdits()
+{
+    ++_imp->knobEditDepth;
+}
+
+void
+ViewerInstance::endKnobEdits()
+{
+    assert(_imp->knobEditDepth > 0);
+    if (--_imp->knobEditDepth > 0) {
+        return;
+    }
+    if (_imp->knobEditRenderPending) {
+        _imp->knobEditRenderPending = false;
+        requestRenderFromKnob();
+    }
+}
+
+void
 ViewerInstance::requestRenderFromKnob()
 {
+    if (_imp->knobEditDepth > 0) {
+        _imp->knobEditRenderPending = true;
+
+        return;
+    }
     ++_imp->knobRenderRequests;
     if (_imp->uiContext && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
@@ -866,15 +891,8 @@ ViewerInstance::onInspectorActiveInputsChanged()
     }
 
     if (getApp()->getProject()->isLoadingProject()) {
-        // A load reconnects the inputs one at a time, and each connection moves the inspector's
-        // active inputs: the saved inputs win once they are connected.
-        for (int side = 0; side < 2; ++side) {
-            const int saved = knobs[side]->getValue();
-            if ((saved != active[side]) && ((saved < 0) || node->getInput(saved))) {
-                applyActiveInput(side, saved);
-            }
-        }
-
+        // A load reconnects the inputs one at a time, each moving the inspector's active inputs;
+        // the saved knobs are applied over them once every input is back, in onProjectLoaded().
         return;
     }
 
@@ -889,6 +907,32 @@ ViewerInstance::onInspectorActiveInputsChanged()
     }
     if (alpha) {
         node->setLayerKnobInput(alpha, std::max(active[0], 0));
+    }
+}
+
+void
+ViewerInstance::onProjectLoaded()
+{
+    NodePtr node = getNode();
+    InspectorNode* isInspector = dynamic_cast<InspectorNode*>(node.get());
+    KnobIntPtr knobs[2] = { _imp->knobs.inputs[0].lock(), _imp->knobs.inputs[1].lock() };
+
+    if (!isInspector || !knobs[0] || !knobs[1]) {
+        return;
+    }
+    int active[2] = { -1, -1 };
+    isInspector->getActiveInputs(active[0], active[1]);
+    bool changed = false;
+    for (int side = 0; side < 2; ++side) {
+        const int saved = knobs[side]->getValue();
+        if (saved != active[side]) {
+            applyActiveInput(side, saved);
+            changed = true;
+        }
+    }
+    if (changed) {
+        // The toolbar menus and the data kind follow the inspector through this signal.
+        Q_EMIT isInspector->activeInputsChanged();
     }
 }
 

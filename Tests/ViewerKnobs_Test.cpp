@@ -451,3 +451,82 @@ TEST_F(ViewerKnobsTest, ViewersSurviveALoadAndResaveWithoutTheGui)
     EXPECT_EQ(7, knobOf<KnobInt>(loadedSecond, kViewerParamInPoint)->getValue());
     EXPECT_FALSE(knobOf<KnobBool>(loadedSecond, kViewerParamEnableGain)->getValue());
 }
+
+TEST_F(ViewerKnobsTest, KnobEditsBatchedIntoOneRenderRequest)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    KnobDoublePtr bottomLeft = knobOf<KnobDouble>(node, kViewerParamUserRoIBottomLeft);
+    KnobDoublePtr size = knobOf<KnobDouble>(node, kViewerParamUserRoISize);
+    ASSERT_TRUE(bool(bottomLeft) && bool(size));
+
+    const unsigned int start = viewer->getKnobRenderRequestCount();
+    viewer->beginKnobEdits();
+    bottomLeft->setValue(10., ViewSpec::all(), 0);
+    bottomLeft->setValue(20., ViewSpec::all(), 1);
+    viewer->beginKnobEdits();
+    size->setValue(100., ViewSpec::all(), 0);
+    size->setValue(200., ViewSpec::all(), 1);
+    viewer->endKnobEdits();
+    EXPECT_EQ(start, viewer->getKnobRenderRequestCount());
+    viewer->endKnobEdits();
+    EXPECT_EQ(start + 1, viewer->getKnobRenderRequestCount());
+
+    viewer->beginKnobEdits();
+    knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
+    viewer->endKnobEdits();
+    EXPECT_EQ(start + 1, viewer->getKnobRenderRequestCount());
+}
+
+TEST_F(ViewerKnobsTest, DesiredFpsStaysAboveZero)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr fps = knobOf<KnobDouble>(node, kViewerParamFps);
+    ASSERT_TRUE(bool(fps));
+    EXPECT_GT(fps->getMinimum(), 0.);
+    EXPECT_GE(fps->getValue(), fps->getMinimum());
+}
+
+// The inputs reconnect in index order during a load, and each connection moves the inspector's
+// active inputs, so a saved input that reconnects late or not at all must still win.
+TEST_F(ViewerKnobsTest, SavedInputsWinWhicheverOrderTheInputsReconnect)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr node = createViewer();
+    NodePtr dot0 = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr dot1 = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(node) && bool(dot0) && bool(dot1));
+    const std::string name = node->getScriptName();
+    connectNodes(dot0, node, 0, true);
+    connectNodes(dot1, node, 1, true);
+    knobOf<KnobInt>(node, kViewerParamAInput)->setValue(1);
+    knobOf<KnobInt>(node, kViewerParamBInput)->setValue(3);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("viewer-inputs.ntp");
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, 0));
+
+    project->reset(false, true);
+    node.reset();
+    dot0.reset();
+    dot1.reset();
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    ViewerInstance* viewer = viewerOf(loaded);
+    ASSERT_TRUE(viewer != 0);
+    ASSERT_TRUE(bool(loaded->getInput(0)) && bool(loaded->getInput(1)));
+
+    int active[2] = { -1, -1 };
+    viewer->getActiveInputs(active[0], active[1]);
+    EXPECT_EQ(1, knobOf<KnobInt>(loaded, kViewerParamAInput)->getValue());
+    EXPECT_EQ(3, knobOf<KnobInt>(loaded, kViewerParamBInput)->getValue());
+    EXPECT_EQ(1, active[0]);
+    EXPECT_EQ(3, active[1]);
+}

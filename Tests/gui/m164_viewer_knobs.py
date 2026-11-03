@@ -101,8 +101,6 @@ try:
     OPEN_EMPTY_PATH = os.path.join(gt.OUT, "m164_checker_into_empty.ntpz")
     OPEN_BUSY_PATH = os.path.join(gt.OUT, "m164_checker_into_new_window.ntpz")
 
-    # ---- plumbing --------------------------------------------------------------------------
-
     def create(plugin_id, x, y):
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)}
         node = app.createNode(plugin_id, -1, None, props)
@@ -277,8 +275,6 @@ try:
         except (ValueError, AttributeError, RuntimeError):
             return None
 
-    # ---- zoom and panels -------------------------------------------------------------------
-
     def zoom_in(tab):
         for c in (children_of(tab, ("ComboBox",)) if tab is not None else []):
             if "6400%" in combo_items(c):
@@ -360,8 +356,6 @@ try:
     def fps_box(name):
         return widget_of(name, ("SpinBox",), "Viewer playback framerate")
 
-    # ---- knobs -----------------------------------------------------------------------------
-
     def knob_value(node, name):
         p = node.getParam(name)
         if p is None:
@@ -392,8 +386,6 @@ try:
     def roi_of(node):
         s = snap(node)
         return dict((k, s[k]) for k in ROI_KNOBS)
-
-    # ---- pixels ----------------------------------------------------------------------------
 
     def px(gl):
         """Two 5x5-averaged screen colours either side of the middle of the viewer, read from a
@@ -444,8 +436,6 @@ try:
 
     def knobs_until(predicate):
         return (yield ("until", predicate, POLL_TIMEOUT_S))
-
-    # ---- the steps -------------------------------------------------------------------------
 
     def steps():
         ok = yield ("until", lambda: bool(gt.widgets_of("NodeGraph")), STARTUP_TIMEOUT_S)
@@ -516,7 +506,6 @@ try:
         check(same_px(p1, p2), "both viewers show the same image to start with")
         gt.shot("m164-baseline.png")
 
-        # ---- Viewer2's Display menu ----------------------------------------------------------
         gt.section("toolbar-viewer2")
         display2 = widget_of(V2, ("ComboBox",), "display device")
         require(display2 is not None, "found Viewer2's Display menu")
@@ -536,7 +525,6 @@ try:
         p2 = yield from settle_px(V2)
         require(p2 is not None, "Viewer2 settles")
 
-        # ---- Viewer1's toolbar ---------------------------------------------------------------
         gt.section("toolbar-viewer1")
         gamma_box = widget_of(V1, ("SpinBox",), "Viewer gamma correction level")
         require(gamma_box is not None, "found Viewer1's gamma box")
@@ -579,7 +567,6 @@ try:
         p1_wiped = yield from settle_px(V1)
         check(p1_wiped is not None and not same_px(p1_wiped, p1), "Viewer1's pixels changed with its own toolbar")
 
-        # ---- gain drag, one undo step --------------------------------------------------------
         gt.section("gain-undo")
         gain_slider = widget_of(V1, ("ScaleSliderQWidget",), "Gain is shown as f-stops")
         gain_box = widget_of(V1, ("SpinBox",), "Gain is shown as f-stops")
@@ -611,7 +598,6 @@ try:
         ok = yield from knobs_until(lambda: abs((knob_value(viewer1, "gain") or 0.0) - gain_after) < 1e-6)
         check(ok, "redo brings the dragged gain back (got %r)" % (knob_value(viewer1, "gain"),))
 
-        # ---- RoI drag, one undo step ---------------------------------------------------------
         gt.section("roi")
         tab1 = tab_for(V1)
         gl1 = viewer_gl(V1)
@@ -639,7 +625,6 @@ try:
         snap1 = snap(viewer1)
         gt.shot("m164-viewer1-roi.png")
 
-        # ---- Python edits on Viewer2 ---------------------------------------------------------
         gt.section("python-input")
         before_a = yield from settle_px(V2)
         require(before_a is not None, "Viewer2 settles before the input switch")
@@ -711,7 +696,6 @@ try:
         yield from settle_px(V2)
         gt.shot("m164-two-viewers.png")
 
-        # ---- a layer the input lacks ---------------------------------------------------------
         gt.section("layer")
         layer_before = knob_value(viewer2, "layer")
         alpha_before = knob_value(viewer2, "alphaChannel")
@@ -727,7 +711,6 @@ try:
         check(listed, "Viewer2's layer menu shows the layer as an unlisted entry")
         check(knob_value(viewer1, "layer") == snap1["layer"], "Viewer1's layer did not move")
 
-        # ---- the settings panel ---------------------------------------------------------------
         gt.section("panel")
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
@@ -753,7 +736,6 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
-        # ---- save and reload -----------------------------------------------------------------
         gt.section("save-reload")
         saved1 = snap(viewer1)
         saved2 = snap(viewer2)
@@ -870,7 +852,6 @@ try:
                         POLL_TIMEOUT_S)
             check(ok, "the reopened panel shows Desired Fps 12")
 
-        # ---- a viewer's panel stays closed when it is created --------------------------------
         gt.section("creation")
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)

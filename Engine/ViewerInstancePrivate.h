@@ -141,6 +141,8 @@ public:
         , viewerParamsAlphaChannelName("a")
         , knobWritesFromSetter(0)
         , knobRenderRequests(0)
+        , knobEditDepth(0)
+        , knobEditRenderPending(false)
         , knobs()
         , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
@@ -468,6 +470,10 @@ public:
     // change itself, so knobChanged() must not apply it a second time.
     int knobWritesFromSetter;
     unsigned int knobRenderRequests; // main thread only
+    // Main thread only. Non-zero inside beginKnobEdits()/endKnobEdits(), which hold the knobs'
+    // render requests back to one at the outermost end.
+    int knobEditDepth;
+    bool knobEditRenderPending;
 
     struct Knobs {
         KnobBoolWPtr enableGain;

@@ -91,8 +91,8 @@ struct SplineWarpLayerAmountSerialization {
 };
 
 /**
- * @brief What a SplineWarp curve context holds beside its curves: the boundary, soft-boundary and
- * cookie-cutter curves, the layer amounts and the links, saved with the curves and resolved after them.
+ * @brief What a SplineWarp curve context holds beside its curves: the boundary and cookie-cutter
+ * curves, the layer amounts and the links, saved with the curves and resolved after them.
  **/
 struct SplineWarpTransformValueSerialization {
     std::string knob;
@@ -125,7 +125,6 @@ struct SplineWarpTransformLinkSerialization {
 
 struct SplineWarpSerialization {
     std::list<std::string> boundaries;
-    std::list<std::string> softBoundaries;
     std::list<std::string> cookieCutters;
     std::list<SplineWarpLayerAmountSerialization> layerAmounts;
     std::list<SplineWarpLinkSerialization> links;

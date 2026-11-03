@@ -849,11 +849,6 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitStringList(em, warp.boundaries);
             }
-            if (!warp.softBoundaries.empty()) {
-                emitKey(em, "softBoundaries");
-                em << YAML::Value;
-                emitStringList(em, warp.softBoundaries);
-            }
             if (!warp.cookieCutters.empty()) {
                 emitKey(em, "cookieCutters");
                 em << YAML::Value;
@@ -968,9 +963,6 @@ namespace YamlDetail {
             MapReader reader(node, context, warnings);
             if (YAML::Node boundaries = reader.get("boundaries")) {
                 warp.boundaries = readStringList(boundaries, context + ".boundaries");
-            }
-            if (YAML::Node softBoundaries = reader.get("softBoundaries")) {
-                warp.softBoundaries = readStringList(softBoundaries, context + ".softBoundaries");
             }
             if (YAML::Node cookieCutters = reader.get("cookieCutters")) {
                 warp.cookieCutters = readStringList(cookieCutters, context + ".cookieCutters");

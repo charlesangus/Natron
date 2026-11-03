@@ -61,8 +61,6 @@ namespace {
 
 const double kTime = 1.;
 
-const double kGreenKey[3] = { 0.1, 0.8, 0.2 };
-
 // The kernel computes as the CPU does, statement for statement, but Vulkan leaves division within
 // 2.5 ulp rather than correctly rounded, which the ramps of the trapezoid scale by their slope.
 ParityTolerance
@@ -71,7 +69,7 @@ keyerTolerance()
     return ParityTolerance::transcendental();
 }
 
-// One setting of every Keyer control.
+// One setting of every Keyer control; range is the trapezoid's points A, B, C and D.
 struct KeyerCase {
     const char* keySource;
     const char* luminanceMath;
@@ -83,8 +81,9 @@ const KeyerCase kCases[] = {
     { "luminance", "rec709", { -0.5, 0.2, 0.2, 2.5 } },
     { "luminance", "max", { 0.3, 0.3, 0.7, 0.7 } },
     { "luminance", "average", { 0.05, 0.5, 1.5, 6. } },
-    { "color", "working", { 0.2, 0.4, 0.6, 1.2 } },
-    { "color", "ccir601", { 0., 0., 0.5, 0.5 } },
+    { "red", "working", { 0.2, 0.4, 0.6, 1.2 } },
+    { "green", "ccir601", { 0., 0., 0.5, 0.5 } },
+    { "blue", "working", { -0.1, 0.3, 0.3, 0.9 } },
 };
 
 bool
@@ -107,7 +106,11 @@ bool
 applyCase(const NodePtr& keyer,
           const KeyerCase& c)
 {
-    return setKnobValue(keyer, kKeyerParamKeySource, std::string(c.keySource)) && setKnobValue(keyer, kKeyerParamLuminanceMath, std::string(c.luminanceMath)) && setKnobValues(keyer, kKeyerParamKeyColor, std::vector<double>(kGreenKey, kGreenKey + 3)) && setKnobValues(keyer, kKeyerParamRange, std::vector<double>(c.range, c.range + 4));
+    // The range knob holds outer low, inner low, centre, inner high and outer high.
+    const double centre = 0.5 * (c.range[1] + c.range[2]);
+    const std::vector<double> range = { c.range[1] - c.range[0], centre - c.range[1], centre, c.range[2] - centre, c.range[3] - c.range[2] };
+
+    return setKnobValue(keyer, kKeyerParamKeySource, std::string(c.keySource)) && setKnobValue(keyer, kKeyerParamLuminanceMath, std::string(c.luminanceMath)) && setKnobValues(keyer, kKeyerParamRange, range);
 }
 
 std::string

@@ -1,9 +1,12 @@
 // KeyerOp::row() in Engine/Nodes/Keyer/Keyer.cpp: the alpha is the trapezoid of the key value,
 // RGB passes through. KeyerGpuParams there mirrors the parameter block: flags, the three key
 // weights and the ordered range A, B, C, D, with one rounding per statement as the CPU computes.
+// Flag bits 1 and 2 hold the key channel plus one; 0 keys by the weights.
 import pixelwrap;
 
 static const uint kKeyerLumaMax = 1u;
+static const uint kKeyerChannelShift = 1u;
+static const uint kKeyerChannelMask = 3u;
 
 struct KeyerOp : IPixelOp
 {
@@ -20,6 +23,13 @@ struct KeyerOp : IPixelOp
 
     float keyValue(float3 rgb)
     {
+        uint channel = (flags >> kKeyerChannelShift) & kKeyerChannelMask;
+        if (channel == 1u)
+            return rgb.r;
+        if (channel == 2u)
+            return rgb.g;
+        if (channel == 3u)
+            return rgb.b;
         if ((flags & kKeyerLumaMax) != 0u)
             return max(max(rgb.r, rgb.g), rgb.b);
         precise float s = weights.x * rgb.r;

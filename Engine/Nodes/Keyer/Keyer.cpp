@@ -26,7 +26,6 @@
 #include "Keyer.h"
 
 #include <algorithm>
-#include <cfloat>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -40,6 +39,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Keyer/KeyerMatte.h"
+#include "Engine/Nodes/Keyer/KeyerRange.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 
@@ -54,7 +54,8 @@ namespace {
 // after it are ColorMath::luminanceMathOptions(), shifted by one.
 const int kLuminanceMathWorkingSpace = 0;
 
-const double kRangeDefaults[4] = { 0., 0.1, 0.9, 1. };
+// Outer low, inner low, centre, inner high and outer high: the points 0, 0.1, 0.9 and 1.
+const double kRangeDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.1, 0.4, 0.5, 0.4, 0.1 };
 
 #ifdef NATRON_HAVE_GPU
 // The parameter block of KeyerOp in keyer.slang, which has no padding between members.
@@ -66,6 +67,8 @@ struct KeyerGpuParams {
 static_assert(sizeof(KeyerGpuParams) == 8 * 4, "must match KeyerOp in keyer.slang");
 
 const uint32_t kKeyerGpuLumaMax = 1u;
+// Bits 1 and 2 hold the key channel plus one, 0 keying by the weights.
+const uint32_t kKeyerGpuChannelShift = 1u;
 #endif
 
 void
@@ -112,27 +115,13 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
         knob->setHintToolTip(EffectInstance::tr("What the key value is computed from.").toStdString());
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("luminance", "Luminance", EffectInstance::tr("The luminance of RGB, by the Luminance Math formula.").toStdString()));
-        options.push_back(ChoiceOption("color", "Color", EffectInstance::tr("The dot product of RGB with the key colour over the sum of the key colour's components: 1 at a pure primary key colour.").toStdString()));
+        options.push_back(ChoiceOption("red", "Red", EffectInstance::tr("The red channel.").toStdString()));
+        options.push_back(ChoiceOption("green", "Green", EffectInstance::tr("The green channel.").toStdString()));
+        options.push_back(ChoiceOption("blue", "Blue", EffectInstance::tr("The blue channel.").toStdString()));
         knob->populateChoices(options);
         knob->setDefaultValue((int)eKeySourceLuminance);
         page->addKnob(knob);
         keySource = knob;
-    }
-    {
-        KnobColorPtr knob = AppManager::createKnob<KnobColor>(knobHolder, EffectInstance::tr("Key Color").toStdString(), 3);
-        knob->setName(kKeyerParamKeyColor);
-        knob->setHintToolTip(EffectInstance::tr("The colour Color mode projects RGB on. A key colour whose components sum to 0 keys by luminance.").toStdString());
-        for (int i = 0; i < 3; ++i) {
-            knob->setDefaultValue(0., i);
-            knob->setMinimum(-DBL_MAX, i);
-            knob->setMaximum(DBL_MAX, i);
-            knob->setDisplayMinimum(0., i);
-            knob->setDisplayMaximum(1., i);
-        }
-        // Hidden under the default Luminance key source; refreshKeySourceDependents() shows it for Colour.
-        knob->setSecret(true);
-        page->addKnob(knob);
-        keyColor = knob;
     }
     {
         KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(knobHolder, std::string(kColorMathParamLuminanceMathLabel));
@@ -148,21 +137,12 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
         luminanceMath = knob;
     }
     {
-        KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(knobHolder, EffectInstance::tr("Range").toStdString(), 4);
-        knob->setName(kKeyerParamRange);
-        knob->setHintToolTip(EffectInstance::tr("The trapezoid from the key value to alpha: 0 up to A, rising to 1 at B, 1 up to C, falling to 0 at D. "
-                                                "Moving one value pushes its neighbours so that A <= B <= C <= D.")
-                                 .toStdString());
-        const char* const names[4] = { "A", "B", "C", "D" };
-        for (int i = 0; i < 4; ++i) {
-            knob->setDimensionName(i, names[i]);
-            knob->setDefaultValue(kRangeDefaults[i], i);
-            knob->setMinimum(-DBL_MAX, i);
-            knob->setMaximum(DBL_MAX, i);
-            knob->setDisplayMinimum(0., i);
-            knob->setDisplayMaximum(1., i);
-        }
-        page->addKnob(knob);
+        KnobDoublePtr knob = createKeyerRangeKnob(knobHolder, page, kKeyerParamRange, EffectInstance::tr("Range").toStdString(),
+                                                  EffectInstance::tr("The trapezoid from the key value to alpha.").toStdString() + "\n" + keyerRangeOffsetsHint(),
+                                                  kRangeDefaults);
+        // The key value is not a colour component, so the strip has no source colour, model,
+        // enable or smooth knob.
+        knob->setRangeWidget(KnobDouble::eRangeWidgetRoleLuma, KnobColorPtr(), KnobChoicePtr(), KnobBoolPtr());
         range = knob;
     }
 }
@@ -172,22 +152,13 @@ KeyerOp::bake(const KnobReader& reader) const
 {
     Params p;
     const int source = reader.value(keySource);
-
-    p.keySource = (source == (int)eKeySourceColor) ? eKeySourceColor : eKeySourceLuminance;
-
-    double w[3] = { 0., 0., 0. };
-    bool weighted = false;
-    if (p.keySource == eKeySourceColor) {
-        const double key[3] = { reader.value(keyColor, 0), reader.value(keyColor, 1), reader.value(keyColor, 2) };
-        const double sum = key[0] + key[1] + key[2];
-        if (sum != 0.) {
-            for (int i = 0; i < 3; ++i) {
-                w[i] = key[i] / sum;
-            }
-            weighted = true;
-        }
-    }
-    if (!weighted) {
+    if ((source >= (int)eKeySourceRed) && (source <= (int)eKeySourceBlue)) {
+        p.keySource = (KeySourceEnum)source;
+        p.channel = source - (int)eKeySourceRed;
+        p.weights[p.channel] = 1.f;
+    } else {
+        p.keySource = eKeySourceLuminance;
+        double w[3] = { 0., 0., 0. };
         const int math = reader.value(luminanceMath) - 1;
         if ((math < (int)ColorMath::eLuminanceMathRec709) || (math > (int)ColorMath::eLuminanceMathMax)) {
             workingLuma(holder, w);
@@ -199,16 +170,11 @@ KeyerOp::bake(const KnobReader& reader) const
             w[1] = ColorMath::luminance(e, 0., 1., 0.);
             w[2] = ColorMath::luminance(e, 0., 0., 1.);
         }
+        for (int i = 0; i < 3; ++i) {
+            p.weights[i] = (float)w[i];
+        }
     }
-    for (int i = 0; i < 3; ++i) {
-        p.weights[i] = (float)w[i];
-    }
-
-    const KeyerTrapezoid t = sortedTrapezoid(reader.value(range, 0), reader.value(range, 1), reader.value(range, 2), reader.value(range, 3));
-    p.range[0] = (float)t.a;
-    p.range[1] = (float)t.b;
-    p.range[2] = (float)t.c;
-    p.range[3] = (float)t.d;
+    keyerRangePoints(reader, range, p.range);
 
     return p;
 }
@@ -226,6 +192,9 @@ float
 KeyerOp::keyValue(const Params& params,
                   const float* rgb)
 {
+    if (params.channel >= 0) {
+        return rgb[params.channel];
+    }
     if (params.lumaMax) {
         return (std::max)((std::max)(rgb[0], rgb[1]), rgb[2]);
     }
@@ -275,6 +244,9 @@ KeyerOp::gpu(const Params& params) const
 #ifdef NATRON_HAVE_GPU
     KeyerGpuParams p = {};
     p.flags = params.lumaMax ? kKeyerGpuLumaMax : 0u;
+    if (params.channel >= 0) {
+        p.flags |= (uint32_t)(params.channel + 1) << kKeyerGpuChannelShift;
+    }
     for (int i = 0; i < 3; ++i) {
         p.weights[i] = params.weights[i];
     }
@@ -294,11 +266,7 @@ KeyerOp::gpu(const Params& params) const
 
 Keyer::Keyer(NodePtr node)
     : ImageNode<KeyerOp>(node)
-    , _orderingRange(false)
 {
-    for (int i = 0; i < 4; ++i) {
-        _lastRange[i] = kRangeDefaults[i];
-    }
 }
 
 Keyer::~Keyer()
@@ -329,62 +297,13 @@ Keyer::refreshKeySourceDependents()
         return;
     }
     const int index = source->getValue();
-    const bool color = (index == (int)KeyerOp::eKeySourceColor);
-    KnobColorPtr key = o.keyColor.lock();
-    if (key) {
-        key->setSecret(!color);
+    KnobChoicePtr math = o.luminanceMath.lock();
+    if (math) {
+        math->setSecret(index != (int)KeyerOp::eKeySourceLuminance);
     }
     KnobStringPtr label = o.subLabel.lock();
     if (label) {
         label->setValue(source->getEntry(index).label);
-    }
-}
-
-void
-Keyer::orderRange(double time,
-                  ViewSpec view)
-{
-    KnobDoublePtr knob = op().range.lock();
-
-    if (!knob) {
-        return;
-    }
-    Q_UNUSED(view);
-    double values[4];
-    int changed = 0;
-    int edited = -1;
-    for (int i = 0; i < 4; ++i) {
-        values[i] = knob->getValueAtTime(time, i);
-        if (values[i] != _lastRange[i]) {
-            ++changed;
-            edited = i;
-        }
-    }
-    double ordered[4] = { values[0], values[1], values[2], values[3] };
-    if (changed == 1) {
-        pushTrapezoidNeighbours(ordered, edited);
-    } else {
-        const KeyerTrapezoid t = sortedTrapezoid(values[0], values[1], values[2], values[3]);
-        ordered[0] = t.a;
-        ordered[1] = t.b;
-        ordered[2] = t.c;
-        ordered[3] = t.d;
-    }
-    // Setting a value calls knobChanged() again, which only records it.
-    _orderingRange = true;
-    for (int i = 0; i < 4; ++i) {
-        if (ordered[i] == values[i]) {
-            continue;
-        }
-        if (knob->isAnimated(i)) {
-            knob->setValueAtTime(time, ordered[i], ViewSpec::all(), i);
-        } else {
-            knob->setValue(ordered[i], ViewSpec::all(), i);
-        }
-    }
-    _orderingRange = false;
-    for (int i = 0; i < 4; ++i) {
-        _lastRange[i] = ordered[i];
     }
 }
 
@@ -395,46 +314,20 @@ Keyer::knobChanged(KnobI* k,
                    double time,
                    bool originatedFromMainThread)
 {
-    const KeyerOp& o = op();
-    KnobChoicePtr source = o.keySource.lock();
-    KnobDoublePtr rangeKnob = o.range.lock();
+    KnobChoicePtr source = op().keySource.lock();
 
     if (source && (k == source.get())) {
         refreshKeySourceDependents();
 
         return true;
     }
-    if (!rangeKnob || (k != rangeKnob.get())) {
-        return ImageNode<KeyerOp>::knobChanged(k, reason, view, time, originatedFromMainThread);
-    }
-    if (_orderingRange) {
-        return true;
-    }
-    AppInstancePtr app = getApp();
-    const bool loading = app && app->getProject() && app->getProject()->isLoadingProject();
-    if (loading || (reason == eValueChangedReasonTimeChanged) || (reason == eValueChangedReasonSlaveRefresh) || (reason == eValueChangedReasonRestoreDefault)) {
-        // The values are what was saved, animated or restored; the render orders them.
-        for (int i = 0; i < 4; ++i) {
-            _lastRange[i] = rangeKnob->getValueAtTime(time, i);
-        }
 
-        return true;
-    }
-    orderRange(time, view);
-
-    return true;
+    return ImageNode<KeyerOp>::knobChanged(k, reason, view, time, originatedFromMainThread);
 }
 
 void
 Keyer::onKnobsLoaded()
 {
-    KnobDoublePtr rangeKnob = op().range.lock();
-
-    if (rangeKnob) {
-        for (int i = 0; i < 4; ++i) {
-            _lastRange[i] = rangeKnob->getValueAtTime(getCurrentTime(), i);
-        }
-    }
     refreshKeySourceDependents();
 }
 

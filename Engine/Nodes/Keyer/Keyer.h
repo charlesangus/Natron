@@ -39,7 +39,6 @@
 #define PLUGIN_MAJOR_NATRON_KEYER 3
 
 #define kKeyerParamKeySource "keySource"
-#define kKeyerParamKeyColor "keyColor"
 #define kKeyerParamLuminanceMath "luminanceMath"
 #define kKeyerParamRange "range"
 
@@ -55,23 +54,28 @@ inline constexpr InputSpec kKeyerInputs[] = {
 };
 
 /**
- * @brief A luminance or colour keyer that outputs an alpha only. The key value is the source's
- * luminance (luminanceMath, by default the working space's luma weights) or its projection on the
- * key colour, the dot product of RGB with keyColor over keyColor's component sum. The alpha is
- * the trapezoid of that value over the four range values A <= B <= C <= D: 0 up to A, rising to 1
- * at B, 1 up to C and falling to 0 at D. RGB passes through untouched and nothing is
- * premultiplied; the host mask and mix blend the new alpha with the source's. The output is RGBA
- * whatever the source.
+ * @brief A luminance or single-channel keyer that outputs an alpha only. The key value is the
+ * source's luminance (luminanceMath, by default the working space's luma weights) or one of its
+ * red, green and blue channels. The alpha is the trapezoid of that value over the range knob's
+ * points A <= B <= C <= D (keyerRangePoints()): 0 up to A, rising to 1 at B, 1 up to C and
+ * falling to 0 at D. The range knob holds a centre and four offsets and is shown as the trapezoid
+ * widget HSVKeyer's ranges use. RGB passes through untouched and nothing is premultiplied; the
+ * host mask and mix blend the new alpha with the source's. The output is RGBA whatever the source.
  **/
 struct KeyerOp {
     enum KeySourceEnum {
         eKeySourceLuminance = 0,
-        eKeySourceColor
+        eKeySourceRed,
+        eKeySourceGreen,
+        eKeySourceBlue
     };
 
-    // The trapezoid is ordered and every weight is a float, as the GPU kernel takes them.
+    // The trapezoid is ordered and every weight is a float, as the GPU kernel takes them. A
+    // channel source reads its channel alone, so an infinite value in another channel cannot
+    // turn the key into NaN through a zero weight.
     struct Params {
         KeySourceEnum keySource = eKeySourceLuminance;
+        int channel = -1;
         bool lumaMax = false;
         float weights[3] = { 0.f, 0.f, 0.f };
         float range[4] = { 0.f, 0.1f, 0.9f, 1.f };
@@ -80,17 +84,16 @@ struct KeyerOp {
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_KEYER,
         .label = "Keyer",
-        .description = "Pull an alpha from the luminance of the source or from its projection on a key colour.\n"
+        .description = "Pull an alpha from the luminance of the source or from one of its red, green and blue channels.\n"
                        "\n"
-                       "The alpha is a trapezoid over the key value, set by the four range values A, B, C and D: "
-                       "0 up to A, rising linearly to 1 at B, 1 from B to C, falling linearly to 0 at D and 0 above D. "
-                       "Equal neighbours make a hard edge. Moving one value pushes its neighbours so that "
-                       "A <= B <= C <= D always holds.\n"
+                       "The alpha is a trapezoid over the key value, drawn and edited on the Range strip: "
+                       "0 below the outer low point, rising linearly to 1 at the inner low point, 1 up to the inner high point, "
+                       "falling linearly to 0 at the outer high point and 0 above it. "
+                       "The range is a centre and four offsets: the inner offsets set the plateau around the centre and "
+                       "the outer offsets the ramps outside it, so the points are always in order. An outer offset of 0 is a hard edge.\n"
                        "\n"
-                       "In Luminance mode the key value is the luminance of RGB; by default it uses the luma weights "
-                       "of the project's working space. In Color mode it is the dot product of RGB with the key colour "
-                       "divided by the sum of the key colour's components, so the key colour itself keys at its own "
-                       "squared norm over that sum, 1 for a pure primary.\n"
+                       "With the Luminance key source the key value is the luminance of RGB; by default it uses the luma weights "
+                       "of the project's working space. With Red, Green or Blue it is that channel's value.\n"
                        "\n"
                        "RGB passes through untouched and is not premultiplied. Values above 1 and below 0 are keyed "
                        "as they are, with no clamp.",
@@ -122,7 +125,6 @@ struct KeyerOp {
     KnobHolder* holder = nullptr;
     KnobStringWPtr subLabel;
     KnobChoiceWPtr keySource;
-    KnobColorWPtr keyColor;
     KnobChoiceWPtr luminanceMath;
     KnobDoubleWPtr range;
 };
@@ -171,14 +173,6 @@ private:
 
     // Shows the knobs the key source uses and writes it into the sublabel.
     void refreshKeySourceDependents();
-
-    // Restores A <= B <= C <= D at time after one range value was set, by pushing its neighbours.
-    void orderRange(double time,
-                    ViewSpec view);
-
-    // The range as last ordered, to tell which value an edit moved.
-    double _lastRange[4];
-    bool _orderingRange;
 };
 
 NATRON_NAMESPACE_EXIT

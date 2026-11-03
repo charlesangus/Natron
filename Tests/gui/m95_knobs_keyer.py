@@ -9,7 +9,12 @@ Sections:
     knob (a native node has none at all; an OFX plug-in's are hidden and host-driven).
   - footer-order: panel shots of Grade, Saturation, ColorLookup and an OFX colour node, with Clamp
     Black and Clamp White side by side above Mix.
-  - keyer-matte: Keyer on a ramp and on a synthetic greenscreen, the matte shown in the viewer.
+  - keyer-widget: the Keyer's key sources are Luminance, Red, Green and Blue with no key colour,
+    and its Range is HSVKeyer's trapezoid strip (no Recentre or Smooth button); dragging the
+    plateau and then the outer low handle moves the range knob's centre and offset, and the matte
+    of a grey Constant in the viewer's alpha goes from white to black to grey.
+  - keyer-matte: Keyer on a ramp and on a synthetic greenscreen keyed on green, the alpha shown in
+    the viewer.
 
 Screenshots go to $NATRON_GUI_TEST_OUT. Usage: Tests/gui/run-gui-test.sh Tests/gui/m95_knobs_keyer.py
 """
@@ -39,6 +44,14 @@ PLUGIN_COLORLOOKUP = "net.sf.openfx.ColorLookupPlugin"
 # OFX colour plug-ins with clamp, premult, mask and mix; the first one registered is used.
 OFX_FOOTER_CANDIDATES = ("net.sf.openfx.HSVToolPlugin", "net.sf.openfx.ColorTransferPlugin", "net.sf.openfx.Quantize")
 PLUGIN_KEYER = "net.sf.openfx.KeyerPlugin"
+KEYER_SOURCES = ["luminance", "red", "green", "blue"]
+STRIP_PREFIX = "TrapezoidStrip_"
+STRIP_BUTTON_PREFIXES = {"Recentre": "TrapezoidRecentre_", "Smooth": "TrapezoidSmooth_", "Reset Zoom": "TrapezoidResetZoom_"}
+# The range knob's dimensions: outer low, inner low, centre, inner high, outer high.
+RANGE_DEFAULTS = [0.1, 0.4, 0.5, 0.4, 0.1]
+CENTRE_DIM = 2
+STRIP_TOLERANCE = 0.03
+KEYED_GREY = 0.3
 OVERLAY_KNOBS = ("interactive", "hidpi", "transformInteractive", "rampInteractive", "RotoTransformInteractive")
 UNTONED_VIEW = "Un-tone-mapped"
 
@@ -47,7 +60,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, Q_ARG
     from PySide6.QtGui import QAction, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QMainWindow, QWidget
 
     import guitest as gt
     from guitest import check, report
@@ -146,6 +159,23 @@ try:
                 return True
         return False
 
+    def display_channels(name):
+        """Picks name ("RGB", "Alpha"...) in the viewer's channels menu, as a user would:
+        PyViewer.setChannels() looks entries up as "A", "R"... while the menu labels them "Alpha"."""
+        for combo in gt.widgets_of("ComboBox") + gt.widgets_of("ChannelsComboBox"):
+            try:
+                if "Display Channels:" not in (combo.toolTip() or ""):
+                    continue
+                items = [str(i) for i in (combo.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            if name in items:
+                hold(combo)
+                QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, items.index(name)))
+                QApplication.processEvents()
+                return True
+        return False
+
     def viewer_crop():
         widget = visible_viewer()
         if widget is None:
@@ -211,6 +241,45 @@ try:
 
     def top_of(w):
         return w.mapToGlobal(w.rect().topLeft()).y()
+
+    # ---- keyer range helpers -------------------------------------------------------------
+
+    def range_points(rng):
+        """The points A, B, C and D the range knob keys with, offsets below 0 counting as 0."""
+        o = [max(0.0, rng.getValue(i)) for i in (0, 1, 3, 4)]
+        c = rng.getValue(CENTRE_DIM)
+        return [c - o[1] - o[0], c - o[1], c + o[2], c + o[2] + o[3]]
+
+    def set_points(rng, a, b, c, d):
+        """Sets the range knob to the trapezoid a <= b <= c <= d, its centre midway along the plateau."""
+        centre = 0.5 * (b + c)
+        for i, v in enumerate((b - a, centre - b, centre, c - centre, d - c)):
+            rng.setValue(v, i)
+
+    def strip_domain(strip):
+        strip.update()
+        strip.repaint()
+        QApplication.processEvents()
+        return float(strip.property("domainLow")), float(strip.property("domainHigh"))
+
+    def strip_x(strip, value):
+        """The strip's x for value, as TrapezoidStrip::valueToX() maps it (handle radius 4)."""
+        low, high = strip_domain(strip)
+        return 4.0 + (value - low) / (high - low) * max(1.0, strip.width() - 8.0)
+
+    def drag_strip(strip, from_value, to_value):
+        y = strip.height() / 2.0
+        start = QPointF(strip_x(strip, from_value), y)
+        end = QPointF(strip_x(strip, to_value), y)
+        send_mouse(strip, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        for i in range(1, DRAG_STEPS + 1):
+            send_mouse(strip, QEvent.MouseMove, start + (end - start) * (i / float(DRAG_STEPS)), Qt.NoButton, Qt.LeftButton)
+        send_mouse(strip, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+
+    def alpha_shown():
+        """The viewer's centre grey, 0 to 255, or -1 when the viewer shows none."""
+        c = gt.viewer_centre_colour()
+        return -1 if c is None else c[1]
 
     # ---- sections ------------------------------------------------------------------------
 
@@ -347,10 +416,86 @@ try:
             destroy_all([node])
             yield ("sleep", 200)
 
+    def section_keyer_widget():
+        gt.section("keyer-widget")
+        keyer = create(PLUGIN_KEYER, 800, 200)
+        constant = create(PLUGIN_CONSTANT, 800, 0)
+        param(constant, "color").set(KEYED_GREY, KEYED_GREY, KEYED_GREY, 1.0)
+        connect(keyer, 0, constant)
+
+        source = param(keyer, "keySource")
+        check(list(source.getOptions()) == KEYER_SOURCES, "the Keyer's key sources are %s (got %r)" % (KEYER_SOURCES, list(source.getOptions())))
+        check(keyer.getParam("keyColor") is None, "the Keyer has no key colour")
+        rng = param(keyer, "range")
+        check(rng.getNumDimensions() == 5, "the Keyer's range has a centre and four offsets (%d dimensions)" % rng.getNumDimensions())
+        check(all(abs(rng.getValue(i) - v) < 1e-9 for i, v in enumerate(RANGE_DEFAULTS)), "the Keyer's range defaults to %s" % RANGE_DEFAULTS)
+
+        show(keyer)
+        check(display_channels("Alpha"), "the viewer shows the alpha")
+        fit_viewer()
+        open_panel(keyer)
+        ok = yield ("until", lambda: panel_of(keyer) is not None, POLL_TIMEOUT_S)
+        check(ok, "the Keyer's panel opens")
+        if not ok:
+            display_channels("RGB")
+            destroy_all([keyer, constant])
+            return
+        yield ("sleep", SETTLE_MS * 2)
+        panel = panel_of(keyer)
+        strips = [w for w in panel.findChildren(QWidget, STRIP_PREFIX + "range") if w.isVisible()]
+        check(len(strips) == 1, "the Keyer's range shows one trapezoid strip (%d)" % len(strips))
+        for name, prefix in STRIP_BUTTON_PREFIXES.items():
+            shown = [w for w in panel.findChildren(QAbstractButton, prefix + "range") if w.isVisible()]
+            if name == "Reset Zoom":
+                check(len(shown) == 1, "the Keyer's range row has a %s button" % name)
+            else:
+                check(not shown, "the Keyer's range row has no %s button" % name)
+        panel_crop("keyer_panel", panel)
+        if len(strips) != 1:
+            display_channels("RGB")
+            destroy_all([keyer, constant])
+            return
+        strip = hold(strips[0])
+
+        check(alpha_shown() > 220, "the grey sits on the default plateau: the alpha is white (%d)" % alpha_shown())
+
+        # The plateau dragged from 0.5 to 0.9 puts A at 0.4, above the grey: the alpha goes black.
+        drag_strip(strip, 0.5, 0.9)
+        yield ("sleep", SETTLE_MS * 3)
+        centre = rng.getValue(CENTRE_DIM)
+        offsets = [rng.getValue(i) for i in (0, 1, 3, 4)]
+        check(abs(centre - 0.9) < STRIP_TOLERANCE, "dragging the plateau moves the centre to 0.9 (%.3f)" % centre)
+        check(all(abs(o - d) < 1e-9 for o, d in zip(offsets, (0.1, 0.4, 0.4, 0.1))), "dragging the plateau keeps the offsets (%s)" % offsets)
+        a, b, c, d = range_points(rng)
+        check(a <= b <= c <= d, "the points stay in order (%.3f %.3f %.3f %.3f)" % (a, b, c, d))
+        check(alpha_shown() < 30, "the grey is below A after the drag: the alpha is black (%d)" % alpha_shown())
+        gt.shot("keyer_widget_plateau.png")
+
+        # The outer low handle dragged down to 0.2 puts the grey on the rising ramp: the alpha is grey.
+        drag_strip(strip, a, 0.2)
+        yield ("sleep", SETTLE_MS * 3)
+        a2, b2, c2, d2 = range_points(rng)
+        check(abs(a2 - 0.2) < STRIP_TOLERANCE, "dragging the outer low handle moves A to 0.2 (%.3f)" % a2)
+        check(abs(b2 - b) < 1e-9 and abs(c2 - c) < 1e-9 and abs(d2 - d) < 1e-9, "dragging the outer low handle leaves B, C and D (%.3f %.3f %.3f)" % (b2, c2, d2))
+        grey = alpha_shown()
+        check(30 < grey < 220, "the grey is on the ramp: the alpha is grey (%d)" % grey)
+        gt.shot("keyer_widget_outer_low.png")
+
+        # The strip follows the knob.
+        set_points(rng, 0.0, 0.1, 0.9, 1.0)
+        yield ("sleep", SETTLE_MS * 3)
+        check(alpha_shown() > 220, "setting the knob back to the default trapezoid makes the alpha white again (%d)" % alpha_shown())
+        panel_crop("keyer_panel_reset", panel)
+
+        display_channels("RGB")
+        gt.close_all_panels()
+        destroy_all([keyer, constant])
+
     def section_keyer_matte():
         gt.section("keyer-matte")
         check(select_untoned_view(), "the viewer's %s view is selected" % UNTONED_VIEW)
         keyer = create(PLUGIN_KEYER, 800, 200)
+        check(display_channels("Alpha"), "the viewer shows the alpha")
         if PLUGIN_RAMP in gt._plugin_ids:
             ramp = create(PLUGIN_RAMP, 800, 0)
             connect(keyer, 0, ramp)
@@ -370,15 +515,13 @@ try:
         param(checker, "color2").set(0.8, 0.55, 0.45, 1.0)
         param(checker, "color3").set(0.1, 0.7, 0.15, 1.0)
         connect(keyer, 0, checker)
-        # getOptions() returns the option IDs. A pure green key colour gives the green boxes 0.7 and
-        # the skin boxes 0.55, so a matte rising from 0.6 to 0.65 keeps only the green.
+        # getOptions() returns the option IDs. Keyed on green, the green boxes read 0.7 and the skin
+        # boxes 0.55, so a matte rising from 0.6 to 0.65 keeps only the green.
         source = param(keyer, "keySource")
-        source.setValue(source.getOptions().index("color"))
-        param(keyer, "keyColor").set(0.0, 1.0, 0.0, 1.0) if param(keyer, "keyColor").getNumDimensions() == 4 else param(keyer, "keyColor").set(0.0, 1.0, 0.0)
+        source.setValue(source.getOptions().index("green"))
         matte_range = param(keyer, "range")
-        for i, v in enumerate((0.6, 0.65, 1e6, 1e6)):
-            matte_range.setValue(v, i)
-        check([round(matte_range.getValue(i), 3) for i in range(4)] == [0.6, 0.65, 1e6, 1e6], "the Keyer range reads back as set")
+        set_points(matte_range, 0.6, 0.65, 2.0, 2.0)
+        check([round(v, 3) for v in range_points(matte_range)] == [0.6, 0.65, 2.0, 2.0], "the Keyer range reads back as set")
         show(keyer)
         fit_viewer()
         yield ("sleep", SETTLE_MS * 3)
@@ -386,6 +529,7 @@ try:
         gt.shot("keyer_greenscreen.png")
         check(crop is not None, "the viewer shows the keyed greenscreen")
         report("NOTE keyer_greenscreen.png: the matte (alpha only) should separate the green boxes from the skin-tone boxes")
+        display_channels("RGB")
         destroy_all([n for n in (keyer, ramp, checker) if n is not None])
 
     def steps():
@@ -397,7 +541,7 @@ try:
         yield ("sleep", 1000)
         check(select_untoned_view(), "the viewer's %s view is selected" % UNTONED_VIEW)
         for name, runner in (("toggle-sync", section_toggle_sync), ("transform-drag", section_transform_drag), ("no-overlay-knobs", section_no_overlay_knobs),
-                             ("footer-order", section_footer_order), ("keyer-matte", section_keyer_matte)):
+                             ("footer-order", section_footer_order), ("keyer-widget", section_keyer_widget), ("keyer-matte", section_keyer_matte)):
             report("NOTE running section " + name)
             try:
                 yield from runner()

@@ -22,8 +22,6 @@
 
 #include "Global/Macros.h"
 
-#include <algorithm>
-
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -93,43 +91,6 @@ trapezoidMatteFloat(float k,
     const float den = range[3] - range[2];
 
     return num / den;
-}
-
-/**
- * @brief The breakpoints in order: each one is raised to the one before it, so a trapezoid that
- * is already ordered comes back unchanged.
- **/
-inline KeyerTrapezoid
-sortedTrapezoid(double a,
-                double b,
-                double c,
-                double d)
-{
-    KeyerTrapezoid t;
-
-    t.a = a;
-    t.b = std::max(b, t.a);
-    t.c = std::max(c, t.b);
-    t.d = std::max(d, t.c);
-
-    return t;
-}
-
-/**
- * @brief Restores a <= b <= c <= d after breakpoint `edited` (0 to 3) was set, by pushing its
- * neighbours: the ones after it are raised to it and the ones before it lowered to it, so the
- * edited value is kept as given.
- **/
-inline void
-pushTrapezoidNeighbours(double values[4],
-                        int edited)
-{
-    for (int i = edited + 1; i < 4; ++i) {
-        values[i] = std::max(values[i], values[i - 1]);
-    }
-    for (int i = edited - 1; i >= 0; --i) {
-        values[i] = std::min(values[i], values[i + 1]);
-    }
 }
 
 NATRON_NAMESPACE_EXIT

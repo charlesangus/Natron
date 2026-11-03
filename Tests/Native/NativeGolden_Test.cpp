@@ -227,10 +227,23 @@ rotateAndScale(const GoldenGraph& g)
     return centerTransform(g) && num(g, kTransformNodeParamRotate, { 30. }) && num(g, kTransformNodeParamScale, { 0.5, 0.75 }) && choice(g, kResamplerParamFilterType, "cubic");
 }
 
-bool
-keyerColorMode(const GoldenGraph& g)
+// The Keyer's range as the trapezoid a <= b <= c <= d: outer low, inner low, centre, inner high
+// and outer high, the centre midway along the plateau.
+std::vector<double>
+keyerRange(double a,
+           double b,
+           double c,
+           double d)
 {
-    return choice(g, kKeyerParamKeySource, "color") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 }) && num(g, kKeyerParamRange, { 0.1, 0.3, 0.7, 1.2 });
+    const double centre = 0.5 * (b + c);
+
+    return { b - a, centre - b, centre, c - centre, d - c };
+}
+
+bool
+keyerGreen(const GoldenGraph& g)
+{
+    return choice(g, kKeyerParamKeySource, "green") && num(g, kKeyerParamRange, keyerRange(0.1, 0.3, 0.7, 1.2));
 }
 
 bool
@@ -983,11 +996,11 @@ TEST_F(NativeGoldenTest, Keyer)
     spec.maskInput = "Mask";
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
-    v.push_back(variant("color", keyerColorMode));
+    v.push_back(variant("green", keyerGreen));
     v.push_back(variant("hardedges", [](const GoldenGraph& g) {
-        return choice(g, kKeyerParamLuminanceMath, "rec709") && num(g, kKeyerParamRange, { 0.2, 0.2, 0.6, 0.6 });
+        return choice(g, kKeyerParamLuminanceMath, "rec709") && num(g, kKeyerParamRange, keyerRange(0.2, 0.2, 0.6, 0.6));
     }));
-    v.push_back(maskVariant("mask", keyerColorMode));
+    v.push_back(maskVariant("mask", keyerGreen));
     run(spec, v);
 }
 

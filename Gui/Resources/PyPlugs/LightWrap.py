@@ -1058,13 +1058,16 @@ def createInstance(app,group):
     lastNode.setColor(0, 1, 0)
     groupKeyer1 = lastNode
 
-    # Alpha rises from the luma tolerance to 1 and stays at 1 over every highlight.
+    # Alpha rises from the luma tolerance to 1 and stays at 1 over every highlight. The range is
+    # outer low, inner low, centre, inner high and outer high: the plateau runs from the centre, 1,
+    # to 1000000, and the outer low offset, bound to the tolerance below, reaches down to it.
     param = lastNode.getParam("range")
     if param is not None:
-        param.setValue(0, 0)
-        param.setValue(1, 1)
-        param.setValue(1000000, 2)
-        param.setValue(1000000, 3)
+        param.setValue(1, 0)
+        param.setValue(0, 1)
+        param.setValue(1, 2)
+        param.setValue(999999, 3)
+        param.setValue(0, 4)
         del param
 
     del lastNode
@@ -1579,7 +1582,7 @@ def createInstance(app,group):
     groupDot4.connectInput(0, groupHighlightMerge)
 
     param = groupKeyer1.getParam("range")
-    param.setExpression("thisGroup.lumaTolerance.getValue()", False, 0)
+    param.setExpression("1 - thisGroup.lumaTolerance.getValue()", False, 0)
     del param
     param = groupBGBlur.getParam("size")
     group.getParam("bgblur").setAsAlias(param)

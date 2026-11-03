@@ -188,6 +188,7 @@ enum PixmapEnum {
     NATRON_PIXMAP_TRANSFORM_GROUPING,
     NATRON_PIXMAP_DEEP_GROUPING,
     NATRON_PIXMAP_METADATA_GROUPING,
+    NATRON_PIXMAP_RFV_GROUPING,
     NATRON_PIXMAP_FILTER_GROUPING,
     NATRON_PIXMAP_MULTIVIEW_GROUPING,
     NATRON_PIXMAP_TOOLSETS_GROUPING,
@@ -596,8 +597,7 @@ enum OpenGLRequirementsTypeEnum
     eOpenGLRequirementsTypeRendering
 };
 
-enum DopeSheetItemType
-{
+enum DopeSheetItemType {
     eDopeSheetItemTypeCommon = 1001,
 
     // Range-based nodes
@@ -605,11 +605,16 @@ enum DopeSheetItemType
     eDopeSheetItemTypeRetime,
     eDopeSheetItemTypeTimeOffset,
     eDopeSheetItemTypeFrameRange,
+    eDopeSheetItemTypeAppendClip,
     eDopeSheetItemTypeGroup,
 
     // Others
     eDopeSheetItemTypeKnobRoot,
-    eDopeSheetItemTypeKnobDim
+    eDopeSheetItemTypeKnobDim,
+
+    // A curve host's item (Bezier or stroke), and a Bezier's shape keys under it
+    eDopeSheetItemTypeRotoItem,
+    eDopeSheetItemTypeShape
 };
 
 enum CreateNodeReason

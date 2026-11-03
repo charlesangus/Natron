@@ -253,9 +253,10 @@ protected:
             connectNodes(input, node, 0, true);
         }
         // These tests compare against warps that move the whole image, which the format
-        // boundary would pin.
+        // boundary would pin and Crop To Format would clip.
         if (node && (std::string(id) == PLUGINID_NATRON_SPLINEWARP)) {
             EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+            EXPECT_TRUE(setKnobValues(node, kSplineWarpParamCropToFormat, { 0. }));
         }
 
         return node;

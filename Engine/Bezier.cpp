@@ -2987,8 +2987,11 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
 {
     assert((points && !pointsSingleList) || (!points && pointsSingleList));
     assert( useFeatherPoints() );
-    QMutexLocker l(&itemMutex);
+    // A context's composeItemTransform may lock this item's itemMutex, which is not recursive.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
 
+    QMutexLocker l(&itemMutex);
 
     if ( _imp->points.empty() ) {
         return;
@@ -3002,9 +3005,6 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
     if ( nextCp != _imp->points.end() ) {
         ++nextCp;
     }
-
-    Transform::Matrix3x3 transform;
-    getTransformAtTime(time, &transform);
 
     for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end();
          ++it) {

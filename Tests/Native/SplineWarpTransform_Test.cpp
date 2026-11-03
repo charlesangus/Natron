@@ -373,12 +373,13 @@ TEST_F(SplineWarpTransformTest, ALinkedCurveFollowsItsSourceAndCyclesAreRefused)
     EXPECT_THROW(ctx->linkTransform(c, layer), std::invalid_argument);
 
     // Unlinking keeps the curve where it was.
+    const Point aLinked = positionAt(a, 0.);
     ctx->unlinkTransform(b);
     ctx->unlinkTransform(a);
     EXPECT_EQ(RotoItemPtr(), ctx->getTransformLink(a));
     const Point aUnlinked = positionAt(a, 0.);
-    EXPECT_NEAR(aAfter.x, aUnlinked.x, 1e-6);
-    EXPECT_NEAR(aAfter.y, aUnlinked.y, 1e-6);
+    EXPECT_NEAR(aLinked.x, aUnlinked.x, 1e-6);
+    EXPECT_NEAR(aLinked.y, aUnlinked.y, 1e-6);
 
     // Removing the target drops the link.
     ctx->linkTransform(a, b);

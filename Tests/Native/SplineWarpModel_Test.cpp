@@ -249,10 +249,10 @@ TEST_F(SplineWarpModelTest, ACookieCutterMustBeClosedAndMayBeLinked)
 
     // A deactivated cookie cutter keeps its flag but is not active.
     ctx->setCookieCutter(b, true);
-    b->setActivated(false, kTime);
+    b->setGloballyActivated(false, false);
     EXPECT_TRUE(ctx->isCookieCutter(b));
     EXPECT_FALSE(ctx->hasActiveCookieCutter(kTime));
-    b->setActivated(true, kTime);
+    b->setGloballyActivated(true, false);
     EXPECT_TRUE(ctx->hasActiveCookieCutter(kTime));
 
     // Opening a cookie cutter clears its flag; its link stays.

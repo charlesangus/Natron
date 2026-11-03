@@ -398,12 +398,12 @@ TEST_F(SplineWarpSamplingTest, DeactivatedCurvesAndLayersAreIgnored)
     ASSERT_TRUE(bool(destination));
     EXPECT_GT(sampleSplineWarp(*_ctx, settings(10.)).linkPairCount, 0);
 
-    destination->setActivated(false, kTime);
+    destination->setGloballyActivated(false, false);
     const SplineWarpSampleSet curveOff = sampleSplineWarp(*_ctx, settings(10.));
     EXPECT_EQ(0, curveOff.linkPairCount);
     EXPECT_TRUE(curveOff.pairs.empty());
     EXPECT_TRUE(SplineWarpTps::solve(curveOff.pairs, 0.).isIdentity());
-    destination->setActivated(true, kTime);
+    destination->setGloballyActivated(true, false);
 
     RotoLayerPtr layer = _ctx->addLayer();
     ASSERT_TRUE(bool(layer));
@@ -421,7 +421,7 @@ TEST_F(SplineWarpSamplingTest, DeactivatedCurvesAndLayersAreIgnored)
     ASSERT_TRUE(bool(boundary));
     _ctx->setBoundary(boundary, true);
     EXPECT_EQ(1u, sampleSplineWarp(*_ctx, settings(10.)).boundaries.size());
-    boundary->setActivated(false, kTime);
+    boundary->setGloballyActivated(false, false);
     const SplineWarpSampleSet boundaryOff = sampleSplineWarp(*_ctx, settings(10.));
     EXPECT_TRUE(boundaryOff.boundaries.empty());
     EXPECT_EQ((std::size_t)boundaryOff.linkPairCount, boundaryOff.pairs.size());

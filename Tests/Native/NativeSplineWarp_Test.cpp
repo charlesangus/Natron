@@ -834,11 +834,11 @@ TEST_F(NativeSplineWarpTest, CookieCutterWritesTheMaskAndLeavesTheSource)
     EXPECT_EQ(0u, wrong) << "the output is not the Source";
 
     // A deactivated cutter is ignored but keeps its role.
-    cutter->setActivated(false, kTime);
+    cutter->setGloballyActivated(false, false);
     EXPECT_TRUE(ctx->isCookieCutter(cutter));
     EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer));
     EXPECT_TRUE(isIdentityOnSource(warp));
-    cutter->setActivated(true, kTime);
+    cutter->setGloballyActivated(true, false);
     EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
 
     // Output Mask set to none writes nothing.

@@ -35,6 +35,8 @@
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/imaging/hd/sceneIndex.h>
+
 PXR_NAMESPACE_OPEN_SCOPE
 class UsdImagingGLEngine;
 PXR_NAMESPACE_CLOSE_SCOPE
@@ -58,12 +60,21 @@ bool isCycles(const std::string& renderer) WARN_UNUSED_RETURN;
  * Capsule and Plane) into meshes for every Cycles engine made after it. The engine hands a
  * delegate those prims as implicit-surface rprims, which Cycles does not take, and only Storm
  * registers the scene index that turns them into meshes, so Cycles would render none of them.
- * Polygonal meshes without vertex normals, the tessellated Cube and Plane among them, are
- * flagged flat-shaded, as USD has them faceted and the delegate would shade them smooth.
- * Must run before the engine is made: its render index builds its scene index chain once. Safe
+ * Polygonal meshes are then handed over as meshShadingSceneIndex() does. Must run before the engine is made: its render index builds its scene index chain once. Safe
  * to call any number of times from any thread.
  **/
 void registerSceneIndices();
+
+/**
+ * @brief input, with every polygonal mesh shaded by Cycles as USD shades it. The delegate shades a
+ * mesh smooth unless it is flagged flat-shaded, from its vertex normals or else from normals it
+ * averages at shared points, and ignores uniform and faceVarying normals. A mesh without normals,
+ * with uniform ones, or with faceVarying ones that are each face's own is flagged flat-shaded. One
+ * whose faceVarying normals agree at every corner of each point gets them as vertex normals; one
+ * with other faceVarying normals gets a point per face corner, its vertex and varying primvars
+ * spread to the corners and its normals made vertex normals.
+ **/
+PXR_NS::HdSceneIndexBaseRefPtr meshShadingSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& input) WARN_UNUSED_RETURN;
 
 /**
  * @brief What Cycles renders, for DelegateSupport::warningText(): its delegate's types and render

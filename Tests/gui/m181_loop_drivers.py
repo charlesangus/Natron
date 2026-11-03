@@ -68,8 +68,14 @@ try:
         return guis[0] if guis else None
 
     def node_graph_view():
-        views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
-        return views[0] if views else None
+        """The visible node graph, first bringing its tab to the front when the curve editor or
+        the dope sheet, which share its pane, hides it."""
+        views = gt.widgets_of("NodeGraph")
+        visible = [v for v in views if v.isVisible()]
+        if not visible and views:
+            make_tab_current(views[0], "node graph")
+            visible = [v for v in views if v.isVisible()]
+        return visible[0] if visible else None
 
     def panel_of(node):
         label = node.getLabel()

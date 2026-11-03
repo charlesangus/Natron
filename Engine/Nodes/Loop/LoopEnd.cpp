@@ -29,27 +29,39 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
 #include <set>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtCore/QThread>
+
+#include <SequenceParsing.h>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopFrameBake.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/PyRFV.h"
@@ -279,12 +291,18 @@ alphaIndexOf(const ImageLayerDesc& layer)
 
 LoopEnd::LoopEnd(NodePtr node)
     : NativeEffectBase(node)
+    , _frameCache(new LoopFrameCache(LoopFrameCache::defaultBudget()))
+    , _bakeGeneration(0)
+    , _baking(false)
+    , _bakeCancelled(false)
 {
     ++liveLoopEnds;
 }
 
 LoopEnd::~LoopEnd()
 {
+    cancelBake();
+    waitForBake();
     --liveLoopEnds;
 }
 
@@ -295,7 +313,7 @@ LoopEnd::anyExists()
 }
 
 std::shared_ptr<LoopEnd>
-LoopEnd::feedbackEndOf(const NodePtr& begin)
+LoopEnd::pairedEndOf(const NodePtr& begin)
 {
     if (!LoopBegin::isLoopBegin(begin)) {
         return std::shared_ptr<LoopEnd>();
@@ -309,12 +327,59 @@ LoopEnd::feedbackEndOf(const NodePtr& begin)
     if (!end) {
         return std::shared_ptr<LoopEnd>();
     }
-    const std::vector<NodePtr> begins = end->getFeedbackBegins();
+    const std::vector<NodePtr> begins = end->getLoopBegins();
     if (std::find(begins.begin(), begins.end(), begin) == begins.end()) {
         return std::shared_ptr<LoopEnd>();
     }
 
     return end;
+}
+
+std::shared_ptr<LoopEnd>
+LoopEnd::chainingPairedEndOf(const NodePtr& begin)
+{
+    std::shared_ptr<LoopEnd> end = pairedEndOf(begin);
+
+    return (end && end->feedsBack(begin)) ? end : std::shared_ptr<LoopEnd>();
+}
+
+std::shared_ptr<LoopEnd>
+LoopEnd::feedbackEndOf(const NodePtr& begin)
+{
+    std::shared_ptr<LoopEnd> end = chainingPairedEndOf(begin);
+
+    return (end && end->isFeedback()) ? end : std::shared_ptr<LoopEnd>();
+}
+
+std::shared_ptr<LoopEnd>
+LoopEnd::crossFrameEndOf(const NodePtr& begin)
+{
+    std::shared_ptr<LoopEnd> end = chainingPairedEndOf(begin);
+
+    return (end && end->isCrossFrame()) ? end : std::shared_ptr<LoopEnd>();
+}
+
+std::shared_ptr<LoopEnd>
+LoopEnd::chainingEndOf(const NodePtr& begin)
+{
+    std::shared_ptr<LoopEnd> end = chainingPairedEndOf(begin);
+
+    return (end && (end->isFeedback() || end->isCrossFrame())) ? end : std::shared_ptr<LoopEnd>();
+}
+
+void
+LoopEnd::refreshLoopsOf(const NodePtr& node)
+{
+    if (!node || !anyExists()) {
+        return;
+    }
+    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
+    for (const NodePtr& endNode : ends) {
+        LoopEnd* end = dynamic_cast<LoopEnd*>(endNode->getEffectInstance().get());
+        if (end) {
+            end->refreshKnobVisibility();
+        }
+    }
 }
 
 void
@@ -326,8 +391,8 @@ LoopEnd::appendFeedbackBeginsOf(const NodePtr& node,
     for (const NodePtr& endNode : ends) {
         const LoopEnd* end = dynamic_cast<const LoopEnd*>(endNode->getEffectInstance().get());
         if (end) {
-            const std::vector<NodePtr> feedbackBegins = end->getFeedbackBegins();
-            begins->insert(begins->end(), feedbackBegins.begin(), feedbackBegins.end());
+            const std::vector<NodePtr> chainingBegins = end->getChainingBegins();
+            begins->insert(begins->end(), chainingBegins.begin(), chainingBegins.end());
         }
     }
 }
@@ -339,6 +404,1071 @@ LoopEnd::isFeedback() const
 
     return mode && (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
 }
+
+bool
+LoopEnd::isCrossFrame() const
+{
+    KnobBoolPtr crossFrame = _crossFrame.lock();
+
+    return crossFrame && crossFrame->getValue();
+}
+
+int
+LoopEnd::crossFrameStart() const
+{
+    KnobIntPtr startFrame = _startFrame.lock();
+
+    return startFrame ? startFrame->getValue() : 1;
+}
+
+double
+LoopEnd::Resolved::offset(int k) const
+{
+    if (frames) {
+        const double at = frameFirst + (double)k * frameStep;
+        const double snap = kLoopEndFrameSnap * frameStep;
+        if ((k == count - 1) && (std::abs(at - frameLast) <= snap)) {
+            return frameLast;
+        }
+        // Samples meant to land on whole frames, the current one above all, land there exactly,
+        // so they share whole-frame renders and cache entries.
+        const double whole = std::round(at);
+
+        return (std::abs(at - whole) <= snap) ? whole : at;
+    }
+    if (subframes && (count > 1)) {
+        // The last iteration lands on the frame itself, exactly.
+        return (double)(k + 1 - count) / (double)count;
+    }
+
+    return 0.;
+}
+
+double
+LoopEnd::Resolved::loopFrame(double frameK,
+                             int k) const
+{
+    const double frame = frameK - offset(k);
+    if (!subframes && !fractionalFrames) {
+        return frame;
+    }
+    // Undoing a fraction of a frame can miss a whole frame by a rounding error, which would make
+    // the iterations derived from one another miss the times the loop set and the frame before.
+    const double whole = std::round(frame);
+
+    return (std::abs(frame - whole) <= 1e-9 * std::max(1., std::abs(whole))) ? whole : frame;
+}
+
+void
+LoopEnd::Resolved::iterationFrom(int i,
+                                 double frameI,
+                                 double timeI,
+                                 int j,
+                                 double* frameJ,
+                                 double* timeJ) const
+{
+    if (!subframes && !fractionalFrames) {
+        // Whole frames apart, which subtract exactly.
+        const double back = offset(i) - offset(j);
+        *frameJ = frameI - back;
+        *timeJ = timeI - back;
+
+        return;
+    }
+    *frameJ = loopFrame(frameI, i) + offset(j);
+    *timeJ = (timeI == frameI) ? *frameJ : timeI - (frameI - *frameJ);
+}
+
+bool
+LoopEnd::crossFrameDriven(double time) const
+{
+    if (!isCrossFrame() || (time != std::floor(time)) || (time < (double)crossFrameStart())) {
+        return false;
+    }
+    const Resolved resolved = resolve();
+
+    return resolved.message.empty() && (resolved.count > 0);
+}
+
+RenderContextPtr
+LoopEnd::crossFrameBase(const RenderContextPtr& context,
+                        const std::string& loopName,
+                        U64* contextKey) const
+{
+    RenderContext::Builder builder(context);
+
+    builder.erase(foldStepName());
+    for (const char* variable : kLoopVariables) {
+        builder.erase(RenderContextName::loop(variable));
+        if (!loopName.empty()) {
+            builder.erase(RenderContextName::loops(loopName, variable));
+        }
+    }
+    // The LoopBegin reads at least what this node reads, so the two agree on the key.
+    RenderContextPtr restricted;
+    *contextKey = restrictContextToNode(builder.build(), getNode(), &restricted);
+
+    return restricted ? restricted : RenderContext::empty();
+}
+
+bool
+LoopEnd::crossFrameStepBefore(const RenderContextPtr& context,
+                              double /*time*/,
+                              CrossFrameStep* previous) const
+{
+    if (!context || !isCrossFrame()) {
+        return false;
+    }
+    const Resolved resolved = resolve();
+    if (!resolved.message.empty() || resolved.loopName.empty()) {
+        return false;
+    }
+    const RenderContextValue* tValue = context->find(RenderContextName::loops(resolved.loopName, "t"));
+    const RenderContextValue* countValue = context->find(RenderContextName::loops(resolved.loopName, "count"));
+    const RenderContextValue* frameValue = context->find(RenderContextName::loops(resolved.loopName, "frame"));
+    const double* t = tValue ? std::get_if<double>(tValue) : 0;
+    const std::int64_t* count = countValue ? std::get_if<std::int64_t>(countValue) : 0;
+    const double* frame = frameValue ? std::get_if<double>(frameValue) : 0;
+    if (!t || !count || !frame || (*count < 1)) {
+        return false;
+    }
+    const int k = (*count > 1) ? (int)std::llround(*t * (double)(*count - 1)) : 0;
+    if ((k < 0) || (k >= *count) || (resolved.feedback && (k > 0))) {
+        return false;
+    }
+    // The frame the loop renders, which iteration k of Iterate Over Frames or Subframes renders the body away from.
+    const double outer = resolved.loopFrame(*frame, k);
+    if (!(outer > (double)crossFrameStart())) {
+        return false;
+    }
+    U64 contextKey = 0;
+    previous->frame = (int)std::ceil(outer) - 1;
+    previous->driven = (outer == std::floor(outer));
+    previous->base = crossFrameBase(context, resolved.loopName, &contextKey);
+
+    return true;
+}
+
+void
+LoopEnd::appendCrossFrameKnobsHash(ContentHasher& h) const
+{
+    const KnobIPtr knobs[] = {
+        _operation.lock(),
+        _reverseOrder.lock(),
+        _crossFrame.lock(),
+        _startFrame.lock(),
+        _subframes.lock(),
+    };
+
+    for (const KnobIPtr& knob : knobs) {
+        h.appendBool(bool(knob));
+        if (knob) {
+            knob->appendContentHash(h);
+        }
+    }
+}
+
+LoopFrameCache*
+LoopEnd::crossFrameCache() const
+{
+    return _frameCache.get();
+}
+
+U64
+LoopEnd::simulationHash() const
+{
+    std::vector<std::pair<std::string, U64>> entries;
+
+    for (const KnobIPtr& knob : getKnobs_mt_safe()) {
+        if (!knob || !knob->isRenderHashed()) {
+            continue;
+        }
+        const std::string name = knob->getName();
+        // Where the frames are kept, and whether they are read, are not the simulation.
+        if ((name == kLoopEndParamCacheFile) || (name == kLoopEndParamLoadFromCache)) {
+            continue;
+        }
+        entries.push_back(std::make_pair(name, knob->getContentHash()));
+    }
+    std::sort(entries.begin(), entries.end());
+    ContentHasher h;
+    h.appendString(std::string("LoopEnd simulation"));
+    h.appendU64(entries.size());
+    for (const std::pair<std::string, U64>& entry : entries) {
+        h.appendString(entry.first);
+        h.appendU64(entry.second);
+    }
+    const NodePtr inputNode = getNode()->getInput(0);
+    const EffectInstancePtr input = inputNode ? inputNode->getEffectInstance() : EffectInstancePtr();
+    h.appendBool(bool(input));
+    if (input) {
+        h.appendU64(input->getHash());
+    }
+
+    return h.finalize();
+}
+
+bool
+LoopEnd::loadsBaked() const
+{
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+
+    // A bake renders the frames whatever the files hold.
+    return !_baking.load() && isCrossFrame() && loadFromCache && loadFromCache->getValue() && cacheFile && !cacheFile->getValue().empty();
+}
+
+U64
+LoopEnd::seriesHash(bool loadBaked) const
+{
+    const U64 simulation = simulationHash();
+
+    if (!loadBaked) {
+        return simulation;
+    }
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    ContentHasher h;
+    h.appendU64(simulation);
+    h.appendString(std::string("bake"));
+    h.appendU64(_bakeGeneration.load());
+    h.appendString(cacheFile ? cacheFile->getValue() : std::string());
+
+    return h.finalize();
+}
+
+void
+LoopEnd::appendNodeContentHash(ContentHasher& h) const
+{
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    const bool loading = isCrossFrame() && loadFromCache && loadFromCache->getValue();
+
+    // The output reads the files of the latest bake.
+    h.appendBool(loading);
+    if (loading) {
+        h.appendU64(_bakeGeneration.load());
+    }
+}
+
+std::string
+LoopEnd::bakedFramePath(int frame) const
+{
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+
+    return bakedFramePath(cacheFile ? cacheFile->getValue() : std::string(), frame);
+}
+
+std::string
+LoopEnd::bakedFramePath(const std::string& cacheFile,
+                        int frame) const
+{
+    if (cacheFile.empty()) {
+        return std::string();
+    }
+    std::vector<std::string> views;
+    const AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        views = app->getProject()->getProjectViewNames();
+    }
+    std::string path = SequenceParsing::generateFileNameFromPattern(cacheFile, views, frame, 0);
+    if (app && app->getProject()) {
+        app->getProject()->canonicalizePath(path);
+    }
+
+    return path;
+}
+
+LoopEnd::BakeSettings
+LoopEnd::bakeSettings() const
+{
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    KnobIntPtr bakeEnd = _bakeEnd.lock();
+    BakeSettings settings;
+
+    settings.cacheFile = cacheFile ? cacheFile->getValue() : std::string();
+    settings.start = crossFrameStart();
+    settings.end = bakeEnd ? bakeEnd->getValue() : settings.start;
+
+    return settings;
+}
+
+bool
+LoopEnd::isBakedContext(const RenderContextPtr& base,
+                        ViewIdx view) const
+{
+    if (view.value() != 0) {
+        return false;
+    }
+    const std::string loopName = getLoopName();
+    U64 key = 0;
+    U64 rootKey = 0;
+    (void)crossFrameBase(base, loopName, &key);
+    (void)crossFrameBase(RenderContextPtr(), loopName, &rootKey);
+
+    return key == rootKey;
+}
+
+void
+LoopEnd::crossFrameLayer(const RenderContextPtr& base,
+                         double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer,
+                         double* par)
+{
+    ImageLayerDesc pairedLayer;
+
+    *layer = ImageLayerDesc();
+    *par = 1.;
+    {
+        ActionContextScope actions(true, base);
+        NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+        if (metadata) {
+            getLayersFromMetadata(*metadata, -1, layer, &pairedLayer);
+            *par = metadata->getPixelAspectRatio(-1);
+        }
+    }
+    if (layer->getNumComponents() == 0) {
+        *layer = ImageLayerDesc::getRGBAComponents();
+    }
+}
+
+bool
+LoopEnd::bakedRegion(int frame,
+                     RectD* rod) const
+{
+    const std::string path = bakedFramePath(frame);
+
+    if (path.empty() || !QFileInfo(QString::fromUtf8(path.c_str())).isFile()) {
+        return false;
+    }
+    LoopFrameBake::FrameInfo info;
+    std::string error;
+    if (!LoopFrameBake::readFrameInfo(path, &info, &error)) {
+        return false;
+    }
+    *rod = info.regionOfDefinition;
+
+    return true;
+}
+
+ImagePtr
+LoopEnd::loadBakedFrame(const RenderContextPtr& base,
+                        int frame,
+                        ViewIdx view,
+                        unsigned int mipmapLevel)
+{
+    const std::string path = bakedFramePath(frame);
+
+    if (path.empty() || !QFileInfo(QString::fromUtf8(path.c_str())).isFile()) {
+        return ImagePtr();
+    }
+    ImageLayerDesc layer;
+    double par = 1.;
+    crossFrameLayer(base, (double)frame, view, &layer, &par);
+    LoopFrameBake::FrameInfo info;
+    std::string error;
+    ImagePtr full = LoopFrameBake::readFrame(path, layer, &info, &error);
+    if (!full) {
+        // Rendered instead, as past the bake.
+        refreshBakeMessage(eMessageTypeWarning, tr("Frame %1 could not be read from %2, so it is rendered: %3").arg(frame).arg(QString::fromUtf8(path.c_str())).arg(QString::fromUtf8(error.c_str())).toStdString());
+
+        return ImagePtr();
+    }
+    if (!info.hasHash || (info.hash != simulationHash())) {
+        refreshBakeMessage(eMessageTypeWarning, tr("Frame %1 of %2 was baked before the latest edit to the loop or to what "
+                                                   "is upstream of it, and is loaded as baked. Bake again to update it.")
+                                                    .arg(frame)
+                                                    .arg(QString::fromUtf8(path.c_str()))
+                                                    .toStdString());
+    } else {
+        refreshBakeMessage(eMessageTypeWarning, std::string());
+    }
+    if (mipmapLevel == 0) {
+        return full;
+    }
+    const RectI bounds = full->getBounds().downscalePowerOfTwoSmallestEnclosing(mipmapLevel);
+    ImagePtr scaled = std::make_shared<Image>(layer, full->getRoD(), bounds, mipmapLevel, full->getPixelAspectRatio(), eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    full->downscaleMipmap(full->getRoD(), full->getBounds(), 0, mipmapLevel, false, scaled.get());
+
+    return scaled;
+}
+
+void
+LoopEnd::refreshCrossFrameMessage(MessageTypeEnum type,
+                                  const std::string& message)
+{
+    QMutexLocker k(&_messageMutex);
+
+    if (message.empty() && _crossFramePosted.empty()) {
+        return;
+    }
+    refreshLoopMessage(getNode(), type, message, &_crossFramePosted);
+}
+
+void
+LoopEnd::refreshBakeMessage(MessageTypeEnum type,
+                            const std::string& message)
+{
+    QMutexLocker k(&_messageMutex);
+
+    if (message.empty() && _bakePosted.empty()) {
+        return;
+    }
+    refreshLoopMessage(getNode(), type, message, &_bakePosted);
+}
+
+bool
+LoopEnd::bakeFrames(bool progressStarted,
+                    std::string* error)
+{
+    if (progressStarted) {
+        return bakeSequence(true, bakeSettings(), error);
+    }
+    if (_baking.exchange(true)) {
+        *error = tr("A bake of this loop is running.").toStdString();
+
+        return false;
+    }
+    _bakeCancelled = false;
+    const bool ok = bakeSequence(false, bakeSettings(), error);
+    _baking = false;
+    onBakeFinished();
+
+    return ok;
+}
+
+bool
+LoopEnd::bakeSequence(bool progressStarted,
+                      const BakeSettings& settings,
+                      std::string* error)
+{
+    const AppInstancePtr app = getApp();
+    const NodePtr node = getNode();
+    struct ProgressEnd {
+        AppInstancePtr app;
+        NodePtr node;
+        ~ProgressEnd()
+        {
+            if (app) {
+                app->progressEnd(node);
+            }
+        }
+    } progressEnd { progressStarted ? app : AppInstancePtr(), node };
+
+    if (!isCrossFrame()) {
+        *error = tr("Bake renders a Cross Frame loop: turn Cross Frame on.").toStdString();
+
+        return false;
+    }
+    const int start = settings.start;
+    const int end = settings.end;
+    if (end < start) {
+        *error = tr("Bake End (%1) is before Start Frame (%2).").arg(end).arg(start).toStdString();
+
+        return false;
+    }
+    const std::string first = bakedFramePath(settings.cacheFile, start);
+    if (first.empty()) {
+        *error = tr("Cache File is empty.").toStdString();
+
+        return false;
+    }
+    if (first == bakedFramePath(settings.cacheFile, start + 1)) {
+        *error = tr("Cache File names every frame %1: put the frame number in it, as in sim.####.exr.")
+                     .arg(QString::fromUtf8(first.c_str()))
+                     .toStdString();
+
+        return false;
+    }
+    if (!crossFrameDriven((double)start)) {
+        const Resolved resolved = resolve();
+        *error = tr("The loop does not run: %1").arg(QString::fromUtf8(resolved.message.c_str())).toStdString();
+
+        return false;
+    }
+
+    const AbortableRenderInfoPtr render = AbortableRenderInfo::create(true, 0);
+    {
+        QMutexLocker k(&_bakeMutex);
+        _bakeRender = render;
+    }
+    struct RenderReset {
+        QMutex* mutex;
+        AbortableRenderInfoPtr* render;
+        ~RenderReset()
+        {
+            QMutexLocker k(mutex);
+            render->reset();
+        }
+    } renderReset { &_bakeMutex, &_bakeRender };
+    if (_bakeCancelled.load()) {
+        render->setAborted();
+    }
+    if (!progressStarted && app) {
+        progressEnd.app = app;
+        app->progressStart(node, tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString(), std::string(), true);
+    }
+    const std::function<bool()> cancelled = [this, render]() {
+        return _bakeCancelled.load() || render->isAborted();
+    };
+    U64 contextKey = 0;
+    const RenderContextPtr root = crossFrameBase(RenderContextPtr(), getLoopName(), &contextKey);
+    for (int frame = start; frame <= end; ++frame) {
+        if (cancelled()) {
+            *error = tr("The bake was cancelled before frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+        // The hash of what this frame renders from; an edit made meanwhile restarts the simulation.
+        const U64 hash = simulationHash();
+        ImagePtr image;
+        RenderRoIRetCode code = eRenderRoIRetCodeFailed;
+        RectI format;
+        {
+            ParallelRenderArgsSetter frameArgs((double)frame,
+                                               ViewIdx(0),
+                                               true /*isRenderUserInteraction*/,
+                                               false /*isSequential*/,
+                                               render,
+                                               node,
+                                               0 /*textureIndex*/,
+                                               app ? app->getTimeLine().get() : 0,
+                                               NodePtr(),
+                                               false /*isAnalysis*/,
+                                               false /*draftMode*/,
+                                               RenderStatsPtr());
+            // As a render of the whole frame plans it.
+            RectD window;
+            {
+                ActionContextScope actions(true, root);
+                bool isProjectFormat = false;
+                if (getRegionOfDefinition_public(getRenderHash(), (double)frame, RenderScale::identity, ViewIdx(0), &window, &isProjectFormat) == eStatusFailed) {
+                    window.clear();
+                }
+            }
+            if (!window.isNull()) {
+                FrameRequestMap request;
+                if (EffectInstance::computeRequestPass((double)frame, ViewIdx(0), 0, window, node, request) != eStatusFailed) {
+                    frameArgs.updateNodesRequest(request);
+                }
+            }
+            CrossFrameOptions options;
+            options.showProgress = false;
+            code = crossFrameImageWith(this, root, frame, ViewIdx(0), RenderScale::identity, false, options, &image);
+            ActionContextScope actions(true, root);
+            NodeMetadataConstPtr metadata = getRenderMetadata((double)frame, ViewIdx(0));
+            if (metadata) {
+                format = metadata->getOutputFormat();
+            }
+        }
+        if ((code == eRenderRoIRetCodeAborted) || cancelled()) {
+            *error = tr("The bake was cancelled at frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+        if ((code != eRenderRoIRetCodeOk) || !image) {
+            *error = tr("Frame %1 did not render.").arg(frame).toStdString();
+
+            return false;
+        }
+        const std::string path = bakedFramePath(settings.cacheFile, frame);
+        QDir().mkpath(QFileInfo(QString::fromUtf8(path.c_str())).absolutePath());
+        std::string writeError;
+        if (!LoopFrameBake::writeFrame(path, *image, format, hash, cancelled, &writeError)) {
+            *error = cancelled() ? tr("The bake was cancelled at frame %1.").arg(frame).toStdString()
+                                 : tr("Frame %1 could not be written to %2: %3").arg(frame).arg(QString::fromUtf8(path.c_str())).arg(QString::fromUtf8(writeError.c_str())).toStdString();
+
+            return false;
+        }
+        if (app && !app->progressUpdate(node, (double)(frame - start + 1) / (double)(end - start + 1))) {
+            _bakeCancelled = true;
+            *error = tr("The bake was cancelled after frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+    }
+
+    return true;
+} // LoopEnd::bakeSequence
+
+bool
+LoopEnd::startBake()
+{
+    if (_baking.exchange(true)) {
+        return false;
+    }
+    waitForBake();
+    _bakeCancelled = false;
+    refreshBakeMessage(eMessageTypeWarning, std::string());
+    const AppInstancePtr app = getApp();
+    const NodePtr node = getNode();
+    if (app) {
+        app->progressStart(node, tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString(), std::string(), true);
+    }
+    const NodeWPtr weakNode = node;
+    const BakeSettings settings = bakeSettings();
+    _bakeThread = std::thread([this, weakNode, settings]() {
+        std::string error;
+        const bool ok = bakeSequence(true, settings, &error);
+        const bool wasCancelled = _bakeCancelled.load();
+        appPTR->getAppTLS()->cleanupTLSForThread();
+        _baking = false;
+        QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
+            NodePtr node = weakNode.lock();
+            LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
+            if (!effect) {
+                return;
+            }
+            effect->onBakeFinished();
+            if (!ok && !wasCancelled) {
+                effect->refreshBakeMessage(eMessageTypeError, error);
+            } }, Qt::QueuedConnection);
+    });
+
+    return true;
+}
+
+void
+LoopEnd::cancelBake()
+{
+    _bakeCancelled = true;
+    QMutexLocker k(&_bakeMutex);
+    if (_bakeRender) {
+        _bakeRender->setAborted();
+    }
+}
+
+void
+LoopEnd::waitForBake()
+{
+    if (_bakeThread.joinable() && (_bakeThread.get_id() != std::this_thread::get_id())) {
+        _bakeThread.join();
+    }
+}
+
+bool
+LoopEnd::isBaking() const
+{
+    return _baking.load();
+}
+
+void
+LoopEnd::onBakeFinished()
+{
+    ++_bakeGeneration;
+    getNode()->markHashDirty();
+    const AppInstancePtr app = getApp();
+    if (app && qApp && (QThread::currentThread() == qApp->thread())) {
+        app->renderAllViewers(true);
+    }
+}
+
+StatusEnum
+LoopEnd::crossFrameRegion(const RenderContextPtr& base,
+                          int frame,
+                          const RenderScale& scale,
+                          ViewIdx view,
+                          RectD* rod)
+{
+    const int start = crossFrameStart();
+
+    if (frame < start) {
+        return eStatusFailed;
+    }
+    LoopFrameSeries series;
+    const RenderContextPtr restricted = crossFrameBase(base, getLoopName(), &series.contextKey);
+    series.hash = getHash();
+    series.view = view;
+    series.mipmapLevel = scale.toMipmapLevel();
+    // The series whose regions this thread is finding. Asked again inside, a region is one found
+    // already; one that is not would be found from inside itself, without end.
+    static thread_local std::vector<std::pair<const LoopEnd*, LoopFrameSeries>> finding;
+    const std::pair<const LoopEnd*, LoopFrameSeries> self(this, series);
+    const bool reentered = std::find(finding.begin(), finding.end(), self) != finding.end();
+    int from = start;
+    {
+        QMutexLocker k(&_crossFrameMutex);
+        if (_regionsHash != series.hash) {
+            _crossFrameRegions.clear();
+            _regionsHash = series.hash;
+        }
+        const std::map<int, RectD>& known = _crossFrameRegions[series];
+        std::map<int, RectD>::const_iterator it = known.upper_bound(frame);
+        if (it != known.begin()) {
+            --it;
+            if (it->first == frame) {
+                *rod = it->second;
+
+                return eStatusOK;
+            }
+            from = it->first + 1;
+        }
+    }
+    if (reentered) {
+        refreshCrossFrameMessage(eMessageTypeError,
+                                 tr("Frame %1 of loop %2 was asked while the regions of the frames before it are found: inside "
+                                    "a Cross Frame loop the body reads only the frame before, so a body node that changes "
+                                    "loops.%2.frame cannot be rendered.")
+                                     .arg(frame)
+                                     .arg(QString::fromUtf8(getLoopName().c_str()))
+                                     .toStdString());
+
+        return eStatusFailed;
+    }
+    finding.push_back(self);
+    struct FindingPop {
+        std::vector<std::pair<const LoopEnd*, LoopFrameSeries>>* finding;
+        ~FindingPop()
+        {
+            finding->pop_back();
+        }
+    } findingPop { &finding };
+    // Frame j's region asks the LoopBegin's at j, which is frame j - 1's: known by then.
+    for (int j = from; j <= frame; ++j) {
+        RectD region;
+        {
+            ActionContextScope actions(true, restricted);
+            bool isProjectFormat = false;
+            if (getRegionOfDefinition_public(getRenderHash(), (double)j, scale, view, &region, &isProjectFormat) == eStatusFailed) {
+                return eStatusFailed;
+            }
+        }
+        QMutexLocker k(&_crossFrameMutex);
+        if (_regionsHash == series.hash) {
+            _crossFrameRegions[series][j] = region;
+        }
+        *rod = region;
+    }
+
+    return eStatusOK;
+} // LoopEnd::crossFrameRegion
+
+EffectInstance::RenderRoIRetCode
+LoopEnd::crossFrameImage(const EffectInstance* consumer,
+                         const RenderContextPtr& base,
+                         int frame,
+                         ViewIdx view,
+                         const RenderScale& scale,
+                         bool byPassCache,
+                         ImagePtr* image,
+                         bool fromDrivenFrame)
+{
+    CrossFrameOptions options;
+
+    options.loadBaked = loadsBaked();
+    options.fromDrivenFrame = fromDrivenFrame;
+
+    return crossFrameImageWith(consumer, base, frame, view, scale, byPassCache, options, image);
+}
+
+EffectInstance::RenderRoIRetCode
+LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
+                             const RenderContextPtr& base,
+                             int frame,
+                             ViewIdx view,
+                             const RenderScale& scale,
+                             bool byPassCache,
+                             const CrossFrameOptions& options,
+                             ImagePtr* image)
+{
+    image->reset();
+    const int start = crossFrameStart();
+    if (!consumer || !isCrossFrame() || (frame < start)) {
+        return eRenderRoIRetCodeFailed;
+    }
+    LoopFrameSeries series;
+    const RenderContextPtr restricted = crossFrameBase(base, getLoopName(), &series.contextKey);
+    // Taken once: an edit made while the frames render does not mix generations in a series.
+    series.hash = seriesHash(options.loadBaked);
+    series.view = view;
+    series.mipmapLevel = scale.toMipmapLevel();
+    // Every series of the node shares the generation, baked or not, so none purges another's.
+    const bool fromFiles = options.loadBaked && isBakedContext(base, view);
+    _frameCache->purgeOtherGenerations(series.hash);
+    *image = _frameCache->lookup(series, frame);
+    if (*image) {
+        return eRenderRoIRetCodeOk;
+    }
+    if (fromFiles) {
+        *image = loadBakedFrame(restricted, frame, view, series.mipmapLevel);
+        if (*image) {
+            _frameCache->insert(series, start, frame, *image);
+
+            return eRenderRoIRetCodeOk;
+        }
+    }
+
+    const ParallelRenderArgsPtr frameArgs = consumer->getParallelRenderArgsTLS();
+    const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    QThread* const self = QThread::currentThread();
+    std::shared_ptr<CrossFrameChain> chain;
+    int rendering = 0;
+    bool stalled = false;
+    {
+        QMutexLocker k(&_crossFrameMutex);
+        _crossFrameChains.erase(std::remove_if(_crossFrameChains.begin(), _crossFrameChains.end(), [](const std::shared_ptr<CrossFrameChain>& c) { return !c->driver && (c.use_count() == 1); }), _crossFrameChains.end());
+        for (const std::shared_ptr<CrossFrameChain>& c : _crossFrameChains) {
+            if (c->series == series) {
+                chain = c;
+                break;
+            }
+        }
+        // The LoopBegin of the frame being rendered, on whichever thread renders it.
+        if (chain && chain->driver && chain->image && (chain->frame == frame)) {
+            *image = chain->image;
+
+            return eRenderRoIRetCodeOk;
+        }
+        // Another frame, asked from inside the one being rendered: on its driving thread, or by
+        // the body of a whole frame of the same render, on another one. Its render waits for
+        // this one, so waiting for it would never end.
+        if (chain && chain->driver && ((chain->driver == self) || (options.fromDrivenFrame && render && (chain->render.lock() == render)))) {
+            stalled = true;
+            rendering = chain->frame + 1;
+        }
+        if (!chain) {
+            chain = std::make_shared<CrossFrameChain>();
+            chain->series = series;
+            _crossFrameChains.push_back(chain);
+        }
+    }
+    if (stalled) {
+        refreshCrossFrameMessage(eMessageTypeError,
+                                 tr("Frame %1 of loop %2 was asked while frame %3 renders: inside a Cross Frame loop the body "
+                                    "reads only the frame before, so a body node that changes loops.%2.frame cannot be rendered.")
+                                     .arg(frame)
+                                     .arg(QString::fromUtf8(getLoopName().c_str()))
+                                     .arg(rendering)
+                                     .toStdString());
+
+        return eRenderRoIRetCodeFailed;
+    }
+
+    while (!chain->driving.tryLock(50)) {
+        if (consumer->aborted()) {
+            return eRenderRoIRetCodeAborted;
+        }
+    }
+    struct DrivingUnlock {
+        QMutex* mutex;
+        ~DrivingUnlock()
+        {
+            mutex->unlock();
+        }
+    } drivingUnlock { &chain->driving };
+
+    // Another render may have rendered it meanwhile.
+    *image = _frameCache->lookup(series, frame);
+    if (*image) {
+        return eRenderRoIRetCodeOk;
+    }
+    int from = start;
+    ImagePtr previous;
+    int found = 0;
+    if ((frame > start) && _frameCache->nearestBefore(series, frame, &found, &previous) && (found >= start)) {
+        from = found + 1;
+    } else {
+        previous.reset();
+    }
+    if (fromFiles) {
+        // A later frame baked than any in RAM: the frames past the bake follow from it.
+        for (int j = frame - 1; j >= from; --j) {
+            ImagePtr baked = loadBakedFrame(restricted, j, view, series.mipmapLevel);
+            if (baked) {
+                _frameCache->insert(series, start, j, baked);
+                previous = baked;
+                from = j + 1;
+                break;
+            }
+        }
+    }
+    {
+        QMutexLocker k(&_crossFrameMutex);
+        chain->driver = self;
+        chain->render = render;
+    }
+    struct DriverReset {
+        QMutex* mutex;
+        CrossFrameChain* chain;
+        ~DriverReset()
+        {
+            QMutexLocker k(mutex);
+            chain->driver = 0;
+            chain->render.reset();
+            chain->image.reset();
+        }
+    } driverReset { &_crossFrameMutex, chain.get() };
+
+    const int total = frame - from + 1;
+    const AppInstancePtr app = getApp();
+    const NodePtr node = getNode();
+    const bool showProgress = options.showProgress && app && (total > 2);
+    struct ProgressEnd {
+        AppInstancePtr app;
+        NodePtr node;
+        ~ProgressEnd()
+        {
+            if (app) {
+                app->progressEnd(node);
+            }
+        }
+    } progressEnd { showProgress ? app : AppInstancePtr(), node };
+    if (showProgress) {
+        app->progressStart(node, tr("Rendering frames %1 to %2 of the cross-frame loop").arg(from).arg(frame).toStdString(), std::string(), true);
+    }
+    for (int j = from; j <= frame; ++j) {
+        if (consumer->aborted()) {
+            return eRenderRoIRetCodeAborted;
+        }
+        {
+            QMutexLocker k(&_crossFrameMutex);
+            chain->frame = j - 1;
+            chain->image = previous;
+        }
+        ImagePtr rendered;
+        const RenderRoIRetCode code = renderCrossFrame(consumer, restricted, j, view, scale, byPassCache, &rendered);
+        if (code != eRenderRoIRetCodeOk) {
+            return code;
+        }
+        _frameCache->insert(series, start, j, rendered);
+        previous = rendered;
+        if (showProgress && !app->progressUpdate(node, (double)(j - from + 1) / (double)total)) {
+            // Cancelled: the frames rendered so far are kept, this one is not output.
+            return eRenderRoIRetCodeFailed;
+        }
+    }
+    *image = previous;
+    refreshCrossFrameMessage(eMessageTypeError, std::string());
+
+    return eRenderRoIRetCodeOk;
+} // LoopEnd::crossFrameImageWith
+
+EffectInstance::RenderRoIRetCode
+LoopEnd::renderCrossFrame(const EffectInstance* consumer,
+                          const RenderContextPtr& base,
+                          int frame,
+                          ViewIdx view,
+                          const RenderScale& scale,
+                          bool byPassCache,
+                          ImagePtr* image)
+{
+    image->reset();
+    const NodePtr tailNode = getNode()->getInput(0);
+    const EffectInstancePtr tail = tailNode ? tailNode->getEffectInstance() : EffectInstancePtr();
+    const double time = (double)frame;
+    const unsigned int mipmapLevel = scale.toMipmapLevel();
+    Resolved resolved;
+    {
+        ActionContextScope actions(true, base);
+        resolved = resolveAt(time);
+    }
+    if (!tail || (!resolved.message.empty() && (resolved.messageType == eMessageTypeError))) {
+        return eRenderRoIRetCodeFailed;
+    }
+    ImageLayerDesc layer;
+    double par = 1.;
+    crossFrameLayer(base, time, view, &layer, &par);
+    // The whole region of definition, unclipped: what leaves the format comes back.
+    RectD window;
+    if (crossFrameRegion(base, frame, scale, view, &window) == eStatusFailed) {
+        return eRenderRoIRetCodeFailed;
+    }
+    RectI bounds = window.toPixelEnclosing(mipmapLevel, par);
+    if (bounds.isNull()) {
+        window = RectD(0., 0., 1., 1.);
+        bounds = window.toPixelEnclosing(mipmapLevel, par);
+    }
+    const int nComps = layer.getNumComponents();
+    const int alphaIndex = alphaIndexOf(layer);
+    const std::size_t rowSize = (std::size_t)bounds.width() * nComps;
+    KnobChoicePtr operationKnob = _operation.lock();
+    const LoopFold::OperationEnum operation = (resolved.singlePass >= 0) ? LoopFold::eOperationSum
+        : operationKnob                                                  ? (LoopFold::OperationEnum)operationKnob->getValue()
+                                                                         : LoopFold::eOperationMean;
+    const bool runs = resolved.message.empty() && (resolved.folded > 0);
+    std::vector<float> acc(rowSize * bounds.height(), runs ? LoopFold::initialValue(operation) : 0.f);
+
+    // As render() folds, over the whole window.
+    auto foldIn = [&](const ImagePtr& src) {
+        const bool usable = src && (src->getBitDepth() == eImageBitDepthFloat);
+        const int srcComps = usable ? (int)src->getComponentsCount() : 0;
+        const RectI covered = usable ? bounds.intersect(src->getBounds()) : RectI();
+        Image::ReadAccess access = usable ? src->getReadRights() : Image::ReadAccess(NULL);
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            const bool rowCovered = !covered.isNull() && (y >= covered.y1) && (y < covered.y2);
+            const float* srcRow = rowCovered ? (const float*)access.pixelAt(covered.x1, y) : NULL;
+            LoopFold::foldRow(operation, srcRow, srcComps, covered.x1, covered.x2, &acc[(std::size_t)(y - bounds.y1) * rowSize], nComps, alphaIndex, bounds.x1, bounds.x2);
+        }
+    };
+    if (runs) {
+        const std::vector<Iteration> iterations = foldedIterations(resolved, base, time);
+        if (resolved.feedback) {
+            FeedbackStep last;
+            last.tail = tailNode;
+            last.context = iterations.front().context;
+            last.time = iterations.front().time;
+            last.iteration = resolved.singlePass;
+            last.count = resolved.count;
+            ImagePtr output;
+            const RenderRoIRetCode code = feedbackImage(consumer, last, view, scale, byPassCache, &output, true /*wholeRegion*/);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+            foldIn(asFoldInput(output, bounds, layer));
+        } else {
+            // One iteration image at a time, as render() pulls them.
+            for (int k = 0; k < resolved.folded; ++k) {
+                if (consumer->aborted()) {
+                    return eRenderRoIRetCodeAborted;
+                }
+                const Iteration& iteration = iterations[iterationOfStep(k, resolved)];
+                ImagePtr src;
+                {
+                    InputContextScope scope(consumer, iteration.context);
+                    InputContextArgs tailContext(consumer, tail, -1, iteration.time, view);
+                    RenderRoIArgs tailArgs(iteration.time,
+                                           scale,
+                                           mipmapLevel,
+                                           view,
+                                           byPassCache,
+                                           bounds,
+                                           RectD(),
+                                           std::list<ImageLayerDesc>(1, layer),
+                                           eImageBitDepthFloat,
+                                           false,
+                                           consumer,
+                                           eStorageModeRAM,
+                                           iteration.time);
+                    std::map<ImageLayerDesc, ImagePtr> images;
+                    const RenderRoIRetCode code = renderInputOrTakeFromStore(tail, -1, &tailArgs, &images, consumer, &tailContext);
+                    if (code != eRenderRoIRetCodeOk) {
+                        return code;
+                    }
+                    if (!images.empty()) {
+                        src = images.begin()->second;
+                    }
+                }
+                foldIn(asFoldInput(src, bounds, layer));
+            }
+        }
+        LoopFold::finishRow(operation, resolved.folded, acc.data(), acc.size());
+    }
+
+    ImagePtr out = std::make_shared<Image>(layer, window, bounds, mipmapLevel, par, eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    {
+        Image::WriteAccess access(out.get());
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            float* dstPix = (float*)access.pixelAt(bounds.x1, y);
+            if (!dstPix) {
+                return eRenderRoIRetCodeFailed;
+            }
+            const float* accRow = &acc[(std::size_t)(y - bounds.y1) * rowSize];
+            std::copy(accRow, accRow + rowSize, dstPix);
+        }
+    }
+    *image = out;
+
+    return eRenderRoIRetCodeOk;
+} // LoopEnd::renderCrossFrame
 
 bool
 LoopEnd::feedbackStepBefore(const RenderContextPtr& context,
@@ -369,9 +1499,9 @@ LoopEnd::feedbackStepBefore(const RenderContextPtr& context,
     if (!previous->tail) {
         return false;
     }
-    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
-    previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, *frame - frameStep);
-    previous->time = time - frameStep;
+    double previousFrame = 0.;
+    resolved.iterationFrom(k, *frame, time, k - 1, &previousFrame, &previous->time);
+    previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, previousFrame);
     previous->iteration = k - 1;
     previous->count = (int)*count;
 
@@ -389,11 +1519,12 @@ LoopEnd::appendFeedbackKnobsHash(ContentHasher& h) const
         _iterations.lock(),
         _start.lock(),
         _step.lock(),
-        _frameStart.lock(),
-        _frameEnd.lock(),
+        _framesBefore.lock(),
+        _framesAfter.lock(),
         _frameStep.lock(),
         _stopCondition.lock(),
         _maxIterations.lock(),
+        _passThroughBegins.lock(),
     };
 
     for (const KnobIPtr& knob : knobs) {
@@ -410,7 +1541,8 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
                        ViewIdx view,
                        const RenderScale& scale,
                        bool byPassCache,
-                       ImagePtr* image)
+                       ImagePtr* image,
+                       bool wholeRegion)
 {
     image->reset();
     const Resolved resolved = resolve();
@@ -423,14 +1555,13 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     if (!frame) {
         return eRenderRoIRetCodeFailed;
     }
-    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
     const unsigned int mipmapLevel = scale.toMipmapLevel();
     // Iteration j of the chain step belongs to, under the variables step.context sets besides it.
     auto iterationAt = [&](int j, double* time) {
-        const double back = (double)(step.iteration - j) * frameStep;
-        *time = step.time - back;
+        double frameJ = 0.;
+        resolved.iterationFrom(step.iteration, *frame, step.time, j, &frameJ, time);
 
-        return iterationContext(step.context, resolved.loopName, j, step.count, resolved.start, resolved.step, *frame - back);
+        return iterationContext(step.context, resolved.loopName, j, step.count, resolved.start, resolved.step, frameJ);
     };
     double time0 = 0.;
     const U64 contextKey = restrictContextToNode(iterationAt(0, &time0), step.tail, 0);
@@ -484,13 +1615,19 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     }
     struct DriverReset {
         QMutex* mutex;
-        FeedbackChain* chain;
+        std::vector<std::shared_ptr<FeedbackChain>>* chains;
+        std::shared_ptr<FeedbackChain> chain;
+        // A whole-region chain is driven once, for a cross-frame frame: then it is let go.
+        bool release;
         ~DriverReset()
         {
             QMutexLocker k(mutex);
             chain->driver = 0;
+            if (release) {
+                chains->erase(std::remove(chains->begin(), chains->end(), chain), chains->end());
+            }
         }
-    } driverReset { &_feedbackMutex, chain.get() };
+    } driverReset { &_feedbackMutex, &_feedbackChains, chain, wholeRegion };
 
     ImagePtr last;
     for (int j = first; j <= step.iteration; ++j) {
@@ -517,7 +1654,7 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
             }
             RectD region;
             const ParallelRenderArgsPtr& planned = tailContext.args();
-            if (!planned || !planned->request || !planned->request->getFrameViewCanonicalRoI(time, view, &region)) {
+            if (wholeRegion || !planned || !planned->request || !planned->request->getFrameViewCanonicalRoI(time, view, &region)) {
                 // Not planned: the whole of the iteration.
                 ActionContextScope actions(true, context);
                 bool isProjectFormat = false;
@@ -675,21 +1812,139 @@ LoopEnd::getLoopBegins() const
 std::vector<NodePtr>
 LoopEnd::getFeedbackBegins() const
 {
-    std::vector<NodePtr> begins;
+    return isFeedback() ? feedsBackBegins() : std::vector<NodePtr>();
+}
 
-    if (!isFeedback()) {
-        return begins;
-    }
+std::vector<NodePtr>
+LoopEnd::getChainingBegins() const
+{
+    return (isFeedback() || isCrossFrame()) ? feedsBackBegins() : std::vector<NodePtr>();
+}
+
+std::vector<NodePtr>
+LoopEnd::feedsBackBegins() const
+{
+    std::vector<NodePtr> begins;
     std::string error;
     const std::vector<NodePtr> paired = findLoopBegins(&error);
+
     for (const NodePtr& node : paired) {
-        const LoopBegin* begin = dynamic_cast<const LoopBegin*>(node->getEffectInstance().get());
-        if (begin && begin->feedsBack()) {
+        if (feedsBack(node)) {
             begins.push_back(node);
         }
     }
 
     return begins;
+}
+
+std::vector<std::string>
+LoopEnd::getPassThroughBeginNames() const
+{
+    std::vector<std::string> names;
+    KnobStringPtr knob = _passThroughBegins.lock();
+
+    if (!knob) {
+        return names;
+    }
+    const std::string value = knob->getValue();
+    std::size_t from = 0;
+    while (from <= value.size()) {
+        std::size_t to = value.find('\n', from);
+        if (to == std::string::npos) {
+            to = value.size();
+        }
+        if (to > from) {
+            names.push_back(value.substr(from, to - from));
+        }
+        from = to + 1;
+    }
+
+    return names;
+}
+
+bool
+LoopEnd::feedsBack(const NodePtr& begin) const
+{
+    if (!begin) {
+        return false;
+    }
+    const std::vector<std::string> passThrough = getPassThroughBeginNames();
+
+    return std::find(passThrough.begin(), passThrough.end(), begin->getScriptName_mt_safe()) == passThrough.end();
+}
+
+std::string
+LoopEnd::encodePassThroughBeginNames(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    std::string value;
+    for (const std::string& each : names) {
+        if (each.empty()) {
+            continue;
+        }
+        if (!value.empty()) {
+            value += '\n';
+        }
+        value += each;
+    }
+
+    return value;
+}
+
+void
+LoopEnd::setPassThroughBeginNames(const std::vector<std::string>& names)
+{
+    KnobStringPtr knob = _passThroughBegins.lock();
+
+    if (!knob) {
+        return;
+    }
+    const std::string value = encodePassThroughBeginNames(names);
+    if (value != knob->getValue()) {
+        knob->setValue(value);
+    }
+}
+
+void
+LoopEnd::setFeedsBack(const NodePtr& begin,
+                      bool feedsBack)
+{
+    if (!begin) {
+        return;
+    }
+    const std::string name = begin->getScriptName_mt_safe();
+    std::vector<std::string> names = getPassThroughBeginNames();
+    const std::vector<std::string>::iterator found = std::find(names.begin(), names.end(), name);
+    if (feedsBack == (found == names.end())) {
+        return;
+    }
+    if (feedsBack) {
+        names.erase(found);
+    } else {
+        names.push_back(name);
+    }
+    setPassThroughBeginNames(names);
+}
+
+void
+LoopEnd::onLoopBeginRenamed(const NodePtr& begin,
+                            const std::string& oldName)
+{
+    if (!LoopBegin::isLoopBegin(begin) || !anyExists()) {
+        return;
+    }
+    std::shared_ptr<LoopEnd> end = pairedEndOf(begin);
+    if (!end) {
+        return;
+    }
+    std::vector<std::string> names = end->getPassThroughBeginNames();
+    const std::vector<std::string>::iterator found = std::find(names.begin(), names.end(), oldName);
+    if (found == names.end()) {
+        return;
+    }
+    *found = begin->getScriptName_mt_safe();
+    end->setPassThroughBeginNames(names);
 }
 
 std::string
@@ -726,7 +1981,7 @@ LoopEnd::previewContext(const RenderContextPtr& base,
         return base;
     }
     const int k = std::max(0, std::min(resolved.count - 1, singlePassIteration->getValue()));
-    const double frame = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+    const double frame = time + resolved.offset(k);
 
     return iterationContext(base ? base : RenderContext::empty(), resolved.loopName, k, resolved.count, resolved.start, resolved.step, frame);
 }
@@ -780,6 +2035,19 @@ LoopEnd::initializeKnobs()
     mode->setDefaultValue(0);
     page->addKnob(mode);
     _mode = mode;
+
+    // Shown as a list of the loop's LoopBegins to tick; it holds the ones left unticked, so a
+    // LoopBegin newly wired in feeds back.
+    KnobStringPtr passThroughBegins = createKnob<KnobString>(tr("Feedback LoopBegins"));
+    passThroughBegins->setName(kLoopEndParamPassThroughBegins);
+    passThroughBegins->setAnimationEnabled(false);
+    passThroughBegins->setDefaultValue(std::string());
+    passThroughBegins->setHintToolTip(tr("Which of the loop's LoopBegins output the iteration before under Feedback, "
+                                         "and the frame before under Cross Frame. An unticked one passes its input "
+                                         "through at every iteration and frame, which brings an unchanging source into "
+                                         "the body. Shown when several LoopBegins open the loop."));
+    page->addKnob(passThroughBegins);
+    _passThroughBegins = passThroughBegins;
 
     KnobBoolPtr singlePass = createKnob<KnobBool>(tr("Single Pass"));
     singlePass->setName(kLoopEndParamSinglePass);
@@ -878,36 +2146,138 @@ LoopEnd::initializeKnobs()
     page->addKnob(step);
     _step = step;
 
-    KnobIntPtr frameStart = createKnob<KnobInt>(tr("Frame Start"));
-    frameStart->setName(kLoopEndParamFrameStart);
-    frameStart->setAnimationEnabled(false);
-    frameStart->setHintToolTip(tr("The first frame iterated over, relative to the current frame."));
-    frameStart->setDisplayMinimum(-10);
-    frameStart->setDisplayMaximum(10);
-    frameStart->setDefaultValue(-2);
-    page->addKnob(frameStart);
-    _frameStart = frameStart;
+    KnobDoublePtr framesBefore = createKnob<KnobDouble>(tr("Frames Before"));
+    framesBefore->setName(kLoopEndParamFramesBefore);
+    framesBefore->setAnimationEnabled(false);
+    framesBefore->setHintToolTip(tr("How far before the current frame the first iteration renders the body, in frames. "
+                                    "Fractional values render subframes: 0.5 starts half a frame before."));
+    framesBefore->setMinimum(0.);
+    framesBefore->setDisplayMinimum(0.);
+    framesBefore->setDisplayMaximum(10.);
+    framesBefore->setIncrement(0.1);
+    framesBefore->setDecimals(3);
+    framesBefore->setDefaultValue(2.);
+    page->addKnob(framesBefore);
+    _framesBefore = framesBefore;
 
-    KnobIntPtr frameEnd = createKnob<KnobInt>(tr("Frame End"));
-    frameEnd->setName(kLoopEndParamFrameEnd);
-    frameEnd->setAnimationEnabled(false);
-    frameEnd->setHintToolTip(tr("The last frame iterated over, relative to the current frame. Before Frame Start, the output is black."));
-    frameEnd->setDisplayMinimum(-10);
-    frameEnd->setDisplayMaximum(10);
-    frameEnd->setDefaultValue(2);
-    page->addKnob(frameEnd);
-    _frameEnd = frameEnd;
+    KnobDoublePtr framesAfter = createKnob<KnobDouble>(tr("Frames After"));
+    framesAfter->setName(kLoopEndParamFramesAfter);
+    framesAfter->setAnimationEnabled(false);
+    framesAfter->setHintToolTip(tr("How far after the current frame the last iteration renders the body, in frames. "
+                                   "Fractional values render subframes."));
+    framesAfter->setMinimum(0.);
+    framesAfter->setDisplayMinimum(0.);
+    framesAfter->setDisplayMaximum(10.);
+    framesAfter->setIncrement(0.1);
+    framesAfter->setDecimals(3);
+    framesAfter->setDefaultValue(2.);
+    page->addKnob(framesAfter);
+    _framesAfter = framesAfter;
 
-    KnobIntPtr frameStep = createKnob<KnobInt>(tr("Frame Step"));
+    KnobDoublePtr frameStep = createKnob<KnobDouble>(tr("Frame Step"));
     frameStep->setName(kLoopEndParamFrameStep);
     frameStep->setAnimationEnabled(false);
-    frameStep->setHintToolTip(tr("How many frames apart the iterated frames are."));
-    frameStep->setMinimum(1);
-    frameStep->setDisplayMinimum(1);
-    frameStep->setDisplayMaximum(10);
-    frameStep->setDefaultValue(1);
+    frameStep->setHintToolTip(tr("How many frames apart the iterations render the body, from Frames Before the current "
+                                 "frame to Frames After it, both included. A fraction renders subframes: Frames Before "
+                                 "0.5, Frames After 0 and Frame Step 0.1 render the body at f - 0.5, f - 0.4, ..., f, "
+                                 "6 iterations. An input that only has whole frames, such as an image sequence, "
+                                 "holds each frame up to the next one."));
+    frameStep->setMinimum(kLoopEndMinFrameStep);
+    frameStep->setDisplayMinimum(0.1);
+    frameStep->setDisplayMaximum(10.);
+    frameStep->setIncrement(0.1);
+    frameStep->setDecimals(3);
+    frameStep->setDefaultValue(1.);
     page->addKnob(frameStep);
     _frameStep = frameStep;
+
+    KnobBoolPtr crossFrame = createKnob<KnobBool>(tr("Cross Frame"));
+    crossFrame->setName(kLoopEndParamCrossFrame);
+    crossFrame->setAnimationEnabled(false);
+    crossFrame->setHintToolTip(tr("After Start Frame, the LoopBegins that feed back output this node's output at "
+                                  "the frame before instead of their input: under Accumulate at every iteration, under "
+                                  "Feedback at the first. With several LoopBegins, the ones Feedback LoopBegins leaves "
+                                  "unticked pass their input through. "
+                                  "A trail or a simulation builds up from Start Frame, the iterations of each "
+                                  "frame being its substeps. Each frame's output is kept in RAM, whole, beyond the "
+                                  "format when it reaches past it; a frame not kept is rendered from the latest one "
+                                  "kept before it, or from Start Frame. At Start Frame and before it, the LoopBegins "
+                                  "output their input."));
+    crossFrame->setDefaultValue(false);
+    page->addKnob(crossFrame);
+    _crossFrame = crossFrame;
+
+    KnobIntPtr startFrame = createKnob<KnobInt>(tr("Start Frame"));
+    startFrame->setName(kLoopEndParamStartFrame);
+    startFrame->setAnimationEnabled(false);
+    startFrame->setHintToolTip(tr("The frame Cross Frame starts from: there the LoopBegins output their input, and "
+                                  "from the frame after it those that feed back output the frame before."));
+    startFrame->setDisplayMinimum(1);
+    startFrame->setDisplayMaximum(100);
+    startFrame->setDefaultValue(1);
+    page->addKnob(startFrame);
+    _startFrame = startFrame;
+
+    KnobBoolPtr subframes = createKnob<KnobBool>(tr("Subframes"));
+    subframes->setName(kLoopEndParamSubframes);
+    subframes->setAnimationEnabled(false);
+    subframes->setHintToolTip(tr("Under Cross Frame and Iterate Over Count, spreads the iterations of frame f over the "
+                                 "interval from the frame before: iteration k renders the body at f - 1 + (k + 1) / "
+                                 "Iterations, the last at f, so an animated input moves smoothly between substeps. The "
+                                 "inputs are always asked for those fractional times; one that only has whole frames, "
+                                 "such as an image sequence, answers with the frame it has. Off, every iteration "
+                                 "renders the body at f."));
+    subframes->setDefaultValue(true);
+    page->addKnob(subframes);
+    _subframes = subframes;
+
+    KnobOutputFilePtr cacheFile = createKnob<KnobOutputFile>(tr("Cache File"));
+    cacheFile->setName(kLoopEndParamCacheFile);
+    cacheFile->setAsOutputImageFile();
+    cacheFile->setAnimationEnabled(false);
+    cacheFile->setHintToolTip(tr("The EXR sequence Bake writes the frames to and Load From Cache reads them from, "
+                                 "its frame number written #### or %04d, as in sim.####.exr. Each frame is stored "
+                                 "whole: the file's data window is the frame's region of definition, beyond the "
+                                 "format where it reaches past it."));
+    page->addKnob(cacheFile);
+    _cacheFile = cacheFile;
+
+    KnobIntPtr bakeEnd = createKnob<KnobInt>(tr("Bake End"));
+    bakeEnd->setName(kLoopEndParamBakeEnd);
+    bakeEnd->setAnimationEnabled(false);
+    bakeEnd->setHashExempt(true);
+    bakeEnd->setHintToolTip(tr("The last frame Bake writes: it renders Start Frame to Bake End in order."));
+    bakeEnd->setDisplayMinimum(1);
+    bakeEnd->setDisplayMaximum(1000);
+    bakeEnd->setDefaultValue(100);
+    page->addKnob(bakeEnd);
+    _bakeEnd = bakeEnd;
+
+    KnobButtonPtr bake = createKnob<KnobButton>(tr("Bake"));
+    bake->setName(kLoopEndParamBake);
+    bake->setHashExempt(true);
+    bake->setHintToolTip(tr("Renders Start Frame to Bake End in order, in the background, and writes each frame "
+                            "to Cache File as a float EXR stamped with the loop's hash. The progress panel shows "
+                            "it and cancels it; the frames written by then stay."));
+    page->addKnob(bake);
+    _bake = bake;
+
+    KnobBoolPtr loadFromCache = createKnob<KnobBool>(tr("Load From Cache"));
+    loadFromCache->setName(kLoopEndParamLoadFromCache);
+    loadFromCache->setAnimationEnabled(false);
+    loadFromCache->setHintToolTip(tr("Reads the frames Cache File holds instead of rendering them, and renders the "
+                                     "frames past the last one baked from it. Frames baked before an edit upstream "
+                                     "or in the loop still load, with a warning."));
+    loadFromCache->setDefaultValue(false);
+    page->addKnob(loadFromCache);
+    _loadFromCache = loadFromCache;
+
+    KnobButtonPtr clearCache = createKnob<KnobButton>(tr("Clear Cache"));
+    clearCache->setName(kLoopEndParamClearCache);
+    clearCache->setHashExempt(true);
+    clearCache->setHintToolTip(tr("Forgets the frames kept in RAM. The files in Cache File stay."));
+    page->addKnob(clearCache);
+    _clearCache = clearCache;
 
     KnobStringPtr stopCondition = createKnob<KnobString>(tr("Stop Condition"));
     stopCondition->setName(kLoopEndParamStopCondition);
@@ -926,7 +2296,7 @@ LoopEnd::initializeKnobs()
     KnobIntPtr maxIterations = createKnob<KnobInt>(tr("Max Iterations"));
     maxIterations->setName(kLoopEndParamMaxIterations);
     maxIterations->setAnimationEnabled(false);
-    maxIterations->setHintToolTip(tr("A safety cap: more Iterations than this is an error, and the output is black."));
+    maxIterations->setHintToolTip(tr("A safety cap: more iterations than this, from Iterations or from the frame range under Iterate Over Frames, is an error, and the output is black."));
     maxIterations->setMinimum(1);
     maxIterations->setMaximum(kContextCountWarningThreshold);
     maxIterations->setDisplayMinimum(1);
@@ -945,6 +2315,8 @@ LoopEnd::initializeKnobs()
                                    "variable, Start, End and Easing can be edited in place. Right-click a "
                                    "parameter in the body and choose Drive from loop to add one."));
     page->addKnob(drivenKnobs);
+
+    refreshKnobVisibility();
 }
 
 std::vector<NodePtr>
@@ -1023,11 +2395,11 @@ LoopEnd::resolve() const
     KnobBoolPtr singlePass = _singlePass.lock();
     KnobIntPtr singlePassIteration = _singlePassIteration.lock();
     KnobChoicePtr iterateOver = _iterateOver.lock();
-    KnobIntPtr frameStart = _frameStart.lock();
-    KnobIntPtr frameEnd = _frameEnd.lock();
-    KnobIntPtr frameStep = _frameStep.lock();
+    KnobDoublePtr framesBefore = _framesBefore.lock();
+    KnobDoublePtr framesAfter = _framesAfter.lock();
+    KnobDoublePtr frameStep = _frameStep.lock();
 
-    if (!iterations || !start || !step || !maxIterations || !mode || !singlePass || !singlePassIteration || !iterateOver || !frameStart || !frameEnd || !frameStep) {
+    if (!iterations || !start || !step || !maxIterations || !mode || !singlePass || !singlePassIteration || !iterateOver || !framesBefore || !framesAfter || !frameStep) {
         resolved.message = "LoopEnd: missing knobs.";
 
         return resolved;
@@ -1046,24 +2418,36 @@ LoopEnd::resolve() const
     resolved.loopName = loopNameOf(getNode());
     resolved.feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
     resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
+    const int cap = maxIterations->getValue();
     if (resolved.frames) {
-        resolved.frameStart = frameStart->getValue();
-        resolved.frameStep = std::max(1, frameStep->getValue());
-        const int end = frameEnd->getValue();
-        resolved.count = (end < resolved.frameStart) ? 0 : ((end - resolved.frameStart) / resolved.frameStep + 1);
+        const double before = std::max(0., framesBefore->getValue());
+        const double after = std::max(0., framesAfter->getValue());
+        resolved.frameFirst = -before;
+        resolved.frameLast = after;
+        resolved.frameStep = std::max(kLoopEndMinFrameStep, frameStep->getValue());
+        resolved.fractionalFrames = (before != std::round(before)) || (after != std::round(after)) || (resolved.frameStep != std::round(resolved.frameStep));
+        // Within kLoopEndFrameSnap of a step, the range ends on a sample, which division rounding
+        // would otherwise drop.
+        const double samples = std::floor((before + after) / resolved.frameStep + kLoopEndFrameSnap) + 1.;
+        if (samples > (double)cap) {
+            resolved.message = tr("%1 iterations is more than Max Iterations (%2).").arg(std::min(samples, 1e15), 0, 'f', 0).arg(cap).toStdString();
+
+            return resolved;
+        }
+        resolved.count = (int)samples;
         resolved.start = 0;
         resolved.step = 1;
     } else {
         resolved.count = iterations->getValue();
         resolved.start = start->getValue();
         resolved.step = step->getValue();
+        KnobBoolPtr subframes = _subframes.lock();
+        resolved.subframes = isCrossFrame() && subframes && subframes->getValue();
     }
-    const int cap = maxIterations->getValue();
     if (resolved.count <= 0) {
         resolved.count = 0;
         resolved.messageType = eMessageTypeWarning;
-        resolved.message = resolved.frames ? tr("Frame End is before Frame Start: the output is black.").toStdString()
-                                           : tr("Iterations is 0: the output is black.").toStdString();
+        resolved.message = tr("Iterations is 0: the output is black.").toStdString();
 
         return resolved;
     }
@@ -1200,7 +2584,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
-            const double iterationTime = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+            const double iterationTime = time + resolved.offset(k);
             PyObject* variables = PyDict_New();
             PyObject* iteration = PyLong_FromLongLong((long long)resolved.start + (long long)k * resolved.step);
             PyObject* count = PyLong_FromLong(resolved.count);
@@ -1296,16 +2680,27 @@ LoopEnd::refreshKnobVisibility()
     const bool feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
     const bool singlePass = singlePassKnob->getValue();
     const bool frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
+    const bool crossFrame = isCrossFrame();
+    // With one LoopBegin, Mode and Cross Frame alone say whether it feeds back.
+    const bool severalBegins = (feedback || crossFrame) && getNode() && (getLoopBegins().size() > 1);
     const std::pair<KnobIPtr, bool> visibility[] = {
+        std::make_pair(KnobIPtr(_passThroughBegins.lock()), severalBegins),
         std::make_pair(KnobIPtr(_operation.lock()), !singlePass && !feedback),
         std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass && !feedback),
         std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
         std::make_pair(KnobIPtr(_iterations.lock()), !frames),
         std::make_pair(KnobIPtr(_start.lock()), !frames),
         std::make_pair(KnobIPtr(_step.lock()), !frames),
-        std::make_pair(KnobIPtr(_frameStart.lock()), frames),
-        std::make_pair(KnobIPtr(_frameEnd.lock()), frames),
+        std::make_pair(KnobIPtr(_framesBefore.lock()), frames),
+        std::make_pair(KnobIPtr(_framesAfter.lock()), frames),
         std::make_pair(KnobIPtr(_frameStep.lock()), frames),
+        std::make_pair(KnobIPtr(_startFrame.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_subframes.lock()), crossFrame && !frames),
+        std::make_pair(KnobIPtr(_cacheFile.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_bakeEnd.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_bake.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_loadFromCache.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_clearCache.lock()), crossFrame),
     };
     for (const std::pair<KnobIPtr, bool>& knob : visibility) {
         if (knob.first) {
@@ -1349,7 +2744,7 @@ LoopEnd::getPreferredMetadataAt(double /*time*/,
 {
     // The stop condition may read the frame, or knobs at it, so where the loop stops can change
     // from frame to frame with nothing animated: the output is only cached per frame.
-    if (!activeStopCondition().empty()) {
+    if (!activeStopCondition().empty() || isCrossFrame()) {
         metadata.setIsFrameVarying(true);
     }
 
@@ -1374,6 +2769,27 @@ LoopEnd::knobChanged(KnobI* k,
                      double time,
                      bool /*originatedFromMainThread*/)
 {
+    KnobButtonPtr bake = _bake.lock();
+    if (bake && (k == bake.get())) {
+        startBake();
+
+        return true;
+    }
+    KnobButtonPtr clearCache = _clearCache.lock();
+    if (clearCache && (k == clearCache.get())) {
+        _frameCache->clear();
+
+        return true;
+    }
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    if ((loadFromCache && (k == loadFromCache.get())) || (cacheFile && (k == cacheFile.get()))) {
+        // A warning about other frames than those now loaded, if any.
+        refreshBakeMessage(eMessageTypeWarning, std::string());
+
+        return true;
+    }
+
     const KnobIPtr resolving[] = {
         _iterations.lock(),
         _maxIterations.lock(),
@@ -1381,12 +2797,23 @@ LoopEnd::knobChanged(KnobI* k,
         _singlePass.lock(),
         _singlePassIteration.lock(),
         _iterateOver.lock(),
-        _frameStart.lock(),
-        _frameEnd.lock(),
+        _framesBefore.lock(),
+        _framesAfter.lock(),
         _frameStep.lock(),
         _stopCondition.lock(),
+        _crossFrame.lock(),
+        _startFrame.lock(),
+        _subframes.lock(),
     };
 
+    KnobStringPtr passThroughBegins = _passThroughBegins.lock();
+    if (passThroughBegins && (k == passThroughBegins.get())) {
+        // Whether each LoopBegin reads its loop's variables moves with it.
+        invalidateRenderContextReads();
+        refreshMessage(resolveAt(time));
+
+        return true;
+    }
     KnobStringPtr name = _name.lock();
     if (name && (k == name.get())) {
         // The loops.<name>.* variables the body and the LoopBegins read move with it.
@@ -1407,7 +2834,8 @@ LoopEnd::knobChanged(KnobI* k,
             KnobChoicePtr mode = _mode.lock();
             KnobBoolPtr singlePass = _singlePass.lock();
             KnobChoicePtr iterateOver = _iterateOver.lock();
-            const bool modeChanged = mode && (k == mode.get());
+            KnobBoolPtr crossFrame = _crossFrame.lock();
+            const bool modeChanged = (mode && (k == mode.get())) || (crossFrame && (k == crossFrame.get()));
             const bool singlePassChanged = singlePass && (k == singlePass.get());
             if (modeChanged || singlePassChanged || (iterateOver && (k == iterateOver.get()))) {
                 refreshKnobVisibility();
@@ -1415,7 +2843,7 @@ LoopEnd::knobChanged(KnobI* k,
             if ((k == _stopCondition.lock().get()) || singlePassChanged) {
                 refreshStopDependencies();
             } else if (modeChanged) {
-                // Feedback has the paired LoopBegin read its own loop's variables.
+                // Feedback and Cross Frame have the paired LoopBegin read its own loop's variables.
                 invalidateRenderContextReads();
             }
             refreshMessage(resolveAt(time));
@@ -1430,7 +2858,15 @@ LoopEnd::knobChanged(KnobI* k,
 void
 LoopEnd::onInputChanged(int /*inputNb*/)
 {
+    refreshKnobVisibility();
     refreshMessage(resolve());
+}
+
+void
+LoopEnd::onSettingsPanelOpened()
+{
+    // The LoopBegins may have been wired while no input of this node changed.
+    refreshKnobVisibility();
 }
 
 void
@@ -1457,6 +2893,7 @@ LoopEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
             }
         }
     }
+    refreshKnobVisibility();
 }
 
 void
@@ -1536,7 +2973,7 @@ LoopEnd::foldedIterations(const Resolved& resolved,
     iterations.reserve(resolved.folded);
     for (int k = first; k < first + resolved.folded; ++k) {
         Iteration iteration;
-        iteration.time = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+        iteration.time = time + resolved.offset(k);
         iteration.context = iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, iteration.time);
         iterations.push_back(iteration);
     }
@@ -1557,9 +2994,13 @@ FramesNeededMap
 LoopEnd::getFramesNeeded(double time,
                          ViewIdx view)
 {
+    if (crossFrameDriven(time)) {
+        // crossFrameImage() renders the body, at the frames before as well.
+        return FramesNeededMap();
+    }
     const Resolved resolved = resolveAt(time);
 
-    if (!resolved.message.empty() || !resolved.frames || !getInput(0)) {
+    if (!resolved.message.empty() || (!resolved.frames && !resolved.subframes) || !getInput(0)) {
         return EffectInstance::getFramesNeeded(time, view);
     }
     const RenderContextPtr context = getCurrentRenderContext();
@@ -1588,7 +3029,7 @@ LoopEnd::getInputContexts(int inputNb,
                           const RenderContextPtr& context,
                           std::vector<RenderContextPtr>* contexts) const
 {
-    if (inputNb != 0) {
+    if ((inputNb != 0) || crossFrameDriven(time)) {
         return false;
     }
     const Resolved resolved = resolveAt(time);
@@ -1617,7 +3058,7 @@ LoopEnd::getContextNodeRequests(double time,
                                 const RectD& roi,
                                 std::vector<ContextNodeRequest>* requests) const
 {
-    if (!foldsAsTasks()) {
+    if (!foldsAsTasks() || crossFrameDriven(time)) {
         return;
     }
     const Resolved resolved = resolveAt(time);
@@ -1660,6 +3101,10 @@ LoopEnd::getRegionOfDefinition(U64 hash,
         return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
     }
     const RenderContextPtr context = getCurrentRenderContext();
+    // A baked frame loads whole, over the region it was baked with.
+    if (loadsBaked() && crossFrameDriven(time) && isBakedContext(context, view) && bakedRegion((int)time, rod)) {
+        return eStatusOK;
+    }
     if (context && context->find(foldStepName())) {
         // Every step covers the whole fold's region, so a step's output holds the accumulator
         // wherever the next one reads it. Asked once, under no step, and cached there.
@@ -1780,6 +3225,9 @@ LoopEnd::pullsInputInRender(int inputNb,
     if (inputNb != 0) {
         return false;
     }
+    if (crossFrameDriven(time)) {
+        return true;
+    }
     const Resolved resolved = resolveAt(time);
 
     return resolved.message.empty() && drivesFeedbackChain(resolved);
@@ -1870,6 +3318,9 @@ LoopEnd::render(const RenderActionArgs& args)
         return eStatusFailed;
     }
     const RenderContextPtr context = getCurrentRenderContext();
+    if (crossFrameDriven(args.time)) {
+        return renderCrossFrameOutput(args, context, resolved.loopName);
+    }
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, args.time);
     const int count = resolved.folded;
     const int step = foldStepOf(context, count);
@@ -1961,6 +3412,45 @@ LoopEnd::render(const RenderActionArgs& args)
             const float* accRow = &acc[(std::size_t)(y - roi.y1) * rowSize];
             std::copy(accRow, accRow + rowSize, dstPix);
         }
+    }
+
+    return eStatusOK;
+}
+
+StatusEnum
+LoopEnd::renderCrossFrameOutput(const RenderActionArgs& args,
+                                const RenderContextPtr& context,
+                                const std::string& loopName)
+{
+    U64 contextKey = 0;
+    const RenderContextPtr base = crossFrameBase(context, loopName, &contextKey);
+    ImagePtr src;
+    const RenderRoIRetCode code = crossFrameImage(this, base, (int)args.time, args.view, args.mappedScale, args.byPassCache, &src);
+
+    if (code == eRenderRoIRetCodeAborted) {
+        return eStatusOK;
+    }
+    if (code != eRenderRoIRetCodeOk) {
+        return eStatusFailed;
+    }
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const ImagePtr& dst = it->second;
+        if (!dst) {
+            return eStatusFailed;
+        }
+        const RectI covered = src ? args.roi.intersect(src->getBounds()) : RectI();
+        if (covered != args.roi) {
+            dst->fillZero(args.roi);
+        }
+        if (covered.isNull()) {
+            continue;
+        }
+        if ((src->getComponents() == dst->getComponents()) && (src->getBitDepth() == dst->getBitDepth())) {
+            dst->pasteFrom(*src, covered, false);
+            continue;
+        }
+        const int srcComps = (int)src->getComponentsCount();
+        src->convertToFormat(covered, (srcComps == 4) ? 3 : ((srcComps == 1) ? 0 : -1), false, dst.get());
     }
 
     return eStatusOK;

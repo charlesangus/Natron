@@ -28,14 +28,20 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <map>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Loop/LoopFold.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/RectD.h"
 #include "Engine/RenderContext.h"
 
 #define PLUGINID_NATRON_LOOPEND "fr.natron.LoopEnd"
@@ -53,8 +59,8 @@
 #define kLoopEndParamIterateOver "iterateOver"
 #define kLoopEndParamIterateOverCount "count"
 #define kLoopEndParamIterateOverFrames "frames"
-#define kLoopEndParamFrameStart "frameStart"
-#define kLoopEndParamFrameEnd "frameEnd"
+#define kLoopEndParamFramesBefore "framesBefore"
+#define kLoopEndParamFramesAfter "framesAfter"
 #define kLoopEndParamFrameStep "frameStep"
 #define kLoopEndParamStopCondition "stopCondition"
 #define kLoopEndParamOperation "operation"
@@ -67,8 +73,19 @@
 #define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
 #define kLoopEndParamDrivenKnobs "drivenKnobs"
+#define kLoopEndParamCrossFrame "crossFrame"
+#define kLoopEndParamStartFrame "startFrame"
+#define kLoopEndParamSubframes "subframes"
+#define kLoopEndParamCacheFile "cacheFile"
+#define kLoopEndParamBakeEnd "bakeEnd"
+#define kLoopEndParamBake "bake"
+#define kLoopEndParamLoadFromCache "loadFromCache"
+#define kLoopEndParamClearCache "clearCache"
+#define kLoopEndParamPassThroughBegins "passThroughBegins"
 
 #define kLoopEndDefaultMaxIterations 1024
+#define kLoopEndMinFrameStep 0.001
+#define kLoopEndFrameSnap 1e-6
 
 NATRON_NAMESPACE_ENTER
 
@@ -114,7 +131,38 @@ public:
     static std::shared_ptr<LoopEnd> feedbackEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Appends the LoopBegins of the Feedback loops whose iterations render node.
+     * @brief The LoopEnd that pairs with begin when Cross Frame is on and begin feeds back, else
+     * null.
+     **/
+    static std::shared_ptr<LoopEnd> crossFrameEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopEnd that pairs with begin when it is in Feedback mode or Cross Frame is on
+     * and begin feeds back: when begin may output something other than its input. Else null.
+     **/
+    static std::shared_ptr<LoopEnd> chainingEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopEnd paired with begin, whatever its mode.
+     **/
+    static std::shared_ptr<LoopEnd> pairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Shows or hides, on the LoopEnds whose loops render node, the knobs that depend on
+     * how many LoopBegins open the loop. Call on the main thread after node's inputs change.
+     **/
+    static void refreshLoopsOf(const NodePtr& node);
+
+    /**
+     * @brief Keeps begin's choice on its LoopEnd's Feedback LoopBegins across a rename from
+     * oldName to its current script name.
+     **/
+    static void onLoopBeginRenamed(const NodePtr& begin,
+                                   const std::string& oldName);
+
+    /**
+     * @brief Appends the LoopBegins that feed back in the Feedback and Cross Frame loops whose
+     * iterations render node.
      **/
     static void appendFeedbackBeginsOf(const NodePtr& node,
                                        std::vector<NodePtr>* begins);
@@ -147,6 +195,105 @@ public:
     void appendFeedbackKnobsHash(ContentHasher& h) const;
 
     /**
+     * @brief What a Cross Frame LoopBegin outputs: this loop's output at frame, under base.
+     **/
+    struct CrossFrameStep {
+        // The context the loop renders under, without its own variables or a fold step,
+        // restricted to what this node reads.
+        RenderContextPtr base;
+        int frame = 0;
+        // The loop renders a whole frame: inside it, only the frame before is ever available.
+        bool driven = false;
+    };
+
+    /**
+     * @brief The frame of this loop's output the LoopBegin rendering at time under context outputs
+     * under Cross Frame: the frame before the one the loop renders, ceil(f) - 1 at a fractional
+     * frame f. False when the loop renders at Start Frame or before it, when context is outside the
+     * loop, under a Feedback iteration after the first, or when Cross Frame is off.
+     **/
+    bool crossFrameStepBefore(const RenderContextPtr& context,
+                              double time,
+                              CrossFrameStep* previous) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Appends the knobs, besides those appendFeedbackKnobsHash() appends, that the output
+     * at one frame folds into the next under Cross Frame.
+     **/
+    void appendCrossFrameKnobsHash(ContentHasher& h) const;
+
+    /**
+     * @brief The loop's output at frame under base, Cross Frame: from the frame cache, else the
+     * frames after the latest one cached (Start Frame when none is) rendered in order up to it,
+     * each over the whole of its region of definition and stored. One render drives a simulation
+     * at a time; the others wait for it. Fails at a frame before Start Frame. With Load From
+     * Cache on, a baked frame is read first, and the frames past the bake follow from the last
+     * one baked. fromDrivenFrame is set by a LoopBegin inside a whole frame of the loop: asking
+     * there for a frame other than the one before, which the render driving the simulation has
+     * not stored, fails at once with an error on this node, as waiting for it would never end.
+     **/
+    EffectInstance::RenderRoIRetCode crossFrameImage(const EffectInstance* consumer,
+                                                     const RenderContextPtr& base,
+                                                     int frame,
+                                                     ViewIdx view,
+                                                     const RenderScale& scale,
+                                                     bool byPassCache,
+                                                     ImagePtr* image,
+                                                     bool fromDrivenFrame = false) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The region of definition of the loop's output at frame under base, Cross Frame: the
+     * window crossFrameImage() stores. The regions of the frames before it are asked from the
+     * earliest not known yet up, so each ask goes one body deep.
+     **/
+    StatusEnum crossFrameRegion(const RenderContextPtr& base,
+                                int frame,
+                                const RenderScale& scale,
+                                ViewIdx view,
+                                RectD* rod) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The frames Cross Frame has rendered.
+     **/
+    LoopFrameCache* crossFrameCache() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The hash of the simulation: the loop's input and its knobs, without Cache File, Bake
+     * End, Load From Cache or the buttons. Baked frames carry it.
+     **/
+    U64 simulationHash() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The file Cache File names for frame; empty when Cache File is.
+     **/
+    std::string bakedFramePath(int frame) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Renders Start Frame to Bake End in order on the calling thread and writes each frame
+     * to Cache File, with progress, which cancels it. progressStarted: the caller started the
+     * progress; it is ended either way. False with error on failure, cancellation or a bake
+     * running already; the frames written so far stay.
+     **/
+    bool bakeFrames(bool progressStarted,
+                    std::string* error) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief What Bake does: bakeFrames() on a thread of its own. False when a bake is running.
+     **/
+    bool startBake();
+
+    void cancelBake();
+
+    /**
+     * @brief Waits for the bake startBake() started, if any.
+     **/
+    void waitForBake();
+
+    bool isBaking() const WARN_UNUSED_RETURN;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
+    /**
      * @brief True inside a task of the task-graph scheduler, whose frame store chains the
      * Feedback iterations; elsewhere feedbackImage() does.
      **/
@@ -157,13 +304,15 @@ public:
      * store: the iterations up to step.iteration not rendered yet in the render consumer belongs
      * to are rendered in order, each at the region the request pass planned for it, each once per
      * render, and only the last one rendered is kept. image is null where the tail is empty.
+     * With wholeRegion, each iteration is rendered over its whole region of definition instead.
      **/
     EffectInstance::RenderRoIRetCode feedbackImage(const EffectInstance* consumer,
                                                    const FeedbackStep& step,
                                                    ViewIdx view,
                                                    const RenderScale& scale,
                                                    bool byPassCache,
-                                                   ImagePtr* image) WARN_UNUSED_RETURN;
+                                                   ImagePtr* image,
+                                                   bool wholeRegion = false) WARN_UNUSED_RETURN;
 
     /**
      * @brief The loop variables of iteration k of count, as LoopEnd sets them under loop.* and
@@ -213,6 +362,42 @@ public:
     std::vector<NodePtr> getFeedbackBegins() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The LoopBegins that output something other than their input, the iteration before
+     * under Feedback or the frame before under Cross Frame, by script name; empty when the loop is
+     * invalid or neither in Feedback mode nor Cross Frame.
+     **/
+    std::vector<NodePtr> getChainingBegins() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether begin outputs the iteration before when this LoopEnd is in Feedback mode,
+     * and the frame before under Cross Frame, whatever the mode. Every LoopBegin does unless it
+     * is set to pass its input through.
+     **/
+    bool feedsBack(const NodePtr& begin) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sets whether begin feeds back, through the Feedback LoopBegins knob.
+     **/
+    void setFeedsBack(const NodePtr& begin,
+                      bool feedsBack);
+
+    /**
+     * @brief The script names the Feedback LoopBegins knob lists as passing their input through.
+     **/
+    std::vector<std::string> getPassThroughBeginNames() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sets the script names the Feedback LoopBegins knob lists as passing their input
+     * through, which may name LoopBegins not wired into the loop now.
+     **/
+    void setPassThroughBeginNames(const std::vector<std::string>& names);
+
+    /**
+     * @brief The Feedback LoopBegins knob's value listing names: sorted, one per line.
+     **/
+    static std::string encodePassThroughBeginNames(std::vector<std::string> names) WARN_UNUSED_RETURN;
+
+    /**
      * @brief base with the loop variables of the iteration the loop previews at time: Single
      * Pass Iteration, clamped to the loop's iterations. base when the loop has no iteration.
      **/
@@ -235,8 +420,17 @@ private:
         int start = 0;
         int step = 1;
         bool frames = false;
-        int frameStart = 0;
-        int frameStep = 1;
+        // Iterate Over Frames: iteration k renders the body at the frame plus frameFirst + k *
+        // frameStep, the last at the frame plus frameLast.
+        double frameFirst = 0.;
+        double frameLast = 0.;
+        double frameStep = 1.;
+        // Iterate Over Frames with a fractional distance or step: the iterations are apart by
+        // fractions of a frame, which do not subtract exactly.
+        bool fractionalFrames = false;
+        // Iterate Over Count under Cross Frame with Subframes on: the iterations of frame f render
+        // the body at f - 1 + (k + 1) / count, spread over the interval from the frame before.
+        bool subframes = false;
         bool feedback = false;
         // The iteration Single Pass outputs, or -1.
         int singlePass = -1;
@@ -249,6 +443,26 @@ private:
         std::string message;
         // Why the stop condition failed; the iterations before it still render.
         std::string stopError;
+
+        /**
+         * @brief How far from the frame the loop renders iteration k renders the body.
+         **/
+        double offset(int k) const WARN_UNUSED_RETURN;
+        /**
+         * @brief The frame the loop renders, from frameK, the frame iteration k renders the body at.
+         **/
+        double loopFrame(double frameK,
+                         int k) const WARN_UNUSED_RETURN;
+        /**
+         * @brief The frame and time iteration j renders the body at, from frameI and timeI, those
+         * of iteration i: timeI differs from frameI by any time offset in the body.
+         **/
+        void iterationFrom(int i,
+                           double frameI,
+                           double timeI,
+                           int j,
+                           double* frameJ,
+                           double* timeJ) const;
     };
 
     struct Iteration {
@@ -279,16 +493,18 @@ private:
                        "iteration, each time with the loop variables loop.iteration, loop.count, loop.t "
                        "(0 at the first iteration, 1 at the last) and loop.frame set; knob drivers in the "
                        "body read them. Iterate Over Count runs Iterations iterations, loop.iteration "
-                       "being Start plus the iteration number times Step, all at the current frame. "
-                       "Iterate Over Frames runs one iteration per frame from the current frame plus "
-                       "Frame Start to the current frame plus Frame End, by Frame Step, rendering the "
-                       "body at that frame; loop.iteration is then the iteration number and loop.frame "
-                       "that frame. Accumulate folds the iterations together in order with the "
+                       "being Start plus the iteration number times Step, all at the current frame, or, under "
+                       "Cross Frame with Subframes, spread over the interval from the frame before. "
+                       "Iterate Over Frames runs one iteration per sample from Frames Before the current "
+                       "frame to Frames After it, both included, by Frame Step, rendering the body at "
+                       "that time, fractional ones included; loop.iteration is then the iteration "
+                       "number and loop.frame that time. Accumulate folds the iterations together in order with the "
                        "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
                        "before it (Over), or under them (Under); Reverse Order folds from the last "
                        "iteration to the first. Feedback feeds each iteration's output to the LoopBegins "
-                       "of the next that have Feedback on, which start from their input, and outputs the "
-                       "last; the other LoopBegins pass their input through at every iteration. "
+                       "of the next, which start from their input, and outputs the last; with several "
+                       "LoopBegins, Feedback LoopBegins chooses which do, the others passing their input "
+                       "through at every iteration. "
                        "Single Pass outputs the one iteration Single Pass Iteration names, unfolded; "
                        "under Feedback, that iteration after the ones before it. A Stop Condition, a Python expression, is evaluated "
                        "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
@@ -319,6 +535,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
+
+    virtual void onSettingsPanelOpened() OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
@@ -388,6 +606,112 @@ private:
 
     bool isFeedback() const WARN_UNUSED_RETURN;
 
+    bool isCrossFrame() const WARN_UNUSED_RETURN;
+
+    int crossFrameStart() const WARN_UNUSED_RETURN;
+
+    // pairedEndOf(begin) when it feeds back, else null.
+    static std::shared_ptr<LoopEnd> chainingPairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    // The paired LoopBegins that feed back, whatever the mode.
+    std::vector<NodePtr> feedsBackBegins() const WARN_UNUSED_RETURN;
+
+    // Under Cross Frame at a whole frame from Start Frame on: the output is the frame
+    // crossFrameImage() renders, and the body is not requested at time.
+    bool crossFrameDriven(double time) const WARN_UNUSED_RETURN;
+
+    // context without the loop's own variables or a fold step, restricted to what this node
+    // reads, the empty context rather than null; its hash in contextKey.
+    RenderContextPtr crossFrameBase(const RenderContextPtr& context,
+                                    const std::string& loopName,
+                                    U64* contextKey) const WARN_UNUSED_RETURN;
+
+    // render() under Cross Frame: the frame crossFrameImage() renders, over the render window.
+    StatusEnum renderCrossFrameOutput(const RenderActionArgs& args,
+                                      const RenderContextPtr& context,
+                                      const std::string& loopName) WARN_UNUSED_RETURN;
+
+    struct CrossFrameOptions {
+        bool loadBaked = false;
+        bool showProgress = true;
+        bool fromDrivenFrame = false;
+    };
+
+    EffectInstance::RenderRoIRetCode crossFrameImageWith(const EffectInstance* consumer,
+                                                         const RenderContextPtr& base,
+                                                         int frame,
+                                                         ViewIdx view,
+                                                         const RenderScale& scale,
+                                                         bool byPassCache,
+                                                         const CrossFrameOptions& options,
+                                                         ImagePtr* image) WARN_UNUSED_RETURN;
+
+    // Load From Cache is on with a Cache File, under Cross Frame.
+    bool loadsBaked() const WARN_UNUSED_RETURN;
+
+    // The generation of the frame cache's series: the simulation's, or its continuation from a bake.
+    U64 seriesHash(bool loadBaked) const WARN_UNUSED_RETURN;
+
+    // The layer and pixel aspect ratio the loop renders at frame under base.
+    void crossFrameLayer(const RenderContextPtr& base,
+                         double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer,
+                         double* par);
+
+    // The frame baked at frame, at mipmapLevel; null when there is none. Warns when it was baked
+    // from another simulation than the current one.
+    ImagePtr loadBakedFrame(const RenderContextPtr& base,
+                            int frame,
+                            ViewIdx view,
+                            unsigned int mipmapLevel);
+
+    // Baked frames stand for the loop under base and view: the root context's, view 0.
+    bool isBakedContext(const RenderContextPtr& base,
+                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // The region of definition of the frame baked at frame; false when there is none.
+    bool bakedRegion(int frame,
+                     RectD* rod) const WARN_UNUSED_RETURN;
+
+    // Posts message on the node for the cross-frame frames, or clears the one posted when empty.
+    void refreshCrossFrameMessage(MessageTypeEnum type,
+                                  const std::string& message);
+
+    void refreshBakeMessage(MessageTypeEnum type,
+                            const std::string& message);
+
+    struct BakeSettings {
+        std::string cacheFile;
+        int start;
+        int end;
+    };
+
+    // Read where the bake was asked for. Bake pressed on the main thread just after an edit of Cache
+    // File or Bake End, while a render holds this node, sees the edit there; the bake thread would
+    // read the value from before it until the queued edit is applied.
+    BakeSettings bakeSettings() const WARN_UNUSED_RETURN;
+
+    std::string bakedFramePath(const std::string& cacheFile,
+                               int frame) const WARN_UNUSED_RETURN;
+
+    // bakeFrames() with the bake marked running by the caller.
+    bool bakeSequence(bool progressStarted,
+                      const BakeSettings& settings,
+                      std::string* error) WARN_UNUSED_RETURN;
+
+    // After a bake: the loaded frames' generation moves on, and the viewers render again.
+    void onBakeFinished();
+
+    // The fold of the loop at frame under base, over its whole region of definition.
+    EffectInstance::RenderRoIRetCode renderCrossFrame(const EffectInstance* consumer,
+                                                      const RenderContextPtr& base,
+                                                      int frame,
+                                                      ViewIdx view,
+                                                      const RenderScale& scale,
+                                                      bool byPassCache,
+                                                      ImagePtr* image) WARN_UNUSED_RETURN;
+
     // resolve(), with the iterations the stop condition leaves at time. Under Feedback, the
     // output iteration alone, as singlePass.
     Resolved resolveAt(double time) const WARN_UNUSED_RETURN;
@@ -453,13 +777,24 @@ private:
     KnobBoolWPtr _singlePass;
     KnobIntWPtr _singlePassIteration;
     KnobChoiceWPtr _iterateOver;
-    KnobIntWPtr _frameStart;
-    KnobIntWPtr _frameEnd;
-    KnobIntWPtr _frameStep;
+    KnobDoubleWPtr _framesBefore;
+    KnobDoubleWPtr _framesAfter;
+    KnobDoubleWPtr _frameStep;
     KnobStringWPtr _stopCondition;
+    KnobBoolWPtr _crossFrame;
+    KnobIntWPtr _startFrame;
+    KnobBoolWPtr _subframes;
+    KnobOutputFileWPtr _cacheFile;
+    KnobIntWPtr _bakeEnd;
+    KnobButtonWPtr _bake;
+    KnobBoolWPtr _loadFromCache;
+    KnobButtonWPtr _clearCache;
+    KnobStringWPtr _passThroughBegins;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;
+    std::string _crossFramePosted;
+    std::string _bakePosted;
 
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;
@@ -481,6 +816,34 @@ private:
 
     mutable QMutex _feedbackMutex;
     std::vector<std::shared_ptr<FeedbackChain>> _feedbackChains;
+
+    struct CrossFrameChain {
+        LoopFrameSeries series;
+        // Held while frames are rendered, so a simulation is rendered once.
+        QMutex driving;
+        // The rest under _crossFrameMutex.
+        QThread* driver = 0;
+        AbortableRenderInfoWPtr render;
+        // The frame before the one being rendered, held for the LoopBegin until it is stored.
+        int frame = 0;
+        ImagePtr image;
+    };
+
+    const std::unique_ptr<LoopFrameCache> _frameCache;
+    mutable QMutex _crossFrameMutex;
+    std::vector<std::shared_ptr<CrossFrameChain>> _crossFrameChains;
+    // The regions crossFrameRegion() found, of the generation _regionsHash.
+    std::map<LoopFrameSeries, std::map<int, RectD>> _crossFrameRegions;
+    U64 _regionsHash = 0;
+
+    // Moves on with every bake, so frames continued from an earlier bake are not reused.
+    std::atomic<U64> _bakeGeneration;
+    std::atomic<bool> _baking;
+    std::atomic<bool> _bakeCancelled;
+    // The bake's render, aborted by cancelBake(); under _bakeMutex with the thread.
+    QMutex _bakeMutex;
+    AbortableRenderInfoPtr _bakeRender;
+    std::thread _bakeThread;
 };
 
 NATRON_NAMESPACE_EXIT

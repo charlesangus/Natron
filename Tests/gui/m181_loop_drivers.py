@@ -14,9 +14,14 @@ Sections:
   - editors: with one Start key on both dimensions, the curve editor and the dope sheet show a
     Driver Start row under size and hide Driver End and the per-dimension rows; Ctrl+A, Backspace
     in either deletes the keys and hides the row, and undo brings both back.
+  - live: with a second LoopEnd's panel open on an empty table, wiring Constant -> LoopBegin ->
+    Blur -> LoopEnd and choosing Drive from loop on the Blur's size from its own panel fills the
+    open table with size.x and size.y; taking the Blur out of the loop empties it and wiring it
+    back fills it again, all without reopening the panel.
 Screenshots: loopdriver_menu.png, loopdriver_row.png, loopdriver_row_iteration3.png,
 loopdriver_table.png, loopdriver_table_edited.png, loopdriver_start_key_menu.png,
-loopdriver_row_keyed.png, loopdriver_curve_editor.png, loopdriver_dope_sheet.png in
+loopdriver_row_keyed.png, loopdriver_curve_editor.png, loopdriver_dope_sheet.png,
+loopdriver_menu_live.png, loopdriver_table_live.png in
 $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m181_loop_drivers.py
@@ -99,6 +104,24 @@ try:
                 return True
             report("NOTE %s's settings panel did not open (attempt %d)" % (node.getScriptName(), attempt + 1))
         return False
+
+    def open_another_panel(node):
+        """Steps that open node's settings panel and leave the open ones open; returns whether it opened."""
+        app.clearSelection()
+        app.selectNode(node, True)
+        QApplication.processEvents()
+        view = node_graph_view()
+        if view is None or not QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel"):
+            report("NOTE showSelectedNodeSettingsPanel was not invoked for %s" % node.getScriptName())
+        ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)
+        return ok
+
+    def table_rows(node):
+        """The parameter column of the driven-knob table on node's open panel, None without one."""
+        table = child(panel_of(node), "LoopDriverTable")
+        if table is None:
+            return None
+        return sorted(table.item(r, 1).text() for r in range(table.rowCount()) if table.item(r, 1) is not None)
 
     def knob_field(panel, script_name):
         """The first-dimension field of the knob named script_name: its tool tip opens with the script
@@ -527,7 +550,61 @@ try:
         ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(hierarchy_view(), blur_label, size_label)), POLL_TIMEOUT_S)
         check(ok, "after undo the dope sheet shows Driver Start again")
 
-        for node in (end, blur, begin, constant):
+        gt.section("live")
+        begin2 = app.createNode(BEGIN_ID)
+        end2 = app.createNode(END_ID)
+        require(begin2 is not None and end2 is not None, "create a second LoopBegin and LoopEnd")
+        begin2.setPosition(400, 120)
+        end2.setPosition(400, 360)
+        ok = yield from open_panel(end2)
+        require(ok, "open the second LoopEnd's panel")
+        yield ("sleep", 600)
+        table = child(panel_of(end2), "LoopDriverTable")
+        require(table is not None, "the second LoopEnd's panel shows the driven-knob table")
+        live_table = table
+        check(table.rowCount() == 0, "a LoopEnd with no body lists nothing (got %d rows)" % table.rowCount())
+
+        blur2 = app.createNode(BLUR_ID)
+        require(blur2 is not None, "create a second Blur")
+        blur2.setPosition(400, 240)
+        size2 = blur2.getParam("size")
+        require(size2 is not None, "the second Blur has a size knob")
+        size2.setValue(5, 0)
+        size2.setValue(5, 1)
+        require(begin2.connectInput(0, constant), "connect the second LoopBegin")
+        require(blur2.connectInput(0, begin2), "connect the second Blur")
+        require(end2.connectInput(0, blur2), "connect the second LoopEnd")
+        yield ("sleep", 300)
+        check(table_rows(end2) == [], "an undriven body lists nothing (got %r)" % table_rows(end2))
+
+        ok = yield from open_another_panel(blur2)
+        require(ok, "open the second Blur's panel next to the LoopEnd's")
+        yield ("sleep", 600)
+        require(panel_of(end2) is not None, "the second LoopEnd's panel stays open")
+        field = knob_field(panel_of(blur2), "size")
+        require(field is not None, "found the second Blur's size field")
+        seen = right_click(field, DRIVE_ITEM, "loopdriver_menu_live.png")
+        ok = yield ("until", lambda: seen["entries"] is not None, POLL_TIMEOUT_S)
+        require(ok, "the second Blur's size menu opened")
+        check(seen["item"] is not None and seen["item"][0], "the menu has an enabled \"%s\" (got %r)" % (DRIVE_ITEM, seen["entries"]))
+        ok = yield ("until", lambda: size2.hasDriver(0) and size2.hasDriver(1), POLL_TIMEOUT_S)
+        require(ok, "Drive from loop drives the second Blur's size")
+        ok = yield ("until", lambda: table_rows(end2) == ["size.x", "size.y"], POLL_TIMEOUT_S)
+        check(ok, "the open table lists the new driver (got %r)" % table_rows(end2))
+        check(child(panel_of(end2), "LoopDriverTable") is live_table, "the table filled without reopening the panel")
+        if panel_of(end2) is not None:
+            screen_crop("loopdriver_table_live", panel_of(end2))
+
+        end2.disconnectInput(0)
+        require(end2.connectInput(0, begin2), "take the second Blur out of the loop")
+        ok = yield ("until", lambda: table_rows(end2) == [], POLL_TIMEOUT_S)
+        check(ok, "a Blur taken out of the body leaves the table (got %r)" % table_rows(end2))
+        end2.disconnectInput(0)
+        require(end2.connectInput(0, blur2), "wire the second Blur back into the loop")
+        ok = yield ("until", lambda: table_rows(end2) == ["size.x", "size.y"], POLL_TIMEOUT_S)
+        check(ok, "wiring the Blur back lists its driver again (got %r)" % table_rows(end2))
+
+        for node in (end2, blur2, begin2, end, blur, begin, constant):
             node.destroy()
         yield ("sleep", 200)
 

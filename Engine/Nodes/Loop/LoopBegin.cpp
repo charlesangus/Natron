@@ -46,6 +46,33 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+// The Cross Frame loop's output begin outputs under context at time, when it outputs one.
+std::shared_ptr<LoopEnd>
+crossFrameStep(const NodePtr& begin,
+               const RenderContextPtr& context,
+               double time,
+               LoopEnd::CrossFrameStep* step)
+{
+    std::shared_ptr<LoopEnd> end = LoopEnd::crossFrameEndOf(begin);
+
+    return (end && end->crossFrameStepBefore(context, time, step)) ? end : std::shared_ptr<LoopEnd>();
+}
+
+// Whether the request pass planned effect at time/view. The frames a Cross Frame loop renders
+// are not planned: the Feedback chain they run is driven in order instead of taken from the store.
+bool
+plannedAt(const EffectInstance* effect,
+          double time,
+          ViewIdx view)
+{
+    const ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+
+    return args && args->request && args->request->getFrameViewRequest(time, view);
+}
+} // anonymous namespace
+
 void
 refreshLoopMessage(const NodePtr& node,
                    MessageTypeEnum type,
@@ -87,36 +114,25 @@ LoopBegin::isLoopBegin(const NodePtr& node)
 bool
 LoopBegin::feedsBack() const
 {
-    KnobBoolPtr feedback = _feedback.lock();
+    const NodePtr self = getNode();
+    const std::shared_ptr<LoopEnd> end = LoopEnd::pairedEndOf(self);
 
-    return feedback && feedback->getValue();
-}
-
-void
-LoopBegin::initializeKnobs()
-{
-    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-    KnobBoolPtr feedback = createKnob<KnobBool>(tr("Feedback"));
-
-    feedback->setName(kLoopBeginParamFeedback);
-    feedback->setAnimationEnabled(false);
-    feedback->setDefaultValue(true);
-    feedback->setHintToolTip(tr("When the LoopEnd is in Feedback mode, each iteration after the first outputs the "
-                                "iteration before it rather than this node's input. Off, this node passes its input "
-                                "through at every iteration, which brings an unchanging source into the body. "
-                                "Ignored in Accumulate mode."));
-    page->addKnob(feedback);
-    _feedback = feedback;
+    return end && end->feedsBack(self);
 }
 
 Route
 LoopBegin::route(double time,
                  ViewIdx /*view*/)
 {
+    const RenderContextPtr context = getCurrentRenderContext();
+    LoopEnd::CrossFrameStep crossFrame;
+    if (crossFrameStep(getNode(), context, time, &crossFrame)) {
+        return Route::none();
+    }
     const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 
-    if (end && end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+    if (end && end->feedbackStepBefore(context, time, &previous)) {
         return Route::none();
     }
 
@@ -128,8 +144,9 @@ LoopBegin::getExtraContextReads() const
 {
     RenderContextReadSet reads;
 
-    // Under Feedback, whether it passes its input through or the iteration before it.
-    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    // Under Feedback or Cross Frame, whether it passes its input through or the iteration or
+    // frame before.
+    const std::shared_ptr<LoopEnd> end = LoopEnd::chainingEndOf(getNode());
     if (end) {
         const std::string name = end->getLoopName();
         reads.add(RenderContextName::loops(name, "t"));
@@ -144,10 +161,16 @@ FramesNeededMap
 LoopBegin::getFramesNeeded(double time,
                            ViewIdx view)
 {
+    const RenderContextPtr context = getCurrentRenderContext();
+    LoopEnd::CrossFrameStep crossFrame;
+    if (crossFrameStep(getNode(), context, time, &crossFrame)) {
+        // The frame before is not requested: the LoopEnd renders it, so a frame's graph stays bounded.
+        return FramesNeededMap();
+    }
     const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 
-    if (end && end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+    if (end && end->feedbackStepBefore(context, time, &previous)) {
         return FramesNeededMap();
     }
 
@@ -161,6 +184,10 @@ LoopBegin::getContextNodeRequests(double time,
                                   const RectD& roi,
                                   std::vector<ContextNodeRequest>* requests) const
 {
+    LoopEnd::CrossFrameStep crossFrame;
+    if (crossFrameStep(getNode(), context, time, &crossFrame)) {
+        return;
+    }
     const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 
@@ -202,10 +229,16 @@ LoopBegin::getRegionOfDefinition(U64 hash,
                                  ViewIdx view,
                                  RectD* rod)
 {
+    const RenderContextPtr context = getCurrentRenderContext();
+    LoopEnd::CrossFrameStep crossFrame;
+    const std::shared_ptr<LoopEnd> crossFrameEnd = crossFrameStep(getNode(), context, time, &crossFrame);
+    if (crossFrameEnd) {
+        return crossFrameEnd->crossFrameRegion(crossFrame.base, crossFrame.frame, scale, view, rod);
+    }
     const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 
-    if (!end || !end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+    if (!end || !end->feedbackStepBefore(context, time, &previous)) {
         return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
     }
     const EffectInstancePtr tail = previous.tail->getEffectInstance();
@@ -250,19 +283,30 @@ LoopBegin::forwardsOutput(const RenderRoIArgs& args,
                           std::map<ImageLayerDesc, ImagePtr>* outputLayers,
                           RenderRoIRetCode* code)
 {
-    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
-    LoopEnd::FeedbackStep previous;
-
-    if ((layers.size() != 1) || (args.returnStorage != eStorageModeRAM) || !end || !end->feedbackStepBefore(getCurrentRenderContext(), args.time, &previous)) {
+    if ((layers.size() != 1) || (args.returnStorage != eStorageModeRAM)) {
         return false;
     }
-    const EffectInstancePtr tail = previous.tail->getEffectInstance();
-    if (!tail) {
+    const RenderContextPtr context = getCurrentRenderContext();
+    LoopEnd::CrossFrameStep crossFrame;
+    const std::shared_ptr<LoopEnd> crossFrameEnd = crossFrameStep(getNode(), context, args.time, &crossFrame);
+    const std::shared_ptr<LoopEnd> end = crossFrameEnd ? std::shared_ptr<LoopEnd>() : LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if (!crossFrameEnd && (!end || !end->feedbackStepBefore(context, args.time, &previous))) {
+        return false;
+    }
+    const EffectInstancePtr tail = crossFrameEnd ? EffectInstancePtr() : previous.tail->getEffectInstance();
+    if (!crossFrameEnd && !tail) {
         return false;
     }
     ImagePtr src;
-    const bool fromStore = LoopEnd::feedbackUsesFrameStore();
-    if (fromStore) {
+    const bool fromStore = !crossFrameEnd && LoopEnd::feedbackUsesFrameStore() && plannedAt(this, args.time, args.view);
+    if (crossFrameEnd) {
+        *code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.scale, args.byPassCache, &src, crossFrame.driven);
+        if (*code != eRenderRoIRetCodeOk) {
+            return true;
+        }
+    } else if (fromStore) {
         // Only what the store holds: render() pulls the tail when it is missing.
         InputContextScope scope(this, previous.context);
         InputContextArgs tailContext(this, tail, -1, previous.time, args.view);
@@ -293,19 +337,30 @@ LoopBegin::forwardsOutput(const RenderRoIArgs& args,
 StatusEnum
 LoopBegin::render(const RenderActionArgs& args)
 {
-    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    const RenderContextPtr context = getCurrentRenderContext();
+    LoopEnd::CrossFrameStep crossFrame;
+    const std::shared_ptr<LoopEnd> crossFrameEnd = crossFrameStep(getNode(), context, args.time, &crossFrame);
+    const std::shared_ptr<LoopEnd> end = crossFrameEnd ? std::shared_ptr<LoopEnd>() : LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 
-    // Not under a Feedback iteration after the first, the node is an identity.
-    if (!end || !end->feedbackStepBefore(getCurrentRenderContext(), args.time, &previous)) {
+    // Not under a Feedback iteration after the first nor after a Cross Frame start, the node is an identity.
+    if (!crossFrameEnd && (!end || !end->feedbackStepBefore(context, args.time, &previous))) {
         return eStatusFailed;
     }
-    const EffectInstancePtr tail = previous.tail->getEffectInstance();
-    if (!tail) {
+    const EffectInstancePtr tail = crossFrameEnd ? EffectInstancePtr() : previous.tail->getEffectInstance();
+    if (!crossFrameEnd && !tail) {
         return eStatusFailed;
     }
     ImagePtr src;
-    if (LoopEnd::feedbackUsesFrameStore()) {
+    if (crossFrameEnd) {
+        const RenderRoIRetCode code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.mappedScale, args.byPassCache, &src, crossFrame.driven);
+        if (code == eRenderRoIRetCodeAborted) {
+            return eStatusOK;
+        }
+        if (code != eRenderRoIRetCodeOk) {
+            return eStatusFailed;
+        }
+    } else if (LoopEnd::feedbackUsesFrameStore() && plannedAt(this, args.time, args.view)) {
         const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
         ImageLayerDesc layer, pairedLayer;
         ImageBitDepthEnum depth = eImageBitDepthFloat;
@@ -376,7 +431,7 @@ LoopBegin::render(const RenderActionArgs& args)
             continue;
         }
         if (src->getComponents() != dst->getComponents()) {
-            conformMessage = tr("The iteration before outputs %1 where the loop's input has %2: it is converted.")
+            conformMessage = tr("The iteration or frame before outputs %1 where the loop's input has %2: it is converted.")
                                  .arg(QString::fromUtf8(src->getComponents().getChannelsLabel().c_str()))
                                  .arg(QString::fromUtf8(dst->getComponents().getChannelsLabel().c_str()))
                                  .toStdString();
@@ -460,7 +515,7 @@ void
 LoopBegin::appendNodeContentHash(ContentHasher& h) const
 {
     const NodePtr self = getNode();
-    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(self);
+    const std::shared_ptr<LoopEnd> end = LoopEnd::chainingEndOf(self);
 
     h.appendBool(bool(end));
     if (!end) {
@@ -470,20 +525,21 @@ LoopBegin::appendNodeContentHash(ContentHasher& h) const
     // image, which moves with every edit in it and with what feeds it from outside.
     const NodePtr endNode = end->getNode();
     U64 digest = 0;
-    Node::walkLoopBody(end->getFeedbackBegins(), endNode->getInput(0), endNode, &digest, 0);
+    Node::walkLoopBody(end->getChainingBegins(), endNode->getInput(0), endNode, &digest, 0);
     h.appendU64(digest);
     end->appendFeedbackKnobsHash(h);
+    end->appendCrossFrameKnobsHash(h);
 }
 
 void
 LoopBegin::appendExtraHashSources(std::vector<NodePtr>* sources) const
 {
     const NodePtr self = getNode();
-    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(self);
+    const std::shared_ptr<LoopEnd> end = LoopEnd::chainingEndOf(self);
 
     if (end) {
         const NodePtr endNode = end->getNode();
-        Node::walkLoopBody(end->getFeedbackBegins(), endNode->getInput(0), endNode, 0, sources);
+        Node::walkLoopBody(end->getChainingBegins(), endNode->getInput(0), endNode, 0, sources);
     }
 }
 
@@ -499,6 +555,26 @@ LoopBegin::appendExtraContextReadSuccessors(std::vector<NodePtr>* successors,
         successors->push_back(tail);
         overridden->push_back(RenderContextReadSet());
     }
+    // Under Cross Frame, the LoopEnd's at the frame before: whatever the LoopEnd reads, so this
+    // node's context key holds the key of the frames it outputs.
+    const std::shared_ptr<LoopEnd> crossFrameEnd = LoopEnd::crossFrameEndOf(getNode());
+    if (crossFrameEnd) {
+        successors->push_back(crossFrameEnd->getNode());
+        overridden->push_back(RenderContextReadSet());
+    }
+}
+
+StatusEnum
+LoopBegin::getPreferredMetadataAt(double /*time*/,
+                                  ViewIdx /*view*/,
+                                  NodeMetadata& metadata)
+{
+    // Under Cross Frame each frame outputs a different frame of the loop, nothing animated.
+    if (LoopEnd::crossFrameEndOf(getNode())) {
+        metadata.setIsFrameVarying(true);
+    }
+
+    return eStatusOK;
 }
 
 void
@@ -507,24 +583,6 @@ LoopBegin::refreshConformMessage(const std::string& message)
     QMutexLocker locker(&_conformMutex);
 
     refreshLoopMessage(getNode(), eMessageTypeWarning, message, &_conformPosted);
-}
-
-bool
-LoopBegin::knobChanged(KnobI* k,
-                       ValueChangedReasonEnum /*reason*/,
-                       ViewSpec /*view*/,
-                       double /*time*/,
-                       bool /*originatedFromMainThread*/)
-{
-    KnobBoolPtr feedback = _feedback.lock();
-
-    if (!feedback || (k != feedback.get())) {
-        return false;
-    }
-    // Under Feedback, whether it reads its loop's variables moves with it.
-    invalidateRenderContextReads();
-
-    return true;
 }
 
 NATRON_NAMESPACE_EXIT

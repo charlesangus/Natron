@@ -296,6 +296,12 @@ public:
      **/
     unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The display settings and tiles of the last full-quality texture-cache lookup of input
+     * A. False before the first one.
+     **/
+    bool getLastFullQualityLookup(ViewerFrameFilter* filter) const WARN_UNUSED_RETURN;
+
     DisplayChannelsEnum getChannels(int texIndex) const WARN_UNUSED_RETURN;
 
     void setFullFrameProcessingEnabled(bool fullFrame);

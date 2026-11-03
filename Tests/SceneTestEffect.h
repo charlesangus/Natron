@@ -81,6 +81,16 @@ sceneTestSourceHook()
 
 // Defined in Tests/Scene/SceneTestAuthoring.cpp, the only test file outside the scene tests that
 // sees USD: this header is included by wmain.cpp, which must stay free of pxr.
+// Called by SceneTestSource while it authors, before it reads its "value" knob, as a node that
+// reads its knobs while authoring does.
+inline std::function<void()>&
+sceneTestSourceAuthorHook()
+{
+    static std::function<void()> hook;
+
+    return hook;
+}
+
 bool sceneTestAuthorSource(const SceneLayerEdit& edit, int value, std::string* errorMessage);
 bool sceneTestAuthorOp(const SceneLayerEdit& edit, int value, std::string* errorMessage);
 bool sceneTestAuthorFactOp(const SceneLayerEdit& edit, int value, int sourceValue, std::string* errorMessage);
@@ -164,9 +174,17 @@ private:
         }
 
         KnobIntPtr valueKnob = _value.lock();
-        const int value = valueKnob ? valueKnob->getValue() : 0;
+        const SceneLayerMemo::AuthorFunc author = [valueKnob](const SceneLayerEdit& edit, std::string* error) {
+            // A copy, so the hook may replace itself.
+            const std::function<void()> hook = sceneTestSourceAuthorHook();
+            if (hook) {
+                hook();
+            }
 
-        return emitSceneLayer(ScenePayload(), [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorSource(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+            return sceneTestAuthorSource(edit, valueKnob ? valueKnob->getValue() : 0, error);
+        };
+
+        return emitSceneLayer(ScenePayload(), author, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
     }
 
     KnobIntWPtr _value;

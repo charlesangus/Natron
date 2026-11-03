@@ -42,6 +42,7 @@
 #include <QString>
 #include <QTemporaryDir>
 
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/RectI.h"
 
@@ -276,7 +277,7 @@ TEST(OiioReadSupport, DataWindowIsMirroredWithinTheDisplayWindow)
     EXPECT_EQ(10, r.y2);
 }
 
-TEST(OiioReadSupport, HeaderCacheFollowsTheFileOnDisk)
+TEST(OiioReadSupport, ARewrittenFileFailsUntilReloadThenGivesTheNewHeader)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -294,6 +295,15 @@ TEST(OiioReadSupport, HeaderCacheFollowsTheFileOnDisk)
 
     const Fixture big = { "h.exr", OIIO::TypeDesc::FLOAT, 3, 32, 24, 0, 0, 0, 0, 32, 24, 0 };
     ASSERT_FALSE(writeFixture(dir, big).empty());
+    const std::string changed = FileStampRegistry::changedOnDiskMessage(path);
+    error.clear();
+    EXPECT_FALSE(bool(OiioReadSupport::readHeader(path, &error)));
+    EXPECT_EQ(changed, error);
+
+    // Reload: the stamp and the header go, and the new file comes in.
+    FileStampRegistry::instance().invalidate(path);
+    OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
+    error.clear();
     const std::shared_ptr<const OiioReadSupport::Header> second = OiioReadSupport::readHeader(path, &error);
     ASSERT_TRUE(bool(second)) << error;
     EXPECT_EQ(32, second->subimages[0].width);

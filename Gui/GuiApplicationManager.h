@@ -238,6 +238,7 @@ public:
 
     NodeClipBoard& getNodeClipBoard();
     virtual void reloadStylesheets() OVERRIDE FINAL;
+    virtual void onViewer3DNavigationChanged(int navigation) OVERRIDE FINAL;
     virtual void reloadScriptEditorFonts() OVERRIDE FINAL;
 
     void clearNodeClipBoard();

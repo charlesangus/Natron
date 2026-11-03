@@ -188,15 +188,16 @@ TEST_F(NativeDissolveTest, WhichBetweenZeroAndOne)
     expectParity(pair, "which-0.3", true);
 }
 
-TEST_F(NativeDissolveTest, WhichTwoAndAHalfIsClampedToTheLastInput)
+TEST_F(NativeDissolveTest, WhichTwoAndAHalfDissolvesTheLastInputHalfwayToBlack)
 {
     resetProject();
     ParityPair pair = makePair(3);
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 2.5 }));
 
-    // The region is the union of the connected inputs, so the OpenFX Dissolve's project-format region
-    // is not the reference here; input 2 alone defines it.
+    // Input 3 is unconnected and reads black, so the result is input 2 halfway to black. The region is
+    // the union of the connected inputs, so the OpenFX Dissolve's project-format region is not the
+    // reference here; input 2 alone defines it.
     NodePtr last = pair.native->getInput(3);
     ASSERT_TRUE(bool(last));
     EffectInstancePtr nativeEffect = pair.native->getEffectInstance();
@@ -218,7 +219,9 @@ TEST_F(NativeDissolveTest, WhichTwoAndAHalfIsClampedToTheLastInput)
         ASSERT_EQ(1u, in.size());
         ASSERT_EQ(in[0].pixels.size(), out[0].pixels.size());
         for (std::size_t i = 0; i < in[0].pixels.size(); ++i) {
-            ASSERT_EQ(in[0].pixels[i], out[0].pixels[i]) << "mipmap " << mipmapLevel << ", sample " << i;
+            const float from = in[0].pixels[i];
+            const float expected = (0.f - from) * 0.5f + from;
+            ASSERT_EQ(expected, out[0].pixels[i]) << "mipmap " << mipmapLevel << ", sample " << i;
         }
     }
 }

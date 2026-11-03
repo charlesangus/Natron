@@ -100,8 +100,7 @@ auditedIds()
         PLUGINID_NATRON_BLUR,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
-        PLUGINID_NATRON_ERODE,
-        PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_ERODEDILATE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_COLORLOOKUP,
     };
@@ -443,7 +442,7 @@ TEST_F(PyPlugNativeParamsTest, FilterInnerNodesSavedUnPremultipliedFilterAsStore
             }
         }
         ASSERT_TRUE(bool(inner)) << pyPlug << "/" << scriptName;
-        EXPECT_EQ(std::string(PLUGINID_NATRON_DILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
+        EXPECT_EQ(std::string(PLUGINID_NATRON_ERODEDILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getUnPremultBySelector())) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getKnobByName(kUnPremultByKnobName))) << pyPlug << "/" << scriptName;
     }

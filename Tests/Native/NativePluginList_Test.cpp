@@ -206,19 +206,12 @@ TEST_F(NativePluginListTest, EveryNativeIdHasASingleVersion)
 }
 
 // Native nodes are named by their plain display name, never a reverse-domain OFX-style ID, and
-// start at major 1. The listed nodes are still to be folded into another node.
+// start at major 1.
 TEST_F(NativePluginListTest, NativeIdsArePlainAtMajorOne)
 {
-    const std::set<std::string> pending = {
-        PLUGINID_NATRON_ERODE,
-        PLUGINID_NATRON_DILATE,
-    };
     const PluginsMap& plugins = appPTR->getPluginsList();
 
     for (const FragmentEntry& entry : fragments()) {
-        if (pending.count(entry.id)) {
-            continue;
-        }
         EXPECT_EQ(std::string::npos, entry.id.find('.')) << entry.id << " is a reverse-domain ID";
         EXPECT_EQ(1, entry.major) << entry.id;
         const PluginsMap::const_iterator it = plugins.find(entry.id);

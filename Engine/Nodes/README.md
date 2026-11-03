@@ -1431,7 +1431,7 @@ suite does. Each node parallelises its own render, within the thread budget
   definition, whatever the mask; the mask and mix only blend the filtered
   window with the source. A pixel's value then never depends on the mask
   elsewhere, and through two render windows it is identical for the FIR
-  Gaussian, the finite-difference EdgeDetect filters and Erode/Dilate. The IIR
+  Gaussian, the finite-difference EdgeDetect filters and ErodeDilate. The IIR
   filters (quasi-Gaussian, Gaussian) start their recursion at the buffer's
   edge, so their value at a pixel moves with the window: the halo,
   max(3, ceil(1.5 size)), is about 3.6 sigma, and on the parity source at sizes
@@ -1527,7 +1527,7 @@ NaNs matches, as do equal infinities.
 
 | Class | `ParityTolerance` | Bound | Used for |
 |---|---|---|---|
-| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge's multiply-and-add Porter-Duff operators on the GPU, Crop without softness |
+| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, ErodeDilate, Merge's multiply-and-add Porter-Duff operators on the GPU, Crop without softness |
 | Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve, Merge's conjoint-over and disjoint-over on the GPU |
 | Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes on the GPU |
 | Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |

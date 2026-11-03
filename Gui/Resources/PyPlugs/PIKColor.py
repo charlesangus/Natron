@@ -964,7 +964,7 @@ def createInstance(app,group):
     # End of node "Shuffle1"
 
     # Start of node "DilateFast1"
-    lastNode = app.createNode("net.sf.cimg.CImgDilate", 2, group)
+    lastNode = app.createNode("ErodeDilate", 1, group)
     lastNode.setScriptName("DilateFast1")
     lastNode.setLabel("DilateFast1")
     lastNode.setPosition(579, 428)
@@ -990,14 +990,14 @@ def createInstance(app,group):
 
     param = lastNode.getParam("userTextArea")
     if param is not None:
-        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">(size/5)*multi*2</font>")
+        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">-(size/5)*multi*2</font>")
         del param
 
     del lastNode
     # End of node "DilateFast1"
 
     # Start of node "DilateFast2"
-    lastNode = app.createNode("net.sf.cimg.CImgDilate", 2, group)
+    lastNode = app.createNode("ErodeDilate", 1, group)
     lastNode.setScriptName("DilateFast2")
     lastNode.setLabel("DilateFast2")
     lastNode.setPosition(803, 431)
@@ -1012,8 +1012,8 @@ def createInstance(app,group):
 
     param = lastNode.getParam("size")
     if param is not None:
-        param.setValue(2, 0)
-        param.setValue(2, 1)
+        param.setValue(-2, 0)
+        param.setValue(-2, 1)
         del param
 
     param = lastNode.getParam("expandRoD")
@@ -1023,7 +1023,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("userTextArea")
     if param is not None:
-        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">size/5</font>")
+        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">-size/5</font>")
         del param
 
     del lastNode
@@ -1115,12 +1115,12 @@ def createInstance(app,group):
     param.setExpression("(thisGroup.size.get()/5)*2", False, 1)
     del param
     param = groupDilateFast1.getParam("size")
-    param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 0)
-    param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 1)
+    param.setExpression("-(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 0)
+    param.setExpression("-(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 1)
     del param
     param = groupDilateFast2.getParam("size")
-    param.setExpression("thisGroup.size.get()/5", False, 0)
-    param.setExpression("thisGroup.size.get()/5", False, 1)
+    param.setExpression("-thisGroup.size.get()/5", False, 0)
+    param.setExpression("-thisGroup.size.get()/5", False, 1)
     del param
 
     # Applies the callback once so the initial mapping matches screenType even though

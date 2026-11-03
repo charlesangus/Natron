@@ -413,7 +413,7 @@ def build_gtg():
 
 
 def erode(inp):
-    n = make("net.sf.cimg.CImgErode")
+    n = make("ErodeDilate")
     n.connectInput(0, inp)
     param(n, "size").set(ERODE_SIZE, ERODE_SIZE)
     return n

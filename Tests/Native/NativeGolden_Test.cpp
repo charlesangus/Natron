@@ -755,26 +755,23 @@ TEST_F(NativeGoldenTest, Glow)
     run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
 }
 
-TEST_F(NativeGoldenTest, Erode)
+TEST_F(NativeGoldenTest, ErodeDilate)
 {
     const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
+    const Apply dilate = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -1., -1. }); };
+    const Apply dilateWide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -3., -1. }); };
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("wide", wide));
-    v.push_back(variant("negative", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
+    v.push_back(variant("dilateClipped", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
     v.push_back(filterMaskMix(wide));
-    run(filterSpec("Erode", PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE), v);
-}
-
-TEST_F(NativeGoldenTest, Dilate)
-{
-    const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(variant("wide", wide));
-    v.push_back(variant("negative", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
-    v.push_back(filterMaskMix(wide));
-    run(filterSpec("Dilate", PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE), v);
+    v.push_back(variant("dilate", dilate));
+    v.push_back(variant("dilateWide", dilateWide));
+    v.push_back(variant("erodeClipped", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 2., 2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
+    v.push_back(maskVariant("dilateMaskmix", [dilateWide](const GoldenGraph& g) {
+        return dilateWide(g) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+    }));
+    run(filterSpec("ErodeDilate", PLUGINID_NATRON_ERODEDILATE, PLUGIN_MAJOR_NATRON_ERODEDILATE), v);
 }
 
 TEST_F(NativeGoldenTest, Transform)

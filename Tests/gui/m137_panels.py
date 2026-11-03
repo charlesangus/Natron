@@ -16,7 +16,7 @@ NODES = [
     ("Grade", "Grade"),
     ("Saturation", "Saturation"),
     ("Blur", "Blur"),
-    ("ErodeDilate", "net.sf.cimg.CImgErode"),
+    ("ErodeDilate", "ErodeDilate"),
     ("Transform", "Transform"),
     ("Dissolve", "Dissolve"),
     ("Switch", "Switch"),

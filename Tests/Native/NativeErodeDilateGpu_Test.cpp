@@ -101,13 +101,23 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeErodeDilateGpu64x48", 1.));
     }
 
-    NodePtr makeNode(bool dilate)
+    NodePtr makeNode()
     {
-        NodePtr node = dilate ? createNode(QString::fromUtf8(PLUGINID_NATRON_DILATE), PLUGIN_MAJOR_NATRON_DILATE)
-                              : createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE), PLUGIN_MAJOR_NATRON_ERODE);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
         EXPECT_TRUE(bool(node));
 
         return node;
+    }
+
+    // Erodes by `x` by `y`, or dilates by them when `dilate` negates them.
+    static bool setSize(const NodePtr& node,
+                        bool dilate,
+                        double x,
+                        double y)
+    {
+        const double sign = dilate ? -1. : 1.;
+
+        return setKnobValues(node, kErodeDilateParamSize, { sign * x, sign * y });
     }
 
     static StagedImageEffect* effectOf(const NodePtr& node)
@@ -125,10 +135,10 @@ TEST_F(NativeErodeDilateGpuTest, EligibilityFollowsTheSupportedSettings)
 #endif
     resetProject();
     for (bool dilate : { false, true }) {
-        NodePtr node = makeNode(dilate);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
-        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 6., -40. }));
+        ASSERT_TRUE(setSize(node, dilate, 6., -40.));
         const std::string name = dilate ? "dilate" : "erode";
 
         for (int nComps : { 1, 2, 3, 4 }) {
@@ -160,7 +170,7 @@ TEST_F(NativeErodeDilateGpuTest, EligibilityFollowsTheSupportedSettings)
             EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " bit depth " << (int)depth;
         }
         // The knob's range, 1000 pixels, fits the kernel's tile.
-        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { -1000., 1000. }));
+        ASSERT_TRUE(setSize(node, dilate, -1000., 1000.));
         EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << name << " the widest size";
     }
 }
@@ -168,7 +178,7 @@ TEST_F(NativeErodeDilateGpuTest, EligibilityFollowsTheSupportedSettings)
 TEST_F(NativeErodeDilateGpuTest, InputRegionIsTheSourceRegionOfInterest)
 {
     resetProject();
-    NodePtr node = makeNode(false);
+    NodePtr node = makeNode();
     ErodeDilate* effect = node ? dynamic_cast<ErodeDilate*>(node->getEffectInstance().get()) : NULL;
     ASSERT_TRUE(effect != NULL);
     ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 12., -30. }));
@@ -380,11 +390,11 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRender)
             for (bool expandRoD : { false, true }) {
                 // A fresh node per setting, so no region of definition cached under an earlier
                 // setting is reused.
-                NodePtr node = makeNode(dilate);
+                NodePtr node = makeNode();
                 StagedImageEffect* effect = effectOf(node);
                 ASSERT_TRUE(effect != NULL);
                 connectNodes(source, node, 0, true);
-                ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { size.x, size.y }));
+                ASSERT_TRUE(setSize(node, dilate, size.x, size.y));
                 ASSERT_TRUE(setKnobValues(node, kErodeDilateParamExpandRoD, { expandRoD ? 1. : 0. }));
 
                 for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
@@ -476,7 +486,7 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
         NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
         ASSERT_TRUE(bool(maskSource));
         setParitySourceOrigin(maskSource, c.maskX, c.maskY);
-        NodePtr node = makeNode(c.dilate);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
@@ -494,7 +504,7 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
             ASSERT_TRUE(bool(channelSet));
             channelSet->setChannels(0, std::vector<std::string> { "R", "A" });
         }
-        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { c.size.x, c.size.y }));
+        ASSERT_TRUE(setSize(node, c.dilate, c.size.x, c.size.y));
 
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
@@ -636,11 +646,11 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
     const SizeCase sizes[] = { { 1., 1. }, { 2., -2. }, { -6., 6. }, { 40., -40. }, { 6., 63. } };
     for (bool dilate : { false, true }) {
         for (const SizeCase& size : sizes) {
-            NodePtr node = makeNode(dilate);
+            NodePtr node = makeNode();
             StagedImageEffect* effect = effectOf(node);
             ASSERT_TRUE(effect != NULL);
             connectNodes(source, node, 0, true);
-            ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { size.x, size.y }));
+            ASSERT_TRUE(setSize(node, dilate, size.x, size.y));
             const RectI rod = pixelRegionOfDefinition(node, 0);
 
             for (const RectI& roi : testWindows(rod)) {
@@ -812,14 +822,14 @@ TEST_F(NativeErodeDilateGpuTest, GradeErodeGradeChainRunsAsOneRegion)
         StripChain chain;
         chain.source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
         chain.first = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-        chain.filter = makeNode(dilate);
+        chain.filter = makeNode();
         chain.second = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         ASSERT_TRUE(bool(chain.source) && bool(chain.first) && bool(chain.filter) && bool(chain.second));
         connectNodes(chain.source, chain.first, 0, true);
         connectNodes(chain.first, chain.filter, 0, true);
         connectNodes(chain.filter, chain.second, 0, true);
         ASSERT_TRUE(setKnobValues(chain.first, "multiply", std::vector<double>(4, 1.5)));
-        ASSERT_TRUE(setKnobValues(chain.filter, kErodeDilateParamSize, { 6., -2. }));
+        ASSERT_TRUE(setSize(chain.filter, dilate, 6., -2.));
         ASSERT_TRUE(setKnobValues(chain.second, "offset", std::vector<double>(4, 0.25)));
 
         const RectI window = paritySourceWindow(chain.source, kTime, 0);
@@ -848,7 +858,7 @@ TEST_F(NativeErodeDilateGpuTest, StripsMatchTheWholeRegionExactly)
         StripChain chain;
         chain.source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
         chain.first = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-        chain.filter = makeNode(dilate);
+        chain.filter = makeNode();
         chain.second = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         ASSERT_TRUE(bool(chain.source) && bool(chain.first) && bool(chain.filter) && bool(chain.second));
         connectNodes(chain.source, chain.first, 0, true);
@@ -856,7 +866,7 @@ TEST_F(NativeErodeDilateGpuTest, StripsMatchTheWholeRegionExactly)
         connectNodes(chain.filter, chain.second, 0, true);
         ASSERT_TRUE(setKnobValues(chain.first, "multiply", std::vector<double>(4, 1.5)));
         const double size = dilate ? kStripFilterSize : -kStripFilterSize;
-        ASSERT_TRUE(setKnobValues(chain.filter, kErodeDilateParamSize, { size, size }));
+        ASSERT_TRUE(setSize(chain.filter, dilate, size, size));
         ASSERT_TRUE(setKnobValues(chain.second, "offset", std::vector<double>(4, 0.25)));
         const std::vector<NodePtr> graph({ chain.first, chain.filter, chain.second });
         const RectI window = pixelRoD(chain.second);

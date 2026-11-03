@@ -334,7 +334,7 @@ future core work has solid ground to build on.
 | M264 | Expression Result Cache | todo | M263 |  | E14 | [M264-expression-result-cache.md](PLAN/MILESTONES/M264-expression-result-cache.md) |
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
 | M266 | Expression Namespace Spike | todo | M262 |  | E14 | [M266-expression-namespace-spike.md](PLAN/MILESTONES/M266-expression-namespace-spike.md) |
-| M267 | RFVSwitch Match Choice Button | doing | M72 | bosley-native-nodes | E13 | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
+| M267 | RFVSwitch Match Choice Button | done | M72 | bosley-native-nodes | E13 | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
 | M270 | Lanczos Sinc Resampling Filters | blocked | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | doing | - | bosley-native-nodes | E14 | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |

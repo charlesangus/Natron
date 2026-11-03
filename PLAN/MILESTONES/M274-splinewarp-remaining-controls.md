@@ -274,6 +274,11 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
   - verify: the knob is gone; SplineWarp tests and the GUI check pass without it.
   - size: M
 
+- [ ] M274.P6.T2 — Remove the separate Soft Boundary role
+  - files: Engine/Nodes/Transform/SplineWarp/*, Engine/PySplineWarp.*, docs/SplineWarp.md, tests, GUI scripts
+  - approach: feathered boundaries (falloff from the curve to its feather points, M147) are the soft boundary (user, 2026-11-02); drop the Soft Boundary role, its toggle, the Role column entry and setSoftBoundary, and any render path only it uses.
+  - verify: no Soft Boundary role anywhere; a feathered boundary still gives a soft falloff in the tests and GUI check.
+  - size: M
 
 ## Decisions
 

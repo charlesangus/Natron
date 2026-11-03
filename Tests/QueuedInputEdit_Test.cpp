@@ -44,6 +44,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Project.h"
 
@@ -290,4 +291,167 @@ TEST_F(QueuedInputEditTest, ARenderCannotStartBetweenTheCheckAndTheApply)
     releaseOnAWorker(&flag);
     QCoreApplication::processEvents();
     EXPECT_EQ(g.b, grade->getInput(0));
+}
+
+// An input edit marks the hash before it lets render starts in: a render that was waiting to
+// start while the edit wrote the input finds the new input under the new hash, never under the
+// hash of the old one.
+TEST_F(QueuedInputEditTest, ARenderStartingAfterTheWriteReadsTheNewHash)
+{
+    TwoSources g;
+    ASSERT_TRUE(build(getApp(), &g));
+    const NodePtr grade = g.grade;
+    const U64 hashA = grade->getHashValue();
+
+    std::atomic<bool> armed(true);
+    std::atomic<bool> starting(false);
+    std::unique_ptr<RenderingFlagSetter> flag;
+    NodePtr seen;
+    U64 seenHash = 0;
+    std::thread worker;
+    Node::setInputEditHookForTesting([&](const Node* node,
+                                         bool /*queued*/) {
+        if ((node != grade.get()) || !armed.exchange(false)) {
+            return;
+        }
+        worker = std::thread([&]() {
+            starting = true;
+            flag.reset(new RenderingFlagSetter(grade));
+            seen = grade->getInput(0);
+            seenHash = grade->getHashValue();
+        });
+        while (!starting) {
+            std::this_thread::yield();
+        }
+    });
+    const bool replaced = grade->replaceInput(g.b, 0);
+    if (worker.joinable()) {
+        worker.join();
+    }
+    Node::setInputEditHookForTesting(Node::InputEditHook());
+
+    ASSERT_TRUE(replaced);
+    EXPECT_EQ(g.b, seen);
+    const U64 hashB = grade->getHashValue();
+    EXPECT_NE(hashA, hashB);
+    EXPECT_EQ(hashB, seenHash) << "the render found the new input under the old hash";
+
+    releaseOnAWorker(&flag);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(g.b, grade->getInput(0));
+}
+
+// Removing a GroupInput shrinks the group's inputs at once; the next dequeue, which a render's
+// end asks for, must not bring the removed input back.
+TEST_F(QueuedInputEditTest, ARemovedGroupInputStaysRemovedAfterTheDequeue)
+{
+    const AppInstancePtr app = getApp();
+    const NodeCollectionPtr root = app->getProject();
+    const NodePtr a = createConstantIn(app, root, kWindow, { 0.5, 0.25, 0.125, 1. });
+    const NodePtr b = createConstantIn(app, root, kWindow, { 0.125, 0.75, 0.5, 1. });
+    const NodePtr groupNode = createEmptyGroupIn(app, root);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(groupNode));
+    const NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    const NodePtr in1 = createIn(app, group, PLUGINID_NATRON_INPUT);
+    const NodePtr in2 = createIn(app, group, PLUGINID_NATRON_INPUT);
+    const NodePtr out = createIn(app, group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(bool(in1) && bool(in2) && bool(out));
+    ASSERT_TRUE(out->connectInput(in1, 0));
+    ASSERT_EQ(2, group->getNInputs());
+    ASSERT_TRUE(groupNode->connectInput(a, 0));
+    ASSERT_TRUE(groupNode->connectInput(b, 1));
+    const U64 hashWith = groupNode->getHashValue();
+
+    in2->deactivate();
+    EXPECT_EQ(1, group->getNInputs());
+    EXPECT_EQ(1u, groupNode->getInputs().size());
+    const U64 hashWithout = groupNode->getHashValue();
+    EXPECT_NE(hashWith, hashWithout);
+
+    groupNode->dequeueActions();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, group->getNInputs());
+    EXPECT_EQ(1u, groupNode->getInputs().size());
+    std::vector<NodePtr> inputs;
+    group->getInputs(&inputs, false);
+    ASSERT_EQ(1u, inputs.size());
+    EXPECT_EQ(in1, inputs[0]);
+    inputs.clear();
+    group->getInputs(&inputs, true);
+    ASSERT_EQ(1u, inputs.size());
+    EXPECT_EQ(in1, inputs[0]);
+    EXPECT_EQ(a, groupNode->getInput(0));
+    EXPECT_EQ(hashWithout, groupNode->getHashValue());
+
+    in2->activate();
+    EXPECT_EQ(2, group->getNInputs());
+    groupNode->dequeueActions();
+    EXPECT_EQ(2, group->getNInputs());
+}
+
+// The viewer's A/B selection is folded into its hash: a render starting after a switch must read
+// the hash of the selection it sees, whichever call made the switch.
+TEST_F(QueuedInputEditTest, ARenderStartingAfterTheABSwitchReadsTheNewHash)
+{
+    const AppInstancePtr app = getApp();
+    const NodeCollectionPtr root = app->getProject();
+    const NodePtr a = createConstantIn(app, root, kWindow, { 0.5, 0.25, 0.125, 1. });
+    const NodePtr b = createConstantIn(app, root, kWindow, { 0.125, 0.75, 0.5, 1. });
+    const NodePtr viewerNode = createViewerIn(app, root);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(viewerNode));
+    InspectorNode* viewer = dynamic_cast<InspectorNode*>(viewerNode.get());
+    ASSERT_TRUE(viewer != NULL);
+    ASSERT_TRUE(viewerNode->connectInput(a, 0));
+    ASSERT_TRUE(viewerNode->connectInput(b, 1));
+    viewer->setInputA(0);
+    viewer->setInputB(1);
+    const U64 hashB1 = viewerNode->getHashValue();
+    viewer->setInputB(0);
+    const U64 hashB0 = viewerNode->getHashValue();
+    ASSERT_NE(hashB0, hashB1);
+
+    for (int path = 0; path < 2; ++path) {
+        viewer->setInputB(0);
+        ASSERT_EQ(hashB0, viewerNode->getHashValue());
+
+        std::atomic<bool> armed(true);
+        std::atomic<bool> starting(false);
+        int seenB = -1;
+        U64 seenHash = 0;
+        std::thread worker;
+        Node::setInputEditHookForTesting([&](const Node* node,
+                                             bool /*queued*/) {
+            if ((node != viewerNode.get()) || !armed.exchange(false)) {
+                return;
+            }
+            worker = std::thread([&]() {
+                starting = true;
+                std::unique_ptr<RenderingFlagSetter> flag(new RenderingFlagSetter(viewerNode));
+                int seenA = -1;
+                viewer->getActiveInputs(seenA, seenB);
+                seenHash = viewerNode->getHashValue();
+                flag.reset();
+            });
+            while (!starting) {
+                std::this_thread::yield();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        });
+        if (path == 0) {
+            viewer->setInputB(1);
+        } else {
+            viewer->setActiveInputAndRefresh(1, false);
+        }
+        if (worker.joinable()) {
+            worker.join();
+        }
+        Node::setInputEditHookForTesting(Node::InputEditHook());
+        QCoreApplication::processEvents();
+
+        EXPECT_FALSE(armed) << "path " << path << ": the A/B switch let render starts in while it changed the selection";
+        EXPECT_EQ(1, seenB) << "path " << path;
+        EXPECT_EQ(hashB1, seenHash) << "path " << path << ": the render found the new selection under the old hash";
+        EXPECT_EQ(hashB1, viewerNode->getHashValue()) << "path " << path;
+    }
 }

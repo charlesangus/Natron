@@ -621,6 +621,30 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
     }
 } // ConnectCommand::doConnect
 
+KissConnectCommand::KissConnectCommand(NodeGraph* graph,
+                                       Edge* edge,
+                                       const NodeGuiPtr& newSrc,
+                                       QUndoCommand* parent)
+    : ConnectCommand(graph, edge, NodeGuiPtr(), newSrc, parent)
+    , _firstRedoCalled(false)
+{
+}
+
+void
+KissConnectCommand::applyNow()
+{
+    ConnectCommand::redo();
+}
+
+void
+KissConnectCommand::redo()
+{
+    if (_firstRedoCalled) {
+        ConnectCommand::redo();
+    }
+    _firstRedoCalled = true;
+}
+
 InsertNodeCommand::InsertNodeCommand(NodeGraph* graph,
                                      Edge* edge,
                                      const NodeGuiPtr& exitNode,

@@ -213,6 +213,28 @@ private:
 };
 
 /*
+ * @brief Connects an unconnected input to newSrc. applyNow() makes the connection while a node
+ * drag is still under way; the first redo(), when the drag's command is pushed, then does nothing.
+ */
+class KissConnectCommand
+    : public ConnectCommand {
+    Q_DECLARE_TR_FUNCTIONS(KissConnectCommand)
+
+public:
+    KissConnectCommand(NodeGraph* graph,
+                       Edge* edge,
+                       const NodeGuiPtr& newSrc,
+                       QUndoCommand* parent = 0);
+
+    void applyNow();
+
+    virtual void redo();
+
+private:
+    bool _firstRedoCalled;
+};
+
+/*
  * @brief Swaps node inputs between two recorded states. The "after" state is already
  * in place when the command is pushed, so the first redo does nothing.
  */

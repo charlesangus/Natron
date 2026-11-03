@@ -118,8 +118,10 @@ class GpuParityRuntime;
 
 // Creates a runtime on whatever Vulkan device exists, software ones included, since the
 // application's context refuses CPU devices outside Force mode. Returns false after reportNoGpu()
-// when there is none: the test must return.
-bool createRuntime(std::unique_ptr<GpuParityRuntime>& runtime);
+// when there is none: the test must return. Without `pushDescriptors` the device is opened with
+// VK_KHR_push_descriptor masked off, as on drivers that lack it.
+bool createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
+                   bool pushDescriptors = true);
 
 class GpuParityRuntime {
 public:
@@ -133,7 +135,8 @@ public:
                            std::size_t floats);
 
 private:
-    friend bool createRuntime(std::unique_ptr<GpuParityRuntime>& runtime);
+    friend bool createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
+                              bool pushDescriptors);
 
     struct Impl;
     GpuParityRuntime();

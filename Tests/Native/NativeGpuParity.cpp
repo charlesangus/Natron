@@ -168,10 +168,12 @@ GpuParityRuntime::buffer(int slot,
 }
 
 bool
-createRuntime(std::unique_ptr<GpuParityRuntime>& runtime)
+createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
+              bool pushDescriptors)
 {
     std::unique_ptr<GpuParityRuntime> created(new GpuParityRuntime);
     gpu::GpuRuntimeOptions options;
+    options.device.disablePushDescriptor = !pushDescriptors;
     const gpu::GpuStatus status = gpu::GpuRuntime::create(options, created->_impl->runtime);
     if (!status) {
         reportNoGpu(status.message);

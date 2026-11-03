@@ -75,6 +75,8 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , shiftDown(0)
     , ctrlDown(0)
     , altDown(0)
+    , cloneOffset(0., 0.)
+    , mouseCenterOnSizeChange()
     , _host(host)
 {
 }
@@ -119,9 +121,12 @@ RotoCurveInteract::getCurrentTime() const
 std::pair<double, double>
 RotoCurveInteract::getPixelScale() const
 {
-    std::pair<double, double> pixelScale;
-
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    std::pair<double, double> pixelScale(1., 1.);
+    // Scripts and tests drive the pen without a viewer.
+    OverlaySupport* viewport = _host->getCurrentViewportForOverlays();
+    if (viewport) {
+        viewport->getPixelScale(pixelScale.first, pixelScale.second);
+    }
 
     return pixelScale;
 }
@@ -272,6 +277,131 @@ RotoCurveInteract::drawEllipse(double x,
     glEnd();
 
     glPopMatrix();
+}
+
+KnobButtonPtr
+RotoCurveInteract::createResetCloneOffsetKnob(const KnobPagePtr& page)
+{
+    KnobButtonPtr resetCloneOffset = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamResetCloneOffsetLabel));
+    resetCloneOffset->setName(kRotoUIParamResetCloneOffset);
+    resetCloneOffset->setHintToolTip(tr(kRotoUIParamResetCloneOffsetHint));
+    resetCloneOffset->setEvaluateOnChange(false);
+    resetCloneOffset->setSecretByDefault(true);
+    resetCloneOffset->setInViewerContextCanHaveShortcut(true);
+    resetCloneOffset->setInViewerContextNewLineActivated(true);
+    page->addKnob(resetCloneOffset);
+    _host->addOverlaySlaveParam(resetCloneOffset);
+    resetCloneOffsetButton = resetCloneOffset;
+
+    return resetCloneOffset;
+}
+
+bool
+RotoCurveInteract::isCloneOffsetDragModifier() const
+{
+    return ctrlDown && !shiftDown && !altDown;
+}
+
+void
+RotoCurveInteract::startCloneOffsetDrag(const QPointF& pos)
+{
+    state = eEventStateDraggingCloneOffset;
+    lastClickPos = pos;
+    lastMousePos = pos;
+}
+
+bool
+RotoCurveInteract::dragCloneOffset(double dx,
+                                   double dy)
+{
+    if (state != eEventStateDraggingCloneOffset) {
+        return false;
+    }
+    cloneOffset.first -= dx;
+    cloneOffset.second -= dy;
+
+    return true;
+}
+
+bool
+RotoCurveInteract::isBrushSizeDragModifier() const
+{
+    return shiftDown && !ctrlDown && !altDown;
+}
+
+void
+RotoCurveInteract::startBrushSizeDrag(const QPointF& pos)
+{
+    state = eEventStateDraggingBrushSize;
+    mouseCenterOnSizeChange = pos;
+}
+
+bool
+RotoCurveInteract::dragBrushSize(const KnobDoublePtr& size,
+                                 double dx,
+                                 double dy)
+{
+    if (state != eEventStateDraggingBrushSize) {
+        return false;
+    }
+    if (!size) {
+        return true;
+    }
+    double value = size->getValue() + ((dx + dy) / 2.);
+    const double step = 0.01;
+    value = std::floor(value / step + 0.5) * step;
+    size->setValue(std::max(1., value));
+
+    return true;
+}
+
+void
+RotoCurveInteract::drawCloneSource(const QPointF& centre,
+                                   const std::pair<double, double>& offset,
+                                   double radius,
+                                   double opacity,
+                                   double screenPixelRatio,
+                                   const std::pair<double, double>& viewportSize)
+{
+    GLdouble projection[16];
+    glGetDoublev(GL_PROJECTION_MATRIX, projection);
+    // How much to translate GL_PROJECTION by to move exactly one pixel on screen.
+    const double shadowX = 2. / (projection[0] * viewportSize.first);
+    const double shadowY = 2. / (projection[5] * viewportSize.second);
+    const double sourceX = centre.x() + offset.first;
+    const double sourceY = centre.y() + offset.second;
+
+    for (int l = 0; l < 2; ++l) {
+        glMatrixMode(GL_PROJECTION);
+        const int direction = (l == 0) ? 1 : -1;
+        glTranslated(direction * shadowX, -direction * shadowY, 0);
+        glMatrixMode(GL_MODELVIEW);
+
+        glColor3f(.5f * l * opacity, .5f * l * opacity, .5f * l * opacity);
+        glLineWidth(1.5 * screenPixelRatio);
+        glBegin(GL_LINES);
+        if (state == eEventStateDraggingCloneOffset) {
+            glVertex2d(centre.x(), centre.y());
+            glVertex2d(sourceX, sourceY);
+        }
+        glVertex2d(sourceX, sourceY - radius);
+        glVertex2d(sourceX, sourceY + radius);
+        glVertex2d(sourceX - radius, sourceY);
+        glVertex2d(sourceX + radius, sourceY);
+        glEnd();
+
+        drawEllipse(sourceX, sourceY, radius, radius, l, 1.f, 1.f, 1.f, opacity / 2.);
+    }
+}
+
+void
+RotoCurveInteract::startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item)
+{
+    KnobIntPtr frame = item ? item->getLifeTimeFrameKnob() : KnobIntPtr();
+    RotoCurveContextPtr context = getCurveContext();
+    if (frame && context) {
+        frame->setValue(context->getTimelineCurrentTime());
+    }
 }
 
 void
@@ -1570,6 +1700,12 @@ RotoCurveInteract::getSelectedCpsBBOXCenter()
 void
 RotoCurveInteract::handleBezierSelection(const BezierPtr& curve)
 {
+    handleItemSelection(curve);
+}
+
+void
+RotoCurveInteract::handleItemSelection(const RotoDrawableItemPtr& curve)
+{
     /// find out if the bezier is already selected.
     bool found = false;
 
@@ -1694,7 +1830,7 @@ RotoCurveInteract::isNearbySelectedCpsCrossHair(const QPointF& pos) const
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     double xHairMidSizeX = kXHairSelectedCpsBox * pixelScale.first;
     double xHairMidSizeY = kXHairSelectedCpsBox * pixelScale.second;
@@ -2183,7 +2319,7 @@ RotoCurveInteract::smoothSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2229,7 +2365,7 @@ RotoCurveInteract::cuspSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2347,7 +2483,7 @@ RotoCurveInteract::moveSelectedCpsWithKeyArrows(int x,
 
     if (!points.empty()) {
         std::pair<double, double> pixelScale;
-        _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+        pixelScale = getPixelScale();
         double time = _host->getCurrentTime();
 
         MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
@@ -2872,7 +3008,7 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
     bool didSomething = false;
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     if (selectedTool == eRotoToolSelectAll) {
         double bezierSelectionTolerance = kBezierSelectionTolerance * pixelScale.first;
@@ -2918,7 +3054,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     }
 
     std::pair<double, double> pixelScale;
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     bool didSomething = false;
     double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
@@ -3304,7 +3440,7 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     RotoCurveContextPtr context = getCurveContext();
     assert(context);

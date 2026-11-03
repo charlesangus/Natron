@@ -117,3 +117,4 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
   - size: M
 
 **Verification gate:** full build and tests pass; a new AppImage is accepted by the user.
+- 2026-11-02 — main merged in (viewer knobs command compression ID → 26); CacheStress non-hashed sweep skips viewers; gate re-running (PM).

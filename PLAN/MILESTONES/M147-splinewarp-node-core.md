@@ -237,3 +237,4 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 - 2026-10-20 — **Invert toggle (user, grill).**
 - 2026-10-20 — **Smoothness knob (user, grill).**
 - 2026-10-20 — **Hidden until M148 - SplineWarp Viewer Tools (user, grill).**
+- 2026-11-02 — main merged in; gate fixes at 042531d7e: a key set through a linked knob also lands on its own curve (Engine/KnobImpl.h, Knob<T>::setKeyFrame) so the roto context's selected-item copy can't drop it — core path, review in PR; boundary/concatenation tests corrected; RotoPaint reference updated with the four values the fix changes (diffed from the failing run) (PM).

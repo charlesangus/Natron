@@ -55,3 +55,4 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
 - 2026-10-25 — **Depth-aware occlusion, optional (user):** plain gather by default.
 
 **Verification gate:** the full build and ctest pass, including both VectorBlur suites (GPU on lavapipe and RADV). Under Xvfb VectorBlur is rendered on a CG fixture with motion vectors and depth, with occlusion off and on and offsets 0, 0.5 and 1; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+- 2026-11-02 — main merged in; gate green; GUI check's occlusion probe now reads red only (the depth bar is cyan); GUI re-running (PM).

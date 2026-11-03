@@ -51,3 +51,4 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 - 2026-10-25 — **Moved from M131 - Native Defocus Family (user):** IBlur went to M184 - Variable-Size Filter Kit and IDefocus here, so all I-nodes share one Map convention.
 
 **Verification gate:** the full build and ctest pass, including both IDefocus suites (GPU on lavapipe and RADV). Under Xvfb IDefocus with disc, 6-blade and image kernels and a roto Map is rendered on a highlight-rich fixture; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+- 2026-11-02 — main merged in; IDefocus gpuWeight follows main's Defocus (M239); gate fails only on unrecorded goldens — recording (PM).

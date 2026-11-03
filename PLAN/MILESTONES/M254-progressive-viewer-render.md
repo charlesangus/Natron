@@ -59,7 +59,7 @@ Selection's viewer dropdown and M251 - Cycles Rendering.
 
 ## Phase 254.2: Max Samples on the Viewer node
 
-- [x] M254.P2.T1 — Max Samples and Stop/Resume as Viewer knobs in a viewer toolbar (b5c839907: `maxSamples` int "Max Samples", 0 = delegate default; `refinementPaused` bool "Refinement Paused"; toolbar row under the second settings row, only for non-Storm scene viewers; undoable like other viewer toggles; gate pending)
+- [x] M254.P2.T1 — Max Samples and Stop/Resume as Viewer knobs in a viewer toolbar (b5c839907, review fixes e24d17f44, gate+GUI green, PR #184, UAT AppImage ready: `maxSamples` int "Max Samples", 0 = delegate default; `refinementPaused` bool "Refinement Paused"; toolbar row under the second settings row, only for non-Storm scene viewers; undoable like other viewer toggles)
   - files: `Engine/ViewerNode*.{h,cpp}` (Viewer knobs), `Gui/ViewerTab*`/`Gui/SceneViewport.{h,cpp}` (toolbar), `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, the M254 tests
   - approach: replace the Renderer-submenu spin box with Viewer node knobs `maxSamples` ("Max Samples") and a Stop/Resume button knob; show them in a viewer toolbar, visible when the viewer's renderer is progressive (non-Storm), driven by the knobs (so they save with the project and are scriptable). Changing Max Samples restarts refinement as before; the sample counter stays in the toolbar. The 4K event-loop check records only on remote runners.
   - verify: release gate green; GUI check sets `maxSamples` via Python and sees the toolbar value and refinement stop at the cap; screenshot of the toolbar shared with the user.

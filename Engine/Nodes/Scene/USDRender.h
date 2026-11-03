@@ -162,6 +162,9 @@ private:
                        RenderSetup* setup,
                        std::string* error);
 
+    // Shows warning, or clears the node's message when it is empty.
+    void showWarning(const std::string& warning);
+
     // The output format in pixels and its pixel aspect ratio, from the format knobs.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 

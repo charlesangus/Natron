@@ -52,12 +52,14 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -321,7 +323,7 @@ TEST_F(USDProject3DTest, TheImageIsALiveTextureTheShaderSamples)
     EXPECT_EQ(std::string("UsdUVTexture"), id.GetString());
     PXR_NS::TfToken wrap;
     ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("wrapS")).Get(&wrap));
-    EXPECT_EQ(std::string("clamp"), wrap.GetString());
+    EXPECT_EQ(std::string("black"), wrap.GetString());
     PXR_NS::SdfAssetPath file;
     ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("file")).Get(&file));
     const std::string prefix = std::string(kLiveTextureScheme) + "://" + plate->getFullyQualifiedName() + "/rgba?v=";
@@ -430,8 +432,9 @@ TEST_F(USDProject3DTest, WithoutACameraTheNodeErrors)
     EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("Camera"))) << getMessage(projector).toStdString();
 }
 
-// A camera path no camera has yet is kept: nothing projects, the node warns, and the camera is used
-// as soon as one at that path reaches the Camera input.
+// A camera path the Camera input lacks is left on the shader for the stage the material renders in:
+// nothing projects until a camera at that path is there, and the node does not warn. A camera at
+// that path reaching the Camera input is used directly.
 TEST_F(USDProject3DTest, ACameraPathTheSceneLacksYetProjectsNothingUntilTheCameraArrives)
 {
     createRig();
@@ -442,11 +445,10 @@ TEST_F(USDProject3DTest, ACameraPathTheSceneLacksYetProjectsNothingUntilTheCamer
     PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
     ASSERT_TRUE(bool(shader));
     EXPECT_EQ(PXR_NS::GfMatrix4d(0.), getMatrix(shader));
-    QString message;
-    int type = -1;
-    projector->getPersistentMessage(&message, &type, false);
-    EXPECT_EQ((int)eMessageTypeWarning, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/Later"))) << message.toStdString();
+    std::string deferred;
+    ASSERT_TRUE(shader.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera)).Get(&deferred));
+    EXPECT_EQ(std::string("/Later"), deferred);
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
 
     // With no Camera input at all, the same.
     projector->disconnectInput(kUSDProject3DInputCamera);
@@ -454,8 +456,7 @@ TEST_F(USDProject3DTest, ACameraPathTheSceneLacksYetProjectsNothingUntilTheCamer
     shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
     ASSERT_TRUE(bool(shader));
     EXPECT_EQ(PXR_NS::GfMatrix4d(0.), getMatrix(shader));
-    projector->getPersistentMessage(&message, &type, false);
-    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
 
     ASSERT_TRUE(projector->connectInput(camera, kUSDProject3DInputCamera));
     getKnob<KnobString>(camera, kSceneParamPrimPath)->setValue("/Later");
@@ -463,7 +464,86 @@ TEST_F(USDProject3DTest, ACameraPathTheSceneLacksYetProjectsNothingUntilTheCamer
     shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
     ASSERT_TRUE(bool(shader));
     EXPECT_NEAR(0.5, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(0., 0., 0.))[0], 1e-6);
+    EXPECT_FALSE(shader.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera)).IsValid());
     EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
+}
+
+// The camera merged in below the projection, with nothing on the Camera input: the composed scene
+// resolves Camera Path, on the card the material is grafted under, as the Camera input would, and a
+// stage synced to the scene does too.
+TEST_F(USDProject3DTest, ACameraPathResolvesOnTheComposedScene)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue(getNodePath(camera).GetString());
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(card && merge);
+    ASSERT_TRUE(card->connectInput(projector, 0));
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(camera, 1));
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(merge, &payload, &error)) << error;
+    EXPECT_TRUE(SceneOps::hasDeferredProjections(payload));
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim cardPrim = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(cardPrim.IsValid());
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(cardPrim).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    const PXR_NS::UsdShadeShader shader = bound.ComputeSurfaceSource();
+    ASSERT_TRUE(bool(shader));
+    EXPECT_NEAR(0.5, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(0., 0., 0.))[0], 1e-6);
+    EXPECT_NEAR(0.25, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(-0.5, 0., 0.))[0], 1e-6);
+
+    SceneStage synced;
+    ASSERT_TRUE(synced.isValid());
+    EXPECT_TRUE(synced.sync(payload));
+    EXPECT_TRUE(synced.getUnresolvedProjections().empty());
+    const PXR_NS::UsdShadeShader syncedShader(synced.getStage()->GetPrimAtPath(shader.GetPath()));
+    ASSERT_TRUE(bool(syncedShader));
+    EXPECT_NEAR(0.25, projectThrough(getMatrix(syncedShader), PXR_NS::GfVec3d(-0.5, 0., 0.))[0], 1e-6);
+
+    // Without the camera in the scene, nothing projects and the stage lists the projection.
+    merge->disconnectInput(1);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(merge, &payload, &error)) << error;
+    EXPECT_TRUE(synced.sync(payload));
+    ASSERT_EQ((std::size_t)1, synced.getUnresolvedProjections().size());
+    EXPECT_EQ(getNodePath(camera).GetString(), synced.getUnresolvedProjections()[0].camera);
+    EXPECT_EQ(PXR_NS::GfMatrix4d(0.), getMatrix(PXR_NS::UsdShadeShader(synced.getStage()->GetPrimAtPath(shader.GetPath()))));
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
+}
+
+// A disabled node between the image and the projector is passed through, as the render passes it:
+// the live texture is its input's.
+TEST_F(USDProject3DTest, TheLiveTextureFollowsADisabledNodeToItsInput)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr between = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT), PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(bool(between));
+    ASSERT_TRUE(between->connectInput(plate, 0));
+    projector->disconnectInput(kUSDProject3DInputImage);
+    ASSERT_TRUE(projector->connectInput(between, kUSDProject3DInputImage));
+    between->setNodeDisabled(true);
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error)) << error;
+    LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    EXPECT_EQ(plate->getFullyQualifiedName(), sources[0].nodeName);
+
+    between->setNodeDisabled(false);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error)) << error;
+    sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    EXPECT_EQ(between->getFullyQualifiedName(), sources[0].nodeName);
 }
 
 TEST_F(USDProject3DTest, ACameraPathThatIsNoPrimPathIsANodeError)
@@ -501,6 +581,7 @@ TEST_F(USDProject3DTest, TheCameraMenuPicksTheCameraPath)
     entries = menu->getEntries_mt_safe();
     ASSERT_EQ((std::size_t)2, entries.size());
     EXPECT_EQ(std::string("/Later"), entries[1].id);
+    EXPECT_EQ(std::string("/Later"), entries[1].label);
     EXPECT_EQ(1, menu->getValue());
 
     menu->onValueChanged(0, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);

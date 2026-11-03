@@ -67,8 +67,18 @@
 #define kUSDProject3DInputGeometryFrame "geometryFrame"
 #define kUSDProject3DInputPlateTransform "plateTransform"
 #define kUSDProject3DInputWorldToProjector "worldToProjector"
+#define kUSDProject3DInputProjectorOrigin "projectorOrigin"
 // On the shader prim, when Use Frame Hold is on: the project frame the camera is held at.
 #define kUSDProject3DAttrFrameHold "natron:frameHold"
+// On the shader prim, when the camera is not on the Camera input: worldToProjector and
+// projectorOrigin are then read from the camera at this path on the stage that renders the
+// material, through the aspect, fit mode (HydraRender::FitModeEnum) and project frames (with their
+// rate) the node would have read it with.
+#define kUSDProject3DAttrCamera "natron:projectionCamera"
+#define kUSDProject3DAttrCameraAspect "natron:projectionAspect"
+#define kUSDProject3DAttrCameraFit "natron:projectionFit"
+#define kUSDProject3DAttrCameraFrames "natron:projectionFrames"
+#define kUSDProject3DAttrCameraFramesPerSecond "natron:projectionFramesPerSecond"
 
 NATRON_NAMESPACE_ENTER
 
@@ -160,11 +170,11 @@ private:
     // The Image input's format as a width over height in square pixels, the project's without one.
     double getPlateAspect(double time) const;
 
-    // Where the Image input's format lies in its live texture at time, the texture covering the
-    // image's region of definition: texture coordinates are the frame's 0..1 coordinates times
+    // Where source's format lies in its live texture at time, the texture covering the image's
+    // region of definition: texture coordinates are the frame's 0..1 coordinates times
     // (transform[0], transform[1]) plus (transform[2], transform[3]). The identity without an image
     // or when its region is unknown.
-    void getPlateTransform(double time, double transform[4]) const;
+    void getPlateTransform(const NodePtr& source, double time, double transform[4]) const;
 
     // Defined where USD is included.
     struct CameraSamples;

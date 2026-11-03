@@ -35,9 +35,11 @@ SceneStage::SceneStage()
         return;
     }
     _root = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
-    if (!_root) {
+    _projections = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
+    if (!_root || !_projections) {
         return;
     }
+    _root->SetSubLayerPaths(std::vector<std::string>(1, _projections->GetIdentifier()));
     // The root carries every metadata field from the start, so later syncs only rewrite the
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
@@ -92,7 +94,9 @@ SceneStage::sync(const ScenePayload& payload)
         // the old and new layer stacks itself when it processes the change.
         PXR_NS::SdfChangeBlock block;
         if (stackChanged) {
-            _root->SetSubLayerPaths(subLayerPaths);
+            std::vector<std::string> rootSubLayers(1, _projections->GetIdentifier());
+            rootSubLayers.insert(rootSubLayers.end(), subLayerPaths.begin(), subLayerPaths.end());
+            _root->SetSubLayerPaths(rootSubLayers);
         }
         if (metadataChanged) {
             SceneOps::writeRootMetadata(_root, metadata, &_metadata);
@@ -103,9 +107,40 @@ SceneStage::sync(const ScenePayload& payload)
     _payload = payload;
     _subLayerPaths.swap(subLayerPaths);
     _metadata = metadata;
+    syncProjections();
     ++_editCount;
 
     return true;
+}
+
+void
+SceneStage::syncProjections()
+{
+    _unresolvedProjections.clear();
+    const bool deferred = SceneOps::hasDeferredProjections(_payload);
+    if (!deferred && _projections->GetRootPrims().empty()) {
+        return;
+    }
+    // Resolved apart and swapped in whole: the stage hears of one change, and of none when the
+    // values are the ones it has.
+    PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
+    if (!resolved) {
+        return;
+    }
+    if (deferred) {
+        SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections);
+    }
+    std::string wanted, current;
+    if (resolved->ExportToString(&wanted) && _projections->ExportToString(&current) && (wanted == current)) {
+        return;
+    }
+    _projections->TransferContent(resolved);
+}
+
+const std::vector<SceneProjectionCameras::Unresolved>&
+SceneStage::getUnresolvedProjections() const
+{
+    return _unresolvedProjections;
 }
 
 std::size_t

@@ -33,6 +33,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
@@ -341,6 +342,36 @@ getLiveTextures(const ScenePayload& payload)
     return sources;
 }
 
+namespace {
+    bool
+    findDeferredProjections(const ScenePayloadImpl* link,
+                            std::set<const ScenePayloadImpl*>* visited)
+    {
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            if (link->top.deferredProjections) {
+                return true;
+            }
+            if (link->top.dependencies) {
+                for (const ScenePayload& stack : link->top.dependencies->stacks) {
+                    if (findDeferredProjections(stack.getImpl().get(), visited)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+} // anonymous namespace
+
+bool
+hasDeferredProjections(const ScenePayload& payload)
+{
+    std::set<const ScenePayloadImpl*> visited;
+
+    return findDeferredProjections(payload.getImpl().get(), &visited);
+}
+
 SceneMetadata
 readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                   const SceneMetadata& weaker)
@@ -459,8 +490,22 @@ compose(const ScenePayload& payload)
     }
     root->SetSubLayerPaths(getSubLayerPaths(payload));
     writeRootMetadata(root, payload.getMetadata(), nullptr);
+    PXR_NS::UsdStageRefPtr stage = openStage(root);
+    if (!stage || !hasDeferredProjections(payload)) {
+        return stage;
+    }
+    // Resolved into a root no stage listens to yet, then composed once more, rather than edited
+    // into the open stage one recomposition per value.
+    PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
+    if (!resolved) {
+        return stage;
+    }
+    resolved->SetSubLayerPaths(getSubLayerPaths(payload));
+    writeRootMetadata(resolved, payload.getMetadata(), nullptr);
+    SceneProjectionCameras::resolve(stage, resolved, nullptr);
+    stage = PXR_NS::UsdStageRefPtr();
 
-    return openStage(root);
+    return openStage(resolved);
 }
 
 std::vector<PXR_NS::SdfLayerRefPtr>
@@ -1141,6 +1186,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.sublayerLinks = &sublayerLinks;
     LiveTextureSourceList liveTextures;
     edit.liveTextures = &liveTextures;
+    bool deferredProjections = false;
+    edit.deferredProjections = &deferredProjections;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -1169,6 +1216,7 @@ SceneLayerMemo::produce(const Key& key,
     if (!liveTextures.empty()) {
         entry.liveTextures = std::make_shared<const LiveTextureSourceList>(std::move(liveTextures));
     }
+    entry.deferredProjections = deferredProjections;
     _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;

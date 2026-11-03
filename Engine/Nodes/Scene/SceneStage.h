@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
@@ -83,8 +84,16 @@ public:
     // How many sync() calls edited the stage.
     U64 getEditCount() const;
 
+    // The projections of the payload whose camera the stage lacks, as last synced.
+    const std::vector<SceneProjectionCameras::Unresolved>& getUnresolvedProjections() const;
+
 private:
+    void syncProjections();
+
     PXR_NS::SdfLayerRefPtr _root;
+    // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
+    PXR_NS::SdfLayerRefPtr _projections;
+    std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
     std::vector<std::string> _subLayerPaths;

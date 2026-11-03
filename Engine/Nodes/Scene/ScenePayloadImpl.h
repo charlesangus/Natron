@@ -67,6 +67,8 @@ struct SceneLayerEntry {
     // The live textures the layer authors, which consumers render before Hydra reads them. Null
     // for a layer that authors none.
     std::shared_ptr<const LiveTextureSourceList> liveTextures;
+    // The layer leaves projection cameras for the composed stage to resolve.
+    bool deferredProjections = false;
 };
 
 /**

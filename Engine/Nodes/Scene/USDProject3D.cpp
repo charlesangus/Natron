@@ -46,6 +46,7 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -56,44 +57,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // The layer of the Image input the live texture reads.
 const char* const kLiveTextureLayer = "rgba";
-
-bool
-transformMightVary(const PXR_NS::UsdPrim& prim)
-{
-    for (PXR_NS::UsdPrim p = prim; p && !p.IsPseudoRoot(); p = p.GetParent()) {
-        const PXR_NS::UsdGeomXformable xformable(p);
-        if (xformable && xformable.TransformMightBeTimeVarying()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool
-attributeMightVary(const PXR_NS::UsdAttribute& attribute)
-{
-    return attribute && attribute.ValueMightBeTimeVarying();
-}
-
-bool
-cameraMightVary(const PXR_NS::UsdGeomCamera& camera)
-{
-    return transformMightVary(camera.GetPrim())
-        || attributeMightVary(camera.GetProjectionAttr())
-        || attributeMightVary(camera.GetFocalLengthAttr())
-        || attributeMightVary(camera.GetHorizontalApertureAttr())
-        || attributeMightVary(camera.GetVerticalApertureAttr())
-        || attributeMightVary(camera.GetHorizontalApertureOffsetAttr())
-        || attributeMightVary(camera.GetVerticalApertureOffsetAttr())
-        || attributeMightVary(camera.GetClippingRangeAttr());
-}
-
-// Clip space x and y from -1..1 to 0..1 of the frame, w kept: (0, 0) at its bottom left.
-const PXR_NS::GfMatrix4d kClipToFrame(0.5, 0., 0., 0.,
-                                      0., 0.5, 0., 0.,
-                                      0., 0., 1., 0.,
-                                      0.5, 0.5, 0., 1.);
 } // anonymous namespace
 
 // The camera as the shader reads it, once, or at every frame of the project range.
@@ -102,8 +65,12 @@ struct USDProject3D::CameraSamples {
     std::vector<PXR_NS::GfMatrix4d> worldToProjector;
     std::vector<PXR_NS::GfVec4f> origin;
     // Camera Path names a camera the camera scene does not have: one zero matrix, which puts every
-    // point behind the camera, so nothing projects.
+    // point behind the camera, so nothing projects until the stage that renders the material
+    // resolves the path (SceneProjectionCameras).
     bool missing = false;
+    // When missing, the project frames that stage reads the camera at: the hold, or the range when
+    // the camera may move there.
+    std::vector<double> deferredFrames;
     U64 digest = 0;
 };
 
@@ -169,9 +136,10 @@ USDProject3D::initializeKnobs()
 
     _camera.create(this, page, kUSDProject3DParamCamera, kUSDProject3DParamCameraPath,
                    tr("The cameras of the Camera input's scene: picking one sets Camera Path to it."),
-                   tr("The path of the camera to project through, on the Camera input's scene. Empty, the first "
-                      "camera is used. A path the scene does not have yet is kept, with a warning, and nothing "
-                      "projects until a camera at that path reaches the Camera input."));
+                   tr("The path of the camera to project through. Empty, the first camera of the Camera input's "
+                      "scene is used. A path the Camera input does not have, or with nothing connected to it, is read "
+                      "from the scene the projection renders in, such as a USDMerge with the camera below the "
+                      "geometry; USDRender warns when that scene has no camera at the path."));
 
     KnobChoicePtr projectionSpace = createKnob<KnobChoice>(tr("Projection Space"));
     projectionSpace->setName(kUSDProject3DParamProjectionSpace);
@@ -212,8 +180,9 @@ USDProject3D::initializeKnobs()
 
     KnobBoolPtr crop = createKnob<KnobBool>(tr("Crop"));
     crop->setName(kUSDProject3DParamCrop);
-    crop->setHintToolTip(tr("Outside the camera's frame, which the image's format fills, the surface shows Outside. Off, "
-                            "the image's data beyond its format shows there, and its edge pixels extend beyond that."));
+    crop->setHintToolTip(tr("Outside the camera's frame, which the image's format fills, the image is transparent black. Off, "
+                            "the image's data beyond its format shows there. Beyond the image's data it is transparent "
+                            "black either way, as the Viewer shows it."));
     crop->setDefaultValue(true);
     crop->setAnimationEnabled(false);
     page->addKnob(crop);
@@ -230,9 +199,8 @@ USDProject3D::initializeKnobs()
 
     KnobChoicePtr outside = createKnob<KnobChoice>(tr("Outside"));
     outside->setName(kUSDProject3DParamOutside);
-    outside->setHintToolTip(tr("What the surface shows where the image does not fall: behind the camera, beyond its frame "
-                               "with Crop on, beyond the clipping planes with Clip Near Far on, and on faces Project On "
-                               "leaves out."));
+    outside->setHintToolTip(tr("What the surface shows where the image does not fall: behind the camera, beyond the "
+                               "clipping planes with Clip Near Far on, and on faces Project On leaves out."));
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("black", tr("Black").toStdString(), tr("Opaque black.").toStdString()));
@@ -365,7 +333,7 @@ USDProject3D::refreshCameraMenu()
             }
         }
     }
-    _camera.refreshMenu(cameras);
+    _camera.refreshMenu(cameras, true);
 }
 
 double
@@ -390,13 +358,14 @@ USDProject3D::getPlateAspect(double time) const
 }
 
 void
-USDProject3D::getPlateTransform(double time,
+USDProject3D::getPlateTransform(const NodePtr& source,
+                                double time,
                                 double transform[4]) const
 {
     transform[0] = transform[1] = 1.;
     transform[2] = transform[3] = 0.;
     // The node the live texture renders, over its region of definition.
-    const EffectInstancePtr input = getInput(kUSDProject3DInputImage);
+    const EffectInstancePtr input = source ? source->getEffectInstance() : EffectInstancePtr();
     const NodeMetadataConstPtr metadata = input ? input->getMetadata(time, ViewIdx(0)) : NodeMetadataConstPtr();
     RectI window;
     if (!metadata || !getNodeDefinitionPixelRect(input->getNode(), time, ViewIdx(0), &window)) {
@@ -493,13 +462,29 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         return fail();
     }
     if (!samples) {
-        const auto missingSamples = []() {
+        const auto missingSamples = [&layerKey, &cameraPath, aspect, fitValue, useFrameHold, frameHold]() {
             std::shared_ptr<CameraSamples> missing = std::make_shared<CameraSamples>();
             missing->missing = true;
             missing->worldToProjector.push_back(PXR_NS::GfMatrix4d(0.));
             missing->origin.push_back(PXR_NS::GfVec4f(0.f, 0.f, 0.f, 1.f));
+            if (useFrameHold) {
+                missing->deferredFrames.push_back(frameHold);
+            } else {
+                SceneLayerEdit range;
+                range.firstFrame = layerKey.firstFrame;
+                range.lastFrame = layerKey.lastFrame;
+                missing->deferredFrames = SceneNodeAuthoring::getSampleFrames(range);
+            }
             ContentHasher digest;
             digest.appendBool(true);
+            digest.appendString(cameraPath);
+            digest.appendDouble(aspect);
+            digest.appendI64(fitValue);
+            digest.appendDouble(layerKey.framesPerSecond);
+            digest.appendU64(missing->deferredFrames.size());
+            for (double frame : missing->deferredFrames) {
+                digest.appendDouble(frame);
+            }
             missing->digest = digest.finalize();
 
             return missing;
@@ -545,7 +530,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
                 std::vector<double> readFrames;
                 if (useFrameHold) {
                     readFrames.push_back(frameHold);
-                } else if (cameraMightVary(camera)) {
+                } else if (SceneProjectionCameras::cameraMightVary(camera)) {
                     computed->frames = SceneNodeAuthoring::getSampleFrames(range);
                     readFrames = computed->frames;
                 } else {
@@ -555,18 +540,10 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
                 digest.appendU64(readFrames.size());
                 for (double frame : readFrames) {
                     const PXR_NS::UsdTimeCode time(SceneOps::frameToTimeCode(cameraScene, frame, fps));
-                    PXR_NS::GfFrustum frustum;
-                    if (!HydraRender::cameraFrustum(stage, path, time, aspect, fit, &frustum, errorMessage)) {
-                        return fail();
-                    }
-                    const PXR_NS::GfMatrix4d matrix = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix() * kClipToFrame;
+                    PXR_NS::GfMatrix4d matrix;
                     PXR_NS::GfVec4f origin;
-                    if (frustum.GetProjectionType() == PXR_NS::GfFrustum::Orthographic) {
-                        const PXR_NS::GfVec3d back = -frustum.ComputeViewDirection();
-                        origin = PXR_NS::GfVec4f((float)back[0], (float)back[1], (float)back[2], 0.f);
-                    } else {
-                        const PXR_NS::GfVec3d position = frustum.GetPosition();
-                        origin = PXR_NS::GfVec4f((float)position[0], (float)position[1], (float)position[2], 1.f);
+                    if (!SceneProjectionCameras::computeProjector(stage, path, time, aspect, fit, &matrix, &origin, errorMessage)) {
+                        return fail();
                     }
                     computed->worldToProjector.push_back(matrix);
                     computed->origin.push_back(origin);
@@ -635,7 +612,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             for (double frame : sourceFrames) {
                 double transform[4] = { 1., 1., 0., 0. };
                 if (hasPlate) {
-                    getPlateTransform(frame, transform);
+                    getPlateTransform(plate.node.lock(), frame, transform);
                 }
                 computed->transforms.push_back(PXR_NS::GfVec4f((float)transform[0], (float)transform[1], (float)transform[2], (float)transform[3]));
                 digest.appendBytes(computed->transforms.back().data(), 4 * sizeof(float));
@@ -671,8 +648,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {
         return fail();
     }
-    SceneLayerMemo::AuthorFunc author = [samples, windows, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate](const SceneLayerEdit& edit,
-                                                                                                                                                              std::string* error) {
+    const double framesPerSecond = layerKey.framesPerSecond;
+    SceneLayerMemo::AuthorFunc author = [samples, windows, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate, cameraPath, aspect, fitValue,
+                                         framesPerSecond](const SceneLayerEdit& edit, std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
         if (!stage) {
             return false;
@@ -686,7 +664,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             return false;
         }
         const PXR_NS::UsdShadeInput matrix = shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector), PXR_NS::SdfValueTypeNames->Matrix4d);
-        const PXR_NS::UsdShadeInput origin = shader.CreateInput(PXR_NS::TfToken("projectorOrigin"), PXR_NS::SdfValueTypeNames->Float4);
+        const PXR_NS::UsdShadeInput origin = shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputProjectorOrigin), PXR_NS::SdfValueTypeNames->Float4);
         bool ok = matrix && origin;
         if (ok && samples->frames.empty()) {
             ok = matrix.Set(samples->worldToProjector.front()) && origin.Set(samples->origin.front());
@@ -702,6 +680,20 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         }
         for (std::size_t i = 0; ok && (i < windows->frames.size()); ++i) {
             ok = window.Set(windows->transforms[i], SceneNodeAuthoring::frameToTimeCode(edit, windows->frames[i]));
+        }
+        if (ok && samples->missing) {
+            const PXR_NS::UsdPrim prim = shader.GetPrim();
+            const PXR_NS::UsdAttribute camera = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera), PXR_NS::SdfValueTypeNames->String, true);
+            const PXR_NS::UsdAttribute cameraAspect = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraAspect), PXR_NS::SdfValueTypeNames->Double, true);
+            const PXR_NS::UsdAttribute cameraFit = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFit), PXR_NS::SdfValueTypeNames->Int, true);
+            const PXR_NS::UsdAttribute cameraFrames = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFrames), PXR_NS::SdfValueTypeNames->DoubleArray, true);
+            const PXR_NS::UsdAttribute cameraRate = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFramesPerSecond), PXR_NS::SdfValueTypeNames->Double, true);
+            const PXR_NS::VtDoubleArray frames(samples->deferredFrames.begin(), samples->deferredFrames.end());
+            ok = camera && camera.Set(cameraPath) && cameraAspect && cameraAspect.Set(aspect) && cameraFit && cameraFit.Set(fitValue) && cameraFrames && cameraFrames.Set(frames)
+                && cameraRate && cameraRate.Set(framesPerSecond);
+            if (ok && edit.deferredProjections) {
+                *edit.deferredProjections = true;
+            }
         }
         // Read by the geometry node the material is grafted under, which takes itself at the same frame.
         if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
@@ -738,10 +730,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             && texture && texture.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdUVTexture")));
         const PXR_NS::UsdShadeInput st = ok ? texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2) : PXR_NS::UsdShadeInput();
         ok = st && st.ConnectToSource(readerOutput);
-        // Clamp even with Crop on, where the shader cuts at the frame and the data itself: a black
-        // border would filter into the plate's edge texels, leaving a see-through line between
-        // the plate and an opaque Outside.
-        const PXR_NS::TfToken wrap("clamp");
+        // The texture covers the image's data window, beyond which the image is transparent black:
+        // clamping would stretch its edge pixels across the rest of the frame.
+        const PXR_NS::TfToken wrap("black");
         for (const char* name : { "wrapS", "wrapT" }) {
             const PXR_NS::UsdShadeInput input = ok ? texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeInput();
             ok = input && input.Set(wrap);
@@ -769,9 +760,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 
     // Checked on every evaluation: the layer can stay the same while the texture fails.
     QStringList warnings;
-    if (samples->missing) {
-        warnings.push_back(tr("No camera at %1 on the Camera input yet: nothing projects until one is there.").arg(QString::fromStdString(cameraPath)));
-    }
     if (!hasPlate) {
         warnings.push_back(tr("Nothing is connected to the Image input: the projection is black."));
     } else {

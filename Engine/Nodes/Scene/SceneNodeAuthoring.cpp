@@ -200,7 +200,8 @@ SceneCameraPathKnobs::getPath() const
 }
 
 void
-SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras) const
+SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
+                                  bool readDownstream) const
 {
     KnobChoicePtr menuKnob = menu.lock();
     if (!menuKnob) {
@@ -217,9 +218,14 @@ SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras) const
     }
     if (!chosen.empty() && (chosenIndex < 0)) {
         chosenIndex = (int)options.size();
-        options.push_back(ChoiceOption(chosen,
-                                       EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
-                                       EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
+        if (readDownstream) {
+            options.push_back(ChoiceOption(chosen, chosen,
+                                           EffectInstance::tr("Read from the scene the projection renders in, which has this camera once it is merged in.").toStdString()));
+        } else {
+            options.push_back(ChoiceOption(chosen,
+                                           EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
+                                           EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
+        }
     }
     // Repopulating an unchanged menu would move the node's hash and come back here.
     const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
@@ -788,10 +794,15 @@ getLiveTextureSource(const EffectInstance& consumer,
                      const std::string& layer,
                      LiveTextureSource* source)
 {
-    const EffectInstancePtr input = consumer.getInput(inputNb);
-    const NodePtr node = input ? input->getNode() : NodePtr();
-
-    if (!node) {
+    const EffectInstancePtr connected = consumer.getInput(inputNb);
+    NodePtr node = connected ? connected->getNode() : NodePtr();
+    const double time = consumer.getCurrentTime();
+    // A disabled node renders as its preferred input, so the texture shows what the render would.
+    while (node && node->isNodeDisabled(time)) {
+        node = node->getPreferredInputNode();
+    }
+    const EffectInstancePtr input = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (!input) {
         return false;
     }
     source->node = node;

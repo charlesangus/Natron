@@ -49,7 +49,7 @@
         },
         "crop": {
             "default": 1,
-            "documentation": "1: outside the frame is the outside mode; 0: the plate's edge pixels extend."
+            "documentation": "1: outside the frame is transparent black; 0: the plate's data beyond the frame shows there."
         },
         "clip": {
             "default": 0,
@@ -124,7 +124,7 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     // Sampled before any fragment returns or discards: the texture's level of detail comes from
     // the coordinates' differences across the 2x2 fragment quad, which are undefined once a
     // neighbour has left, so a quad straddling the frame's edge would read a coarse, smeared
-    // level. The texture clamps at its edges, as Crop off extends them.
+    // level. Beyond the texture, the image's data window, the sampler reads transparent black.
     vec4 plate = HdGet_plate(uv);
 
     int projectOn = HdGet_projectOn();
@@ -146,11 +146,12 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     if (HdGet_clip() != 0 && (depth < -1.0 || depth > 1.0)) {
         return natronProject3DOutside();
     }
+    // The image is transparent black beyond its format when cropped and beyond its data window
+    // always, as the 2D viewer shows it.
     if (crop && (any(lessThan(frame, vec2(0.0))) || any(greaterThan(frame, vec2(1.0))))) {
-        return natronProject3DOutside();
+        return ApplyColorOverrides(vec4(0.0));
     }
-    if (crop && (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
-        // Inside the format but outside the image's data.
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
         return ApplyColorOverrides(vec4(0.0));
     }
 

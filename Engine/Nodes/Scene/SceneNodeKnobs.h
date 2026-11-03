@@ -122,8 +122,13 @@ struct SceneCameraPathKnobs {
 
     std::string getPath() const;
 
-    // Lists cameras, then the path when none of them has it, and selects the path's entry.
-    void refreshMenu(const std::vector<std::string>& cameras) const;
+    /**
+     * @brief Lists cameras, then the path when none of them has it, and selects the path's entry.
+     * A node that reads its camera on the stage it renders in (readDownstream) lists the path as
+     * itself, not as missing.
+     **/
+    void refreshMenu(const std::vector<std::string>& cameras,
+                     bool readDownstream = false) const;
 
     // True when k is one of the knobs, with *menuStale set when the menu must be refreshed.
     bool knobChanged(KnobI* k,

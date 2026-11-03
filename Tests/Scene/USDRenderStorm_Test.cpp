@@ -63,6 +63,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -82,6 +83,8 @@
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -428,8 +431,8 @@ private:
  * looking down -Z with a 2:1 frame as wide as twice their distance, so the render's 200 x 100
  * pixels span 20 x 10 units on the z = 0 plane and the projector's frame 10 x 5 there. The plate is
  * a 200 x 100 checker of 25 pixel squares centred on its format, red where the squares' indices
- * sum to an even number and blue elsewhere; the card, 16 x 8 units, is unlit and Crop shows
- * black around the frame.
+ * sum to an even number and blue elsewhere; the card, 16 x 8 units, is unlit and Crop leaves it
+ * transparent black around the frame.
  **/
 const double kRenderCameraZ = 10.;
 const double kProjectorZ = 5.;
@@ -467,7 +470,7 @@ enum ProjectedColourEnum {
     eProjectedUnsure = 0,
     eProjectedRed,
     eProjectedBlue,
-    eProjectedBlack
+    eProjectedTransparent
 };
 
 // What the projection shows at plate pixel (u, v) with Crop on: unsure within margin of an edge.
@@ -479,7 +482,7 @@ expectedProjection(double u,
     const bool outside = (u < -margin) || (u > kWidth + margin) || (v < -margin) || (v > kHeight + margin);
     const bool inside = (u > margin) && (u < kWidth - margin) && (v > margin) && (v < kHeight - margin);
     if (outside) {
-        return eProjectedBlack;
+        return eProjectedTransparent;
     }
     if (!inside) {
         return eProjectedUnsure;
@@ -505,8 +508,8 @@ classifyColour(const float* rgba)
     if ((b > 0.1f) && (b > 4.f * r) && (b > 4.f * g)) {
         return eProjectedBlue;
     }
-    if ((std::max(r, std::max(g, b)) < 0.02f) && (rgba[3] > 0.5f)) {
-        return eProjectedBlack;
+    if (std::max(std::max(r, g), std::max(b, rgba[3])) < 0.02f) {
+        return eProjectedTransparent;
     }
 
     return eProjectedUnsure;
@@ -520,13 +523,48 @@ colourName(ProjectedColourEnum c)
         return "red";
     case eProjectedBlue:
         return "blue";
-    case eProjectedBlack:
-        return "black";
+    case eProjectedTransparent:
+        return "transparent black";
     case eProjectedUnsure:
         break;
     }
 
-    return "neither red, blue nor black";
+    return "neither red, blue nor transparent black";
+}
+
+// What the render shows over render pixels [x1, x2) x [y1, y2), rows counted from the bottom: the
+// largest of any channel and how many pixels are red, blue and fully opaque.
+struct RegionColours {
+    float maximum = 0.f;
+    int red = 0;
+    int blue = 0;
+    int opaque = 0;
+    int count = 0;
+};
+
+RegionColours
+regionColours(const std::vector<float>& rgba,
+              int x1,
+              int y1,
+              int x2,
+              int y2)
+{
+    RegionColours region;
+    for (int y = y1; y < y2; ++y) {
+        for (int x = x1; x < x2; ++x) {
+            const std::size_t i = ((std::size_t)y * (std::size_t)kWidth + (std::size_t)x) * 4;
+            for (int c = 0; c < 4; ++c) {
+                region.maximum = std::max(region.maximum, rgba[i + c]);
+            }
+            const ProjectedColourEnum colour = classifyColour(&rgba[i]);
+            region.red += (colour == eProjectedRed) ? 1 : 0;
+            region.blue += (colour == eProjectedBlue) ? 1 : 0;
+            region.opaque += (rgba[i + 3] > 0.98f) ? 1 : 0;
+            ++region.count;
+        }
+    }
+
+    return region;
 }
 
 /**
@@ -565,7 +603,16 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
                 continue;
             }
             const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+            double u = 0., v = 0.;
+            planeToPlate(localX, Y, &u, &v);
+            const ProjectedColourEnum expected = expectedProjection(u, v, margin);
+            // Storm's translucent pass writes no depth where the projection is transparent.
             if (!std::isfinite(depth[i])) {
+                if ((expected == eProjectedTransparent) && (classifyColour(&rgba[i * 4]) == eProjectedTransparent)) {
+                    ++checked;
+                    ++counts[eProjectedTransparent];
+                    continue;
+                }
                 ++wrong;
                 if (firstWrong.empty()) {
                     firstWrong = "(" + std::to_string(x) + ", " + std::to_string(y) + ") is not the card";
@@ -576,9 +623,6 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
                 cardRgb[k] += rgba[i * 4 + k];
             }
             ++cardPixels;
-            double u = 0., v = 0.;
-            planeToPlate(localX, Y, &u, &v);
-            const ProjectedColourEnum expected = expectedProjection(u, v, margin);
             if (expected == eProjectedUnsure) {
                 continue;
             }
@@ -604,7 +648,7 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
     // The frame spans 100 x 50 render pixels and the card around it 160 x 80.
     EXPECT_GT(counts[eProjectedRed], 800) << what;
     EXPECT_GT(counts[eProjectedBlue], 800) << what;
-    EXPECT_GT(counts[eProjectedBlack], 2000) << what;
+    EXPECT_GT(counts[eProjectedTransparent], 2000) << what;
     EXPECT_LE(wrong, checked / 200) << what << ": " << wrong << " of " << checked << " checked pixels are wrong, first " << firstWrong;
 } // checkProjectedChecker
 
@@ -1014,6 +1058,28 @@ protected:
         checkCropAgainstReference(planes[0], goldenCrop, goldenCase);
     }
 
+    // The colour plane of render at frame 1, failing on a render error or a shader Storm could not
+    // build.
+    static void renderColour(const NodePtr& render,
+                             const char* what,
+                             std::vector<float>* rgba)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        bool rendered = false;
+        std::string shaderProblems;
+        {
+            USDDiagnostics diagnostics;
+            rendered = renderOffMainThread(render, 1., &planes, &error);
+            shaderProblems = diagnostics.shaderProblems();
+        }
+        EXPECT_TRUE(shaderProblems.empty()) << what << ": " << shaderProblems;
+        ASSERT_TRUE(rendered) << what << ": " << error;
+        ASSERT_EQ(3u, planes.size()) << what;
+        ASSERT_EQ((std::size_t)kWidth * kHeight * 4, planes[0].pixels.size()) << what;
+        *rgba = planes[0].pixels;
+    }
+
     static std::list<ImageLayerDesc> allPlanes()
     {
         std::list<ImageLayerDesc> layers;
@@ -1366,4 +1432,138 @@ TEST_F(USDRenderStormTest, StormProject3DOverscan)
     crop->setValue(true);
 
     renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DOverscan);
+}
+
+// With Crop on, the card around the projector's frame is transparent, not opaque black, and the
+// frame is opaque.
+TEST_F(USDRenderStormTest, StormProject3DCropIsTransparentOutsideTheFrame)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobBool* crop = knob<KnobBool>(projector, kUSDProject3DParamCrop);
+    KnobChoice* outside = knob<KnobChoice>(projector, kUSDProject3DParamOutside);
+    ASSERT_TRUE(crop && outside);
+    crop->setValue(true);
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+
+    std::vector<float> rgba;
+    renderColour(render, "crop", &rgba);
+    ASSERT_FALSE(rgba.empty());
+    EXPECT_FALSE(projector->hasPersistentMessage());
+    // The card spans render pixels 20..180 by 10..90 and the frame 50..150 by 25..75.
+    for (const RectI& band : { RectI(24, 14, 46, 86), RectI(154, 14, 176, 86), RectI(54, 14, 146, 21), RectI(54, 79, 146, 86) }) {
+        const RegionColours around = regionColours(rgba, band.x1, band.y1, band.x2, band.y2);
+        EXPECT_LT(around.maximum, 0.02f) << "around the frame, " << band.x1 << ", " << band.y1 << " to " << band.x2 << ", " << band.y2;
+    }
+    const RegionColours inside = regionColours(rgba, 54, 29, 146, 71);
+    EXPECT_EQ(inside.count, inside.opaque);
+    EXPECT_GT(inside.red, inside.count / 3);
+    EXPECT_GT(inside.blue, inside.count / 3);
+}
+
+// A Camera Path with nothing on the Camera input is read from the scene the projection renders in:
+// the camera merged in beside the card projects as it would through the Camera input, and neither
+// node warns. A path that scene lacks too is USDRender's warning.
+TEST_F(USDRenderStormTest, StormProject3DCameraPathFromTheMergedScene)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr projectorCamera = projector->getInput(kUSDProject3DInputCamera);
+    NodePtr merge = render->getInput(0);
+    ASSERT_TRUE(projectorCamera && merge);
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    ASSERT_TRUE(setString(projector, kUSDProject3DParamCameraPath, "/Projector"));
+    connectNodes(projectorCamera, merge, 2, true);
+
+    renderProjection(render, projector, 1., 0., RectI(), "StormProject3DCameraPathFromTheMergedScene");
+
+    ASSERT_TRUE(setString(projector, kUSDProject3DParamCameraPath, "/Nowhere"));
+    std::vector<float> rgba;
+    renderColour(render, "missing camera", &rgba);
+    EXPECT_FALSE(projector->hasPersistentMessage());
+    ASSERT_TRUE(render->hasPersistentMessage());
+    QString message;
+    int type = -1;
+    render->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Nowhere"))) << message.toStdString();
+}
+
+// A disabled node above the projector renders as its input, and so does the projected texture.
+TEST_F(USDRenderStormTest, StormProject3DFollowsADisabledNodeToItsInput)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT), PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(bool(invert));
+    connectNodes(plate, invert, 0, true);
+    projector->disconnectInput(kUSDProject3DInputImage);
+    connectNodes(invert, projector, kUSDProject3DInputImage, true);
+    invert->setNodeDisabled(true);
+
+    renderProjection(render, projector, 1., 0., RectI(), "StormProject3DFollowsADisabledNodeToItsInput");
+}
+
+// The image's data window ends inside the frame: a checker cropped to its bottom half and moved up
+// a quarter of the frame. Above and below the data the card is transparent black, not the data's
+// edge stretched out.
+TEST_F(USDRenderStormTest, StormProject3DIsTransparentBeyondTheDataWindow)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr crop = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(crop && transform);
+    KnobDouble* bottomLeft = knob<KnobDouble>(crop, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(crop, kNativeGeneratorParamSize);
+    KnobDouble* softness = knob<KnobDouble>(crop, kCropParamSoftness);
+    KnobBool* blackOutside = knob<KnobBool>(crop, kCropParamBlackOutside);
+    KnobDouble* translate = knob<KnobDouble>(transform, kTransformNodeParamTranslate);
+    ASSERT_TRUE(bottomLeft && size && softness && blackOutside && translate);
+    bottomLeft->setValue(0., ViewSpec::all(), 0);
+    bottomLeft->setValue(0., ViewSpec::all(), 1);
+    size->setValue(kWidth, ViewSpec::all(), 0);
+    size->setValue(kHeight / 2., ViewSpec::all(), 1);
+    softness->setValue(0.);
+    blackOutside->setValue(true);
+    translate->setValue(kHeight / 4., ViewSpec::all(), 1);
+    connectNodes(plate, crop, 0, true);
+    connectNodes(crop, transform, 0, true);
+    projector->disconnectInput(kUSDProject3DInputImage);
+    connectNodes(transform, projector, kUSDProject3DInputImage, true);
+
+    for (int cropOn = 0; cropOn < 2; ++cropOn) {
+        KnobBool* cropKnob = knob<KnobBool>(projector, kUSDProject3DParamCrop);
+        ASSERT_TRUE(cropKnob != nullptr);
+        cropKnob->setValue(cropOn != 0);
+        const char* what = cropOn ? "crop on" : "crop off";
+        std::vector<float> rgba;
+        renderColour(render, what, &rgba);
+        ASSERT_FALSE(rgba.empty());
+        EXPECT_FALSE(projector->hasPersistentMessage()) << what;
+        // The frame spans render rows 25..75, two plate rows a render row; the data plate rows
+        // 25..75, render rows 37..63 (a pixel of Crop's black edge beyond them).
+        for (const RectI& band : { RectI(54, 27, 146, 34), RectI(54, 66, 146, 73) }) {
+            const RegionColours beyond = regionColours(rgba, band.x1, band.y1, band.x2, band.y2);
+            EXPECT_LT(beyond.maximum, 0.02f) << what << ", rows " << band.y1 << " to " << band.y2;
+        }
+        const RegionColours data = regionColours(rgba, 54, 41, 146, 59);
+        EXPECT_GT(data.red + data.blue, data.count * 3 / 4) << what;
+    }
 }

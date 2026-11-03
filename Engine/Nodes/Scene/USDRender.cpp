@@ -31,6 +31,7 @@
 #include <vector>
 
 #include <QMetaObject>
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
@@ -340,6 +341,8 @@ struct USDRender::RenderSetup {
     HydraRender::Request request;
     // The render's pixels in the output image.
     RectI pixels;
+    // What renders but not as asked, shown once the render succeeds.
+    std::string warning;
 };
 
 bool
@@ -391,6 +394,13 @@ USDRender::prepareRender(double time,
 
         return false;
     }
+    QStringList unresolved;
+    for (const SceneProjectionCameras::Unresolved& projection : lease.getUnresolvedProjections()) {
+        unresolved.push_back(tr("%1 projects through %2, which the scene has no camera at: it projects nothing.")
+                                 .arg(QString::fromStdString(projection.shader.GetString()))
+                                 .arg(QString::fromStdString(projection.camera)));
+    }
+    setup->warning = unresolved.join(QLatin1Char('\n')).toStdString();
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     const PXR_NS::UsdTimeCode timeCode(SceneOps::frameToTimeCode(scene, time, fps));
@@ -504,10 +514,20 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    clearPersistentMessage(false);
+    showWarning(setup.warning);
 
     return eStatusOK;
 } // USDRender::render
+
+void
+USDRender::showWarning(const std::string& warning)
+{
+    if (warning.empty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeWarning, warning);
+    }
+}
 
 std::optional<OpKind>
 USDRender::opKind() const
@@ -564,6 +584,7 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
         return eStatusFailed;
     }
+    showWarning(setup.warning);
 
     return eStatusOK;
 #else

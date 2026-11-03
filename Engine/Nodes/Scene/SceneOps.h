@@ -61,6 +61,9 @@ struct SceneLayerEdit {
     // The live textures the author authors (SceneNodeAuthoring::recordLiveTexture), kept with the
     // layer. Null where a layer cannot record any.
     LiveTextureSourceList* liveTextures = nullptr;
+    // Set by an author whose layer leaves values for the stage that renders it to resolve
+    // (SceneProjectionCameras). Null where a layer cannot.
+    bool* deferredProjections = nullptr;
 };
 
 /**
@@ -211,6 +214,12 @@ std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
  * (a grafted material's) included, each layer's once.
  **/
 LiveTextureSourceList getLiveTextures(const ScenePayload& payload);
+
+/**
+ * @brief True when a layer of the payload, or of the stacks they compose from, leaves projection
+ * cameras for the stage that composes it to resolve (SceneProjectionCameras::resolve).
+ **/
+bool hasDeferredProjections(const ScenePayload& payload);
 
 /**
  * @brief The stage-level metadata layer authors on its pseudo-root, over weaker for whatever it

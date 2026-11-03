@@ -409,6 +409,7 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs).
 - M231 - Scene Graph Panel (bosley-native-nodes): on hold, not to merge (user, 2026-11-02: "more thoughts trying it again"); waiting for the user's feedback. M232 - Scene Selection To Nodes is stacked on it and waits too.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
 - M165 - Rich Viewer Overlays (bosley-native-nodes): Q1, does a node publish an overlay image through the normal render/cache path or a side buffer? Also: ship Phase 1 alone and move Phases 2–3 to a follow-up? (audit, 2026-11-02).

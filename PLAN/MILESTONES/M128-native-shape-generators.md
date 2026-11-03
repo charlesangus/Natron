@@ -237,3 +237,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **Only ColorWheel is ported from the test patterns, in linear mode only (user):** ColorBars stays OFX.
 - 2026-10-13 — **Noise is its own milestone (user):** M129 - Clean-Sheet Noise Node.
 - 2026-11-02 — main merged in; gate green (run 41556822898); m128_shapes GUI check 181/181, screenshots shared; AppImage + steps in build/appimages/Natron-m128-native-shape-generators.*; awaiting user UAT (PM).
+- 2026-11-02 — UAT round 1: Radial showed Interactive Update and HiDPI knobs; removed from M128's nodes (M95 removes them everywhere) (user).

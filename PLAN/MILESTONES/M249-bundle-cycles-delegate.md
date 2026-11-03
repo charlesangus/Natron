@@ -61,3 +61,4 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 - 2026-10-27 — **Bundle in the AppImage (user):** both delegates ship in the release, not discovery-only.
 - 2026-10-27 — **CPU first (user):** GPU devices are planned for later.
 - 2026-11-02 — Audit: all tasks committed (680e291ca, fa6ddbbcb, 80e44ed97) and pushed; worktree clean; no PR; 23 behind origin/main. The branch still carries M248's pre-squash commits (M248 merged as #152), so merging origin/main in needs the squash-stack handling. The OIDN keep/drop question to the user is still open (audit).
+- 2026-11-02 — OIDN is bundled (user: "yes please").

@@ -66,6 +66,29 @@ their images through M233 - Live Node Textures. Survey:
 
 **Prior verification gate:** release gate green; strict-GL projection tests pass; on real hardware a tracked camera from an `.abc` projects a plate sequence onto cards and a sphere live in the 3D view and in USDRender; screenshots shared before sign-off.
 
+## Phase 234.7: UAT round 3 fixes (user, 2026-11-02)
+
+- [ ] M234.P7.T1 — Crop outside the frame is transparent black
+  - files: USDProject3D / projection shader and its crop path, projection tests
+  - approach: the "crop" setting must give alpha 0 (and black RGB) outside the projected frame; today alpha is 1 there.
+  - verify: a test projects with crop on and reads alpha 0 outside the frame, 1 inside.
+  - size: M
+- [ ] M234.P7.T2 — Camera Path resolves lazily on the composed stage
+  - files: USDProject3D camera lookup, the material/shader binding that consumes it, projection tests
+  - approach: per the spec, the camera path is resolved when the stage the viewer/render sees is composed, not in the projection node's own upstream scene. Texture → USDProject3D (Camera Path /USDCamera1) → USDCard, merged in USDMerge with USDCamera1, viewed downstream: must project cleanly with no "(missing)", no node warning. Only warn when the final composed stage lacks the prim.
+  - verify: a test builds exactly that chain and checks the projection renders the texture (not black/white-alpha) and the node carries no warning.
+  - size: L
+- [ ] M234.P7.T3 — A disabled node feeding a live texture still projects
+  - files: live-texture source resolution (shared with M233), projection tests
+  - approach: when the node directly above USDProject3D (or any live-texture consumer) is disabled, follow the disabled node's pass-through input as the render does instead of failing.
+  - verify: a test disables the node above the projection and checks the projected texture equals its input's image.
+  - size: M
+- [ ] M234.P7.T4 — No edge stretching outside the data window
+  - files: live-texture upload (data window / format handling), projection shader sampling, tests
+  - approach: checkerboard → Crop (black outside) → Transform y 250 (black outside) → USDProject3D shows a black border at the bottom in 2D, but in 3D the checker edge stretches: the texture is clamp-to-edge sampled or the data window is dropped. Upload/sample so pixels outside the data window are black (clamp-to-border transparent), consistent with the 2D viewer.
+  - verify: a test renders that chain in 3D and reads black in the band the 2D viewer shows black.
+  - size: M
+
 ## Decisions
 
 - 2026-10-28: Projection Space Geometry: the shader takes the fragment to object space (ApplyInstanceTransformInverse) then applies a geometryFrame matrix the geometry node writes on its grafted material copy (held frame with Use Frame Hold, recorded as natron:frameHold; time-sampled otherwise). Overscan: a plateTransform (scale, offset) maps the camera frame onto the format inside the RoD-sized live texture; Crop on shows Outside beyond the frame, Crop off samples overscan then extends edges. USDWrite bakes both; with Crop on and overscan the export shows the overscan and warns. USDProjectUV unchanged (no image input). Needs a CI GL run to confirm Storm exposes the transform-inverse helpers in surface shaders.

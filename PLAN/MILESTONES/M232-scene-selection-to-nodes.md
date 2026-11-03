@@ -78,3 +78,16 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 **Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in the replacement AppImage.
 - 2026-11-01 — P3 at b15e5b2ab: prim path set as the initial value on create-from-selection (root cause of the user's report unconfirmed — recheck in UAT); USDXformPrim Mode knob (Graft default, Wrap when created from a selection): /World/Box becomes /World/Wrap1/Box, links retargeted; Tab menu filtered by the selection's single output kind (any-kind nodes still shown, menu commands hidden while filtered). To confirm with the user: "current node" = last-opened panel (implementer).
 - 2026-11-02 — USDMaterial is a source (no scene input), so it is not offered when creating after a scene node; the scene-filtered Tab list is USDEditTransform, USDPrune and the other scene-input nodes (PM, from review; verify line amended).
+
+## Phase 232.4: UAT round 3 fixes (user, 2026-11-02)
+
+- [ ] M232.P4.T1 — The kind filter hides nodes only, never menu commands
+  - files: Gui/TabMenuBridge.cpp, Tab menu tests
+  - approach: filtering by the selection's kind must leave menu items (node menu commands) in the list; only node-creation entries are filtered. Today a selection hides the commands, so the user has to click empty space first.
+  - verify: Tab-menu test with a scene selection finds and runs a menu command.
+  - size: M
+- [ ] M232.P4.T2 — Create-from-selection keeps a non-native up-axis
+  - files: create-from-selection path, up-axis handling (see M241 - Up-Axis And Units Policy), scene tests
+  - approach: selecting a prim in a scene whose up-axis differs from the project's and creating a node with Tab makes the scene snap 90° on X back to its native up-axis. Find whether the new node drops the up-axis correction (stage metadata or the correction transform) and fix it; check whether this was already logged or fixed elsewhere.
+  - verify: test creates a node from a selection in a Z-up scene and checks the composed world transform is unchanged.
+  - size: M

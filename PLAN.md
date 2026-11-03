@@ -374,6 +374,7 @@ future core work has solid ground to build on.
 | M306 | Knob Row Layout | todo | M229 |  | E10 | [M306-knob-row-layout.md](PLAN/MILESTONES/M306-knob-row-layout.md) |
 | M307 | Remove Viewer Auto-Contrast | todo | M164 |  | E10 | [M307-remove-viewer-auto-contrast.md](PLAN/MILESTONES/M307-remove-viewer-auto-contrast.md) |
 | M308 | Knob Label Cleanup | todo | - |  | E10 | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
+| M309 | Roto Feather Falloff Banding | todo | M224 |  | E6 | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 
 # Epics
 

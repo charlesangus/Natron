@@ -69,6 +69,14 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 **Prior verification gate:** release gate green; strict-GL live-texture test passes; on real hardware a plate sequence on a USDCard plays in the 3D view and in USDRender; an export opens in `usdview` with textures; screenshots shared before sign-off.
 
+## Phase 233.6: UAT round 3 fixes (user, 2026-11-02)
+
+- [ ] M233.P6.T1 — Live textures honour incoming alpha
+  - files: live-texture upload, material/shader binding (opacity), viewer 3D draw (blending), tests
+  - approach: the texture's alpha drives the material's opacity so transparent and semi-transparent areas show through (premultiplied input; blend correctly in Storm).
+  - verify: a test feeds a half-transparent texture and reads the background through it at the expected ratio.
+  - size: L
+
 ## Decisions
 
 - 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.

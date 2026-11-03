@@ -102,6 +102,19 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 **Prior verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. The stroke and shape goldens are bit-identical. The `m224_*` Xvfb tests pass. `roto_bench` `compare.py` against `roto-xvfb.jsonl` shows no regression. Host p95 pen-to-pixel latency is within the signed-off budget, and the user passes UAT.
 
+## Phase 224.8: UAT round 3 fixes (user, 2026-11-02)
+
+- [ ] M224.P8.T1 — Alt-drag on a feather handle, and the broken state it leaves
+  - files: RotoCurveInteract (feather handle hit-testing, alt modifier), viewer pan handling
+  - approach: alt-drag on a feather handle must drag the handle (not pan the viewer). After the failed alt-drag, feather handles, feather points and feather tangents could no longer be clicked at all (clicks deselected the shape); find the stuck state (likely an interaction/event state not reset after the viewer took the alt-drag) and fix it.
+  - verify: GUI check alt-drags a feather handle and sees it move, then clicks a feather point and a feather tangent and drags each.
+  - size: L
+- [ ] M224.P8.T2 — Shift+E resets feather on the selected points only
+  - files: Roto feather reset action
+  - approach: with points selected, reset only their feather; with no points selected, reset all.
+  - verify: GUI check with one point selected changes only that point's feather; with none selected, all.
+  - size: M
+
 ## Decisions
 
 - 2026-11-02 — Audit: P7.T1 and P7.T2 landed in 58378084f (tangents grown no further than half way to their neighbours; Alt-drag edits only on a feather bar and pans elsewhere, with a gtest and m224_gestures.py coverage). The remote build 41391443666 at the tip passed. Pushed, no uncommitted work, no PR. The branch is 23 commits behind main. Still open: P5.T1 (host bench rerun) and the round-2 UAT AppImage.

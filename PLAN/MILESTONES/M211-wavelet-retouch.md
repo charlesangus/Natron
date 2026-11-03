@@ -137,6 +137,29 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 - Screenshots of a skin and blemish cleanup across two scales are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
 
+## Phase 211.7: UAT round 3 fixes (user, 2026-11-02)
+
+- [ ] M211.P7.T1 — Shift-drag sets brush size
+  - files: Retouch viewer interact
+  - approach: shift-drag in the viewer resizes the brush, as in RotoPaint.
+  - verify: GUI check shift-drags and reads the brush size knob change.
+  - size: M
+- [ ] M211.P7.T2 — Strokes stay editable after painting
+  - files: Retouch stroke storage and interact
+  - approach: strokes/shapes can be selected and edited (points, settings) after they are painted, like RotoPaint strokes.
+  - verify: GUI check paints a stroke, selects it, changes its settings and sees the render change.
+  - size: L
+- [ ] M211.P7.T3 — One set of shape controls: next shape, or the selected shape
+  - files: Retouch knobs/panel
+  - approach: collapse the "selected shape" and "future shape" controls into one set. With nothing selected they set what the next shape/stroke gets; with a shape selected they show and edit that shape's settings.
+  - verify: GUI check: settings with no selection apply to a new stroke; selecting a stroke loads its settings and editing them changes only that stroke.
+  - size: L
+- [ ] M211.P7.T4 — Remove or wire the General-tab Color control
+  - files: Retouch knobs
+  - approach: the "color" control on the main/General tab has no effect. Wire it if it was meant to do something (fill colour), otherwise remove it.
+  - verify: either a test shows the control changes the output, or the knob is gone and the panel check passes.
+  - size: M
+
 ## Decisions
 
 - 2026-11-02 — Audit: P6.T1–T3 committed and pushed (1c7e18874, 0d1bd238e, GUI check f4e856239). The round-3 UAT AppImage (03:30) was built after the branch head.

@@ -10,3 +10,4 @@ Acceptance sketch:
 - The delegates' AOV lists are reachable from a checklist or from authored RenderSettings, as the spike decides.
 - Each selected AOV appears as a named Natron layer.
 - Unselected AOVs cost no render time.
+- 2026-11-03 — AOVs are authored as RenderProduct/RenderVar under the /Render prim through USDRenderSettings (M253.P2), read with M253.P2.T3's library (UsdRenderComputeSpec), and hashed through M253.P2.T8's side table (user decision on M253, 2026-11-03).

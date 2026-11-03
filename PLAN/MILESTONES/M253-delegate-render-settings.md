@@ -55,6 +55,83 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 
 **Verification gate:** CI green; every setting either delegate declares is reachable through a curated or a generated knob (audit output attached to the PR); settings persist and drive renders; a Xvfb screenshot of both property panels is shared with the user.
 
+## Phase 253.2: Render settings in the scene (user, 2026-11-03)
+- [ ] M253.P2.T1 — Confirm whether hdCycles and hdMoonray consume HdRenderSettings prims
+  - files: `PLAN/MILESTONES/M253-delegate-render-settings.md` (Decisions only)
+  - approach: the sources aren't in build/, natron-dev or the local ghcr images (both build scripts delete them; `tools/ci/local/build-cycles.sh:169`, `build-moonray.sh:267`). Upstream, Cycles v5.2.0 `src/hydra/render_delegate.{h,cpp}` has no `GetRenderSettingsNamespaces` override and its Bprims (cpp:168) lack `renderSettings`. hdMoonray @986121d (openmoonray d96c6e30) `lib/hydramoonray/RenderDelegate.cc:187` lists only `renderBuffer`. Both take settings through `SetRenderSetting` only. Record this with links. If the image's pins have changed, re-read them. If either now supports the prim, T3 and T6 call `UsdImagingGLEngine::SetActiveRenderSettingsPrimPath` (engine.h:544) for it instead.
+  - verify: Decisions note cites file:line for both delegates and the pinned tags
+  - size: S
+- [ ] M253.P2.T2 — Carry `renderSettingsPrimPath` stage metadata through scene payloads
+  - files: `Engine/ScenePayload.h`, `Engine/Nodes/Scene/SceneOps.cpp`, `USDRead.cpp`, `USDWrite.cpp`, `SceneNodeAuthoring.cpp`
+  - approach: add the field to `SceneMetadata` (ScenePayload.h:45), comparing it in `operator==`. Then handle it the same way `defaultPrim` is handled: read it in SceneOps.cpp:331, write it onto the root in `writeRootMetadata` (:354), carry it in USDRead.cpp:321, write it in USDWrite.cpp:587, and hash it in `appendUpstreamMetadata` (SceneNodeAuthoring.cpp:216). This lets `UsdRenderSettings::GetStageRenderSettings` see it.
+  - verify: a test where a .usda with the metadata passes through USDRead→USDWrite, and the composed stage and the written file both carry it
+  - size: M
+- [ ] M253.P2.T3 — Prim-to-delegate translation library
+  - files: new `Engine/Nodes/Scene/RenderSettingsPrim.{h,cpp}`, `Tests/Scene/RenderSettingsPrim_Test.cpp`
+  - approach:
+    - Namespaces come from the delegate's `GetRenderSettingsNamespaces()`. If that is empty, use a table (cycles, moonray, storm, otherwise `scriptPrefix()`).
+    - Attribute names: a key that already starts with `<ns>:` is used as is (all of Cycles' keys and MoonRay's `sceneVariable:` keys); any other key becomes `<ns>:<key>` (MoonRay's `debug`, `logLevel` and so on, Storm's keys).
+    - `settings(prim, renderer, time)` = `UsdRenderComputeNamespacedSettings` (usdRender/spec.h:121), mapped back to the delegate's keys.
+    - `activePrim(stage, overridePath)` tries the override, then the stage metadata, then nothing.
+    - It also reads the standard attributes: camera rel, resolution, pixelAspectRatio, aspectRatioConformPolicy, dataWindowNDC, disableMotionBlur, disableDepthOfField.
+  - verify: unit tests on in-memory .usda strings: mapping both ways for prefixed and unprefixed keys, other namespaces ignored, and active-prim precedence
+  - size: M
+- [ ] M253.P2.T4 — USDRenderSettings scene node with standard attributes
+  - files: new `Engine/Nodes/Scene/USDRenderSettings.{h,cpp,reg.inc}`, `Tests/Scene/USDRenderSettings_Test.cpp`
+  - approach: follow `USDCamera` (SceneNodeAuthoring, SceneLayerMemo).
+    - It authors a `UsdRenderSettings` prim at a Prim Path knob, default `/Render/rendersettings`.
+    - Knobs: Camera (a menu of the upstream cameras, authored as the relationship); format (`ExtentKnobs::createFormatKnobs`) authoring resolution and pixelAspectRatio; Conform Policy covering all five tokens; Data Window; Disable Motion Blur; Disable Depth Of Field.
+    - It also has a "Make Active" bool, default on, which sets `renderSettingsPrimPath` (T2).
+    - Animated knobs author time samples through `authorValue`.
+  - verify: the test reads the authored prim back through the UsdRender API, including an animated resolution
+  - size: L
+- [ ] M253.P2.T5 — Move the per-renderer knob builders onto USDRenderSettings and drop the hidden store
+  - files: `RenderSettingsKnobs.{h,cpp}`, `CyclesSettings.cpp`, `MoonRaySettings.cpp`, `USDRenderSettings.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
+  - approach: give each `rendererIds()` entry its own page (tab) holding its curated group and Other Settings, all always shown. Add `author(prim, edit)`, which writes non-default values as namespaced attributes (T3's naming). Delete `kRenderSettingsParamStore`, `finish()`, `knobsLoaded()`, `orphans()` and `showRenderer()`. Do not import old values (no backward compat).
+  - verify: values for every renderer round-trip through project save/load; the Cycles and MoonRay params→knob audits pass on the new node; the authored attribute names match T3
+  - size: L
+- [ ] M253.P2.T6 — Default-renderer attribute `natron:renderer`
+  - files: `USDRenderSettings.cpp`, `RenderSettingsPrim.{h,cpp}`, `Tests/Scene/RenderSettingsPrim_Test.cpp`
+  - approach: a Default Renderer knob authors `uniform token natron:renderer` with the Hydra plugin id (e.g. `HdCyclesPlugin`).
+    - USD has no schema attribute for picking a renderer. `UsdRenderPass.passType` is a pipeline category and would need a RenderPass prim.
+    - Putting it on the prim lets several settings prims target different renderers, with the stage metadata choosing the scene default.
+    - The `natron:` namespace is never one of a delegate's namespaces, so it is never forwarded.
+    - The plugin id is the key `HdRendererPluginRegistry` and the Renderer knobs already use.
+  - verify: `rendererFor(prim)` returns the authored id; an unknown id is a named error, not a silent fallback to Storm
+  - size: M
+- [ ] M253.P2.T7 — Make USDRender a thin consumer: Settings Prim choice and Renderer override
+  - files: `Engine/Nodes/Scene/USDRender.{h,cpp}`, `HydraRenderImpl.{h,cpp}`, `Tests/Scene/USDRender_Test.cpp`, `USDRenderCycles_Test.cpp`, `USDRenderMoonRay_Test.cpp`
+  - approach:
+    - Remove `_settings` (USDRender.cpp:197-234, 538) and the camera, format and fit knobs.
+    - Add a Settings Prim menu: "Stage Default" plus every `/Render` RenderSettings path.
+    - Turn Renderer into "Scene Default" plus the delegates.
+    - Precedence: the override knob, then `natron:renderer`, then Storm. Report it when no prim is found.
+    - Build the request from T3: settings go through `SetRendererSetting` (HydraRenderImpl.cpp:848), and the camera, resolution and conform policy come from the prim. Map conform policy to `FitModeEnum` and add `expandAperture`. `adjustPixelAspect` warns.
+  - verify: a precedence test (override > prim > Storm; Settings Prim override > metadata); a test that loads a hand-written .usda's /Render prim through USDRead and sees its cycles:samples, resolution and camera honoured
+  - size: L
+- [ ] M253.P2.T8 — Hash only the active delegate's namespaces
+  - files: `Engine/Knob.h`, `Engine/Node.{h,cpp}`, `RenderSettingsKnobs.cpp`, `USDRender.cpp`, `Tests/Scene/USDRenderSettings_Test.cpp`
+  - approach: renderer-tab knobs get a hash namespace. `getKnobsContentDigest` (Node.cpp:~900) skips them and folds them instead into a per-(prim, namespace) digest side table. That table also carries the node's default renderer and Make Active. `computeContentHash` (:950) merges it down the inputs. The node's `SceneLayerMemo` key still includes these knobs. USDRender's `appendNodeContentHash` folds only the active entry's digests; when the active prim isn't in the table (it comes from a file), it folds every namespace.
+  - verify: editing a MoonRay knob while Cycles is active leaves USDRender's hash unchanged; switching to MoonRay afterwards changes it and renders the edited value (no stale cache hit)
+  - size: L
+- [ ] M253.P2.T9 — Viewer reads the active prim
+  - files: `Gui/SceneViewport.{h,cpp}`, `Tests/SceneViewport_Test.cpp`
+  - approach: the viewer applies T3's settings for its renderer from the stage's active prim. M254 - Progressive Viewer Render's Max Samples and Stop stay viewer-local and are applied last, over `cycles:samples` / `moonray:sceneVariable:pixel_samples`. Add a "Scene Default" entry to the dropdown, keeping Storm as the default per the M248 user decision of 2026-10-27. Restart only when the changed paths touch the active namespaces or anything outside /Render.
+  - verify: strict GUI runner: a Cycles viewer takes the prim's samples, Max Samples overrides it, and a MoonRay-tab edit does not restart refinement
+  - size: M
+- [ ] M253.P2.T10 — GUI check
+  - files: `build/m253-gui/*.py` (scripts only)
+  - approach: run under Xvfb at 1920x1080: a USDRenderSettings panel with Cycles, MoonRay and Storm tabs, USDRender's thin panel, and the viewer dropdown
+  - verify: screenshots shared one per file; the user OKs them
+  - size: M
+- [ ] M253.P2.T11 — Docs
+  - files: new `Engine/Nodes/Scene/docs/USDRenderSettings.md`, `docs/USDRender.md`
+  - approach: describe the node, tabs, `natron:renderer`, precedence, the hash rule, and loading external /Render prims
+  - verify: the docs build; the knob labels match the script names
+  - size: S
+
+**Verification gate:** CI green; T7/T8 tests pass; audits attached; GUI screenshots OKed.
+
 ## Decisions
 
 - 2026-10-28: Implemented (build pending; waits on M250's image). Each renderer gets a curated group plus a closed "Other Settings" group with a knob for every other declared setting; only the chosen renderer's groups show. Values for missing renderers/settings kept in a hidden hash-exempt store, logged once, restored when the renderer returns. Labels drop the renderer prefix, script names keep it. Only non-default values are sent. A settings change rebuilds the engine (Cycles doesn't mark samples/time limit dirty). Storm's settings are read from a Storm delegate made without Hgi. Gaps: Cycles declares no pixel filter; MoonRay has no seed; MoonRay curated sampling uses undeclared scene-variable keys. M254's Max Samples spin box should read/write cycles:samples / moonray:sceneVariable:pixel_samples. Viewer's own copy of the settings not implemented. Open (user): OIDN in our Cycles and MoonRay builds (M249 OIDN +46 MB question)? Should unselected renderers' knobs change the node hash (they do now)?
@@ -63,3 +140,4 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 - 2026-11-02 — OIDN is bundled (user).
 - 2026-11-03 — User on the hash question: hidden renderers' settings must not change the hash, and probably should not be editable at all ("why would we show knobs that aren't relevant?"). The user also questions whether one USDRender node is the right shape and asked how Solaris, Katana and Gaffer handle several renderers; a consultant is researching before this is re-asked. Blocked on that design question.
 - 2026-11-03 — **Reshape before merge (user, after research on Solaris/Katana/Gaffer/USD):** a USDRenderSettings scene node authors /Render RenderSettings prims (camera, resolution and other standard attributes) with **one tab per installed renderer** (curated group + Other Settings, namespaced attributes; all renderers' values coexist); **the default renderer is authored in the scene** and USDRender and the viewer may override it; USDRender becomes a thin renderer-agnostic consumer choosing a delegate and a settings prim (default from stage metadata); the hidden-value store goes; the hash ignores /Render attributes outside the active delegate's namespaces. M254's Max Samples/Stop stay viewer-local overrides; M256 takes RenderProduct/RenderVar for AOVs. Needs a check whether hdCycles/hdMoonRay read HdRenderSettings prims natively (else the host translates the prim into SetRendererSetting). New phase to be elaborated.
+- 2026-11-03 — Phase 253.2 elaborated (consultant): neither hdCycles (v5.2.0) nor hdMoonray reads HdRenderSettings prims, so the host translates the active prim's namespaced attributes into SetRendererSetting. Phase 253.1's settings-on-USDRender and hidden store are superseded by it. M253 merges after M254. Open (user): should the viewer default stay Storm or become Scene Default?

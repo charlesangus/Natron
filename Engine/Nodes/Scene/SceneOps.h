@@ -337,15 +337,6 @@ bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  std::string* errorMessage);
 
 /**
- * @brief Whether expression (parsePrimExpression()) selects the prim at primPath, judged on
- * the path alone: a scratch stage holding just that prim and its ancestors, as untyped prims, so
- * predicates that look at a prim's type or attributes do not match. False when expression does
- * not parse or primPath is not an absolute prim path.
- **/
-bool selectsPrimPath(const std::string& expression,
-                     const std::string& primPath);
-
-/**
  * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up
  * axis: +90 for Y to Z, -90 for Z to Y, 0 when the axes match or correctUpAxis is off.
  **/

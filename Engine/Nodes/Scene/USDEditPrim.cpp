@@ -532,12 +532,14 @@ USDEditPrim::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
-        // The ancestors the input scene lacks are defined as Xforms; the others keep their type.
+        // The ancestors the input scene lacks or only overs are defined, as Xforms unless the input
+        // gives them a type; the others are left alone.
         std::vector<PXR_NS::SdfPath> ancestors;
         for (PXR_NS::SdfPath parent = path.GetParentPath(); !parent.IsEmpty() && !parent.IsAbsoluteRootPath(); parent = parent.GetParentPath()) {
             ancestors.insert(ancestors.begin(), parent);
         }
         std::vector<PXR_NS::SdfPath> missing = ancestors;
+        std::vector<bool> missingTyped(ancestors.size(), false);
         if (!upstream.isEmpty() && !ancestors.empty()) {
             SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
             PXR_NS::UsdStageRefPtr stage = lease.getStage();
@@ -550,19 +552,23 @@ USDEditPrim::renderScene(const SceneRenderActionArgs& args,
                 return eStatusFailed;
             }
             missing.clear();
+            missingTyped.clear();
             for (const PXR_NS::SdfPath& ancestor : ancestors) {
-                if (!stage->GetPrimAtPath(ancestor)) {
+                const PXR_NS::UsdPrim ancestorPrim = stage->GetPrimAtPath(ancestor);
+                if (!ancestorPrim || !ancestorPrim.IsDefined()) {
                     missing.push_back(ancestor);
+                    missingTyped.push_back(ancestorPrim && !ancestorPrim.GetTypeName().IsEmpty());
                 }
             }
         }
         facts.appendU64(missing.size());
-        for (const PXR_NS::SdfPath& ancestor : missing) {
-            facts.appendString(ancestor.GetString());
+        for (std::size_t i = 0; i < missing.size(); ++i) {
+            facts.appendString(missing[i].GetString());
+            facts.appendBool(missingTyped[i]);
         }
         const bool typed = hasSchema && (schema.kind == SchemaKnobMapper::eSchemaKindConcreteTyped);
-        author = [path, missing, schema, typed, applies, instanceName, attributes](const SceneLayerEdit& edit,
-                                                                                   std::string* error) {
+        author = [path, missing, missingTyped, schema, typed, applies, instanceName, attributes](const SceneLayerEdit& edit,
+                                                                                                 std::string* error) {
             PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
             if (!stage) {
                 if (error->empty()) {
@@ -583,11 +589,13 @@ USDEditPrim::renderScene(const SceneRenderActionArgs& args,
             if (typed) {
                 spec->SetTypeName(schema.identifier);
             }
-            for (const PXR_NS::SdfPath& ancestor : missing) {
-                PXR_NS::SdfPrimSpecHandle ancestorSpec = edit.layer->GetPrimAtPath(ancestor);
+            for (std::size_t i = 0; i < missing.size(); ++i) {
+                PXR_NS::SdfPrimSpecHandle ancestorSpec = edit.layer->GetPrimAtPath(missing[i]);
                 if (ancestorSpec) {
                     ancestorSpec->SetSpecifier(PXR_NS::SdfSpecifierDef);
-                    ancestorSpec->SetTypeName("Xform");
+                    if (!missingTyped[i]) {
+                        ancestorSpec->SetTypeName("Xform");
+                    }
                 }
             }
             PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);

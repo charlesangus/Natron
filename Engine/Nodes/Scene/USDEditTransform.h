@@ -113,6 +113,13 @@ public:
     void getMatchedPrims(std::vector<std::string>* primPaths,
                          std::vector<std::string>* opNames) const;
 
+    /**
+     * @brief Whether the node transforms the prim at primPath on the scene its last evaluation
+     * read: the pattern selects it and it can hold a transform. A pattern changed since that
+     * evaluation is evaluated on the same scene. False before any evaluation.
+     **/
+    bool transformsPrim(const std::string& primPath) const;
+
     const SceneTransformKnobs& getTransformKnobs() const
     {
         return _transform;

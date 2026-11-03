@@ -341,6 +341,12 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
 
         return eStatusOK;
     }
+    if ((sourceKind == eSourceFile) && PXR_NS::ArGetResolver().Resolve(assetPath).IsEmpty()) {
+        *outputScene = upstream;
+        setPersistentMessage(eMessageTypeWarning, tr("The file %1 does not resolve; the scene is passed through unchanged.").arg(QString::fromStdString(assetPath)).toStdString());
+
+        return eStatusOK;
+    }
     facts.appendString(sourcePath.GetString());
 
     // Whether the input defines the prim and which of its ancestors it lacks.

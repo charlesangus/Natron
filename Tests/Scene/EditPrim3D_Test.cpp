@@ -31,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -304,6 +305,58 @@ TEST_F(EditPrim3DTest, DefineLeavesExistingAncestorsAsTheyAre)
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("SphereLight"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Fill")).GetTypeName());
+}
+
+TEST_F(EditPrim3DTest, DefineDefinesAncestorsTheInputOnlyOvers)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.filePath(QString::fromUtf8("overs.usda"));
+    {
+        QFile f(path);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("#usda 1.0\n"
+                "over \"rig\"\n{\n}\n"
+                "over Scope \"group\"\n{\n}\n");
+    }
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(reader));
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(path.toStdString());
+
+    NodePtr light = createEditPrim(reader, "define", "SphereLight");
+    ASSERT_TRUE(bool(light));
+    getKnob<KnobString>(light, kSceneParamPrimPath)->setValue(std::string("/rig/key"));
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(light, &payload));
+    PXR_NS::SdfLayerRefPtr layer = getTopLayer(payload);
+    ASSERT_TRUE(bool(layer));
+    PXR_NS::SdfPrimSpecHandle rig = layer->GetPrimAtPath(PXR_NS::SdfPath("/rig"));
+    ASSERT_TRUE(bool(rig));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, rig->GetSpecifier());
+    EXPECT_EQ(PXR_NS::TfToken("Xform"), rig->GetTypeName());
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/rig")).IsDefined());
+    const PXR_NS::UsdPrim key = stage->GetPrimAtPath(PXR_NS::SdfPath("/rig/key"));
+    EXPECT_TRUE(key.IsDefined());
+    EXPECT_EQ(PXR_NS::TfToken("SphereLight"), key.GetTypeName());
+
+    // An over that already carries a type is defined with that type.
+    NodePtr grouped = createEditPrim(reader, "define", "SphereLight");
+    ASSERT_TRUE(bool(grouped));
+    getKnob<KnobString>(grouped, kSceneParamPrimPath)->setValue(std::string("/group/key"));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(grouped, &payload));
+    layer = getTopLayer(payload);
+    ASSERT_TRUE(bool(layer));
+    PXR_NS::SdfPrimSpecHandle group = layer->GetPrimAtPath(PXR_NS::SdfPath("/group"));
+    ASSERT_TRUE(bool(group));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, group->GetSpecifier());
+    EXPECT_TRUE(group->GetTypeName().IsEmpty());
+    stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/group")).IsDefined());
+    EXPECT_EQ(PXR_NS::TfToken("Scope"), stage->GetPrimAtPath(PXR_NS::SdfPath("/group")).GetTypeName());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/group/key")).IsDefined());
 }
 
 TEST_F(EditPrim3DTest, DefiningAnAbstractSchemaFails)

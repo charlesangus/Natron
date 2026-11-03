@@ -283,6 +283,28 @@ TEST_F(Reference3DTest, AMissingSourcePassesTheSceneThrough)
     EXPECT_EQ((int)eMessageTypeWarning, type);
 }
 
+TEST_F(Reference3DTest, AFileThatDoesNotResolvePassesTheSceneThrough)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = createReference(reader, "/World/Copy");
+    ASSERT_TRUE(bool(node));
+    const std::string absent = std::string(NATRON_TESTS_FIXTURES_DIR) + "/no-such-reference.usda";
+    getKnob<KnobFile>(node, kUSDReferenceParamFile)->setValue(absent);
+
+    ScenePayload input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &input));
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));
+    EXPECT_TRUE(payload.isSameStack(input));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromStdString(absent))) << message.toStdString();
+}
+
 TEST_F(Reference3DTest, ABadSourcePrimFails)
 {
     NodePtr node = createReference(NodePtr(), "/Ref");

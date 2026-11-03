@@ -601,34 +601,6 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
     return true;
 }
 
-bool
-selectsPrimPath(const std::string& expression,
-                const std::string& primPath)
-{
-    PXR_NS::SdfPathExpression parsed;
-    std::string error;
-    if (!parsePrimExpression(expression, &parsed, &error) || parsed.IsEmpty()) {
-        return false;
-    }
-    if (!PXR_NS::SdfPath::IsValidPathString(primPath)) {
-        return false;
-    }
-    const PXR_NS::SdfPath path(primPath);
-    if (!path.IsAbsolutePath() || !path.IsPrimPath() || path.IsAbsoluteRootPath()) {
-        return false;
-    }
-    const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
-    if (!stage || !stage->DefinePrim(path)) {
-        return false;
-    }
-    std::vector<PXR_NS::SdfPath> found;
-    if (!selectPrims(stage, expression, &found, &error)) {
-        return false;
-    }
-
-    return std::find(found.begin(), found.end(), path) != found.end();
-}
-
 double
 getMetricsCorrectionAngle(const SceneMetricsCorrection& correction)
 {

@@ -131,6 +131,28 @@ getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
 
     return result;
 } // getAppendBaseOrder
+
+// The prims of stage that pattern selects and that can hold a transform, in stage order.
+bool
+selectXformables(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& pattern,
+                 std::vector<PXR_NS::UsdPrim>* prims,
+                 std::string* errorMessage)
+{
+    prims->clear();
+    std::vector<PXR_NS::SdfPath> found;
+    if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
+        return false;
+    }
+    for (const PXR_NS::SdfPath& path : found) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+        if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
+            prims->push_back(prim);
+        }
+    }
+
+    return true;
+}
 } // anonymous namespace
 
 struct USDEditTransform::Implementation {
@@ -286,6 +308,43 @@ USDEditTransform::getMatchedPrims(std::vector<std::string>* primPaths,
 }
 
 bool
+USDEditTransform::transformsPrim(const std::string& primPath) const
+{
+    const std::string pattern = _primPattern.getExpression();
+    ScenePayload upstream;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->matchesValid && (_imp->matchedPattern == pattern)) {
+            for (const PXR_NS::SdfPath& path : _imp->matches) {
+                if (path.GetString() == primPath) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        upstream = _imp->lastUpstream;
+    }
+    if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
+        return false;
+    }
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    std::vector<PXR_NS::UsdPrim> found;
+    if (!stage || !selectXformables(stage, pattern, &found, &error)) {
+        return false;
+    }
+    for (const PXR_NS::UsdPrim& prim : found) {
+        if (prim.GetPath().GetString() == primPath) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
 USDEditTransform::getHandleTarget(std::string* primPath,
                                   std::string* opName) const
 {
@@ -394,19 +453,16 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
 
                 return eStatusFailed;
             }
-            std::vector<PXR_NS::SdfPath> found;
-            if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
+            std::vector<PXR_NS::UsdPrim> found;
+            if (!selectXformables(stage, pattern, &found, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
             }
-            for (const PXR_NS::SdfPath& path : found) {
-                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-                if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
-                    matches.push_back(path);
-                    opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
-                    baseOrders.push_back(getAppendBaseOrder(prim));
-                }
+            for (const PXR_NS::UsdPrim& prim : found) {
+                matches.push_back(prim.GetPath());
+                opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
+                baseOrders.push_back(getAppendBaseOrder(prim));
             }
         }
     }

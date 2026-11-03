@@ -41,7 +41,6 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Settings.h"
@@ -521,15 +520,6 @@ createEditNode(const NodePtr& viewed,
     return node;
 } // createEditNode
 
-// Whether the USDEditTransform pattern selects primPath, by the rules SceneOps::selectPrims
-// applies to a stage.
-bool
-patternNamesPrim(const std::string& pattern,
-                 const std::string& primPath)
-{
-    return SceneOps::selectsPrimPath(pattern, primPath);
-}
-
 // A Replace-mode USDEditTransform discards every transform authored upstream of it on the prims
 // it matches, so for those prims it is the only node whose writes show.
 bool
@@ -538,12 +528,7 @@ replacesTransformOf(const NodePtr& node,
 {
     USDEditTransform* edit = toEditTransform(node);
 
-    if (!edit || (edit->getMode() != USDEditTransform::eModeReplace)) {
-        return false;
-    }
-    KnobStringPtr pattern = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUSDEditTransformParamPrimPattern));
-
-    return pattern && patternNamesPrim(pattern->getValue(), primPath);
+    return edit && (edit->getMode() == USDEditTransform::eModeReplace) && edit->transformsPrim(primPath);
 }
 
 NodePtr

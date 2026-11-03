@@ -31,6 +31,15 @@ default, multiplies it through the texture's `scale`. Colours are in the
 project working space and are written unchanged. Animated knobs are written as
 time samples.
 
+With Use Alpha on, the default, the alpha of the image on the Emissive input
+drives the shader's `opacity` from the texture's `a` output, with `opacityMode`
+set to `presence`: where the image is transparent the surface shows what is
+behind it, at the ratio of the alpha, as the image composited over it. Live
+textures are served with their colour divided by their alpha, as USD expects of
+a texture, and the opacity multiplies it back. A surface with an opacity is drawn
+in Storm's translucent pass, which writes no depth or prim id. With Use Alpha
+off, or for a texture file, no opacity is written and the surface is opaque.
+
 The material only names the images. The viewer and USDRender render them before
 they draw a frame. An image that cannot be rendered leaves the renderer's
 fallback texture, and the node shows a warning that names it.

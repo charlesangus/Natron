@@ -40,6 +40,7 @@
 
 #define kUSDEmissiveMaterialParamEmissiveColor "emissiveColor"
 #define kUSDEmissiveMaterialParamEmissiveTexture "emissiveTexture"
+#define kUSDEmissiveMaterialParamUseAlpha "useAlpha"
 
 // The one image input, whose image the surface shows.
 #define kUSDEmissiveMaterialInputEmissive 0
@@ -111,6 +112,7 @@ private:
     KnobStringWPtr _primPath;
     KnobColorWPtr _emissiveColor;
     KnobFileWPtr _emissiveTexture;
+    KnobBoolWPtr _useAlpha;
 };
 
 NATRON_NAMESPACE_EXIT

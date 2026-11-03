@@ -124,6 +124,15 @@ bool connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
                                    const PXR_NS::UsdShadeOutput& coordinates,
                                    const PXR_NS::UsdShadeInput& st);
 
+/**
+ * @brief Connects the opacity of the UsdPreviewSurface surface to the alpha of the UsdUVTexture
+ * texture, in the "presence" opacity mode: the whole shaded colour, emission and specular included,
+ * is scaled by the alpha, as a premultiplied image composited over what is behind it. Storm then
+ * draws the surface in its translucent pass.
+ **/
+bool connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                           PXR_NS::UsdShadeShader texture);
+
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
 

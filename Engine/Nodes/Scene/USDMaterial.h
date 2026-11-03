@@ -47,6 +47,7 @@
 #define kUSDMaterialParamRoughnessTexture "roughnessTexture"
 #define kUSDMaterialParamEmissiveColor "emissiveColor"
 #define kUSDMaterialParamEmissiveTexture "emissiveTexture"
+#define kUSDMaterialParamUseAlpha "useAlpha"
 
 // The optional image inputs, each driving the surface input of the same name through a live texture.
 #define kUSDMaterialInputDiffuseColor 0
@@ -145,6 +146,7 @@ private:
     KnobFileWPtr _roughnessTexture;
     KnobColorWPtr _emissiveColor;
     KnobFileWPtr _emissiveTexture;
+    KnobBoolWPtr _useAlpha;
 };
 
 NATRON_NAMESPACE_EXIT

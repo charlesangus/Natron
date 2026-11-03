@@ -222,6 +222,18 @@ USDMaterial::initializeKnobs()
     _emissiveTexture = makeTextureKnob(this, page, tr("Emissive Texture"), kUSDMaterialParamEmissiveTexture,
                                        tr("An image file whose colour replaces Emissive Color, read at the prims' st texture "
                                           "coordinates. Authored even when it does not resolve."));
+
+    KnobBoolPtr useAlpha = createKnob<KnobBool>(tr("Use Alpha"));
+    useAlpha->setName(kUSDMaterialParamUseAlpha);
+    useAlpha->setHintToolTip(tr("When on, the alpha of the image connected to the Diffuse Color input, or to the Emissive "
+                                "Color input when Diffuse Color has none, is the surface's opacity (inputs:opacity, in "
+                                "the presence mode): where it is transparent the surface shows what is behind it, as "
+                                "the image would composited over it. A transparent surface is drawn in the renderer's "
+                                "translucent pass, which writes no depth or prim id. When off, the surface is opaque."));
+    useAlpha->setDefaultValue(true);
+    useAlpha->setAnimationEnabled(false);
+    page->addKnob(useAlpha);
+    _useAlpha = useAlpha;
 } // USDMaterial::initializeKnobs
 
 std::string
@@ -248,7 +260,8 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     KnobDoublePtr metallic = _metallic.lock();
     KnobDoublePtr roughness = _roughness.lock();
     KnobColorPtr emissiveColor = _emissiveColor.lock();
-    if (!diffuseColor || !metallic || !roughness || !emissiveColor) {
+    KnobBoolPtr useAlpha = _useAlpha.lock();
+    if (!diffuseColor || !metallic || !roughness || !emissiveColor || !useAlpha) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
         return false;
@@ -321,6 +334,16 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
         { "emissiveColor", getTexturePath(_emissiveTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputEmissiveColor), true, false, &emissiveInput },
         { "normal", std::string(), normalSource, false, true, &normalInput },
     };
+    // The image whose alpha is the opacity: the diffuse one, the colour a lit surface shows, or
+    // failing that the emissive one.
+    std::string opacityFrom;
+    if (useAlpha->getValue()) {
+        if (getLiveTexture(liveTextures, kUSDMaterialInputDiffuseColor)) {
+            opacityFrom = "diffuseColor";
+        } else if (getLiveTexture(liveTextures, kUSDMaterialInputEmissiveColor)) {
+            opacityFrom = "emissiveColor";
+        }
+    }
     PXR_NS::UsdShadeShader reader;
     for (const TexturedInput& t : textured) {
         AuthorFileFunc authorFile;
@@ -350,6 +373,12 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
         }
         if (!connectTexture(stage, path, reader, t.name, authorFile, edit, t.live ? &live : nullptr, t.isColor, t.isNormal, *t.input)) {
             *errorMessage = tr("USD could not author the %1 texture of the material at %2.").arg(QString::fromStdString(t.name)).arg(pathString).toStdString();
+
+            return false;
+        }
+        if (t.live && (t.name == opacityFrom)
+            && !SceneNodeAuthoring::connectOpacityToAlpha(surface, PXR_NS::UsdShadeShader::Get(stage, path.AppendChild(PXR_NS::TfToken(t.name + "Texture"))))) {
+            *errorMessage = tr("USD could not author the opacity of the material at %1.").arg(pathString).toStdString();
 
             return false;
         }

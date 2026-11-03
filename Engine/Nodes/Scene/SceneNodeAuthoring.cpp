@@ -742,6 +742,19 @@ connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
         && st.ConnectToSource(result);
 } // connectLiveTextureCoordinates
 
+bool
+connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                      PXR_NS::UsdShadeShader texture)
+{
+    const PXR_NS::UsdShadeOutput alpha = texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float);
+    PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput opacityMode = surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token);
+
+    return alpha && opacity && opacityMode
+        && opacity.ConnectToSource(alpha)
+        && opacityMode.Set(PXR_NS::TfToken("presence"));
+}
+
 } // namespace SceneNodeAuthoring
 
 NATRON_NAMESPACE_EXIT

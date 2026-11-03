@@ -88,12 +88,17 @@ copyRow(const Image::ReadAccess& access,
             row[2] = pix[2] * scale;
             row[3] = 1.f;
             break;
-        default:
-            row[0] = pix[0] * scale;
-            row[1] = pix[1] * scale;
-            row[2] = pix[2] * scale;
-            row[3] = pix[3] * scale;
+        default: {
+            // Natron's images are premultiplied, a UsdUVTexture's are not: Storm multiplies the
+            // colour by the alpha the material's opacity reads, so it is divided out here.
+            const float alpha = pix[3] * scale;
+            const float unpremult = (alpha > 0.f) ? (1.f / alpha) : 1.f;
+            row[0] = pix[0] * scale * unpremult;
+            row[1] = pix[1] * scale * unpremult;
+            row[2] = pix[2] * scale * unpremult;
+            row[3] = alpha;
             break;
+        }
         }
     }
 }
@@ -104,12 +109,22 @@ renderSource(const LiveTextureSource& source,
              ViewIdx view,
              std::string* failure)
 {
-    const NodePtr node = source.node.lock();
+    NodePtr node = source.node.lock();
 
     if (!node || !node->isActivated()) {
         *failure = "the node " + source.nodeName + " that feeds it no longer exists";
 
         return LiveTextureBufferConstPtr();
+    }
+    // A disabled node shows its pass-through input, as the engine renders it, but the render
+    // below declines a disabled node.
+    while (node->isNodeDisabled(frame)) {
+        node = node->getPreferredInputNode();
+        if (!node || !node->isActivated()) {
+            *failure = "the node " + source.nodeName + " that feeds it is disabled and passes no input through";
+
+            return LiveTextureBufferConstPtr();
+        }
     }
     // The texture holds the whole window its layer authored texture coordinates for: the format
     // with the overscan around it, transparent black where the image does not reach.

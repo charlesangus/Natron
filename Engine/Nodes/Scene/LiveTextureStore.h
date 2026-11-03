@@ -52,7 +52,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief One rendered live texture, immutable once stored: width x height RGBA float pixels, rows
- * bottom-up as Natron renders them, after a small header. The header and the pixels are one
+ * bottom-up as Natron renders them, after a small header. The colour is not premultiplied, as USD
+ * textures are not: where the alpha is 0 it is left as rendered. The header and the pixels are one
  * buffer, which is what the natron:// asset serves without a copy.
  **/
 class LiveTextureBuffer {

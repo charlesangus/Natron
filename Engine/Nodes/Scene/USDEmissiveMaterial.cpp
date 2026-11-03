@@ -97,6 +97,18 @@ USDEmissiveMaterial::initializeKnobs()
     texture->setFileExtensions({ "exr", "tif", "tiff", "tx", "png", "jpg", "jpeg", "tga", "bmp", "hdr", "avif" });
     page->addKnob(texture);
     _emissiveTexture = texture;
+
+    KnobBoolPtr useAlpha = createKnob<KnobBool>(tr("Use Alpha"));
+    useAlpha->setName(kUSDEmissiveMaterialParamUseAlpha);
+    useAlpha->setHintToolTip(tr("When on, the alpha of the image connected to the Emissive input is the surface's opacity "
+                                "(inputs:opacity, in the presence mode): where it is transparent the surface shows what is "
+                                "behind it, as the image would composited over it. A transparent surface is drawn in the "
+                                "renderer's translucent pass, which writes no depth or prim id. When off, the surface is "
+                                "opaque."));
+    useAlpha->setDefaultValue(true);
+    useAlpha->setAnimationEnabled(false);
+    page->addKnob(useAlpha);
+    _useAlpha = useAlpha;
 } // USDEmissiveMaterial::initializeKnobs
 
 bool
@@ -115,7 +127,8 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
     }
     KnobColorPtr color = _emissiveColor.lock();
     KnobFilePtr textureKnob = _emissiveTexture.lock();
-    if (!color || !textureKnob) {
+    KnobBoolPtr useAlpha = _useAlpha.lock();
+    if (!color || !textureKnob || !useAlpha) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
         return false;
@@ -203,7 +216,7 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
 
                    return PXR_NS::GfVec4f(c[0], c[1], c[2], 1.f);
                })
-        && rgb && emissiveInput.ConnectToSource(rgb);
+        && rgb && emissiveInput.ConnectToSource(rgb) && (!hasLive || !useAlpha->getValue() || SceneNodeAuthoring::connectOpacityToAlpha(surface, texture));
     if (!textured) {
         *errorMessage = tr("USD could not author the emissive texture of the material at %1.").arg(pathString).toStdString();
 

@@ -40,9 +40,11 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
@@ -303,6 +305,76 @@ TEST_F(LiveTextureTest, PrepareRendersAMissingTextureOnce)
     LiveTextureStore::instance().clear();
     EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
+}
+
+// Natron's images are premultiplied and USD's textures are not: the store divides the colour by the
+// alpha, which the material's opacity multiplies back.
+TEST_F(LiveTextureTest, TheTextureColourIsNotPremultiplied)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.4, ViewSpec::all(), 0);
+    color->setValue(0.2, ViewSpec::all(), 1);
+    color->setValue(0.1, ViewSpec::all(), 2);
+    color->setValue(0.5, ViewSpec::all(), 3);
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(source.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    EXPECT_NEAR(0.8, center[0], 1e-5);
+    EXPECT_NEAR(0.4, center[1], 1e-5);
+    EXPECT_NEAR(0.2, center[2], 1e-5);
+    EXPECT_NEAR(0.5, center[3], 1e-5);
+}
+
+// A disabled node passes its input through in the 2D graph, and its texture shows that input.
+TEST_F(LiveTextureTest, ADisabledSourceShowsItsPassThroughInput)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
+    ASSERT_TRUE(constant && invert);
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(color && channels);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    channels->setChannels(0, rgb);
+    connectNodes(constant, invert, 0, true);
+    invert->setNodeDisabled(true);
+
+    LiveTextureSource source;
+    source.node = invert;
+    source.nodeName = invert->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = invert->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(source.getUri(1.));
+    ASSERT_TRUE(bool(buffer)) << "a disabled node's texture is rendered from its input";
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    EXPECT_NEAR(1., center[0], 1e-5);
+    EXPECT_NEAR(0., center[1], 1e-5);
+    EXPECT_NEAR(0., center[2], 1e-5);
+    EXPECT_NEAR(1., center[3], 1e-5);
 }
 
 // A Constant whose rectangle covers the left half of the format and as much again outside it: the

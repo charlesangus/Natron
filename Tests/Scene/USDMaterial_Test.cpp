@@ -491,6 +491,87 @@ TEST_F(USDMaterialTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
     }
 }
 
+// The opacity of the material at materialPath reads the alpha of the texture feeding its surface
+// input inputName, in presence mode, where opacity scales the whole shaded colour.
+static void
+expectOpacityFromAlphaOf(const PXR_NS::UsdStageRefPtr& stage,
+                         const char* materialPath,
+                         const char* inputName)
+{
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface)) << materialPath;
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).GetConnectedSource(&source, &sourceName, &sourceType)) << materialPath;
+    PXR_NS::UsdShadeConnectableAPI colourSource;
+    PXR_NS::TfToken colourName;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken(inputName)).GetConnectedSource(&colourSource, &colourName, &sourceType)) << inputName;
+    EXPECT_EQ(colourSource.GetPath(), source.GetPath());
+    EXPECT_EQ(PXR_NS::TfToken("a"), sourceName);
+    PXR_NS::TfToken mode;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("presence"), mode);
+}
+
+static void
+expectNoOpacity(const PXR_NS::UsdStageRefPtr& stage,
+                const char* materialPath)
+{
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface)) << materialPath;
+    const PXR_NS::UsdShadeInput opacity = surface.GetInput(PXR_NS::TfToken("opacity"));
+    EXPECT_FALSE(opacity && opacity.HasConnectedSource()) << materialPath;
+}
+
+TEST_F(USDMaterialTest, ALiveDiffuseImageDrivesTheOpacityWithItsAlpha)
+{
+    NodePtr diffuse = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr emissive = node(PLUGINID_NATRON_CONSTANT, "Constant2");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(diffuse && emissive && material);
+    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDMaterialParamUseAlpha).get());
+    ASSERT_TRUE(useAlpha != NULL);
+    EXPECT_TRUE(useAlpha->getValue()) << "Use Alpha is on by default";
+    EXPECT_EQ(std::string("Use Alpha"), useAlpha->getLabel());
+    ASSERT_TRUE(material->connectInput(emissive, kUSDMaterialInputEmissiveColor));
+
+    // With no diffuse image, the emissive image's alpha is the opacity.
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "emissiveColor");
+
+    ASSERT_TRUE(material->connectInput(diffuse, kUSDMaterialInputDiffuseColor));
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "diffuseColor");
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+
+    useAlpha->setValue(false);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectNoOpacity(stage, "/Material1");
+}
+
+TEST_F(USDMaterialTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlpha)
+{
+    NodePtr source = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { source });
+    ASSERT_TRUE(source && material);
+    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDEmissiveMaterialParamUseAlpha).get());
+    ASSERT_TRUE(useAlpha != NULL);
+    EXPECT_TRUE(useAlpha->getValue()) << "Use Alpha is on by default";
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "emissiveColor");
+
+    useAlpha->setValue(false);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectNoOpacity(stage, "/Material1");
+}
+
 TEST_F(USDMaterialTest, TheLitMaterialOffersNoShaderChoice)
 {
     NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");

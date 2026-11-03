@@ -53,9 +53,11 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
@@ -175,6 +177,39 @@ coverageOf(const std::string& path,
             c.y += y;
             c.minDepth = std::min(c.minDepth, depth[i]);
             c.maxDepth = std::max(c.maxDepth, depth[i]);
+            for (int k = 0; k < 3; ++k) {
+                c.rgb[k] += rgba[i * 4 + k];
+            }
+        }
+    }
+    if (c.count) {
+        c.x /= c.count;
+        c.y /= c.count;
+        for (int k = 0; k < 3; ++k) {
+            c.rgb[k] /= c.count;
+        }
+    }
+
+    return c;
+}
+
+// The pixels of rgba more than half covered, alone in a scene on a transparent background. Unlike
+// coverageOf it holds for a surface with an opacity, which Storm draws in its translucent pass,
+// where no prim id is written.
+Coverage
+coverageByAlpha(const std::vector<float>& rgba)
+{
+    Coverage c;
+
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+            if (rgba[i * 4 + 3] <= 0.5f) {
+                continue;
+            }
+            ++c.count;
+            c.x += x;
+            c.y += y;
             for (int k = 0; k < 3; ++k) {
                 c.rgb[k] += rgba[i * 4 + k];
             }
@@ -516,6 +551,13 @@ protected:
     static Coverage renderCard(const NodePtr& render,
                                double frame)
     {
+        return coverageByAlpha(renderColour(render, frame));
+    }
+
+    // The colour plane of render at frame, rendered off the main thread as renderCard explains.
+    static std::vector<float> renderColour(const NodePtr& render,
+                                           double frame)
+    {
         std::vector<RenderedPlane> planes;
         std::string error;
         bool rendered = false;
@@ -528,10 +570,27 @@ protected:
         if (planes.size() != 3u) {
             ADD_FAILURE() << "frame " << frame << " rendered " << planes.size() << " planes";
 
-            return Coverage();
+            return std::vector<float>((std::size_t)kWidth * (std::size_t)kHeight * 4u, 0.f);
         }
 
-        return coverageOf("/Card", planes[0].pixels, planes[1].pixels, planes[2].pixels);
+        return planes[0].pixels;
+    }
+
+    // The mean colour and alpha of the 5 by 5 pixels at the centre of rgba.
+    static void centreOf(const std::vector<float>& rgba,
+                         double out[4])
+    {
+        for (int k = 0; k < 4; ++k) {
+            out[k] = 0.;
+        }
+        for (int y = kHeight / 2 - 2; y <= kHeight / 2 + 2; ++y) {
+            for (int x = kWidth / 2 - 2; x <= kWidth / 2 + 2; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                for (int k = 0; k < 4; ++k) {
+                    out[k] += rgba[i * 4 + k] / 25.;
+                }
+            }
+        }
     }
 
     static std::list<ImageLayerDesc> allPlanes()
@@ -797,6 +856,93 @@ TEST_F(USDRenderStormTest, TheEmissiveMaterialShowsItsImageUnchangedWithNoLights
     }
 }
 
+// A card showing a Constant of half-transparent red, premultiplied as Natron's images are, in front
+// of an opaque blue card: the red composites over the blue, so half of each shows through.
+TEST_F(USDRenderStormTest, AHalfTransparentLiveTextureShowsTheBackgroundThroughIt)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr merge = render->getInput(0);
+    ASSERT_TRUE(merge != nullptr);
+    NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(backMaterial && backCard);
+    ASSERT_TRUE(setString(backMaterial, kSceneParamPrimPath, "/Blue"));
+    ASSERT_TRUE(setString(backCard, kSceneParamPrimPath, "/Back"));
+    ASSERT_TRUE(setTriple(backCard, kSceneParamTranslate, 0., 0., -1.));
+    KnobColor* blue = knob<KnobColor>(backMaterial, kUSDEmissiveMaterialParamEmissiveColor);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(blue && color);
+    blue->setValue(0., ViewSpec::all(), 0);
+    blue->setValue(0., ViewSpec::all(), 1);
+    blue->setValue(1., ViewSpec::all(), 2);
+    connectNodes(backMaterial, backCard, 0, true);
+    connectNodes(backCard, merge, 2, true);
+    color->setValue(0.5, ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(0.5, ViewSpec::all(), 3);
+
+    double centre[4];
+    centreOf(renderColour(render, 1.), centre);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    const double expected[4] = { 0.5, 0., 0.5, 1. };
+    for (int k = 0; k < 4; ++k) {
+        EXPECT_NEAR(expected[k], centre[k], 0.04) << "channel " << k << ", centre " << centre[0] << ", " << centre[1] << ", " << centre[2] << ", " << centre[3];
+    }
+}
+
+// The node feeding a live texture, disabled, passes its input through, as it does in the 2D graph:
+// an Invert of red shows cyan, and red once the Invert is disabled.
+TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(material != nullptr);
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
+    ASSERT_TRUE(invert != nullptr);
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(channels != nullptr);
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    channels->setChannels(0, rgb);
+    disconnectNodes(constant, material, true);
+    connectNodes(constant, invert, 0, true);
+    connectNodes(invert, material, kUSDEmissiveMaterialInputEmissive, true);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage inverted = renderCard(render, 1.);
+    ASSERT_GT(inverted.count, 500);
+    EXPECT_NEAR(0., inverted.rgb[0], 0.03) << "inverted " << inverted.rgb[0] << ", " << inverted.rgb[1] << ", " << inverted.rgb[2];
+    EXPECT_NEAR(1., inverted.rgb[1], 0.03);
+    EXPECT_NEAR(1., inverted.rgb[2], 0.03);
+
+    invert->setNodeDisabled(true);
+    const Coverage passed = renderCard(render, 1.);
+    ASSERT_GT(passed.count, 500);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    EXPECT_NEAR(1., passed.rgb[0], 0.03) << "disabled " << passed.rgb[0] << ", " << passed.rgb[1] << ", " << passed.rgb[2];
+    EXPECT_NEAR(0., passed.rgb[1], 0.03);
+    EXPECT_NEAR(0., passed.rgb[2], 0.03);
+}
+
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test
 // binary may not load, and an animated colour exercises the same per-frame URIs.
 TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
@@ -882,6 +1028,10 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
     size->setValue(format.height(), ViewSpec::all(), 1);
     file->setValue(quadPath.toStdString());
     ASSERT_TRUE(setString(material, kSceneParamPrimPath, "/Live"));
+    KnobBool* useAlpha = knob<KnobBool>(material, kUSDEmissiveMaterialParamUseAlpha);
+    ASSERT_TRUE(useAlpha != nullptr);
+    // The quad is found by its prim id, which Storm does not write for a surface with an opacity.
+    useAlpha->setValue(false);
     ASSERT_TRUE(setString(camera, kSceneParamPrimPath, "/Cam"));
     ASSERT_TRUE(setTriple(camera, kSceneParamTranslate, 0., 0., 10.));
     connectNodes(constant, material, kUSDEmissiveMaterialInputEmissive, true);

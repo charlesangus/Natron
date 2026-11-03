@@ -42,6 +42,16 @@ Metallic read `r` as raw values. Normal takes a tangent-space normal map encoded
 in 0 to 1. It is read as raw `rgb` with a scale of 2 and a bias of -1, and drives
 the shader's `normal`, which the node writes only when the input is connected.
 
+With Use Alpha on, the default, the alpha of the image on the Diffuse Color
+input, or on Emissive Color when Diffuse Color has none, drives the shader's
+`opacity` from its texture's `a` output, with `opacityMode` set to `presence`.
+Where the image is transparent the surface shows what is behind it, at the ratio
+of the alpha, as the image composited over it; the emission and the specular
+fade with it. Live textures are served with their colour divided by their alpha,
+as USD expects of a texture, and the renderer multiplies it back. A surface with
+an opacity is drawn in Storm's translucent pass, which writes no depth or prim
+id. With Use Alpha off, no opacity is written and the surface is opaque.
+
 The material only names the images. The viewer and USDRender render them before
 they draw a frame, and USD reads them through Natron's `natron` asset resolver.
 Changing the connected image re-writes this node's material and no other layer.

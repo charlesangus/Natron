@@ -139,22 +139,22 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.7: UAT round 3 fixes (user, 2026-11-02)
 
-- [ ] M211.P7.T1 — Shift-drag sets brush size
+- [x] M211.P7.T1 — Shift-drag sets brush size
   - files: Retouch viewer interact
   - approach: shift-drag in the viewer resizes the brush, as in RotoPaint.
   - verify: GUI check shift-drags and reads the brush size knob change.
   - size: M
-- [ ] M211.P7.T2 — Strokes stay editable after painting
+- [x] M211.P7.T2 — Strokes stay editable after painting
   - files: Retouch stroke storage and interact
   - approach: strokes/shapes can be selected and edited (points, settings) after they are painted, like RotoPaint strokes.
   - verify: GUI check paints a stroke, selects it, changes its settings and sees the render change.
   - size: L
-- [ ] M211.P7.T3 — One set of shape controls: next shape, or the selected shape
+- [x] M211.P7.T3 — One set of shape controls: next shape, or the selected shape
   - files: Retouch knobs/panel
   - approach: collapse the "selected shape" and "future shape" controls into one set. With nothing selected they set what the next shape/stroke gets; with a shape selected they show and edit that shape's settings.
   - verify: GUI check: settings with no selection apply to a new stroke; selecting a stroke loads its settings and editing them changes only that stroke.
   - size: L
-- [ ] M211.P7.T4 — Remove or wire the General-tab Color control
+- [x] M211.P7.T4 — Remove or wire the General-tab Color control
   - files: Retouch knobs
   - approach: the "color" control on the main/General tab has no effect. Wire it if it was meant to do something (fill colour), otherwise remove it.
   - verify: either a test shows the control changes the output, or the knob is gone and the panel check passes.
@@ -213,3 +213,4 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 **Verification gate:** Retouch parity and GUI checks pass; a new AppImage is accepted by the user.
 - 2026-11-02 — P6 at 1c7e18874. Decisions (user): the carried source offset starts at 0 like RotoPaint; Ctrl at pen down drags the offset as in RotoPaint; RotoPaint's Reset Transform button is relabelled Reset Clone Offset to match its script name.
+- 2026-11-02 — P7 at 869042367: Shift-drag brush size via the shared roto interact; click inside a brush stroke selects it, its settings then edit it (stroke points aren't editable, as in RotoPaint; no Transform tab); one Shape Settings tab (old next-shape knobs kept hidden as storage); General Color hidden — a retouch mask uses coverage only (implementer).

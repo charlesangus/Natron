@@ -104,12 +104,12 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.8: UAT round 3 fixes (user, 2026-11-02)
 
-- [ ] M224.P8.T1 — Alt-drag on a feather handle, and the broken state it leaves
+- [x] M224.P8.T1 — Alt-drag on a feather handle, and the broken state it leaves
   - files: RotoCurveInteract (feather handle hit-testing, alt modifier), viewer pan handling
   - approach: alt-drag on a feather handle must drag the handle (not pan the viewer). After the failed alt-drag, feather handles, feather points and feather tangents could no longer be clicked at all (clicks deselected the shape); find the stuck state (likely an interaction/event state not reset after the viewer took the alt-drag) and fix it.
   - verify: GUI check alt-drags a feather handle and sees it move, then clicks a feather point and a feather tangent and drags each.
   - size: L
-- [ ] M224.P8.T2 — Shift+E resets feather on the selected points only
+- [x] M224.P8.T2 — Shift+E resets feather on the selected points only
   - files: Roto feather reset action
   - approach: with points selected, reset only their feather; with no points selected, reset all.
   - verify: GUI check with one point selected changes only that point's feather; with none selected, all.
@@ -212,3 +212,4 @@ Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 
 **Verification gate:** Roto GUI tests pass; a new AppImage is accepted by the user.
 - 2026-11-01 — UAT round 2: tangent growth and handle interactivity accepted; P7 for neighbour-aware growth and Alt-drag only on feather handles (Alt+E question settled: Alt-drag is recycled); render speed follow-up M299 - Roto Render Performance (user).
+- 2026-11-02 — P8 at 159abcfd8: Alt-press claims feather points and tangents (it only took the bar); modifiers resync at each press so a lost Alt release can't stick (the 'clicks deselect' state was not reproduced — recheck in UAT); Shift+E resets only the selected points' feather, all feathers of the selected shapes otherwise (PM).

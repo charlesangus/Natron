@@ -2016,15 +2016,18 @@ ColorEqualizer::recordGpu(const PassGpuIO& io,
                           float scale,
                           const RectI& frame) const
 {
-    // Over a finite source the region of definition is the frame; over an infinite one the
-    // domain is clamped to it and the output outside it is the source.
-    if (frame.isNull() || (io.rod == frame)) {
+    // The domain is clamped to the frame and the output outside it is the source, as the CPU
+    // renders it. The domain lies within the region of definition, so a window reaching past a
+    // finite source's frame is passed through over a domain of its own.
+    if (frame.isNull()) {
         return recordGpuFrame(io, params, scale, false);
     }
     RectI inside(0, 0, 0, 0);
     const bool overlaps = PassExec::intersectRects(io.output, frame, &inside) && !PassExec::isEmptyRect(inside);
     if (!overlaps || (inside != io.output)) {
-        if (recordGpuFrame(io, params, scale, true) != eStatusOK) {
+        PassGpuIO through(io);
+        through.domain = io.output;
+        if (recordGpuFrame(through, params, scale, true) != eStatusOK) {
             return eStatusFailed;
         }
         if (!overlaps) {

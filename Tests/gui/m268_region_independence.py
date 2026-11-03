@@ -36,7 +36,11 @@ try:
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
-    from guitest import check, report, require
+    from guitest import report, require
+
+    def check(ok, label, detail=""):
+        """gt.check() with require()'s detail, shown only on failure."""
+        return gt.check(ok, label + (" (" + detail + ")" if detail and not ok else ""))
 
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
@@ -181,7 +185,16 @@ try:
         if img is not None and img.save(path):
             report("SHOT " + path)
 
+    def graph_view():
+        views = visible_of("NodeGraph")
+        return views[0] if views else None
+
     def steps():
+        # A fresh project has no Viewer node, so no viewer shows until one is created.
+        ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the node graph is up")
+        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "a viewer is up")
         win = main_window()
@@ -194,8 +207,6 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("setup")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
-        require(viewer is not None, "a Viewer node exists")
         plate = app.createNode("Noise")
         require(plate is not None, "create a Noise", gt.plugin_problem("Noise"))
         set_choice(plate.getParam("extent"), "size")

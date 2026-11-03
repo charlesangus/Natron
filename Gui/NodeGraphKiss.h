@@ -22,6 +22,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -133,6 +134,18 @@ double kissDistanceToTarget(double x,
 // to the earlier target. A target is never kissed by itself. Returns an invalid plan when none fits.
 KissPlan planKiss(const std::vector<KissInputTip>& inputs,
                   const std::vector<KissOutput>& outputs,
+                  const std::vector<KissTarget>& targets,
+                  double reach,
+                  const KissValidator& isValid = KissValidator());
+
+// The same choice, measuring only the targets listed for each endpoint: inputNear[i] and
+// outputNear[o] are indices into targets for inputs[i] and outputs[o]. With each list holding the
+// targets found around its endpoint, the work follows the nearby pairs rather than every endpoint
+// against every target.
+KissPlan planKiss(const std::vector<KissInputTip>& inputs,
+                  const std::vector<std::vector<std::size_t>>& inputNear,
+                  const std::vector<KissOutput>& outputs,
+                  const std::vector<std::vector<std::size_t>>& outputNear,
                   const std::vector<KissTarget>& targets,
                   double reach,
                   const KissValidator& isValid = KissValidator());

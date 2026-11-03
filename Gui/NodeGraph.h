@@ -306,6 +306,10 @@ private:
 
     void commitCut();
 
+    void cancelNodeDrag();
+
+    QUndoCommand* takeDragMoveCommand(QUndoCommand* parent, NodesGuiList* moved);
+
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
     bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);

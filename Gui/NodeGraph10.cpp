@@ -232,6 +232,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
     _imp->_shakeDetector.reset();
     _imp->_dragClock.start();
     _imp->_deltaSinceMousePress = QPointF(0, 0);
+    _imp->_dragPickupPositions.clear();
     if ( buttonDownIsMiddle(e) ) {
         _imp->_evtState = eEventStateMovingArea;
 

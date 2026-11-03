@@ -329,7 +329,12 @@ protected:
             return std::string();
         }
         EXPECT_EQ(chain.highlights, chain.demosaic->getInput(0)) << fixture.file;
-        EXPECT_EQ(chain.demosaic, chain.inputColor->getInput(0)) << fixture.file;
+        if (chain.denoise) {
+            EXPECT_EQ(chain.demosaic, chain.denoise->getInput(0)) << fixture.file;
+            EXPECT_EQ(chain.denoise, chain.inputColor->getInput(0)) << fixture.file;
+        } else {
+            EXPECT_EQ(chain.demosaic, chain.inputColor->getInput(0)) << fixture.file;
+        }
 
         if (hasDenoise) {
             *hasDenoise = bool(chain.denoise);

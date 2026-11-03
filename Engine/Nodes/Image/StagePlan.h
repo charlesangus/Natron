@@ -409,8 +409,8 @@ void stageSourcesNeededLayers(EffectInstance& effect,
 
 /**
  * @brief The runtime shaders one node's device cannot run. Each is reported once in the node's
- * persistent message and never built again for that node; the message is withdrawn once a shader
- * is accepted. Safe to call from several threads.
+ * persistent message and never built again for that node on that device; the message is withdrawn
+ * once a shader is accepted. Safe to call from several threads.
  **/
 class StageGpuShaderGate {
 public:
@@ -420,7 +420,15 @@ public:
     bool accept(const GpuRuntimeShader& shader,
                 const NodePtr& node) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether accept() rejected shader on the device with this pipeline-cache tag.
+     **/
+    bool isRejected(const std::string& deviceTag,
+                    const GpuRuntimeShader& shader) WARN_UNUSED_RETURN;
+
 private:
+    static std::string rejectionKey(const std::string& deviceTag, const GpuRuntimeShader& shader);
+
     std::mutex _mutex;
     std::set<std::string> _rejected;
     std::string _message;

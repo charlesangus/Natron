@@ -31,12 +31,20 @@
 #include <vector>
 
 #include <pxr/base/tf/token.h>
+#include <pxr/base/vt/array.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/filteringSceneIndex.h>
+#include <pxr/imaging/hd/legacyDisplayStyleSchema.h>
+#include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/overlayContainerDataSource.h>
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
 #include <pxr/usd/sdr/registry.h>
+#include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
 #include <tbb/task_arena.h>
@@ -80,6 +88,98 @@ namespace {
 
         return !known.count(id);
     }
+
+    /**
+     * Flags flatShadingEnabled on every polygonal (none or bilinear) mesh without vertex normals.
+     * USD renders such a mesh faceted, as Storm does, but Cycles' delegate shades every mesh
+     * smooth unless flatShadingEnabled is set, from normals it averages at shared points, and
+     * ignores uniform normals. The implicit Cube and Plane tessellate to such meshes, and an
+     * 8-point cube shaded smooth has normals tilted across each face like a sphere's.
+     **/
+    class FacetedMeshSceneIndex;
+    typedef TfRefPtr<FacetedMeshSceneIndex> FacetedMeshSceneIndexRefPtr;
+
+    class FacetedMeshSceneIndex
+        : public HdSingleInputFilteringSceneIndexBase {
+    public:
+        static FacetedMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+        {
+            return TfCreateRefPtr(new FacetedMeshSceneIndex(input));
+        }
+
+        HdSceneIndexPrim GetPrim(const SdfPath& path) const override
+        {
+            HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(path);
+            if ((prim.primType == HdPrimTypeTokens->mesh) && prim.dataSource && faceted(prim.dataSource)) {
+                static const HdContainerDataSourceHandle flat = HdRetainedContainerDataSource::New(
+                    HdLegacyDisplayStyleSchema::GetSchemaToken(),
+                    HdLegacyDisplayStyleSchema::Builder().SetFlatShadingEnabled(HdRetainedTypedSampledDataSource<bool>::New(true)).Build());
+                prim.dataSource = HdOverlayContainerDataSource::New(flat, prim.dataSource);
+            }
+
+            return prim;
+        }
+
+        SdfPathVector GetChildPrimPaths(const SdfPath& path) const override
+        {
+            return _GetInputSceneIndex()->GetChildPrimPaths(path);
+        }
+
+    protected:
+        void _PrimsAdded(const HdSceneIndexBase& /*sender*/,
+                         const HdSceneIndexObserver::AddedPrimEntries& entries) override
+        {
+            _SendPrimsAdded(entries);
+        }
+
+        void _PrimsRemoved(const HdSceneIndexBase& /*sender*/,
+                           const HdSceneIndexObserver::RemovedPrimEntries& entries) override
+        {
+            _SendPrimsRemoved(entries);
+        }
+
+        void _PrimsDirtied(const HdSceneIndexBase& /*sender*/,
+                           const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
+        {
+            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetSubdivisionSchemeLocator(), HdPrimvarsSchema::GetDefaultLocator().Append(HdTokens->normals) };
+            HdSceneIndexObserver::DirtiedPrimEntries forwarded = entries;
+            for (HdSceneIndexObserver::DirtiedPrimEntry& entry : forwarded) {
+                if (entry.dirtyLocators.Intersects(decides)) {
+                    entry.dirtyLocators.insert(HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator());
+                }
+            }
+            _SendPrimsDirtied(forwarded);
+        }
+
+    private:
+        explicit FacetedMeshSceneIndex(const HdSceneIndexBaseRefPtr& input)
+            : HdSingleInputFilteringSceneIndexBase(input)
+        {
+        }
+
+        static bool faceted(const HdContainerDataSourceHandle& prim)
+        {
+            TfToken scheme = UsdGeomTokens->catmullClark;
+            if (HdTokenDataSourceHandle ds = HdMeshSchema::GetFromParent(prim).GetSubdivisionScheme()) {
+                scheme = ds->GetTypedValue(0.f);
+            }
+            if ((scheme != UsdGeomTokens->none) && (scheme != UsdGeomTokens->bilinear)) {
+                return false;
+            }
+            const HdPrimvarSchema normals = HdPrimvarsSchema::GetFromParent(prim).GetPrimvar(HdTokens->normals);
+            const HdSampledDataSourceHandle value = normals.GetPrimvarValue();
+            if (!value) {
+                return true;
+            }
+            const VtValue sampled = value->GetValue(0.f);
+            if (!sampled.IsHolding<VtVec3fArray>() || sampled.UncheckedGet<VtVec3fArray>().empty()) {
+                return true;
+            }
+            const HdTokenDataSourceHandle interpolation = normals.GetInterpolation();
+
+            return interpolation && (interpolation->GetTypedValue(0.f) == HdPrimvarSchemaTokens->uniform);
+        }
+    };
 } // anon namespace
 
 void
@@ -94,7 +194,7 @@ registerSceneIndices()
         HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
             kRenderDelegateCyclesDisplayName,
             [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
-                return HdsiImplicitSurfaceSceneIndex::New(input, args);
+                return FacetedMeshSceneIndex::New(HdsiImplicitSurfaceSceneIndex::New(input, args));
             },
             HdRetainedContainerDataSource::New(count, types.data(), modes.data()),
             0,

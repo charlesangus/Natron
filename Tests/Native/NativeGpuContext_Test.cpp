@@ -48,7 +48,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -161,14 +161,14 @@ protected:
     NodePtr createSet(const std::string& name,
                       double value)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 
             return NodePtr();
         }
         EffectInstancePtr effect = set->getEffectInstance();
-        KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+        KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
         KnobDoublePtr knob = effect->createDoubleKnob(name, name, 1);
         if (!variables || !variables->addKnob(knob)) {
             ADD_FAILURE() << "the Set node refused " << name;

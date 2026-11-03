@@ -361,6 +361,17 @@ natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
 natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
+# SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
+# from the configure step is written to an include that ctest runs just before it.
+# A build whose OpenUSD install carries the Cycles delegate (tools/ci/local/build-cycles.sh) bundles
+# it, so CyclesDelegate must fail, not skip, if the plug-in is not registered.
+if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
+    set(NATRON_CYCLES_BUNDLED ON)
+else()
+    set(NATRON_CYCLES_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\n")
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)

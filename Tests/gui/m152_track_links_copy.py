@@ -86,6 +86,15 @@ try:
                 parent = parent.parentWidget()
         return None
 
+    def fresh_tree(node):
+        """The node's curve list, found again on every call: a tree wrapper held across a yield can
+        be invalidated, and the panel wrapper is held so the tree's wrapper outlives this call."""
+        panel = panel_of(node)
+        if panel is None:
+            return None
+        hold(panel)
+        return curve_tree(panel)
+
     def open_panel(view, node):
         app.selectNode(node, True)
         QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
@@ -132,7 +141,11 @@ try:
             popup.close()
 
         QTimer.singleShot(MENU_MS, pick)
-        pos = tree.visualItemRect(item).center()
+        # A release on any other column of a selected row is taken as a click on that cell (activation,
+        # lock, colour) and opens no menu, so the click lands on the name column.
+        header = tree.header()
+        x = header.sectionViewportPosition(0) + header.sectionSize(0) // 2
+        pos = QPoint(x, tree.visualItemRect(item).center().y())
         send_mouse(tree.viewport(), QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
 
     def xy(value):
@@ -224,8 +237,7 @@ try:
         require(ok, "opened the SplineWarp's settings panel")
         ok = yield ("until", lambda: visible_viewer() is not None, POLL_TIMEOUT_S)
         require(ok, "a viewer is on screen")
-        tree = curve_tree(panel_of(warp))
-        require(tree is not None, "the SplineWarp's panel holds the curve list")
+        require(fresh_tree(warp) is not None, "the SplineWarp's panel holds the curve list")
         show_in_viewer(viewer, warp)
         py_viewer.seek(LINK_FRAME)
         yield ("sleep", RENDER_MS)
@@ -233,11 +245,13 @@ try:
         gt.section("link-splinewarp")
         closed = make_square(roto, RECT)
         yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
         items = select_in_tree(tree, [closed])
         require(len(items) == 1, "selected the closed curve in the curve list")
         seen = {}
         run_menu_action(tree, items[0], "Duplicate and Link", seen)
         ok = yield ("until", lambda: sw.getLink(closed) is not None, POLL_TIMEOUT_S)
+        check(seen.get("Duplicate and Link", False), "the context menu offers Duplicate and Link")
         require(ok, "Duplicate and Link linked the closed curve")
         link = hold(sw.getLink(closed))
         dest = hold(link.getDestination())
@@ -318,7 +332,7 @@ try:
         open_panel(view, roto_node)
         ok = yield ("until", lambda: panel_of(roto_node) is not None, POLL_TIMEOUT_S)
         require(ok, "the Roto's panel is open")
-        roto_tree = curve_tree(panel_of(roto_node))
+        roto_tree = fresh_tree(roto_node)
         require(roto_tree is not None, "the Roto's panel holds the curve list")
         items = select_in_tree(roto_tree, [rsquare])
         require(len(items) == 1, "selected the Roto shape in its curve list")
@@ -330,7 +344,7 @@ try:
         open_panel(view, warp2)
         ok = yield ("until", lambda: panel_of(warp2) is not None, POLL_TIMEOUT_S)
         require(ok, "opened the second SplineWarp's settings panel")
-        tree2 = curve_tree(panel_of(warp2))
+        tree2 = fresh_tree(warp2)
         require(tree2 is not None, "the second SplineWarp's panel holds the curve list")
         show_in_viewer(viewer, warp2)
         target = tree2.topLevelItem(0)
@@ -354,7 +368,8 @@ try:
         open_panel(view, warp)
         ok = yield ("until", lambda: panel_of(warp) is not None, POLL_TIMEOUT_S)
         require(ok, "the first SplineWarp's panel is open")
-        tree = curve_tree(panel_of(warp))
+        tree = fresh_tree(warp)
+        require(tree is not None, "the first SplineWarp's panel holds the curve list")
         items = select_in_tree(tree, [closed, dest])
         require(len(items) == 2, "selected the linked source and destination")
         seen = {}
@@ -365,7 +380,7 @@ try:
         open_panel(view, warp3)
         ok = yield ("until", lambda: panel_of(warp3) is not None, POLL_TIMEOUT_S)
         require(ok, "opened the third SplineWarp's settings panel")
-        tree3 = curve_tree(panel_of(warp3))
+        tree3 = fresh_tree(warp3)
         require(tree3 is not None, "the third SplineWarp's panel holds the curve list")
         show_in_viewer(viewer, warp3)
         target = tree3.topLevelItem(0)

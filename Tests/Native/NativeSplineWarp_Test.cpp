@@ -42,6 +42,7 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
+#include "SplineWarpTestCurves.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -74,10 +75,9 @@
 NATRON_NAMESPACE_USING
 
 using TransformMath::Mat3;
+using namespace SplineWarpTestCurves;
 
 namespace {
-
-const double kTime = 1.;
 
 // A warp that is exactly a translation against a Transform of the same offset: both resample
 // once, through different code paths.
@@ -87,84 +87,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-SplineWarpContextPtr
-contextOf(const NodePtr& node)
-{
-    return node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
-}
-
-// A closed Bezier through points, keyed at kTime.
-BezierPtr
-makeCurve(const SplineWarpContextPtr& ctx,
-          const std::vector<std::pair<double, double>>& points)
-{
-    BezierPtr bezier = ctx->makeBezier(points[0].first, points[0].second, kRotoBezierBaseName, kTime, false);
-    if (!bezier) {
-        return bezier;
-    }
-    for (std::size_t i = 1; i < points.size(); ++i) {
-        bezier->addControlPoint(points[i].first, points[i].second, kTime);
-    }
-    bezier->setCurveFinished(true);
-
-    return bezier;
-}
-
-// A quadrilateral at (x, y), scaled by s about (cx, cy), then moved by (dx, dy).
-BezierPtr
-makeQuad(const SplineWarpContextPtr& ctx,
-         double x,
-         double y,
-         double size,
-         double dx = 0.,
-         double dy = 0.,
-         double s = 1.)
-{
-    const double base[4][2] = { { x, y }, { x + size, y }, { x + size * 1.2, y + size }, { x - size * 0.1, y + size * 0.8 } };
-    const double cx = x + size * 0.5;
-    const double cy = y + size * 0.5;
-    std::vector<std::pair<double, double>> points;
-    for (int i = 0; i < 4; ++i) {
-        points.push_back(std::make_pair(cx + s * (base[i][0] - cx) + dx, cy + s * (base[i][1] - cy) + dy));
-    }
-
-    return makeCurve(ctx, points);
-}
-
-BezierPtr
-makeRectangle(const SplineWarpContextPtr& ctx,
-              double x1,
-              double y1,
-              double x2,
-              double y2)
-{
-    std::vector<std::pair<double, double>> points;
-    points.push_back(std::make_pair(x1, y1));
-    points.push_back(std::make_pair(x2, y1));
-    points.push_back(std::make_pair(x2, y2));
-    points.push_back(std::make_pair(x1, y2));
-
-    return makeCurve(ctx, points);
-}
-
-// A link moving a quadrilateral by (dx, dy): the warp is that translation everywhere.
-SplineWarpLinkPtr
-linkTranslation(const SplineWarpContextPtr& ctx,
-                double x,
-                double y,
-                double size,
-                double dx,
-                double dy)
-{
-    BezierPtr source = makeQuad(ctx, x, y, size);
-    BezierPtr destination = makeQuad(ctx, x, y, size, dx, dy);
-    if (!source || !destination) {
-        return SplineWarpLinkPtr();
-    }
-
-    return ctx->linkWithAlignment(source, destination, 0., false);
 }
 
 bool
@@ -463,7 +385,7 @@ TEST_F(NativeSplineWarpTest, TranslationLinkMatchesTransform)
     NodePtr warp = makeSplineWarp(source);
     NodePtr transform = makeTranslate(source, 3.5, -2.25);
     ASSERT_TRUE(source && warp && transform);
-    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 20., 15., 16., 3.5, -2.25)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 20., 15., 16., 3.5, -2.25)));
     EXPECT_FALSE(isIdentityOnSource(warp));
 
     const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
@@ -509,7 +431,7 @@ TEST_F(NativeSplineWarpTest, InvertGivesTheOppositeShift)
     NodePtr warp = makeSplineWarp(source);
     NodePtr transform = makeTranslate(source, -3.5, 2.25);
     ASSERT_TRUE(source && warp && transform);
-    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 20., 15., 16., 3.5, -2.25)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 20., 15., 16., 3.5, -2.25)));
     ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamInvert, { 1. }));
 
     const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
@@ -530,7 +452,7 @@ TEST_F(NativeSplineWarpTest, IdentityCases)
 
     EXPECT_TRUE(isIdentityOnSource(warp)) << "no link";
 
-    SplineWarpLinkPtr link = linkTranslation(ctx, 20., 15., 16., 3., 2.);
+    SplineWarpLinkPtr link = linkQuad(ctx, 20., 15., 16., 3., 2.);
     ASSERT_TRUE(bool(link));
     EXPECT_FALSE(isIdentityOnSource(warp)) << "one link";
 
@@ -566,7 +488,7 @@ TEST_F(NativeSplineWarpTest, BoundaryKeepsTheOutsideBitExact)
     BezierPtr boundary = makeRectangle(ctx, 16., 12., 48., 36.);
     ASSERT_TRUE(bool(boundary));
     ctx->setBoundary(boundary, true);
-    ASSERT_TRUE(bool(linkTranslation(ctx, 27., 21., 6., 2., 1.5)));
+    ASSERT_TRUE(bool(linkQuad(ctx, 27., 21., 6., 2., 1.5)));
     EXPECT_FALSE(isIdentityOnSource(warp));
 
     const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
@@ -607,7 +529,7 @@ TEST_F(NativeSplineWarpTest, RoDFollowsTheBBox)
     NodePtr source = makeSource();
     NodePtr warp = makeSplineWarp(source);
     ASSERT_TRUE(source && warp);
-    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 20., 15., 16., 10., 5.)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 20., 15., 16., 10., 5.)));
 
     const RectD sourceRoD = rodOf(source);
     ASSERT_FALSE(sourceRoD.isNull());
@@ -701,8 +623,8 @@ TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
     NodePtr warp = makeSplineWarp(transform);
     NodePtr twice = makeSplineWarp(crop);
     ASSERT_TRUE(warp && twice);
-    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 26., 18., 10., 2.5, 1.5)));
-    ASSERT_TRUE(bool(linkTranslation(contextOf(twice), 26., 18., 10., 2.5, 1.5)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 26., 18., 10., 2.5, 1.5)));
+    ASSERT_TRUE(bool(linkQuad(contextOf(twice), 26., 18., 10., 2.5, 1.5)));
 
     InputMatrixMap transforms;
     warp->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);

@@ -34,6 +34,7 @@
 #include <new>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QThread>
@@ -102,6 +103,133 @@ copyRow(const Image::ReadAccess& access,
         }
     }
 }
+
+// One level of the pyramid fillTransparentColour builds: per texel, the colour of the texels it
+// covers that have an alpha, averaged by that alpha, and the mean alpha that weights it.
+struct FillLevel {
+    int width = 0;
+    int height = 0;
+    std::vector<float> rgbw;
+};
+
+void
+sampleLevel(const FillLevel& level,
+            double u,
+            double v,
+            float* rgb)
+{
+    u = std::min(std::max(u, 0.), double(level.width - 1));
+    v = std::min(std::max(v, 0.), double(level.height - 1));
+    const int x0 = (int)u;
+    const int y0 = (int)v;
+    const int x1 = std::min(x0 + 1, level.width - 1);
+    const int y1 = std::min(y0 + 1, level.height - 1);
+    const float tx = float(u - x0);
+    const float ty = float(v - y0);
+    const float* p00 = &level.rgbw[(std::size_t(y0) * std::size_t(level.width) + std::size_t(x0)) * 4];
+    const float* p10 = &level.rgbw[(std::size_t(y0) * std::size_t(level.width) + std::size_t(x1)) * 4];
+    const float* p01 = &level.rgbw[(std::size_t(y1) * std::size_t(level.width) + std::size_t(x0)) * 4];
+    const float* p11 = &level.rgbw[(std::size_t(y1) * std::size_t(level.width) + std::size_t(x1)) * 4];
+    for (int c = 0; c < 3; ++c) {
+        const float bottom = p00[c] + (p10[c] - p00[c]) * tx;
+        const float top = p01[c] + (p11[c] - p01[c]) * tx;
+        rgb[c] = bottom + (top - bottom) * ty;
+    }
+}
+
+/**
+ * Straight colour is undefined where the alpha is 0, and Storm's bilinear and mipmap filtering
+ * blends it into the edge texels it averages with: left black, it darkens every soft or
+ * antialiased edge. A push-pull fill gives those texels the colour of the nearest texels with an
+ * alpha, at every distance a mip level reaches, in time linear in the texels. Texels with an
+ * alpha, and every alpha, are left as they are.
+ **/
+void
+fillTransparentColour(LiveTextureBuffer& buffer)
+{
+    const int width = buffer.getWidth();
+    const int height = buffer.getHeight();
+    std::vector<FillLevel> levels;
+    bool anyTransparent = false;
+    bool anyCovered = false;
+
+    for (int y = 0; y < height; ++y) {
+        const float* row = buffer.getRow(y);
+        for (int x = 0; x < width; ++x) {
+            if (row[4 * x + 3] > 0.f) {
+                anyCovered = true;
+            } else {
+                anyTransparent = true;
+            }
+        }
+    }
+    if (!anyTransparent || !anyCovered) {
+        return;
+    }
+
+    int fineWidth = width;
+    int fineHeight = height;
+    while ((fineWidth > 1) || (fineHeight > 1)) {
+        FillLevel coarse;
+        coarse.width = (fineWidth + 1) / 2;
+        coarse.height = (fineHeight + 1) / 2;
+        coarse.rgbw.assign(std::size_t(coarse.width) * std::size_t(coarse.height) * 4, 0.f);
+        const FillLevel* fine = levels.empty() ? nullptr : &levels.back();
+        for (int cy = 0; cy < coarse.height; ++cy) {
+            for (int cx = 0; cx < coarse.width; ++cx) {
+                float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+                int numChildren = 0;
+                for (int y = 2 * cy; y < std::min(2 * cy + 2, fineHeight); ++y) {
+                    for (int x = 2 * cx; x < std::min(2 * cx + 2, fineWidth); ++x) {
+                        const float* child = fine ? &fine->rgbw[(std::size_t(y) * std::size_t(fineWidth) + std::size_t(x)) * 4]
+                                                  : buffer.getRow(y) + 4 * x;
+                        const float weight = (child[3] > 0.f) ? child[3] : 0.f;
+                        ++numChildren;
+                        if (weight > 0.f) {
+                            sum[0] += child[0] * weight;
+                            sum[1] += child[1] * weight;
+                            sum[2] += child[2] * weight;
+                            sum[3] += weight;
+                        }
+                    }
+                }
+                float* out = &coarse.rgbw[(std::size_t(cy) * std::size_t(coarse.width) + std::size_t(cx)) * 4];
+                if (sum[3] > 0.f) {
+                    out[0] = sum[0] / sum[3];
+                    out[1] = sum[1] / sum[3];
+                    out[2] = sum[2] / sum[3];
+                    out[3] = sum[3] / float(numChildren);
+                }
+            }
+        }
+        fineWidth = coarse.width;
+        fineHeight = coarse.height;
+        levels.push_back(std::move(coarse));
+    }
+
+    for (int l = (int)levels.size() - 2; l >= 0; --l) {
+        FillLevel& fine = levels[l];
+        const FillLevel& coarse = levels[l + 1];
+        for (int y = 0; y < fine.height; ++y) {
+            for (int x = 0; x < fine.width; ++x) {
+                float* texel = &fine.rgbw[(std::size_t(y) * std::size_t(fine.width) + std::size_t(x)) * 4];
+                if (texel[3] <= 0.f) {
+                    sampleLevel(coarse, (x + 0.5) / 2. - 0.5, (y + 0.5) / 2. - 0.5, texel);
+                }
+            }
+        }
+    }
+    const FillLevel& first = levels.front();
+    for (int y = 0; y < height; ++y) {
+        float* row = buffer.getRow(y);
+        for (int x = 0; x < width; ++x) {
+            float* texel = row + 4 * x;
+            if (!(texel[3] > 0.f)) {
+                sampleLevel(first, (x + 0.5) / 2. - 0.5, (y + 0.5) / 2. - 0.5, texel);
+            }
+        }
+    }
+} // fillTransparentColour
 
 LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
@@ -172,6 +300,10 @@ renderSource(const LiveTextureSource& source,
 
             return LiveTextureBufferConstPtr();
         }
+    }
+    // Only RGBA colour is unpremultiplied, and an alpha-only image's colour is its alpha.
+    if (numComps >= 4) {
+        fillTransparentColour(*buffer);
     }
 
     return buffer;

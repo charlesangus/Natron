@@ -58,6 +58,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
@@ -894,6 +895,84 @@ TEST_F(USDRenderStormTest, AHalfTransparentLiveTextureShowsTheBackgroundThroughI
     for (int k = 0; k < 4; ++k) {
         EXPECT_NEAR(expected[k], centre[k], 0.04) << "channel " << k << ", centre " << centre[0] << ", " << centre[1] << ", " << centre[2] << ", " << centre[3];
     }
+}
+
+// A card showing red over the left half of its image, its edge softened, in front of a white card: the
+// red composites over the white, so across the edge every pixel lies between red and white. Black
+// filtered in from the transparent texels would show as a band darker than both.
+TEST_F(USDRenderStormTest, ASoftLiveTextureEdgeHasNoDarkFringe)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr merge = render->getInput(0);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(merge && material);
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
+    NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(blur && backMaterial && backCard);
+    ASSERT_TRUE(setString(backMaterial, kSceneParamPrimPath, "/White"));
+    ASSERT_TRUE(setString(backCard, kSceneParamPrimPath, "/Back"));
+    ASSERT_TRUE(setTriple(backCard, kSceneParamTranslate, 0., 0., -1.));
+    ASSERT_TRUE(setTriple(backCard, kSceneParamScale, 2., 2., 1.));
+    KnobColor* white = knob<KnobColor>(backMaterial, kUSDEmissiveMaterialParamEmissiveColor);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobChoice* extent = knob<KnobChoice>(constant, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(constant, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(constant, kNativeGeneratorParamSize);
+    KnobDouble* blurSize = knob<KnobDouble>(blur, kBlurParamSize);
+    ASSERT_TRUE(white && color && extent && bottomLeft && size && blurSize);
+    for (int k = 0; k < 3; ++k) {
+        white->setValue(1., ViewSpec::all(), k);
+    }
+    connectNodes(backMaterial, backCard, 0, true);
+    connectNodes(backCard, merge, 2, true);
+
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    bottomLeft->setValue(format.x1 - format.width(), ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1 - format.height(), ViewSpec::all(), 1);
+    size->setValue(format.width() + format.width() / 2, ViewSpec::all(), 0);
+    size->setValue(3 * format.height(), ViewSpec::all(), 1);
+    // An edge a few texels wide: one wide enough to fade to almost nothing before its alpha reaches
+    // 0 would hide the black, which Storm's mipmaps blend in a texel or so from where the alpha is 0.
+    blurSize->setValue(3., ViewSpec::all(), 0);
+    blurSize->setValue(3., ViewSpec::all(), 1);
+    disconnectNodes(constant, material, true);
+    connectNodes(constant, blur, 0, true);
+    connectNodes(blur, material, kUSDEmissiveMaterialInputEmissive, true);
+
+    const std::vector<float> rgba = renderColour(render, 1.);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    bool sawRed = false;
+    bool sawWhite = false;
+    for (int y = kHeight / 2 - 2; y <= kHeight / 2 + 2; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+            const float* p = &rgba[i * 4];
+            if (p[3] < 0.99f) {
+                continue;
+            }
+            sawRed = sawRed || (p[1] < 0.05f);
+            sawWhite = sawWhite || (p[1] > 0.95f);
+            EXPECT_GT(p[0], 0.96f) << "pixel " << x << ", " << y << ": " << p[0] << ", " << p[1] << ", " << p[2];
+            EXPECT_GT(p[1], -0.04f) << "pixel " << x << ", " << y;
+            EXPECT_LT(p[1], 1.04f) << "pixel " << x << ", " << y;
+            EXPECT_NEAR(p[1], p[2], 0.04) << "pixel " << x << ", " << y << ": " << p[0] << ", " << p[1] << ", " << p[2];
+        }
+    }
+    EXPECT_TRUE(sawRed) << "the row crosses the red";
+    EXPECT_TRUE(sawWhite) << "the row crosses the white";
 }
 
 // The node feeding a live texture, disabled, passes its input through, as it does in the 2D graph:

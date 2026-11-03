@@ -637,6 +637,9 @@ VectorBlur::reportClamped(double time,
                           bool coversWholeImage,
                           bool clamped)
 {
+    const AppInstancePtr app = getApp();
+    const TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
+    const double current = timeline ? (double)timeline->currentFrame() : time;
     bool show = false;
     {
         std::lock_guard<std::mutex> lock(_warningMutex);
@@ -649,7 +652,6 @@ VectorBlur::reportClamped(double time,
         }
         // Renders ahead of or behind the timeline must not change what the current frame shows.
         double shown = time;
-        const double current = getApp()->getTimeLine()->currentFrame();
         if (_clampedByTime.find(current) != _clampedByTime.end()) {
             shown = current;
         }
@@ -939,6 +941,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         int nComps = 0;
         int srcNComps = 0;
         std::bitset<4> channels;
+        RectI dstBounds;
         RectI srcBounds;
         std::shared_ptr<Image::ReadAccess> srcAccess;
         std::shared_ptr<Image::WriteAccess> dstAccess;
@@ -950,6 +953,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         std::unique_ptr<Plane> plane(new Plane());
         plane->dst = it->second;
         if (plane->dst) {
+            plane->dstBounds = plane->dst->getBounds();
             plane->nComps = (int)plane->dst->getComponentsCount();
             plane->channels = PassExec::processedBitsForImage(it->first, plane->nComps, args.processChannels);
             ImageLayerDesc sourceLayer;
@@ -1132,8 +1136,9 @@ VectorBlur::renderOp(const RenderActionArgs& args,
 
     // A cancelled render has not seen every pixel, so it cannot say the frame is unclamped.
     bool coversWholeImage = !cancel.check();
+    // dstBounds, not dst->getBounds(): that read-locks the image dstAccess still write-locks.
     for (const std::unique_ptr<Plane>& plane : planes) {
-        if (plane->dst && !roi.contains(plane->dst->getBounds())) {
+        if (plane->dst && !roi.contains(plane->dstBounds)) {
             coversWholeImage = false;
         }
     }

@@ -30,6 +30,10 @@ INPUT_GAP = 8.0
 # The dragged node's bottom stops this far above the target, inside the kiss reach (18 viewport px).
 OUTPUT_GAP = 5.0
 KISS_RGB_F = (0.1, 0.9, 0.2)
+# The pipe shows in only a few pixels between the two nodes, and the drawn nodes sit a few scene
+# units from where getPosition()/getSize() put them, so the probe overlaps both nodes' edges.
+# Neither node's fill nor a white selected pipe is near the Selection colour.
+STRIP_PAD = 12.0
 
 try:
     import NatronEngine
@@ -212,7 +216,7 @@ try:
         dest = below(src, mover, INPUT_GAP)
         pos = move(graph, start, dest)
         sx, sy, sw, sh = box(src)
-        strip = (sx + sw / 2.0 - 20.0, sy + sh + 2.0, sx + sw / 2.0 + 20.0, sy + sh + INPUT_GAP - 2.0)
+        strip = (sx + sw / 2.0 - 20.0, sy + sh - STRIP_PAD, sx + sw / 2.0 + 20.0, sy + sh + INPUT_GAP + STRIP_PAD)
         yield ("sleep", SETTLE_MS)
         hits = count_selection_colour(graph, strip)
         check(hits == 0, "input-kiss: without Ctrl no preview is drawn (%d px)" % hits)

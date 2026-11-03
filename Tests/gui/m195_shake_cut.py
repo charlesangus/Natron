@@ -1,6 +1,7 @@
 """Shake and cut disconnect. Shaking a dragged node (three fast reversals) disconnects all its pipes
 at once while the drag goes on, and the drag, move included, is one undo step; a slow back-and-forth
-does nothing; a shaken multi-selection keeps the pipes inside it; a Dot shakes like any node.
+does nothing; a shaken multi-selection keeps the pipes inside it; a Dot shakes like any node; a shaken
+backdrop keeps every pipe of the nodes it carries.
 Ctrl-dragging from empty canvas draws a cut line that highlights the pipes it crosses in the
 Preferences Selection colour and cuts them on release in one undo step; letting go of Ctrl mid-cut
 keeps cutting; Escape cancels; a cut that crosses nothing changes nothing; Ctrl+Alt and a plain drag
@@ -303,6 +304,38 @@ try:
         release(graph, pos)
         yield ("sleep", SETTLE_MS)
         check(dot.getInput(0) is None and out.getInput(0) is None, "dot: shaking the Dot cuts both its pipes")
+
+        # ---- a shaken backdrop carries its contents along without cutting any of their pipes.
+        gt.section("backdrop")
+        outer_src = create("net.sf.openfx.ConstantPlugin", 10000, 0)
+        inner_a = create("net.sf.cimg.CImgBlur", 0, 0)
+        inner_b = create("net.sf.cimg.CImgBlur", 0, 0)
+        outer_out = create("net.sf.cimg.CImgBlur", 0, 0)
+        place_under(outer_src, inner_a, 200.0)
+        place_under(inner_a, inner_b, 100.0)
+        place_under(inner_b, outer_out, 200.0)
+        check(inner_a.connectInput(0, outer_src) and inner_b.connectInput(0, inner_a)
+              and outer_out.connectInput(0, inner_b), "backdrop: chain source-a-b-out")
+        backdrop = create("fr.inria.built-in.BackDrop", 0, 0)
+        ax, ay, aw, ah = box(inner_a)
+        bx, by, bw, bh = box(inner_b)
+        backdrop.setPosition(min(ax, bx) - 60.0, ay - 60.0)
+        backdrop.setSize(max(aw, bw) + 120.0, by + bh - ay + 120.0)
+        fresh(graph, [outer_src, backdrop, outer_out])
+        yield ("sleep", SETTLE_MS)
+        inner_pre = inner_a.getPosition()
+        dx, dy = backdrop.getPosition()
+        start = press_at(graph, (dx + 30.0, dy + 8.0))
+        pos = move(graph, start, (start[0] + 200.0, start[1]))
+        pos = shake(graph, pos)
+        pos = move(graph, pos, (pos[0] + 40.0, pos[1]))
+        release(graph, pos)
+        yield ("sleep", SETTLE_MS)
+        shot(graph, "shake-03-backdrop")
+        check(not near(inner_a.getPosition(), inner_pre), "backdrop: the drag carried the backdrop's contents")
+        check(fed_by(inner_a, outer_src), "backdrop: the pipe into the backdrop's contents stays")
+        check(fed_by(inner_b, inner_a), "backdrop: the pipe inside the backdrop stays")
+        check(fed_by(outer_out, inner_b), "backdrop: the pipe out of the backdrop's contents stays")
 
         # ---- cut: Ctrl-drag across two pipes highlights them, then cuts both in one undo step.
         gt.section("cut")

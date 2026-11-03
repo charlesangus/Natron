@@ -616,11 +616,13 @@ NodeGraph::takeKissCommand(NodesGuiList* touched)
 }
 
 void
-NodeGraph::disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken)
+NodeGraph::disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken,
+                                 const std::set<NodeGuiPtr>& moving)
 {
     clearKissPreview();
 
-    // Each pipe between a shaken node and one left behind, by its destination's input.
+    // Each pipe between a shaken node and one left behind, by its destination's input. Nodes that
+    // ride along inside a dragged backdrop are not shaken themselves but are not left behind either.
     std::set<std::pair<NodeGuiPtr, int>> cuts;
     for (std::set<NodeGuiPtr>::const_iterator it = shaken.begin(); it != shaken.end(); ++it) {
         const NodeGuiPtr& gui = *it;
@@ -630,7 +632,7 @@ NodeGraph::disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken)
         }
         const std::vector<Edge*>& arrows = gui->getInputsArrows();
         for (std::size_t i = 0; i < arrows.size(); ++i) {
-            if (arrows[i] && arrows[i]->hasSource() && (shaken.find(arrows[i]->getSource()) == shaken.end())) {
+            if (arrows[i] && arrows[i]->hasSource() && (moving.find(arrows[i]->getSource()) == moving.end())) {
                 cuts.insert(std::make_pair(gui, arrows[i]->getInputNumber()));
             }
         }
@@ -638,7 +640,7 @@ NodeGraph::disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken)
         for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
             NodePtr output = it2->lock();
             NodeGuiPtr outputGui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr();
-            if (!outputGui || (outputGui->getDagGui() != this) || (shaken.find(outputGui) != shaken.end())) {
+            if (!outputGui || (outputGui->getDagGui() != this) || (moving.find(outputGui) != moving.end())) {
                 continue;
             }
             const std::vector<Edge*>& outputArrows = outputGui->getInputsArrows();
@@ -685,10 +687,18 @@ NodeGraph::extendCutLine(const QPointF& scenePos)
     const QLineF step(_imp->_root->mapToScene(_imp->_cutLine.back()), scenePos);
     _imp->_cutLine.push_back(point);
 
-    // The pipes keep still for the whole cut, so only the newest step of the line can cross more.
-    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        const NodeGuiPtr& destGui = *it;
-        if (!destGui->isVisible()) {
+    // The pipes keep still for the whole cut, so only the newest step of the line can cross more,
+    // and the scene index narrows that to the pipes whose bounds meet the step. The rect is padded
+    // because an axis-aligned step has an empty bounding rect, which intersects nothing.
+    const QRectF stepBounds = QRectF(step.p1(), step.p2()).normalized().adjusted(-1., -1., 1., 1.);
+    const QList<QGraphicsItem*> nearby = scene()->items(stepBounds, Qt::IntersectsItemBoundingRect);
+    for (QList<QGraphicsItem*>::const_iterator it = nearby.begin(); it != nearby.end(); ++it) {
+        Edge* pipe = dynamic_cast<Edge*>(*it);
+        if (!pipe || !pipe->isVisible() || !pipe->hasSource() || pipe->isOutputEdge()) {
+            continue;
+        }
+        NodeGuiPtr destGui = pipe->getDest();
+        if (!destGui || !destGui->isVisible() || (destGui->getDagGui() != this)) {
             continue;
         }
         NodePtr destNode = destGui->getNode();
@@ -696,32 +706,17 @@ NodeGraph::extendCutLine(const QPointF& scenePos)
             continue;
         }
         EffectInstancePtr destEffect = destNode->getEffectInstance();
-        const std::vector<Edge*>& pipes = destGui->getInputsArrows();
-        for (std::size_t i = 0; i < pipes.size(); ++i) {
-            Edge* pipe = pipes[i];
-            if (!pipe || !pipe->isVisible() || !pipe->hasSource() || pipe->isOutputEdge()) {
-                continue;
-            }
-            if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
-                continue;
-            }
-            QLineF segment = pipe->line();
-            segment.setP1(pipe->mapToScene(segment.p1()));
-            segment.setP2(pipe->mapToScene(segment.p2()));
-            if (!segmentsIntersect(step, segment)) {
-                continue;
-            }
-            bool known = false;
-            for (std::size_t c = 0; c < _imp->_cutPipes.size(); ++c) {
-                if ((_imp->_cutPipes[c].first.lock() == destGui) && (_imp->_cutPipes[c].second == pipe->getInputNumber())) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known) {
-                _imp->_cutPipes.push_back(std::make_pair(NodeGuiWPtr(destGui), pipe->getInputNumber()));
-                pipe->setUseHighlight(true);
-            }
+        if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
+            continue;
+        }
+        QLineF segment = pipe->line();
+        segment.setP1(pipe->mapToScene(segment.p1()));
+        segment.setP2(pipe->mapToScene(segment.p2()));
+        if (!segmentsIntersect(step, segment)) {
+            continue;
+        }
+        if (_imp->_cutPipes[NodeGuiWPtr(destGui)].insert(pipe->getInputNumber()).second) {
+            pipe->setUseHighlight(true);
         }
     }
 } // NodeGraph::extendCutLine
@@ -729,11 +724,16 @@ NodeGraph::extendCutLine(const QPointF& scenePos)
 void
 NodeGraph::clearCutLine()
 {
-    for (std::size_t i = 0; i < _imp->_cutPipes.size(); ++i) {
-        NodeGuiPtr dest = _imp->_cutPipes[i].first.lock();
-        Edge* pipe = dest ? dest->getInputArrow(_imp->_cutPipes[i].second) : 0;
-        if (pipe) {
-            pipe->setUseHighlight(false);
+    for (std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>>::const_iterator it = _imp->_cutPipes.begin(); it != _imp->_cutPipes.end(); ++it) {
+        NodeGuiPtr dest = it->first.lock();
+        if (!dest) {
+            continue;
+        }
+        for (std::set<int>::const_iterator input = it->second.begin(); input != it->second.end(); ++input) {
+            Edge* pipe = dest->getInputArrow(*input);
+            if (pipe) {
+                pipe->setUseHighlight(false);
+            }
         }
     }
     _imp->_cutPipes.clear();
@@ -743,14 +743,23 @@ NodeGraph::clearCutLine()
 void
 NodeGraph::commitCut()
 {
-    const std::vector<std::pair<NodeGuiWPtr, int>> cutPipes = _imp->_cutPipes;
+    std::vector<std::pair<NodeGuiPtr, int>> cutPipes;
+    for (std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>>::const_iterator it = _imp->_cutPipes.begin(); it != _imp->_cutPipes.end(); ++it) {
+        NodeGuiPtr dest = it->first.lock();
+        if (!dest) {
+            continue;
+        }
+        for (std::set<int>::const_iterator input = it->second.begin(); input != it->second.end(); ++input) {
+            cutPipes.push_back(std::make_pair(dest, *input));
+        }
+    }
     clearCutLine();
 
     QUndoCommand* cut = 0;
     NodesGuiList touched;
     for (std::size_t i = 0; i < cutPipes.size(); ++i) {
-        NodeGuiPtr dest = cutPipes[i].first.lock();
-        Edge* pipe = dest ? dest->getInputArrow(cutPipes[i].second) : 0;
+        const NodeGuiPtr& dest = cutPipes[i].first;
+        Edge* pipe = dest->getInputArrow(cutPipes[i].second);
         if (!pipe || !pipe->hasSource()) {
             continue;
         }
@@ -850,7 +859,15 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
     setKissAiming(controlDown);
 
     if (_imp->_shakeDetector.addSample(_imp->_dragClock.elapsed(), newPos.x(), newPos.y()) && !_imp->_kissCancelled) {
-        disconnectShakenNodes(nodesToMove);
+        // Backdrop contents move with the drag without being selected, so shaking a backdrop
+        // leaves their pipes alone.
+        std::set<NodeGuiPtr> shaken;
+        for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+            if (!dynamic_cast<BackdropGui*>(it->get())) {
+                shaken.insert(*it);
+            }
+        }
+        disconnectShakenNodes(shaken, nodesToMove);
     }
 } // NodeGraph::moveSelectedNodesBy
 

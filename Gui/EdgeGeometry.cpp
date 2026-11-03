@@ -32,7 +32,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// The sign of the cross product (b - a) x (c - a): which side of a->b the point c is on.
 int
 orientation(const QPointF& a,
             const QPointF& b,
@@ -49,7 +48,6 @@ orientation(const QPointF& a,
     return 0;
 }
 
-// For c collinear with a and b: whether c lies within the segment's bounding box.
 bool
 onSegment(const QPointF& a,
           const QPointF& b,

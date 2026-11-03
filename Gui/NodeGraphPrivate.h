@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -245,7 +246,7 @@ public:
     // it on the pipes, and the pipes it crosses by destination and input, highlighted until the
     // cut ends.
     std::vector<QPointF> _cutLine;
-    std::vector<std::pair<NodeGuiWPtr, int>> _cutPipes;
+    std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>> _cutPipes;
     bool _bendPointsVisible;
     bool _knobLinksVisible;
     double _accumDelta;

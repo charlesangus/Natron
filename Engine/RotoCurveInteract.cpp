@@ -28,12 +28,14 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 
 #include <QLineF>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -1123,6 +1125,24 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         nudgeRightMenuAction = action;
     }
     {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionShowInCurveEditorLabel));
+        action->setName(kRotoUIParamRightClickMenuActionShowInCurveEditor);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        page->addKnob(action);
+        showInCurveEditorMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionRemoveFromCurveEditorLabel));
+        action->setName(kRotoUIParamRightClickMenuActionRemoveFromCurveEditor);
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        page->addKnob(action);
+        removeFromCurveEditorMenuAction = action;
+    }
+    {
         KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionSelectAllLabel));
         action->setName(kRotoUIParamRightClickMenuActionSelectAll);
         action->setSecretByDefault(true);
@@ -1249,6 +1269,8 @@ RotoCurveInteract::getRightClickMenuShortcuts(std::list<PluginActionShortcut>* s
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionSelectAll, kRotoUIParamRightClickMenuActionSelectAllLabel, Key_A, eKeyboardModifierControl));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionOpenClose, kRotoUIParamRightClickMenuActionOpenCloseLabel, Key_Return));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionLockShapes, kRotoUIParamRightClickMenuActionLockShapesLabel, Key_L, eKeyboardModifierShift));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionShowInCurveEditor, kRotoUIParamRightClickMenuActionShowInCurveEditorLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveFromCurveEditor, kRotoUIParamRightClickMenuActionRemoveFromCurveEditorLabel));
 }
 
 bool
@@ -1364,6 +1386,20 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         }
     } else if (k == lockShapeMenuAction.lock().get()) {
         lockSelectedCurves();
+    } else if ((k == showInCurveEditorMenuAction.lock().get()) || (k == removeFromCurveEditorMenuAction.lock().get())) {
+        const bool show = (k == showInCurveEditorMenuAction.lock().get());
+        std::map<BezierPtr, std::list<BezierCPPtr>> pointsPerShape;
+        for (SelectedCPs::iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+            // A selected feather point stands for its control point.
+            const BezierCPPtr& cp = (it->first && it->first->isFeatherPoint()) ? it->second : it->first;
+            BezierPtr shape = cp ? cp->getBezier() : BezierPtr();
+            if (shape) {
+                pointsPerShape[shape].push_back(cp);
+            }
+        }
+        for (std::map<BezierPtr, std::list<BezierCPPtr>>::iterator it = pointsPerShape.begin(); it != pointsPerShape.end(); ++it) {
+            it->first->requestPointsInCurveEditor(it->second, show);
+        }
     } else {
         return false;
     }
@@ -1528,6 +1564,8 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
     menuKnobs.push_back(nudgeBottomMenuAction.lock());
     menuKnobs.push_back(nudgeRightMenuAction.lock());
     menuKnobs.push_back(nudgeTopMenuAction.lock());
+    menuKnobs.push_back(showInCurveEditorMenuAction.lock());
+    menuKnobs.push_back(removeFromCurveEditorMenuAction.lock());
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {

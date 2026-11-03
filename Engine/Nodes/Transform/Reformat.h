@@ -149,12 +149,6 @@ struct ReformatOp {
      **/
     bool canConcatenate() const;
 
-    /**
-     * @brief The cost model's hint: no spread and no motion blur.
-     **/
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
-
     const Reformat* reformat = nullptr;
     KnobBoolWPtr center;
     KnobBoolWPtr flip;

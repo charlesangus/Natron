@@ -44,3 +44,4 @@ Tests/fixtures/raw/*.raf filter=lfs diff=lfs merge=lfs -text
 Tests/fixtures/raw/*.dng filter=lfs diff=lfs merge=lfs -text
 Tests/fixtures/raw/reference/canon-*.tif filter=lfs diff=lfs merge=lfs -text
 Tests/fixtures/raw/reference/fujifilm-*.tif filter=lfs diff=lfs merge=lfs -text
+Tests/fixtures/raw/reference/contrastntexture-*.tif filter=lfs diff=lfs merge=lfs -text

@@ -1388,18 +1388,7 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.fxarena.openfx.Swirl",
         "net.fxarena.openfx.Wave",
         // Time
-        "net.sf.openfx.FrameHold",
-        "net.sf.openfx.timeOffset",
-        "net.sf.openfx.FrameRange",
-        "net.sf.openfx.AppendClip",
-        "net.sf.openfx.Retime",
-        "net.sf.openfx.FrameBlend",
-        "net.sf.openfx.TimeBlur",
-        "net.sf.openfx.NoTimeBlurPlugin",
-        "net.sf.openfx.SlitScan",
         "net.sf.openfx.Deinterlace",
-        "net.sf.openfx.TimeBufferRead",
-        "net.sf.openfx.TimeBufferWrite",
         // Filter
         "net.sf.cimg.CImgMedian",
         "net.sf.cimg.CImgErodeSmooth",
@@ -1423,7 +1412,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.fxarena.openfx.Sketch",
         "net.fxarena.openfx.Morphology",
         // Routing
-        "net.sf.openfx.TimeDissolvePlugin",
         "net.sf.openfx.CopyRectanglePlugin",
         "net.sf.openfx.ContactSheetOFX",
         "net.sf.openfx.LayerContactSheetOFX",

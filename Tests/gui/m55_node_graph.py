@@ -1090,11 +1090,12 @@ try:
             report("NOTE badge-tooltip: tooltip %r" % tip[:80])
             check("expression" in tip, "badge-tooltip: hovering the expression badge shows its tooltip")
             QToolTip.hideText()
-            off_view = graph_n.mapFromScene(QPointF(bx + bw / 2.0, by + 400.0))
+            off_view = QPoint(badge_view.x(), vp.height() - 30)
             ev = QHelpEvent(QEvent.ToolTip, off_view, vp.mapToGlobal(off_view))
             QApplication.sendEvent(vp, ev)
-            QApplication.processEvents()
-            check(not QToolTip.isVisible() or "expression" not in QToolTip.text(),
+            # Qt hides a shown tooltip on a 300 ms timer, so it still reads as visible straight away.
+            yield ("sleep", 600)
+            check(not QToolTip.isVisible(),
                   "badge-tooltip: empty graph space shows no badge tooltip")
             QToolTip.hideText()
 

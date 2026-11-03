@@ -48,6 +48,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/GpuWeight.h"
@@ -800,7 +801,12 @@ protected:
                      int major,
                      const NodePtr& input)
     {
-        NodePtr node = createNode(QString::fromUtf8(id), major);
+        CreateNodeArgs args(id, getApp()->getProject());
+
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        NodePtr node = getApp()->createNode(args);
 
         EXPECT_TRUE(bool(node)) << id;
         if (node && input) {

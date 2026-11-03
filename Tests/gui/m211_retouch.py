@@ -19,11 +19,15 @@ Color is hidden. With nothing selected, Shift+drags with the brush and checks th
 by half the move right plus up and nothing is painted; sets the shape settings to a Color fill and
 paints a second brush that takes them and renders filled. Clicks inside Brush1 with the select tool
 and checks it is selected with its own settings loaded, edits them and checks Brush1 alone changes
-and renders filled, then deselects and checks the next shape's settings come back. Screenshots of the panel and
+and renders filled, then deselects and checks the next shape's settings come back. On a second
+Retouch over a CheckerBoard, so the source has texture, drags a heal ellipse's source outline,
+checks the healed pixels change while the pen is still down, and checks the frame left after the
+release matches a fresh render: a third Retouch made with the same shape and the final offset,
+which no cache of the dragged node can reach. Screenshots of the panel and
 the viewer at each step go to $NATRON_GUI_TEST_OUT.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
-    docker exec -e NATRON_GUI_TEST_OUT=build/m211-shots/out -e GUI_TEST_TIMEOUT=300 \\
+    docker exec -e NATRON_GUI_TEST_OUT=build/m211-shots/out -e GUI_TEST_TIMEOUT=420 \\
         -w /home/bosley/git/Natron natron-dev \\
         Tests/gui/run-gui-test.sh Tests/gui/m211_retouch.py build/fast/App/Natron
 """
@@ -35,10 +39,11 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 STARTUP_TIMEOUT_S = 60.0
 POLL_TIMEOUT_S = 20.0
-WATCHDOG_S = 300
+WATCHDOG_S = 420
 SETTLE_MS = 500
 PLUGIN_ID = "Retouch"
 CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
+CHECKER_ID = "net.sf.openfx.CheckerBoardPlugin"
 MAX_WIDTH = 1920
 MAX_HEIGHT = 1080
 COLUMN_HEADER = "Scale / Algorithm"
@@ -79,6 +84,10 @@ ALGORITHM_FILL = 3
 FILL_MODE_COLOR = 1
 FILL_GREY = 0.9
 MIN_FILLED_GREEN = 120  # the viewer's green over a Fill Color stroke of FILL_GREY, on the 0.02 plate
+RENDER_MS = 1500  # between the two grabs that must agree before a frame counts as rendered
+COLOUR_SLACK = 3  # 8-bit levels a solve's rounding may move a viewer pixel
+SAMPLE_STEP = 6  # widget pixels between samples over a healed disc
+MIN_CHANGED_SHARE = 0.1  # of a heal's grey samples that a drag of its source must change
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -726,6 +735,157 @@ try:
               "deselecting brings back the next shape's settings")
         check(brush1.getParam("shapeBrushSize").getValue() == BRUSH1_EDIT_SIZE,
               "the stroke keeps its edit after the deselection")
+
+        gt.section("heal-drag")
+        gt.close_all_panels()
+        app.clearSelection()
+        checker = app.createNode(CHECKER_ID)
+        require(checker is not None, "create a CheckerBoard", gt.plugin_problem(CHECKER_ID))
+        checker.setPosition(600, 0)
+
+        def textured_heal(x):
+            n = app.createNode(PLUGIN_ID)
+            require(n is not None, "create Retouch", gt.plugin_problem(PLUGIN_ID))
+            n.setPosition(x, 200)
+            require(n.connectInput(0, checker), "Retouch reads the CheckerBoard")
+            n.getParam("algorithm").setValue(ALGORITHM_HEAL)
+            return n
+
+        def heal_ellipse(n, ox, oy):
+            c = n.getRotoContext()
+            require(c is not None, "the Retouch node hosts curves")
+            e = c.createEllipse(CENTRE[0], CENTRE[1], 2 * RADIUS, True, 1.0)
+            require(e is not None, "created an ellipse")
+            n.getParam("sourceOffset").set(ox, oy)
+            o = e.getParam("sourceOffset")
+            if (o.getValue(0), o.getValue(1)) != (ox, oy):
+                o.set(ox, oy)
+            check(o.getValue(0) == ox and o.getValue(1) == oy, "the ellipse's Source Offset reads (%r, %r)" % (ox, oy))
+            return e
+
+        def disc_samples(centre, radius, grey_only=False):
+            """Viewer colours on a SAMPLE_STEP grid over a disc in widget pixels; with grey_only, None
+            where the colour is not grey, as the overlay's lines are not."""
+            img = grab_viewer()
+            if img is None:
+                return None
+            out = []
+            r = int(radius)
+            for dy in range(-r, r + 1, SAMPLE_STEP):
+                for dx in range(-r, r + 1, SAMPLE_STEP):
+                    x, y = int(centre[0] + dx), int(centre[1] + dy)
+                    if dx * dx + dy * dy > r * r or not (0 <= x < img.width() and 0 <= y < img.height()):
+                        continue
+                    c = img.pixelColor(x, y)
+                    rgb = (c.red(), c.green(), c.blue())
+                    if grey_only and (abs(rgb[0] - rgb[1]) > 12 or abs(rgb[1] - rgb[2]) > 12):
+                        rgb = None
+                    out.append(rgb)
+            return out
+
+        def differs(a, b):
+            return a is None or b is None or any(abs(x - y) > COLOUR_SLACK for x, y in zip(a, b))
+
+        def settled(sample):
+            """Waits until two samples RENDER_MS apart agree, and returns the last one, or None when
+            the viewer never stabilises."""
+            previous = None
+            for _ in range(int(POLL_TIMEOUT_S * 1000 / RENDER_MS)):
+                yield ("sleep", RENDER_MS)
+                now = sample()
+                if now is not None and previous is not None and len(now) == len(previous) \
+                        and not any(differs(a, b) for a, b in zip(now, previous)):
+                    return now
+                previous = now
+            return None
+
+        healer = textured_heal(600)
+        require(viewer.connectInput(0, healer), "the viewer shows the textured Retouch")
+        yield ("sleep", SETTLE_MS)
+        plain = red_pixels(grab_viewer())
+        app.selectNode(healer, True)
+        QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(healer) is not None, POLL_TIMEOUT_S)
+        require(ok, "the textured Retouch's panel opened")
+        healed = heal_ellipse(healer, OFFSET_X, 0.0)
+        healed_offset = healed.getParam("sourceOffset")
+        found = {"red": []}
+
+        def healed_overlay():
+            found["red"] = sorted(red_pixels(grab_viewer()) - plain)
+            return len(found["red"]) > MIN_OUTLINE_PIXELS
+
+        ok = yield ("until", healed_overlay, POLL_TIMEOUT_S)
+        require(ok, "the textured heal's outlines are drawn")
+        hred = found["red"]
+        hmid = (min(p[1] for p in hred) + max(p[1] for p in hred)) / 2.0
+        hcols = sorted(set(p[0] for p in hred if abs(p[1] - hmid) > 3))
+        hruns = [[hcols[0], hcols[0]]]
+        for x in hcols[1:]:
+            if x - hruns[-1][1] > OUTLINE_GAP:
+                hruns.append([x, x])
+            else:
+                hruns[-1][1] = x
+        require(len(hruns) >= 2, "the textured heal's source outline is drawn apart from it")
+        h_left, h_right = hruns[-1]
+        h_ys = [p[1] for p in hred if h_left <= p[0] <= h_right]
+        h_scale = ((h_right - h_left) + (max(h_ys) - min(h_ys))) / (4.0 * RADIUS)
+        h_source = ((h_left + h_right) / 2.0, (min(h_ys) + max(h_ys)) / 2.0)
+        # The shape's centre is the source's less the offset; widget y runs down.
+        h_centre = (h_source[0] - OFFSET_X * h_scale, h_source[1])
+        h_radius = 0.85 * RADIUS * h_scale
+        report("NOTE textured heal centre (%.0f, %.0f), radius %.0f widget px" % (h_centre[0], h_centre[1], h_radius))
+        require(h_radius > 3 * SAMPLE_STEP, "the textured heal is large enough on screen to sample")
+        before = yield from settled(lambda: disc_samples(h_centre, h_radius, True))
+        require(before is not None, "the textured heal renders before the drag")
+        screen_crop("retouch_heal_drag_before.png", visible_viewer())
+
+        def changed_share(now):
+            pairs = [(a, b) for a, b in zip(before, now or []) if a is not None and b is not None]
+            if not pairs:
+                return 0.0
+            return sum(1 for a, b in pairs if differs(a, b)) / float(len(pairs))
+
+        w = hold(visible_viewer())
+        send_mouse(w, QEvent.MouseButtonPress, h_source, Qt.LeftButton, Qt.LeftButton)
+        offsets = []
+        shares = []
+        for half in (1, 2):
+            for i in range(1, 5):
+                f = (4 * (half - 1) + i) / 8.0
+                w = hold(visible_viewer())
+                require(w is not None, "the viewer stays on screen during the drag")
+                send_mouse(w, QEvent.MouseMove, (h_source[0] + f * DRAG[0], h_source[1] + f * DRAG[1]),
+                           Qt.NoButton, Qt.LeftButton)
+            offsets.append((healed_offset.getValue(0), healed_offset.getValue(1)))
+            ok = yield ("until", lambda: changed_share(disc_samples(h_centre, h_radius, True)) >= MIN_CHANGED_SHARE,
+                        POLL_TIMEOUT_S)
+            shares.append(changed_share(disc_samples(h_centre, h_radius, True)))
+            screen_crop("retouch_heal_drag_%d.png" % half, visible_viewer())
+        report("NOTE offsets during the drag %r, changed shares %r" % (offsets, shares))
+        check(offsets[0] != (OFFSET_X, 0.0) and offsets[1] != offsets[0], "the source offset follows the pen during the drag")
+        check(all(x >= MIN_CHANGED_SHARE for x in shares), "the healed pixels change while the pen is down")
+        w = hold(visible_viewer())
+        send_mouse(w, QEvent.MouseButtonRelease, (h_source[0] + DRAG[0], h_source[1] + DRAG[1]), Qt.LeftButton, Qt.NoButton)
+        final_offset = (healed_offset.getValue(0), healed_offset.getValue(1))
+        report("NOTE source offset after the release %r" % (final_offset,))
+
+        # No overlay in either grab, so every sample is the render's.
+        gt.close_all_panels()
+        released = yield from settled(lambda: disc_samples(h_centre, 1.2 * RADIUS * h_scale))
+        require(released is not None, "the frame after the release settles")
+        screen_crop("retouch_heal_drag_released.png", visible_viewer())
+        fresh = textured_heal(800)
+        heal_ellipse(fresh, final_offset[0], final_offset[1])
+        gt.close_all_panels()
+        require(viewer.connectInput(0, fresh), "the viewer shows the fresh Retouch")
+        reference = yield from settled(lambda: disc_samples(h_centre, 1.2 * RADIUS * h_scale))
+        require(reference is not None, "the fresh render settles")
+        screen_crop("retouch_heal_drag_fresh.png", visible_viewer())
+        mismatched = sum(1 for a, b in zip(released, reference) if differs(a, b))
+        report("NOTE %d of %d samples differ from the fresh render" % (mismatched, len(reference)))
+        check(len(released) == len(reference) and mismatched == 0,
+              "the frame after the release matches a fresh render of the final offset")
 
         faulthandler.cancel_dump_traceback_later()
 

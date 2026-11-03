@@ -56,6 +56,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
 #include "Engine/Nodes/Filter/EdgeAware/PoissonHeal.h"
+#include "Engine/Nodes/Filter/EdgeAware/Wavelets.h"
 #include "Engine/Nodes/Filter/Retouch.h"
 #include "Engine/Nodes/Filter/RetouchRender.h"
 #include "Engine/Project.h"
@@ -1129,6 +1130,179 @@ TEST_F(NativeRetouchTest, CroppedProcessMatchesTheFullImage)
             }
             EXPECT_LE(worst, 1e-6) << scales << " scales, window " << window.x << "," << window.y << " " << window.width << "x" << window.height;
         }
+    }
+}
+
+// With shapes on the image and detail scales only, the result decomposes just the shapes' areas
+// and matches the full decomposition, on the whole image, its crops and with non-finite samples.
+TEST_F(NativeRetouchTest, DetailScalesMatchTheFullDecomposition)
+{
+    const int width = 220;
+    const int height = 170;
+    std::vector<float> image = texturedImage(width, height);
+    image[((std::size_t)50 * width + 130) * 4 + 1] = std::numeric_limits<float>::quiet_NaN();
+    image[((std::size_t)12 * width + 3) * 4 + 2] = std::numeric_limits<float>::infinity();
+    std::vector<RC::Shape> shapes;
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 0, 30.f, 40.f, 70.f, 50.f, 8.f, -25.f, 60.f));
+    shapes.push_back(brushShape(RC::eAlgorithmClone, 2, 120.f, 20.f, 150.f, 60.f, 6.f, 40.f, 70.f));
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 1, 150.f, 110.f, 185.f, 120.f, 7.f, 120.f, 10.f));
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 4, 100.f, 60.f, 140.f, 70.f, 9.f, -60.f, 30.f));
+    shapes.push_back(brushShape(RC::eAlgorithmBlur, 3, 60.f, 120.f, 90.f, 135.f, 5.f, 0.f, 0.f));
+    shapes.push_back(brushShape(RC::eAlgorithmFill, 2, 2.f, 3.f, 12.f, 8.f, 4.f, 0.f, 0.f));
+    shapes.push_back(brushShape(RC::eAlgorithmClone, 4, 200.f, 150.f, 215.f, 165.f, 5.f, -150.f, -120.f));
+    const RC::Region windows[] = {
+        { 0, 0, 40, 30 },
+        { 100, 60, 30, 20 },
+        { 160, 100, 40, 50 },
+        { 195, 145, 25, 25 },
+    };
+
+    RC::Params params;
+    params.numScales = 4;
+    params.maxHealIterations = 100;
+    std::vector<float> reference = image;
+    EdgeAware::DwtParams dwt;
+    dwt.width = width;
+    dwt.height = height;
+    dwt.scales = params.numScales;
+    EdgeAware::dwtDecompose(reference.data(), dwt, [&](float* layer, const EdgeAware::DwtParams& p, int scale) { RC::processLayer(layer, p.width, p.height, scale, p.scales, p.returnLayer, p.mergeFromScale, params, shapes, EdgeAware::serialFor); }, EdgeAware::serialFor);
+    ASSERT_EQ(dwt.scales, params.numScales);
+
+    std::vector<float> full = image;
+    RC::process(full.data(), width, height, params, shapes, EdgeAware::serialFor);
+    double worst = 0.;
+    for (std::size_t i = 0; i < full.size(); ++i) {
+        if (!std::isfinite(image[i])) {
+            EXPECT_EQ(std::isnan(full[i]), std::isnan(image[i])) << i;
+            continue;
+        }
+        worst = std::max(worst, (double)std::fabs(full[i] - reference[i]));
+    }
+    EXPECT_LE(worst, 1e-6);
+
+    for (const RC::Region& window : windows) {
+        const RC::Region crop = RC::processRegion(window, shapes, params, width, height);
+        std::vector<float> part((std::size_t)crop.width * crop.height * 4);
+        for (int y = 0; y < crop.height; ++y) {
+            std::copy(&image[((std::size_t)(y + crop.y) * width + crop.x) * 4], &image[((std::size_t)(y + crop.y) * width + crop.x + crop.width) * 4],
+                      &part[(std::size_t)y * crop.width * 4]);
+        }
+        RC::Params cropParams = params;
+        cropParams.originX = crop.x;
+        cropParams.originY = crop.y;
+        cropParams.fullWidth = width;
+        cropParams.fullHeight = height;
+        RC::process(part.data(), crop.width, crop.height, cropParams, shapes, EdgeAware::serialFor);
+        double cropWorst = 0.;
+        for (int y = window.y; y < window.y + window.height; ++y) {
+            for (int x = window.x; x < window.x + window.width; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float a = reference[((std::size_t)y * width + x) * 4 + c];
+                    const float b = part[((std::size_t)(y - crop.y) * crop.width + (x - crop.x)) * 4 + c];
+                    if (std::isfinite(a)) {
+                        cropWorst = std::max(cropWorst, (double)std::fabs(a - b));
+                    }
+                }
+            }
+        }
+        EXPECT_LE(cropWorst, 1e-6) << "window " << window.x << "," << window.y;
+    }
+}
+
+// With a patch cache, a render solves only the shapes whose input, settings or reach changed:
+// editing one heal leaves another's result cached, while a shape it reaches through the wavelet
+// support is solved again. Cached renders equal uncached ones, in crops too, and drafts stay out.
+TEST_F(NativeRetouchTest, EditingAShapeKeepsTheOthersCached)
+{
+    const int width = 200;
+    const int height = 150;
+    const std::vector<float> image = texturedImage(width, height);
+    std::vector<RC::Shape> shapes;
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 0, 30.f, 40.f, 70.f, 50.f, 8.f, -25.f, -60.f));
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 0, 140.f, 100.f, 180.f, 110.f, 7.f, 20.f, 40.f));
+    shapes.push_back(brushShape(RC::eAlgorithmHeal, 2, 40.f, 62.f, 80.f, 66.f, 5.f, -60.f, 40.f));
+    RC::PatchCache cache((std::size_t)64 << 20);
+    RC::Params plain;
+    plain.numScales = 3;
+    plain.maxHealIterations = 100;
+    RC::Params params = plain;
+    params.cache = &cache;
+    params.inputKey = 7;
+
+    const auto worstDifference = [&](const std::vector<RC::Shape>& set, const RC::Params& cachedParams) {
+        std::vector<float> cached = image;
+        RC::process(cached.data(), width, height, cachedParams, set, EdgeAware::serialFor);
+        std::vector<float> fresh = image;
+        RC::process(fresh.data(), width, height, plain, set, EdgeAware::serialFor);
+        double worst = 0.;
+        for (std::size_t i = 0; i < cached.size(); ++i) {
+            worst = std::max(worst, (double)std::fabs(cached[i] - fresh[i]));
+        }
+
+        return worst;
+    };
+
+    EXPECT_EQ(worstDifference(shapes, params), 0.);
+    EXPECT_EQ(cache.misses(), 3u);
+    EXPECT_EQ(worstDifference(shapes, params), 0.);
+    EXPECT_EQ(cache.misses(), 3u);
+
+    // The second heal is out of the first's reach.
+    shapes[1].dx = 25.f;
+    EXPECT_EQ(worstDifference(shapes, params), 0.);
+    EXPECT_EQ(cache.misses(), 4u);
+
+    // The scale-2 heal reads within the first's wavelet support.
+    shapes[0].dx = -35.f;
+    EXPECT_EQ(worstDifference(shapes, params), 0.);
+    EXPECT_EQ(cache.misses(), 6u);
+
+    // A crop around the second heal finds it cached and matches the full render there.
+    const RC::Region window = { 130, 90, 60, 30 };
+    const RC::Region crop = RC::processRegion(window, shapes, params, width, height);
+    std::vector<float> part((std::size_t)crop.width * crop.height * 4);
+    for (int y = 0; y < crop.height; ++y) {
+        std::copy(&image[((std::size_t)(y + crop.y) * width + crop.x) * 4], &image[((std::size_t)(y + crop.y) * width + crop.x + crop.width) * 4],
+                  &part[(std::size_t)y * crop.width * 4]);
+    }
+    RC::Params cropParams = params;
+    cropParams.originX = crop.x;
+    cropParams.originY = crop.y;
+    cropParams.fullWidth = width;
+    cropParams.fullHeight = height;
+    RC::process(part.data(), crop.width, crop.height, cropParams, shapes, EdgeAware::serialFor);
+    EXPECT_EQ(cache.misses(), 6u);
+    std::vector<float> full = image;
+    RC::process(full.data(), width, height, plain, shapes, EdgeAware::serialFor);
+    double cropWorst = 0.;
+    for (int y = window.y; y < window.y + window.height; ++y) {
+        for (int x = window.x; x < window.x + window.width; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                cropWorst = std::max(cropWorst, (double)std::fabs(full[((std::size_t)y * width + x) * 4 + c] - part[((std::size_t)(y - crop.y) * crop.width + (x - crop.x)) * 4 + c]));
+            }
+        }
+    }
+    EXPECT_LE(cropWorst, 1e-6);
+
+    // Another input solves everything again.
+    params.inputKey = 8;
+    EXPECT_EQ(worstDifference(shapes, params), 0.);
+    EXPECT_EQ(cache.misses(), 9u);
+
+    // A draft without a warm start solves in full and is kept; one refining a warm start is not.
+    std::vector<RC::Shape> draftShapes(1, shapes[1]);
+    draftShapes[0].dx = 30.f;
+    draftShapes[0].warmStart = std::make_shared<RC::HealWarmStart>();
+    RC::Params draft = params;
+    draft.draftHealCycles = 2;
+    std::vector<float> out = image;
+    RC::process(out.data(), width, height, draft, draftShapes, EdgeAware::serialFor);
+    EXPECT_EQ(cache.misses(), 10u);
+    draftShapes[0].dx = 31.f;
+    for (std::size_t expected : { 11u, 12u }) {
+        out = image;
+        RC::process(out.data(), width, height, draft, draftShapes, EdgeAware::serialFor);
+        EXPECT_EQ(cache.misses(), expected);
     }
 }
 

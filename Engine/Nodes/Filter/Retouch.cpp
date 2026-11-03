@@ -54,6 +54,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -472,6 +473,8 @@ Retouch::imagePipelineSpec() const
 bool
 Retouch::setInteractiveDraft(bool draft)
 {
+    // A render whose hash snapshot predates the hash mark refuses to cache what it rendered.
+    KnobContentWrite write;
     const bool was = _draft.exchange(draft);
     if (was == draft) {
         return was;
@@ -666,7 +669,7 @@ Retouch::initializeKnobs()
 
     KnobIntPtr maxHealIterations = createKnob<KnobInt>(tr("Max Heal Iterations"));
     maxHealIterations->setName(kRetouchParamMaxHealIterations);
-    maxHealIterations->setHintToolTip(tr("The most iterations a Heal shape's solver runs before it stops. The CPU solver usually converges within 20; the GPU one runs darktable's relaxation up to this count."));
+    maxHealIterations->setHintToolTip(tr("The most iterations a Heal shape's solver runs before it stops. It usually converges within 20; the GPU solver stops at 64."));
     maxHealIterations->setDefaultValue(EdgeAware::kPoissonHealDefaultIterations);
     maxHealIterations->setMinimum(1);
     maxHealIterations->setMaximum(100000);
@@ -1888,24 +1891,42 @@ Retouch::rasterizeBrushShape(const RotoDrawableItemPtr& item,
                              double scale,
                              const RectI& full,
                              RC::Region* roi,
-                             std::vector<float>* mask)
+                             std::vector<float>* mask,
+                             const EdgeAware::ParallelFor& parallel,
+                             RC::PatchCache* masks)
 {
     const std::vector<std::vector<RC::BrushPoint>> strokes = readBrushStrokes(item, time, scale, full);
     std::vector<RC::BrushPoint> all;
+    RC::KeyHash key;
     for (const std::vector<RC::BrushPoint>& points : strokes) {
         all.insert(all.end(), points.begin(), points.end());
+        key.add(points.size());
+        key.addBytes(points.data(), points.size() * sizeof(RC::BrushPoint));
     }
     *roi = RC::brushBounds(all);
     if ((roi->width <= 0) || (roi->height <= 0)) {
         return false;
     }
-    mask->assign((std::size_t)roi->width * (std::size_t)roi->height, 0.f);
-    std::vector<float> strokeMask;
-    for (const std::vector<RC::BrushPoint>& points : strokes) {
-        RC::rasterizeBrush(points, *roi, &strokeMask);
-        for (std::size_t i = 0; i < mask->size(); ++i) {
-            (*mask)[i] = std::max((*mask)[i], strokeMask[i]);
+    key.addRegion(*roi);
+    std::unique_ptr<RC::CacheClaim> claim;
+    if (masks) {
+        const std::shared_ptr<const RC::PatchCache::Patch> hit = masks->acquire(key.value());
+        if (hit) {
+            *mask = hit->values;
+
+            return true;
         }
+        claim.reset(new RC::CacheClaim(masks, key.value()));
+    }
+    mask->assign((std::size_t)roi->width * (std::size_t)roi->height, 0.f);
+    for (const std::vector<RC::BrushPoint>& points : strokes) {
+        RC::accumulateBrush(points, *roi, mask->data(), parallel);
+    }
+    if (claim) {
+        std::shared_ptr<RC::PatchCache::Patch> patch = std::make_shared<RC::PatchCache::Patch>();
+        patch->area = *roi;
+        patch->values = *mask;
+        claim->publish(patch);
     }
 
     return true;
@@ -1915,16 +1936,21 @@ std::vector<RC::Shape>
 Retouch::collectShapes(double time,
                        const RenderScale& scale,
                        const RectI& full,
-                       bool rasterize) const
+                       bool rasterize,
+                       bool draft) const
 {
     std::vector<RC::Shape> shapes;
     RotoCurveContextPtr context = getNode()->getCurveContext();
     if (!context) {
         return shapes;
     }
-    const bool draft = rasterize && _draft.load();
     const double s = scale.toOfxPointD().x;
     const unsigned int mipmapLevel = scale.toMipmapLevel();
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    // Not cancellable: a mask left half drawn would be kept in the mask cache.
+    const EdgeAware::ParallelFor parallel = [nThreads](int count, const std::function<void(int)>& body) {
+        parallelForOnGlobalPool(count, nThreads, body);
+    };
     const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(true);
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
         if (!isRetouchShape(*it) || !(*it)->isActivated(time)) {
@@ -1942,23 +1968,40 @@ Retouch::collectShapes(double time,
             pixels.y1 = (int)std::floor(bbox.y1 * s);
             pixels.x2 = (int)std::ceil(bbox.x2 * s);
             pixels.y2 = (int)std::ceil(bbox.y2 * s);
-            std::vector<float> coverage;
-            if (rasterize && !bezier->rasterizeCoverage(time, mipmapLevel, pixels, &coverage)) {
-                continue;
-            }
             shape.maskRoi.x = pixels.x1 - full.x1;
             shape.maskRoi.y = full.y2 - pixels.y2;
             shape.maskRoi.width = pixels.width();
             shape.maskRoi.height = pixels.height();
-            // Coverage rows go up from pixels.y1; the shape's mask rows go down.
-            shape.mask.resize(coverage.size());
-            const std::size_t w = (std::size_t)shape.maskRoi.width;
-            for (int r = 0; rasterize && (r < shape.maskRoi.height); ++r) {
-                std::copy(&coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w], &coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w] + w,
-                          &shape.mask[(std::size_t)r * w]);
+            if (rasterize) {
+                RC::KeyHash key;
+                key.add(bezier->getContentHash());
+                key.addBytes(&time, sizeof(time));
+                key.add(mipmapLevel);
+                key.addRegion(shape.maskRoi);
+                const std::shared_ptr<const RC::PatchCache::Patch> hit = _shapeMasks.acquire(key.value());
+                if (hit) {
+                    shape.mask = hit->values;
+                } else {
+                    RC::CacheClaim claim(&_shapeMasks, key.value());
+                    std::vector<float> coverage;
+                    if (!bezier->rasterizeCoverage(time, mipmapLevel, pixels, &coverage)) {
+                        continue;
+                    }
+                    // Coverage rows go up from pixels.y1; the shape's mask rows go down.
+                    shape.mask.resize(coverage.size());
+                    const std::size_t w = (std::size_t)shape.maskRoi.width;
+                    for (int r = 0; r < shape.maskRoi.height; ++r) {
+                        std::copy(&coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w], &coverage[(std::size_t)(shape.maskRoi.height - 1 - r) * w] + w,
+                                  &shape.mask[(std::size_t)r * w]);
+                    }
+                    std::shared_ptr<RC::PatchCache::Patch> patch = std::make_shared<RC::PatchCache::Patch>();
+                    patch->area = shape.maskRoi;
+                    patch->values = shape.mask;
+                    claim.publish(patch);
+                }
             }
         } else if (rasterize) {
-            if (!rasterizeBrushShape(*it, time, s, full, &shape.maskRoi, &shape.mask)) {
+            if (!rasterizeBrushShape(*it, time, s, full, &shape.maskRoi, &shape.mask, parallel, &_shapeMasks)) {
                 continue;
             }
         } else {
@@ -2012,7 +2055,7 @@ Retouch::getRegionsOfInterest(double time,
     RectI full, crop;
     RC::Params params;
     std::vector<RC::Shape> shapes;
-    if (!processPlan(time, view, scale, window, false, &full, &crop, &params, &shapes) || crop.isNull()) {
+    if (!processPlan(time, view, scale, window, false, false, &full, &crop, &params, &shapes) || crop.isNull()) {
         return;
     }
     const RectD needed = PassExec::toCanonical(crop, scale, par);
@@ -2030,6 +2073,7 @@ Retouch::processPlan(double time,
                      const RenderScale& scale,
                      const RectI& window,
                      bool rasterize,
+                     bool draft,
                      RectI* full,
                      RectI* crop,
                      RC::Params* params,
@@ -2046,7 +2090,7 @@ Retouch::processPlan(double time,
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);
-    *shapes = collectShapes(time, scale, *full, rasterize);
+    *shapes = collectShapes(time, scale, *full, rasterize, draft);
     RC::Region w;
     w.x = window.x1 - full->x1;
     w.y = full->y2 - window.y2;
@@ -2065,7 +2109,7 @@ Retouch::processPlan(double time,
     params->originY = c.y;
     params->fullWidth = full->width();
     params->fullHeight = full->height();
-    if (rasterize && _draft.load()) {
+    if (draft) {
         params->draftHealCycles = kDraftHealCycles;
     }
 
@@ -2104,7 +2148,10 @@ Retouch::renderOp(const RenderActionArgs& args,
     RectI full, crop;
     RC::Params params;
     std::vector<RC::Shape> shapes;
-    if (!processPlan(args.time, args.view, args.mappedScale, args.roi, true, &full, &crop, &params, &shapes)) {
+    // Read once, after the render's hash snapshot: setInteractiveDraft() brackets its flip as a
+    // content write, so a frame whose flag differs from its hash is never cached under it.
+    const bool draft = _draft.load();
+    if (!processPlan(args.time, args.view, args.mappedScale, args.roi, true, draft, &full, &crop, &params, &shapes)) {
         return eStatusFailed;
     }
 
@@ -2133,12 +2180,30 @@ Retouch::renderOp(const RenderActionArgs& args,
     };
     const int width = crop.width();
     const int height = crop.height();
+    params.cache = &_shapeResults;
+    params.cancelled = [&cancel]() {
+        return cancel.check();
+    };
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         if (!it->second) {
             continue;
         }
         const int nComps = (int)it->second->getComponentsCount();
+
+        // The source image names the crop's pixels only where it covers the crop.
+        params.inputKey = 0;
+        if (src && srcBounds.contains(crop) && (src->getKey().getTreeVersion() != 0)) {
+            RC::KeyHash key;
+            key.add(src->getKey().getHash());
+            key.add(src->getMipmapLevel());
+            key.addBytes(sourceLayer.getLayerID().data(), sourceLayer.getLayerID().size());
+            key.add((std::uint64_t)nComps);
+            key.add((std::uint64_t)srcNComps);
+            key.add((std::uint64_t)(std::uint32_t)full.x1 | ((std::uint64_t)(std::uint32_t)full.y1 << 32));
+            key.add((std::uint64_t)(std::uint32_t)full.x2 | ((std::uint64_t)(std::uint32_t)full.y2 << 32));
+            params.inputKey = std::max<std::uint64_t>(key.value(), 1);
+        }
 
         // The crop of the source, top-down, as darktable's 4 channels: one channel goes to all three colours.
         std::vector<float> image((std::size_t)width * height * 4, 0.f);
@@ -2238,15 +2303,6 @@ struct RetouchGpuParams {
     uint32_t padding0;
 };
 static_assert(sizeof(RetouchGpuParams) == 128, "RetouchGpuParams must match the push-constant block");
-
-bool
-deviceHasPushDescriptors()
-{
-    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
-    gpu::GpuRuntime* runtime = gpu ? gpu->runtime() : nullptr;
-
-    return runtime && runtime->device().info().pushDescriptor;
-}
 } // anonymous namespace
 #endif
 
@@ -2301,7 +2357,6 @@ Retouch::canRenderOpOnGpu(const GpuQuery& query) const
     }
     RotoCurveContextPtr context = getNode()->getCurveContext();
     if (context) {
-        const bool healIterationsFit = (params.maxHealIterations <= EdgeAware::kPoissonHealGpuMaxIterationsWithoutPushDescriptors) || deviceHasPushDescriptors();
         const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(true);
         for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
             if (!isRetouchShape(*it) || !(*it)->isActivated(query.time)) {
@@ -2313,9 +2368,6 @@ Retouch::canRenderOpOnGpu(const GpuQuery& query) const
             }
             // The bilateral grid has no GPU port.
             if ((s.algorithm == RC::eAlgorithmBlur) && (s.blurType == RC::eBlurTypeBilateral) && (std::fabs(s.blurRadius) > 0.1f)) {
-                return false;
-            }
-            if ((s.algorithm == RC::eAlgorithmHeal) && !healIterationsFit) {
                 return false;
             }
         }
@@ -2388,10 +2440,16 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     const StagePlan plan = resolveGpuPlan(query);
-    const std::vector<RC::Shape> shapes = collectShapes(query.time, query.mappedScale, full);
+    // The GPU heal solves in full, so a draft renders as the final frame does.
+    RectI crop;
+    std::vector<RC::Shape> shapes;
+    if (!processPlan(query.time, query.view, query.mappedScale, rect, true, false, &full, &crop, &params, &shapes)) {
+        return eStatusFailed;
+    }
 
-    const int width = full.width();
-    const int height = full.height();
+    // Only the crop is processed; the rest of the rect, outside the source, stores the source.
+    const int width = crop.isNull() ? 0 : crop.width();
+    const int height = crop.isNull() ? 0 : crop.height();
     const uint64_t imageFloats = (uint64_t)4 * (uint64_t)width * (uint64_t)height;
     const uint64_t filteredFloats = (uint64_t)rect.area() * (uint64_t)nComps;
     const uint64_t srcEnd = source.buffer ? (source.byteOffset / sizeof(float) + (uint64_t)source.bounds.height() * (uint64_t)source.rowStrideFloats) : 0;
@@ -2403,7 +2461,7 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     gpu::GpuBuffer* image = nullptr;
     gpu::GpuBuffer* filteredBuffer = nullptr;
     gpu::GpuBuffer* standIn = nullptr;
-    if (!ctx.scratch(imageFloats * sizeof(float), image) || !image || !ctx.scratch(filteredFloats * sizeof(float), filteredBuffer) || !filteredBuffer
+    if (!ctx.scratch(std::max<uint64_t>(imageFloats, 4) * sizeof(float), image) || !image || !ctx.scratch(filteredFloats * sizeof(float), filteredBuffer) || !filteredBuffer
         || !ctx.scratch(4 * sizeof(float), standIn) || !standIn) {
         return eStatusFailed;
     }
@@ -2412,8 +2470,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     RetouchGpuParams p = {};
     p.width = (uint32_t)width;
     p.height = (uint32_t)height;
-    p.fullX1 = full.x1;
-    p.fullY2 = full.y2;
+    p.fullX1 = crop.x1;
+    p.fullY2 = crop.y2;
     if (source.buffer) {
         p.srcOffset = (uint32_t)(source.byteOffset / sizeof(float));
         p.srcStride = (uint32_t)source.rowStrideFloats;
@@ -2451,6 +2509,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
     // processLayer() of the shapes on one scale, on a layer of the region's size.
     const auto processLayer = [&](const gpu::GpuBuffer* layer, int scale) {
         RC::Region layerRoi;
+        layerRoi.x = params.originX;
+        layerRoi.y = params.originY;
         layerRoi.width = width;
         layerRoi.height = height;
         std::vector<float> mask;
@@ -2486,8 +2546,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
             }
 
             RetouchGpuParams sp = p;
-            sp.maskX = maskRoi.x;
-            sp.maskY = maskRoi.y;
+            sp.maskX = maskRoi.x - layerRoi.x;
+            sp.maskY = maskRoi.y - layerRoi.y;
             sp.maskW = (uint32_t)maskRoi.width;
             sp.maskH = (uint32_t)maskRoi.height;
             sp.opacity = s.opacity;
@@ -2517,7 +2577,7 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
                 if (!run(gpu::GpuKernelId::retouch_crop, sp, layer, aux, maskBuffer, sp.maskW, sp.maskH)) {
                     return false;
                 }
-                if (!EdgeAware::recordPoissonHeal(ctx, *aux2, *aux, *maskBuffer, maskRoi.width, maskRoi.height, params.maxHealIterations)) {
+                if (!EdgeAware::recordPoissonHeal(ctx, *aux2, *aux, *maskBuffer, mask.data(), maskRoi.width, maskRoi.height, params.maxHealIterations)) {
                     return false;
                 }
                 break;
@@ -2554,10 +2614,10 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         return true;
     };
 
-    if (!run(gpu::GpuKernelId::retouch_load, p, image, nullptr, nullptr, p.width, p.height) || !processLayer(image, 0)) {
+    if ((width > 0) && (!run(gpu::GpuKernelId::retouch_load, p, image, nullptr, nullptr, p.width, p.height) || !processLayer(image, 0))) {
         return eStatusFailed;
     }
-    if (scales > 0) {
+    if ((width > 0) && (scales > 0)) {
         std::vector<gpu::GpuBuffer*> details((std::size_t)scales, nullptr);
         for (gpu::GpuBuffer*& band : details) {
             if (!ctx.scratch(imageFloats * sizeof(float), band) || !band) {
@@ -2570,7 +2630,8 @@ Retouch::renderOpGpu(const GpuRenderArgs& args)
         }
         const std::vector<const gpu::GpuBuffer*> bandViews(details.begin(), details.end());
         int bands = 0;
-        if (!EdgeAware::recordDwtDecomposeScales(ctx, *image, width, height, scales, std::span<const gpu::GpuBuffer* const>(bandViews.data(), bandViews.size()), *residual, bands)
+        if (!EdgeAware::recordDwtDecomposeScales(ctx, *image, width, height, scales, std::span<const gpu::GpuBuffer* const>(bandViews.data(), bandViews.size()), *residual, bands,
+                                                 full.width(), full.height())
             || (bands != scales)) {
             return eStatusFailed;
         }

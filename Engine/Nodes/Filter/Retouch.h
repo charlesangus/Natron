@@ -222,10 +222,18 @@ public:
     static std::vector<std::vector<RetouchCore::BrushPoint>> readBrushStrokes(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full);
 
     /**
-     * @brief The mask of a brush shape over its bounds, as collectShapes() makes it. False when
+     * @brief The mask of a brush shape over its bounds, as collectShapes() makes it, rows split
+     * over parallel and taken from or kept in masks, by stroke geometry, when given. False when
      * the shape is not a brush or covers nothing.
      **/
-    static bool rasterizeBrushShape(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full, RetouchCore::Region* roi, std::vector<float>* mask);
+    static bool rasterizeBrushShape(const RotoDrawableItemPtr& item,
+                                    double time,
+                                    double scale,
+                                    const RectI& full,
+                                    RetouchCore::Region* roi,
+                                    std::vector<float>* mask,
+                                    const EdgeAware::ParallelFor& parallel = EdgeAware::serialFor,
+                                    RetouchCore::PatchCache* masks = nullptr);
 
     static std::vector<ChoiceOption> algorithmOptions();
     static std::vector<ChoiceOption> blurTypeOptions();
@@ -325,20 +333,23 @@ private:
 
     /**
      * @brief The shapes of a render at time and scale over full, the source's pixels, top-down,
-     * in render order; rasterised unless rasterize is false, which leaves their masks empty.
+     * in render order; rasterised unless rasterize is false, which leaves their masks empty. A
+     * draft gives its Heal shapes their warm starts.
      **/
-    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full, bool rasterize = true) const;
+    std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full, bool rasterize, bool draft) const;
 
     /**
      * @brief What a render of window (pixels at scale) processes: the source's pixel extent
      * full, the crop of it RetouchCore::processRegion() asks for, and the parameters and shapes,
-     * rasterised when rasterize is true. False when there is no source.
+     * rasterised when rasterize is true, for a draft render when draft is. False when there is
+     * no source.
      **/
     bool processPlan(double time,
                      ViewIdx view,
                      const RenderScale& scale,
                      const RectI& window,
                      bool rasterize,
+                     bool draft,
                      RectI* full,
                      RectI* crop,
                      RetouchCore::Params* params,
@@ -443,6 +454,9 @@ private:
     // The Heal shapes' warm starts while a draft is on, by script name.
     mutable std::mutex _warmStartsMutex;
     mutable std::map<std::string, std::shared_ptr<RetouchCore::HealWarmStart>> _warmStarts;
+    // Shape results and shape masks kept across renders and tiles, keyed by what they depend on.
+    mutable RetouchCore::PatchCache _shapeResults { (std::size_t)256 << 20 };
+    mutable RetouchCore::PatchCache _shapeMasks { (std::size_t)64 << 20 };
 };
 
 NATRON_NAMESPACE_EXIT

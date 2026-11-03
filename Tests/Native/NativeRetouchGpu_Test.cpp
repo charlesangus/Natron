@@ -115,9 +115,10 @@ protected:
     // with Retouch run on the device.
     void expectParity(const NodePtr& node,
                       const std::string& name,
-                      const ParityTolerance& tolerance = kRetouchTolerance)
+                      const ParityTolerance& tolerance = kRetouchTolerance,
+                      const RectI& window = kWindow)
     {
-        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, kWindow, kTime);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime);
 
         if (result.skipped) {
             return;
@@ -198,8 +199,6 @@ TEST_F(NativeRetouchGpuTest, HealMatchesTheCpu)
 {
     NodePtr node = makeRetouch();
     ASSERT_TRUE(bool(node));
-    // Within the iterations a device without push descriptors records.
-    ASSERT_TRUE(setKnobValues(node, kRetouchParamMaxHealIterations, { 400. }));
     RetouchTest::ShapeSpec spec;
     spec.algorithm = RetouchCore::eAlgorithmHeal;
     spec.scale = 1;
@@ -214,6 +213,27 @@ TEST_F(NativeRetouchGpuTest, HealMatchesTheCpu)
     spec.feather = 2.;
     ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
     expectParity(node, "heal on the image, feather 2", kRetouchHealTolerance);
+}
+
+// A window the shapes reach only part of: the device processes the region the CPU crops to.
+TEST_F(NativeRetouchGpuTest, PartialWindowMatchesTheCpu)
+{
+    NodePtr node = makeRetouch();
+    ASSERT_TRUE(bool(node));
+    RetouchTest::ShapeSpec spec;
+    spec.algorithm = RetouchCore::eAlgorithmHeal;
+    spec.scale = 0;
+    spec.sourceX = 14.;
+    spec.sourceY = 8.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
+    spec.cx = 42.;
+    spec.algorithm = RetouchCore::eAlgorithmClone;
+    spec.scale = 2;
+    spec.sourceX = -12.;
+    spec.sourceY = 4.;
+    ASSERT_TRUE(bool(RetouchTest::makeShape(node, spec)));
+    expectParity(node, "heal and clone, left window", kRetouchHealTolerance, RectI(0, 0, 24, kParitySourceHeight));
+    expectParity(node, "heal and clone, right window", kRetouchHealTolerance, RectI(36, 10, kParitySourceWidth, 40));
 }
 
 TEST_F(NativeRetouchGpuTest, BlurMatchesTheCpu)

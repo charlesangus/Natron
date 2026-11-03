@@ -361,6 +361,39 @@ dwtDecompose(float* image,
     nonFinite.restore(image);
 } // dwtDecompose
 
+void
+dwtDetailBand(const float* in,
+              int width,
+              int height,
+              int scale,
+              float* detail,
+              const ParallelFor& parallel)
+{
+    if ((width <= 0) || (height <= 0) || (scale <= 0)) {
+        return;
+    }
+    const std::size_t samples = 4 * (std::size_t)width * (std::size_t)height;
+    std::copy(in, in + samples, detail);
+    std::vector<float> coarse(samples);
+    std::vector<float> next;
+    float* band = detail;
+    for (int lev = 0; lev < scale; ++lev) {
+        hatVertical(coarse.data(), band, (std::size_t)height, (std::size_t)width, (unsigned int)lev, parallel);
+        hatHorizontal(coarse.data(), band, (std::size_t)height, (std::size_t)width, (unsigned int)lev, parallel);
+        if (lev + 1 < scale) {
+            // The next level decomposes this one's low-pass.
+            if (next.empty()) {
+                next.resize(samples);
+            }
+            std::swap(next, coarse);
+            band = next.data();
+        }
+    }
+    if (band != detail) {
+        std::copy(band, band + samples, detail);
+    }
+} // dwtDetailBand
+
 int
 dwtDecomposeScales(const float* in,
                    int width,

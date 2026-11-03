@@ -98,6 +98,19 @@ void dwtDecompose(float* image,
                   const DwtLayerFn& layerFn,
                   const ParallelFor& parallel);
 
+/**
+ * @brief Into detail, the hat-transform detail band scale (1 for the finest) of in (width x
+ * height x 4), as dwtDecompose() hands it to its layer function. When in is a crop of a larger
+ * image, the band matches that image's within the crop except for the 2^scale - 1 pixels next to
+ * the crop's edges inside the image, which see the crop's mirroring instead of the image.
+ **/
+void dwtDetailBand(const float* in,
+                   int width,
+                   int height,
+                   int scale,
+                   float* detail,
+                   const ParallelFor& parallel);
+
 /// The detail bands of a decomposition, finest first, and its residual low-pass.
 struct WaveletScales {
     std::vector<std::vector<float>> details;

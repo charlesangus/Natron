@@ -28,8 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
@@ -123,6 +128,99 @@ struct Shape {
     std::shared_ptr<HealWarmStart> warmStart;
 };
 
+/// A 64-bit key built from values and bytes; equal sequences give equal keys.
+class KeyHash {
+public:
+    void add(std::uint64_t value);
+    void addFloat(float value);
+    void addRegion(const Region& region);
+    void addBytes(const void* data, std::size_t size);
+
+    std::uint64_t value() const
+    {
+        return _hash;
+    }
+
+private:
+    std::uint64_t _hash = 0x84222325cbf29ce4ULL;
+};
+
+/**
+ * @brief Float arrays over a region, kept between renders under keys that name everything they
+ * depend on, the least recently used dropped past a byte budget. A caller that misses computes
+ * the entry while later callers of the same key wait for it, so concurrent renders of one shape
+ * compute it once. MT-safe.
+ **/
+class PatchCache {
+public:
+    struct Patch {
+        Region area;
+        std::vector<float> values;
+    };
+
+    explicit PatchCache(std::size_t maxBytes);
+
+    /**
+     * @brief The entry of key. Without one, and with no other caller computing it, returns null
+     * and leaves the caller to publish() or abandon() it; with one being computed, waits for it.
+     **/
+    std::shared_ptr<const Patch> acquire(std::uint64_t key);
+    void publish(std::uint64_t key, const std::shared_ptr<const Patch>& patch);
+    void abandon(std::uint64_t key);
+
+    void clear();
+    /// How many acquire() calls returned null: the entries computed or abandoned.
+    std::size_t misses() const;
+
+private:
+    struct Entry {
+        std::shared_ptr<const Patch> patch;
+        std::list<std::uint64_t>::iterator recent;
+        bool pending = true;
+    };
+
+    std::size_t bytesOf(const Patch& patch) const;
+
+    mutable std::mutex _mutex;
+    std::condition_variable _published;
+    std::unordered_map<std::uint64_t, Entry> _entries;
+    std::list<std::uint64_t> _recent;
+    std::size_t _bytes = 0;
+    std::size_t _maxBytes;
+    std::size_t _misses = 0;
+};
+
+/// A PatchCache::acquire() miss to fill: abandoned unless published before it goes.
+class CacheClaim {
+public:
+    CacheClaim(PatchCache* cache,
+               std::uint64_t key)
+        : _cache(cache)
+        , _key(key)
+    {
+    }
+
+    CacheClaim(const CacheClaim&) = delete;
+    CacheClaim& operator=(const CacheClaim&) = delete;
+
+    ~CacheClaim()
+    {
+        if (_cache) {
+            _cache->abandon(_key);
+        }
+    }
+
+    void publish(const std::shared_ptr<const PatchCache::Patch>& patch)
+    {
+        _cache->publish(_key, patch);
+        _cache = nullptr;
+    }
+
+private:
+    PatchCache* _cache;
+    std::uint64_t _key;
+};
+
 struct Params {
     int numScales = 0;
     int mergeFromScale = 0;
@@ -143,6 +241,15 @@ struct Params {
     int originY = 0;
     int fullWidth = 0;
     int fullHeight = 0;
+    /**
+     * With a cache and a non-zero inputKey, which names the unprocessed image, a shape's result
+     * is taken from the cache when the image, the shape, the layer and the shapes before it that
+     * can reach it are those of a cached result, and is stored in it otherwise, unless the solve
+     * was a draft or cancelled() turned true.
+     **/
+    PatchCache* cache = nullptr;
+    std::uint64_t inputKey = 0;
+    std::function<bool()> cancelled;
 };
 
 /// What pen pressure changes on a brush stroke: darktable's pressure_sensitivity preference.
@@ -188,6 +295,9 @@ Region brushBounds(const std::vector<BrushPoint>& points);
  * 0 at the border, with round ends. Where segments overlap the larger value wins.
  **/
 void rasterizeBrush(const std::vector<BrushPoint>& points, const Region& roi, std::vector<float>* mask);
+
+/// Raises mask, roi's pixels, to rasterizeBrush()'s values for points where those are larger.
+void accumulateBrush(const std::vector<BrushPoint>& points, const Region& roi, float* mask, const EdgeAware::ParallelFor& parallel);
 
 /// The returnLayer of an output mode.
 int returnLayerForOutput(OutputEnum output, int numScales, int currentScale);

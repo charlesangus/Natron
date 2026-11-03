@@ -327,8 +327,7 @@ namespace {
 namespace {
     // Active cells per parallel block of a multigrid level.
     const std::size_t kCellBlock = 4096;
-    // The residual reduction, against the boundary terms, at which the multigrid solve stops.
-    const double kMultigridTolerance = 1e-5;
+    const double kMultigridTolerance = kPoissonHealMultigridTolerance;
     // Gauss-Seidel sweep pairs before and after each coarse-grid correction.
     const int kSmoothPairs = 2;
     // Piecewise-constant prolongation undershoots the smooth error by about half; this
@@ -692,10 +691,50 @@ namespace {
             }
         }
 
+        const std::vector<Level>& levels() const
+        {
+            return _levels;
+        }
+
     private:
         const ParallelFor& _parallel;
         std::vector<Level> _levels;
     };
+
+    // The finest level for the masked pixels of inMask (width x height).
+    Level
+    fineLevel(const unsigned char* inMask,
+              int width,
+              int height,
+              const ParallelFor& parallel)
+    {
+        Level fine;
+        fine.allocate(width, height);
+        const std::size_t s = fine.stride;
+        forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
+            for (int y = begin; y < end; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const std::size_t k = fine.index(x, y);
+                    fine.active[k] = inMask[(std::size_t)y * width + x];
+                    fine.diag[k] = (float)((x > 0) + (x + 1 < width) + (y > 0) + (y + 1 < height));
+                }
+            }
+        });
+        forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
+            for (int y = begin; y < end; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const std::size_t k = fine.index(x, y);
+                    if (fine.active[k]) {
+                        fine.east[k] = fine.active[k + 1] ? 1.f : 0.f;
+                        fine.south[k] = fine.active[k + s] ? 1.f : 0.f;
+                    }
+                }
+            }
+        });
+        fine.buildSpans();
+
+        return fine;
+    }
 
     // What poissonHeal() and poissonHealMultigrid() share about non-finite samples: those of dest
     // and src are set aside and their dest set to the finite src, so that their difference is 0.
@@ -782,8 +821,7 @@ poissonHealMultigrid(const float* src,
     const std::size_t pixels = (std::size_t)width * (std::size_t)height;
     HealInput input(src, dest, mask, pixels);
 
-    Level fine;
-    fine.allocate(width, height);
+    Level fine = fineLevel(input.inMask.data(), width, height, parallel);
     const std::size_t s = fine.stride;
     // dest - src over the region and 0 in the border cells: the unknowns inside the mask, the
     // fixed boundary values outside it.
@@ -793,29 +831,14 @@ poissonHealMultigrid(const float* src,
             for (int x = 0; x < width; ++x) {
                 const std::size_t p = (std::size_t)y * width + x;
                 const std::size_t k = fine.index(x, y);
-                const bool masked = input.inMask[p];
-                const float* g = (masked && guess) ? guess + 4 * p : nullptr;
+                const float* g = (input.inMask[p] && guess) ? guess + 4 * p : nullptr;
                 for (int c = 0; c < 4; ++c) {
                     const float d = dest[4 * p + c] - input.finiteSrc[4 * p + c];
                     u[4 * k + c] = (g && std::isfinite(g[c])) ? g[c] : d;
                 }
-                fine.active[k] = masked;
-                fine.diag[k] = (float)((x > 0) + (x + 1 < width) + (y > 0) + (y + 1 < height));
             }
         }
     });
-    forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
-        for (int y = begin; y < end; ++y) {
-            for (int x = 0; x < width; ++x) {
-                const std::size_t k = fine.index(x, y);
-                if (fine.active[k]) {
-                    fine.east[k] = fine.active[k + 1] ? 1.f : 0.f;
-                    fine.south[k] = fine.active[k + s] ? 1.f : 0.f;
-                }
-            }
-        }
-    });
-    fine.buildSpans();
 
     int cycles = 0;
     Multigrid mg(parallel);
@@ -944,6 +967,57 @@ poissonHealMultigrid(const float* src,
 
     return cycles;
 } // poissonHealMultigrid
+
+void
+buildHealGrid(const float* mask,
+              int width,
+              int height,
+              HealGrid* grid)
+{
+    *grid = HealGrid();
+    if ((width <= 0) || (height <= 0)) {
+        return;
+    }
+    const std::size_t pixels = (std::size_t)width * (std::size_t)height;
+    std::vector<unsigned char> inMask(pixels);
+    for (std::size_t k = 0; k < pixels; ++k) {
+        inMask[k] = std::isfinite(mask[k]) && (mask[k] != 0.f);
+    }
+    const ParallelFor serial = serialFor;
+    Multigrid mg(serial);
+    mg.build(fineLevel(inMask.data(), width, height, serial));
+    for (const Level& level : mg.levels()) {
+        HealGridLevel g;
+        g.nx = level.nx;
+        g.ny = level.ny;
+        g.cellOffset = (std::uint32_t)grid->totalCells;
+        g.stride = (std::uint32_t)level.stride;
+        for (int list = 0; list < 3; ++list) {
+            g.listOffset[list] = (std::uint32_t)grid->cells.size();
+            for (const Span& span : level.spans) {
+                const int first = (list == 0) ? 0 : colourStart(span, list - 1);
+                const int step = (list == 0) ? 1 : 2;
+                for (int j = first; j < span.count; j += step) {
+                    grid->cells.push_back((std::uint32_t)(span.start + (std::size_t)j));
+                }
+            }
+            g.listCount[list] = (std::uint32_t)grid->cells.size() - g.listOffset[list];
+        }
+        grid->totalCells += level.cells();
+        grid->levels.push_back(g);
+    }
+    grid->coefficients.assign(grid->totalCells * 4, 0.f);
+    for (std::size_t l = 0; l < mg.levels().size(); ++l) {
+        const Level& level = mg.levels()[l];
+        float* const out = &grid->coefficients[(std::size_t)grid->levels[l].cellOffset * 4];
+        for (std::size_t k = 0; k < level.cells(); ++k) {
+            out[4 * k + 0] = level.diag[k];
+            out[4 * k + 1] = level.invDiag[k];
+            out[4 * k + 2] = level.east[k];
+            out[4 * k + 3] = level.south[k];
+        }
+    }
+} // buildHealGrid
 
 double
 poissonHealResidual(const float* src,

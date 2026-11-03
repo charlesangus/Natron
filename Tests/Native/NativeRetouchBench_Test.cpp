@@ -151,8 +151,9 @@ struct BenchSize {
 };
 } // anon namespace
 
-// RC::process on one brush stroke, for each image size, render scale, Scales setting, algorithm
-// and stroke direction: prints the milliseconds of each render.
+// RC::process on one brush stroke, for each image size, render scale, Scales setting, scale the
+// stroke is on (the image, a detail scale, the coarsest and the residual), algorithm and stroke
+// direction: prints the milliseconds of each render.
 TEST(NativeRetouchBench, ProcessTimings)
 {
     std::vector<BenchSize> sizes;
@@ -168,23 +169,28 @@ TEST(NativeRetouchBench, ProcessTimings)
             const int height = std::max(1, (int)std::lround(size.height * renderScale));
             const std::vector<float> image = benchImage(width, height);
             for (int scales : { 0, 5 }) {
-                for (RC::AlgorithmEnum algorithm : { RC::eAlgorithmClone, RC::eAlgorithmHeal }) {
-                    for (bool diagonal : { false, true }) {
-                        RC::Params params;
-                        params.numScales = scales;
-                        params.renderScale = renderScale;
-                        const std::vector<RC::Shape> shapes(1, benchStroke(algorithm, 0, width, height, size.strokeWidth * renderScale, size.strokeLength * renderScale, diagonal));
-                        std::vector<float> out = image;
-                        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-                        RC::process(out.data(), width, height, params, shapes, threadedFor);
-                        const double ms = millisecondsSince(start);
-                        std::printf("[ retouch  ] %s scale %.1f, Scales %d, %s, %s: %.1f ms\n", size.name, renderScale, scales,
-                                    (algorithm == RC::eAlgorithmHeal) ? "heal" : "clone", diagonal ? "diagonal" : "horizontal", ms);
-                        bool finite = true;
-                        for (float v : out) {
-                            finite = finite && std::isfinite(v);
+                for (int shapeScale : { 0, 3, 5, 6 }) {
+                    if (shapeScale > scales + 1) {
+                        continue;
+                    }
+                    for (RC::AlgorithmEnum algorithm : { RC::eAlgorithmClone, RC::eAlgorithmHeal }) {
+                        for (bool diagonal : { false, true }) {
+                            RC::Params params;
+                            params.numScales = scales;
+                            params.renderScale = renderScale;
+                            const std::vector<RC::Shape> shapes(1, benchStroke(algorithm, shapeScale, width, height, size.strokeWidth * renderScale, size.strokeLength * renderScale, diagonal));
+                            std::vector<float> out = image;
+                            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+                            RC::process(out.data(), width, height, params, shapes, threadedFor);
+                            const double ms = millisecondsSince(start);
+                            std::printf("[ retouch  ] %s scale %.1f, Scales %d, shape on %d, %s, %s: %.1f ms\n", size.name, renderScale, scales, shapeScale,
+                                        (algorithm == RC::eAlgorithmHeal) ? "heal" : "clone", diagonal ? "diagonal" : "horizontal", ms);
+                            bool finite = true;
+                            for (float v : out) {
+                                finite = finite && std::isfinite(v);
+                            }
+                            EXPECT_TRUE(finite) << size.name;
                         }
-                        EXPECT_TRUE(finite) << size.name;
                     }
                 }
             }

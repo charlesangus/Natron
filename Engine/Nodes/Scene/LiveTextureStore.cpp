@@ -88,12 +88,17 @@ copyRow(const Image::ReadAccess& access,
             row[2] = pix[2] * scale;
             row[3] = 1.f;
             break;
-        default:
-            row[0] = pix[0] * scale;
-            row[1] = pix[1] * scale;
-            row[2] = pix[2] * scale;
-            row[3] = pix[3] * scale;
+        default: {
+            // Natron's images are premultiplied, a UsdUVTexture's are not: Storm multiplies the
+            // colour by the alpha the material's opacity reads, so it is divided out here.
+            const float alpha = pix[3] * scale;
+            const float unpremult = (alpha > 0.f) ? (1.f / alpha) : 1.f;
+            row[0] = pix[0] * scale * unpremult;
+            row[1] = pix[1] * scale * unpremult;
+            row[2] = pix[2] * scale * unpremult;
+            row[3] = alpha;
             break;
+        }
         }
     }
 }
@@ -104,15 +109,19 @@ renderSource(const LiveTextureSource& source,
              ViewIdx view,
              std::string* failure)
 {
-    const NodePtr node = source.node.lock();
+    NodePtr node = source.node.lock();
 
     if (!node || !node->isActivated()) {
         *failure = "the node " + source.nodeName + " that feeds it no longer exists";
 
         return LiveTextureBufferConstPtr();
     }
-    // Over the format, pixels of it the image does not cover stay transparent black and overscan
-    // outside it is left out. Over the definition, the texture is exactly the rendered region.
+    // SceneNodeAuthoring::getLiveTextureSource() already took a disabled node's pass-through input.
+    // Over the definition, the texture is exactly the rendered region. Otherwise it holds the whole
+    // window its layer authored texture coordinates for: the format with the overscan around it,
+    // transparent black where the image does not reach.
+    char frameText[32];
+    std::snprintf(frameText, sizeof(frameText), "%g", frame);
     RectI extent;
     RectI rect;
     ImagePtr image;
@@ -122,10 +131,15 @@ renderSource(const LiveTextureSource& source,
         rendered = bool(image);
         extent = rect;
     } else {
-        rendered = renderNodeImageOverFormat(node, frame, view, ImageLayerDesc::getRGBAComponents(), &extent, &image, &rect);
+        LiveTextureWindow window = source.getWindow(frame);
+        if (window.isNull() && !getNodeImageWindow(node, frame, view, &window.format, &window.window)) {
+            *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
+
+            return LiveTextureBufferConstPtr();
+        }
+        extent = window.window;
+        rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), extent, &image, &rect);
     }
-    char frameText[32];
-    std::snprintf(frameText, sizeof(frameText), "%g", frame);
     if (!rendered || extent.isNull() || (image && rect.isNull())) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
@@ -251,6 +265,34 @@ LiveTextureSource::getUri(double frame) const
     h.appendDouble(getSourceFrame(frame));
 
     return makeUri(nodeName, layer, h.finalize(), coverage);
+}
+
+LiveTextureWindow
+LiveTextureSource::getWindow(double frame) const
+{
+    const double index = varying ? getSourceFrame(frame) - std::ceil(firstFrame) : 0.;
+
+    if ((index < 0.) || (index >= (double)windows.size())) {
+        return LiveTextureWindow();
+    }
+
+    return windows[(std::size_t)index];
+}
+
+void
+LiveTextureWindow::getUvTransform(double scale[2],
+                                  double translation[2]) const
+{
+    if (isNull()) {
+        scale[0] = scale[1] = 1.;
+        translation[0] = translation[1] = 0.;
+
+        return;
+    }
+    scale[0] = (double)format.width() / (double)window.width();
+    scale[1] = (double)format.height() / (double)window.height();
+    translation[0] = (double)(format.x1 - window.x1) / (double)window.width();
+    translation[1] = (double)(format.y1 - window.y1) / (double)window.height();
 }
 
 std::string

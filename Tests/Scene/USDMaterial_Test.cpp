@@ -43,14 +43,17 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
@@ -409,22 +412,190 @@ TEST_F(USDMaterialTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
     EXPECT_EQ(times.size(), versions.size());
 }
 
-// Emissive shades with the emission alone: black diffuse, a black specular colour in the specular
-// workflow, the emissive input as a live texture, and the inputs the shader ignores neither
-// authored nor recorded for consumers to render.
-TEST_F(USDMaterialTest, TheEmissiveShaderShowsOnlyTheEmission)
+// A live texture's coordinates go through a UsdTransform2d from the st reader that maps 0 to 1 onto
+// the format inside the texture, which holds the overscan too: here a rectangle reaching half a
+// format past the format's left edge, in both material nodes.
+TEST_F(USDMaterialTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
 {
-    NodePtr diffuseSource = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr emissiveSource = node(PLUGINID_NATRON_CONSTANT, "Constant2");
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    ASSERT_GT(format.width(), 8);
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    ASSERT_TRUE(bool(constant));
+    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName(kNativeGeneratorParamExtent).get());
+    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(extent && bottomLeft && size);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1 - half, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(2 * half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+    const double width = format.width() + half;
+    const PXR_NS::GfVec2f expectedScale((float)(format.width() / width), 1.f);
+    const PXR_NS::GfVec2f expectedTranslation((float)(half / width), 0.f);
+
+    NodePtr lit = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr emissive = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Emissive1", { constant });
+    ASSERT_TRUE(lit && emissive);
+    ASSERT_TRUE(lit->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const struct {
+        NodePtr material;
+        const char* path;
+        const char* input;
+    } cases[] = {
+        { lit, "/Material1", "diffuseColor" },
+        { emissive, "/Emissive1", "emissiveColor" },
+    };
+    for (const auto& c : cases) {
+        PXR_NS::UsdStageRefPtr stage = compose(c.material);
+        ASSERT_TRUE(bool(stage)) << c.path;
+        const PXR_NS::UsdShadeShader texture = textureOf(stage, c.path, c.input);
+        ASSERT_TRUE(bool(texture)) << c.path;
+        PXR_NS::UsdShadeConnectableAPI source;
+        PXR_NS::TfToken sourceName;
+        PXR_NS::UsdShadeAttributeType sourceType;
+        ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("st")).GetConnectedSource(&source, &sourceName, &sourceType)) << c.path;
+        const PXR_NS::UsdShadeShader transform(source.GetPrim());
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(transform.GetShaderId(&id));
+        EXPECT_EQ(PXR_NS::TfToken("UsdTransform2d"), id) << c.path;
+        EXPECT_EQ(PXR_NS::TfToken("result"), sourceName);
+        ASSERT_TRUE(transform.GetInput(PXR_NS::TfToken("in")).GetConnectedSource(&source, &sourceName, &sourceType)) << c.path;
+        ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetShaderId(&id));
+        EXPECT_EQ(PXR_NS::TfToken("UsdPrimvarReader_float2"), id) << c.path;
+
+        const PXR_NS::UsdAttribute scale = transform.GetInput(PXR_NS::TfToken("scale")).GetAttr();
+        const PXR_NS::UsdAttribute translation = transform.GetInput(PXR_NS::TfToken("translation")).GetAttr();
+        EXPECT_EQ((std::size_t)0, scale.GetNumTimeSamples()) << "a static image's window is one default";
+        PXR_NS::GfVec2f value;
+        ASSERT_TRUE(scale.Get(&value));
+        EXPECT_NEAR(expectedScale[0], value[0], 1e-6) << c.path;
+        EXPECT_NEAR(expectedScale[1], value[1], 1e-6) << c.path;
+        ASSERT_TRUE(translation.Get(&value));
+        EXPECT_NEAR(expectedTranslation[0], value[0], 1e-6) << c.path;
+        EXPECT_NEAR(expectedTranslation[1], value[1], 1e-6) << c.path;
+
+        // Consumers render the window the coordinates were authored for.
+        ScenePayload payload;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  c.material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+            << error;
+        const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+        ASSERT_EQ((std::size_t)1, sources.size()) << c.path;
+        const LiveTextureWindow window = sources[0].getWindow(1.);
+        EXPECT_EQ(RectI(format.x1, format.y1, format.x2, format.y2), window.format) << c.path;
+        EXPECT_EQ(RectI(format.x1 - half, format.y1, format.x2, format.y2), window.window) << c.path;
+    }
+}
+
+// The opacity of the material at materialPath reads the alpha of the texture feeding its surface
+// input inputName, in presence mode, where opacity scales the whole shaded colour.
+static void
+expectOpacityFromAlphaOf(const PXR_NS::UsdStageRefPtr& stage,
+                         const char* materialPath,
+                         const char* inputName)
+{
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface)) << materialPath;
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).GetConnectedSource(&source, &sourceName, &sourceType)) << materialPath;
+    PXR_NS::UsdShadeConnectableAPI colourSource;
+    PXR_NS::TfToken colourName;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken(inputName)).GetConnectedSource(&colourSource, &colourName, &sourceType)) << inputName;
+    EXPECT_EQ(colourSource.GetPath(), source.GetPath());
+    EXPECT_EQ(PXR_NS::TfToken("a"), sourceName);
+    PXR_NS::TfToken mode;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("presence"), mode);
+}
+
+static void
+expectNoOpacity(const PXR_NS::UsdStageRefPtr& stage,
+                const char* materialPath)
+{
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface)) << materialPath;
+    const PXR_NS::UsdShadeInput opacity = surface.GetInput(PXR_NS::TfToken("opacity"));
+    EXPECT_FALSE(opacity && opacity.HasConnectedSource()) << materialPath;
+}
+
+TEST_F(USDMaterialTest, ALiveDiffuseImageDrivesTheOpacityWithItsAlpha)
+{
+    NodePtr diffuse = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr emissive = node(PLUGINID_NATRON_CONSTANT, "Constant2");
     NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
-    ASSERT_TRUE(diffuseSource && emissiveSource && material);
-    KnobChoice* shader = dynamic_cast<KnobChoice*>(material->getKnobByName(kUSDMaterialParamShader).get());
-    ASSERT_TRUE(shader != NULL);
-    EXPECT_EQ(std::string(kUSDMaterialShaderLit), shader->getActiveEntry().id);
-    ASSERT_TRUE(material->connectInput(diffuseSource, kUSDMaterialInputDiffuseColor));
-    ASSERT_TRUE(material->connectInput(emissiveSource, kUSDMaterialInputEmissiveColor));
-    shader->setValueFromID(kUSDMaterialShaderEmissive, 0);
-    ASSERT_EQ(std::string(kUSDMaterialShaderEmissive), shader->getActiveEntry().id);
+    ASSERT_TRUE(diffuse && emissive && material);
+    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDMaterialParamUseAlpha).get());
+    ASSERT_TRUE(useAlpha != NULL);
+    EXPECT_TRUE(useAlpha->getValue()) << "Use Alpha is on by default";
+    EXPECT_EQ(std::string("Use Alpha"), useAlpha->getLabel());
+    ASSERT_TRUE(material->connectInput(emissive, kUSDMaterialInputEmissiveColor));
+
+    // With no diffuse image, the emissive image's alpha is the opacity.
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "emissiveColor");
+
+    ASSERT_TRUE(material->connectInput(diffuse, kUSDMaterialInputDiffuseColor));
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "diffuseColor");
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+
+    useAlpha->setValue(false);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectNoOpacity(stage, "/Material1");
+}
+
+TEST_F(USDMaterialTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlpha)
+{
+    NodePtr source = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { source });
+    ASSERT_TRUE(source && material);
+    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDEmissiveMaterialParamUseAlpha).get());
+    ASSERT_TRUE(useAlpha != NULL);
+    EXPECT_TRUE(useAlpha->getValue()) << "Use Alpha is on by default";
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectOpacityFromAlphaOf(stage, "/Material1", "emissiveColor");
+
+    useAlpha->setValue(false);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    expectNoOpacity(stage, "/Material1");
+}
+
+TEST_F(USDMaterialTest, TheLitMaterialOffersNoShaderChoice)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    EXPECT_FALSE(bool(material->getKnobByName("shader")));
+}
+
+TEST_F(USDMaterialTest, TheEmissiveMaterialHasOneEmissiveImageInput)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    ASSERT_EQ(1, material->getNInputs());
+    EXPECT_EQ(std::string("Emissive"), material->getInputLabel(kUSDEmissiveMaterialInputEmissive));
+    EXPECT_FALSE(bool(material->getKnobByName("shader")));
+    EXPECT_FALSE(bool(material->getKnobByName("diffuseColor")));
+}
+
+// The emission alone: black diffuse, a black specular colour in the specular workflow, and the
+// input as an untinted live texture that consumers are told to render.
+TEST_F(USDMaterialTest, TheEmissiveMaterialShowsOnlyItsInput)
+{
+    NodePtr source = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { source });
+    ASSERT_TRUE(source && material);
 
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
@@ -444,8 +615,11 @@ TEST_F(USDMaterialTest, TheEmissiveShaderShowsOnlyTheEmission)
     ASSERT_TRUE(bool(texture));
     PXR_NS::SdfAssetPath path;
     ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("file")).Get(&path));
-    const std::string prefix = std::string(kLiveTextureScheme) + "://" + emissiveSource->getFullyQualifiedName() + "/rgba?v=";
+    const std::string prefix = std::string(kLiveTextureScheme) + "://" + source->getFullyQualifiedName() + "/rgba?v=";
     EXPECT_EQ(0u, path.GetAssetPath().rfind(prefix, 0)) << path.GetAssetPath();
+    PXR_NS::GfVec4f scale(0.f);
+    ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("scale")).Get(&scale));
+    EXPECT_EQ(PXR_NS::GfVec4f(1.f), scale);
 
     ScenePayload payload;
     std::string error;
@@ -454,14 +628,29 @@ TEST_F(USDMaterialTest, TheEmissiveShaderShowsOnlyTheEmission)
         << error;
     const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
     ASSERT_EQ((std::size_t)1, sources.size());
-    EXPECT_EQ(emissiveSource->getFullyQualifiedName(), sources[0].nodeName);
+    EXPECT_EQ(source->getFullyQualifiedName(), sources[0].nodeName);
+}
 
-    // Back to Lit, the diffuse input drives the surface again.
-    shader->setValueFromID(kUSDMaterialShaderLit, 0);
-    stage = compose(material);
+TEST_F(USDMaterialTest, TheEmissiveMaterialWithoutAnImageEmitsItsColor)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    KnobColor* color = dynamic_cast<KnobColor*>(material->getKnobByName(kUSDEmissiveMaterialParamEmissiveColor).get());
+    ASSERT_TRUE(color != NULL);
+    EXPECT_EQ(std::string("Emissive Color"), color->getLabel());
+    color->setValue(0.25, ViewSpec::all(), 0);
+    color->setValue(0.5, ViewSpec::all(), 1);
+    color->setValue(0.75, ViewSpec::all(), 2);
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(bool(textureOf(stage, "/Material1", "diffuseColor")));
-    EXPECT_TRUE(bool(textureOf(stage, "/Material1", "emissiveColor")));
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    const PXR_NS::UsdShadeInput emissive = surface.GetInput(PXR_NS::TfToken("emissiveColor"));
+    EXPECT_FALSE(emissive.HasConnectedSource());
+    PXR_NS::GfVec3f value(0.f);
+    ASSERT_TRUE(emissive.Get(&value));
+    EXPECT_EQ(PXR_NS::GfVec3f(0.25f, 0.5f, 0.75f), value);
 }
 
 TEST_F(USDMaterialTest, AnUpstreamImageEditReauthorsOnlyTheMaterialLayer)

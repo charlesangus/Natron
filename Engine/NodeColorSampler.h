@@ -50,19 +50,32 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          RectI* renderedRect);
 
 /**
- * @brief As renderNodeImage(), at full scale over the node's output format (its display window, the
- * project format when it has none): format receives it, renderedRect the part of it inside the region
- * of definition, which image covers and may exceed. Pixels of the region outside the format are not
+ * @brief The part of node's image at time a texture of it holds, in full-scale pixel coordinates,
+ * found without rendering: window receives its output format (its display window, the project
+ * format when it has none) merged with its region of definition, whole. An infinite region is not merged,
+ * which leaves the format. format receives the format.
+ *
+ * Returns false for a null or deactivated node, or one whose format cannot be told.
+ **/
+bool getNodeImageWindow(const NodePtr& node,
+                        double time,
+                        ViewIdx view,
+                        RectI* format,
+                        RectI* window);
+
+/**
+ * @brief As renderNodeImage(), at full scale over window: renderedRect receives the part of window
+ * inside the region of definition, which image covers and may exceed. Pixels outside window are not
  * rendered.
  *
  * Returns false in the cases sampleNodeColor() returns false. Returns true with a null image when the
- * region of definition misses the format: the format is then all transparent black.
+ * region of definition misses window: it is then all transparent black.
  **/
-bool renderNodeImageOverFormat(const NodePtr& node,
+bool renderNodeImageOverWindow(const NodePtr& node,
                                double time,
                                ViewIdx view,
                                const ImageLayerDesc& layer,
-                               RectI* format,
+                               const RectI& window,
                                ImagePtr* image,
                                RectI* renderedRect);
 

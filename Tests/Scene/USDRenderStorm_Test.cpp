@@ -52,14 +52,17 @@
 #include <OpenImageIO/imageio.h>
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -74,6 +77,7 @@
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -190,6 +194,39 @@ coverageOf(const std::string& path,
             c.y += y;
             c.minDepth = std::min(c.minDepth, depth[i]);
             c.maxDepth = std::max(c.maxDepth, depth[i]);
+            for (int k = 0; k < 3; ++k) {
+                c.rgb[k] += rgba[i * 4 + k];
+            }
+        }
+    }
+    if (c.count) {
+        c.x /= c.count;
+        c.y /= c.count;
+        for (int k = 0; k < 3; ++k) {
+            c.rgb[k] /= c.count;
+        }
+    }
+
+    return c;
+}
+
+// The pixels of rgba more than half covered, alone in a scene on a transparent background. Unlike
+// coverageOf it holds for a surface with an opacity, which Storm draws in its translucent pass,
+// where no prim id is written.
+Coverage
+coverageByAlpha(const std::vector<float>& rgba)
+{
+    Coverage c;
+
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+            if (rgba[i * 4 + 3] <= 0.5f) {
+                continue;
+            }
+            ++c.count;
+            c.x += x;
+            c.y += y;
             for (int k = 0; k < 3; ++k) {
                 c.rgb[k] += rgba[i * 4 + k];
             }
@@ -843,19 +880,24 @@ protected:
 
     /**
      * A card at the origin facing the camera at (0, 0, 10), its material's Diffuse Color input
-     * fed by a Constant, lit head on. Sets *constant to the Constant and returns the USDRender,
-     * kWidth x kHeight, null after a gtest failure.
+     * fed by a Constant, lit head on by a key light unless withLight is false, when the scene has
+     * no light. Sets *constant to the Constant and returns the USDRender, kWidth x kHeight, null
+     * after a gtest failure.
      **/
-    NodePtr createLiveTextureGraph(NodePtr* constant)
+    // The constant feeds the diffuse input of a USDMaterial, or with emissive the one input of a
+    // USDEmissiveMaterial.
+    NodePtr createLiveTextureGraph(NodePtr* constant,
+                                   bool withLight = true,
+                                   bool emissive = false)
     {
         NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr light = withLight ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT)) : NodePtr();
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!source || !material || !card || !camera || !light || !merge || !render) {
+        if (!source || !material || !card || !camera || (withLight && !light) || !merge || !render) {
             ADD_FAILURE() << "a node is not registered";
 
             return NodePtr();
@@ -871,15 +913,17 @@ protected:
         ok = ok && setString(card, kSceneParamPrimPath, "/Card");
         ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
         ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
-        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        ok = ok && (!light || setString(light, kSceneParamPrimPath, "/Key"));
         if (!ok) {
             return NodePtr();
         }
-        connectNodes(source, material, kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
-        connectNodes(light, merge, 2, true);
+        if (light) {
+            connectNodes(light, merge, 2, true);
+        }
         connectNodes(merge, render, 0, true);
         renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
         size->setValue(kWidth, ViewSpec::all(), 0);
@@ -897,6 +941,13 @@ protected:
     static Coverage renderCard(const NodePtr& render,
                                double frame)
     {
+        return coverageByAlpha(renderColour(render, frame));
+    }
+
+    // The colour plane of render at frame, rendered off the main thread as renderCard explains.
+    static std::vector<float> renderColour(const NodePtr& render,
+                                           double frame)
+    {
         std::vector<RenderedPlane> planes;
         std::string error;
         bool rendered = false;
@@ -909,10 +960,27 @@ protected:
         if (planes.size() != 3u) {
             ADD_FAILURE() << "frame " << frame << " rendered " << planes.size() << " planes";
 
-            return Coverage();
+            return std::vector<float>((std::size_t)kWidth * (std::size_t)kHeight * 4u, 0.f);
         }
 
-        return coverageOf("/Card", planes[0].pixels, planes[1].pixels, planes[2].pixels);
+        return planes[0].pixels;
+    }
+
+    // The mean colour and alpha of the 5 by 5 pixels at the centre of rgba.
+    static void centreOf(const std::vector<float>& rgba,
+                         double out[4])
+    {
+        for (int k = 0; k < 4; ++k) {
+            out[k] = 0.;
+        }
+        for (int y = kHeight / 2 - 2; y <= kHeight / 2 + 2; ++y) {
+            for (int x = kWidth / 2 - 2; x <= kWidth / 2 + 2; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                for (int k = 0; k < 4; ++k) {
+                    out[k] += rgba[i * 4 + k] / 25.;
+                }
+            }
+        }
     }
 
     // Every plane of render at frame, rendered off the main thread as renderCard does.
@@ -1275,6 +1343,161 @@ TEST_F(USDRenderStormTest, ALiveTextureColoursTheCardWithTheImageConnected)
     EXPECT_GT(card.rgb[0], 5. * card.rgb[2]);
 }
 
+// With no light in the scene a lit card is black, unless Headlight, off by default, adds a light at
+// the camera; turning it off again takes the light back.
+TEST_F(USDRenderStormTest, TheHeadlightLightsAnUnlitSceneOnlyWhenOn)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobBool* headlight = knob<KnobBool>(render, kUSDRenderParamHeadlight);
+    ASSERT_TRUE(color != nullptr);
+    ASSERT_TRUE(headlight != nullptr);
+    EXPECT_FALSE(headlight->getValue()) << "Headlight is off by default";
+    EXPECT_EQ(std::string("Headlight"), headlight->getLabel());
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage off = renderCard(render, 1.);
+    ASSERT_GT(off.count, 500);
+    EXPECT_LT(off.rgb[0], 0.02) << "card colour, headlight off " << off.rgb[0] << ", " << off.rgb[1] << ", " << off.rgb[2];
+    EXPECT_LT(off.rgb[1], 0.02);
+    EXPECT_LT(off.rgb[2], 0.02);
+
+    headlight->setValue(true);
+    const Coverage on = renderCard(render, 1.);
+    ASSERT_GT(on.count, 500);
+    EXPECT_GT(on.rgb[0], 0.1) << "card colour, headlight on " << on.rgb[0] << ", " << on.rgb[1] << ", " << on.rgb[2];
+    EXPECT_GT(on.rgb[0], 5. * on.rgb[1]);
+    EXPECT_GT(on.rgb[0], 5. * on.rgb[2]);
+
+    headlight->setValue(false);
+    const Coverage offAgain = renderCard(render, 1.);
+    ASSERT_GT(offAgain.count, 500);
+    EXPECT_LT(offAgain.rgb[0], 0.02) << "card colour, headlight off again " << offAgain.rgb[0];
+}
+
+// With no light and no headlight, the emissive material's card shows its input as it is.
+TEST_F(USDRenderStormTest, TheEmissiveMaterialShowsItsImageUnchangedWithNoLights)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobBool* headlight = knob<KnobBool>(render, kUSDRenderParamHeadlight);
+    ASSERT_TRUE(color != nullptr);
+    ASSERT_TRUE(headlight != nullptr);
+    ASSERT_FALSE(headlight->getValue());
+    const double source[3] = { 0.6, 0.3, 0.1 };
+    for (int c = 0; c < 3; ++c) {
+        color->setValue(source[c], ViewSpec::all(), c);
+    }
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage card = renderCard(render, 1.);
+    ASSERT_GT(card.count, 500);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(source[c], card.rgb[c], 0.03) << "channel " << c << ", card colour " << card.rgb[0] << ", " << card.rgb[1] << ", " << card.rgb[2];
+    }
+}
+
+// A card showing a Constant of half-transparent red, premultiplied as Natron's images are, in front
+// of an opaque blue card: the red composites over the blue, so half of each shows through.
+TEST_F(USDRenderStormTest, AHalfTransparentLiveTextureShowsTheBackgroundThroughIt)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr merge = render->getInput(0);
+    ASSERT_TRUE(merge != nullptr);
+    NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(backMaterial && backCard);
+    ASSERT_TRUE(setString(backMaterial, kSceneParamPrimPath, "/Blue"));
+    ASSERT_TRUE(setString(backCard, kSceneParamPrimPath, "/Back"));
+    ASSERT_TRUE(setTriple(backCard, kSceneParamTranslate, 0., 0., -1.));
+    KnobColor* blue = knob<KnobColor>(backMaterial, kUSDEmissiveMaterialParamEmissiveColor);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(blue && color);
+    blue->setValue(0., ViewSpec::all(), 0);
+    blue->setValue(0., ViewSpec::all(), 1);
+    blue->setValue(1., ViewSpec::all(), 2);
+    connectNodes(backMaterial, backCard, 0, true);
+    connectNodes(backCard, merge, 2, true);
+    color->setValue(0.5, ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(0.5, ViewSpec::all(), 3);
+
+    double centre[4];
+    centreOf(renderColour(render, 1.), centre);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    const double expected[4] = { 0.5, 0., 0.5, 1. };
+    for (int k = 0; k < 4; ++k) {
+        EXPECT_NEAR(expected[k], centre[k], 0.04) << "channel " << k << ", centre " << centre[0] << ", " << centre[1] << ", " << centre[2] << ", " << centre[3];
+    }
+}
+
+// The node feeding a live texture, disabled, passes its input through, as it does in the 2D graph:
+// an Invert of red shows cyan, and red once the Invert is disabled.
+TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(material != nullptr);
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
+    ASSERT_TRUE(invert != nullptr);
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(channels != nullptr);
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    channels->setChannels(0, rgb);
+    disconnectNodes(constant, material, true);
+    connectNodes(constant, invert, 0, true);
+    connectNodes(invert, material, kUSDEmissiveMaterialInputEmissive, true);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage inverted = renderCard(render, 1.);
+    ASSERT_GT(inverted.count, 500);
+    EXPECT_NEAR(0., inverted.rgb[0], 0.03) << "inverted " << inverted.rgb[0] << ", " << inverted.rgb[1] << ", " << inverted.rgb[2];
+    EXPECT_NEAR(1., inverted.rgb[1], 0.03);
+    EXPECT_NEAR(1., inverted.rgb[2], 0.03);
+
+    invert->setNodeDisabled(true);
+    const Coverage passed = renderCard(render, 1.);
+    ASSERT_GT(passed.count, 500);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    EXPECT_NEAR(1., passed.rgb[0], 0.03) << "disabled " << passed.rgb[0] << ", " << passed.rgb[1] << ", " << passed.rgb[2];
+    EXPECT_NEAR(0., passed.rgb[1], 0.03);
+    EXPECT_NEAR(0., passed.rgb[2], 0.03);
+}
+
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test
 // binary may not load, and an animated colour exercises the same per-frame URIs.
 TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
@@ -1566,4 +1789,139 @@ TEST_F(USDRenderStormTest, StormProject3DIsTransparentBeyondTheDataWindow)
         const RegionColours data = regionColours(rgba, 54, 41, 146, 59);
         EXPECT_GT(data.red + data.blue, data.count * 3 / 4) << what;
     }
+}
+
+// A quad whose u runs from -0.5 to 1, bound to an emissive material showing a Constant that covers
+// half a format past the format's left edge and the format's left half. Coordinates 0 to 1 span the
+// format, so the overscan shows at negative u, the left third of the quad: the image covers its
+// left two thirds, and the right third, the format's right half, is black.
+TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString quadPath = tmp.path() + QString::fromUtf8("/quad.usda");
+    {
+        QFile file(quadPath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("#usda 1.0\n"
+                   "(\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\n"
+                   "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                   "    int[] faceVertexCounts = [4]\n"
+                   "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-1.5, -0.5, 0), (1.5, -0.5, 0), (1.5, 0.5, 0), (-1.5, 0.5, 0)]\n"
+                   "    texCoord2f[] primvars:st = [(-0.5, 0), (1, 0), (1, 1), (-0.5, 1)] (\n        interpolation = \"vertex\"\n    )\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                   "    rel material:binding = </Live>\n"
+                   "}\n");
+    }
+
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    ASSERT_GT(format.width(), 8);
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(constant && material && reader && camera && merge && render);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobChoice* extent = knob<KnobChoice>(constant, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(constant, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(constant, kNativeGeneratorParamSize);
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+    KnobInt* renderSize = knob<KnobInt>(render, kNatronParamFormatSize);
+    KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+    ASSERT_TRUE(color && extent && bottomLeft && size && file && renderCamera && renderSize && par);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1 - half, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(2 * half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+    file->setValue(quadPath.toStdString());
+    ASSERT_TRUE(setString(material, kSceneParamPrimPath, "/Live"));
+    KnobBool* useAlpha = knob<KnobBool>(material, kUSDEmissiveMaterialParamUseAlpha);
+    ASSERT_TRUE(useAlpha != nullptr);
+    // The quad is found by its prim id, which Storm does not write for a surface with an opacity.
+    useAlpha->setValue(false);
+    ASSERT_TRUE(setString(camera, kSceneParamPrimPath, "/Cam"));
+    ASSERT_TRUE(setTriple(camera, kSceneParamTranslate, 0., 0., 10.));
+    connectNodes(constant, material, kUSDEmissiveMaterialInputEmissive, true);
+    connectNodes(reader, merge, 0, true);
+    connectNodes(material, merge, 1, true);
+    connectNodes(camera, merge, 2, true);
+    connectNodes(merge, render, 0, true);
+    renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+    renderSize->setValue(kWidth, ViewSpec::all(), 0);
+    renderSize->setValue(kHeight, ViewSpec::all(), 1);
+    par->setValue(1.);
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    bool rendered = false;
+    std::thread worker([&]() {
+        rendered = renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
+    });
+    worker.join();
+    ASSERT_TRUE(rendered) << error;
+    ASSERT_EQ(3u, planes.size());
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& primId = planes[2].pixels;
+    const std::uint32_t quadId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Quad")));
+    int left = kWidth;
+    int right = -1;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (bitsOf(primId[(std::size_t)y * (std::size_t)kWidth + (std::size_t)x]) == quadId) {
+                left = std::min(left, x);
+                right = std::max(right, x);
+            }
+        }
+    }
+    ASSERT_GT(right - left, 30) << "the quad is drawn";
+
+    // Mean red and green over the quad's pixels whose horizontal position across it is in [from, to].
+    const auto meanOver = [&](double from,
+                              double to,
+                              double rg[2]) {
+        int count = 0;
+        rg[0] = rg[1] = 0.;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                const double across = (x - left + 0.5) / (double)(right - left + 1);
+                if ((bitsOf(primId[i]) != quadId) || (across < from) || (across > to)) {
+                    continue;
+                }
+                rg[0] += rgba[i * 4 + 0];
+                rg[1] += rgba[i * 4 + 1];
+                ++count;
+            }
+        }
+        if (count) {
+            rg[0] /= count;
+            rg[1] /= count;
+        }
+
+        return count;
+    };
+    double overscan[2];
+    double formatLeft[2];
+    double formatRight[2];
+    ASSERT_GT(meanOver(0.05, 0.28, overscan), 50);
+    ASSERT_GT(meanOver(0.39, 0.61, formatLeft), 50);
+    ASSERT_GT(meanOver(0.72, 0.95, formatRight), 50);
+    EXPECT_GT(overscan[0], 0.9) << "u < 0 reads the overscan, red " << overscan[0];
+    EXPECT_LT(overscan[1], 0.05);
+    EXPECT_GT(formatLeft[0], 0.9) << "0 < u < 0.5 is the format's left half, red " << formatLeft[0];
+    EXPECT_LT(formatRight[0], 0.05) << "0.5 < u < 1 is the format's right half the image does not cover, red " << formatRight[0];
 }

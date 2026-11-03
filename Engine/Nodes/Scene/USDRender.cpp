@@ -46,6 +46,7 @@
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -139,13 +140,80 @@ USDRender::initializeKnobs()
     fitMode->setAnimationEnabled(false);
     page->addKnob(fitMode);
     _fitMode = fitMode;
+
+    KnobChoicePtr renderer = createKnob<KnobChoice>(tr("Renderer"));
+    renderer->setName(kUSDRenderParamRenderer);
+    renderer->setHintToolTip(tr("The Hydra render delegate that renders the scene. Storm renders with OpenGL; the "
+                                "others render on the CPU. A renderer that is not installed or cannot run here stays "
+                                "chosen, and the node is an error naming it until it is installed or another is "
+                                "chosen."));
+    {
+        std::vector<ChoiceOption> options;
+        int stormIndex = 0;
+        for (const RenderDelegates::Delegate& delegate : RenderDelegates::list()) {
+            if (RenderDelegates::isStorm(delegate.id)) {
+                stormIndex = (int)options.size();
+            }
+            if (delegate.available) {
+                options.push_back(ChoiceOption(delegate.id, delegate.displayName, ""));
+            } else {
+                options.push_back(ChoiceOption(delegate.id,
+                                               tr("%1 (unavailable)").arg(QString::fromStdString(delegate.displayName)).toStdString(),
+                                               delegate.error));
+            }
+        }
+        renderer->populateChoices(options);
+        renderer->setDefaultValue(stormIndex);
+    }
+    renderer->setAnimationEnabled(false);
+    page->addKnob(renderer);
+    _renderer = renderer;
+
+    KnobBoolPtr headlight = createKnob<KnobBool>(tr("Headlight"));
+    headlight->setName(kUSDRenderParamHeadlight);
+    headlight->setHintToolTip(tr("Adds a light at the camera to the scene's own lights. Off, only the scene's lights light "
+                                 "it, and a scene with none renders its lit surfaces black."));
+    headlight->setDefaultValue(false);
+    headlight->setAnimationEnabled(false);
+    page->addKnob(headlight);
+    _headlight = headlight;
 } // USDRender::initializeKnobs
 
 void
 USDRender::onKnobsLoaded()
 {
     NativeEffectBase::onKnobsLoaded();
+    keepLoadedRenderer();
     scheduleCameraMenuRefresh();
+}
+
+void
+USDRender::keepLoadedRenderer()
+{
+    KnobChoicePtr renderer = _renderer.lock();
+
+    if (!renderer) {
+        return;
+    }
+    // Loading an id the menu lacks leaves the index on the default; the menu gains the id so that
+    // the knob, its hash and the next save all name it.
+    const ChoiceOption active = renderer->getActiveEntry();
+    if (active.id.empty() || renderer->isActiveEntryPresentInEntries()) {
+        return;
+    }
+    renderer->appendChoice(ChoiceOption(active.id,
+                                        tr("%1 (not installed)").arg(QString::fromStdString(active.id)).toStdString(),
+                                        RenderDelegates::unavailableMessage(active.id)));
+    renderer->setValue(renderer->getNumEntries() - 1);
+}
+
+std::string
+USDRender::rendererId() const
+{
+    KnobChoicePtr renderer = _renderer.lock();
+    const std::string id = renderer ? renderer->getActiveEntry().id : std::string();
+
+    return id.empty() ? std::string(kRenderDelegateStormId) : id;
 }
 
 void
@@ -426,6 +494,9 @@ USDRender::prepareRender(double time,
     setup->request.time = timeCode;
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
+    KnobBoolPtr headlightKnob = _headlight.lock();
+    setup->request.headlight = headlightKnob && headlightKnob->getValue();
+    setup->request.renderer = rendererId();
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
         return false;
@@ -448,11 +519,17 @@ USDRender::render(const RenderActionArgs& args)
     if (!prepareRender(args.time, args.view, args.mappedScale.toMipmapLevel(), &setup, &error)) {
         return fail(error);
     }
-    const HydraRender::Request& request = setup.request;
+    HydraRender::Request& request = setup.request;
     const RectI& pixels = setup.pixels;
+    request.aborted = [this]() { return aborted(); };
 
     HydraRender::Result result;
     if (!HydraRender::render(request, &result, &error)) {
+        // A cancelled render is no error of the node's.
+        if (aborted()) {
+            return eStatusFailed;
+        }
+
         return fail(error);
     }
 
@@ -551,6 +628,10 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
 #ifdef NATRON_HAVE_GPU
     const std::string& layerID = query.plane.getLayerID();
     if ((query.bitDepth != eImageBitDepthFloat) || (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId"))) {
+        return false;
+    }
+    // Only Storm renders into GL; the other delegates' host pixels are read back by render().
+    if (!RenderDelegates::isStorm(rendererId())) {
         return false;
     }
 

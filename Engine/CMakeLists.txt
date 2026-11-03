@@ -190,6 +190,13 @@ if(NATRON_GPU)
 endif()
 
 add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
+# The pinned darktable-ai model manifest Ai/ModelRegistry reads, as :/Ai/ai_models.json.
+# tools/ai/update-manifest.py regenerates it.
+qt_add_resources(NatronEngine AiModelManifest
+    PREFIX "/Ai"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
+)
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport
@@ -242,6 +249,11 @@ install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/na
 set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+
+# darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
+set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)
+configure_file(${NatronEngine_NOISE_PROFILES_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/noiseprofiles.json COPYONLY)
+install(FILES ${NatronEngine_NOISE_PROFILES_JSON} DESTINATION Resources/darktable)
 
 # Some Linux dependencies (notably Qt) can expose the distribution FreeType
 # before this static library's transitive link interface is expanded.  The

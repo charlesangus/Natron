@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
@@ -87,8 +88,31 @@ public:
     // The projections of the payload whose camera the stage lacks, as last synced.
     const std::vector<SceneProjectionCameras::Unresolved>& getUnresolvedProjections() const;
 
+    /**
+     * @brief Draws each prim of deltas moved in the world by its matrix (a Gf matrix, so the
+     * prim's world transform W becomes W * delta), until clearPreviewTransforms(): an op on the
+     * root layer goes first in the prim's op order. The parent transforms and op orders are read
+     * by the first call after a clear; a later call with the same prims only changes the matrices,
+     * and one with other prims starts over. Prims that are not xformable, or are instance proxies,
+     * are left as they are. Returns whether any prim is previewed. sync() keeps the preview.
+     **/
+    bool setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>& deltas,
+                              double timeCode);
+
+    void clearPreviewTransforms();
+
+    bool hasPreviewTransforms() const;
+
 private:
     void syncProjections();
+
+    struct PreviewPrim {
+        PXR_NS::SdfPath path;
+        PXR_NS::GfMatrix4d parentToWorld;
+        PXR_NS::GfMatrix4d worldToParent;
+        bool resetsXformStack = false;
+        PXR_NS::SdfAttributeSpecHandle op;
+    };
 
     PXR_NS::SdfLayerRefPtr _root;
     // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
@@ -99,6 +123,8 @@ private:
     std::vector<std::string> _subLayerPaths;
     SceneMetadata _metadata;
     U64 _editCount = 0;
+    std::vector<PreviewPrim> _preview;
+    std::vector<std::string> _previewRequested;
 };
 
 NATRON_NAMESPACE_EXIT

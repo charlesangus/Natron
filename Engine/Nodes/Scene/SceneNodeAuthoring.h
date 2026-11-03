@@ -114,10 +114,33 @@ void appendLiveTextureSource(const LiveTextureSource& source,
 
 /**
  * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
- * recorded: its getUri(frame) is what the layer authors at frame.
+ * recorded: its getUri(frame) is what the layer authors at frame, and its getWindow(frame) where
+ * that texture lies over the image, found without rendering.
  **/
 LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
                                     const LiveTextureSource& source);
+
+/**
+ * @brief Connects the texture coordinates st of a texture showing recorded to coordinates, through
+ * a UsdTransform2d defined at transformPath that takes 0 to 1 over the image's format to the
+ * texture's whole window, time-sampled when the window changes over edit's frames. Coordinates
+ * outside 0 to 1 then read the overscan, and the texture's wrap mode applies beyond it.
+ **/
+bool connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                                   const SceneLayerEdit& edit,
+                                   const PXR_NS::SdfPath& transformPath,
+                                   const LiveTextureSource& recorded,
+                                   const PXR_NS::UsdShadeOutput& coordinates,
+                                   const PXR_NS::UsdShadeInput& st);
+
+/**
+ * @brief Connects the opacity of the UsdPreviewSurface surface to the alpha of the UsdUVTexture
+ * texture, in the "presence" opacity mode: the whole shaded colour, emission and specular included,
+ * is scaled by the alpha, as a premultiplied image composited over what is behind it. Storm then
+ * draws the surface in its translucent pass.
+ **/
+bool connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                           PXR_NS::UsdShadeShader texture);
 
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
@@ -280,6 +303,15 @@ int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);
 // The rotation part of composeTransformMatrix(), as a Gf (row-vector) matrix.
 PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
                                          SceneRotateOrderEnum rotateOrder);
+
+/**
+ * @brief The rotate values (degrees, indexed by axis) that composeRotationMatrix() turns into
+ * rotation in rotateOrder. rotation's upper 3x3 must be a rotation. Of the equivalent values,
+ * the ones closest to hint are returned, so that a value edited a little at a time does not jump.
+ **/
+PXR_NS::GfVec3d decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                                        SceneRotateOrderEnum rotateOrder,
+                                        const PXR_NS::GfVec3d& hint);
 
 } // namespace SceneNodeAuthoring
 

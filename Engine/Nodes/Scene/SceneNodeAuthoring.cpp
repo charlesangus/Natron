@@ -38,6 +38,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -740,6 +741,58 @@ composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
     return rotation;
 }
 
+PXR_NS::GfVec3d
+decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                        SceneRotateOrderEnum rotateOrder,
+                        const PXR_NS::GfVec3d& hint)
+{
+    const int i = getRotateOrderAxis(rotateOrder, 0);
+    const int j = getRotateOrderAxis(rotateOrder, 1);
+    const int k = getRotateOrderAxis(rotateOrder, 2);
+    // In column-vector terms the rotation is Rk Rj Ri, and r(a, b) is its element at row a,
+    // column b: the transpose of Gf's row-vector matrix.
+    const auto r = [&rotation](int a, int b) {
+        return rotation[b][a];
+    };
+    // +1 when the order is a cyclic permutation of XYZ.
+    const double s = ((j - i + 3) % 3 == 1) ? 1. : -1.;
+    const double sinB = std::min(1., std::max(-1., -s * r(k, i)));
+    double a, b, c;
+    b = std::asin(sinB);
+    if (std::abs(r(k, i)) < 1. - 1e-10) {
+        a = std::atan2(s * r(k, j), r(k, k));
+        c = std::atan2(s * r(j, i), r(i, i));
+    } else {
+        // Gimbal lock: only the sum or difference of the outer angles is defined.
+        c = 0.;
+        a = std::atan2(-s * r(j, k), r(j, j));
+    }
+    const double toDegrees = 180. / M_PI;
+    // Two sets of angles give each rotation: (a, b, c) and (a + 180, 180 - b, c + 180).
+    PXR_NS::GfVec3d candidates[2];
+    candidates[0][i] = a * toDegrees;
+    candidates[0][j] = b * toDegrees;
+    candidates[0][k] = c * toDegrees;
+    candidates[1][i] = a * toDegrees + 180.;
+    candidates[1][j] = 180. - b * toDegrees;
+    candidates[1][k] = c * toDegrees + 180.;
+    PXR_NS::GfVec3d best;
+    double bestDistance = -1.;
+    for (PXR_NS::GfVec3d& candidate : candidates) {
+        double distance = 0.;
+        for (int axis = 0; axis < 3; ++axis) {
+            candidate[axis] += 360. * std::round((hint[axis] - candidate[axis]) / 360.);
+            distance += std::abs(candidate[axis] - hint[axis]);
+        }
+        if ((bestDistance < 0.) || (distance < bestDistance)) {
+            best = candidate;
+            bestDistance = distance;
+        }
+    }
+
+    return best;
+} // decomposeRotationMatrix
+
 PXR_NS::GfMatrix4d
 composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                        const PXR_NS::GfVec3d& rotate,
@@ -838,11 +891,84 @@ recordLiveTexture(const SceneLayerEdit& edit,
 
     recorded.firstFrame = edit.firstFrame;
     recorded.lastFrame = edit.lastFrame;
+    recorded.windows.clear();
+    const NodePtr node = source.node.lock();
+    const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
+    recorded.windows.reserve(frames.size());
+    for (double frame : frames) {
+        LiveTextureWindow window;
+        if (!node || !getNodeImageWindow(node, frame, ViewIdx(0), &window.format, &window.window)) {
+            window = LiveTextureWindow();
+        }
+        recorded.windows.push_back(window);
+    }
     if (edit.liveTextures) {
         edit.liveTextures->push_back(recorded);
     }
 
     return recorded;
+}
+
+bool
+connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                              const SceneLayerEdit& edit,
+                              const PXR_NS::SdfPath& transformPath,
+                              const LiveTextureSource& recorded,
+                              const PXR_NS::UsdShadeOutput& coordinates,
+                              const PXR_NS::UsdShadeInput& st)
+{
+    PXR_NS::UsdShadeShader transform = PXR_NS::UsdShadeShader::Define(stage, transformPath);
+
+    if (!transform || !transform.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdTransform2d")))) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput in = transform.CreateInput(PXR_NS::TfToken("in"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput scale = transform.CreateInput(PXR_NS::TfToken("scale"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput translation = transform.CreateInput(PXR_NS::TfToken("translation"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeOutput result = transform.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2);
+    if (!in || !scale || !translation || !result || !coordinates || !st) {
+        return false;
+    }
+
+    bool windowVaries = false;
+    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
+        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
+            windowVaries = true;
+            break;
+        }
+    }
+    const auto scaleAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)s[0], (float)s[1]);
+    };
+    const auto translationAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)t[0], (float)t[1]);
+    };
+
+    return in.ConnectToSource(coordinates)
+        && authorValue(scale.GetAttr(), edit, windowVaries, scaleAt)
+        && authorValue(translation.GetAttr(), edit, windowVaries, translationAt)
+        && st.ConnectToSource(result);
+} // connectLiveTextureCoordinates
+
+bool
+connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                      PXR_NS::UsdShadeShader texture)
+{
+    const PXR_NS::UsdShadeOutput alpha = texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float);
+    PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput opacityMode = surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token);
+
+    return alpha && opacity && opacityMode
+        && opacity.ConnectToSource(alpha)
+        && opacityMode.Set(PXR_NS::TfToken("presence"));
 }
 
 } // namespace SceneNodeAuthoring

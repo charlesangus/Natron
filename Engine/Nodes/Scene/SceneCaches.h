@@ -51,6 +51,13 @@ void releaseIdleQueryStages();
 void releaseRenderEngines();
 
 /**
+ * @brief Drops every USDRender node's stage and engine of a render delegate other than Storm, and
+ * with them the host memory they hold. Free GPU Memory leaves these; the purge of scene memory
+ * drops them. Does not wait. MT-safe.
+ **/
+void releaseCpuRenderEngines();
+
+/**
  * @brief Drops every rendered live texture; the consumers that need one render it again. MT-safe.
  **/
 void releaseLiveTextures();

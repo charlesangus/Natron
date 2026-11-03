@@ -16,5 +16,7 @@ shaped `[1, 3, height, width]`, and return one output, `output`.
 | `scale2.onnx` | float32 multiply by 2 |
 | `scale2-fp16.onnx` | float16 multiply by 2 |
 | `upscale2-nearest.onnx` | 2x nearest-neighbour `Resize`: output pixel (x, y) is input pixel (x/2, y/2) |
+| `upscale4-nearest.onnx` | 4x nearest-neighbour `Resize`: output pixel (x, y) is input pixel (x/4, y/4) |
 | `slow-loop.onnx` | a `Loop` of 2^50 identity steps over a float vector `input` of any length. Only an abort ends it |
 | `identity.dtmodel` | `identity.onnx` packed as a darktable-ai package, `test-identity`, by `tools/ai/make-test-dtmodel.py` |
+| `upscale.dtmodel` | the two nearest-neighbour upscales packed as `test-upscale` (`model_x2.onnx`, `model_x4.onnx`, 32-pixel tiles), by `tools/ai/make-test-dtmodel.py` |

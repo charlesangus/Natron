@@ -710,7 +710,8 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
                     entry.times.push_back(task.key.time);
                     continue;
                 }
-                // The request pass plans no edge for a range with fractional bounds, so nothing would be resident.
+                // Regions take whole-frame input times only. A range with fractional bounds is either read anywhere
+                // within it, with no edge planned, or a single fractional time, which is planned but renders on the CPU.
                 if ((range.min != (int)range.min) || (range.max != (int)range.max)) {
                     return false;
                 }
@@ -788,9 +789,13 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 bool
 makeGpuTaskPlanes(const FrameGraph::Task& task,
                   const FrameRenderContext& context,
-                  std::vector<GpuTaskPlane>* planes)
+                  std::vector<GpuTaskPlane>* planes,
+                  std::string* refusal)
 {
     planes->clear();
+    if (refusal) {
+        refusal->clear();
+    }
     const NodePtr& node = task.key.node;
     const std::shared_ptr<FrameRequestMap>& request = context.getRequest();
     // A task under a context renders on the CPU, where its frame args carry the context.
@@ -801,6 +806,14 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
     FrameRequestMap::const_iterator nodeRequest = request->find(node);
     const FrameViewRequest* fvRequest = request->findFrameViewRequest(node, task.key.time, task.key.view);
     if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
+        return false;
+    }
+    // renderRoI() fails such a task and posts the missing channel; the GPU would render it without a word.
+    if (!node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
+        if (refusal) {
+            *refusal = "a channel the node selects is missing from its input";
+        }
+
         return false;
     }
 

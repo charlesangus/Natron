@@ -168,6 +168,9 @@ try:
         return curve
 
     def show_in_viewer(viewer, node):
+        # connectInput refuses an input that is already in use.
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
         require(viewer.connectInput(0, node), "connected %s to the viewer" % node.getScriptName())
 
     def steps():

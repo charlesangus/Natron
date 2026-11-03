@@ -69,7 +69,7 @@ effectOf(const NodePtr& node)
     return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
 }
 
-struct Setup {
+struct LensSetup {
     const char* what;
     const char* camera;
     const char* lens;
@@ -78,7 +78,7 @@ struct Setup {
     const char* geometry;
 };
 
-const Setup kSetups[] = {
+const LensSetup kSetups[] = {
     { "ptlens poly3-tca vignetting", "Canon EOS 5D Mark III", "Canon EF 70-200mm f/2.8L IS II USM", 100., kLensCorrectModeCorrect, kLensCorrectGeometryLens },
     { "ptlens distort", "Canon EOS 5D Mark III", "Canon EF 70-200mm f/2.8L IS II USM", 100., kLensCorrectModeDistort, kLensCorrectGeometryLens },
     { "poly3", "X-Pro2", "XF50mmF2 R WR", 50., kLensCorrectModeCorrect, kLensCorrectGeometryLens },
@@ -110,7 +110,7 @@ protected:
     }
 
     NodePtr makeLensCorrect(const NodePtr& source,
-                            const Setup& setup)
+                            const LensSetup& setup)
     {
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LENSCORRECT), PLUGIN_MAJOR_NATRON_LENSCORRECT);
         EXPECT_TRUE(bool(node));
@@ -182,7 +182,7 @@ TEST_F(NativeLensCorrectGpuTest, EveryModelMatchesTheCpu)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    for (const Setup& setup : kSetups) {
+    for (const LensSetup& setup : kSetups) {
         NodePtr node = makeLensCorrect(source, setup);
         ASSERT_TRUE(bool(node)) << setup.what;
         expectParity(source, node, setup.what);

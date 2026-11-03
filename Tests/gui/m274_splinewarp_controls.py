@@ -357,6 +357,10 @@ try:
         link = hold(sw.link(source, dest))
         require(link is not None, "linked the source curve to the destination")
         require(set_param(warp, "show", SHOW_DESTINATION), "set Show to Destination")
+        # A selected curve draws feather bars past its corners in the same blue, which would
+        # stretch the measured box.
+        tree.clearSelection()
+        QApplication.processEvents()
         yield ("sleep", RENDER_MS)
         img = grab_viewer()
         blue = coloured_pixels(img, is_destination)
@@ -406,6 +410,8 @@ try:
               "moved the destination's transform centre")
         items = select_in_tree(tree, [dest])
         require(len(items) == 1, "selected the destination alone in the curve list")
+        # Host overlays draw only for knobs on the current page.
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Transform"))
         yield ("sleep", RENDER_MS)
         gt.shot("m274-overlay-shown.png")
         before = grab_viewer()
@@ -435,6 +441,7 @@ try:
         report("NOTE the drag changes the warped picture by %.2f" % d)
         check(d > 2.0, "the translated destination changes the warp")
         tree.clearSelection()
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Controls"))
         QApplication.processEvents()
         yield ("sleep", RENDER_MS)
 

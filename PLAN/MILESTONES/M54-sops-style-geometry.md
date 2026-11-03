@@ -43,7 +43,7 @@ geometry context. In the scene context, picking and editing stay at prim level, 
 **Assumptions:**
 - `SdfLayer::Reload(true)` on a file-format layer with an unchanged identifier diffs the new data against the old and sends field-level change notices, not a full resync. M54.P2.T5 verifies this first. If it's false, the fallback is to push the diff through `SdfChangeBlock` edits.
 - A custom `SdfFileFormat` can be registered at startup from a `plugInfo.json` shipped with Natron via `PlugRegistry::RegisterPlugins`. Nothing in the tree registers a USD plug-in yet.
-Requires M52 (`PrimSelector`) and M20.P2.T1 (gizmo). Runs after M53.
+Requires M52 (`PrimSelector`) and M20.P2.T1 (gizmo).
 All nodes are `NativeEffectBase` subclasses in `Engine/Nodes/Geometry/`,
 registered under `PLUGIN_GROUP_3D`; mirror M18's deep plumbing wherever a
 choice arises.
@@ -170,7 +170,7 @@ choice arises.
 
 - [ ] M54.P3.T10 — `GeoUVProject`
   - files: `Engine/Nodes/Geometry/GeoUVProject.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/GeoUVProject_Test.cpp`
-  - approach: writes `st` from a planar (axis + TRS) or camera projection (inputs: optional Scene for the camera; camera path knob), `faceVarying` interpolation. Pairs with M53's `ProjectTexture` for geometry with no UVs.
+  - approach: writes `st` from a planar (axis + TRS) or camera projection (inputs: optional Scene for the camera; camera path knob), `faceVarying` interpolation. Gives TexturePaint (M53) UVs on geometry that has none.
   - verify: unit test — planar projection of a grid yields `st` equal to its normalized XY; camera projection of a camera-facing quad yields 0–1.
   - size: M
 
@@ -209,3 +209,4 @@ choice arises.
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** The scratch stage "keyed by detail hash" would rebuild per frame: use a viewer-private geometry layer edited in place instead, so value-only changes become dirty points. GeoToUSD layer keys follow M19's per-node read keys. Geometry keys on time only when something upstream varies with time (user).
 - 2026-10-26 — **USD primitives come first (user, M19/M20 UAT grill):** card, sphere, cube and cylinder ship as USD-authoring source nodes in M227 - USD Primitive Nodes; `GeoPrimitive` (P3.T1) stays the native-geometry generator and should share M227's `PrimitiveMeshes` builders rather than duplicate them. Read `USDTransform` as `USDEditTransform` (M226 - Scene Hierarchy From Topology).
 - 2026-10-27 — **Bridges follow Solaris (user, from a Houdini SOP Import/SOP Modify investigation; `PLAN/DECISIONS/2026-10-27-geometry-bridges-follow-solaris.md`):** `GeoToUSD` serves the detail through a `natrongeo` Sdf file format plugin (new M54.P2.T5) rather than authoring into a layer, and copying is the "Copy Into Layer" opt-in. `USDToGeo` brings prims in packed by default with Unpack on request, and `GeoToUSD` writes the result back as overrides on the source paths (new M54.P2.T6). Component display and picking exist only in the geometry context, through `HdSelection` highlighting plus guide prims. The plugin layer is identified by node, not content hash (user): a hash change reloads it in place, which keeps the 2026-10-25 dirty-points behaviour, and the viewer-private layer in that decision is now this layer. The scratch stage and `GeoScratchStage` are gone.
+- 2026-11-02 — No longer depends on M53 - Projected Texture Painting (user, inbox drain): the only link was `GeoUVProject` pairing with `ProjectTexture`, which M53's redesign unregisters.

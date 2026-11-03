@@ -194,8 +194,8 @@ future core work has solid ground to build on.
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
 | M259 | GPU Placement Under Render Contexts | doing | M180, M181, M182 | bosley-native-nodes | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | doing | M226 | bosley-native-nodes | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
-| M53 | Projected Texture Painting | doing | M52, M233 | bosley-native-nodes | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
-| M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
+| M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
+| M54 | SOPs-Style Geometry | todo | M52, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
@@ -376,6 +376,12 @@ future core work has solid ground to build on.
 | M308 | Knob Label Cleanup | todo | - |  | E10 | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
 | M309 | Roto Feather Falloff Banding | todo | M224 |  | E6 | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 | M310 | Device-Switch Shader Test Fix | todo | - |  | E14 | [M310-device-switch-shader-test-fix.md](PLAN/MILESTONES/M310-device-switch-shader-test-fix.md) |
+| M311 | UDIM Live Textures | todo | M233 |  | E9 | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
+| M312 | USDLayerMaterial Node | todo | M53 |  | E9 | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
+| M313 | USDBakeTextures Node | todo | M53, M234 |  | E9 | [M313-usdbaketextures-node.md](PLAN/MILESTONES/M313-usdbaketextures-node.md) |
+| M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |
+| M315 | Direct Texel Painting | todo | M53 |  | E9 | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
+| M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 
 # Epics
 

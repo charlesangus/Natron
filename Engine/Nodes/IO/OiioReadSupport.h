@@ -41,6 +41,7 @@
 #include "Global/FloatingPointExceptions.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/RectI.h"
@@ -55,11 +56,14 @@ struct Header {
 };
 
 /**
- * @brief The headers of every subimage of `path`, cached on (path, modification time, size).
- * A file that changed on disk is parsed again. Returns null and fills `error` on failure.
- * Thread-safe.
+ * @brief The headers of every subimage of `path`, cached on the path and the file's identity
+ * (modification time, size, inode). With FilePin::eStamp, the default, the header is that of the
+ * file as FileStampRegistry recorded it: once the file on disk is another one this fails with
+ * FileStampRegistry::changedOnDiskMessage and never parses it, until the stamp is invalidated and
+ * the header evicted (Reload). With FilePin::eDisk a file that changed on disk is parsed again.
+ * Returns null and fills `error` on failure. Thread-safe.
  **/
-std::shared_ptr<const Header> readHeader(const std::string& path, std::string* error);
+std::shared_ptr<const Header> readHeader(const std::string& path, std::string* error, FilePin pin = FilePin::eStamp);
 
 void clearHeaderCache();
 
@@ -270,6 +274,10 @@ bool colourPartOf(const Header& header, const std::string& view, PartChannels* c
  *
  * Only the scanlines, or tiles, that intersect `window` are read. Every call opens its own
  * ImageInput, so concurrent calls never share one. Thread-safe.
+ *
+ * The file is stat'ed before it is opened and after it is read, and the decode fails unless both
+ * match the identity of the header it was decoded under, so its pixels never come from another
+ * version of the file than that header. `pin` is as for readHeader.
  **/
 bool decode(const std::string& path,
             int subimage,
@@ -278,7 +286,8 @@ bool decode(const std::string& path,
             const RectI& window,
             float* dst,
             std::size_t rowStride,
-            std::string* error);
+            std::string* error,
+            FilePin pin = FilePin::eStamp);
 
 /**
  * @brief The attributes of `spec`, a subimage header of the file at `path`, as metadata keys.

@@ -108,6 +108,8 @@
 #include "Global/PythonUtils.h"
 
 #include "Engine/AbortWatchdog.h"
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
@@ -747,6 +749,49 @@ AppManager::setApplicationLocale()
     QLocale::setDefault( QLocale(QLocale::English, QLocale::UnitedStates) );
 }
 
+// --list-models: one line per model, tab-separated so that scripts can cut it.
+static bool
+printModelList()
+{
+    try {
+        const std::shared_ptr<const ModelRegistry> registry = ModelRegistry::process();
+        std::cout << "id\ttask\tstatus\tsize\tweights licence\ttraining-data licence\tosaid" << std::endl;
+        for (const AiModelEntry& entry : registry->models()) {
+            const bool installed = registry->resolve(entry.id).status == AiModelStatus::eInstalled;
+            std::cout << entry.id << '\t' << aiModelTaskName(entry.task) << '\t' << (installed ? "Installed" : "Missing")
+                      << '\t' << entry.size << '\t' << entry.weightsLicence << '\t' << entry.trainingDataLicence
+                      << '\t' << entry.osaid << std::endl;
+        }
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
+static bool
+downloadModel(const std::string& id)
+{
+    try {
+        std::string error;
+        if (!ModelDownloader::process()->download(id, &error)) {
+            std::cerr << "Cannot download the AI model " << id << ": " << error << std::endl;
+
+            return false;
+        }
+        const AiModelResolution resolution = ModelDownloader::process()->registry()->resolve(id);
+        std::cout << "Installed the AI model " << id << " in " << resolution.directory << std::endl;
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
 bool
 AppManager::loadInternal(const CLArgs& cl)
 {
@@ -807,6 +852,19 @@ AppManager::loadInternal(const CLArgs& cl)
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
+
+    // Model commands need no project, plug-ins or GPU, so they run and exit here.
+    if (cl.isListModels() || !cl.getDownloadModelId().isEmpty()) {
+        bool ok = true;
+        if (!cl.getDownloadModelId().isEmpty()) {
+            ok = downloadModel(cl.getDownloadModelId().toStdString());
+        }
+        if (ok && cl.isListModels()) {
+            ok = printModelList();
+        }
+
+        return ok;
+    }
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
@@ -1420,6 +1478,7 @@ AppManager::clearAllCaches()
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
     SceneCaches::releaseLiveTextures();
+    SceneCaches::releaseCpuRenderEngines();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
@@ -2652,15 +2711,23 @@ void
 AppManager::getViewerCachedFrames(const std::string& holderID,
                                   U64 viewerHash,
                                   unsigned int mipmapLevel,
+                                  const ViewerFrameFilter* filter,
                                   std::map<SequenceTime, StorageModeEnum>* frames) const
 {
     frames->clear();
     if (!_imp->_viewerCache) {
         return;
     }
+    std::map<SequenceTime, std::vector<TextureRect>> tilesHeld;
     _imp->_viewerCache->visitEntryKeys([&](const FrameKey& key, StorageModeEnum storage) {
         if ((key.getTreeVersion() != viewerHash) || (key.getMipmapLevel() != mipmapLevel) || (key.getCacheHolderID() != holderID)) {
             return;
+        }
+        if (filter && (key.isDraft() || !key.hasTheDisplaySettingsOf(filter->settings))) {
+            return;
+        }
+        if (filter) {
+            tilesHeld[key.getTime()].push_back(key.getTexRect());
         }
         std::map<SequenceTime, StorageModeEnum>::iterator found = frames->find(key.getTime());
         if (found == frames->end()) {
@@ -2669,6 +2736,24 @@ AppManager::getViewerCachedFrames(const std::string& holderID,
             found->second = eStorageModeRAM;
         }
     });
+    if (!filter) {
+        return;
+    }
+    for (std::map<SequenceTime, StorageModeEnum>::iterator it = frames->begin(); it != frames->end();) {
+        const std::vector<TextureRect>& held = tilesHeld[it->first];
+        bool covered = true;
+        for (const TextureRect& tile : filter->tiles) {
+            if (std::find(held.begin(), held.end(), tile) == held.end()) {
+                covered = false;
+                break;
+            }
+        }
+        if (covered) {
+            ++it;
+        } else {
+            frames->erase(it++);
+        }
+    }
 }
 
 SettingsPtr AppManager::getCurrentSettings() const
@@ -3536,7 +3621,7 @@ AppManager::getReaderPluginIDForFile(const std::string& originalPath,
         }
     }
     // DeepRead reads the first part, so that is the part that decides.
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL, FilePin::eDisk);
     if (header && !header->subimages.empty() && header->subimages[0].deep) {
         return std::string(PLUGINID_NATRON_DEEPREAD);
     }

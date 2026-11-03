@@ -104,130 +104,104 @@ copyRow(const Image::ReadAccess& access,
     }
 }
 
-// One level of the pyramid fillTransparentColour builds: per texel, the colour of the texels it
-// covers that have an alpha, averaged by that alpha, and the mean alpha that weights it.
-struct FillLevel {
-    int width = 0;
-    int height = 0;
-    std::vector<float> rgbw;
-};
-
-void
-sampleLevel(const FillLevel& level,
-            double u,
-            double v,
-            float* rgb)
-{
-    u = std::min(std::max(u, 0.), double(level.width - 1));
-    v = std::min(std::max(v, 0.), double(level.height - 1));
-    const int x0 = (int)u;
-    const int y0 = (int)v;
-    const int x1 = std::min(x0 + 1, level.width - 1);
-    const int y1 = std::min(y0 + 1, level.height - 1);
-    const float tx = float(u - x0);
-    const float ty = float(v - y0);
-    const float* p00 = &level.rgbw[(std::size_t(y0) * std::size_t(level.width) + std::size_t(x0)) * 4];
-    const float* p10 = &level.rgbw[(std::size_t(y0) * std::size_t(level.width) + std::size_t(x1)) * 4];
-    const float* p01 = &level.rgbw[(std::size_t(y1) * std::size_t(level.width) + std::size_t(x0)) * 4];
-    const float* p11 = &level.rgbw[(std::size_t(y1) * std::size_t(level.width) + std::size_t(x1)) * 4];
-    for (int c = 0; c < 3; ++c) {
-        const float bottom = p00[c] + (p10[c] - p00[c]) * tx;
-        const float top = p01[c] + (p11[c] - p01[c]) * tx;
-        rgb[c] = bottom + (top - bottom) * ty;
-    }
-}
-
 /**
  * Straight colour is undefined where the alpha is 0, and Storm's bilinear and mipmap filtering
  * blends it into the edge texels it averages with: left black, it darkens every soft or
- * antialiased edge. A push-pull fill gives those texels the colour of the nearest texels with an
- * alpha, at every distance a mip level reaches, in time linear in the texels. Texels with an
- * alpha, and every alpha, are left as they are.
+ * antialiased edge. Texels with no alpha within kTransparentFillBand texels (counting diagonal
+ * steps as one, as a mip level's square footprint does) of one with an alpha take the colour of
+ * their neighbours one step nearer, weighted by alpha next to the covered texels, in time linear in
+ * the texels. Farther texels, texels with an alpha, and every alpha are left as rendered.
  **/
 void
 fillTransparentColour(LiveTextureBuffer& buffer)
 {
     const int width = buffer.getWidth();
     const int height = buffer.getHeight();
-    std::vector<FillLevel> levels;
+    const unsigned char unreached = std::numeric_limits<unsigned char>::max();
+    std::vector<unsigned char> distance(std::size_t(width) * std::size_t(height), unreached);
     bool anyTransparent = false;
-    bool anyCovered = false;
 
     for (int y = 0; y < height; ++y) {
         const float* row = buffer.getRow(y);
         for (int x = 0; x < width; ++x) {
             if (row[4 * x + 3] > 0.f) {
-                anyCovered = true;
+                distance[std::size_t(y) * std::size_t(width) + std::size_t(x)] = 0;
             } else {
                 anyTransparent = true;
             }
         }
     }
-    if (!anyTransparent || !anyCovered) {
+    if (!anyTransparent) {
         return;
     }
 
-    int fineWidth = width;
-    int fineHeight = height;
-    while ((fineWidth > 1) || (fineHeight > 1)) {
-        FillLevel coarse;
-        coarse.width = (fineWidth + 1) / 2;
-        coarse.height = (fineHeight + 1) / 2;
-        coarse.rgbw.assign(std::size_t(coarse.width) * std::size_t(coarse.height) * 4, 0.f);
-        const FillLevel* fine = levels.empty() ? nullptr : &levels.back();
-        for (int cy = 0; cy < coarse.height; ++cy) {
-            for (int cx = 0; cx < coarse.width; ++cx) {
-                float sum[4] = { 0.f, 0.f, 0.f, 0.f };
-                int numChildren = 0;
-                for (int y = 2 * cy; y < std::min(2 * cy + 2, fineHeight); ++y) {
-                    for (int x = 2 * cx; x < std::min(2 * cx + 2, fineWidth); ++x) {
-                        const float* child = fine ? &fine->rgbw[(std::size_t(y) * std::size_t(fineWidth) + std::size_t(x)) * 4]
-                                                  : buffer.getRow(y) + 4 * x;
-                        const float weight = (child[3] > 0.f) ? child[3] : 0.f;
-                        ++numChildren;
-                        if (weight > 0.f) {
-                            sum[0] += child[0] * weight;
-                            sum[1] += child[1] * weight;
-                            sum[2] += child[2] * weight;
-                            sum[3] += weight;
-                        }
+    const auto texelAt = [&](std::size_t i) {
+        return buffer.getRow(int(i / std::size_t(width))) + 4 * (i % std::size_t(width));
+    };
+    std::vector<std::size_t> frontier;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t i = std::size_t(y) * std::size_t(width) + std::size_t(x);
+            if (distance[i] != 0) {
+                continue;
+            }
+            bool bordersTransparent = false;
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1) && !bordersTransparent; ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    if (distance[std::size_t(ny) * std::size_t(width) + std::size_t(nx)] == unreached) {
+                        bordersTransparent = true;
+                        break;
                     }
                 }
-                float* out = &coarse.rgbw[(std::size_t(cy) * std::size_t(coarse.width) + std::size_t(cx)) * 4];
-                if (sum[3] > 0.f) {
-                    out[0] = sum[0] / sum[3];
-                    out[1] = sum[1] / sum[3];
-                    out[2] = sum[2] / sum[3];
-                    out[3] = sum[3] / float(numChildren);
-                }
+            }
+            if (bordersTransparent) {
+                frontier.push_back(i);
             }
         }
-        fineWidth = coarse.width;
-        fineHeight = coarse.height;
-        levels.push_back(std::move(coarse));
     }
 
-    for (int l = (int)levels.size() - 2; l >= 0; --l) {
-        FillLevel& fine = levels[l];
-        const FillLevel& coarse = levels[l + 1];
-        for (int y = 0; y < fine.height; ++y) {
-            for (int x = 0; x < fine.width; ++x) {
-                float* texel = &fine.rgbw[(std::size_t(y) * std::size_t(fine.width) + std::size_t(x)) * 4];
-                if (texel[3] <= 0.f) {
-                    sampleLevel(coarse, (x + 0.5) / 2. - 0.5, (y + 0.5) / 2. - 0.5, texel);
+    std::vector<std::size_t> next;
+    for (int d = 1; (d <= LiveTextureBuffer::kTransparentFillBand) && !frontier.empty(); ++d) {
+        next.clear();
+        for (std::size_t i : frontier) {
+            const int x = int(i % std::size_t(width));
+            const int y = int(i / std::size_t(width));
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1); ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    const std::size_t n = std::size_t(ny) * std::size_t(width) + std::size_t(nx);
+                    if (distance[n] == unreached) {
+                        distance[n] = (unsigned char)d;
+                        next.push_back(n);
+                    }
                 }
             }
         }
-    }
-    const FillLevel& first = levels.front();
-    for (int y = 0; y < height; ++y) {
-        float* row = buffer.getRow(y);
-        for (int x = 0; x < width; ++x) {
-            float* texel = row + 4 * x;
-            if (!(texel[3] > 0.f)) {
-                sampleLevel(first, (x + 0.5) / 2. - 0.5, (y + 0.5) / 2. - 0.5, texel);
+        for (std::size_t n : next) {
+            const int x = int(n % std::size_t(width));
+            const int y = int(n / std::size_t(width));
+            float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+            for (int ny = std::max(y - 1, 0); ny <= std::min(y + 1, height - 1); ++ny) {
+                for (int nx = std::max(x - 1, 0); nx <= std::min(x + 1, width - 1); ++nx) {
+                    const std::size_t i = std::size_t(ny) * std::size_t(width) + std::size_t(nx);
+                    if (distance[i] != d - 1) {
+                        continue;
+                    }
+                    const float* nearer = texelAt(i);
+                    const float weight = (d == 1) ? nearer[3] : 1.f;
+                    sum[0] += nearer[0] * weight;
+                    sum[1] += nearer[1] * weight;
+                    sum[2] += nearer[2] * weight;
+                    sum[3] += weight;
+                }
+            }
+            if (sum[3] > 0.f) {
+                float* texel = texelAt(n);
+                texel[0] = sum[0] / sum[3];
+                texel[1] = sum[1] / sum[3];
+                texel[2] = sum[2] / sum[3];
             }
         }
+        frontier.swap(next);
     }
 } // fillTransparentColour
 

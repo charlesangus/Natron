@@ -36,9 +36,10 @@ drives the shader's `opacity` from the texture's `a` output, with `opacityMode`
 set to `presence`: where the image is transparent the surface shows what is
 behind it, at the ratio of the alpha, as the image composited over it. Live
 textures are served with their colour divided by their alpha, as USD expects of
-a texture, and the opacity multiplies it back. Where the alpha is 0 the colour
-is that of the nearest pixels with an alpha, so the texture's filtering blends
-no black into soft edges. A surface with an opacity is drawn
+a texture, and the opacity multiplies it back. Where the alpha is 0, up to 8
+pixels from pixels with an alpha, the colour is that of the nearest of them, so
+the texture's filtering blends no black into soft edges; farther out it is left
+as rendered. A surface with an opacity is drawn
 in Storm's translucent pass, which writes no depth or prim id. With Use Alpha
 off, or for a texture file, no opacity is written and the surface is opaque.
 

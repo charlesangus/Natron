@@ -53,12 +53,21 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief One rendered live texture, immutable once stored: width x height RGBA float pixels, rows
  * bottom-up as Natron renders them, after a small header. The colour is not premultiplied, as USD
- * textures are not: where an RGBA image's alpha is 0 the colour is that of the nearest texels with
- * an alpha, so filtering across its edges blends in no black. The header and the pixels are one
+ * textures are not: where an RGBA image's alpha is 0, within kTransparentFillBand texels of one
+ * with an alpha, the colour is that of the nearest texels with an alpha, so filtering across its
+ * edges blends in no black; farther out it is as rendered. The header and the pixels are one
  * buffer, which is what the natron:// asset serves without a copy.
  **/
 class LiveTextureBuffer {
 public:
+    /*
+     * Bilinear filtering at mip level k reaches 2^(k+1) - 1 texels past the last one with an alpha,
+     * so 8 keeps levels 0 to 2, up to 4x minification, free of black. Beyond that an edge is under
+     * a pixel on screen, and a wider band would smear colour across uncovered areas that show when
+     * the alpha is not used.
+     */
+    static constexpr int kTransparentFillBand = 8;
+
     // Null when the size is not positive or does not fit in memory.
     static std::shared_ptr<LiveTextureBuffer> create(int width, int height);
 

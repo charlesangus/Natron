@@ -899,7 +899,9 @@ TEST_F(USDRenderStormTest, AHalfTransparentLiveTextureShowsTheBackgroundThroughI
 
 // A card showing red over the left half of its image, its edge softened, in front of a white card: the
 // red composites over the white, so across the edge every pixel lies between red and white. Black
-// filtered in from the transparent texels would show as a band darker than both.
+// filtered in from the transparent texels would show as a band darker than both. The camera is
+// zoomed in on the edge to about 2 texels a pixel, a minification the fill band covers: at the
+// default view a 1920-texel card is some 40 texels a pixel, where the edge is under a pixel.
 TEST_F(USDRenderStormTest, ASoftLiveTextureEdgeHasNoDarkFringe)
 {
     if (skipWithoutGL()) {
@@ -910,8 +912,13 @@ TEST_F(USDRenderStormTest, ASoftLiveTextureEdgeHasNoDarkFringe)
     ASSERT_TRUE(render != nullptr);
     NodePtr merge = render->getInput(0);
     NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
-    ASSERT_TRUE(merge && material);
+    NodePtr camera = merge ? merge->getInput(1) : NodePtr();
+    ASSERT_TRUE(merge && material && camera);
     ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDCAMERA), camera->getPluginID());
+    KnobDouble* focalLength = knob<KnobDouble>(camera, kUSDCameraParamFocalLength);
+    ASSERT_TRUE(focalLength != nullptr);
+    focalLength->setValue(1000.);
     NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
     NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
     NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
@@ -945,7 +952,8 @@ TEST_F(USDRenderStormTest, ASoftLiveTextureEdgeHasNoDarkFringe)
     size->setValue(format.width() + format.width() / 2, ViewSpec::all(), 0);
     size->setValue(3 * format.height(), ViewSpec::all(), 1);
     // An edge a few texels wide: one wide enough to fade to almost nothing before its alpha reaches
-    // 0 would hide the black, which Storm's mipmaps blend in a texel or so from where the alpha is 0.
+    // 0 would hide the black, which Storm's filtering blends in a texel or so from where the alpha
+    // is 0.
     blurSize->setValue(3., ViewSpec::all(), 0);
     blurSize->setValue(3., ViewSpec::all(), 1);
     disconnectNodes(constant, material, true);

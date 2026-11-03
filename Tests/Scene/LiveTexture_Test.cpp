@@ -459,13 +459,15 @@ TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
 }
 
 // Storm filters the straight colour, so a black colour where the alpha is 0 would darken the edge
-// texels it blends into: a Constant of red over the left half of the format leaves the right half
-// transparent with the red's colour, and its own texels as rendered.
+// texels it blends into: a Constant of red over the left half of the format gives the transparent
+// texels of the right half within the fill band the red's colour, leaves those beyond it black,
+// where a surface drawn without its alpha shows nothing, and its own texels as rendered.
 TEST_F(LiveTextureTest, TransparentTexelsTakeTheColourOfTheNearestCoveredOnes)
 {
     Format format;
     getApp()->getProject()->getProjectDefaultFormat(&format);
-    ASSERT_GT(format.width(), 8);
+    const int band = LiveTextureBuffer::kTransparentFillBand;
+    ASSERT_GT(format.width(), 4 * band);
     ASSERT_GT(format.height(), 8);
 
     NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
@@ -513,12 +515,18 @@ TEST_F(LiveTextureTest, TransparentTexelsTakeTheColourOfTheNearestCoveredOnes)
             EXPECT_EQ(0.f, opaque[2]) << "opaque texel " << x << ", " << y;
             EXPECT_EQ(1.f, opaque[3]) << "opaque texel " << x << ", " << y;
         }
-        for (int x : { half, half + 1, buffer->getWidth() - 1 }) {
-            const float* transparent = row + 4 * x;
-            EXPECT_NEAR(1., transparent[0], 1e-5) << "transparent texel " << x << ", " << y;
-            EXPECT_NEAR(0., transparent[1], 1e-5) << "transparent texel " << x << ", " << y;
-            EXPECT_NEAR(0., transparent[2], 1e-5) << "transparent texel " << x << ", " << y;
-            EXPECT_EQ(0.f, transparent[3]) << "transparent texel " << x << ", " << y;
+        for (int x : { half, half + 1, half + band - 1 }) {
+            const float* filled = row + 4 * x;
+            EXPECT_NEAR(1., filled[0], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_NEAR(0., filled[1], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_NEAR(0., filled[2], 1e-5) << "transparent texel in the band " << x << ", " << y;
+            EXPECT_EQ(0.f, filled[3]) << "transparent texel in the band " << x << ", " << y;
+        }
+        for (int x : { half + band, half + 2 * band, buffer->getWidth() - 1 }) {
+            const float* beyond = row + 4 * x;
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(0.f, beyond[c]) << "transparent texel beyond the band " << x << ", " << y << ", channel " << c;
+            }
         }
     }
 }

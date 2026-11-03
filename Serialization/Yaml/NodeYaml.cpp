@@ -56,7 +56,8 @@ namespace YamlDetail {
                  const NodeSerialization& node,
                  const std::string& fullName,
                  BlobSink& sink,
-                 std::set<std::string>* usedPaths)
+                 std::set<std::string>* usedPaths,
+                 bool withCacheIDs)
         {
             em << YAML::BeginMap;
             emitKey(em, "plugin");
@@ -71,6 +72,11 @@ namespace YamlDetail {
                 emitKey(em, "label");
                 em << YAML::Value;
                 emitString(em, node.label);
+            }
+            if (withCacheIDs && !node.cacheID.empty()) {
+                emitKey(em, "cacheID");
+                em << YAML::Value;
+                emitString(em, node.cacheID);
             }
             if (!node.pythonModule.empty()) {
                 emitKey(em, "python");
@@ -134,7 +140,7 @@ namespace YamlDetail {
             if (!node.children.empty()) {
                 emitKey(em, "children");
                 em << YAML::Value;
-                emitNodeMap(em, node.children, fullName, sink, usedPaths);
+                emitNodeMap(em, node.children, fullName, sink, usedPaths, withCacheIDs);
             }
             em << YAML::EndMap;
         }
@@ -164,6 +170,9 @@ namespace YamlDetail {
                 data.label = readString(label, context + ".label");
             } else {
                 data.label = scriptName;
+            }
+            if (YAML::Node cacheID = reader.get("cacheID")) {
+                data.cacheID = readString(cacheID, context + ".cacheID");
             }
             if (YAML::Node python = reader.get("python")) {
                 MapReader pythonReader(python, context + ".python", warnings);
@@ -235,7 +244,8 @@ namespace YamlDetail {
                 const std::list<NodeSerializationPtr>& nodes,
                 const std::string& parentFullName,
                 BlobSink& sink,
-                std::set<std::string>* usedPaths)
+                std::set<std::string>* usedPaths,
+                bool withCacheIDs)
     {
         const std::vector<NodeSerializationPtr> sorted = sortedByScriptName(nodes, parentFullName);
         if (sorted.empty()) {
@@ -248,7 +258,7 @@ namespace YamlDetail {
             emitKey(em, node->scriptName);
             em << YAML::Value;
             const std::string fullName = parentFullName.empty() ? node->scriptName : parentFullName + "." + node->scriptName;
-            emitNode(em, *node, fullName, sink, usedPaths);
+            emitNode(em, *node, fullName, sink, usedPaths, withCacheIDs);
         }
         em << YAML::EndMap;
     }

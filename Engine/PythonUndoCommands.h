@@ -54,6 +54,13 @@ NATRON_NAMESPACE_ENTER
 bool recordPythonKnobEdit(const KnobIPtr& knob) WARN_UNUSED_RETURN;
 
 /**
+ * @brief The recording recordPythonKnobEdit() does, for edits made outside Python, such as the
+ * edits of a Viewer overlay inside its gesture's undo step. Call on the main thread before changing
+ * knob; does nothing unless the application's recorder is recording.
+ **/
+void recordKnobEdit(const KnobIPtr& knob);
+
+/**
  * @brief Call once a node created from Python exists. Undo removes it, redo brings it back.
  **/
 void recordPythonNodeCreated(const NodePtr& node);

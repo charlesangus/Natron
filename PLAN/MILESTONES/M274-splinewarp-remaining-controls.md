@@ -266,6 +266,15 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
    - `cookieCutInput` replaces Nuke's `premultiply`, so it isn't mistaken for a premult knob. Recommendation: yes.
    - Roto's `skewx`/`skewy` names are reused.
 
+## Phase 274.6: User answers (2026-11-02)
+
+- [ ] M274.P6.T1 — Remove the Cookie Cut Input option
+  - files: Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp/.h, tests, docs
+  - approach: delete the cookieCutInput knob and its render path (Source × cookie-cutter mask); cookie-cutter curves keep their other roles.
+  - verify: the knob is gone; SplineWarp tests and the GUI check pass without it.
+  - size: M
+
+
 ## Decisions
 
 - 2026-11-02 — Audit: every task but P5.T2 is committed and pushed (046ace3c2, c707964a3, 9ce74bffd, eabe9bf6a, c6e1cd742, ea152553a); no uncommitted work, no PR. P5.T2 still waits on M270. The latest remote build (40676155527, at 174d2beac) failed in both ctest legs; the four commits since are unbuilt. Open questions 1–4 and the label-rule exceptions are still with the user. The branch carries the whole M147–M151 and M148 stack and is 23 commits behind main.
@@ -274,3 +283,4 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 - 2026-10-28: Phases 1–2 implemented (build pending). Audit corrections: Activated was honoured for curves but not layers (now isDeactivatedRecursive); panel hook lives in Engine/Nodes/Transform/SplineWarp/; sample-cache key in SplineWarp.h; mask/mix in addMaskMixKnobs; SplineWarpMesh needed no change (open soft polylines are constrained edges). Pages: Controls (amount, invert, Layer Amount, Link Amount, Boundary BBox, stage knobs), Render (flat). Setting one boundary kind clears the other; opening a curve clears only a hard boundary; hard boundaries use boundaryCurveResolution (draft doubles it). "Only layers" = ≥1 layer selected and every selected curve inside one. linkAmount undo goes through the knob's own undo. Q1/Q2 provisionally as recommended (soft boundary built, boundaryBBox on, 4 px). Draft renders run on the GPU with the coarse field (merge 82bb13872). The mesh pins its padded-box corners, so a long soft curve's far side stays put (TPS test checks the far side moves).
 - 2026-10-28: elaborated (consultant). PM call: morph (Destination input, output modes, morph mix, A/B Type, Duplicate in B) stays dropped under the user's M147 decision (out of scope). The consultant's morph phase was struck, and the rows are marked "dropped (user, M147)". Deps widened to M149–M151, the branch this builds on. The Lanczos/Sinc task waits on M270.
 - 2026-11-02 — P5.T2 (Lanczos/Sinc on SplineWarp) moves into M270 - Lanczos Sinc Resampling Filters, which isn't started; M274 closes without it (user).
+- 2026-11-02 — Answers (user): no separate Soft Boundary role — feathered boundaries (M147: falloff from the curve to its feather points) are the soft boundary; keep our defaults (TPS, 4 px, previewResolution 25, boundaryBBox on); Lanczos6 = Sinc with Lobes 6; names amount/layerAmount/linkAmount and Roto's skewx/skewy; do NOT offer cookieCutInput (P6.T1 removes it). P5.T2 moved to M270.

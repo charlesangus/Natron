@@ -169,8 +169,8 @@ Median and Bilateral approved (user).
 
 - [ ] M130.P5.T1 — Split the transform path out of DirBlur into a native GodRays node
   - files: `Engine/Nodes/Filter/DirBlur.{h,cpp}`, new `Engine/Nodes/Filter/GodRays.{h,cpp,reg.inc}`, `Engine/Gpu/Kernels/dirblur.slang` (or a godrays kernel), docs, tests
-  - approach: DirBlur keeps only Directional, Radial and Zoom. The transform-path accumulation (translate/rotate/scale/skew/center path with steps, the GodRays-style mode) becomes its own native GodRays node, as simple as possible while fully functional: centre and the transform path, start/end tint, gamma along the ray, samples, mask/mix. Not a port of openfx-misc GodRays; Nuke's GodRays is the template if one is needed (user, 2026-11-04). Report maps Nuke's knobs to ours. Retire `net.sf.openfx.GodRays` to the native node. CPU and GPU, parity test, mask/mix.
-  - verify: GodRays and DirBlur tests pass; the Nuke→ours knob map is in the docs; GUI screenshots.
+  - approach: DirBlur keeps only Directional, Radial and Zoom. The transform-path accumulation (translate/rotate/scale/skew/center path with steps, the GodRays-style mode) becomes its own native GodRays node, as simple as possible while fully functional: centre and the transform path, start/end tint, gamma along the ray, samples, mask/mix. Not a port of openfx-misc GodRays; Nuke's GodRays is the template if one is needed (user, 2026-11-04). Docs never mention Nuke (user); the knob map goes in the PM report only. Retire `net.sf.openfx.GodRays` to the native node. CPU and GPU, parity test, mask/mix.
+  - verify: GodRays and DirBlur tests pass; the docs describe the node on its own terms; GUI screenshots.
   - size: L
 - [ ] M130.P5.T2 — DirBlur shows only the knobs its mode uses
   - approach: hide knobs per mode (e.g. Target does nothing in Zoom, so it isn't shown there); audit every knob against each mode.

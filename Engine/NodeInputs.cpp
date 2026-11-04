@@ -519,6 +519,7 @@ Node::initializeInputs()
         _imp->effect->addAcceptedComponents(-1, &_imp->outputComponents);
     }
     _imp->inputsInitialized = true;
+    LoopEnd::onGraphChanged();
 
     Q_EMIT inputsInitialized();
 } // Node::initializeInputs
@@ -1122,6 +1123,7 @@ Node::connectOutput(bool useGuiValues,
             _imp->guiOutputs.push_back(output);
         }
     }
+    LoopEnd::onGraphChanged();
     Q_EMIT outputsChanged();
 }
 
@@ -1301,6 +1303,7 @@ Node::disconnectOutput(bool useGuiValues,
         }
     }
 
+    LoopEnd::onGraphChanged();
     //Will just refresh the gui
     Q_EMIT outputsChanged();
 
@@ -1626,6 +1629,7 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
+    LoopEnd::onGraphChanged();
     // A destroy deferred until the node's renders quit can finish after its app is gone.
     AppInstancePtr app = getApp();
     if (!app || app->getProject()->isProjectClosing()) {

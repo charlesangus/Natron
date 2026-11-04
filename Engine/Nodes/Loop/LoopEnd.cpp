@@ -33,6 +33,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -75,6 +76,46 @@ namespace {
 const char* const kLoopVariables[] = { "iteration", "count", "t", "frame" };
 
 std::atomic<int> liveLoopEnds(0);
+
+// Moves with every change of the graph the pairing walks read; 0 is never current.
+std::atomic<U64> loopGraphGeneration(1);
+
+// Every LoopEnd alive, under liveLoopEndsMutex(). Never destroyed: a LoopEnd may outlive statics.
+QMutex&
+liveLoopEndsMutex()
+{
+    static QMutex* mutex = new QMutex();
+
+    return *mutex;
+}
+
+std::vector<LoopEnd*>&
+liveLoopEndList()
+{
+    static std::vector<LoopEnd*>* list = new std::vector<LoopEnd*>();
+
+    return *list;
+}
+
+std::vector<NodePtr>
+lockAll(const std::vector<NodeWPtr>& weak,
+        bool* expired)
+{
+    std::vector<NodePtr> nodes;
+
+    nodes.reserve(weak.size());
+    for (const NodeWPtr& each : weak) {
+        NodePtr node = each.lock();
+        if (!node) {
+            *expired = true;
+
+            return std::vector<NodePtr>();
+        }
+        nodes.push_back(std::move(node));
+    }
+
+    return nodes;
+}
 
 typedef std::pair<Node*, int> WalkStep;
 
@@ -291,17 +332,34 @@ alphaIndexOf(const ImageLayerDesc& layer)
 
 LoopEnd::LoopEnd(NodePtr node)
     : NativeEffectBase(node)
-    , _frameCache(new LoopFrameCache(LoopFrameCache::defaultBudget()))
+    , _frameCache(new LoopFrameCache(LoopFrameBudget::shared()))
     , _bakeGeneration(0)
     , _baking(false)
     , _bakeCancelled(false)
+    , _visibilityRefreshQueued(false)
 {
+    QMutexLocker k(&liveLoopEndsMutex());
+
+    liveLoopEndList().push_back(this);
     ++liveLoopEnds;
 }
 
 LoopEnd::~LoopEnd()
 {
+    {
+        QMutexLocker k(&liveLoopEndsMutex());
+        std::vector<LoopEnd*>& list = liveLoopEndList();
+
+        list.erase(std::remove(list.begin(), list.end(), this), list.end());
+    }
     cancelBake();
+    {
+        std::lock_guard<std::mutex> l(_bakeThreadMutex);
+        // The bake let go of the last reference to this node: it ends right after.
+        if (_bakeThread.joinable() && (_bakeThread.get_id() == std::this_thread::get_id())) {
+            _bakeThread.detach();
+        }
+    }
     waitForBake();
     --liveLoopEnds;
 }
@@ -312,25 +370,59 @@ LoopEnd::anyExists()
     return liveLoopEnds.load() > 0;
 }
 
+bool
+LoopEnd::anyFeedbackExists()
+{
+    if (!anyExists()) {
+        return false;
+    }
+    QMutexLocker k(&liveLoopEndsMutex());
+    for (const LoopEnd* end : liveLoopEndList()) {
+        if (end->isFeedback() || end->isCrossFrame()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+LoopEnd::onGraphChanged()
+{
+    loopGraphGeneration.fetch_add(1);
+}
+
 std::shared_ptr<LoopEnd>
 LoopEnd::pairedEndOf(const NodePtr& begin)
 {
-    if (!LoopBegin::isLoopBegin(begin)) {
+    const LoopBegin* effect = (begin && LoopBegin::isLoopBegin(begin)) ? dynamic_cast<const LoopBegin*>(begin->getEffectInstance().get()) : 0;
+
+    if (!effect) {
         return std::shared_ptr<LoopEnd>();
     }
+    const U64 generation = loopGraphGeneration.load();
+    {
+        QMutexLocker k(&effect->_pairingMutex);
+        if (effect->_pairingGeneration == generation) {
+            return effect->_pairedEnd.lock();
+        }
+    }
+    std::shared_ptr<LoopEnd> end;
     std::set<Node*> ends;
     collectPairedEnds(begin, &ends);
-    if (ends.size() != 1) {
-        return std::shared_ptr<LoopEnd>();
+    if (ends.size() == 1) {
+        end = std::dynamic_pointer_cast<LoopEnd>((*ends.begin())->getEffectInstance());
     }
-    std::shared_ptr<LoopEnd> end = std::dynamic_pointer_cast<LoopEnd>((*ends.begin())->getEffectInstance());
-    if (!end) {
-        return std::shared_ptr<LoopEnd>();
+    if (end) {
+        const std::vector<NodePtr> begins = end->getLoopBegins();
+        if (std::find(begins.begin(), begins.end(), begin) == begins.end()) {
+            end.reset();
+        }
     }
-    const std::vector<NodePtr> begins = end->getLoopBegins();
-    if (std::find(begins.begin(), begins.end(), begin) == begins.end()) {
-        return std::shared_ptr<LoopEnd>();
-    }
+    // Under the generation the walks started at: a change since leaves it stale.
+    QMutexLocker k(&effect->_pairingMutex);
+    effect->_pairingGeneration = generation;
+    effect->_pairedEnd = end;
 
     return end;
 }
@@ -373,27 +465,144 @@ LoopEnd::refreshLoopsOf(const NodePtr& node)
     if (!node || !anyExists()) {
         return;
     }
-    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
-    for (const NodePtr& endNode : ends) {
-        LoopEnd* end = dynamic_cast<LoopEnd*>(endNode->getEffectInstance().get());
-        if (end) {
-            end->refreshKnobVisibility();
+    // How many LoopBegins open a loop only shows on a LoopEnd in Feedback mode or Cross Frame,
+    // whose Mode and Cross Frame refresh it when they change. Each of those refreshes once per turn of the event loop, not
+    // once per edit, and walks no further than its own body.
+    std::vector<std::weak_ptr<EffectInstance>> queued;
+    {
+        QMutexLocker k(&liveLoopEndsMutex());
+        for (LoopEnd* end : liveLoopEndList()) {
+            if (!end->isFeedback() && !end->isCrossFrame()) {
+                continue;
+            }
+            std::weak_ptr<EffectInstance> weak = end->weak_from_this();
+            // Not owned yet while it is being created, and no longer while it is destroyed.
+            if (!weak.expired() && !end->_visibilityRefreshQueued.exchange(true)) {
+                queued.push_back(std::move(weak));
+            }
         }
+    }
+    for (const std::weak_ptr<EffectInstance>& weak : queued) {
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [weak]() {
+            const std::shared_ptr<LoopEnd> end = std::dynamic_pointer_cast<LoopEnd>(weak.lock());
+            if (end) {
+                end->_visibilityRefreshQueued.store(false);
+                end->refreshKnobVisibility();
+            } }, Qt::QueuedConnection);
     }
 }
 
-void
-LoopEnd::appendFeedbackBeginsOf(const NodePtr& node,
-                                std::vector<NodePtr>* begins)
+std::size_t
+LoopEnd::FeedbackBeginsLookup::StepHash::operator()(const std::pair<const Node*, int>& step) const
 {
-    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
+    return std::hash<const Node*>()(step.first) ^ (std::hash<int>()(step.second) * 0x9e3779b97f4a7c15ULL);
+}
 
-    for (const NodePtr& endNode : ends) {
-        const LoopEnd* end = dynamic_cast<const LoopEnd*>(endNode->getEffectInstance().get());
-        if (end) {
-            const std::vector<NodePtr> chainingBegins = end->getChainingBegins();
-            begins->insert(begins->end(), chainingBegins.begin(), chainingBegins.end());
+const std::vector<NodePtr>&
+LoopEnd::FeedbackBeginsLookup::pairedEndsAt(const NodePtr& node,
+                                            int depth)
+{
+    typedef std::pair<const Node*, int> Step;
+    // The walk collectPairedEnds() runs from each output, each step's ends found once for every
+    // node asked about. Post-order, so a step unions the ends of the steps below it, found first.
+    struct Pending {
+        NodePtr node;
+        int depth;
+        bool expanded;
+    };
+    std::vector<Pending> stack(1, Pending { node, depth, false });
+    std::vector<NodePtr> outputs;
+
+    while (!stack.empty()) {
+        Pending& top = stack.back();
+        const Step step(top.node.get(), top.depth);
+        int below = top.depth;
+        bool ends = false;
+        if (LoopEnd::isLoopEnd(top.node)) {
+            ends = (below == 0);
+            --below;
+        } else if (LoopBegin::isLoopBegin(top.node)) {
+            ++below;
         }
+        if (top.expanded) {
+            const NodePtr current = top.node;
+            stack.pop_back();
+            std::vector<NodePtr> found;
+            outputs.clear();
+            current->appendOutputsWithGroupRedirection(&outputs);
+            for (const NodePtr& output : outputs) {
+                const auto it = _pairedEnds.find(Step(output.get(), below));
+                if (it != _pairedEnds.end()) {
+                    found.insert(found.end(), it->second.begin(), it->second.end());
+                }
+            }
+            std::sort(found.begin(), found.end());
+            found.erase(std::unique(found.begin(), found.end()), found.end());
+            _pairedEnds[step] = std::move(found);
+            continue;
+        }
+        if (_pairedEnds.find(step) != _pairedEnds.end()) {
+            stack.pop_back();
+            continue;
+        }
+        if (ends) {
+            _pairedEnds[step] = std::vector<NodePtr>(1, top.node);
+            stack.pop_back();
+            continue;
+        }
+        // Empty until expanded, which a cycle in the graph would meet before then.
+        _pairedEnds[step] = std::vector<NodePtr>();
+        top.expanded = true;
+        const NodePtr current = top.node;
+        outputs.clear();
+        current->appendOutputsWithGroupRedirection(&outputs);
+        for (NodePtr& output : outputs) {
+            if (output && (_pairedEnds.find(Step(output.get(), below)) == _pairedEnds.end())) {
+                stack.push_back(Pending { std::move(output), below, false });
+            }
+        }
+    }
+
+    return _pairedEnds[Step(node.get(), depth)];
+}
+
+void
+LoopEnd::FeedbackBeginsLookup::appendFeedbackBeginsOf(const NodePtr& node,
+                                                      std::vector<NodePtr>* begins)
+{
+    if (!node) {
+        return;
+    }
+    // As enclosingLoopEnds(): the LoopEnds node's outputs reach, then those enclosing them.
+    std::set<const Node*> seen;
+    std::vector<NodePtr> from(1, node);
+    std::vector<NodePtr> outputs;
+    while (!from.empty()) {
+        std::vector<NodePtr> next;
+        for (const NodePtr& start : from) {
+            outputs.clear();
+            start->appendOutputsWithGroupRedirection(&outputs);
+            for (const NodePtr& output : outputs) {
+                if (!output) {
+                    continue;
+                }
+                const std::vector<NodePtr>& ends = pairedEndsAt(output, 0);
+                for (const NodePtr& end : ends) {
+                    if (seen.insert(end.get()).second) {
+                        next.push_back(end);
+                    }
+                }
+            }
+        }
+        for (const NodePtr& endNode : next) {
+            auto found = _feedbackBegins.find(endNode.get());
+            if (found == _feedbackBegins.end()) {
+                const LoopEnd* end = dynamic_cast<const LoopEnd*>(endNode->getEffectInstance().get());
+                found = _feedbackBegins.emplace(endNode.get(), end ? end->getChainingBegins() : std::vector<NodePtr>()).first;
+            }
+            begins->insert(begins->end(), found->second.begin(), found->second.end());
+        }
+        from.swap(next);
     }
 }
 
@@ -639,6 +848,12 @@ LoopEnd::seriesHash(bool loadBaked) const
 void
 LoopEnd::appendNodeContentHash(ContentHasher& h) const
 {
+    appendBakeHash(h);
+}
+
+void
+LoopEnd::appendBakeHash(ContentHasher& h) const
+{
     KnobBoolPtr loadFromCache = _loadFromCache.lock();
     const bool loading = isCrossFrame() && loadFromCache && loadFromCache->getValue();
 
@@ -816,12 +1031,118 @@ LoopEnd::refreshBakeMessage(MessageTypeEnum type,
     refreshLoopMessage(getNode(), type, message, &_bakePosted);
 }
 
+LoopEnd::ProgressScope::ProgressScope(LoopEnd* effect,
+                                      bool bake)
+    : _effect(effect)
+    , _app(effect->getApp())
+    , _node(effect->getNode())
+    , _bake(bake)
+    , _token(0)
+    , _registered(false)
+{
+}
+
+LoopEnd::ProgressScope::~ProgressScope()
+{
+    end();
+}
+
+bool
+LoopEnd::ProgressScope::start(const std::string& message)
+{
+    const AppInstancePtr app = _app.lock();
+    const NodePtr node = _node.lock();
+
+    if (!app || !node || _token) {
+        return false;
+    }
+    QMutexLocker k(&_effect->_progressMutex);
+    if (!_bake && _effect->_progressHolder) {
+        return false;
+    }
+    _token = ++_effect->_progressSerial;
+    _effect->_progressHolder = _token;
+    // From another thread the task is registered later, when the main thread gets to it: until
+    // then an update finds none, which is no cancel.
+    _registered = !qApp || (QThread::currentThread() == qApp->thread());
+    app->progressStart(node, message, std::string(), true);
+
+    return true;
+}
+
+void
+LoopEnd::ProgressScope::adopt()
+{
+    QMutexLocker k(&_effect->_progressMutex);
+
+    _token = ++_effect->_progressSerial;
+    _effect->_progressHolder = _token;
+    _registered = true;
+}
+
+bool
+LoopEnd::ProgressScope::started() const
+{
+    return _token != 0;
+}
+
+bool
+LoopEnd::ProgressScope::holds() const
+{
+    QMutexLocker k(&_effect->_progressMutex);
+
+    return _token && (_effect->_progressHolder == _token);
+}
+
+bool
+LoopEnd::ProgressScope::update(double progress)
+{
+    const AppInstancePtr app = _app.lock();
+    const NodePtr node = _node.lock();
+
+    if (!app || !node || !holds()) {
+        return true;
+    }
+    if (app->progressUpdate(node, progress)) {
+        _registered = true;
+
+        return true;
+    }
+
+    // A bake that took the task over meanwhile answered for its own.
+    return !_registered || !holds();
+}
+
+void
+LoopEnd::ProgressScope::end()
+{
+    if (!_token) {
+        return;
+    }
+    {
+        QMutexLocker k(&_effect->_progressMutex);
+        if (_effect->_progressHolder == _token) {
+            _effect->_progressHolder = 0;
+            const AppInstancePtr app = _app.lock();
+            const NodePtr node = _node.lock();
+            if (app && node) {
+                app->progressEnd(node);
+            }
+        }
+    }
+    _token = 0;
+}
+
 bool
 LoopEnd::bakeFrames(bool progressStarted,
                     std::string* error)
 {
+    ProgressScope progress(this, true);
+
     if (progressStarted) {
-        return bakeSequence(true, bakeSettings(), error);
+        progress.adopt();
+
+        return bakeSequence(progress, bakeSettings(), error);
     }
     if (_baking.exchange(true)) {
         *error = tr("A bake of this loop is running.").toStdString();
@@ -829,7 +1150,8 @@ LoopEnd::bakeFrames(bool progressStarted,
         return false;
     }
     _bakeCancelled = false;
-    const bool ok = bakeSequence(false, bakeSettings(), error);
+    const bool ok = bakeSequence(progress, bakeSettings(), error);
+    progress.end();
     _baking = false;
     onBakeFinished();
 
@@ -837,22 +1159,12 @@ LoopEnd::bakeFrames(bool progressStarted,
 }
 
 bool
-LoopEnd::bakeSequence(bool progressStarted,
+LoopEnd::bakeSequence(ProgressScope& progress,
                       const BakeSettings& settings,
                       std::string* error)
 {
     const AppInstancePtr app = getApp();
     const NodePtr node = getNode();
-    struct ProgressEnd {
-        AppInstancePtr app;
-        NodePtr node;
-        ~ProgressEnd()
-        {
-            if (app) {
-                app->progressEnd(node);
-            }
-        }
-    } progressEnd { progressStarted ? app : AppInstancePtr(), node };
 
     if (!isCrossFrame()) {
         *error = tr("Bake renders a Cross Frame loop: turn Cross Frame on.").toStdString();
@@ -903,9 +1215,8 @@ LoopEnd::bakeSequence(bool progressStarted,
     if (_bakeCancelled.load()) {
         render->setAborted();
     }
-    if (!progressStarted && app) {
-        progressEnd.app = app;
-        app->progressStart(node, tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString(), std::string(), true);
+    if (!progress.started()) {
+        progress.start(tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString());
     }
     const std::function<bool()> cancelled = [this, render]() {
         return _bakeCancelled.load() || render->isAborted();
@@ -979,7 +1290,7 @@ LoopEnd::bakeSequence(bool progressStarted,
 
             return false;
         }
-        if (app && !app->progressUpdate(node, (double)(frame - start + 1) / (double)(end - start + 1))) {
+        if (!progress.update((double)(frame - start + 1) / (double)(end - start + 1))) {
             _bakeCancelled = true;
             *error = tr("The bake was cancelled after frame %1.").arg(frame).toStdString();
 
@@ -999,29 +1310,41 @@ LoopEnd::startBake()
     waitForBake();
     _bakeCancelled = false;
     refreshBakeMessage(eMessageTypeWarning, std::string());
-    const AppInstancePtr app = getApp();
     const NodePtr node = getNode();
-    if (app) {
-        app->progressStart(node, tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString(), std::string(), true);
-    }
+    std::shared_ptr<ProgressScope> progress = std::make_shared<ProgressScope>(this, true);
+    progress->start(tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString());
     const NodeWPtr weakNode = node;
+    const EffectInstanceWPtr weakSelf = shared_from_this();
     const BakeSettings settings = bakeSettings();
-    _bakeThread = std::thread([this, weakNode, settings]() {
+    std::lock_guard<std::mutex> l(_bakeThreadMutex);
+    // Only weak references outlive the bake: deleting the node or closing the project cancels it
+    // and waits for it. Should this thread still drop the last reference, ~LoopEnd detaches it,
+    // so nothing here touches the effect after self is released.
+    _bakeThread = std::thread([weakSelf, weakNode, settings, progress]() mutable {
+        EffectInstancePtr self = weakSelf.lock();
+        LoopEnd* effect = dynamic_cast<LoopEnd*>(self.get());
+        if (!effect) {
+            return;
+        }
         std::string error;
-        const bool ok = bakeSequence(true, settings, &error);
-        const bool wasCancelled = _bakeCancelled.load();
+        const bool ok = effect->bakeSequence(*progress, settings, &error);
+        const bool wasCancelled = effect->_bakeCancelled.load();
+        progress.reset();
         appPTR->getAppTLS()->cleanupTLSForThread();
-        _baking = false;
-        QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
-            NodePtr node = weakNode.lock();
-            LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
-            if (!effect) {
-                return;
-            }
-            effect->onBakeFinished();
-            if (!ok && !wasCancelled) {
-                effect->refreshBakeMessage(eMessageTypeError, error);
-            } }, Qt::QueuedConnection);
+        effect->_baking = false;
+        if (qApp) {
+            QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
+                NodePtr node = weakNode.lock();
+                LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
+                if (!effect) {
+                    return;
+                }
+                effect->onBakeFinished();
+                if (!ok && !wasCancelled) {
+                    effect->refreshBakeMessage(eMessageTypeError, error);
+                } }, Qt::QueuedConnection);
+        }
+        self.reset();
     });
 
     return true;
@@ -1040,8 +1363,22 @@ LoopEnd::cancelBake()
 void
 LoopEnd::waitForBake()
 {
-    if (_bakeThread.joinable() && (_bakeThread.get_id() != std::this_thread::get_id())) {
-        _bakeThread.join();
+    std::lock_guard<std::mutex> l(_bakeThreadMutex);
+
+    if (!_bakeThread.joinable() || (_bakeThread.get_id() == std::this_thread::get_id())) {
+        return;
+    }
+    _bakeThread.join();
+}
+
+void
+LoopEnd::quitBackgroundWork(bool blocking)
+{
+    if (_baking.load()) {
+        cancelBake();
+    }
+    if (blocking) {
+        waitForBake();
     }
 }
 
@@ -1055,7 +1392,11 @@ void
 LoopEnd::onBakeFinished()
 {
     ++_bakeGeneration;
-    getNode()->markHashDirty();
+    const NodePtr node = getNode();
+    if (!node || !node->isActivated()) {
+        return;
+    }
+    node->markHashDirty();
     const AppInstancePtr app = getApp();
     if (app && qApp && (QThread::currentThread() == qApp->thread())) {
         app->renderAllViewers(true);
@@ -1299,21 +1640,10 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
     } driverReset { &_crossFrameMutex, chain.get() };
 
     const int total = frame - from + 1;
-    const AppInstancePtr app = getApp();
-    const NodePtr node = getNode();
-    const bool showProgress = options.showProgress && app && (total > 2);
-    struct ProgressEnd {
-        AppInstancePtr app;
-        NodePtr node;
-        ~ProgressEnd()
-        {
-            if (app) {
-                app->progressEnd(node);
-            }
-        }
-    } progressEnd { showProgress ? app : AppInstancePtr(), node };
-    if (showProgress) {
-        app->progressStart(node, tr("Rendering frames %1 to %2 of the cross-frame loop").arg(from).arg(frame).toStdString(), std::string(), true);
+    ProgressScope progress(this, false);
+    // A bake shows its own progress, which this run's would replace.
+    if (options.showProgress && (total > 2) && !_baking.load()) {
+        progress.start(tr("Rendering frames %1 to %2 of the cross-frame loop").arg(from).arg(frame).toStdString());
     }
     for (int j = from; j <= frame; ++j) {
         if (consumer->aborted()) {
@@ -1331,7 +1661,7 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
         }
         _frameCache->insert(series, start, j, rendered);
         previous = rendered;
-        if (showProgress && !app->progressUpdate(node, (double)(j - from + 1) / (double)total)) {
+        if (!progress.update((double)(j - from + 1) / (double)total)) {
             // Cancelled: the frames rendered so far are kept, this one is not output.
             return eRenderRoIRetCodeFailed;
         }
@@ -1569,14 +1899,16 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
 
+    // A chain is owned by its render, so its image goes when the render ends; one outside any
+    // render is only shared with the renders it drives itself, which own it meanwhile.
     std::shared_ptr<FeedbackChain> chain;
     {
         QMutexLocker k(&_feedbackMutex);
-        // A chain outside any render is only shared with the renders it drives itself.
-        _feedbackChains.erase(std::remove_if(_feedbackChains.begin(), _feedbackChains.end(), [](const std::shared_ptr<FeedbackChain>& c) { return !c->driver && c->render.expired(); }), _feedbackChains.end());
-        for (const std::shared_ptr<FeedbackChain>& c : _feedbackChains) {
-            if ((c->contextKey == contextKey) && (c->time == time0) && (c->view == view) && (c->mipmapLevel == mipmapLevel) && (render ? (c->render.lock() == render) : (c->render.expired() && c->driver))) {
-                chain = c;
+        _feedbackChains.erase(std::remove_if(_feedbackChains.begin(), _feedbackChains.end(), [](const std::weak_ptr<FeedbackChain>& c) { return c.expired(); }), _feedbackChains.end());
+        for (const std::weak_ptr<FeedbackChain>& weak : _feedbackChains) {
+            std::shared_ptr<FeedbackChain> c = weak.lock();
+            if (c && (c->contextKey == contextKey) && (c->time == time0) && (c->view == view) && (c->mipmapLevel == mipmapLevel) && (render ? (c->render.lock() == render) : (c->render.expired() && c->driver))) {
+                chain = std::move(c);
                 break;
             }
         }
@@ -1597,6 +1929,10 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
             chain->time = time0;
             chain->view = view;
             chain->mipmapLevel = mipmapLevel;
+            // A whole-region chain is let go once driven, so its render does not keep it.
+            if (render && !wholeRegion) {
+                render->keepAliveWithRender(chain);
+            }
             _feedbackChains.push_back(chain);
         }
     }
@@ -1615,7 +1951,7 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     }
     struct DriverReset {
         QMutex* mutex;
-        std::vector<std::shared_ptr<FeedbackChain>>* chains;
+        std::vector<std::weak_ptr<FeedbackChain>>* chains;
         std::shared_ptr<FeedbackChain> chain;
         // A whole-region chain is driven once, for a cross-frame frame: then it is let go.
         bool release;
@@ -1624,7 +1960,8 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
             QMutexLocker k(mutex);
             chain->driver = 0;
             if (release) {
-                chains->erase(std::remove(chains->begin(), chains->end(), chain), chains->end());
+                const std::shared_ptr<FeedbackChain>& self = chain;
+                chains->erase(std::remove_if(chains->begin(), chains->end(), [&self](const std::weak_ptr<FeedbackChain>& c) { return c.expired() || (c.lock() == self); }), chains->end());
             }
         }
     } driverReset { &_feedbackMutex, &_feedbackChains, chain, wholeRegion };
@@ -1957,8 +2294,8 @@ LoopEnd::getLoopNameError() const
             .arg(QString::fromUtf8(name.c_str()))
             .toStdString();
     }
-    const std::list<NodePtr> others = otherLoopEndsInGroup(getNode());
-    for (std::list<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
+    const std::vector<NodePtr> others = cachedOtherLoopEnds();
+    for (std::vector<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
         if (loopNameOf(*it) == name) {
             return tr("Another LoopEnd in this group, %1, is also named \"%2\".")
                 .arg(QString::fromUtf8((*it)->getScriptName_mt_safe().c_str()))
@@ -2322,6 +2659,59 @@ LoopEnd::initializeKnobs()
 std::vector<NodePtr>
 LoopEnd::findLoopBegins(std::string* error) const
 {
+    const U64 generation = loopGraphGeneration.load();
+    {
+        QMutexLocker k(&_pairingMutex);
+        if (_pairing.generation == generation) {
+            bool expired = false;
+            std::vector<NodePtr> begins = lockAll(_pairing.begins, &expired);
+            if (!expired) {
+                *error = _pairing.error;
+
+                return begins;
+            }
+        }
+    }
+    std::string found;
+    std::vector<NodePtr> begins = walkLoopBegins(&found);
+    {
+        // Under the generation the walk started at: a change since leaves it stale.
+        QMutexLocker k(&_pairingMutex);
+        _pairing.generation = generation;
+        _pairing.begins.assign(begins.begin(), begins.end());
+        _pairing.error = found;
+    }
+    *error = found;
+
+    return begins;
+}
+
+std::vector<NodePtr>
+LoopEnd::cachedOtherLoopEnds() const
+{
+    const U64 generation = loopGraphGeneration.load();
+    {
+        QMutexLocker k(&_pairingMutex);
+        if (_pairing.othersGeneration == generation) {
+            bool expired = false;
+            std::vector<NodePtr> others = lockAll(_pairing.others, &expired);
+            if (!expired) {
+                return others;
+            }
+        }
+    }
+    const std::list<NodePtr> listed = otherLoopEndsInGroup(getNode());
+    const std::vector<NodePtr> others(listed.begin(), listed.end());
+    QMutexLocker k(&_pairingMutex);
+    _pairing.othersGeneration = generation;
+    _pairing.others.assign(others.begin(), others.end());
+
+    return others;
+}
+
+std::vector<NodePtr>
+LoopEnd::walkLoopBegins(std::string* error) const
+{
     std::vector<NodePtr> begins;
     const NodePtr self = getNode();
     NodePtr input = self->getInput(0);
@@ -2344,6 +2734,20 @@ LoopEnd::findLoopBegins(std::string* error) const
     std::sort(begins.begin(), begins.end(), [](const NodePtr& a, const NodePtr& b) {
         return a->getScriptName_mt_safe() < b->getScriptName_mt_safe();
     });
+    // Feedback LoopBegins lists them by script name, which LoopBegins in different groups may
+    // share.
+    for (std::size_t i = 1; i < begins.size(); ++i) {
+        const std::string name = begins[i]->getScriptName_mt_safe();
+        if (name == begins[i - 1]->getScriptName_mt_safe()) {
+            *error = tr("The LoopBegins %1 and %2 of this loop are both named %3: the LoopBegins of one loop need different names.")
+                         .arg(QString::fromUtf8(begins[i - 1]->getFullyQualifiedName().c_str()))
+                         .arg(QString::fromUtf8(begins[i]->getFullyQualifiedName().c_str()))
+                         .arg(QString::fromUtf8(name.c_str()))
+                         .toStdString();
+
+            return std::vector<NodePtr>();
+        }
+    }
     for (const NodePtr& begin : begins) {
         std::set<Node*> ends;
         collectPairedEnds(begin, &ends);

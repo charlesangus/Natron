@@ -25,16 +25,21 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <initializer_list>
 #include <list>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QFileInfo>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThreadPool>
@@ -795,6 +800,100 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
     persistentMessageOf(endNode, &message, &type);
     EXPECT_FALSE(message.isEmpty());
     EXPECT_EQ((int)eMessageTypeWarning, type);
+}
+
+// Under Load From Cache, turning it on and each bake move the body's hashes on, so the images the
+// body cached from the other source or an earlier bake's files are not reused.
+TEST_F(NativeLoopCrossFrameTest, ABakeMovesTheBodyHashesOnUnderLoadFromCache)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Trail t = createTrail(1);
+    ASSERT_TRUE(bool(t.end));
+    std::shared_ptr<LoopEnd> end = loopEndOf(t.end);
+    ASSERT_TRUE(bool(end));
+    ASSERT_TRUE(setCacheFile(t.end, dir.path() + QString::fromUtf8("/trail.####.exr")));
+    ASSERT_TRUE(setKnobValues(t.end, kLoopEndParamBakeEnd, { 3. }));
+    std::string error;
+    ASSERT_TRUE(end->bakeFrames(false, &error)) << error;
+
+    const EffectInstancePtr begin = t.begin->getEffectInstance();
+    const EffectInstancePtr grade = t.grade->getEffectInstance();
+    const U64 beginComputing = begin->getRenderHash();
+    const U64 gradeComputing = grade->getRenderHash();
+    ASSERT_TRUE(setKnobValues(t.end, kLoopEndParamLoadFromCache, { 1. }));
+    const U64 beginLoading = begin->getRenderHash();
+    const U64 gradeLoading = grade->getRenderHash();
+    EXPECT_NE(beginComputing, beginLoading);
+    EXPECT_NE(gradeComputing, gradeLoading);
+
+    ASSERT_TRUE(end->bakeFrames(false, &error)) << error;
+    EXPECT_NE(beginLoading, begin->getRenderHash());
+    EXPECT_NE(gradeLoading, grade->getRenderHash());
+}
+
+// Destroying a LoopEnd while its bake renders cancels the bake and waits for its thread.
+TEST_F(NativeLoopCrossFrameTest, DestroyingALoopEndMidBakeCancelsTheBake)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    NodePtr constant = createConstant(0.25);
+    NodePtr begin = createLoopBegin(constant);
+    NodePtr counting = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(constant && begin && counting);
+    ASSERT_TRUE(counting->connectInput(begin, 0));
+    NodePtr endNode = createLoopEnd("sim", kLoopEndParamModeFeedback, 4, true, 1, counting);
+    ASSERT_TRUE(bool(endNode));
+    std::shared_ptr<LoopEnd> end = loopEndOf(endNode);
+    ASSERT_TRUE(bool(end));
+    ASSERT_TRUE(setCacheFile(endNode, dir.path() + QString::fromUtf8("/sim.####.exr")));
+    ASSERT_TRUE(setKnobValues(endNode, kLoopEndParamBakeEnd, { 50. }));
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered = false;
+    bool released = false;
+    CountingTestRegistry::reset();
+    CountingTestRegistry::setRenderHook([&](const Node*) {
+        std::unique_lock<std::mutex> l(mutex);
+        entered = true;
+        changed.notify_all();
+        changed.wait(l, [&]() { return released; });
+    });
+    // A failed assertion must not leave the bake held up in the hook.
+    struct Release {
+        std::mutex* mutex;
+        std::condition_variable* changed;
+        bool* released;
+        ~Release()
+        {
+            {
+                std::lock_guard<std::mutex> l(*mutex);
+                *released = true;
+                changed->notify_all();
+            }
+            CountingTestRegistry::reset();
+        }
+    } release { &mutex, &changed, &released };
+    ASSERT_TRUE(end->startBake());
+    {
+        std::unique_lock<std::mutex> l(mutex);
+        ASSERT_TRUE(changed.wait_for(l, std::chrono::seconds(60), [&]() { return entered; }));
+    }
+    EXPECT_TRUE(end->isBaking());
+    // Released only once the destroy waits on the bake, which a render holds up meanwhile.
+    std::thread releaser([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::lock_guard<std::mutex> l(mutex);
+        released = true;
+        changed.notify_all();
+    });
+    endNode->destroyNode(true, false);
+    releaser.join();
+
+    EXPECT_FALSE(end->isBaking());
+    EXPECT_FALSE(QFileInfo(QString::fromUtf8(end->bakedFramePath(50).c_str())).exists());
+    QCoreApplication::processEvents();
 }
 
 // A body node asking its LoopBegin for another frame than the one before fails the render at

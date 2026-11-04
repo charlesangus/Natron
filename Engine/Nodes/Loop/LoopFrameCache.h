@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include <QtCore/QMutex>
@@ -70,25 +71,87 @@ struct LoopFrameSeries {
     }
 };
 
+class LoopFrameCache;
+
 /**
- * @brief The frames a cross-frame loop has rendered, in RAM under a bytes budget. Over budget, the
- * least recently used frames go first, checkpoint frames last: those at startFrame + k * the
- * checkpoint interval, a power of two chosen so the checkpoints of every series fit in a quarter
- * of the budget. The frame inserted last is never evicted by its own insertion, so a frame larger
- * than the budget still lets a simulation advance. Thread-safe.
+ * @brief The RAM the frame caches charging it may hold together. Over it, the least recently used
+ * frames of any of them go first, checkpoint frames last: those at startFrame + k * the
+ * checkpoint interval, a power of two chosen so the checkpoints of every series of every cache
+ * fit in a quarter of the budget. Thread-safe.
+ **/
+class LoopFrameBudget {
+public:
+    explicit LoopFrameBudget(std::size_t budget);
+
+    LoopFrameBudget(const LoopFrameBudget&) = delete;
+    LoopFrameBudget& operator=(const LoopFrameBudget&) = delete;
+
+    /**
+     * @brief The budget every cross-frame loop charges, sized by defaultBudget().
+     **/
+    static std::shared_ptr<LoopFrameBudget> shared() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sizes the shared budget again from the RAM setting, when it exists.
+     **/
+    static void refreshShared();
+
+    /**
+     * @brief A quarter of the RAM the image cache may use.
+     **/
+    static std::size_t defaultBudget() WARN_UNUSED_RETURN;
+
+    void setBudget(std::size_t budget);
+
+    std::size_t getBudget() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief What the caches charging this budget hold together.
+     **/
+    std::size_t bytes() const WARN_UNUSED_RETURN;
+
+private:
+    friend class LoopFrameCache;
+
+    std::size_t seriesCount() const WARN_UNUSED_RETURN;
+
+    // Evicts down to the budget, keeping keptFrame of kept in keptCache. Under _mutex.
+    void evict(const LoopFrameCache* keptCache,
+               const LoopFrameSeries& kept,
+               int keptFrame);
+
+    mutable QMutex _mutex;
+    std::size_t _budget;
+    std::size_t _bytes;
+    U64 _clock;
+    std::vector<LoopFrameCache*> _caches;
+};
+
+/**
+ * @brief The frames a cross-frame loop has rendered, in RAM, charged to a LoopFrameBudget it may
+ * share with other caches and which evicts from all of them. The frame inserted last is never
+ * evicted by its own insertion, so a frame larger than the budget still lets a simulation
+ * advance. Thread-safe.
  **/
 class LoopFrameCache {
 public:
+    /**
+     * @brief A cache with a budget of its own.
+     **/
     explicit LoopFrameCache(std::size_t budget);
+
+    explicit LoopFrameCache(const std::shared_ptr<LoopFrameBudget>& budget);
+
+    ~LoopFrameCache();
 
     LoopFrameCache(const LoopFrameCache&) = delete;
     LoopFrameCache& operator=(const LoopFrameCache&) = delete;
 
-    /**
-     * @brief The budget a loop's cache gets by default: a quarter of the RAM the image cache may use.
-     **/
-    static std::size_t defaultBudget() WARN_UNUSED_RETURN;
+    const std::shared_ptr<LoopFrameBudget>& budget() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Sets the budget this cache charges, shared or not.
+     **/
     void setBudget(std::size_t budget);
 
     std::size_t getBudget() const WARN_UNUSED_RETURN;
@@ -125,6 +188,9 @@ public:
 
     void clear();
 
+    /**
+     * @brief What this cache holds.
+     **/
     std::size_t bytes() const WARN_UNUSED_RETURN;
 
     /**
@@ -138,6 +204,8 @@ public:
     int checkpointInterval(const LoopFrameSeries& series) const WARN_UNUSED_RETURN;
 
 private:
+    friend class LoopFrameBudget;
+
     struct Entry {
         ImagePtr image;
         std::size_t bytes = 0;
@@ -152,16 +220,14 @@ private:
 
     typedef std::map<LoopFrameSeries, Frames> SeriesMap;
 
+    // Under the budget's mutex, as is everything below.
     int intervalOf(const Frames& frames) const WARN_UNUSED_RETURN;
 
-    // Evicts down to the budget, keeping keptFrame of kept.
-    void evict(const LoopFrameSeries& kept,
-               int keptFrame);
+    // Drops every frame, uncharging them.
+    void clearLocked();
 
-    mutable QMutex _mutex;
-    std::size_t _budget;
+    const std::shared_ptr<LoopFrameBudget> _budget;
     std::size_t _bytes;
-    U64 _clock;
     SeriesMap _series;
 };
 

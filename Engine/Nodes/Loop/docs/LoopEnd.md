@@ -164,13 +164,15 @@ within 1e-6 relative, from the device's division (mean) and rounding.
 - A frame needs every frame before it back to `startFrame`. Rendering frame f renders, in
   order, the frames from the latest one kept before f, or from `startFrame`, to f, on one
   thread; the progress panel shows a run of more than two frames, and cancelling it fails that
-  render, keeping the frames rendered so far.
+  render, keeping the frames rendered so far. While a bake of the loop, or another such run,
+  shows its progress, a run shows none, and a bake started during a run takes its progress over.
 - The stored window is the LoopEnd's region of definition, unclipped: a frame is kept whole,
   beyond the format where it reaches past it, so what leaves the format comes back.
-- Memory: each frame's output is kept in RAM under a budget, by default a quarter of what the
-  image cache may use. Over the budget the least recently used frames go first and the
+- Memory: each frame's output is kept in RAM under one budget that every cross-frame loop
+  shares, a quarter of what the image cache may use; it follows the RAM setting when that
+  changes. Over the budget the least recently used frames of any loop go first and the
   checkpoints last: the frames at `startFrame + k * interval`, the interval a power of two
-  chosen so the checkpoints of every series fit in a quarter of the budget. A frame no longer
+  chosen so the checkpoints of every series of every loop fit in a quarter of the budget. A frame no longer
   kept is rendered again from the checkpoint before it. Editing the loop, its body or anything
   upstream of it starts a new series and drops the frames kept for the old one.
 - The body reads only the frame before. A body node that asks its LoopBegin for another frame,
@@ -206,6 +208,7 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   then stay, and a cancelled bake posts no message. A bake that fails, with Cross Frame off,
   `bakeEnd` before `startFrame`, an empty `cacheFile` or one without a frame number, posts an
   error on the LoopEnd. While a bake runs, the LoopEnd's own renders compute rather than load.
+  Deleting the LoopEnd, or closing the project, cancels the bake and waits for it to stop.
 - Each file is a float EXR of the LoopEnd's output layer whose data window is the frame's
   region of definition, unclipped: it can extend outside the format. It carries
   `natron:loopHash`, the loop's simulation hash when the frame rendered: the LoopEnd's
@@ -221,7 +224,7 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   rendered instead, with a warning.
 - `clearCache` forgets the frames kept in RAM; the files stay. A bake, and turning
   `loadFromCache` on or off, starts a new series, so frames rendered before it are not mixed
-  with frames read from the files.
+  with frames read from the files; the body's own cached images move on with it.
 - An upstream node whose hash changes between sessions, such as one holding a per-session
   salt, warns on every load after a relaunch.
 

@@ -534,6 +534,7 @@ LoopBegin::appendNodeContentHash(ContentHasher& h) const
     h.appendU64(digest);
     end->appendFeedbackKnobsHash(h);
     end->appendCrossFrameKnobsHash(h);
+    end->appendBakeHash(h);
 }
 
 void

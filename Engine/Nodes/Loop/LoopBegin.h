@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <string>
 
 #include <QtCore/QMutex>
@@ -40,6 +41,8 @@
 #define PLUGIN_MAJOR_NATRON_LOOPBEGIN 1
 
 NATRON_NAMESPACE_ENTER
+
+class LoopEnd;
 
 inline constexpr InputSpec kLoopBeginInputs[] = {
     InputSpec { .label = "Source", .kind = eDataKindImage },
@@ -182,6 +185,14 @@ private:
 
     QMutex _conformMutex;
     std::string _conformPosted;
+
+    friend class LoopEnd;
+
+    // The LoopEnd LoopEnd::pairedEndOf() found for it, null for none, while the graph is at
+    // _pairingGeneration (see LoopEnd::onGraphChanged()).
+    mutable QMutex _pairingMutex;
+    mutable U64 _pairingGeneration = 0;
+    mutable std::weak_ptr<LoopEnd> _pairedEnd;
 };
 
 /**

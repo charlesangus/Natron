@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -186,6 +187,40 @@ TEST(LoopFrameCacheTest, PurgeDropsEveryOtherGeneration)
     cache.clear();
     EXPECT_TRUE(cache.frames(seriesOf(2)).empty());
     EXPECT_EQ(0u, cache.bytes());
+}
+
+// Caches charging one budget hold no more than it together and evict from each other, the least
+// recently used frames that are not checkpoints first.
+TEST(LoopFrameCacheTest, CachesSharingABudgetEvictFromEachOther)
+{
+    std::shared_ptr<LoopFrameBudget> budget = std::make_shared<LoopFrameBudget>(4 * kFrameBytes);
+    LoopFrameCache a(budget);
+    LoopFrameCache b(budget);
+
+    fill(&a, seriesOf(1), 0, 0, 3);
+    EXPECT_EQ(4 * kFrameBytes, a.bytes());
+    EXPECT_EQ(4 * kFrameBytes, budget->bytes());
+
+    fill(&b, seriesOf(2), 0, 0, 1);
+    EXPECT_EQ(4 * kFrameBytes, budget->bytes());
+    EXPECT_EQ(2 * kFrameBytes, b.bytes());
+    EXPECT_EQ(std::vector<int>({ 0, 3 }), a.frames(seriesOf(1)));
+    EXPECT_EQ(std::vector<int>({ 0, 1 }), b.frames(seriesOf(2)));
+
+    budget->setBudget(2 * kFrameBytes);
+    EXPECT_EQ(2 * kFrameBytes, a.getBudget());
+    EXPECT_LE(budget->bytes(), 2 * kFrameBytes);
+    EXPECT_EQ(budget->bytes(), a.bytes() + b.bytes());
+
+    {
+        LoopFrameCache c(budget);
+        fill(&c, seriesOf(3), 0, 0, 0);
+        EXPECT_EQ(budget->bytes(), a.bytes() + b.bytes() + c.bytes());
+    }
+    EXPECT_EQ(budget->bytes(), a.bytes() + b.bytes());
+
+    a.clear();
+    EXPECT_EQ(b.bytes(), budget->bytes());
 }
 
 // Threads inserting, looking up and searching the same series under a budget that keeps evicting:

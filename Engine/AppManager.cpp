@@ -292,6 +292,9 @@ void
 handleShutDownSignal(int signalId)
 {
     if (g_pastTeardown.load() || (g_signalsReceived.fetch_add(1) > 0)) {
+        static const char kImmediate[] = "\nNatron: termination signal during shutdown, exiting at once\n";
+        ssize_t ignored = ::write(STDERR_FILENO, kImmediate, sizeof(kImmediate) - 1);
+        (void)ignored;
         _exit(128 + signalId);
     }
     const int savedErrno = errno;
@@ -309,24 +312,27 @@ onTerminationSignal(int signalId)
     ShutdownState& state = shutdownState();
     std::unique_lock<std::mutex> k(state.readerMutex);
 
+    // The flag first: beginTeardown() cannot set it while this thread holds readerMutex, so once it reads false the
+    // destructor has not started and _instance is not being written.
+    if (g_pastTeardown.load()) {
+        return;
+    }
     AppManager* manager = AppManager::instance();
-    if (g_pastTeardown.load() || !manager) {
+    if (!manager) {
         return;
     }
     std::cerr << "\nCaught termination signal, exiting!" << std::endl;
     armShutdownWatchdog("quitting after a termination signal");
 
     if (!manager->isBackground()) {
-        // File > Quit's path without its save question: it stops the viewers and then waits for the renders off the
-        // main thread. quitApplication() would wait on the main thread instead, and deadlock against a playback
-        // scheduler blocked in requestExecutionOnMainThread(). The last closed project ends the event loop; the
-        // explicit qApp->quit() is only for a signal that arrives before the first project exists, because quitting
-        // the loop while a close is still waiting would leave ~AppManager to close that project with the same
-        // blocking wait.
-        QMetaObject::invokeMethod(manager, [manager]() {
-            manager->exitApp(false);
-            if (qApp && (manager->getNumInstances() == 0)) {
-                qApp->quit();
+        // The closure holds no manager: it may be delivered by an event loop pumped during teardown, so it looks the
+        // manager up again and gives up once teardown has begun.
+        QMetaObject::invokeMethod(manager, []() {
+            if (g_pastTeardown.load()) {
+                return;
+            }
+            if (AppManager* current = AppManager::instance()) {
+                current->requestTermination();
             } }, Qt::QueuedConnection);
 
         return;
@@ -401,6 +407,36 @@ exitGuard(int status,
 #endif
 
 } // anon namespace
+
+bool
+AppManager::isTearingDown()
+{
+    return g_pastTeardown.load();
+}
+
+void
+AppManager::markTeardownStarted(const char* stage)
+{
+    beginTeardown(stage);
+}
+
+void
+AppManager::requestTermination()
+{
+    // File > Quit's path without its save question: it stops the viewers and then waits for the renders off the main
+    // thread. quitApplication() would wait on the main thread instead, and deadlock against a playback scheduler
+    // blocked in requestExecutionOnMainThread(). The last closed project ends the event loop; the explicit
+    // qApp->quit() is only for a request that arrives before the first project exists, because quitting the loop
+    // while a close is still waiting would leave ~AppManager to close that project with the same blocking wait.
+    if (_imp->terminationRequested) {
+        return;
+    }
+    _imp->terminationRequested = true;
+    exitApp(false);
+    if (qApp && (getNumInstances() == 0)) {
+        qApp->quit();
+    }
+}
 
 void
 AppManager::exitWithoutLibraryDestructors(int rc)
@@ -3220,7 +3256,8 @@ AppManager::clearErrorLog_mt_safe()
 void
 AppManager::exitApp(bool /*warnUserForSave*/)
 {
-    const AppInstanceVec & instances = getAppInstances();
+    // A copy: quitting an instance removes it from the manager's list.
+    const AppInstanceVec instances = getAppInstances();
 
     for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
         (*it)->quitNow();

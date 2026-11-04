@@ -158,6 +158,18 @@ public:
      **/
     [[noreturn]] static void exitWithoutLibraryDestructors(int rc);
 
+    /**
+     * @brief True once teardown has begun: the event loop returned or the manager is being destroyed. A termination
+     * request delivered after that is ignored.
+     **/
+    static bool isTearingDown();
+
+    /**
+     * @brief Main thread only: quits every project without asking to save, in answer to a termination signal.
+     * Repeated requests are ignored.
+     **/
+    virtual void requestTermination();
+
     static AppManager* instance()
     {
         return _instance;
@@ -746,6 +758,10 @@ Q_SIGNALS:
     void s_requestOFXDialogOnMainThread(OfxImageEffectInstance* instance, void* instanceData);
 
 protected:
+    /**
+     * @brief Marks teardown as begun, for a derived destructor that runs before ~AppManager.
+     **/
+    static void markTeardownStarted(const char* stage);
 
     virtual bool initGui(const CLArgs& cl);
     virtual void loadBuiltinNodePlugins();

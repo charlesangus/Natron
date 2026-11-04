@@ -258,7 +258,7 @@ TEST_F(NativeDirBlurGpuFilterTest, MatchesTheCpuRenderForEveryFilter)
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
-            ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.15, 1.15 }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
             const std::string name = std::string(mode) + " " + filters[f].id + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");
             ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, name));
         }
@@ -348,9 +348,8 @@ TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
     }
 }
 
-// The controls carried over from God Rays and Nuke's DirBlur, in every mode: the transform about
-// Center, Use Target, Pixel Offset, the Exponential ramp and Max, against the CPU render.
-TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithTransformTargetOffsetRampAndMax)
+// Use Target, Pixel Offset, the Exponential ramp and Max, in every mode, against the CPU render.
+TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithTargetOffsetRampAndMax)
 {
     NodePtr source = makeParitySource(3, 5);
     ASSERT_TRUE(bool(source));
@@ -358,21 +357,17 @@ TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithTransformTargetOffsetRampAnd
         const char* name;
         double length;
         bool centered;
-        bool transform;
-        bool invert;
         bool target;
         double pixelOffset;
         bool exponential;
         bool max;
     };
     const Setting settings[] = {
-        { "transform only", 0., false, true, false, false, 0., false, false },
-        { "transform inverted centered", 10., true, true, true, false, 0., false, false },
-        { "target", 14., false, false, false, true, 0., false, false },
-        { "pixel offset", 8., false, false, false, false, 6., false, false },
-        { "exponential", 16., false, false, false, false, 0., true, false },
-        { "max", 16., true, false, false, false, 0., false, true },
-        { "everything", 12., false, true, false, true, 3., true, true },
+        { "target", 14., false, true, 0., false, false },
+        { "pixel offset", 8., false, false, 6., false, false },
+        { "exponential", 16., false, false, 0., true, false },
+        { "max", 16., true, false, 0., false, true },
+        { "everything", 12., true, true, 3., true, true },
     };
     for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
         for (const Setting& s : settings) {
@@ -383,15 +378,6 @@ TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithTransformTargetOffsetRampAnd
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { s.centered ? 1. : 0. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamFromColor, { 1., 0.8, 0.5, 1. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamToColor, { 0.1, 0.4, 1.2, 0.5 }));
-            if (s.transform) {
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamTranslate, { 4., -3. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamRotate, { 15. }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.3, 0.8 }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamSkewY, { 0.15 }));
-                ASSERT_TRUE(setKnobValue(node, kDirBlurParamSkewOrder, std::string("YX")));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamTransformAmount, { 0.8 }));
-                ASSERT_TRUE(setKnobValues(node, kDirBlurParamInvert, { s.invert ? 1. : 0. }));
-            }
             if (s.target) {
                 ASSERT_TRUE(setKnobValues(node, kDirBlurParamUseTarget, { 1. }));
                 ASSERT_TRUE(setKnobValues(node, kDirBlurParamTarget, { 12., 40. }));

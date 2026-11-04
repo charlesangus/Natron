@@ -86,9 +86,9 @@ constexpr NodeSpec kDirBlurNodeSpec = {
                    "\n"
                    "Directional smears each pixel Length pixels along Direction, or towards Target with Use Target, as a straight motion blur. Radial smears it around Center by an angle of Length degrees, as a spinning motion blur. Zoom smears it along the line through Center, so that the corners of the format move by Length pixels; a positive Length streaks towards Center, a negative one away from it.\n"
                    "\n"
-                   "The transform (Translate, Rotate, Scale, Skew, about Center) is applied along the blur in every mode, as the God Rays node does: a copy at a fraction t of the blur is transformed by t times Transform Amount. With Length 0 it alone gives God Rays.\n"
+                   "The result is the weighted average of Samples copies of the image, each moved by an even step along the blur and resampled with Filter, as the Transform node resamples, or their maximum with Max. Falloff fades the copies out towards the end of the blur, and From Color and To Color tint them, from the start of the blur to its end. The weights are normalised, so with the default white tints the blur keeps the image's energy.\n"
                    "\n"
-                   "The result is the weighted average of Samples copies of the image, each moved by an even step along the blur and resampled with Filter, as the Transform node resamples, or their maximum with Max. Falloff fades the copies out towards the end of the blur, and From Color and To Color tint them, from the start of the blur to its end, which gives God-rays-like light streaks in Zoom mode. The weights are normalised, so with the default white tints the blur keeps the image's energy.\n"
+                   "Only the controls the selected Mode uses are shown.\n"
                    "\n"
                    "Where the Holdout Channel of the Holdout input is 1 the source is left out of the average, and where it is between 0 and 1 it counts that much less.\n"
                    "\n"
@@ -195,7 +195,7 @@ DirBlur::initializeKnobs()
 
     KnobDoublePtr lengthKnob = AppManager::createKnob<KnobDouble>(this, tr("Length"));
     lengthKnob->setName(kDirBlurParamLength);
-    lengthKnob->setHintToolTip(tr("The extent of the blur: in pixels in Directional and Zoom modes, in degrees in Radial mode. With Centered it extends this far on each side. 0, with no transform and no Pixel Offset, leaves the input unchanged."));
+    lengthKnob->setHintToolTip(tr("The extent of the blur: in pixels in Directional and Zoom modes, in degrees in Radial mode. With Centered it extends this far on each side. 0, with no Pixel Offset, leaves the input unchanged."));
     lengthKnob->setDisplayMinimum(-100.);
     lengthKnob->setDisplayMaximum(100.);
     lengthKnob->setDefaultValue(20.);
@@ -215,7 +215,7 @@ DirBlur::initializeKnobs()
 
     KnobBoolPtr centeredKnob = AppManager::createKnob<KnobBool>(this, tr("Centered"));
     centeredKnob->setName(kDirBlurParamCentered);
-    centeredKnob->setHintToolTip(tr("When checked the blur extends Length both ways from each pixel instead of one way. The transform then runs the other way too, inverted."));
+    centeredKnob->setHintToolTip(tr("When checked the blur extends Length both ways from each pixel instead of one way."));
     centeredKnob->setDefaultValue(false);
     page->addKnob(centeredKnob);
     _centered = centeredKnob;
@@ -275,7 +275,7 @@ DirBlur::initializeKnobs()
 
     KnobDoublePtr centerKnob = AppManager::createKnob<KnobDouble>(this, tr("Center"), 2);
     centerKnob->setName(kDirBlurParamCenter);
-    centerKnob->setHintToolTip(tr("The centre of the Radial and Zoom blurs, of the transform, and the start of the Directional blur with Use Target. Can also be moved by dragging the transform handle in the Viewer."));
+    centerKnob->setHintToolTip(tr("The centre of the Radial and Zoom blurs, and the start of the Directional blur with Use Target. Can also be moved by dragging its handle in the Viewer."));
     centerKnob->setSpatial(true);
     centerKnob->setDefaultValuesAreNormalized(true);
     centerKnob->disableSlider();
@@ -289,11 +289,12 @@ DirBlur::initializeKnobs()
     }
     centerKnob->setAddNewLine(false);
     page->addKnob(centerKnob);
+    centerKnob->setHasHostOverlayHandle(true);
     _center = centerKnob;
 
     KnobButtonPtr resetCenterKnob = AppManager::createKnob<KnobButton>(this, tr("Reset Center"));
     resetCenterKnob->setName(kDirBlurParamResetCenter);
-    resetCenterKnob->setHintToolTip(tr("Move Center to the middle of the source's region of definition, changing Translate so that the transform at its full amount keeps its place."));
+    resetCenterKnob->setHintToolTip(tr("Move Center to the middle of the source's region of definition."));
     page->addKnob(resetCenterKnob);
     _resetCenter = resetCenterKnob;
 
@@ -369,135 +370,12 @@ DirBlur::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kDirBlurParamRampLinear, tr("Linear").toStdString(), tr("In even steps.").toStdString()));
-        options.push_back(ChoiceOption(kDirBlurParamRampExponential, tr("Exponential").toStdString(), tr("By an even factor per step, as the God Rays node ramps; each colour is held to at least 0.001.").toStdString()));
+        options.push_back(ChoiceOption(kDirBlurParamRampExponential, tr("Exponential").toStdString(), tr("By an even factor per step; each colour is held to at least 0.001.").toStdString()));
         rampKnob->populateChoices(options);
     }
     rampKnob->setDefaultValue((int)eDirBlurRampLinear);
     tintGroup->addKnob(rampKnob);
     _ramp = rampKnob;
-
-    KnobGroupPtr transformGroup = AppManager::createKnob<KnobGroup>(this, tr("Transform"));
-    transformGroup->setName(kDirBlurParamTransformGroup);
-    transformGroup->setHintToolTip(tr("The transform applied along the blur, about Center, in every mode."));
-    transformGroup->setDefaultValue(false);
-    page->addKnob(transformGroup);
-
-    KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(this, tr("Translate"), 2);
-    translateKnob->setName(kDirBlurParamTranslate);
-    translateKnob->setHintToolTip(tr("The translation, in pixels, of the copy at the end of the blur; the copies between move by a share of it. Can also be adjusted by dragging the centre handle in the Viewer."));
-    translateKnob->setSpatial(true);
-    translateKnob->setDefaultValuesAreNormalized(true);
-    translateKnob->disableSlider();
-    for (int d = 0; d < 2; ++d) {
-        translateKnob->setMinimum(-DBL_MAX, d);
-        translateKnob->setMaximum(DBL_MAX, d);
-        translateKnob->setDisplayMinimum(-10000., d);
-        translateKnob->setDisplayMaximum(10000., d);
-        translateKnob->setIncrement(10., d);
-        translateKnob->setDefaultValue(0., d);
-    }
-    transformGroup->addKnob(translateKnob);
-    _translate = translateKnob;
-
-    KnobDoublePtr rotateKnob = AppManager::createKnob<KnobDouble>(this, tr("Rotate"));
-    rotateKnob->setName(kDirBlurParamRotate);
-    rotateKnob->setHintToolTip(tr("The rotation, in degrees around Center, of the copy at the end of the blur. Can also be adjusted by dragging the rotation bar in the Viewer."));
-    rotateKnob->setMinimum(-DBL_MAX);
-    rotateKnob->setMaximum(DBL_MAX);
-    rotateKnob->setDisplayMinimum(-180.);
-    rotateKnob->setDisplayMaximum(180.);
-    rotateKnob->setIncrement(0.1);
-    rotateKnob->setDefaultValue(0.);
-    transformGroup->addKnob(rotateKnob);
-    _rotate = rotateKnob;
-
-    KnobDoublePtr scaleKnob = AppManager::createKnob<KnobDouble>(this, tr("Scale"), 2);
-    scaleKnob->setName(kDirBlurParamScale);
-    scaleKnob->setHintToolTip(tr("The scale, about Center, of the copy at the end of the blur; the copies between are scaled geometrically. Can also be adjusted by dragging the outer circle in the Viewer."));
-    scaleKnob->setCanAutoFoldDimensions(true);
-    for (int d = 0; d < 2; ++d) {
-        scaleKnob->setMinimum(-1.e4, d);
-        scaleKnob->setMaximum(1.e4, d);
-        scaleKnob->setDisplayMinimum(0.1, d);
-        scaleKnob->setDisplayMaximum(10., d);
-        scaleKnob->setIncrement(0.01, d);
-        scaleKnob->setDefaultValue(1., d);
-    }
-    scaleKnob->setAddNewLine(false);
-    scaleKnob->setSpacingBetweenItems(1);
-    transformGroup->addKnob(scaleKnob);
-    _scale = scaleKnob;
-
-    KnobBoolPtr uniformKnob = AppManager::createKnob<KnobBool>(this, tr("Uniform"));
-    uniformKnob->setName(kDirBlurParamUniform);
-    uniformKnob->setHintToolTip(tr("Use the X scale for both directions."));
-    uniformKnob->setDefaultValue(false);
-    transformGroup->addKnob(uniformKnob);
-    _uniform = uniformKnob;
-
-    KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(this, tr("Skew X"));
-    skewXKnob->setName(kDirBlurParamSkewX);
-    skewXKnob->setHintToolTip(tr("The skew along the x axis of the copy at the end of the blur. Can also be adjusted by dragging the skew bar in the Viewer."));
-    skewXKnob->setMinimum(-DBL_MAX);
-    skewXKnob->setMaximum(DBL_MAX);
-    skewXKnob->setDisplayMinimum(-1.);
-    skewXKnob->setDisplayMaximum(1.);
-    skewXKnob->setIncrement(0.01);
-    skewXKnob->setDefaultValue(0.);
-    transformGroup->addKnob(skewXKnob);
-    _skewX = skewXKnob;
-
-    KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(this, tr("Skew Y"));
-    skewYKnob->setName(kDirBlurParamSkewY);
-    skewYKnob->setHintToolTip(tr("The skew along the y axis of the copy at the end of the blur."));
-    skewYKnob->setMinimum(-DBL_MAX);
-    skewYKnob->setMaximum(DBL_MAX);
-    skewYKnob->setDisplayMinimum(-1.);
-    skewYKnob->setDisplayMaximum(1.);
-    skewYKnob->setIncrement(0.01);
-    skewYKnob->setDefaultValue(0.);
-    transformGroup->addKnob(skewYKnob);
-    _skewY = skewYKnob;
-
-    KnobChoicePtr skewOrderKnob = AppManager::createKnob<KnobChoice>(this, tr("Skew Order"));
-    skewOrderKnob->setName(kDirBlurParamSkewOrder);
-    skewOrderKnob->setHintToolTip(tr("The order in which the skews apply: X then Y, or Y then X."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("XY", "XY", ""));
-        options.push_back(ChoiceOption("YX", "YX", ""));
-        skewOrderKnob->populateChoices(options);
-    }
-    skewOrderKnob->setDefaultValue(0);
-    transformGroup->addKnob(skewOrderKnob);
-    _skewOrder = skewOrderKnob;
-
-    KnobDoublePtr transformAmountKnob = AppManager::createKnob<KnobDouble>(this, tr("Transform Amount"));
-    transformAmountKnob->setName(kDirBlurParamTransformAmount);
-    transformAmountKnob->setHintToolTip(tr("How much of the transform the copy at the end of the blur takes: 0 leaves the copies untransformed, 1 applies the full transform."));
-    transformAmountKnob->setMinimum(-DBL_MAX);
-    transformAmountKnob->setMaximum(DBL_MAX);
-    transformAmountKnob->setDisplayMinimum(0.);
-    transformAmountKnob->setDisplayMaximum(1.);
-    transformAmountKnob->setIncrement(0.01);
-    transformAmountKnob->setDefaultValue(1.);
-    transformGroup->addKnob(transformAmountKnob);
-    _transformAmount = transformAmountKnob;
-
-    KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(this, tr("Invert"));
-    invertKnob->setName(kDirBlurParamInvert);
-    invertKnob->setHintToolTip(tr("Invert the transform."));
-    invertKnob->setDefaultValue(false);
-    transformGroup->addKnob(invertKnob);
-    _invert = invertKnob;
-
-    KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(this, tr("Interactive"));
-    interactiveKnob->setName(kDirBlurParamInteractive);
-    interactiveKnob->setHintToolTip(tr("If checked, update the parameter values while dragging the transform handles in the Viewer, else when the pen is released."));
-    interactiveKnob->setDefaultValue(true);
-    interactiveKnob->setEvaluateOnChange(false);
-    transformGroup->addKnob(interactiveKnob);
-    _interactive = interactiveKnob;
 
     KnobGroupPtr holdoutGroup = AppManager::createKnob<KnobGroup>(this, tr("Holdout"));
     holdoutGroup->setName(kDirBlurParamHoldoutGroup);
@@ -515,10 +393,10 @@ DirBlur::initializeKnobs()
 
     addStageKnobs(page);
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateModeVisibility();
 
     NodePtr node = getNode();
     if (node) {
-        node->addTransformInteract(translateKnob, scaleKnob, uniformKnob, rotateKnob, skewXKnob, skewYKnob, skewOrderKnob, centerKnob, invertKnob, interactiveKnob);
         node->declareLayerKnob(holdoutChannelKnob, kDirBlurInputHoldout, LayerKnobSpec::eRoleInputBound);
     }
 } // DirBlur::initializeKnobs
@@ -545,21 +423,6 @@ DirBlur::getParams(double time,
     params.falloff = std::max(0., (double)reader.value(_falloff));
     params.pixelOffset = reader.value(_pixelOffset);
 
-    TransformMath::TransformParams& tp = params.transform;
-    tp.translateX = reader.value(_translate, 0);
-    tp.translateY = reader.value(_translate, 1);
-    tp.rotate = reader.value(_rotate);
-    tp.scaleX = reader.value(_scale, 0);
-    tp.scaleY = reader.value(_scale, 1);
-    tp.scaleUniform = reader.value(_uniform);
-    tp.skewX = reader.value(_skewX);
-    tp.skewY = reader.value(_skewY);
-    tp.skewOrderYX = (reader.value(_skewOrder) == 1);
-    tp.centerX = params.centerX;
-    tp.centerY = params.centerY;
-    tp.amount = reader.value(_transformAmount);
-    params.invert = reader.value(_invert);
-
     for (int c = 0; c < 4; ++c) {
         params.fromColor[c] = reader.value(_fromColor, c);
         params.toColor[c] = reader.value(_toColor, c);
@@ -580,11 +443,8 @@ DirBlur::hasMotion(const DirBlurParams& params)
     if (params.length != 0.) {
         return true;
     }
-    if ((params.mode == eDirBlurModeZoom) && (params.pixelOffset != 0.)) {
-        return true;
-    }
 
-    return !TransformMath::isIdentity(params.transform);
+    return (params.mode == eDirBlurModeZoom) && (params.pixelOffset != 0.);
 }
 
 double
@@ -668,6 +528,13 @@ DirBlur::knobChanged(KnobI* k,
 
         return true;
     }
+    KnobChoicePtr modeKnob = _mode.lock();
+    KnobBoolPtr useTargetKnob = _useTarget.lock();
+    if ((modeKnob && (k == modeKnob.get())) || (useTargetKnob && (k == useTargetKnob.get()))) {
+        updateModeVisibility();
+
+        return true;
+    }
 
     return StagedImageEffect::knobChanged(k, reason, view, time, originatedFromMainThread);
 }
@@ -685,44 +552,51 @@ DirBlur::updateClampEnabled(double time,
 }
 
 void
+DirBlur::updateModeVisibility()
+{
+    KnobChoicePtr mode = _mode.lock();
+    KnobBoolPtr useTarget = _useTarget.lock();
+    if (!mode || !useTarget) {
+        return;
+    }
+    // The knobs are not animated per mode, so the current values decide.
+    const int m = mode->getValue();
+    const bool directional = (m == (int)eDirBlurModeDirectional);
+    const bool targeted = directional && useTarget->getValue();
+    const bool usesCenter = !directional || targeted;
+
+    const auto show = [](const KnobIPtr& knob, bool visible) {
+        if (knob) {
+            knob->setSecret(!visible);
+        }
+    };
+    show(_direction.lock(), directional && !targeted);
+    show(useTarget, directional);
+    show(_target.lock(), targeted);
+    show(_center.lock(), usesCenter);
+    show(_resetCenter.lock(), usesCenter);
+    show(_pixelOffset.lock(), m == (int)eDirBlurModeZoom);
+}
+
+void
 DirBlur::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateModeVisibility();
 }
 
 void
 DirBlur::resetCenter(double time)
 {
     KnobDoublePtr center = _center.lock();
-    KnobDoublePtr translate = _translate.lock();
-    if (!center || !translate) {
+    if (!center) {
         return;
     }
     const RectD rod = sourceRoD(time, ViewIdx(0), RenderScale::identity);
     if (rod.isNull() || rod.isInfinite()) {
         return;
     }
-    const TransformMath::TransformParams p = getParams(time, ViewIdx(0)).transform;
-    const double newCenterX = (rod.x1 + rod.x2) / 2;
-    const double newCenterY = (rod.y1 + rod.y2) / 2;
-    if ((newCenterX == p.centerX) && (newCenterY == p.centerY)) {
-        return;
-    }
-    double sx, sy;
-    TransformMath::effectiveScale(p.scaleX, p.scaleY, p.scaleUniform, &sx, &sy);
-    const Mat3 rInv = TransformMath::rotation(-TransformMath::toRadians(p.rotate)) * TransformMath::skewXY(p.skewX, p.skewY, p.skewOrderYX) * TransformMath::scale(sx, sy);
-    const double dx = newCenterX - p.centerX;
-    const double dy = newCenterY - p.centerY;
-    TransformMath::Point3 d = rInv * TransformMath::Point3(dx, dy, 1.);
-    if (d.z != 0) {
-        d.x /= d.z;
-        d.y /= d.z;
-    }
-
-    beginChanges();
-    center->setValues(newCenterX, newCenterY, ViewSpec::all(), eValueChangedReasonPluginEdited);
-    translate->setValues(p.translateX + d.x - dx, p.translateY + d.y - dy, ViewSpec::all(), eValueChangedReasonPluginEdited);
-    endChanges();
+    center->setValues((rod.x1 + rod.x2) / 2, (rod.y1 + rod.y2) / 2, ViewSpec::all(), eValueChangedReasonPluginEdited);
 }
 
 double
@@ -804,7 +678,6 @@ DirBlur::canonicalSamples(const DirBlurParams& params,
             direction = std::atan2(dy, dx);
         }
     }
-    const bool transformed = !TransformMath::isIdentity(params.transform);
     std::vector<DirBlurSample> samples(positions.size());
     for (std::size_t i = 0; i < positions.size(); ++i) {
         const double t = positions[i];
@@ -824,12 +697,6 @@ DirBlur::canonicalSamples(const DirBlurParams& params,
             s.inverse = toCenter * TransformMath::scale(k, k) * fromCenter;
             break;
         }
-        }
-        if (transformed) {
-            // A copy before the start of a centred blur takes the inverse of the transform at |t|.
-            const Mat3 along = (t >= 0.) ? TransformMath::inverseTransformCanonical(params.transform, t, params.invert)
-                                         : TransformMath::inverseTransformCanonical(params.transform, -t, !params.invert);
-            s.inverse = s.inverse * along;
         }
         const double a = std::fabs(t);
         const double weight = params.max ? weights[i] : (weights[i] / sum);
@@ -1008,7 +875,7 @@ DirBlur::isOpIdentity(double time,
                       const RectI& /*roi*/,
                       ViewIdx view)
 {
-    // As God Rays: no motion leaves the source unchanged, whatever the tints, Max or holdout.
+    // No motion leaves the source unchanged, whatever the tints, Max or holdout.
     return !hasMotion(getParams(time, view));
 }
 

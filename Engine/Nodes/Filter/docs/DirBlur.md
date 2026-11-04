@@ -6,15 +6,16 @@ Tolerance:
 |---|---|---|---|
 | DirBlur (DirBlur) | resampling | `kDirBlurTolerance` = `ParityTolerance::make(0., 1e-4)` | GPU against CPU, every filter, with and without Clamp and Black outside: the GPU uses the CPU's matrices, factors and summation order, with two-float sample positions |
 
-Smears the image along a direction, around a centre or towards a centre. It replaces Nuke's DirBlur
-and the God Rays node (`net.sf.openfx.GodRays`), whose transform is folded in.
+Smears the image along a direction, around a centre or towards a centre. It replaces the OFX
+DirBlur (`net.sf.openfx.DirBlur`). Rays from a transformed copy of the image are the GodRays node
+(see `GodRays.md`).
 
 ## Model
 
 The output is built from Samples copies of the Source. A copy sits at a position `t` along the blur:
 `(i + 0.5) / n` for `i = 0 .. n - 1`, or `-1 + (2i + 1) / n` with Centered, so it runs both ways.
-Each copy is the Source resampled through one matrix, as the Transform node resamples it. That
-matrix is the mode's motion at `t`, composed with the transform at `|t|`.
+Each copy is the Source resampled through one matrix, as the Transform node resamples it: the
+mode's motion at `t`.
 
 - **Directional.** The copy moves `t * Length` pixels along Direction. That is degrees
   counter-clockwise from the x axis, or, with Use Target, the direction from Center to Target.
@@ -23,25 +24,20 @@ matrix is the mode's motion at `t`, composed with the transform at `|t|`.
 - **Zoom.** The copy is scaled about Center by `k = 1 + (t * Length + Pixel Offset) / R`, where
   `R` is half the format's diagonal. So the format's corners move by `t * Length + Pixel Offset`
   pixels: inwards for a positive Length, outwards for a negative one. `k` is at least 0.01.
-- **Transform.** Translate, Rotate, Scale (with Uniform), Skew X/Y and Skew Order act about Center,
-  as the Transform node's controls do. Transform Amount and Invert also follow the Transform node.
-  The copy at `t` takes the transform at `t * Transform Amount`. Scale is interpolated
-  geometrically. A copy before the start of a centred blur takes the inverse transform at `|t|`.
-  The transform works in every mode. With Length 0 and only the transform you get God Rays.
 
 Each copy's weight is `(1 - |t|)^Falloff`, or 1 when Falloff is 0. The copy is tinted per channel
 by the Ramp from From Color (at `|t| = 0`) to To Color (at `|t| = 1`):
 
 - **Linear:** `from + (to - from) * |t|`.
-- **Exponential:** `from * (to / from)^|t|`, with each colour at least 0.001. This is God Rays'
-  exponential decay: From white and To black give crepuscular rays.
+- **Exponential:** `from * (to / from)^|t|`, with each colour at least 0.001: an exponential
+  decay from From Color to To Color.
 
 The output is the sum of the tinted copies divided by the sum of their weights. With white tints,
 a flat image stays flat and the blur keeps the image's energy. With **Max**, each channel is instead
 the maximum, starting from 0, of the tinted copies, each weighed by its weight without
-normalisation. That is God Rays' "brightest value at each pixel".
+normalisation: the brightest copy at each pixel.
 
-Length 0 with no transform and no Pixel Offset is the identity, whatever the tints, Max or holdout.
+Length 0 with no Pixel Offset is the identity, whatever the tints, Max or holdout.
 
 ## Resampling
 
@@ -49,7 +45,7 @@ Filter, Clamp and Black outside are the Transform node's knobs, with its filter 
 The CPU uses `Resampler::resampleRow` per copy, and minified copies are supersampled as Transform
 does.
 
-- **Filter** defaults to Cubic, as in God Rays and Transform. Draft renders use Impulse.
+- **Filter** defaults to Cubic, as in Transform. Draft renders use Impulse.
 - **Clamp** works only for the filters that honour it (Keys, Simon, Rifman, Mitchell) and is
   disabled otherwise. It keeps the filter's overshoot within the neighbouring pixels' range.
 - **Black outside** (default on): a copy reads black beyond the Source's image, and the region of
@@ -66,7 +62,7 @@ The channel is resampled through the same matrix as each copy, with the same fil
 and always reads black outside its own image. Each copy then counts `1 - clamp(h, 0, 1)` as much.
 Without Max, the held-out copies leave the average and the rest are renormalised to their weights,
 so a pixel whose copies are all held out is 0. With Max, a held-out copy is skipped. The holdout
-works in every mode, whereas Nuke's DirBlur applies it only in Zoom. The Holdout is read over the
+works the same way in every mode. The Holdout is read over the
 Source's region, unclipped by the Source's region of definition.
 
 ## Region
@@ -81,8 +77,9 @@ rendered in.
 
 ## Knobs
 
-The page has the blur controls, then the Filter row, then three groups: Tint (open), Transform
-(closed by default) and Holdout (open). The standard channel, mask and mix knobs follow.
+The page has the blur controls, then the Filter row, then two groups: Tint and Holdout (both open).
+The standard channel, mask and mix knobs follow. Only the controls the selected Mode uses are
+shown; the others are hidden, and come back with their values when the Mode changes back.
 
 | Parameter | Label | Default | Meaning |
 |---|---|---|---|
@@ -95,8 +92,8 @@ The page has the blur controls, then the Filter row, then three groups: Tint (op
 | `direction` | Direction | 45 | Directional's direction, in degrees, without Use Target |
 | `useTarget` | Use Target | off | Directional runs from Center towards Target |
 | `target` | Target | (0.75, 0.5) of the format | Directional's target point, with a Viewer handle |
-| `center` | Center | middle of the format | Centre of Radial, Zoom and the transform; Use Target's start |
-| `resetCenter` | Reset Center | | Centre to the middle of the Source's region, keeping the full transform in place |
+| `center` | Center | middle of the format | Centre of Radial and Zoom; Use Target's start, with a Viewer handle |
+| `resetCenter` | Reset Center | | Center to the middle of the Source's region of definition |
 | `pixelOffset` | Pixel Offset | 0 | Zoom only: moves every copy this many pixels further along the blur at the corners |
 | `filter` | Filter | Cubic | The Transform node's filters |
 | `clamp` | Clamp | off | Clamp the filter's overshoot (Keys, Simon, Rifman, Mitchell) |
@@ -104,36 +101,41 @@ The page has the blur controls, then the Filter row, then three groups: Tint (op
 | `fromColor` | From Color | (1, 1, 1, 1) | Tint at the start of the blur |
 | `toColor` | To Color | (1, 1, 1, 1) | Tint at the end of the blur |
 | `ramp` | Ramp | Linear | Linear or Exponential tint between the colours |
-| `translate` | Translate | (0, 0) | Translation of the copy at the end of the blur |
-| `rotate` | Rotate | 0 | Rotation, in degrees, about Center |
-| `scale` | Scale | (1, 1) | Scale about Center, geometric along the blur |
-| `uniform` | Uniform | off | Use the X scale for both axes |
-| `skewX`, `skewY` | Skew X, Skew Y | 0 | Skews of the copy at the end of the blur |
-| `skewOrder` | Skew Order | XY | Order the skews apply in |
-| `transformAmount` | Transform Amount | 1 | Share of the transform the last copy takes |
-| `invert` | Invert | off | Invert the transform |
-| `interactive` | Interactive | on | Update the values while dragging the Viewer handles, else on release |
 | `holdoutChannel` | Holdout Channel | `rgba.A` | The Holdout input's channel |
 
-The Viewer shows the Transform node's handle (centre, translate, rotate, scale, skew) and a Target
-handle.
+The Viewer shows a Center handle and a Target handle.
+
+### Visibility by mode
+
+| Knob | Directional | Directional with Use Target | Radial | Zoom |
+|---|---|---|---|---|
+| `direction` | shown | hidden | hidden | hidden |
+| `useTarget` | shown | shown | hidden | hidden |
+| `target` | hidden | shown | hidden | hidden |
+| `center`, `resetCenter` | hidden | shown | shown | shown |
+| `pixelOffset` | hidden | hidden | hidden | shown |
+
+Every other knob is shown in every mode. Use Target only matters in Directional, so with it on in
+Radial or Zoom the table's Radial and Zoom columns still apply. The visibility follows Mode and Use
+Target as they change and when a project loads.
 
 ## Decisions
 
-- **Quality dropped.** Nuke's Quality renders the blur at a reduced resolution and scales it back.
-  That makes a pixel depend on the reduced grid, which breaks tile independence and GPU parity.
+- **No reduced-resolution quality control.** Rendering the blur at a reduced resolution and scaling
+  it back would make a pixel depend on the reduced grid, which breaks tile independence and GPU parity.
   Samples and the viewer's proxy cover its use.
-- **PixelAspect dropped.** The pixel aspect ratio comes from the input's metadata. Matrices are built
+- **No pixel aspect knob.** The pixel aspect ratio comes from the input's metadata. Matrices are built
   in canonical coordinates and mapped to pixels with it, so anamorphic footage blurs undistorted
   without a knob.
-- **Holdout in every mode.** Nuke applies the holdout only in Zoom. Here the holdout works the same
-  way in every mode, and the mode does not change what it means.
+- **Holdout in every mode.** The holdout works the same way in every mode, and the mode does not
+  change what it means.
 - **No "(Un)premult by".** DirBlur is a filter: the source is averaged as it comes.
-- **God Rays' Steps** (`2^steps` copies) is Samples, which takes any count.
+- **No transform.** Transformed copies (rays from a scaled, rotated or moved image) are the GodRays
+  node's job, so DirBlur keeps only its three modes. Controls a mode does not use are hidden.
 
 The CPU properties are in `Tests/Native/NativeDirBlur_Test.cpp`. They cover the knobs and groups,
-the sample positions and weights, the ramps, each mode's smear, flat fields, the transform,
-target, pixel offset, holdout and Max, edge repeat and clamp, tiles against the full frame (every
+the visibility of the knobs in each mode, the sample positions and weights, the ramps, each mode's
+smear, flat fields, target, pixel offset, holdout and Max, edge repeat and clamp, tiles against the full frame (every
 mode, filters, Clamp and edge repeat) and legacy against task-graph renders. The GPU parity
 (every filter in every mode, with and without Black outside, mask, mix, channels, holdout and a
 fused Grade chain) is in `Tests/Native/NativeDirBlurGpu_Test.cpp`.

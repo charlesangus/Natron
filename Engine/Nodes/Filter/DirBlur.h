@@ -58,16 +58,6 @@
 #define kDirBlurParamUseTarget "useTarget"
 #define kDirBlurParamTarget "target"
 #define kDirBlurParamPixelOffset "pixelOffset"
-#define kDirBlurParamTranslate "translate"
-#define kDirBlurParamRotate "rotate"
-#define kDirBlurParamScale "scale"
-#define kDirBlurParamUniform "uniform"
-#define kDirBlurParamSkewX "skewX"
-#define kDirBlurParamSkewY "skewY"
-#define kDirBlurParamSkewOrder "skewOrder"
-#define kDirBlurParamTransformAmount "transformAmount"
-#define kDirBlurParamInvert "invert"
-#define kDirBlurParamInteractive "interactive"
 #define kDirBlurParamResetCenter "resetCenter"
 #define kDirBlurParamFromColor "fromColor"
 #define kDirBlurParamToColor "toColor"
@@ -77,7 +67,6 @@
 #define kDirBlurParamMax "max"
 #define kDirBlurParamHoldoutChannel "holdoutChannel"
 #define kDirBlurParamTintGroup "tint"
-#define kDirBlurParamTransformGroup "transform"
 #define kDirBlurParamHoldoutGroup "holdout"
 
 #define kDirBlurInputSource 0
@@ -114,10 +103,6 @@ struct DirBlurParams {
     double falloff = 0.;
     // Zoom only: canonical pixels added to every sample's zoom distance.
     double pixelOffset = 0.;
-    // Applied along the blur in every mode, about the centre: a sample at position t takes the
-    // transform at amount t.
-    TransformMath::TransformParams transform;
-    bool invert = false;
     double fromColor[4] = { 1., 1., 1., 1. };
     double toColor[4] = { 1., 1., 1., 1. };
     DirBlurRampEnum ramp = eDirBlurRampLinear;
@@ -173,7 +158,7 @@ public:
     DirBlurParams getParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /// Whether params move the image at all; when they do not the node is an identity, whatever
-    /// the tints, Max or holdout, as God Rays is.
+    /// the tints, Max or holdout.
     static bool hasMotion(const DirBlurParams& params) WARN_UNUSED_RETURN;
 
     /**
@@ -282,8 +267,13 @@ private:
     void updateClampEnabled(double time, ViewIdx view);
 
     // Moves the centre to the middle of the source's region of definition, or of the project
-    // format without one, changing Translate so that the transform's full amount keeps its place.
+    // format without one.
     void resetCenter(double time);
+
+    // Hides the knobs that do not affect the result in the selected mode: Direction, Use Target
+    // and Target belong to Directional, Pixel Offset to Zoom, and Center to Radial, Zoom and a
+    // Directional blur aimed at its target.
+    void updateModeVisibility();
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -308,16 +298,6 @@ private:
     KnobBoolWPtr _useTarget;
     KnobDoubleWPtr _target;
     KnobDoubleWPtr _pixelOffset;
-    KnobDoubleWPtr _translate;
-    KnobDoubleWPtr _rotate;
-    KnobDoubleWPtr _scale;
-    KnobBoolWPtr _uniform;
-    KnobDoubleWPtr _skewX;
-    KnobDoubleWPtr _skewY;
-    KnobChoiceWPtr _skewOrder;
-    KnobDoubleWPtr _transformAmount;
-    KnobBoolWPtr _invert;
-    KnobBoolWPtr _interactive;
     KnobButtonWPtr _resetCenter;
     KnobColorWPtr _fromColor;
     KnobColorWPtr _toColor;

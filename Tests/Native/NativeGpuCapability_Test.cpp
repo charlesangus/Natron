@@ -67,6 +67,7 @@
 #include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/Glow.h"
+#include "Engine/Nodes/Filter/GodRays.h"
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Median.h"
@@ -182,6 +183,7 @@ gpuCapableIds()
         PLUGINID_NATRON_MEDIAN,
         PLUGINID_NATRON_BILATERAL,
         PLUGINID_NATRON_DIRBLUR,
+        PLUGINID_NATRON_GODRAYS,
         PLUGINID_NATRON_TIMEWARP,
         PLUGINID_NATRON_RETIME,
         PLUGINID_NATRON_CONTRASTTEXTURE,

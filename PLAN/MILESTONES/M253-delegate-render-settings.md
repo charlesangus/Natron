@@ -56,17 +56,17 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 **Verification gate:** CI green; every setting either delegate declares is reachable through a curated or a generated knob (audit output attached to the PR); settings persist and drive renders; a Xvfb screenshot of both property panels is shared with the user.
 
 ## Phase 253.2: Render settings in the scene (user, 2026-11-03)
-- [ ] M253.P2.T1 — Confirm whether hdCycles and hdMoonray consume HdRenderSettings prims
+- [x] M253.P2.T1 — Confirm whether hdCycles and hdMoonray consume HdRenderSettings prims (1ae36579d)
   - files: `PLAN/MILESTONES/M253-delegate-render-settings.md` (Decisions only)
   - approach: the sources aren't in build/, natron-dev or the local ghcr images (both build scripts delete them; `tools/ci/local/build-cycles.sh:169`, `build-moonray.sh:267`). Upstream, Cycles v5.2.0 `src/hydra/render_delegate.{h,cpp}` has no `GetRenderSettingsNamespaces` override and its Bprims (cpp:168) lack `renderSettings`. hdMoonray @986121d (openmoonray d96c6e30) `lib/hydramoonray/RenderDelegate.cc:187` lists only `renderBuffer`. Both take settings through `SetRenderSetting` only. Record this with links. If the image's pins have changed, re-read them. If either now supports the prim, T3 and T6 call `UsdImagingGLEngine::SetActiveRenderSettingsPrimPath` (engine.h:544) for it instead.
   - verify: Decisions note cites file:line for both delegates and the pinned tags
   - size: S
-- [ ] M253.P2.T2 — Carry `renderSettingsPrimPath` stage metadata through scene payloads
+- [x] M253.P2.T2 — Carry `renderSettingsPrimPath` stage metadata through scene payloads (1ae36579d)
   - files: `Engine/ScenePayload.h`, `Engine/Nodes/Scene/SceneOps.cpp`, `USDRead.cpp`, `USDWrite.cpp`, `SceneNodeAuthoring.cpp`
   - approach: add the field to `SceneMetadata` (ScenePayload.h:45), comparing it in `operator==`. Then handle it the same way `defaultPrim` is handled: read it in SceneOps.cpp:331, write it onto the root in `writeRootMetadata` (:354), carry it in USDRead.cpp:321, write it in USDWrite.cpp:587, and hash it in `appendUpstreamMetadata` (SceneNodeAuthoring.cpp:216). This lets `UsdRenderSettings::GetStageRenderSettings` see it.
   - verify: a test where a .usda with the metadata passes through USDRead→USDWrite, and the composed stage and the written file both carry it
   - size: M
-- [ ] M253.P2.T3 — Prim-to-delegate translation library
+- [x] M253.P2.T3 — Prim-to-delegate translation library (1ae36579d)
   - files: new `Engine/Nodes/Scene/RenderSettingsPrim.{h,cpp}`, `Tests/Scene/RenderSettingsPrim_Test.cpp`
   - approach:
     - Namespaces come from the delegate's `GetRenderSettingsNamespaces()`. If that is empty, use a table (cycles, moonray, storm, otherwise `scriptPrefix()`).
@@ -76,21 +76,21 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
     - It also reads the standard attributes: camera rel, resolution, pixelAspectRatio, aspectRatioConformPolicy, dataWindowNDC, disableMotionBlur, disableDepthOfField.
   - verify: unit tests on in-memory .usda strings: mapping both ways for prefixed and unprefixed keys, other namespaces ignored, and active-prim precedence
   - size: M
-- [ ] M253.P2.T4 — USDRenderSettings scene node with standard attributes
+- [x] M253.P2.T4 — USDRenderSettings scene node with standard attributes (1ae36579d)
   - files: new `Engine/Nodes/Scene/USDRenderSettings.{h,cpp,reg.inc}`, `Tests/Scene/USDRenderSettings_Test.cpp`
   - approach: follow `USDCamera` (SceneNodeAuthoring, SceneLayerMemo).
     - It authors a `UsdRenderSettings` prim at a Prim Path knob, default `/Render/rendersettings`.
     - Knobs: Camera (a menu of the upstream cameras, authored as the relationship); format (`ExtentKnobs::createFormatKnobs`) authoring resolution and pixelAspectRatio; Conform Policy covering all five tokens; Data Window; Disable Motion Blur; Disable Depth Of Field.
     - It also has a "Make Active" bool, default on, which sets `renderSettingsPrimPath` (T2).
-    - Animated knobs author time samples through `authorValue`.
-  - verify: the test reads the authored prim back through the UsdRender API, including an animated resolution
+    - The UsdRenderSettingsBase attributes are uniform, so values are authored as defaults and the standard knobs don't animate (PM, 2026-11-03).
+  - verify: the test reads the authored prim back through the UsdRender API, including that no time samples are authored
   - size: L
-- [ ] M253.P2.T5 — Move the per-renderer knob builders onto USDRenderSettings and drop the hidden store
+- [x] M253.P2.T5 — Move the per-renderer knob builders onto USDRenderSettings and drop the hidden store (1ae36579d)
   - files: `RenderSettingsKnobs.{h,cpp}`, `CyclesSettings.cpp`, `MoonRaySettings.cpp`, `USDRenderSettings.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
   - approach: give each `rendererIds()` entry its own page (tab) holding its curated group and Other Settings, all always shown. Add `author(prim, edit)`, which writes non-default values as namespaced attributes (T3's naming). Delete `kRenderSettingsParamStore`, `finish()`, `knobsLoaded()`, `orphans()` and `showRenderer()`. Do not import old values (no backward compat).
   - verify: values for every renderer round-trip through project save/load; the Cycles and MoonRay params→knob audits pass on the new node; the authored attribute names match T3
   - size: L
-- [ ] M253.P2.T6 — Default-renderer attribute `natron:renderer`
+- [x] M253.P2.T6 — Default-renderer attribute `natron:renderer` (1ae36579d)
   - files: `USDRenderSettings.cpp`, `RenderSettingsPrim.{h,cpp}`, `Tests/Scene/RenderSettingsPrim_Test.cpp`
   - approach: a Default Renderer knob authors `uniform token natron:renderer` with the Hydra plugin id (e.g. `HdCyclesPlugin`).
     - USD has no schema attribute for picking a renderer. `UsdRenderPass.passType` is a pipeline category and would need a RenderPass prim.
@@ -142,3 +142,5 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 - 2026-11-03 — **Reshape before merge (user, after research on Solaris/Katana/Gaffer/USD):** a USDRenderSettings scene node authors /Render RenderSettings prims (camera, resolution and other standard attributes) with **one tab per installed renderer** (curated group + Other Settings, namespaced attributes; all renderers' values coexist); **the default renderer is authored in the scene** and USDRender and the viewer may override it; USDRender becomes a thin renderer-agnostic consumer choosing a delegate and a settings prim (default from stage metadata); the hidden-value store goes; the hash ignores /Render attributes outside the active delegate's namespaces. M254's Max Samples/Stop stay viewer-local overrides; M256 takes RenderProduct/RenderVar for AOVs. Needs a check whether hdCycles/hdMoonRay read HdRenderSettings prims natively (else the host translates the prim into SetRendererSetting). New phase to be elaborated.
 - 2026-11-03 — Phase 253.2 elaborated (consultant): neither hdCycles (v5.2.0) nor hdMoonray reads HdRenderSettings prims, so the host translates the active prim's namespaced attributes into SetRendererSetting. Phase 253.1's settings-on-USDRender and hidden store are superseded by it. M253 merges after M254. Open (user): should the viewer default stay Storm or become Scene Default?
 - 2026-11-03 — User: Cycles can't really be tested without render settings; proceed with Phase 253.2 and UAT M249/M251/M252/M254 together with M253 (one AppImage). M252 and M254 merged in (merges 2026-11-03).
+- 2026-11-03 — T1: neither delegate consumes HdRenderSettings prims; both take settings only through SetRenderSetting, so the host translates the prim. Cycles charlesangus/cycles@c8d449e6 (v5.2.0+deep): src/hydra/render_delegate.cpp:58-64,168 (Bprims renderBuffer/openvdbAsset only), no GetRenderSettingsNamespaces; settings via SetRenderSetting (cpp:133, 401). MoonRay openmoonray v2026.29.1/d96c6e30, hdMoonray@986121db: lib/hydramoonray/RenderDelegate.cc:187-193 (Bprims renderBuffer/openvdbAsset), no namespaces or SetRenderSetting override (base store; RenderSettings.cc:70,86,109).
+- 2026-11-03 — T3: UsdRenderComputeNamespacedSettings reads defaults only, so settings() reads each attribute at the requested time. T5: author(prim) takes the prim, not the layer edit.

@@ -30,6 +30,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -103,6 +104,13 @@ public:
     bool getHandleTarget(std::string* primPath,
                          std::string* opName) const;
 
+    /**
+     * @brief Every prim the last evaluation matched, in pattern order, and the name of the op the
+     * node authors on each. Both empty when it matched nothing.
+     **/
+    void getMatchedPrims(std::vector<std::string>* primPaths,
+                         std::vector<std::string>* opNames) const;
+
     const SceneTransformKnobs& getTransformKnobs() const
     {
         return _transform;
@@ -115,6 +123,8 @@ public:
 
     // The xformOp:transform:... name the node authors where the prim has no op of that name yet.
     std::string getBaseOpName() const;
+
+    ModeEnum getMode() const;
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -129,8 +139,6 @@ private:
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    ModeEnum getMode() const;
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

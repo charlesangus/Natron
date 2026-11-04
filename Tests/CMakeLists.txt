@@ -116,6 +116,8 @@ set(Tests_SOURCES
     Ai/ModelRegistry_Test.cpp
     Ai/ModelDownloader_Test.cpp
     Ai/ModelKnob_Test.cpp
+    Ai/Segmentation_Test.cpp
+    Ai/MaskTrace_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -131,6 +133,7 @@ set(Tests_SOURCES
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
@@ -288,6 +291,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
+    EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
@@ -298,7 +302,9 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
+    NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
     RotoItemKnobKeyframes_Test.cpp

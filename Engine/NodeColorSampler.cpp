@@ -170,7 +170,8 @@ renderNodeImage(const NodePtr& node,
                 unsigned int mipmapLevel,
                 const RectI& pixelRect,
                 const ImageLayerDesc& layer,
-                RectI* renderedRect)
+                RectI* renderedRect,
+                const AbortableRenderInfoPtr& abortInfoArg)
 {
     if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || pixelRect.isNull()) {
         return ImagePtr();
@@ -189,7 +190,7 @@ renderNodeImage(const NodePtr& node,
         break;
     }
 
-    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    AbortableRenderInfoPtr abortInfo = abortInfoArg ? abortInfoArg : AbortableRenderInfo::create(false, 0);
     AbortableThread* isAbortable = dynamic_cast<AbortableThread*>(QThread::currentThread());
     if (isAbortable) {
         isAbortable->setAbortInfo(true /*isRenderUserInteraction*/, abortInfo, node->getEffectInstance());

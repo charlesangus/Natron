@@ -286,6 +286,30 @@ private:
 
     void cancelSplice();
 
+    void setKissAiming(bool aiming);
+
+    void updateKissPreview();
+
+    void clearKissPreview();
+
+    void commitKiss();
+
+    void rollBackKisses();
+
+    QUndoCommand* takeKissCommand(NodesGuiList* touched);
+
+    void disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken, const std::set<NodeGuiPtr>& moving);
+
+    void extendCutLine(const QPointF& scenePos);
+
+    void clearCutLine();
+
+    void commitCut();
+
+    void cancelNodeDrag();
+
+    QUndoCommand* takeDragMoveCommand(QUndoCommand* parent, NodesGuiList* moved);
+
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
     bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);

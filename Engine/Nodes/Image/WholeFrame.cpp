@@ -26,6 +26,7 @@
 #include "WholeFrame.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 
 #include "Engine/EffectInstance.h"
@@ -80,6 +81,9 @@ wholeFramePixels(const EffectInstance& effect,
 }
 
 namespace {
+// How often a caller waiting on another's compute asks whether its own render was aborted.
+constexpr std::chrono::milliseconds kCancelPoll(10);
+
 void
 appendExact(std::string* key,
             double value)
@@ -143,8 +147,14 @@ WholeFrameCache::WholeFrameCache(const char* what,
 
 WholeFrameCache::Result
 WholeFrameCache::get(const std::string& key,
+                     const std::function<bool()>& cancelled,
                      const Compute& compute)
 {
+    const auto isCancelled = [&cancelled]() { return cancelled && cancelled(); };
+
+    if (isCancelled()) {
+        return Result();
+    }
     std::unique_lock<std::mutex> lock(_mutex);
 
     for (;;) {
@@ -160,9 +170,23 @@ WholeFrameCache::get(const std::string& key,
             break;
         }
         const std::shared_ptr<InFlight> flight = computing->second;
-        _finished.wait(lock, [&flight]() { return flight->done; });
+        while (!_finished.wait_for(lock, kCancelPoll, [&flight]() { return flight->done; })) {
+            // cancelled may take locks of its own, so it is not asked under the cache's.
+            lock.unlock();
+            const bool stop = isCancelled();
+            lock.lock();
+            if (stop) {
+                return Result();
+            }
+        }
         if (flight->result) {
             return flight->result;
+        }
+        lock.unlock();
+        const bool stop = isCancelled();
+        lock.lock();
+        if (stop) {
+            return Result();
         }
     }
     const std::shared_ptr<InFlight> flight = std::make_shared<InFlight>();

@@ -338,6 +338,7 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
     const EdgeAware::ParallelFor parallel = [&cancel, nThreads](int count, const std::function<void(int)>& body) {
         parallelForCancellable(count, nThreads, cancel, body);
     };
+    const std::function<bool()> cancelled = [&cancel]() { return cancel.check(); };
     const int width = full.width();
     const int height = full.height();
 
@@ -352,13 +353,19 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
         RectI overlap;
         if (PassExec::intersectRects(args.roi, full, &overlap) && !PassExec::isEmptyRect(overlap)) {
             const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, full, it->first.getLayerID(), nComps);
-            mapResult = _map.get(key, [&]() -> WholeFrameCache::Result {
+            mapResult = _map.get(key, cancelled, [&]() -> WholeFrameCache::Result {
+                if (cancel.check()) {
+                    return WholeFrameCache::Result();
+                }
                 ImagePtr src;
                 ImageLayerDesc sourceLayer;
                 if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
                     RectI sourceRoI;
                     // Mapped to the clip's components, the layout the output plane is rendered in.
                     src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
+                }
+                if (cancel.check()) {
+                    return WholeFrameCache::Result();
                 }
                 if (src && !PassExec::isFloatImage(src)) {
                     return WholeFrameCache::Result();

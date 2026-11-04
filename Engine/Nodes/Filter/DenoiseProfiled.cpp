@@ -53,6 +53,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 
 #include <QCoreApplication>
 #include <QMetaObject>
@@ -925,6 +926,10 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     const DenoiseProfiledKernels::Settings& s = r.settings;
     const int sourceInput = plan.sourceInput;
     const double renderScale = args.mappedScale.toOfxPointD().x;
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    RenderCancellation cancel(this);
+    const ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
+    const std::function<bool()> cancelled = [&cancel]() { return cancel.check(); };
 
     ImagePtr mask;
     if (plan.applyMask && (plan.maskChannel >= 0)) {
@@ -959,6 +964,9 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
                 job.divisor.reset();
             }
         }
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
         if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
             return eStatusFailed;
         }
@@ -986,26 +994,36 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
         PlaneJob measureJob = jobs[0];
         measureJob.channels.reset().set(0).set(1).set(2);
         const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, rodPixel, layerIds[0], measureJob.nComps);
-        RenderCancellation measureCancel(this);
-        const WholeFrameCache::Result measured = _varianceFrame.get(key, [&]() -> WholeFrameCache::Result {
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
+        const WholeFrameCache::Result measured = _varianceFrame.get(key, cancelled, [&]() -> WholeFrameCache::Result {
             measureJob.lock();
             const ProcessedPlanes measurePlanes(measureJob);
             const int bw = rodPixel.width();
             const int bh = rodPixel.height();
             const std::size_t planeSize = (std::size_t)bw * bh;
-            const int nThreads = appPTR->getNCPUsAvailableForEffect();
             std::vector<float> filled(planeSize * measurePlanes.count());
-            fillBuffer(measureJob, measurePlanes, rodPixel, Boundary::Zero, nThreads, measureCancel, filled.data());
-            if (measureCancel.check()) {
+            fillBuffer(measureJob, measurePlanes, rodPixel, Boundary::Zero, nThreads, cancel, filled.data());
+            if (cancel.check()) {
                 return WholeFrameCache::Result();
             }
             std::vector<float> rgb(planeSize * 3);
-            for (std::size_t i = 0; i < planeSize; ++i) {
-                for (int c = 0; c < 3; ++c) {
-                    rgb[3 * i + c] = filled[(std::size_t)measurePlanes.planeOfChannel[c] * planeSize + i];
+            parallel(bh, [&](int y) {
+                const std::size_t first = (std::size_t)y * bw;
+                for (std::size_t i = first; i < first + (std::size_t)bw; ++i) {
+                    for (int c = 0; c < 3; ++c) {
+                        rgb[3 * i + c] = filled[(std::size_t)measurePlanes.planeOfChannel[c] * planeSize + i];
+                    }
                 }
+            });
+            if (cancel.check()) {
+                return WholeFrameCache::Result();
             }
-            const Vec3d v = measureVariance(rgb.data(), planeSize, s);
+            const Vec3d v = measureVariance(rgb.data(), planeSize, s, cancelled);
+            if (cancel.check()) {
+                return WholeFrameCache::Result();
+            }
 
             return std::make_shared<const std::vector<float>>(std::vector<float> { (float)v[0], (float)v[1], (float)v[2] });
         });
@@ -1037,9 +1055,6 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
         }
     }
 
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    RenderCancellation cancel(this);
-    const ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);

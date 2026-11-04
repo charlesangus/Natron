@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <array>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -1808,7 +1809,8 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
             // by cancellation leaves the next waiter to compute it.
             std::shared_ptr<FrameComputation> mine;
             std::uint64_t generation = 0;
-            {
+            bool abandoned = cancel.check();
+            if (!abandoned) {
                 std::unique_lock<std::mutex> lock(_frameMutex);
                 for (;;) {
                     if (_frame && (_frameKey == key)) {
@@ -1823,11 +1825,28 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
                         break;
                     }
                     const std::shared_ptr<FrameComputation> other = found->second;
-                    _frameComputed.wait(lock, [&other]() {
+                    while (!_frameComputed.wait_for(lock, std::chrono::milliseconds(10), [&other]() {
                         return other->done;
-                    });
+                    })) {
+                        // aborted() may take locks of its own, so it is not asked under the frame's.
+                        lock.unlock();
+                        abandoned = cancel.check();
+                        lock.lock();
+                        if (abandoned) {
+                            break;
+                        }
+                    }
+                    if (abandoned) {
+                        break;
+                    }
                     if (other->values) {
                         values = other->values;
+                        break;
+                    }
+                    lock.unlock();
+                    abandoned = cancel.check();
+                    lock.lock();
+                    if (abandoned) {
                         break;
                     }
                 }

@@ -53,6 +53,7 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -263,10 +264,13 @@ void denoiseNlm(const float* in,
 /**
  * @brief process_variance(): the red, green and blue sample variance of n interleaved RGB pixels
  * after the variance-stabilising transform, which is 1 where the profile fits a uniform patch.
+ * cancelled, when set, is asked between blocks of pixels; once it answers true the result is
+ * meaningless and the caller discards it.
  **/
 Vec3d measureVariance(const float* in,
                       std::size_t n,
-                      const Settings& settings) WARN_UNUSED_RETURN;
+                      const Settings& settings,
+                      const std::function<bool()>& cancelled = std::function<bool()>()) WARN_UNUSED_RETURN;
 
 /**
  * @brief The number of wavelet scales process_wavelets() uses at renderScale for an image whose

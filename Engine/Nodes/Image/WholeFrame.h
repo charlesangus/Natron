@@ -126,8 +126,14 @@ public:
      * once for any number of concurrent callers with the same key. When it returns null, the
      * callers waiting on it compute again with their own compute, so one cancelled render does
      * not cancel another; an exception from compute is passed on to its caller alone.
+     *
+     * cancelled is the caller's render cancellation. It is asked before the caller takes the
+     * compute on, and every few milliseconds while it waits on another caller's compute, never
+     * under the cache's lock; once it answers true the caller returns null at once and leaves the
+     * compute to the caller running it. The caller running compute is not interrupted by it.
      **/
     Result get(const std::string& key,
+               const std::function<bool()>& cancelled,
                const Compute& compute);
 
     /**

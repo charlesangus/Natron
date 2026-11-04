@@ -3088,6 +3088,10 @@ Node::areAllProcessingThreadsQuit() const
 void
 Node::quitAnyProcessing_non_blocking()
 {
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(false);
+    }
+
     //If this effect has a RenderEngine, make sure it is finished
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );
 
@@ -3119,6 +3123,10 @@ void
 Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
 {
     QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
+
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(true);
+    }
 
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
@@ -4578,6 +4586,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
 

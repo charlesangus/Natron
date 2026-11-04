@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <mutex>
 
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
@@ -35,17 +36,47 @@
 
 NATRON_NAMESPACE_ENTER
 
-LoopFrameCache::LoopFrameCache(std::size_t budget)
+namespace {
+std::mutex sharedBudgetMutex;
+std::shared_ptr<LoopFrameBudget> sharedBudget;
+} // anonymous namespace
+
+LoopFrameBudget::LoopFrameBudget(std::size_t budget)
     : _mutex()
     , _budget(budget)
     , _bytes(0)
     , _clock(0)
-    , _series()
+    , _caches()
 {
 }
 
+std::shared_ptr<LoopFrameBudget>
+LoopFrameBudget::shared()
+{
+    std::lock_guard<std::mutex> l(sharedBudgetMutex);
+
+    if (!sharedBudget) {
+        sharedBudget = std::make_shared<LoopFrameBudget>(defaultBudget());
+    }
+
+    return sharedBudget;
+}
+
+void
+LoopFrameBudget::refreshShared()
+{
+    std::shared_ptr<LoopFrameBudget> budget;
+    {
+        std::lock_guard<std::mutex> l(sharedBudgetMutex);
+        budget = sharedBudget;
+    }
+    if (budget) {
+        budget->setBudget(defaultBudget());
+    }
+}
+
 std::size_t
-LoopFrameCache::defaultBudget()
+LoopFrameBudget::defaultBudget()
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
 
@@ -57,20 +88,125 @@ LoopFrameCache::defaultBudget()
 }
 
 void
-LoopFrameCache::setBudget(std::size_t budget)
+LoopFrameBudget::setBudget(std::size_t budget)
 {
     QMutexLocker k(&_mutex);
 
     _budget = budget;
-    evict(LoopFrameSeries(), std::numeric_limits<int>::min());
+    evict(0, LoopFrameSeries(), std::numeric_limits<int>::min());
+}
+
+std::size_t
+LoopFrameBudget::getBudget() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _budget;
+}
+
+std::size_t
+LoopFrameBudget::bytes() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _bytes;
+}
+
+std::size_t
+LoopFrameBudget::seriesCount() const
+{
+    std::size_t count = 0;
+
+    for (const LoopFrameCache* cache : _caches) {
+        count += cache->_series.size();
+    }
+
+    return count;
+}
+
+void
+LoopFrameBudget::evict(const LoopFrameCache* keptCache,
+                       const LoopFrameSeries& kept,
+                       int keptFrame)
+{
+    while (_bytes > _budget) {
+        LoopFrameCache* victimCache = 0;
+        LoopFrameCache::SeriesMap::iterator victimSeries;
+        std::map<int, LoopFrameCache::Entry>::iterator victim;
+        bool victimIsCheckpoint = true;
+
+        for (LoopFrameCache* cache : _caches) {
+            for (LoopFrameCache::SeriesMap::iterator s = cache->_series.begin(); s != cache->_series.end(); ++s) {
+                const long long interval = cache->intervalOf(s->second);
+                const bool isKept = (cache == keptCache) && (s->first == kept);
+                for (std::map<int, LoopFrameCache::Entry>::iterator e = s->second.entries.begin(); e != s->second.entries.end(); ++e) {
+                    if (isKept && (e->first == keptFrame)) {
+                        continue;
+                    }
+                    const long long offset = (long long)e->first - (long long)s->second.startFrame;
+                    const bool checkpoint = (offset >= 0) && (offset % interval == 0);
+                    const bool better = !victimCache || (victimIsCheckpoint && !checkpoint) || ((victimIsCheckpoint == checkpoint) && (e->second.lastUse < victim->second.lastUse));
+                    if (better) {
+                        victimCache = cache;
+                        victimSeries = s;
+                        victim = e;
+                        victimIsCheckpoint = checkpoint;
+                    }
+                }
+            }
+        }
+        if (!victimCache) {
+            return;
+        }
+        victimSeries->second.bytes -= victim->second.bytes;
+        victimCache->_bytes -= victim->second.bytes;
+        _bytes -= victim->second.bytes;
+        victimSeries->second.entries.erase(victim);
+        if (victimSeries->second.entries.empty()) {
+            victimCache->_series.erase(victimSeries);
+        }
+    }
+}
+
+LoopFrameCache::LoopFrameCache(std::size_t budget)
+    : LoopFrameCache(std::make_shared<LoopFrameBudget>(budget))
+{
+}
+
+LoopFrameCache::LoopFrameCache(const std::shared_ptr<LoopFrameBudget>& budget)
+    : _budget(budget)
+    , _bytes(0)
+    , _series()
+{
+    QMutexLocker k(&_budget->_mutex);
+
+    _budget->_caches.push_back(this);
+}
+
+LoopFrameCache::~LoopFrameCache()
+{
+    QMutexLocker k(&_budget->_mutex);
+
+    clearLocked();
+    _budget->_caches.erase(std::remove(_budget->_caches.begin(), _budget->_caches.end(), this), _budget->_caches.end());
+}
+
+const std::shared_ptr<LoopFrameBudget>&
+LoopFrameCache::budget() const
+{
+    return _budget;
+}
+
+void
+LoopFrameCache::setBudget(std::size_t budget)
+{
+    _budget->setBudget(budget);
 }
 
 std::size_t
 LoopFrameCache::getBudget() const
 {
-    QMutexLocker k(&_mutex);
-
-    return _budget;
+    return _budget->getBudget();
 }
 
 void
@@ -86,7 +222,7 @@ LoopFrameCache::insert(const LoopFrameSeries& series,
     if (bytes == 0) {
         bytes = image->size();
     }
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
     Frames& frames = _series[series];
     if (frames.entries.empty()) {
         frames.startFrame = startFrame;
@@ -94,19 +230,21 @@ LoopFrameCache::insert(const LoopFrameSeries& series,
     Entry& entry = frames.entries[frame];
     frames.bytes -= entry.bytes;
     _bytes -= entry.bytes;
+    _budget->_bytes -= entry.bytes;
     entry.image = image;
     entry.bytes = bytes;
-    entry.lastUse = ++_clock;
+    entry.lastUse = ++_budget->_clock;
     frames.bytes += bytes;
     _bytes += bytes;
-    evict(series, frame);
+    _budget->_bytes += bytes;
+    _budget->evict(this, series, frame);
 }
 
 ImagePtr
 LoopFrameCache::lookup(const LoopFrameSeries& series,
                        int frame)
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
     SeriesMap::iterator found = _series.find(series);
 
     if (found == _series.end()) {
@@ -116,7 +254,7 @@ LoopFrameCache::lookup(const LoopFrameSeries& series,
     if (entry == found->second.entries.end()) {
         return ImagePtr();
     }
-    entry->second.lastUse = ++_clock;
+    entry->second.lastUse = ++_budget->_clock;
 
     return entry->second.image;
 }
@@ -127,7 +265,7 @@ LoopFrameCache::nearestBefore(const LoopFrameSeries& series,
                               int* found,
                               ImagePtr* image)
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
     SeriesMap::iterator it = _series.find(series);
 
     if (it == _series.end()) {
@@ -139,7 +277,7 @@ LoopFrameCache::nearestBefore(const LoopFrameSeries& series,
         return false;
     }
     --after;
-    after->second.lastUse = ++_clock;
+    after->second.lastUse = ++_budget->_clock;
     *found = after->first;
     *image = after->second.image;
 
@@ -149,11 +287,12 @@ LoopFrameCache::nearestBefore(const LoopFrameSeries& series,
 void
 LoopFrameCache::purgeOtherGenerations(U64 hash)
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
 
     for (SeriesMap::iterator it = _series.begin(); it != _series.end();) {
         if (it->first.hash != hash) {
             _bytes -= it->second.bytes;
+            _budget->_bytes -= it->second.bytes;
             it = _series.erase(it);
         } else {
             ++it;
@@ -164,16 +303,23 @@ LoopFrameCache::purgeOtherGenerations(U64 hash)
 void
 LoopFrameCache::clear()
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
 
-    _series.clear();
+    clearLocked();
+}
+
+void
+LoopFrameCache::clearLocked()
+{
+    _budget->_bytes -= _bytes;
     _bytes = 0;
+    _series.clear();
 }
 
 std::size_t
 LoopFrameCache::bytes() const
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
 
     return _bytes;
 }
@@ -181,7 +327,7 @@ LoopFrameCache::bytes() const
 std::vector<int>
 LoopFrameCache::frames(const LoopFrameSeries& series) const
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
     std::vector<int> result;
     SeriesMap::const_iterator it = _series.find(series);
 
@@ -197,7 +343,7 @@ LoopFrameCache::frames(const LoopFrameSeries& series) const
 int
 LoopFrameCache::checkpointInterval(const LoopFrameSeries& series) const
 {
-    QMutexLocker k(&_mutex);
+    QMutexLocker k(&_budget->_mutex);
     SeriesMap::const_iterator it = _series.find(series);
 
     return (it == _series.end()) ? 1 : intervalOf(it->second);
@@ -209,8 +355,8 @@ LoopFrameCache::intervalOf(const Frames& frames) const
     if (frames.entries.empty()) {
         return 1;
     }
-    // Every series shares the quarter of the budget kept for checkpoints.
-    const std::size_t share = _budget / 4 / std::max<std::size_t>(1, _series.size());
+    // Every series of every cache on the budget shares the quarter of it kept for checkpoints.
+    const std::size_t share = _budget->_budget / 4 / std::max<std::size_t>(1, _budget->seriesCount());
     const std::size_t average = std::max<std::size_t>(1, frames.bytes / frames.entries.size());
     const long long capacity = (long long)std::max<std::size_t>(1, share / average);
     const long long span = std::max(0LL, (long long)frames.entries.rbegin()->first - (long long)frames.startFrame);
@@ -223,44 +369,6 @@ LoopFrameCache::intervalOf(const Frames& frames) const
     }
 
     return (int)interval;
-}
-
-void
-LoopFrameCache::evict(const LoopFrameSeries& kept,
-                      int keptFrame)
-{
-    while (_bytes > _budget) {
-        SeriesMap::iterator victimSeries = _series.end();
-        std::map<int, Entry>::iterator victim;
-        bool victimIsCheckpoint = true;
-
-        for (SeriesMap::iterator s = _series.begin(); s != _series.end(); ++s) {
-            const long long interval = intervalOf(s->second);
-            const bool isKept = (s->first == kept);
-            for (std::map<int, Entry>::iterator e = s->second.entries.begin(); e != s->second.entries.end(); ++e) {
-                if (isKept && (e->first == keptFrame)) {
-                    continue;
-                }
-                const long long offset = (long long)e->first - (long long)s->second.startFrame;
-                const bool checkpoint = (offset >= 0) && (offset % interval == 0);
-                const bool better = (victimSeries == _series.end()) || (victimIsCheckpoint && !checkpoint) || ((victimIsCheckpoint == checkpoint) && (e->second.lastUse < victim->second.lastUse));
-                if (better) {
-                    victimSeries = s;
-                    victim = e;
-                    victimIsCheckpoint = checkpoint;
-                }
-            }
-        }
-        if (victimSeries == _series.end()) {
-            return;
-        }
-        victimSeries->second.bytes -= victim->second.bytes;
-        _bytes -= victim->second.bytes;
-        victimSeries->second.entries.erase(victim);
-        if (victimSeries->second.entries.empty()) {
-            _series.erase(victimSeries);
-        }
-    }
 }
 
 NATRON_NAMESPACE_EXIT

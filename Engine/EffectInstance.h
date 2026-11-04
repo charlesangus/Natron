@@ -2122,6 +2122,12 @@ public:
     }
     virtual void clearLastRenderedImage();
 
+    /**
+     * @brief Stops threads the effect runs on its own, outside renders: asks them to stop and,
+     * blocking, waits for them. Called when the node is deactivated or its processing quits.
+     **/
+    virtual void quitBackgroundWork(bool /*blocking*/) { }
+
     void clearActionsCache();
 
     /**

@@ -31,6 +31,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -289,9 +290,21 @@ public:
      **/
     void waitForBake();
 
+    /**
+     * @brief Cancels a running bake and, blocking, waits for the thread startBake() started.
+     **/
+    virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
+
     bool isBaking() const WARN_UNUSED_RETURN;
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
+    /**
+     * @brief Under Cross Frame, whether Load From Cache is on and, when it is, the generation of
+     * the latest bake: what this node's hash and its LoopBegins' fold in, so images cached from
+     * other files or the other source are not reused.
+     **/
+    void appendBakeHash(ContentHasher& h) const;
 
     /**
      * @brief True inside a task of the task-graph scheduler, whose frame store chains the
@@ -677,8 +690,45 @@ private:
     std::string bakedFramePath(const std::string& cacheFile,
                                int frame) const WARN_UNUSED_RETURN;
 
-    // bakeFrames() with the bake marked running by the caller.
-    bool bakeSequence(bool progressStarted,
+    // This node's task in the progress panel, which keys tasks by node, so one user shows it at a
+    // time: a bake takes it over from a catch-up render, which shows none while anyone holds it.
+    class ProgressScope {
+    public:
+        ProgressScope(LoopEnd* effect,
+                      bool bake);
+
+        // Ends the task while this scope holds it.
+        ~ProgressScope();
+
+        ProgressScope(const ProgressScope&) = delete;
+        ProgressScope& operator=(const ProgressScope&) = delete;
+
+        // Starts the task; false when it is not shown.
+        bool start(const std::string& message);
+
+        // Holds a task the caller started, on the main thread.
+        void adopt();
+
+        bool started() const WARN_UNUSED_RETURN;
+
+        // False only when the user cancelled the task.
+        bool update(double progress);
+
+        void end();
+
+    private:
+        bool holds() const WARN_UNUSED_RETURN;
+
+        LoopEnd* const _effect;
+        const AppInstanceWPtr _app;
+        const NodeWPtr _node;
+        const bool _bake;
+        U64 _token;
+        bool _registered;
+    };
+
+    // bakeFrames() with the bake marked running by the caller; starts progress unless it is.
+    bool bakeSequence(ProgressScope& progress,
                       const BakeSettings& settings,
                       std::string* error) WARN_UNUSED_RETURN;
 
@@ -825,7 +875,13 @@ private:
     // The bake's render, aborted by cancelBake(); under _bakeMutex with the thread.
     QMutex _bakeMutex;
     AbortableRenderInfoPtr _bakeRender;
+    // Joined or detached under _bakeThreadMutex, which nothing on the bake thread takes.
+    std::mutex _bakeThreadMutex;
     std::thread _bakeThread;
+    // The ProgressScope holding this node's task, 0 for none.
+    QMutex _progressMutex;
+    U64 _progressHolder = 0;
+    U64 _progressSerial = 0;
 };
 
 NATRON_NAMESPACE_EXIT

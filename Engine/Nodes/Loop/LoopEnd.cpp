@@ -33,6 +33,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -290,7 +291,7 @@ alphaIndexOf(const ImageLayerDesc& layer)
 
 LoopEnd::LoopEnd(NodePtr node)
     : NativeEffectBase(node)
-    , _frameCache(new LoopFrameCache(LoopFrameCache::defaultBudget()))
+    , _frameCache(new LoopFrameCache(LoopFrameBudget::shared()))
     , _bakeGeneration(0)
     , _baking(false)
     , _bakeCancelled(false)
@@ -301,6 +302,13 @@ LoopEnd::LoopEnd(NodePtr node)
 LoopEnd::~LoopEnd()
 {
     cancelBake();
+    {
+        std::lock_guard<std::mutex> l(_bakeThreadMutex);
+        // The bake let go of the last reference to this node: it ends right after.
+        if (_bakeThread.joinable() && (_bakeThread.get_id() == std::this_thread::get_id())) {
+            _bakeThread.detach();
+        }
+    }
     waitForBake();
     --liveLoopEnds;
 }
@@ -638,6 +646,12 @@ LoopEnd::seriesHash(bool loadBaked) const
 void
 LoopEnd::appendNodeContentHash(ContentHasher& h) const
 {
+    appendBakeHash(h);
+}
+
+void
+LoopEnd::appendBakeHash(ContentHasher& h) const
+{
     KnobBoolPtr loadFromCache = _loadFromCache.lock();
     const bool loading = isCrossFrame() && loadFromCache && loadFromCache->getValue();
 
@@ -815,12 +829,118 @@ LoopEnd::refreshBakeMessage(MessageTypeEnum type,
     refreshLoopMessage(getNode(), type, message, &_bakePosted);
 }
 
+LoopEnd::ProgressScope::ProgressScope(LoopEnd* effect,
+                                      bool bake)
+    : _effect(effect)
+    , _app(effect->getApp())
+    , _node(effect->getNode())
+    , _bake(bake)
+    , _token(0)
+    , _registered(false)
+{
+}
+
+LoopEnd::ProgressScope::~ProgressScope()
+{
+    end();
+}
+
+bool
+LoopEnd::ProgressScope::start(const std::string& message)
+{
+    const AppInstancePtr app = _app.lock();
+    const NodePtr node = _node.lock();
+
+    if (!app || !node || _token) {
+        return false;
+    }
+    QMutexLocker k(&_effect->_progressMutex);
+    if (!_bake && _effect->_progressHolder) {
+        return false;
+    }
+    _token = ++_effect->_progressSerial;
+    _effect->_progressHolder = _token;
+    // From another thread the task is registered later, when the main thread gets to it: until
+    // then an update finds none, which is no cancel.
+    _registered = !qApp || (QThread::currentThread() == qApp->thread());
+    app->progressStart(node, message, std::string(), true);
+
+    return true;
+}
+
+void
+LoopEnd::ProgressScope::adopt()
+{
+    QMutexLocker k(&_effect->_progressMutex);
+
+    _token = ++_effect->_progressSerial;
+    _effect->_progressHolder = _token;
+    _registered = true;
+}
+
+bool
+LoopEnd::ProgressScope::started() const
+{
+    return _token != 0;
+}
+
+bool
+LoopEnd::ProgressScope::holds() const
+{
+    QMutexLocker k(&_effect->_progressMutex);
+
+    return _token && (_effect->_progressHolder == _token);
+}
+
+bool
+LoopEnd::ProgressScope::update(double progress)
+{
+    const AppInstancePtr app = _app.lock();
+    const NodePtr node = _node.lock();
+
+    if (!app || !node || !holds()) {
+        return true;
+    }
+    if (app->progressUpdate(node, progress)) {
+        _registered = true;
+
+        return true;
+    }
+
+    // A bake that took the task over meanwhile answered for its own.
+    return !_registered || !holds();
+}
+
+void
+LoopEnd::ProgressScope::end()
+{
+    if (!_token) {
+        return;
+    }
+    {
+        QMutexLocker k(&_effect->_progressMutex);
+        if (_effect->_progressHolder == _token) {
+            _effect->_progressHolder = 0;
+            const AppInstancePtr app = _app.lock();
+            const NodePtr node = _node.lock();
+            if (app && node) {
+                app->progressEnd(node);
+            }
+        }
+    }
+    _token = 0;
+}
+
 bool
 LoopEnd::bakeFrames(bool progressStarted,
                     std::string* error)
 {
+    ProgressScope progress(this, true);
+
     if (progressStarted) {
-        return bakeSequence(true, bakeSettings(), error);
+        progress.adopt();
+
+        return bakeSequence(progress, bakeSettings(), error);
     }
     if (_baking.exchange(true)) {
         *error = tr("A bake of this loop is running.").toStdString();
@@ -828,7 +948,8 @@ LoopEnd::bakeFrames(bool progressStarted,
         return false;
     }
     _bakeCancelled = false;
-    const bool ok = bakeSequence(false, bakeSettings(), error);
+    const bool ok = bakeSequence(progress, bakeSettings(), error);
+    progress.end();
     _baking = false;
     onBakeFinished();
 
@@ -836,22 +957,12 @@ LoopEnd::bakeFrames(bool progressStarted,
 }
 
 bool
-LoopEnd::bakeSequence(bool progressStarted,
+LoopEnd::bakeSequence(ProgressScope& progress,
                       const BakeSettings& settings,
                       std::string* error)
 {
     const AppInstancePtr app = getApp();
     const NodePtr node = getNode();
-    struct ProgressEnd {
-        AppInstancePtr app;
-        NodePtr node;
-        ~ProgressEnd()
-        {
-            if (app) {
-                app->progressEnd(node);
-            }
-        }
-    } progressEnd { progressStarted ? app : AppInstancePtr(), node };
 
     if (!isCrossFrame()) {
         *error = tr("Bake renders a Cross Frame loop: turn Cross Frame on.").toStdString();
@@ -902,9 +1013,8 @@ LoopEnd::bakeSequence(bool progressStarted,
     if (_bakeCancelled.load()) {
         render->setAborted();
     }
-    if (!progressStarted && app) {
-        progressEnd.app = app;
-        app->progressStart(node, tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString(), std::string(), true);
+    if (!progress.started()) {
+        progress.start(tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString());
     }
     const std::function<bool()> cancelled = [this, render]() {
         return _bakeCancelled.load() || render->isAborted();
@@ -978,7 +1088,7 @@ LoopEnd::bakeSequence(bool progressStarted,
 
             return false;
         }
-        if (app && !app->progressUpdate(node, (double)(frame - start + 1) / (double)(end - start + 1))) {
+        if (!progress.update((double)(frame - start + 1) / (double)(end - start + 1))) {
             _bakeCancelled = true;
             *error = tr("The bake was cancelled after frame %1.").arg(frame).toStdString();
 
@@ -998,29 +1108,41 @@ LoopEnd::startBake()
     waitForBake();
     _bakeCancelled = false;
     refreshBakeMessage(eMessageTypeWarning, std::string());
-    const AppInstancePtr app = getApp();
     const NodePtr node = getNode();
-    if (app) {
-        app->progressStart(node, tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString(), std::string(), true);
-    }
+    std::shared_ptr<ProgressScope> progress = std::make_shared<ProgressScope>(this, true);
+    progress->start(tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString());
     const NodeWPtr weakNode = node;
+    const EffectInstanceWPtr weakSelf = shared_from_this();
     const BakeSettings settings = bakeSettings();
-    _bakeThread = std::thread([this, weakNode, settings]() {
+    std::lock_guard<std::mutex> l(_bakeThreadMutex);
+    // Only weak references outlive the bake: deleting the node or closing the project cancels it
+    // and waits for it. Should this thread still drop the last reference, ~LoopEnd detaches it,
+    // so nothing here touches the effect after self is released.
+    _bakeThread = std::thread([weakSelf, weakNode, settings, progress]() mutable {
+        EffectInstancePtr self = weakSelf.lock();
+        LoopEnd* effect = dynamic_cast<LoopEnd*>(self.get());
+        if (!effect) {
+            return;
+        }
         std::string error;
-        const bool ok = bakeSequence(true, settings, &error);
-        const bool wasCancelled = _bakeCancelled.load();
+        const bool ok = effect->bakeSequence(*progress, settings, &error);
+        const bool wasCancelled = effect->_bakeCancelled.load();
+        progress.reset();
         appPTR->getAppTLS()->cleanupTLSForThread();
-        _baking = false;
-        QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
-            NodePtr node = weakNode.lock();
-            LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
-            if (!effect) {
-                return;
-            }
-            effect->onBakeFinished();
-            if (!ok && !wasCancelled) {
-                effect->refreshBakeMessage(eMessageTypeError, error);
-            } }, Qt::QueuedConnection);
+        effect->_baking = false;
+        if (qApp) {
+            QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
+                NodePtr node = weakNode.lock();
+                LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
+                if (!effect) {
+                    return;
+                }
+                effect->onBakeFinished();
+                if (!ok && !wasCancelled) {
+                    effect->refreshBakeMessage(eMessageTypeError, error);
+                } }, Qt::QueuedConnection);
+        }
+        self.reset();
     });
 
     return true;
@@ -1039,8 +1161,22 @@ LoopEnd::cancelBake()
 void
 LoopEnd::waitForBake()
 {
-    if (_bakeThread.joinable() && (_bakeThread.get_id() != std::this_thread::get_id())) {
-        _bakeThread.join();
+    std::lock_guard<std::mutex> l(_bakeThreadMutex);
+
+    if (!_bakeThread.joinable() || (_bakeThread.get_id() == std::this_thread::get_id())) {
+        return;
+    }
+    _bakeThread.join();
+}
+
+void
+LoopEnd::quitBackgroundWork(bool blocking)
+{
+    if (_baking.load()) {
+        cancelBake();
+    }
+    if (blocking) {
+        waitForBake();
     }
 }
 
@@ -1054,7 +1190,11 @@ void
 LoopEnd::onBakeFinished()
 {
     ++_bakeGeneration;
-    getNode()->markHashDirty();
+    const NodePtr node = getNode();
+    if (!node || !node->isActivated()) {
+        return;
+    }
+    node->markHashDirty();
     const AppInstancePtr app = getApp();
     if (app && qApp && (QThread::currentThread() == qApp->thread())) {
         app->renderAllViewers(true);
@@ -1298,21 +1438,10 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
     } driverReset { &_crossFrameMutex, chain.get() };
 
     const int total = frame - from + 1;
-    const AppInstancePtr app = getApp();
-    const NodePtr node = getNode();
-    const bool showProgress = options.showProgress && app && (total > 2);
-    struct ProgressEnd {
-        AppInstancePtr app;
-        NodePtr node;
-        ~ProgressEnd()
-        {
-            if (app) {
-                app->progressEnd(node);
-            }
-        }
-    } progressEnd { showProgress ? app : AppInstancePtr(), node };
-    if (showProgress) {
-        app->progressStart(node, tr("Rendering frames %1 to %2 of the cross-frame loop").arg(from).arg(frame).toStdString(), std::string(), true);
+    ProgressScope progress(this, false);
+    // A bake shows its own progress, which this run's would replace.
+    if (options.showProgress && (total > 2) && !_baking.load()) {
+        progress.start(tr("Rendering frames %1 to %2 of the cross-frame loop").arg(from).arg(frame).toStdString());
     }
     for (int j = from; j <= frame; ++j) {
         if (consumer->aborted()) {
@@ -1330,7 +1459,7 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
         }
         _frameCache->insert(series, start, j, rendered);
         previous = rendered;
-        if (showProgress && !app->progressUpdate(node, (double)(j - from + 1) / (double)total)) {
+        if (!progress.update((double)(j - from + 1) / (double)total)) {
             // Cancelled: the frames rendered so far are kept, this one is not output.
             return eRenderRoIRetCodeFailed;
         }

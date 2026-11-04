@@ -37,6 +37,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QUndoCommand>
 #include <QWidget>
 #include <QtCore/QPointF>
+#include <QtCore/QPointer>
 #include <QtCore/QStringList>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -105,6 +106,19 @@ NodePtr nodeOf(const KnobIPtr& knob);
 QStringList loopVariables(const NodePtr& node);
 
 bool canDrive(const KnobIPtr& knob);
+
+/**
+ * @brief Gives combo the variables, and current when they lack it, refilling it only when its
+ * items differ, and selects current without emitting.
+ **/
+void fillVariables(ComboBox* combo,
+                   const QStringList& variables,
+                   const QString& current);
+
+/**
+ * @brief The name knobs of ends, whose renames change the variables.
+ **/
+std::vector<KnobIPtr> loopNameKnobs(const std::vector<NodePtr>& ends);
 
 std::vector<KnobDriverPtr> driversOf(const KnobIPtr& knob);
 
@@ -338,6 +352,7 @@ private Q_SLOTS:
     void onDimensionChanged(int index);
     void onStartChanged(double value);
     void onEndChanged(double value);
+    void onRangeEditingFinished();
     void onEasingChanged(int index);
     void onEditCurveClicked();
     void onContextMenuRequested(const QPoint& pos);
@@ -354,7 +369,16 @@ private:
     void edit(const LoopDriverEdit::DriverChange& change,
               quint64 gesture);
 
+    // A spin box with focus keeps its text unless force.
+    void showRange(bool force);
+
     void connectLoopEnds(const NodePtr& node);
+
+    void disconnectWatched();
+
+    // Refreshes whenever the graph holding the node gains or loses a node or a connection, which
+    // can move it into or out of a loop.
+    void watchGraph(const NodePtr& node);
 
     std::weak_ptr<KnobGui> _knobGui;
     KnobIWPtr _knob;
@@ -363,7 +387,8 @@ private:
     // The dimension the row edits, -1 for all of them; _scopes lists the dimension choice's.
     int _scope;
     std::vector<int> _scopes;
-    std::vector<NodeWPtr> _watchedLoopEnds;
+    std::vector<KnobIWPtr> _watched;
+    QPointer<NodeGraph> _graph;
     QStringList _variables;
     ComboBox* _variable;
     ComboBox* _dimension;

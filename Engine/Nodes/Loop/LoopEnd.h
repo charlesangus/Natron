@@ -34,6 +34,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <QtCore/QMutex>
@@ -126,6 +127,17 @@ public:
     static bool anyExists() WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether any LoopEnd in the process is in Feedback mode or Cross Frame.
+     **/
+    static bool anyFeedbackExists() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops every pairing of LoopBegins and LoopEnds found so far. Call whenever a node's
+     * inputs, outputs, group wiring, activation or script name change.
+     **/
+    static void onGraphChanged();
+
+    /**
      * @brief The LoopEnd that pairs with begin when it is in Feedback mode and begin feeds back,
      * else null.
      **/
@@ -150,7 +162,8 @@ public:
 
     /**
      * @brief Shows or hides, on the LoopEnds whose loops render node, the knobs that depend on
-     * how many LoopBegins open the loop. Call on the main thread after node's inputs change.
+     * how many LoopBegins open the loop, once the main thread's event loop runs. Call on the main
+     * thread after node's inputs change.
      **/
     static void refreshLoopsOf(const NodePtr& node);
 
@@ -162,11 +175,31 @@ public:
                                    const std::string& oldName);
 
     /**
-     * @brief Appends the LoopBegins that feed back in the Feedback and Cross Frame loops whose
-     * iterations render node.
+     * @brief Finds the LoopBegins that feed back in the Feedback and Cross Frame loops whose
+     * iterations render a node, for many nodes of a graph that does not change meanwhile: the
+     * walks down to the LoopEnds are shared between the nodes asked about.
      **/
-    static void appendFeedbackBeginsOf(const NodePtr& node,
-                                       std::vector<NodePtr>* begins);
+    class FeedbackBeginsLookup {
+    public:
+        /**
+         * @brief Appends the LoopBegins that feed back in the Feedback and Cross Frame loops whose
+         * iterations render node.
+         **/
+        void appendFeedbackBeginsOf(const NodePtr& node,
+                                    std::vector<NodePtr>* begins);
+
+    private:
+        struct StepHash {
+            std::size_t operator()(const std::pair<const Node*, int>& step) const;
+        };
+
+        // The LoopEnds the walk down from node, entering it at depth, pairs with.
+        const std::vector<NodePtr>& pairedEndsAt(const NodePtr& node,
+                                                 int depth);
+
+        std::unordered_map<std::pair<const Node*, int>, std::vector<NodePtr>, StepHash> _pairedEnds;
+        std::unordered_map<const Node*, std::vector<NodePtr>> _feedbackBegins;
+    };
 
     /**
      * @brief What the LoopBegin outputs under a Feedback iteration after the first: tail, the
@@ -316,8 +349,9 @@ public:
      * @brief The tail's output at step, the Feedback chain's store for a scheduler without a frame
      * store: the iterations up to step.iteration not rendered yet in the render consumer belongs
      * to are rendered in order, each at the region the request pass planned for it, each once per
-     * render, and only the last one rendered is kept. image is null where the tail is empty.
-     * With wholeRegion, each iteration is rendered over its whole region of definition instead.
+     * render, and only the last one rendered is kept, until the render ends. image is null where
+     * the tail is empty. With wholeRegion, each iteration is rendered over its whole region of
+     * definition instead, and the chain is let go once driven.
      **/
     EffectInstance::RenderRoIRetCode feedbackImage(const EffectInstance* consumer,
                                                    const FeedbackStep& step,
@@ -794,7 +828,13 @@ private:
     bool abortIfEditedSinceFrameStart() const WARN_UNUSED_RETURN;
 
     // The LoopBegins the walk up from input 0 pairs with, by script name, or why there are none.
+    // Walked once per graph generation.
     std::vector<NodePtr> findLoopBegins(std::string* error) const WARN_UNUSED_RETURN;
+
+    std::vector<NodePtr> walkLoopBegins(std::string* error) const WARN_UNUSED_RETURN;
+
+    // The other LoopEnds of this node's group, listed once per graph generation.
+    std::vector<NodePtr> cachedOtherLoopEnds() const WARN_UNUSED_RETURN;
 
     void refreshMessage(const Resolved& resolved);
 
@@ -828,6 +868,21 @@ private:
     std::string _crossFramePosted;
     std::string _bakePosted;
 
+    // What findLoopBegins() and cachedOtherLoopEnds() found while the graph was at generation.
+    struct Pairing {
+        U64 generation = 0;
+        std::vector<NodeWPtr> begins;
+        std::string error;
+        U64 othersGeneration = 0;
+        std::vector<NodeWPtr> others;
+    };
+
+    mutable QMutex _pairingMutex;
+    mutable Pairing _pairing;
+
+    // A refreshKnobVisibility() queued by refreshLoopsOf() and not run yet.
+    std::atomic<bool> _visibilityRefreshQueued;
+
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;
 
@@ -847,7 +902,8 @@ private:
     };
 
     mutable QMutex _feedbackMutex;
-    std::vector<std::shared_ptr<FeedbackChain>> _feedbackChains;
+    // Owned by their renders, or by the threads driving a chain outside any render.
+    std::vector<std::weak_ptr<FeedbackChain>> _feedbackChains;
 
     struct CrossFrameChain {
         LoopFrameSeries series;

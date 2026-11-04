@@ -1307,6 +1307,9 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);

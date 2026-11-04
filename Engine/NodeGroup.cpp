@@ -55,6 +55,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGuiI.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
@@ -1269,6 +1270,7 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
         _imp->guiInputs = _imp->inputs;
         _imp->guiOutputs = _imp->outputs;
     }
+    LoopEnd::onGraphChanged();
 
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
@@ -1306,6 +1308,7 @@ NodeGroup::notifyNodeActivated(const NodePtr& node)
             _imp->guiOutputs.push_back(node);
         }
     }
+    LoopEnd::onGraphChanged();
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
@@ -1344,10 +1347,13 @@ NodeGroup::notifyNodeNameChanged(const NodePtr& node)
 void
 NodeGroup::dequeueConnexions()
 {
-    QMutexLocker k(&_imp->nodesLock);
+    {
+        QMutexLocker k(&_imp->nodesLock);
 
-    _imp->inputs = _imp->guiInputs;
-    _imp->outputs = _imp->guiOutputs;
+        _imp->inputs = _imp->guiInputs;
+        _imp->outputs = _imp->guiOutputs;
+    }
+    LoopEnd::onGraphChanged();
 }
 
 NodePtr

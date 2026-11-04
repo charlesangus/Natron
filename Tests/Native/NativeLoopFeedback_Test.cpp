@@ -34,6 +34,7 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QTemporaryDir>
 
 #include "BaseTest.h"
@@ -1156,7 +1157,9 @@ TEST_F(NativeLoopFeedbackTest, FeedbackLoopBeginsShowOnlyWithSeveralLoopBegins)
     ASSERT_TRUE(end->connectInput(sum, 0));
     EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "one LoopBegin";
 
+    // Wiring the body refreshes the LoopEnd once the event loop runs.
     ASSERT_TRUE(sum->connectInput(second, 1));
+    QCoreApplication::processEvents();
     EXPECT_FALSE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "two LoopBegins";
 
     ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamMode, kLoopEndParamModeAccumulate));
@@ -1169,7 +1172,107 @@ TEST_F(NativeLoopFeedbackTest, FeedbackLoopBeginsShowOnlyWithSeveralLoopBegins)
     EXPECT_FALSE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "Feedback again";
 
     sum->disconnectInput(1);
+    QCoreApplication::processEvents();
     EXPECT_TRUE(isKnobSecret(end, kLoopEndParamPassThroughBegins)) << "back to one LoopBegin";
+}
+
+// The pairing a LoopEnd and its LoopBegins keep between edits follows every rewiring and rename.
+TEST_F(NativeLoopFeedbackTest, ThePairingFollowsRewiringAndRenames)
+{
+    SharedLoop loop;
+    ASSERT_TRUE(createSharedLoop(&loop));
+    LoopEnd* end = dynamic_cast<LoopEnd*>(loop.end->getEffectInstance().get());
+    ASSERT_TRUE(end);
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first, loop.second }), end->getLoopBegins());
+    EXPECT_EQ(end, LoopEnd::pairedEndOf(loop.second).get());
+
+    loop.sum->disconnectInput(1);
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first }), end->getLoopBegins());
+    EXPECT_FALSE(LoopEnd::pairedEndOf(loop.second)) << "disconnected";
+
+    ASSERT_TRUE(loop.sum->connectInput(loop.second, 1));
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first, loop.second }), end->getLoopBegins());
+    EXPECT_EQ(end, LoopEnd::pairedEndOf(loop.second).get()) << "reconnected";
+
+    // The LoopBegins are listed by script name.
+    ASSERT_NO_THROW(loop.first->setScriptName("ZLastBegin"));
+    EXPECT_EQ(std::vector<NodePtr>({ loop.second, loop.first }), end->getLoopBegins());
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first }), end->getFeedbackBegins());
+    expectValue(loop.end, 41.f, "after rewiring and renaming");
+}
+
+// Feedback LoopBegins lists LoopBegins by script name, which a LoopBegin inside a Group may share
+// with one outside it: a loop opened by two LoopBegins of one name is an error naming both.
+TEST_F(NativeLoopFeedbackTest, LoopBeginsOfOneLoopNeedDifferentNames)
+{
+    NodePtr one = createConstant(1.);
+    NodePtr ten = createConstant(10.);
+    NodePtr outerBegin = createLoopBegin();
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr group = getApp()->createNode(groupArgs);
+    NodePtr sum = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+    NodePtr endNode = createFeedbackEnd(4);
+    ASSERT_TRUE(one && ten && outerBegin && group && sum && endNode);
+    ASSERT_TRUE(setDoubleKnob(sum, "value", 0.));
+    NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(inside));
+    const auto createInside = [&](const char* pluginID) {
+        CreateNodeArgs args(pluginID, inside);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
+    };
+    NodePtr groupInput = createInside(PLUGINID_NATRON_INPUT);
+    NodePtr innerBegin = createInside(PLUGINID_NATRON_LOOPBEGIN);
+    NodePtr groupOutput = createInside(PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && innerBegin && groupOutput);
+    ASSERT_TRUE(innerBegin->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(innerBegin, 0));
+    ASSERT_GE(group->getNInputs(), 1);
+    ASSERT_TRUE(outerBegin->connectInput(one, 0));
+    ASSERT_TRUE(group->connectInput(ten, 0));
+    ASSERT_TRUE(sum->connectInput(outerBegin, 0));
+    ASSERT_TRUE(sum->connectInput(group, 1));
+    ASSERT_TRUE(endNode->connectInput(sum, 0));
+    LoopEnd* end = dynamic_cast<LoopEnd*>(endNode->getEffectInstance().get());
+    ASSERT_TRUE(end);
+
+    ASSERT_NO_THROW(outerBegin->setScriptName("SharedBegin"));
+    ASSERT_NO_THROW(innerBegin->setScriptName("InnerBegin"));
+    EXPECT_EQ(std::vector<NodePtr>({ innerBegin, outerBegin }), end->getLoopBegins());
+    ASSERT_TRUE(setBeginFeedsBack(endNode, innerBegin, false));
+    EXPECT_EQ(std::vector<NodePtr>({ outerBegin }), end->getFeedbackBegins());
+    expectValue(endNode, 41.f, "the LoopBegin in the Group passing through");
+
+    ASSERT_NO_THROW(innerBegin->setScriptName("SharedBegin"));
+    EXPECT_TRUE(end->getLoopBegins().empty());
+    EXPECT_FALSE(LoopEnd::pairedEndOf(innerBegin));
+    EXPECT_FALSE(LoopEnd::pairedEndOf(outerBegin));
+    const QString message = loopErrorOf(endNode);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("both named"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(innerBegin->getFullyQualifiedName().c_str()))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(outerBegin->getFullyQualifiedName().c_str()))) << message.toStdString();
+
+    // Named apart again, the LoopBegin in the Group keeps passing its input through.
+    ASSERT_NO_THROW(innerBegin->setScriptName("InnerBegin"));
+    EXPECT_EQ(std::vector<NodePtr>({ innerBegin, outerBegin }), end->getLoopBegins());
+    EXPECT_EQ(std::vector<NodePtr>({ outerBegin }), end->getFeedbackBegins());
+    expectValue(endNode, 41.f, "named apart again");
+}
+
+// What a node keeps for one render, such as a Feedback chain's last image, goes with the render.
+TEST_F(NativeLoopFeedbackTest, WhatARenderKeepsAliveEndsWithIt)
+{
+    AbortableRenderInfoPtr render = AbortableRenderInfo::create(true, 0);
+    std::shared_ptr<int> kept = std::make_shared<int>(1);
+    const std::weak_ptr<int> weak = kept;
+    render->keepAliveWithRender(kept);
+    kept.reset();
+    EXPECT_FALSE(weak.expired());
+    render.reset();
+    EXPECT_TRUE(weak.expired());
 }
 
 // A LoopEnd just created shows only the knobs of its default settings: Accumulate over a count,

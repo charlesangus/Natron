@@ -51,6 +51,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderContext.h"
@@ -61,6 +63,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGui.h"
 #include "Gui/Label.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeGraph.h"
 #include "Gui/SpinBox.h"
 #include "Gui/UndoHistory.h"
 
@@ -234,6 +237,40 @@ loopVariables(const NodePtr& node)
     }
 
     return variables;
+}
+
+void
+fillVariables(ComboBox* combo,
+              const QStringList& variables,
+              const QString& current)
+{
+    QStringList items = variables;
+
+    if (!items.contains(current)) {
+        items.push_back(current);
+    }
+    if (combo->itemTexts() != items) {
+        combo->clear();
+        for (const QString& name : items) {
+            combo->addItem(name);
+        }
+    }
+    combo->setCurrentText_no_emit(current);
+}
+
+std::vector<KnobIPtr>
+loopNameKnobs(const std::vector<NodePtr>& ends)
+{
+    std::vector<KnobIPtr> knobs;
+
+    for (const NodePtr& end : ends) {
+        const KnobIPtr name = LoopEnd::isLoopEnd(end) ? end->getKnobByName(kLoopEndParamName) : KnobIPtr();
+        if (name && (std::find(knobs.begin(), knobs.end(), name) == knobs.end())) {
+            knobs.push_back(name);
+        }
+    }
+
+    return knobs;
 }
 
 bool
@@ -771,7 +808,8 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
     , _refreshPending(false)
     , _scope(-1)
     , _scopes()
-    , _watchedLoopEnds()
+    , _watched()
+    , _graph()
     , _variables()
     , _variable(0)
     , _dimension(0)
@@ -807,6 +845,7 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
     _start->setToolTip(tr("The value at t = 0. It animates like any parameter: right-click to set a key."));
     _start->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_start, SIGNAL(valueChanged(double)), this, SLOT(onStartChanged(double)));
+    QObject::connect(_start, SIGNAL(editingFinished()), this, SLOT(onRangeEditingFinished()));
     QObject::connect(_start, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onStartMenuRequested(QPoint)));
     layout->addWidget(_start);
 
@@ -818,6 +857,7 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
     _end->setToolTip(tr("The value at t = 1. It animates like any parameter: right-click to set a key."));
     _end->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_end, SIGNAL(valueChanged(double)), this, SLOT(onEndChanged(double)));
+    QObject::connect(_end, SIGNAL(editingFinished()), this, SLOT(onRangeEditingFinished()));
     QObject::connect(_end, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onEndMenuRequested(QPoint)));
     layout->addWidget(_end);
 
@@ -873,32 +913,48 @@ KnobDriverRow::scheduleRefresh()
 }
 
 void
-KnobDriverRow::connectLoopEnds(const NodePtr& node)
+KnobDriverRow::disconnectWatched()
 {
-    for (const NodeWPtr& weak : _watchedLoopEnds) {
-        NodePtr end = weak.lock();
-        if (!end) {
-            continue;
-        }
-        const std::vector<KnobIPtr>& knobs = end->getKnobs();
-        for (const KnobIPtr& knob : knobs) {
-            KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
-            if (helper && helper->getSignalSlotHandler()) {
-                QObject::disconnect(helper->getSignalSlotHandler().get(), 0, this, 0);
-            }
+    for (const KnobIWPtr& weak : _watched) {
+        KnobIPtr knob = weak.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && helper->getSignalSlotHandler()) {
+            QObject::disconnect(helper->getSignalSlotHandler().get(), 0, this, 0);
         }
     }
-    _watchedLoopEnds.clear();
-    // Every knob of a LoopEnd may move the preview iteration or the variables a body reads.
+    _watched.clear();
+}
+
+void
+KnobDriverRow::watchGraph(const NodePtr& node)
+{
+    if (_graph) {
+        return;
+    }
+    const NodeCollectionPtr group = node ? node->getGroup() : NodeCollectionPtr();
+    _graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : 0;
+    if (_graph) {
+        QObject::connect(_graph.data(), SIGNAL(topologyChanged()), this, SLOT(scheduleRefresh()));
+    }
+}
+
+void
+KnobDriverRow::connectLoopEnds(const NodePtr& node)
+{
+    disconnectWatched();
+    // Every knob of a LoopEnd may move the preview iteration or the variables a body reads, its
+    // name, which names its loops.<name>.* variables, included.
     const std::vector<NodePtr> ends = LoopEnd::enclosingLoopEnds(node);
+    std::vector<KnobIPtr> knobs;
     for (const NodePtr& end : ends) {
-        _watchedLoopEnds.push_back(end);
-        const std::vector<KnobIPtr>& knobs = end->getKnobs();
-        for (const KnobIPtr& knob : knobs) {
-            KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
-            if (helper && helper->getSignalSlotHandler()) {
-                QObject::connect(helper->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(scheduleRefresh()));
-            }
+        const std::vector<KnobIPtr>& endKnobs = end->getKnobs();
+        knobs.insert(knobs.end(), endKnobs.begin(), endKnobs.end());
+    }
+    for (const KnobIPtr& knob : knobs) {
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && helper->getSignalSlotHandler()) {
+            QObject::connect(helper->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(scheduleRefresh()));
+            _watched.push_back(knob);
         }
     }
 }
@@ -939,8 +995,7 @@ KnobDriverRow::refresh()
         return;
     }
     const NodePtr node = LoopDriverEdit::nodeOf(knob);
-    connectLoopEnds(node);
-    _variables = LoopDriverEdit::loopVariables(node);
+    watchGraph(node);
 
     const std::vector<KnobDriverPtr> drivers = LoopDriverEdit::driversOf(knob);
     std::vector<int> scopes;
@@ -959,10 +1014,14 @@ KnobDriverRow::refresh()
     }
     setVisible(driving);
     if (!driving) {
+        disconnectWatched();
+        _variables.clear();
         knobGui->setWarningValue(KnobGui::eKnobWarningLoopDriverStale, QString());
 
         return;
     }
+    connectLoopEnds(node);
+    _variables = LoopDriverEdit::loopVariables(node);
 
     if (all) {
         scopes.insert(scopes.begin(), -1);
@@ -985,16 +1044,9 @@ KnobDriverRow::refresh()
         stale = stale || LoopDriverEdit::isStale(d, _variables);
     }
 
-    _variable->clear();
-    for (const QString& name : _variables) {
-        _variable->addItem(name);
-    }
-    if (!_variables.contains(variable)) {
-        _variable->addItem(variable);
-    }
-    _variable->setCurrentText_no_emit(variable);
+    LoopDriverEdit::fillVariables(_variable, _variables, variable);
 
-    refreshRange();
+    showRange(false);
     const int easing = (int)(std::find(kEasings, kEasings + 3, driver->getEasing()) - kEasings);
     _easing->setCurrentIndex_no_emit(easing);
     _editCurve->setVisible(driver->getEasing() == KnobDriver::eEasingCurve);
@@ -1026,6 +1078,12 @@ KnobDriverRow::refreshPreview()
 void
 KnobDriverRow::refreshRange()
 {
+    showRange(false);
+}
+
+void
+KnobDriverRow::showRange(bool force)
+{
     KnobIPtr knob = _knob.lock();
     const KnobDriverPtr driver = currentDriver();
 
@@ -1033,8 +1091,12 @@ KnobDriverRow::refreshRange()
         return;
     }
     const double time = knob->getCurrentTime();
-    _start->setValue(driver->getStartAt(time));
-    _end->setValue(driver->getEndAt(time));
+    if (force || !_start->hasFocus()) {
+        _start->setValue(driver->getStartAt(time));
+    }
+    if (force || !_end->hasFocus()) {
+        _end->setValue(driver->getEndAt(time));
+    }
     _start->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, false, time));
     _end->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, true, time));
 }
@@ -1093,6 +1155,14 @@ KnobDriverRow::onEndChanged(double value)
 
     change.value = value;
     edit(change, _end->getGestureKey());
+}
+
+void
+KnobDriverRow::onRangeEditingFinished()
+{
+    if (_driving) {
+        showRange(true);
+    }
 }
 
 void

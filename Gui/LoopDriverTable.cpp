@@ -243,6 +243,24 @@ LoopDriverTable::rebuild()
     }
 
     const std::vector<NodePtr> body = end->bodyNodes();
+    // A rename of this loop, of one around it or of one nested in its body changes the
+    // variables the rows offer.
+    std::vector<NodePtr> loops = LoopEnd::enclosingLoopEnds(end->getNode());
+    loops.push_back(end->getNode());
+    for (const NodePtr& node : body) {
+        if (LoopEnd::isLoopEnd(node)) {
+            loops.push_back(node);
+        }
+    }
+    const std::vector<KnobIPtr> names = LoopDriverEdit::loopNameKnobs(loops);
+    for (const KnobIPtr& name : names) {
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(name.get());
+        if (helper && helper->getSignalSlotHandler()) {
+            QObject::connect(helper->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(scheduleRebuild()));
+            _watched.push_back(name);
+        }
+    }
+
     for (const NodePtr& node : body) {
         const KnobsVec& knobs = node->getKnobs();
         for (const KnobIPtr& knob : knobs) {
@@ -275,15 +293,13 @@ LoopDriverTable::rebuild()
     }
     if (sameRows) {
         for (int row = 0; row < (int)_entries.size(); ++row) {
-            const KnobDriverPtr driver = LoopDriverEdit::driversOf(_entries[row].knob.lock())[_entries[row].dimension];
+            const KnobIPtr knob = _entries[row].knob.lock();
+            const KnobDriverPtr driver = LoopDriverEdit::driversOf(knob)[_entries[row].dimension];
             ComboBox* variable = qobject_cast<ComboBox*>(_table->cellWidget(row, eColumnVariable));
             ComboBox* easing = qobject_cast<ComboBox*>(_table->cellWidget(row, eColumnEasing));
-            const QString current = QString::fromUtf8(driver->getVariable().c_str());
-            if (variable && !variable->itemTexts().contains(current)) {
-                variable->addItem(current);
-            }
             if (variable) {
-                variable->setCurrentText_no_emit(current);
+                LoopDriverEdit::fillVariables(variable, LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)),
+                                              QString::fromUtf8(driver->getVariable().c_str()));
             }
             if (easing) {
                 easing->setCurrentIndex_no_emit((int)(std::find(kEasings, kEasings + 3, driver->getEasing()) - kEasings));
@@ -306,15 +322,7 @@ LoopDriverTable::rebuild()
         _table->setItem(row, eColumnParameter, readOnlyItem(LoopDriverEdit::knobLabel(knob, knob->getDimension() > 1 ? dimension : -1)));
 
         ComboBox* variable = new ComboBox(_table);
-        const QStringList variables = LoopDriverEdit::loopVariables(node);
-        const QString current = QString::fromUtf8(driver->getVariable().c_str());
-        for (const QString& name : variables) {
-            variable->addItem(name);
-        }
-        if (!variables.contains(current)) {
-            variable->addItem(current);
-        }
-        variable->setCurrentText_no_emit(current);
+        LoopDriverEdit::fillVariables(variable, LoopDriverEdit::loopVariables(node), QString::fromUtf8(driver->getVariable().c_str()));
         variable->setProperty(kRowProperty, row);
         QObject::connect(variable, SIGNAL(currentIndexChanged(int)), this, SLOT(onVariableChanged(int)));
         _table->setCellWidget(row, eColumnVariable, variable);

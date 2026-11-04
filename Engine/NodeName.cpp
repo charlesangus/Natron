@@ -407,6 +407,8 @@ Node::setNameInternal(const std::string& name,
             _imp->label = newName;
         }
     }
+    // A loop lists its LoopBegins by script name.
+    LoopEnd::onGraphChanged();
     std::string fullySpecifiedName = getFullyQualifiedName();
 
     if (collection) {

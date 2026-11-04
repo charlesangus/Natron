@@ -110,14 +110,18 @@ public:
     static QColor pairColor(const std::string& loopName);
 
     /**
-     * @brief The nodes on the paths from begin down to end, both excluded.
+     * @brief The nodes LoopEnd::bodyNodes() gives for end: those on the paths from its LoopBegin
+     * and the side branches feeding them, nested loops included, in one walk up from end.
      **/
-    static std::vector<NodePtr> pathNodes(const NodePtr& begin,
-                                          const NodePtr& end);
+    static std::vector<NodePtr> bodyNodes(const NodePtr& end);
 
 public Q_SLOTS:
 
     void refresh();
+
+private Q_SLOTS:
+
+    void onLoopNameChanged();
 
 private:
     struct Membership {
@@ -129,9 +133,13 @@ private:
 
     void recomputeMembership();
 
+    void disconnectNames();
+
     NodeGraph* _graph;
     QPointer<LoopBlockItem> _item;
     std::vector<Membership> _blocks;
+    // The LoopBegin name knobs, which colour the blocks.
+    std::vector<KnobIWPtr> _watchedNames;
     bool _pending;
     bool _topologyDirty;
 };

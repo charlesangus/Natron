@@ -27,7 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
+#include <set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -36,6 +36,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
@@ -183,6 +184,7 @@ LoopBlockOverlay::LoopBlockOverlay(NodeGraph* graph,
     , _graph(graph)
     , _item(new LoopBlockItem(nodeRoot))
     , _blocks()
+    , _watchedNames()
     , _pending(false)
     , _topologyDirty(true)
 {
@@ -219,51 +221,73 @@ LoopBlockOverlay::pairColor(const std::string& loopName)
 }
 
 std::vector<NodePtr>
-LoopBlockOverlay::pathNodes(const NodePtr& begin,
-                            const NodePtr& end)
+LoopBlockOverlay::bodyNodes(const NodePtr& end)
 {
     std::vector<NodePtr> nodes;
-    // Whether a node reaches begin going up; absent until settled, false while on the stack.
-    std::map<Node*, bool> reaches;
+    std::set<Node*> members;
+    // Each node with the count of LoopEnds less LoopBegins between it and end. LoopEnd's own
+    // walk goes down from every node; walking up instead visits each node once per nesting level.
+    std::set<std::pair<Node*, int>> visited;
     std::vector<std::pair<NodePtr, int>> stack;
 
-    if (!begin || !end) {
+    if (!end) {
         return nodes;
     }
-    reaches[begin.get()] = true;
-    reaches[end.get()] = false;
-    stack.push_back(std::make_pair(end, 0));
+    for (int i = 0; i < end->getNInputs(); ++i) {
+        stack.push_back(std::make_pair(end->getInput(i), 0));
+    }
     while (!stack.empty()) {
         const NodePtr node = stack.back().first;
-        const int input = stack.back().second;
-        if (input < node->getNInputs()) {
-            ++stack.back().second;
-            const NodePtr up = node->getInput(input);
-            if (up && (reaches.find(up.get()) == reaches.end())) {
-                reaches[up.get()] = false;
-                stack.push_back(std::make_pair(up, 0));
-            }
+        int open = stack.back().second;
+        stack.pop_back();
+        if (!node || (node == end) || !visited.insert(std::make_pair(node.get(), open)).second) {
             continue;
         }
-        bool found = false;
-        for (int i = 0; i < node->getNInputs(); ++i) {
-            const NodePtr up = node->getInput(i);
-            found = found || (up && reaches[up.get()]);
-        }
-        reaches[node.get()] = found;
-        if (found && (node != end)) {
+        if (members.insert(node.get()).second) {
             nodes.push_back(node);
         }
-        stack.pop_back();
+        if (LoopEnd::isLoopEnd(node)) {
+            ++open;
+        } else if (LoopBegin::isLoopBegin(node)) {
+            // Nodes above a LoopBegin with no LoopEnd open below it feed that LoopBegin's loop
+            // from outside, so they are not in end's body.
+            if (open == 0) {
+                continue;
+            }
+            --open;
+        }
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            stack.push_back(std::make_pair(node->getInput(i), open));
+        }
     }
 
     return nodes;
 }
 
 void
+LoopBlockOverlay::disconnectNames()
+{
+    for (const KnobIWPtr& weak : _watchedNames) {
+        KnobIPtr knob = weak.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && helper->getSignalSlotHandler()) {
+            QObject::disconnect(helper->getSignalSlotHandler().get(), 0, this, 0);
+        }
+    }
+    _watchedNames.clear();
+}
+
+void
+LoopBlockOverlay::onLoopNameChanged()
+{
+    schedule(true);
+}
+
+void
 LoopBlockOverlay::recomputeMembership()
 {
     _blocks.clear();
+    disconnectNames();
     const NodesGuiList& guis = _graph->getAllActiveNodes();
     for (NodesGuiList::const_iterator it = guis.begin(); it != guis.end(); ++it) {
         const NodePtr end = (*it)->getNode();
@@ -280,7 +304,14 @@ LoopBlockOverlay::recomputeMembership()
         block.end = end;
         LoopBegin* beginEffect = dynamic_cast<LoopBegin*>(begin->getEffectInstance().get());
         block.name = beginEffect ? beginEffect->getLoopName() : begin->getScriptName_mt_safe();
-        const std::vector<NodePtr> nodes = pathNodes(begin, end);
+        const KnobIPtr nameKnob = begin->getKnobByName(kLoopBeginParamName);
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(nameKnob.get());
+        if (helper && helper->getSignalSlotHandler()) {
+            QObject::connect(helper->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(onLoopNameChanged()),
+                             Qt::UniqueConnection);
+            _watchedNames.push_back(nameKnob);
+        }
+        const std::vector<NodePtr> nodes = bodyNodes(end);
         for (const NodePtr& node : nodes) {
             block.nodes.push_back(node);
         }

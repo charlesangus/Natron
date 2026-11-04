@@ -18,10 +18,13 @@ Sections:
     Blur -> LoopEnd and choosing Drive from loop on the Blur's size from its own panel fills the
     open table with size.x and size.y; taking the Blur out of the loop empties it and wiring it
     back fills it again, all without reopening the panel.
+  - stale: with both panels still open, renaming the second LoopBegin swaps its loops.<name>.*
+    variables in the Blur's row and in the table; taking the Blur out of the loop shows the row's
+    stale-driver warning and drops the loop variables from its list, and wiring it back clears it.
 Screenshots: loopdriver_menu.png, loopdriver_row.png, loopdriver_row_iteration3.png,
 loopdriver_table.png, loopdriver_table_edited.png, loopdriver_start_key_menu.png,
 loopdriver_row_keyed.png, loopdriver_curve_editor.png, loopdriver_dope_sheet.png,
-loopdriver_menu_live.png, loopdriver_table_live.png in
+loopdriver_menu_live.png, loopdriver_table_live.png, loopdriver_row_stale.png in
 $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m181_loop_drivers.py
@@ -40,6 +43,8 @@ BEGIN_ID = "fr.natron.LoopBegin"
 END_ID = "fr.natron.LoopEnd"
 DRIVE_ITEM = "Drive from loop"
 SET_KEY_ITEM = "Set Key"
+STALE_WARNING = "no loop around this node sets"
+RENAMED_LOOP = "renamedloop"
 # SpinBox's animation property: 0 constant, 1 animated, 2 on a key.
 ANIMATED = 1
 ON_KEY = 2
@@ -156,6 +161,34 @@ try:
 
     def driver_row(panel):
         return child(panel, "KnobDriverRow")
+
+    def row_variables(panel):
+        """The items of the driver row's variable list on panel, None without a row."""
+        combo = child(driver_row(panel), "driverVariable")
+        return list(combo.property("natronItems")) if combo is not None else None
+
+    def table_variables(node):
+        """The items of each variable list in the driven-knob table on node's open panel."""
+        table = child(panel_of(node), "LoopDriverTable")
+        if table is None:
+            return None
+        lists = []
+        for r in range(table.rowCount()):
+            combo = table.cellWidget(r, 2)
+            lists.append(list(combo.property("natronItems")) if combo is not None else None)
+        return lists
+
+    def stale_warning_shown(panel):
+        """Whether panel shows the stale-driver warning badge."""
+        if panel is None:
+            return False
+        for w in panel.findChildren(QLabel):
+            try:
+                if w.isVisible() and STALE_WARNING in w.toolTip():
+                    return True
+            except RuntimeError:
+                continue
+        return False
 
     def preview_text(panel):
         row = driver_row(panel)
@@ -609,6 +642,41 @@ try:
         require(end2.connectInput(0, blur2), "wire the second Blur back into the loop")
         ok = yield ("until", lambda: table_rows(end2) == ["size.x", "size.y"], POLL_TIMEOUT_S)
         check(ok, "wiring the Blur back lists its driver again (got %r)" % table_rows(end2))
+
+        gt.section("stale")
+        loop_name = begin2.getParam("name")
+        require(loop_name is not None, "the second LoopBegin has a name knob")
+        old_name = loop_name.getValue()
+        old_t = "loops.%s.t" % old_name
+        new_t = "loops.%s.t" % RENAMED_LOOP
+        ok = yield ("until", lambda: old_t in (row_variables(panel_of(blur2)) or []), POLL_TIMEOUT_S)
+        check(ok, "the row offers %s before the rename (got %r)" % (old_t, row_variables(panel_of(blur2))))
+        check(not stale_warning_shown(panel_of(blur2)), "a driver inside its loop shows no stale warning")
+        loop_name.setValue(RENAMED_LOOP)
+
+        def renamed(items):
+            return items is not None and new_t in items and old_t not in items
+
+        ok = yield ("until", lambda: renamed(row_variables(panel_of(blur2))), POLL_TIMEOUT_S)
+        check(ok, "renaming the loop swaps %s for %s in the row (got %r)" % (old_t, new_t, row_variables(panel_of(blur2))))
+        ok = yield ("until", lambda: (table_variables(end2) or []) != [] and all(renamed(v) for v in table_variables(end2)),
+                    POLL_TIMEOUT_S)
+        check(ok, "renaming the loop swaps %s for %s in the table (got %r)" % (old_t, new_t, table_variables(end2)))
+
+        end2.disconnectInput(0)
+        require(end2.connectInput(0, begin2), "take the second Blur out of the loop again")
+        ok = yield ("until", lambda: stale_warning_shown(panel_of(blur2)), POLL_TIMEOUT_S)
+        check(ok, "a driver whose loop no longer encloses the node shows the stale warning")
+        ok = yield ("until", lambda: row_variables(panel_of(blur2)) == ["loop.t"], POLL_TIMEOUT_S)
+        check(ok, "outside any loop the row offers only the driver's own variable (got %r)" % row_variables(panel_of(blur2)))
+        if panel_of(blur2) is not None:
+            screen_crop("loopdriver_row_stale", panel_of(blur2))
+        end2.disconnectInput(0)
+        require(end2.connectInput(0, blur2), "wire the second Blur back into the loop again")
+        ok = yield ("until", lambda: not stale_warning_shown(panel_of(blur2)), POLL_TIMEOUT_S)
+        check(ok, "wiring the Blur back clears the stale warning")
+        ok = yield ("until", lambda: renamed(row_variables(panel_of(blur2))), POLL_TIMEOUT_S)
+        check(ok, "wiring the Blur back offers the loop's variables again (got %r)" % row_variables(panel_of(blur2)))
 
         for node in (end2, blur2, begin2, end, blur, begin, constant):
             node.destroy()

@@ -116,12 +116,12 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
   - size: L
 - [ ] M253.P2.T9 — Viewer reads the active prim
   - files: `Gui/SceneViewport.{h,cpp}`, `Tests/SceneViewport_Test.cpp`
-  - approach: the viewer applies T3's settings for its renderer from the stage's active prim. M254 - Progressive Viewer Render's Max Samples and Stop stay viewer-local and are applied last, over `cycles:samples` / `moonray:sceneVariable:pixel_samples`. Add a "Scene Default" entry to the dropdown, keeping Storm as the default per the M248 user decision of 2026-10-27. Restart only when the changed paths touch the active namespaces or anything outside /Render.
+  - approach: the viewer applies T3's settings for its renderer from the stage's active prim. M254 - Progressive Viewer Render's Max Samples and Stop stay viewer-local and are applied last, over `cycles:samples` / `moonray:sceneVariable:pixel_samples`. Add a "Scene Default" entry to the dropdown, keeping Storm as the default per the M248 user decision of 2026-10-27. Restart only when the changed paths touch the active namespaces or anything outside /Render. MoonRay in the progressive viewer too: the viewer engine calls `MoonRayAovs::configureEngine` (its AOVs and thread budget), as USDRender's does; M254 was built before MoonRay landed.
   - verify: strict GUI runner: a Cycles viewer takes the prim's samples, Max Samples overrides it, and a MoonRay-tab edit does not restart refinement
   - size: M
 - [ ] M253.P2.T10 — GUI check
-  - files: `build/m253-gui/*.py` (scripts only)
-  - approach: run under Xvfb at 1920x1080: a USDRenderSettings panel with Cycles, MoonRay and Storm tabs, USDRender's thin panel, and the viewer dropdown
+  - files: `Tests/gui/m253_render_settings.py`
+  - approach: a remote GUI check (`build.sh --gui`) at 1920x1080: a USDRenderSettings panel with Cycles, MoonRay and Storm tabs, USDRender's thin panel, and the viewer dropdown
   - verify: screenshots shared one per file; the user OKs them
   - size: M
 - [ ] M253.P2.T11 — Docs

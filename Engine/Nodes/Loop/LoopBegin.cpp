@@ -456,6 +456,11 @@ LoopBegin::canRenderOnGpu(const GpuQuery& query) const
     if ((query.nComps < 1) || (query.nComps > 4) || (query.plane.getNumComponents() != query.nComps)) {
         return false;
     }
+    // Cross-frame work stays on the CPU, and takes precedence over feedback as in route().
+    LoopEnd::CrossFrameStep crossFrame;
+    if (crossFrameStep(getNode(), getCurrentRenderContext(), query.time, &crossFrame)) {
+        return false;
+    }
     const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
     LoopEnd::FeedbackStep previous;
 

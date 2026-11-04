@@ -3246,6 +3246,10 @@ LoopEnd::canRenderOnGpu(const GpuQuery& query) const
     if ((query.nComps < 1) || (query.nComps > 4) || (query.plane.getNumComponents() != query.nComps)) {
         return false;
     }
+    // Cross-frame work stays on the CPU.
+    if (crossFrameDriven(query.time)) {
+        return false;
+    }
     const Resolved resolved = resolveAt(query.time);
 
     return resolved.message.empty() && (resolved.folded > 0);

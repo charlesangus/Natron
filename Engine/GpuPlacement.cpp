@@ -827,6 +827,12 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
     if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
         return false;
     }
+    const ParallelRenderArgsPtr contextArgs = gpuTaskContextArgs(task, context);
+    if ((task.key.contextKey != 0) && !contextArgs) {
+        return false;
+    }
+    const ContextFrameArgsScope contextScope(effect, contextArgs);
+
     // renderRoI() fails such a task and posts the missing channel; the GPU would render it without a word.
     if (!node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
         if (refusal) {
@@ -835,11 +841,6 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
 
         return false;
     }
-    const ParallelRenderArgsPtr contextArgs = gpuTaskContextArgs(task, context);
-    if ((task.key.contextKey != 0) && !contextArgs) {
-        return false;
-    }
-    const ContextFrameArgsScope contextScope(effect, contextArgs);
 
     // What renderRoI() renders and passes through.
     EffectInstance::ComponentsNeededMap comps;

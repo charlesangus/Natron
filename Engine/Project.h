@@ -623,6 +623,14 @@ public:
     bool isProjectUpAxisZ() const;
     double getProjectMetersPerUnit() const;
 
+    // The root prim name the project's scenes share materials under ("materials" for the
+    // Materials Scope /materials), or empty when shared materials are off.
+    std::string getProjectMaterialsScope() const;
+
+    // The root prim name a Materials Scope value names: empty unless it is a single absolute
+    // prim name, such as /materials.
+    static std::string validateMaterialsScope(const std::string& path);
+
     KnobPathPtr getEnvVarKnob() const;
 
     /**
@@ -757,6 +765,10 @@ Q_SIGNALS:
     void autoPreviewChanged(bool);
 
     void projectNameChanged(QString name, bool modified);
+
+    // Emitted once a load has succeeded and isLoadingProject() is false again: views that ignore
+    // resizes during a load act on the restored graph here.
+    void loaded();
 
     // Emitted from the saving thread whenever saveProject_imp() ends, so that a save waiting on
     // the main thread can stop waiting.

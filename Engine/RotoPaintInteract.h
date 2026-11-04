@@ -160,10 +160,6 @@ NATRON_NAMESPACE_ENTER
     "- background: the original image unpainted connected to bg,\n" \
     "- backgroundN: the original image unpainted connected to bgN"
 
-#define kRotoUIParamResetCloneOffset "resetCloneOffsetButton"
-#define kRotoUIParamResetCloneOffsetLabel "Reset Transform"
-#define kRotoUIParamResetCloneOffsetHint "Reset the transform applied before cloning to identity"
-
 #define kRotoUIParamMultiStrokeEnabled "multiStrokeEnabledButton"
 #define kRotoUIParamMultiStrokeEnabledLabel "Multi-Stroke"
 #define kRotoUIParamMultiStrokeEnabledHint "When checked, strokes will be appended to the same item " \
@@ -243,11 +239,9 @@ class RotoPaintInteract
 public:
     RotoPaintPrivate* p;
     RotoStrokeItemPtr strokeBeingPaint;
-    int strokeBeingPaintedTimelineFrame;// the frame at which we painted the last brush stroke
-    std::pair<double, double> cloneOffset;
+    int strokeBeingPaintedTimelineFrame; // the frame at which we painted the last brush stroke
     KnobButtonWPtr lastPaintToolAction;
     bool lastTabletDownTriggeredEraser;
-    QPointF mouseCenterOnSizeChange;
 
     //////// Toolbar
     KnobGroupWPtr paintBrushToolGroup;
@@ -279,7 +273,6 @@ public:
     KnobIntWPtr timeOffsetSpinBox;
     KnobChoiceWPtr timeOffsetModeChoice;
     KnobChoiceWPtr sourceTypeChoice;
-    KnobButtonWPtr resetCloneOffsetButton;
     KnobBoolWPtr multiStrokeEnabled;
 
 

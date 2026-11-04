@@ -1268,9 +1268,10 @@ differ by design:
   which changes only the rounding.
 - `recordQuantize` at a sampling other than 0 or 1 may put a sample within a few ulps of a step on
   the other side.
-- `recordPoissonHeal` relaxes the whole image red/black and records all `maxIter` iterations;
-  the ones after convergence return at once. On a device without push descriptors it refuses more
-  than `kPoissonHealGpuMaxIterationsWithoutPushDescriptors`.
+- `recordPoissonHeal` is `poissonHealMultigrid`: the hierarchy is built on the host from the
+  mask, sweeps touch the masked cells only, and levels of at most 4096 cells run their part of a
+  cycle in one dispatch. It records at most `kPoissonHealGpuMaxCycles` cycles; those after
+  convergence return at once. Its sums run in float, in another order.
 
 ### AI nodes
 

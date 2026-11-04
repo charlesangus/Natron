@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <vector>
+
 #include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
 
 NATRON_NAMESPACE_ENTER
@@ -58,6 +61,70 @@ void poissonHeal(const float* src,
                  int height,
                  int maxIter,
                  const ParallelFor& parallel);
+
+/**
+ * @brief poissonHeal()'s equation solved to convergence: conjugate gradients preconditioned by a
+ * multigrid V-cycle (2x2 aggregation with the Galerkin operator, red/black Gauss-Seidel
+ * smoothing), stopped once the residual has fallen by kMultigridTolerance against the boundary
+ * terms or after maxCycles cycles. Unlike darktable's capped SOR, large masks converge.
+ *
+ * guess, when not null (width x height x 4), is a starting dest - src inside the mask, such as a
+ * previous solve's, which a capped draft solve refines. The work is split by masked pixel count,
+ * and the result does not depend on how parallel orders it. Returns the cycles run.
+ **/
+int poissonHealMultigrid(const float* src,
+                         float* dest,
+                         const float* mask,
+                         int width,
+                         int height,
+                         int maxCycles,
+                         const ParallelFor& parallel,
+                         const float* guess = nullptr);
+
+/// The residual reduction, against the boundary terms, at which poissonHealMultigrid() stops.
+const double kPoissonHealMultigridTolerance = 1e-5;
+
+/**
+ * @brief One grid of a HealGrid: cells of the level are cellOffset + (y + 1) * stride + x + 1, a
+ * one-cell zero border around nx x ny, and its active cells are listed at three ranges of
+ * HealGrid::cells: all of them, then the two checkerboard colours, (x + y) even being colour 0.
+ **/
+struct HealGridLevel {
+    int nx = 0;
+    int ny = 0;
+    std::uint32_t cellOffset = 0;
+    std::uint32_t stride = 0;
+    std::uint32_t listOffset[3] = { 0, 0, 0 };
+    std::uint32_t listCount[3] = { 0, 0, 0 };
+};
+
+/**
+ * @brief The multigrid hierarchy poissonHealMultigrid() solves with for a mask, flattened for a
+ * device: the levels finest first, four floats a cell (the diagonal, its inverse, the coupling
+ * to the east cell and to the south cell) and the lists of each level's active cells by their
+ * index within the level.
+ **/
+struct HealGrid {
+    std::vector<HealGridLevel> levels;
+    std::size_t totalCells = 0;
+    std::vector<float> coefficients;
+    std::vector<std::uint32_t> cells;
+};
+
+void buildHealGrid(const float* mask,
+                   int width,
+                   int height,
+                   HealGrid* grid);
+
+/**
+ * @brief The L2 norm over the masked pixels and the four channels of the Laplacian of dest - src,
+ * with the neighbours poissonHeal() uses: 0 for an exact heal.
+ **/
+double poissonHealResidual(const float* src,
+                           const float* dest,
+                           const float* mask,
+                           int width,
+                           int height);
 } // namespace EdgeAware
 
 NATRON_NAMESPACE_EXIT

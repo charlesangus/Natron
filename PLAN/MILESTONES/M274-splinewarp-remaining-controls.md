@@ -284,28 +284,28 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 Fixes land on the integration branch `uat/splinewarp`; the stack (M147–M152, M274) then merges as one integration PR.
 
-- [ ] M274.P7.T1 — Z (smooth) and the Smooth menu action hang Natron on any SplineWarp curve
+- [x] M274.P7.T1 — Z (smooth) and the Smooth menu action hang Natron on any SplineWarp curve (856db8ff2, 69cca67eb, ec0321953)
   - files: SplineWarp viewer interact / roto smoothing code (Gui and Engine roto)
   - approach: reproduce, find the hang (likely a loop over linked/feathered points or a lock re-entry), fix; regression test.
   - verify: Z and right-click Smooth on source, destination, linked and boundary curves return promptly; test covers it.
   - size: M
-- [ ] M274.P7.T2 — Viewer right-click menu on shapes carries the curve actions
+- [x] M274.P7.T2 — Viewer right-click menu on shapes carries the curve actions (856db8ff2, 69cca67eb, ec0321953)
   - approach: Duplicate, Link, Link Transform, Unlink, Toggle Boundary, Toggle Cookie Cutter and the other curve-list actions also appear in the viewer's right-click menu on a shape, enabled by the same rules as the properties panel; one implementation shared by both menus.
   - verify: GUI check right-clicks a shape in the viewer and runs Duplicate and Link from there.
   - size: M
-- [ ] M274.P7.T3 — Point-type shapes are created with a linked point
+- [x] M274.P7.T3 — Point-type shapes are created with a linked point (856db8ff2, 69cca67eb, ec0321953)
   - approach: creating a point shape (single-point curve) in SplineWarp makes the source/destination pair already linked, as the user expects when placing a pin.
   - verify: test creates a point shape and finds it linked; GUI check.
   - size: S
-- [ ] M274.P7.T4 — Coincident source and destination pin the image
+- [x] M274.P7.T4 — Coincident source and destination pin the image (856db8ff2, 69cca67eb, ec0321953)
   - approach: user expectation: moving one destination point of a linked pair should leave regions where source and destination still coincide (the unmoved parts of the curve) essentially fixed. Investigate the solver's samples and interpolation; decide with the consultant's findings and Nuke's documented behaviour.
   - verify: test moves one destination point and checks the displacement near the unmoved parts of the curve is near zero.
   - size: M
-- [ ] M274.P7.T5 — Reorganise SplineWarp's knobs
+- [x] M274.P7.T5 — Reorganise SplineWarp's knobs (856db8ff2, 69cca67eb, ec0321953)
   - approach: no Controls tab mixing layer, global and render controls; group each knob where users look for it (per-curve/layer controls with the curve list, global warp controls, render/quality settings), labels = script names. Output Mask on the main tab. Remove the Interactive knob from the Transform tab (it is a global setting now). Screenshots for the user.
   - verify: GUI screenshots one per page; every knob still saves/loads; layout fits 1920x1080.
   - size: M
-- [ ] M274.P7.T6 — Output Mask creates its channel
+- [x] M274.P7.T6 — Output Mask creates its channel (856db8ff2, 69cca67eb, ec0321953)
   - approach: choosing an output mask layer the input doesn't have creates it on the output instead of warning that the channel isn't in the input.
   - verify: test with an RGB-only input and Output Mask SplineWarpMask.A renders the mask layer with no warning.
   - size: S
@@ -322,3 +322,4 @@ Fixes land on the integration branch `uat/splinewarp`; the stack (M147–M152, M
 - 2026-11-03 — P6.T1 was done in 72049653c (stale comments fixed in 36fa9da7f). Gate green (run 41588454845 at c85f22334). UAT AppImage built; this branch has M147, M149 and M150 but not M148 (viewer tools) or M151.
 - 2026-11-03 — UAT is one integration build, branch uat/splinewarp (M274 + M151 + M152, c8e0975bb; conflicts resolved to M274's single Boundary role; copy/paste also carries cookie cutters, layer amounts and transforms). Each milestone still merges from its own branch; the copy extension must be carried back to M152 before it merges.
 - 2026-11-04 — Knob pages: Warp (Amount, Invert, Layer Amount, Link Amount, Boundary BBox, Crop To Format, Output Mask, mask/mix), Transform (only the transform knobs, name kept for Nuke users), Render (user). Warp actions also in the control-point right-click menu (user).
+- 2026-11-04 — Round 2 gate green on 9884c803c (main merged in, run 41856039611). Repeat right-clicks: KnobChoice::populateChoices' M167 early return swallowed the menu signal (also on main); populateChoices(entries, notifyIfUnchanged) fixes it. UAT round 3: build/appimages/Natron-splinewarp-stack.AppImage.

@@ -1,0 +1,61 @@
+# M334 - Knob Prim Tools
+
+Setting and updating paths and expressions on existing nodes, not only new ones. Every prim path
+or pattern knob gets a selection menu, a popup tree showing current matches, an armed viewer pick,
+and the tree filter doubles as a pattern editor. Builds on M232 - Scene Selection To Nodes.
+Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
+
+## Scope
+
+**In:**
+- Selection menu on the knob: Replace, Add, Remove with the current selection, and Select Matches.
+- Popup tree over the node's input with current matches checked, and Search Unloaded.
+- Armed pick: Pick, select in viewer or panel, Enter writes, Esc cancels.
+- The tree filter accepts path expressions, highlights matches live, and Apply To Node writes the expression.
+
+**Out:**
+- Generating wildcards from a selection — none for now; the filter is where wildcards get built.
+- Pattern language — M52 - USD Layer-Stack Completion's `PrimSelector`.
+- Engine-side matching and Search Unloaded — M331 - Deferred Pattern Matching.
+
+**Edge cases:**
+- Remove on a pattern knob whose text is an expression, not a path list: remove literal entries it can find, and otherwise append `- /path` in `SdfPathExpression`'s difference syntax.
+- A path knob takes one prim from a multi-selection, the same one everywhere, as M232 - Scene Selection To Nodes settles it. Replace is the only menu action there.
+- An armed pick is cancelled by closing the settings panel, deleting the node or switching viewers. Only one knob can be armed.
+- The popup reads the node's input, so paths outside it are listed as "not in input" rather than dropped.
+- Select Matches and the filter report unsearched unloaded branches.
+- `//` recursion, not `/**`: filter help and tooltips must use USD's real syntax.
+- Each write is one undo step.
+
+**Assumptions:**
+- M52 - USD Layer-Stack Completion's `PrimSelector` has reached main by the time this starts.
+
+## Phase 334.1: On the knob
+
+- [ ] M334.P1.T1 — Selection menu on prim knobs
+  - files: `Gui/KnobGuiString.{h,cpp}`, `Gui/SceneSelectionActions.{h,cpp}`, `Tests/gui/scene_knob_tools.py`
+  - approach: a small menu button on flagged knobs. Replace, Add and Remove take the current viewer selection and write one undo step. Select Matches evaluates the knob through `PrimSelector` and sets the selection set in viewer and panel. Share the write path with `dropPrimPaths`.
+  - verify: GUI script on USDPrune — Add appends, Remove takes out, Replace swaps, each undoable; Select Matches on `/a/*` highlights those rows.
+  - size: M
+
+- [ ] M334.P1.T2 — Popup tree with current matches
+  - files: `Gui/ScenePrimPickerPopup.{h,cpp}`, `Gui/KnobGuiString.cpp`, `Tests/gui/scene_prim_picker.py`
+  - approach: extend M232's popup. Opens on the node's input, unloaded. Current matches are checked and their ancestors opened. Search Unloaded calls M331 - Deferred Pattern Matching's query and shows results marked as unloaded. OK writes literal paths, unless the text was an expression and nothing changed, which leaves it alone.
+  - verify: GUI script — opening on `/a /b` shows both checked; OK with no change leaves an expression knob's text intact; Search Unloaded on the city finds a match inside an unloaded payload without loading it on the viewer.
+  - size: M
+
+- [ ] M334.P1.T3 — Armed viewer pick
+  - files: `Gui/KnobGuiString.cpp`, `Gui/SceneViewport.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_armed_pick.py`
+  - approach: Pick puts the viewer and panel into a visible armed state for that knob. Selecting works as usual, Enter writes one undo step, Esc cancels. Show the armed knob in a viewer banner; `M326 - Legible Viewer Warning Banner` isn't a dependency, so use the existing viewer overlay text.
+  - verify: GUI script — pick two prims, Enter writes both; Esc leaves the knob unchanged; deleting the node cancels the mode.
+  - size: M
+
+## Phase 334.2: Filter as pattern editor
+
+- [ ] M334.P2.T1 — Filter takes path expressions and applies them
+  - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneGraphModel.{h,cpp}`, `Tests/gui/scene_filter_pattern.py`
+  - approach: text beginning with `/` or containing `%` or `{` is parsed as an expression through `PrimSelector`; other text stays a name search. Matching stays incremental (8 ms slices between stage-lock releases, per the 2026-11-02 M231 - Scene Graph Panel decision) and uses `UsdObjectCollectionExpressionEvaluator`'s incremental searcher. Add `loaded` and `active` predicates through a custom predicate library. Apply To Node writes the expression to the current node's first prim pattern knob as one undo step. Invalid expressions show the parse error beside the field.
+  - verify: GUI script — `//{kind:component}` lists only components and highlights in the viewer; Apply To Node writes that text; the panel reports unsearched unloaded branches; the main thread stays within the stall budget on the flat file.
+  - size: L
+
+**Verification gate:** release gate green; GUI scripts pass under Xvfb; on one USDPrune, drag, each menu action, popup, armed pick and Apply To Node all round-trip through Undo; screenshots of the menu, popup and armed state shared before sign-off; accepted from the UAT AppImage.

@@ -119,3 +119,4 @@
 - 2026-11-01 — niikl-defocus-port-shape: port Niik-l LensTrace into ZDefocus/Defocus, not their LensDefocus node; harness-measured ZDefocus engine revisit, GPU-resident; DeepDefocus after → DECISIONS/2026-11-01-niikl-defocus-port-shape.md
 - 2026-11-01 — unified-tiered-cache: one cache logic over RAM/disk/VRAM tiers, cost-aware demotion past high-water, retention priority replaces shouldCacheOutput, DiskCache node = pin, viewer cache separate → DECISIONS/2026-11-01-unified-tiered-cache.md
 - 2026-11-03 — expression-frame-view-globals: frame/view in the shared Python globals is accepted behaviour; no isolation stub, at most document it (user) → DECISIONS/2026-11-03-expression-frame-view-globals.md
+- 2026-11-04 — scene-graph-draw-model: twirl, per-viewer draw state and load set are independent; loading is intentional; display state stays out of USD; patterns match what the evaluator has loaded (user) → DECISIONS/2026-11-04-scene-graph-draw-model.md

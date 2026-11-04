@@ -168,6 +168,17 @@ future core work has solid ground to build on.
 | M230 | 3D Transform Widgets | done | M226, M229 | bosley-native-nodes | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | blocked | M229 | bosley-native-nodes | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
 | M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
+| M327 | Heavy Scene Spike | todo | M231, M232 |  | E9 | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
+| M328 | Deferred Viewer Stage | todo | M327 |  | E9 | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
+| M329 | Viewer Draw States | todo | M327, M328 |  | E9 | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
+| M330 | Graph Draw Policy | todo | M329 |  | E9 | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
+| M331 | Deferred Pattern Matching | todo | M52, M327, M328 |  | E9 | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
+| M332 | Scene Graph Points | todo | M328 |  | E9 | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
+| M333 | Prim Inspector | todo | M232 |  | E9 | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
+| M334 | Knob Prim Tools | todo | M52, M232, M331 |  | E9 | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
+| M335 | Viewer Render Draw States | todo | M254, M329 |  | E9 | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
+| M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
+| M337 | Geometry Spreadsheet | todo | M54, M333 |  | E9 | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
 | M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
@@ -420,11 +431,10 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
-- **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03).
-- M231 - Scene Graph Panel (bosley-native-nodes): on hold, not to merge (user, 2026-11-02: "more thoughts trying it again"); waiting for the user's feedback. M232 - Scene Selection To Nodes is stacked on it and waits too.
+- **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03). The scene graph redesign is also exempt (user, 2026-11-04): M327 - Heavy Scene Spike through M336 - Heavy Scene Acceptance may start once M231 - Scene Graph Panel and M232 - Scene Selection To Nodes are merged.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
 - **NatronRenderer and [Project] (PM, 2026-11-02):** `NatronRenderer -w Write 3-3 defocus_retime.ntpz` fails with "Could not open [Project]/../…": the Write path's [Project] is not expanded when the renderer opens an .ntpz directly (seen on the M125 branch, before M245 - Write Path Variables). Re-check once M245 is on main; if it persists, file it.
-- **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M231 - Scene Graph Panel (one-level twirl, Open Mode/Levels, USDExpandHierarchy, Follow chooser), M232 - Scene Selection To Nodes (never UAT-tested; wrap mode, prim path fill, Tab filtering), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo).
+- **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo).
 - **M206 - Neural Raw Denoise:** remind the user later about the hand-made darktable 5 reference export (user, 2026-11-02: "remind me later").
 
 - M238 - EdgeExtend Options (bosley-native-nodes): which Nuke options to add (recommend all five), replace Size/Slices with push-pull (recommend yes), edge mask in an output channel (recommend yes). See the milestone's Open questions.

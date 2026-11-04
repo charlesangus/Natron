@@ -1,0 +1,67 @@
+# M330 - Graph Draw Policy
+
+Control of draw states from the node graph: USDRead's `Initial Draw`, a new USDExpandHierarchy,
+and Bake to Node. Policy travels along scene edges beside the layer stack and never enters a
+USD layer, so viewers follow it and USDRender and USDWrite never see it. Design:
+`PLAN/DESIGN/2026-11-04-scene-graph-design.md`. Names from M329 - Viewer Draw States are
+assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
+
+## Scope
+
+**In:**
+- Policy rules on `ScenePayload`: pattern, draw state and options, in graph order.
+- USDRead `Initial Draw`: BBox (default), Levels, To Kind, Full, Full + Load. Applied only to the prims that USDRead brought in.
+- USDExpandHierarchy: rules of pattern and draw state, with deferred matching.
+- Rows show whether their state comes from the viewer or the graph.
+- Bake to Node.
+
+**Out:**
+- Affecting USDRender or USDWrite: never (user).
+- Deferred matching in other nodes — M331 - Deferred Pattern Matching.
+- USD-level load controls such as authored population masks — none.
+
+**Edge cases:**
+- A viewer's interactive state beats graph policy on the same path; among graph rules, the later node wins.
+- USDMerge concatenates its inputs' policies in input order.
+- Full + Load on a pattern re-matches after each load until nothing new matches, and can be cancelled from the panel.
+- A rule matching nothing does nothing and shows no error, since its target may sit inside an unloaded payload. The node shows the unsearched note from M331 - Deferred Pattern Matching once that lands.
+- Bake to Node with nothing set is disabled.
+- Baking when the viewed node already has a USDExpandHierarchy directly below it adds to that node rather than chaining another.
+
+## Phase 330.1: Policy along edges
+
+- [ ] M330.P1.T1 — Carry draw policy on ScenePayload
+  - files: `Engine/ScenePayload.{h,cpp}`, `Engine/Nodes/Scene/SceneOps.cpp`, `Gui/SceneViewport.cpp`, `Tests/Scene/ScenePayload_Test.cpp`, `Tests/Scene/USDWrite_Test.cpp`
+  - approach: a rules list on the payload, free of pxr types like the rest of `ScenePayload`. It feeds the viewer's effective-state resolution as the middle layer of precedence. A change of rules must not change the stack hash, so it never re-authors a layer or recomposes.
+  - verify: gtest — equal stacks with different rules hash equal; a USDWrite export is byte-identical with and without rules; a USDRender stage has no trace of them.
+  - size: M
+
+- [ ] M330.P1.T2 — USDRead Initial Draw knob
+  - files: `Engine/Nodes/Scene/USDRead.{h,cpp}`, `Engine/Nodes/Scene/docs/USDRead.md`, `Tests/Scene/USDRead_Test.cpp`, `Tests/gui/scene_initial_draw.py`
+  - approach: script name `initialDraw`, label "Initial Draw", plus `levels` and `toKind` shown when relevant. Emits rules scoped to the file's top-level prims; To Kind stops at the first prim of that kind or stronger. Full + Load loads payloads below in viewers only. No scene edit.
+  - verify: gtest — each value emits the expected rules; GUI script — a new USDRead on the city draws one box per top-level prim, native primitives merged with it stay Full, and no building layer opens.
+  - size: M
+
+## Phase 330.2: USDExpandHierarchy
+
+- [ ] M330.P2.T1 — USDExpandHierarchy node
+  - files: `Engine/Nodes/Scene/USDExpandHierarchy.{h,cpp}`, `Engine/Nodes/Scene/USDExpandHierarchy.reg.inc`, `Engine/Nodes/Scene/docs/USDExpandHierarchy.md`, `Tests/Scene/USDExpandHierarchy_Test.cpp`, `Tests/gui/scene_expand_hierarchy.py`
+  - approach: authors no layer; passes its input stack through and appends rules. Holds a list of rules so Bake to Node can write several; check existing table knobs before adding a knob type. Pattern knobs carry the prim-path hint. Viewer resolution matches patterns against loaded prims. A Full + Load rule iterates its re-match after each load. Rewrites the node removed from M231 - Scene Graph Panel; take its docs and registration from git history.
+  - verify: gtest — stack hash is unchanged by the node, and a rule's effect is resolved per viewer; GUI script — a Full + Load rule on one block loads only that block's payloads, and removing the node returns that block to its USDRead default draw while its payloads stay loaded until Unload.
+  - size: L
+
+## Phase 330.3: Row origin and baking
+
+- [ ] M330.P3.T1 — Show where each row's state comes from
+  - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneGraphModel.{h,cpp}`, `Tests/gui/scene_draw_origin.py`
+  - approach: the draw column distinguishes viewer-set, graph-set and inherited values, with a tooltip naming the node. Reset to Graph on a row or on the panel clears interactive states.
+  - verify: GUI script — a graph-set row shows its node in the tooltip, an interactive change flips its origin, and Reset to Graph flips it back.
+  - size: M
+
+- [ ] M330.P3.T2 — Bake to Node
+  - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneSelectionActions.{h,cpp}`, `Tests/gui/scene_bake_to_node.py`
+  - approach: a panel action writing the viewer's interactive states into a USDExpandHierarchy below the viewed node, as literal paths, and clearing them. One undo step covers node, rules and clearing. If a USDExpandHierarchy is directly below, add to it.
+  - verify: GUI script — after baking, the viewer draws the same, the states are graph-origin, Undo restores both graph and interactive states; saving and reopening keeps the draw.
+  - size: M
+
+**Verification gate:** release gate green; GUI scripts above pass under Xvfb; a USDWrite export and a USDRender of the city are unaffected by any rule; harness budgets still pass on the GPU host; screenshots of the draw column's origins shared before sign-off; accepted from the UAT AppImage.

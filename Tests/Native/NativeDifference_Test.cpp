@@ -258,11 +258,14 @@ protected:
                 for (int c = 0; c < 3; ++c) {
                     ASSERT_EQ(b[c], got[c]) << "channel " << c << " at (" << x << ", " << y << ")";
                 }
-                // Nothing is written outside the union of the two sources' regions, so alpha is zero
-                // there whatever the remap does to a zero distance.
-                const bool inB = (x >= 0) && (y >= 0) && (x < kParitySourceWidth) && (y < kParitySourceHeight);
-                const bool inA = withA && (x >= aOriginX) && (y >= aOriginY) && (x < aOriginX + kParitySourceWidth) && (y < aOriginY + kParitySourceHeight);
-                const float want = (inA || inB) ? matte(b, a, remap) : 0.f;
+                // Nothing is written outside the bounding box of the two sources' regions, so alpha is
+                // zero there whatever the remap does to a zero distance.
+                const int x1 = withA ? std::min(0, aOriginX) : 0;
+                const int y1 = withA ? std::min(0, aOriginY) : 0;
+                const int x2 = withA ? std::max(kParitySourceWidth, aOriginX + kParitySourceWidth) : kParitySourceWidth;
+                const int y2 = withA ? std::max(kParitySourceHeight, aOriginY + kParitySourceHeight) : kParitySourceHeight;
+                const bool inRegion = (x >= x1) && (y >= y1) && (x < x2) && (y < y2);
+                const float want = inRegion ? matte(b, a, remap) : 0.f;
                 ASSERT_NEAR(want, got[3], relTolerance * std::max(1.f, std::fabs(want))) << "alpha at (" << x << ", " << y << ")";
                 largest = std::max(largest, got[3]);
             }

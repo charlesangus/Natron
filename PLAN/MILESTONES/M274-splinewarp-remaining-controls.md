@@ -280,6 +280,36 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
   - verify: no Soft Boundary role anywhere; a feathered boundary still gives a soft falloff in the tests and GUI check.
   - size: M
 
+## Phase 274.7: Stack UAT Round 2 (user, 2026-11-04)
+
+Fixes land on the integration branch `uat/splinewarp`; the stack (M147–M152, M274) then merges as one integration PR.
+
+- [ ] M274.P7.T1 — Z (smooth) and the Smooth menu action hang Natron on any SplineWarp curve
+  - files: SplineWarp viewer interact / roto smoothing code (Gui and Engine roto)
+  - approach: reproduce, find the hang (likely a loop over linked/feathered points or a lock re-entry), fix; regression test.
+  - verify: Z and right-click Smooth on source, destination, linked and boundary curves return promptly; test covers it.
+  - size: M
+- [ ] M274.P7.T2 — Viewer right-click menu on shapes carries the curve actions
+  - approach: Duplicate, Link, Link Transform, Unlink, Toggle Boundary, Toggle Cookie Cutter and the other curve-list actions also appear in the viewer's right-click menu on a shape, enabled by the same rules as the properties panel; one implementation shared by both menus.
+  - verify: GUI check right-clicks a shape in the viewer and runs Duplicate and Link from there.
+  - size: M
+- [ ] M274.P7.T3 — Point-type shapes are created with a linked point
+  - approach: creating a point shape (single-point curve) in SplineWarp makes the source/destination pair already linked, as the user expects when placing a pin.
+  - verify: test creates a point shape and finds it linked; GUI check.
+  - size: S
+- [ ] M274.P7.T4 — Coincident source and destination pin the image
+  - approach: user expectation: moving one destination point of a linked pair should leave regions where source and destination still coincide (the unmoved parts of the curve) essentially fixed. Investigate the solver's samples and interpolation; decide with the consultant's findings and Nuke's documented behaviour.
+  - verify: test moves one destination point and checks the displacement near the unmoved parts of the curve is near zero.
+  - size: M
+- [ ] M274.P7.T5 — Reorganise SplineWarp's knobs
+  - approach: no Controls tab mixing layer, global and render controls; group each knob where users look for it (per-curve/layer controls with the curve list, global warp controls, render/quality settings), labels = script names. Output Mask on the main tab. Remove the Interactive knob from the Transform tab (it is a global setting now). Screenshots for the user.
+  - verify: GUI screenshots one per page; every knob still saves/loads; layout fits 1920x1080.
+  - size: M
+- [ ] M274.P7.T6 — Output Mask creates its channel
+  - approach: choosing an output mask layer the input doesn't have creates it on the output instead of warning that the channel isn't in the input.
+  - verify: test with an RGB-only input and Output Mask SplineWarpMask.A renders the mask layer with no warning.
+  - size: S
+
 ## Decisions
 
 - 2026-11-02 — Audit: every task but P5.T2 is committed and pushed (046ace3c2, c707964a3, 9ce74bffd, eabe9bf6a, c6e1cd742, ea152553a); no uncommitted work, no PR. P5.T2 still waits on M270. The latest remote build (40676155527, at 174d2beac) failed in both ctest legs; the four commits since are unbuilt. Open questions 1–4 and the label-rule exceptions are still with the user. The branch carries the whole M147–M151 and M148 stack and is 23 commits behind main.

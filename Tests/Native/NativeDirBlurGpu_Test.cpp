@@ -234,7 +234,10 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
 // Every filter of the Transform node's set, with Clamp where the filter honours it, in every mode,
 // against the CPU render. Black outside alternates with the mode, so each filter renders with it
 // on and off. Its own suite, so its own ctest timeout: each end-to-end render brings up a fresh
-// device, and on a software device building the resampling pipeline takes seconds.
+// device, and on a software device building the resampling pipeline takes seconds. The length is
+// not a round value: the format's half diagonal is 40, and 15 over it makes a zoom of exactly 2/3,
+// whose sample positions land on pixel edges, where a discontinuous filter's tap is decided by the
+// last bit of the CPU's double position.
 class NativeDirBlurGpuFilterTest
     : public NativeDirBlurGpuTest {
 };
@@ -256,7 +259,7 @@ TEST_F(NativeDirBlurGpuFilterTest, MatchesTheCpuRenderForEveryFilter)
             ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
             ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
-            ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
             const std::string name = std::string(mode) + " " + filters[f].id + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");

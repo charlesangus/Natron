@@ -186,3 +186,4 @@ Median and Bilateral approved (user).
 - 2026-10-13 — **GPU ships with each port (user).**
 
 **Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Median, Bilateral (both modes) and DirBlur (all modes) are rendered with a mask and mix ≠ 1, and the DirBlur centre overlay is dragged. Screenshots are shared with the user before sign-off. The retired IDs load as missing-plugin nodes. An AppImage built with `package.sh` is handed over for UAT.
+- 2026-11-04 — DirBlur keeps its From/To tint ramp (and Max); DirBlur's holdout is removed and GodRays gets none (user). GodRays gamma: tint = From + (To−From)·a^(1/gamma), so Gamma > 1 reaches To sooner (user). Samples cap 512, old OFX icon kept (PM).

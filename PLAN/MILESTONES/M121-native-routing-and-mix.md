@@ -52,7 +52,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - The native `Switch` node, its routing and its tests: M137 - Native Base Class Flexibility.
 
 **Edge cases:**
-- KeyMix with A unconnected is identity on B. With the mask unconnected, A covers everywhere (mask = 1), the same as Nuke.
+- KeyMix with A unconnected is identity on B. With the mask unconnected or disabled it passes B through (superseded 2026-11-04, user).
 - Difference with A missing passes B through with alpha 0. With B missing it outputs black. (superseded 2026-10-28: with A missing, B is compared with itself, alpha = max(0, −offset); see Decisions)
 - AdjustBBox with negative padding crops. Nearest boundary repeats the source edge; Black fills 0.
 

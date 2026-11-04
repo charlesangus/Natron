@@ -56,7 +56,7 @@ depend on the tile it is rendered in.
 ## GPU
 
 The GPU path reuses DirBlur's kernel (`dirblur.slang`): GodRays fills its parameter block with the
-copies' matrices, tints and weights and no holdout. Every filter, Clamp, Black outside, Max, the
+copies' matrices and tints. Every filter, Clamp, Black outside, Max, the
 mask, mix and channels render on the device.
 
 ## Knobs

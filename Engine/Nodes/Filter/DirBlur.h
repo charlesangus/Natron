@@ -65,13 +65,10 @@
 #define kDirBlurParamRampLinear "linear"
 #define kDirBlurParamRampExponential "exponential"
 #define kDirBlurParamMax "max"
-#define kDirBlurParamHoldoutChannel "holdoutChannel"
 #define kDirBlurParamTintGroup "tint"
-#define kDirBlurParamHoldoutGroup "holdout"
 
 #define kDirBlurInputSource 0
 #define kDirBlurInputMask 1
-#define kDirBlurInputHoldout 2
 
 NATRON_NAMESPACE_ENTER
 
@@ -158,7 +155,7 @@ public:
     DirBlurParams getParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /// Whether params move the image at all; when they do not the node is an identity, whatever
-    /// the tints, Max or holdout.
+    /// the tints or Max.
     static bool hasMotion(const DirBlurParams& params) WARN_UNUSED_RETURN;
 
     /**
@@ -170,12 +167,6 @@ public:
 
     /// The smallest tint an Exponential ramp starts or ends at.
     static constexpr double kMinExponentialTint = 0.001;
-
-    /**
-     * @brief The layer and the channel of it Holdout Channel selects on the Holdout input; false
-     * when the input is disconnected, the knob is None or the layer is absent.
-     **/
-    bool resolveHoldoutChannel(double time, ViewIdx view, ImageLayerDesc* layer, int* channel) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The canonical distance a Zoom Length is measured at: half the diagonal of the
@@ -233,16 +224,6 @@ public:
                                    ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool readsGpuInput(int inputNb,
-                               const ImageLayerDesc& plane,
-                               double time,
-                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool getInputLayersRead(int inputNb,
-                                    double time,
-                                    ViewIdx view,
-                                    std::list<ImageLayerDesc>* layers) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 protected:
     virtual void getRegionsOfInterest(double time,
@@ -303,7 +284,6 @@ private:
     KnobColorWPtr _toColor;
     KnobChoiceWPtr _ramp;
     KnobBoolWPtr _max;
-    KnobChannelSelectWPtr _holdoutChannel;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;

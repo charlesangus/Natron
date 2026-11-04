@@ -61,9 +61,9 @@ using TransformMath::Mat3;
 
 namespace {
 #ifdef NATRON_HAVE_GPU
-// dirblur.slang's parameter block layout, which GodRays fills without a holdout.
-constexpr std::size_t kGodRaysGpuHeaderWords = 12;
-constexpr std::size_t kGodRaysGpuSampleWords = 20;
+// dirblur.slang's parameter block layout.
+constexpr std::size_t kGodRaysGpuHeaderWords = 3;
+constexpr std::size_t kGodRaysGpuSampleWords = 16;
 constexpr uint32_t kGodRaysGpuSourceValid = 1;
 constexpr uint32_t kGodRaysGpuMax = 2;
 constexpr uint32_t kGodRaysGpuClamp = 16;
@@ -767,8 +767,8 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     }
     const bool hasSource = sourceSlot && cropped.inputs[sourceInput].buffer;
 
-    // dirblur.slang's parameter block: filter, flags, count, an unused holdout view, then per
-    // copy the matrix's two rows as (hi, lo) float pairs, the four factors and the weight.
+    // dirblur.slang's parameter block: filter, flags, count, then per
+    // copy the matrix's two rows as (hi, lo) float pairs and the four factors.
     std::vector<uint32_t> words(kGodRaysGpuHeaderWords + samples.size() * kGodRaysGpuSampleWords, 0u);
     uint32_t flags = (hasSource ? kGodRaysGpuSourceValid : 0u) | (params.max ? kGodRaysGpuMax : 0u);
     if (params.clamp && Resampler::filterHonoursClamp(filter)) {
@@ -791,7 +791,6 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
             std::memcpy(&w[2 * e + 1], &lo, sizeof(float));
         }
         std::memcpy(&w[12], samples[i].factor, 4 * sizeof(float));
-        std::memcpy(&w[16], &samples[i].weight, sizeof(float));
     }
 
     PixelKernelGpu op;
@@ -799,10 +798,7 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     op.params.resize(words.size() * sizeof(uint32_t));
     std::memcpy(op.params.data(), words.data(), op.params.size());
 
-    // The kernel's holdout binding, unread without the holdout flag.
-    GpuImageView noHoldout;
-
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&noHoldout, 1));
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>());
 #else
     Q_UNUSED(args);
 

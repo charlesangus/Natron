@@ -37,7 +37,7 @@ a flat image stays flat and the blur keeps the image's energy. With **Max**, eac
 the maximum, starting from 0, of the tinted copies, each weighed by its weight without
 normalisation: the brightest copy at each pixel.
 
-Length 0 with no Pixel Offset is the identity, whatever the tints, Max or holdout.
+Length 0 with no Pixel Offset is the identity, whatever the tints or Max.
 
 ## Resampling
 
@@ -55,16 +55,6 @@ does.
   definition instead of being cut by it. Wherever a read goes past the region of definition, the
   region of interest reaches its edge, so the edge pixels are the same in every tile.
 
-## Holdout
-
-The optional Holdout input, with Holdout Channel (any layer, default `rgba.A`; None turns it off).
-The channel is resampled through the same matrix as each copy, with the same filter and Clamp,
-and always reads black outside its own image. Each copy then counts `1 - clamp(h, 0, 1)` as much.
-Without Max, the held-out copies leave the average and the rest are renormalised to their weights,
-so a pixel whose copies are all held out is 0. With Max, a held-out copy is skipped. The holdout
-works the same way in every mode. The Holdout is read over the
-Source's region, unclipped by the Source's region of definition.
-
 ## Region
 
 The region of definition is the union of the Source's region of definition carried by every copy's
@@ -77,7 +67,7 @@ rendered in.
 
 ## Knobs
 
-The page has the blur controls, then the Filter row, then two groups: Tint and Holdout (both open).
+The page has the blur controls, then the Filter row, then one group: Tint (open).
 The standard channel, mask and mix knobs follow. Only the controls the selected Mode uses are
 shown; the others are hidden, and come back with their values when the Mode changes back.
 
@@ -101,7 +91,6 @@ shown; the others are hidden, and come back with their values when the Mode chan
 | `fromColor` | From Color | (1, 1, 1, 1) | Tint at the start of the blur |
 | `toColor` | To Color | (1, 1, 1, 1) | Tint at the end of the blur |
 | `ramp` | Ramp | Linear | Linear or Exponential tint between the colours |
-| `holdoutChannel` | Holdout Channel | `rgba.A` | The Holdout input's channel |
 
 The Viewer shows a Center handle and a Target handle.
 
@@ -127,15 +116,14 @@ Target as they change and when a project loads.
 - **No pixel aspect knob.** The pixel aspect ratio comes from the input's metadata. Matrices are built
   in canonical coordinates and mapped to pixels with it, so anamorphic footage blurs undistorted
   without a knob.
-- **Holdout in every mode.** The holdout works the same way in every mode, and the mode does not
-  change what it means.
+- **No holdout.** DirBlur has no holdout input; the blur is the whole source.
 - **No "(Un)premult by".** DirBlur is a filter: the source is averaged as it comes.
 - **No transform.** Transformed copies (rays from a scaled, rotated or moved image) are the GodRays
   node's job, so DirBlur keeps only its three modes. Controls a mode does not use are hidden.
 
 The CPU properties are in `Tests/Native/NativeDirBlur_Test.cpp`. They cover the knobs and groups,
 the visibility of the knobs in each mode, the sample positions and weights, the ramps, each mode's
-smear, flat fields, target, pixel offset, holdout and Max, edge repeat and clamp, tiles against the full frame (every
+smear, flat fields, target, pixel offset and Max, edge repeat and clamp, tiles against the full frame (every
 mode, filters, Clamp and edge repeat) and legacy against task-graph renders. The GPU parity
-(every filter in every mode, with and without Black outside, mask, mix, channels, holdout and a
+(every filter in every mode, with and without Black outside, mask, mix, channels and a
 fused Grade chain) is in `Tests/Native/NativeDirBlurGpu_Test.cpp`.

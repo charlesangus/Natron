@@ -261,9 +261,6 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     EXPECT_EQ(std::string("Source"), node->getInputLabel(0));
     EXPECT_EQ(std::string("Mask"), node->getInputLabel(1));
     EXPECT_TRUE(node->getEffectInstance()->isInputMask(1));
-    EXPECT_EQ(std::string("Holdout"), node->getInputLabel(kDirBlurInputHoldout));
-    EXPECT_TRUE(node->getEffectInstance()->isInputOptional(kDirBlurInputHoldout));
-    EXPECT_FALSE(node->getEffectInstance()->isInputMask(kDirBlurInputHoldout));
     EXPECT_TRUE(bool(node->getKnobByName("enableMask_Mask")));
     EXPECT_TRUE(bool(node->getKnobByName(kOfxMixParamName)));
     // A filter: no (un)premult-by knob.
@@ -288,12 +285,10 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
         { kDirBlurParamToColor, "To Color" },
         { kDirBlurParamRamp, "Ramp" },
         { kDirBlurParamMax, "Max" },
-        { kDirBlurParamHoldoutChannel, "Holdout Channel" },
         { kResamplerParamFilterType, "Filter" },
         { kResamplerParamFilterClamp, "Clamp" },
         { kResamplerParamFilterBlackOutside, "Black outside" },
         { kDirBlurParamTintGroup, "Tint" },
-        { kDirBlurParamHoldoutGroup, "Holdout" },
     };
     for (const auto& l : labels) {
         KnobIPtr knob = node->getKnobByName(l.name);
@@ -351,7 +346,7 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     ASSERT_TRUE(bool(blackOutside));
     EXPECT_TRUE(blackOutside->getValue());
 
-    // The tint and holdout knobs sit in their own groups.
+    // The tint knobs sit in their own group.
     const struct {
         const char* knob;
         const char* group;
@@ -359,7 +354,6 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
         { kDirBlurParamFromColor, kDirBlurParamTintGroup },
         { kDirBlurParamToColor, kDirBlurParamTintGroup },
         { kDirBlurParamRamp, kDirBlurParamTintGroup },
-        { kDirBlurParamHoldoutChannel, kDirBlurParamHoldoutGroup },
     };
     for (const auto& g : grouped) {
         KnobIPtr knob = node->getKnobByName(g.knob);
@@ -393,8 +387,6 @@ TEST_F(NativeDirBlurTest, KnobVisibilityFollowsTheMode)
         kDirBlurParamFromColor,
         kDirBlurParamToColor,
         kDirBlurParamRamp,
-        kDirBlurParamHoldoutGroup,
-        kDirBlurParamHoldoutChannel,
     };
     struct ModeCase {
         const char* name;
@@ -773,68 +765,6 @@ TEST_F(NativeDirBlurTest, PixelOffsetShiftsTheZoom)
     EXPECT_EQ(0.f, maxDifference(a, b));
 }
 
-// Copies read where the Holdout Channel is 1 leave the average, which the others are renormalised
-// to; where every copy is held out the result is 0. With Max held-out copies are skipped.
-TEST_F(NativeDirBlurTest, HoldoutLeavesCopiesOut)
-{
-    resetProject();
-    // A white block on the left of the format, held out by itself.
-    const RectI block(0, 0, 20, kHeight);
-    NodePtr source = makeConstant(1., &block);
-    NodePtr holdout = makeConstant(1., &block);
-    ASSERT_TRUE(bool(source) && bool(holdout));
-    NodePtr node = makeDirBlur(source, kDirBlurParamModeDirectional);
-    ASSERT_TRUE(bool(node));
-    ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 0. }));
-    // Four copies 1, 3, 5 and 7 pixels back, each on a pixel centre.
-    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 8. }));
-    ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 4. }));
-    const RectI window(0, 10, 40, 30);
-
-    RenderedPlane plain;
-    ASSERT_TRUE(renderRGBA(node, window, &plain));
-    EXPECT_NEAR(0.75, at(plain, 22, 20, 0), 1e-6);
-    EXPECT_NEAR(1., at(plain, 10, 20, 0), 1e-6);
-
-    connectNodes(holdout, node, kDirBlurInputHoldout, true);
-    KnobChannelSelect* channel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kDirBlurParamHoldoutChannel).get());
-    ASSERT_TRUE(channel != NULL);
-    channel->set("rgba.A");
-    RenderedPlane held;
-    ASSERT_TRUE(renderRGBA(node, window, &held));
-    // Only the copy from x = 21 remains, and it is black.
-    EXPECT_NEAR(0., at(held, 22, 20, 0), 1e-6);
-    // Every copy held out.
-    EXPECT_NEAR(0., at(held, 10, 20, 0), 1e-6);
-
-    // Max: the held-out copies are skipped, the rest are black.
-    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 1. }));
-    ASSERT_TRUE(renderRGBA(node, window, &held));
-    EXPECT_NEAR(0., at(held, 22, 20, 0), 1e-6);
-    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
-
-    // A uniform holdout of one half weighs every copy the same, which the renormalisation undoes
-    // wherever every copy comes from inside the format.
-    NodePtr half = makeConstant(0.5, NULL);
-    ASSERT_TRUE(bool(half));
-    disconnectNodes(holdout, node, true);
-    connectNodes(half, node, kDirBlurInputHoldout, true);
-    channel->set("rgba.R");
-    ASSERT_TRUE(renderRGBA(node, window, &held));
-    for (int y = window.y1; y < window.y2; ++y) {
-        for (int x = 8; x < window.x2; ++x) {
-            for (int c = 0; c < 4; ++c) {
-                ASSERT_NEAR(at(plain, x, y, c), at(held, x, y, c), 1e-6) << "at (" << x << "," << y << ") channel " << c;
-            }
-        }
-    }
-
-    // None turns it off.
-    channel->setNone();
-    ASSERT_TRUE(renderRGBA(node, window, &held));
-    EXPECT_EQ(0.f, maxDifference(plain, held));
-}
-
 // Max takes the largest tinted copy per channel instead of the average: a flat field comes out
 // as itself times the largest tint along the blur.
 TEST_F(NativeDirBlurTest, MaxTakesTheBrightestCopy)
@@ -867,16 +797,13 @@ TEST_F(NativeDirBlurTest, MaxTakesTheBrightestCopy)
 }
 
 // A tile of the render equals the same pixels of the full render, bit for bit, in every mode,
-// and with Use Target, Pixel Offset, an Exponential ramp, Max and a holdout.
+// and with Use Target, Pixel Offset, an Exponential ramp, and Max.
 TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(source));
     setParitySourceOrigin(source, 0, 0);
-    NodePtr holdout = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    ASSERT_TRUE(bool(holdout));
-    setParitySourceOrigin(holdout, 5, 3);
     const struct {
         const char* mode;
         bool extras;
@@ -916,7 +843,6 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamPixelOffset, { 4. }));
             ASSERT_TRUE(setKnobValue(node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential)));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { (std::string(mode) == kDirBlurParamModeRadial) ? 1. : 0. }));
-            connectNodes(holdout, node, kDirBlurInputHoldout, true);
         }
         const RectI rod = pixelRoD(node);
         RenderedPlane whole;
@@ -1055,11 +981,6 @@ TEST_F(NativeDirBlurTest, SameBothWays)
     ASSERT_TRUE(setKnobValue(node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential)));
     expectSame("radial-max-exponential");
     ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
-    NodePtr holdout = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    ASSERT_TRUE(bool(holdout));
-    setParitySourceOrigin(holdout, 3, 7);
-    connectNodes(holdout, node, kDirBlurInputHoldout, true);
-    expectSame("radial-holdout");
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));

@@ -63,12 +63,10 @@ using TransformMath::Mat3;
 namespace {
 #ifdef NATRON_HAVE_GPU
 // dirblur.slang's parameter block layout.
-constexpr std::size_t kDirBlurGpuHeaderWords = 12;
-constexpr std::size_t kDirBlurGpuSampleWords = 20;
+constexpr std::size_t kDirBlurGpuHeaderWords = 3;
+constexpr std::size_t kDirBlurGpuSampleWords = 16;
 constexpr uint32_t kDirBlurGpuSourceValid = 1;
 constexpr uint32_t kDirBlurGpuMax = 2;
-constexpr uint32_t kDirBlurGpuHoldout = 4;
-constexpr uint32_t kDirBlurGpuHoldoutValid = 8;
 constexpr uint32_t kDirBlurGpuClamp = 16;
 constexpr uint32_t kDirBlurGpuBlackOutside = 32;
 #endif
@@ -76,7 +74,6 @@ constexpr uint32_t kDirBlurGpuBlackOutside = 32;
 constexpr InputSpec kDirBlurInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
-    InputSpec { .label = "Holdout", .role = InputRole::Aux, .optional = true },
 };
 
 constexpr NodeSpec kDirBlurNodeSpec = {
@@ -89,8 +86,6 @@ constexpr NodeSpec kDirBlurNodeSpec = {
                    "The result is the weighted average of Samples copies of the image, each moved by an even step along the blur and resampled with Filter, as the Transform node resamples, or their maximum with Max. Falloff fades the copies out towards the end of the blur, and From Color and To Color tint them, from the start of the blur to its end. The weights are normalised, so with the default white tints the blur keeps the image's energy.\n"
                    "\n"
                    "Only the controls the selected Mode uses are shown.\n"
-                   "\n"
-                   "Where the Holdout Channel of the Holdout input is 1 the source is left out of the average, and where it is between 0 and 1 it counts that much less.\n"
                    "\n"
                    "Beyond the source's region of definition the image reads black, or with Black outside off the source's edge pixels, extended outwards.",
     .grouping = PLUGIN_GROUP_FILTER,
@@ -167,8 +162,6 @@ DirBlur::getInputHint(int inputNb) const
         return tr("The image to blur.").toStdString();
     case kDirBlurInputMask:
         return tr("The mask the blurred result is mixed with the source through.").toStdString();
-    case kDirBlurInputHoldout:
-        return tr("The image whose Holdout Channel keeps parts of the source out of the blur.").toStdString();
     }
 
     return std::string();
@@ -335,7 +328,7 @@ DirBlur::initializeKnobs()
 
     KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(this, tr(kResamplerParamFilterBlackOutsideLabel));
     blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
-    blackOutsideKnob->setHintToolTip(tr("Fill the area outside the source image with black. Unchecked, the copies read the source's edge pixels beyond it, extended outwards. The Holdout input always reads 0 outside its own image."));
+    blackOutsideKnob->setHintToolTip(tr("Fill the area outside the source image with black. Unchecked, the copies read the source's edge pixels beyond it, extended outwards."));
     blackOutsideKnob->setDefaultValue(true);
     page->addKnob(blackOutsideKnob);
     _blackOutside = blackOutsideKnob;
@@ -377,28 +370,9 @@ DirBlur::initializeKnobs()
     tintGroup->addKnob(rampKnob);
     _ramp = rampKnob;
 
-    KnobGroupPtr holdoutGroup = AppManager::createKnob<KnobGroup>(this, tr("Holdout"));
-    holdoutGroup->setName(kDirBlurParamHoldoutGroup);
-    holdoutGroup->setHintToolTip(tr("What the Holdout input keeps out of the blur."));
-    holdoutGroup->setDefaultValue(true);
-    page->addKnob(holdoutGroup);
-
-    KnobChannelSelectPtr holdoutChannelKnob = AppManager::createKnob<KnobChannelSelect>(this, tr("Holdout Channel"));
-    holdoutChannelKnob->setName(kDirBlurParamHoldoutChannel);
-    holdoutChannelKnob->setAnimationEnabled(false);
-    holdoutChannelKnob->setDefaultValue(holdoutChannelKnob->encode(std::string(kNatronColorViewRGBA) + ".A"));
-    holdoutChannelKnob->setHintToolTip(tr("The channel of the Holdout input, in any of its layers, read where each copy comes from: the source counts (1 - holdout) as much there, and not at all where it is 1. Unused without a Holdout input; None turns it off."));
-    holdoutGroup->addKnob(holdoutChannelKnob);
-    _holdoutChannel = holdoutChannelKnob;
-
     addStageKnobs(page);
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateModeVisibility();
-
-    NodePtr node = getNode();
-    if (node) {
-        node->declareLayerKnob(holdoutChannelKnob, kDirBlurInputHoldout, LayerKnobSpec::eRoleInputBound);
-    }
 } // DirBlur::initializeKnobs
 
 DirBlurParams
@@ -460,53 +434,6 @@ DirBlur::tintAt(const DirBlurParams& params,
     }
 
     return params.fromColor[c] + (params.toColor[c] - params.fromColor[c]) * a;
-}
-
-bool
-DirBlur::resolveHoldoutChannel(double time,
-                               ViewIdx view,
-                               ImageLayerDesc* layer,
-                               int* channel) const
-{
-    *channel = -1;
-    KnobChannelSelectPtr knob = _holdoutChannel.lock();
-    if (!knob || knob->isNone() || !getInput(kDirBlurInputHoldout)) {
-        return false;
-    }
-    std::list<ImageLayerDesc> present;
-    const_cast<DirBlur*>(this)->getPresentLayers(time, view, kDirBlurInputHoldout, &present);
-    if (!knob->resolve(present, layer, channel) || (*channel < 0)) {
-        *channel = -1;
-
-        return false;
-    }
-    const int nComps = layer->getNumComponents();
-    if ((nComps < 1) || (nComps > 4) || (*channel >= nComps)) {
-        *channel = -1;
-
-        return false;
-    }
-
-    return true;
-}
-
-bool
-DirBlur::getInputLayersRead(int inputNb,
-                            double time,
-                            ViewIdx view,
-                            std::list<ImageLayerDesc>* layers)
-{
-    if (inputNb != kDirBlurInputHoldout) {
-        return false;
-    }
-    ImageLayerDesc layer;
-    int channel = -1;
-    if (!resolveHoldoutChannel(time, view, &layer, &channel)) {
-        return false;
-    }
-    layers->push_back(layer);
-
-    return true;
 }
 
 bool
@@ -835,8 +762,7 @@ DirBlur::getRegionsOfInterest(double time,
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
     EffectInstancePtr source = getInput(kDirBlurInputSource);
-    EffectInstancePtr holdout = getInput(kDirBlurInputHoldout);
-    if (!source && !holdout) {
+    if (!source) {
         return;
     }
     const DirBlurParams params = getParams(time, view);
@@ -854,19 +780,6 @@ DirBlur::getRegionsOfInterest(double time,
         }
         (*ret)[source] = roi;
     }
-    if (holdout) {
-        // The holdout is read where the source is, whatever its own region of definition.
-        RectD roi = renderWindow;
-        if (moves) {
-            mergeInto(sourceRegion(canonical, renderWindow, scale, par, nullRect()), &roi);
-        }
-        RoIMap::iterator found = ret->find(holdout);
-        if (found != ret->end()) {
-            found->second.merge(roi);
-        } else {
-            ret->insert(std::make_pair(holdout, roi));
-        }
-    }
 }
 
 bool
@@ -875,7 +788,7 @@ DirBlur::isOpIdentity(double time,
                       const RectI& /*roi*/,
                       ViewIdx view)
 {
-    // No motion leaves the source unchanged, whatever the tints, Max or holdout.
+    // No motion leaves the source unchanged, whatever the tints or Max.
     return !hasMotion(getParams(time, view));
 }
 
@@ -887,32 +800,6 @@ DirBlur::renderOp(const RenderActionArgs& args,
     const std::vector<DirBlurSample> samples = pixelSamples(canonicalSamples(params, zoomReference(args.time, args.view)), args.time, args.mappedScale, outputPar(args.time, args.view));
     const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : params.filter;
     const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter);
-
-    // The Holdout Channel as one float per pixel, locked here; the band threads only read it.
-    ImageLayerDesc holdoutLayer;
-    int holdoutChannel = -1;
-    const bool holdoutOn = resolveHoldoutChannel(args.time, args.view, &holdoutLayer, &holdoutChannel);
-    std::vector<float> holdoutPixels;
-    Resampler::SourceImage holdoutSource((const float*)0, RectI(), 1);
-    if (holdoutOn) {
-        RectI holdoutRoI;
-        const ImagePtr image = getImage(kDirBlurInputHoldout, args.time, args.mappedScale, args.view, NULL, &holdoutLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &holdoutRoI);
-        if (image && !PassExec::isFloatImage(image)) {
-            return eStatusFailed;
-        }
-        const RectI bounds = image ? image->getBounds() : RectI();
-        const int imageNComps = image ? (int)image->getComponentsCount() : 0;
-        if (image && !bounds.isNull() && (holdoutChannel < imageNComps)) {
-            const Image::ReadAccess access(image.get());
-            const int width = bounds.width();
-            holdoutPixels.resize((std::size_t)width * bounds.height());
-            for (int y = bounds.y1; y < bounds.y2; ++y) {
-                PassExec::readChannelRow(image.get(), &access, bounds, imageNComps, holdoutChannel, bounds.x1, y, width, 0.f, &holdoutPixels[(std::size_t)(y - bounds.y1) * width]);
-            }
-            holdoutSource = Resampler::SourceImage(&holdoutPixels[0], bounds, 1);
-        }
-    }
-    const bool holdoutSampled = holdoutSource.isValid();
     const bool takeMax = params.max;
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -960,8 +847,6 @@ DirBlur::renderOp(const RenderActionArgs& args,
             std::vector<float> sum(n, 0.f);
             if (sampled) {
                 std::vector<float> tmp(n);
-                std::vector<float> hold(holdoutOn ? io.width : 0, 0.f);
-                std::vector<float> weightSum((holdoutOn && !takeMax) ? io.width : 0, 0.f);
                 int bits[4];
                 for (int c = 0; c < io.nComps; ++c) {
                     bits[c] = pixelKernelChannelBit(io.nComps, c);
@@ -978,39 +863,11 @@ DirBlur::renderOp(const RenderActionArgs& args,
                     rp.blackOutside = params.blackOutside;
                     rp.motionBlur = 0.;
                     Resampler::resampleRow(rp, source, io.y, io.x0, io.x0 + io.width, &tmp[0]);
-                    if (holdoutSampled) {
-                        // The holdout holds nothing back outside its own image.
-                        rp.blackOutside = true;
-                        Resampler::resampleRow(rp, holdoutSource, io.y, io.x0, io.x0 + io.width, &hold[0]);
-                    }
                     for (int i = 0; i < io.width; ++i) {
-                        const float keep = holdoutOn ? (1.f - std::min(1.f, std::max(0.f, hold[i]))) : 1.f;
-                        if (takeMax) {
-                            if (keep <= 0.f) {
-                                continue;
-                            }
-                            for (int c = 0; c < io.nComps; ++c) {
-                                const std::size_t k = (std::size_t)i * io.nComps + c;
-                                sum[k] = std::max(sum[k], keep * s.factor[bits[c]] * tmp[k]);
-                            }
-                        } else {
-                            for (int c = 0; c < io.nComps; ++c) {
-                                const std::size_t k = (std::size_t)i * io.nComps + c;
-                                sum[k] += keep * s.factor[bits[c]] * tmp[k];
-                            }
-                            if (holdoutOn) {
-                                weightSum[i] += keep * s.weight;
-                            }
-                        }
-                    }
-                }
-                // Held-out copies leave the average: the rest are renormalised to their weights.
-                if (holdoutOn && !takeMax) {
-                    for (int i = 0; i < io.width; ++i) {
-                        const float w = weightSum[i];
                         for (int c = 0; c < io.nComps; ++c) {
-                            float& v = sum[(std::size_t)i * io.nComps + c];
-                            v = (w > 0.f) ? (v / w) : 0.f;
+                            const std::size_t k = (std::size_t)i * io.nComps + c;
+                            const float term = s.factor[bits[c]] * tmp[k];
+                            sum[k] = takeMax ? std::max(sum[k], term) : (sum[k] + term);
                         }
                     }
                 }
@@ -1056,30 +913,9 @@ DirBlur::getOpGpuInputLayer(int inputNb,
                             ViewIdx view,
                             ImageLayerDesc* layer) const
 {
-    if (inputNb == kDirBlurInputHoldout) {
-        int channel = -1;
-        if (resolveHoldoutChannel(time, view, layer, &channel)) {
-            return true;
-        }
-    }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
     return true;
-}
-
-bool
-DirBlur::readsGpuInput(int inputNb,
-                       const ImageLayerDesc& /*plane*/,
-                       double time,
-                       ViewIdx view) const
-{
-    if (inputNb != kDirBlurInputHoldout) {
-        return true;
-    }
-    ImageLayerDesc layer;
-    int channel = -1;
-
-    return resolveHoldoutChannel(time, view, &layer, &channel);
 }
 
 RectI
@@ -1089,7 +925,7 @@ DirBlur::getOpGpuInputRoI(int inputNb,
                           const RectI& outputRect,
                           const RenderScale& scale) const
 {
-    if ((inputNb != kDirBlurInputSource) && (inputNb != kDirBlurInputHoldout)) {
+    if (inputNb != kDirBlurInputSource) {
         return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
     const DirBlurParams params = getParams(time, view);
@@ -1101,8 +937,7 @@ DirBlur::getOpGpuInputRoI(int inputNb,
     const double sx = scale.toOfxPointD().x;
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
-    const RectD clip = (inputNb == kDirBlurInputSource) ? sourceRoD(time, view, scale) : nullRect();
-    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, clip, params.blackOutside);
+    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, sourceRoD(time, view, scale), params.blackOutside);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -1134,17 +969,8 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     }
     const bool hasSource = sourceSlot && cropped.inputs[sourceInput].buffer;
 
-    GpuImageView holdoutView;
-    if (!stageGpuInputView(*this, args, kDirBlurInputHoldout, &holdoutView)) {
-        return eStatusFailed;
-    }
-    ImageLayerDesc holdoutLayer;
-    int holdoutChannel = -1;
-    const bool holdoutOn = resolveHoldoutChannel(query.time, query.view, &holdoutLayer, &holdoutChannel);
-
-    // dirblur.slang's parameter block: filter, flags, count, the Holdout view (offset, stride,
-    // bounds, components and the component read), then per sample the matrix's two rows as
-    // (hi, lo) float pairs, the four factors and the weight.
+    // dirblur.slang's parameter block: filter, flags, count, then per sample the matrix's two rows as
+    // (hi, lo) float pairs and the four factors.
     std::vector<uint32_t> words(kDirBlurGpuHeaderWords + samples.size() * kDirBlurGpuSampleWords, 0u);
     uint32_t flags = (hasSource ? kDirBlurGpuSourceValid : 0u) | (params.max ? kDirBlurGpuMax : 0u);
     if (params.clamp && Resampler::filterHonoursClamp(filter)) {
@@ -1152,21 +978,6 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     }
     if (params.blackOutside) {
         flags |= kDirBlurGpuBlackOutside;
-    }
-    if (holdoutOn) {
-        flags |= kDirBlurGpuHoldout;
-        const int component = holdoutView.buffer ? stageGpuMaskViewComponent(holdoutLayer, holdoutChannel, holdoutView.nComps) : -1;
-        if ((component >= 0) && (component < holdoutView.nComps) && !holdoutView.bounds.isNull()) {
-            flags |= kDirBlurGpuHoldoutValid;
-            words[3] = (uint32_t)(holdoutView.byteOffset / sizeof(float));
-            words[4] = (uint32_t)holdoutView.rowStrideFloats;
-            words[5] = (uint32_t)holdoutView.bounds.x1;
-            words[6] = (uint32_t)holdoutView.bounds.y1;
-            words[7] = (uint32_t)holdoutView.bounds.x2;
-            words[8] = (uint32_t)holdoutView.bounds.y2;
-            words[9] = (uint32_t)holdoutView.nComps;
-            words[10] = (uint32_t)component;
-        }
     }
     words[0] = (uint32_t)filter;
     words[1] = flags;
@@ -1182,7 +993,6 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
             std::memcpy(&w[2 * e + 1], &lo, sizeof(float));
         }
         std::memcpy(&w[12], samples[i].factor, 4 * sizeof(float));
-        std::memcpy(&w[16], &samples[i].weight, sizeof(float));
     }
 
     PixelKernelGpu op;
@@ -1190,7 +1000,7 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     op.params.resize(words.size() * sizeof(uint32_t));
     std::memcpy(op.params.data(), words.data(), op.params.size());
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&holdoutView, 1));
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>());
 #else
     Q_UNUSED(args);
 

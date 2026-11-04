@@ -288,6 +288,26 @@ TEST_F(NativeZDefocusTest, NonFiniteSourceLeavesTheOutputFinite)
     }
 }
 
+// With lens aberrations too: a slice that leaves a channel group sharp weighs a non-finite pixel
+// it gives no weight to as 0, not as 0 times the pixel.
+TEST_F(NativeZDefocusTest, LensNonFiniteSourceLeavesTheOutputFinite)
+{
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceNonFinite(source, RectI(10, 8, 22, 18));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 0.5, 9.);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 1. }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.5 }));
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &plane));
+    for (float v : plane.pixels) {
+        ASSERT_TRUE(std::isfinite(v));
+    }
+}
+
 // A constant depth defocuses the whole image with one kernel: Defocus's at the same size, away
 // from the borders where ZDefocus normalises by the coverage the image leaves.
 TEST_F(NativeZDefocusTest, ConstantDepthMatchesDefocus)
@@ -357,6 +377,78 @@ TEST_F(NativeZDefocusTest, SharpForegroundDoesNotHalo)
     EXPECT_EQ(0u, haloed);
     EXPECT_EQ(0u, blurredInside);
     // The far feature spreads beyond its own pixels.
+    EXPECT_GT(pixelAt(actual, 10, 6, 1), 0.f);
+    EXPECT_LT(pixelAt(actual, 5, 5, 1), 1.f);
+}
+
+// At a constant depth the lens aberrations match Defocus's: the same cells, cat-eye clips and
+// per-channel kernels, while no channel's circle of confusion exceeds Max Size.
+TEST_F(NativeZDefocusTest, LensConstantDepthMatchesDefocus)
+{
+    NodePtr background = makeConstant(kWindow, { 0., 0.2, 0.7, 1. });
+    NodePtr box = makeBoxOver(background, RectI(20, 14, 44, 34), { 1., 0.5, 0.25, 1. });
+    NodePtr source = makeBoxOver(box, RectI(30, 20, 33, 23), { 4., 3., 0.1, 1. });
+    ASSERT_TRUE(bool(source));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 0., 20.);
+    NodePtr defocus = createNode(QString::fromUtf8(PLUGINID_NATRON_DEFOCUS), PLUGIN_MAJOR_NATRON_DEFOCUS);
+    ASSERT_TRUE(bool(zdefocus) && bool(defocus));
+    connectNodes(source, defocus, kDefocusInputSource, true);
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamMaxSize, { 12. }));
+    ASSERT_TRUE(setKnobValues(defocus, kDefocusParamSize, { 12. }));
+    // Green at full size, red and blue smaller, so that Max Size clamps none of them.
+    for (const NodePtr& node : { zdefocus, defocus }) {
+        ASSERT_TRUE(setKnobValues(node, kBokehParamCatEye, { 0.7 }));
+        ASSERT_TRUE(setKnobValues(node, kBokehParamChromaticAberration, { 0.25 }));
+        ASSERT_TRUE(setKnobValues(node, kBokehParamChromaticOffset, { -1., 0., -2. }));
+    }
+
+    RenderedPlane expected, actual;
+    ASSERT_TRUE(renderRGBA(defocus, kWindow, &expected));
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+    double worst = 0.;
+    for (int y = kWindow.y1 + 7; y < kWindow.y2 - 7; ++y) {
+        for (int x = kWindow.x1 + 7; x < kWindow.x2 - 7; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                const double e = pixelAt(expected, x, y, c);
+                worst = std::max(worst, std::fabs((double)pixelAt(actual, x, y, c) - e) / std::max(1., std::fabs(e)));
+            }
+        }
+    }
+    EXPECT_LE(worst, 1e-5);
+}
+
+// Across two depth slices with cat-eye and chromatic aberration, the sharp foreground still does
+// not halo or blur, while the far feature spreads.
+TEST_F(NativeZDefocusTest, LensSharpForegroundDoesNotHalo)
+{
+    const RectI fg(20, 14, 44, 34);
+    NodePtr background = makeConstant(kWindow, { 0., 0., 0.05, 0.1 });
+    NodePtr feature = makeBoxOver(background, RectI(4, 4, 8, 8), { 0., 1., 0., 0.1 });
+    NodePtr source = makeBoxOver(feature, fg, { 1., 0., 0., 1. });
+    ASSERT_TRUE(bool(source));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 1., 20.);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 1. }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.5 }));
+
+    RenderedPlane actual;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+    std::size_t haloed = 0;
+    std::size_t blurredInside = 0;
+    for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+        for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+            const bool inside = fg.contains(x, y);
+            const bool nearEdge = (x >= fg.x1 - 1) && (x < fg.x2 + 1) && (y >= fg.y1 - 1) && (y < fg.y2 + 1);
+            if (!nearEdge && (pixelAt(actual, x, y, 0) > 1e-6f)) {
+                ++haloed;
+            }
+            if (inside && ((pixelAt(actual, x, y, 0) != 1.f) || (pixelAt(actual, x, y, 3) != 1.f))) {
+                ++blurredInside;
+            }
+        }
+    }
+    EXPECT_EQ(0u, haloed);
+    EXPECT_EQ(0u, blurredInside);
     EXPECT_GT(pixelAt(actual, 10, 6, 1), 0.f);
     EXPECT_LT(pixelAt(actual, 5, 5, 1), 1.f);
 }
@@ -485,7 +577,7 @@ TEST_F(NativeZDefocusTest, RegionIndependence)
 }
 
 // Regression fixtures: the parity source defocused by its extra layer's red as inverse distance,
-// in each mode and output, the Image kernel being another parity source.
+// in each mode, output and lens aberration, the Image kernel being another parity source.
 TEST_F(NativeZDefocusTest, Golden)
 {
     GoldenNodeSpec spec;
@@ -520,6 +612,21 @@ TEST_F(NativeZDefocusTest, Golden)
     v.push_back(goldenVariant("focalPlane", false, [depth](const GoldenGraph& g) {
         return depth(g) && setKnobValues(g.node, kZDefocusParamDepthOfField, { 0.2 })
             && setKnobValue(g.node, kZDefocusParamOutput, std::string(kZDefocusParamOutputFocalPlane));
+    }));
+    v.push_back(goldenVariant("catEye", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 1. });
+    }));
+    v.push_back(goldenVariant("swirl", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.6 })
+            && setKnobValue(g.node, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential));
+    }));
+    v.push_back(goldenVariant("chromaticAnamorphic", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.5 }) && setKnobValues(g.node, kZDefocusParamAspectRatio, { 0.5 });
+    }));
+    v.push_back(goldenVariant("lensTextured", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.8 }) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.3 })
+            && setKnobValues(g.node, kBokehParamSphericalAberration, { 0.5 }) && setKnobValues(g.node, kZDefocusParamHighlightThreshold, { 1. })
+            && setKnobValues(g.node, kZDefocusParamHighlightGain, { 4. });
     }));
     v.push_back(goldenVariant("maskmix", true, [depth](const GoldenGraph& g) {
         return depth(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

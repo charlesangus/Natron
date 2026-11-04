@@ -249,16 +249,18 @@ void
 KnobGuiButton::setEnabled()
 {
     KnobButtonPtr knob = _knob.lock();
-    bool b = knob->isEnabled(0);
-
-    _button->setEnabled(b);
+    if (_button) {
+        _button->setEnabled(knob->isEnabled(0));
+    }
 }
 
 void
 KnobGuiButton::setReadOnly(bool readOnly,
                            int /*dimension*/)
 {
-    _button->setEnabled(!readOnly);
+    if (_button) {
+        _button->setEnabled(!readOnly);
+    }
 }
 
 KnobIPtr

@@ -225,8 +225,12 @@ struct SplineWarpSampleSet {
  * @brief Samples links and boundaries into constraint pairs.
  *
  * Each link walks its source from parameter 0 and its destination from its aligned start. Its
- * correspondences split both walks into spans, and each span pairs the two curves by arc length,
- * a sample every settings.spacing along the longer side. Two closed curves pair one lap with one
+ * correspondences split both walks into spans. When both curves have as many segments, and a closed
+ * destination's aligned start is one of its control points, each source control point is anchored
+ * to the destination control point as many points along the walk, so a stretch of curve the user
+ * did not change pairs with itself; such an anchor that would cross a correspondence on the
+ * destination is dropped. Each span pairs the two curves by arc length, a sample every
+ * settings.spacing along the longer side. Two closed curves pair one lap with one
  * lap; a closed curve linked to an open one is cut at its start and both ends are paired. A curve
  * with no segment pairs with its single point. Each pair's destination is then lerped toward its
  * source by globalAmount times the link's amount, after swapping the sides when inverted.
@@ -263,7 +267,8 @@ std::vector<Point> splineWarpPolyline(const SplineWarpCurveShape& shape, int per
 
 /**
  * @brief The parameter on the other curve of link that its pairing, the arc-length spans between
- * its correspondences, puts with param: on the destination when fromSource, on the source otherwise.
+ * its correspondences and control-point anchors, puts with param: on the destination when
+ * fromSource, on the source otherwise.
  **/
 double splineWarpPairedParam(const SplineWarpLinkSamplingInput& link, bool fromSource, double param);
 

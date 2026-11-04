@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoItem.h"
 #include "Global/GLIncludes.h"
 
@@ -242,6 +243,14 @@ SplineWarpInteract::onKnobChanged(KnobI* k,
         *ret = true;
 
         return true;
+    }
+    for (std::size_t i = 0; i < _curveMenuButtons.size(); ++i) {
+        KnobButtonPtr button = _curveMenuButtons[i].second.lock();
+        if (button && (k == button.get())) {
+            *ret = runCurveMenuAction(_curveMenuButtons[i].first, getSelectedRotoItems()).empty();
+
+            return true;
+        }
     }
 
     return RotoCurveInteract::onKnobChanged(k, time, ret);
@@ -595,6 +604,139 @@ SplineWarpInteract::runAction(SplineWarpActionEnum action,
     }
 
     return std::string();
+}
+
+namespace {
+struct CurveMenuActionInfo {
+    SplineWarpActionEnum action;
+    const char* id;
+};
+
+// The warp actions of the curve menus, in menu order; the transform link actions follow them.
+const CurveMenuActionInfo kCurveMenuActions[] = {
+    { eSplineWarpActionDuplicateAndLink, "duplicateAndLink" },
+    { eSplineWarpActionLink, "link" },
+    { eSplineWarpActionUnlink, "unlink" },
+    { eSplineWarpActionSwap, "swap" },
+    { eSplineWarpActionToggleBoundary, "toggleBoundary" },
+    { eSplineWarpActionToggleCookieCutter, "toggleCookieCutter" },
+};
+const std::size_t kCurveMenuActionCount = sizeof(kCurveMenuActions) / sizeof(kCurveMenuActions[0]);
+
+const char kLinkTransformId[] = "linkTransform";
+const char kUnlinkTransformId[] = "unlinkTransform";
+} // anonymous namespace
+
+std::vector<RotoCurvePanelHook::MenuAction>
+SplineWarpInteract::getCurveMenuActions(const std::list<RotoItemPtr>& items) const
+{
+    const QString labels[kCurveMenuActionCount] = {
+        tr("Duplicate and Link"),
+        tr("Link"),
+        tr("Unlink"),
+        tr("Swap Source/Destination"),
+        tr("Toggle Boundary"),
+        tr("Toggle Cookie Cutter"),
+    };
+    std::vector<RotoCurvePanelHook::MenuAction> actions;
+
+    for (std::size_t i = 0; i < kCurveMenuActionCount; ++i) {
+        RotoCurvePanelHook::MenuAction action;
+        action.id = kCurveMenuActions[i].id;
+        action.label = labels[i].toStdString();
+        action.enabled = getRefusal(kCurveMenuActions[i].action, items).empty();
+        actions.push_back(action);
+    }
+    RotoCurvePanelHook::MenuAction link;
+    link.id = kLinkTransformId;
+    link.label = tr("Link Transform to First").toStdString();
+    link.enabled = getTransformLinkRefusal(true, items).empty();
+    actions.push_back(link);
+    RotoCurvePanelHook::MenuAction unlink;
+    unlink.id = kUnlinkTransformId;
+    unlink.label = tr("Unlink Transform").toStdString();
+    unlink.enabled = getTransformLinkRefusal(false, items).empty();
+    actions.push_back(unlink);
+
+    return actions;
+}
+
+std::string
+SplineWarpInteract::runCurveMenuAction(const std::string& actionId,
+                                       const std::list<RotoItemPtr>& items,
+                                       UndoCommandPtr* pushed)
+{
+    if (actionId == kLinkTransformId) {
+        return linkTransform(items, pushed);
+    }
+    if (actionId == kUnlinkTransformId) {
+        return unlinkTransform(items, pushed);
+    }
+    for (std::size_t i = 0; i < kCurveMenuActionCount; ++i) {
+        if (actionId != kCurveMenuActions[i].id) {
+            continue;
+        }
+        if (items != getSelectedRotoItems()) {
+            std::list<RotoDrawableItemPtr> drawables;
+            for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+                if (drawable) {
+                    drawables.push_back(drawable);
+                }
+            }
+            setSelection(drawables, std::list<std::pair<BezierCPPtr, BezierCPPtr>>());
+        }
+
+        return runAction(kCurveMenuActions[i].action, pushed);
+    }
+
+    return std::string();
+}
+
+void
+SplineWarpInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
+{
+    RotoCurveInteract::createRightClickMenuKnobs(page);
+    EffectInstance* host = getHost();
+    const std::vector<RotoCurvePanelHook::MenuAction> actions = getCurveMenuActions(std::list<RotoItemPtr>());
+    _curveMenuButtons.clear();
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        KnobButtonPtr button = AppManager::createKnob<KnobButton>(host, actions[i].label);
+        button->setName(actions[i].id + "MenuAction");
+        button->setSecretByDefault(true);
+        button->setEvaluateOnChange(false);
+        host->addOverlaySlaveParam(button);
+        page->addKnob(button);
+        _curveMenuButtons.push_back(std::make_pair(actions[i].id, KnobButtonWPtr(button)));
+    }
+}
+
+void
+SplineWarpInteract::appendCurveMenuActions(std::vector<KnobButtonPtr>* menuKnobs)
+{
+    // Greyed out, as in the curve list, when the action would refuse the selection.
+    const std::vector<RotoCurvePanelHook::MenuAction> actions = getCurveMenuActions(getSelectedRotoItems());
+
+    for (std::size_t i = 0; (i < actions.size()) && (i < _curveMenuButtons.size()); ++i) {
+        KnobButtonPtr button = _curveMenuButtons[i].second.lock();
+        if (!button) {
+            continue;
+        }
+        button->setEnabled(0, actions[i].enabled);
+        menuKnobs->push_back(button);
+    }
+}
+
+BezierPtr
+SplineWarpInteract::makePointCurve(double x,
+                                   double y,
+                                   double time)
+{
+    // Held here: without a GUI the push runs redo() and drops the command.
+    std::shared_ptr<SplineWarpMakeLinkedPointUndoCommand> command = std::make_shared<SplineWarpMakeLinkedPointUndoCommand>(shared_from_this(), x, y, time);
+    getHost()->pushUndoCommand(command);
+
+    return command->getSource();
 }
 
 std::string

@@ -1,4 +1,5 @@
-"""SplineWarp's remaining controls: the Controls, Transform and Render pages fit at 1920x1080, a
+"""SplineWarp's remaining controls: the Warp, Selection and Render pages hold their knobs and fit at
+1920x1080, a
 feathered boundary's soft falloff, a drag of the viewer transform overlay, the cookie mask in the
 Output Mask layer, and Crop To Format on and off.
 
@@ -26,7 +27,16 @@ RENDER_MS = 1500
 DRAG_STEPS = 12
 SHOW_SOURCE, SHOW_DESTINATION, SHOW_BOTH = 0, 1, 2
 MIN_INK = 40  # pixels on a 2-pixel sampling grid
-PAGES = ("Controls", "Transform", "Render")
+PAGES = ("Warp", "Selection", "Render")
+# Where each visible knob lives: the whole warp, what the curve list has selected, how it renders.
+PAGE_KNOBS = {
+    "Warp": ("amount", "invert", "boundaryBBox", "cropToFormat", "outputMask", "maskInvert", "mix"),
+    "Selection": ("layerAmount", "linkAmount", "translate", "rotate", "scale", "uniform", "skewx", "skewy",
+                  "skewOrder", "center", "resetTransformCenter", "extraMatrix", "resetTransform"),
+    "Render": ("solver", "smoothness", "curveResolution", "boundaryCurveResolution", "fieldResolution",
+               "previewResolution", "filter", "clamp", "black_outside", "bbox", "motionBlur", "shutter",
+               "shutterOffset", "shutterCustomOffset"),
+}
 # Canonical rectangles (x0, y0, x1, y1).
 SOURCE_RECT = (700.0, 350.0, 1200.0, 750.0)
 SHIFT = 120.0  # the destination is the source moved right
@@ -323,9 +333,19 @@ try:
         tree = hold(curve_tree(panel))
         require(tree is not None, "the settings panel holds the curve list")
 
+        gt.section("page-content")
+        for name, knobs in PAGE_KNOBS.items():
+            for knob in knobs:
+                param = warp.getParam(knob)
+                parent = param.getParent() if param is not None else None
+                label = parent.getLabel() if parent is not None else None
+                check(label == name, "%s is on the %s page (%r)" % (knob, name, label))
+        check(warp.getParam("RotoTransformInteractive") is None,
+              "no Interactive knob: the transform handle follows the global preference")
+
         gt.section("pages-fit")
         tabs = hold(page_tabs(panel))
-        require(tabs is not None, "the settings panel has Controls, Transform and Render pages")
+        require(tabs is not None, "the settings panel has Warp, Selection and Render pages")
         screen = QGuiApplication.primaryScreen().geometry()
         report("NOTE screen %dx%d" % (screen.width(), screen.height()))
         top_left = panel.mapToGlobal(QPoint(0, 0))
@@ -346,7 +366,7 @@ try:
             check(vmax == 0, "the %s page fits without scrolling vertically" % name)
             check(hmax == 0, "the %s page fits without scrolling horizontally" % name)
             gt.shot("m274-page-%s.png" % name.lower())
-        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Controls"))
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Warp"))
         yield ("sleep", SETTLE_MS)
 
         gt.section("calibrate")
@@ -411,7 +431,7 @@ try:
         items = select_in_tree(tree, [dest])
         require(len(items) == 1, "selected the destination alone in the curve list")
         # Host overlays draw only for knobs on the current page.
-        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Transform"))
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Selection"))
         yield ("sleep", RENDER_MS)
         gt.shot("m274-overlay-shown.png")
         before = grab_viewer()
@@ -435,13 +455,13 @@ try:
         check(tx > 1.0 and ty > 1.0, "the overlay drag translated the destination up and right")
         node_translate = warp.getParam("translate")
         check(node_translate is not None and abs(node_translate.getValue(0) - tx) < 1e-3,
-              "the Transform page shows the selected curve's translate")
+              "the Selection page shows the selected curve's translate")
         moved = mapping.rect(shifted(dest_rect, tx))
         d = region_difference(before, grab_viewer(), moved)
         report("NOTE the drag changes the warped picture by %.2f" % d)
         check(d > 2.0, "the translated destination changes the warp")
         tree.clearSelection()
-        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Controls"))
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Warp"))
         QApplication.processEvents()
         yield ("sleep", RENDER_MS)
 

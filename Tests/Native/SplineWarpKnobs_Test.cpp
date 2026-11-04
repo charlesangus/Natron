@@ -52,8 +52,8 @@ struct KnobRow {
     std::vector<double> defaults;
 };
 
-const char* const kControls = "Controls";
-const char* const kTransform = "Transform";
+const char* const kWarp = "Warp";
+const char* const kSelection = "Selection";
 const char* const kRender = "Render";
 
 // The audit table of the Nuke port, then the Natron extras it keeps. The mask and Resampler
@@ -62,31 +62,31 @@ const std::vector<KnobRow>&
 auditRows()
 {
     static const std::vector<KnobRow> rows = {
-        { kSplineWarpParamCropToFormat, "Crop To Format", kControls, { 1. } },
-        { kSplineWarpParamBoundaryBBox, "Boundary BBox", kControls, { 1. } },
-        { kSplineWarpUIParamOutputWarped, "Output Warped", kControls, { 1. } },
-        { kSplineWarpParamAmount, "Amount", kControls, { 1. } },
-        { kSplineWarpParamLayerAmount, "Layer Amount", kControls, { 1. } },
-        { kSplineWarpParamLinkAmount, "Link Amount", kControls, { 1. } },
-        { "translate", "Translate", kTransform, { 0., 0. } },
-        { "rotate", "Rotate", kTransform, { 0. } },
-        { "scale", "Scale", kTransform, { 1., 1. } },
-        { "uniform", "Uniform", kTransform, { 1. } },
-        { "skewx", "Skew X", kTransform, { 0. } },
-        { "skewy", "Skew Y", kTransform, { 0. } },
-        { "skewOrder", "Skew Order", kTransform, { 0. } },
+        { kSplineWarpParamCropToFormat, "Crop To Format", kWarp, { 1. } },
+        { kSplineWarpParamBoundaryBBox, "Boundary BBox", kWarp, { 1. } },
+        { kSplineWarpUIParamOutputWarped, "Output Warped", kWarp, { 1. } },
+        { kSplineWarpParamAmount, "Amount", kWarp, { 1. } },
+        { kSplineWarpParamLayerAmount, "Layer Amount", kSelection, { 1. } },
+        { kSplineWarpParamLinkAmount, "Link Amount", kSelection, { 1. } },
+        { "translate", "Translate", kSelection, { 0., 0. } },
+        { "rotate", "Rotate", kSelection, { 0. } },
+        { "scale", "Scale", kSelection, { 1., 1. } },
+        { "uniform", "Uniform", kSelection, { 1. } },
+        { "skewx", "Skew X", kSelection, { 0. } },
+        { "skewy", "Skew Y", kSelection, { 0. } },
+        { "skewOrder", "Skew Order", kSelection, { 0. } },
         // Normalized: a new curve's centre is set to the Source format's centre.
-        { "center", "Center", kTransform, { 0.5, 0.5 } },
-        { "extraMatrix", "Extra Matrix", kTransform, { 1., 0., 0., 0., 1., 0., 0., 0., 1. } },
+        { "center", "Center", kSelection, { 0.5, 0.5 } },
+        { "extraMatrix", "Extra Matrix", kSelection, { 1., 0., 0., 0., 1., 0., 0., 0., 1. } },
         { kSplineWarpParamCurveResolution, "Curve Resolution", kRender, { 4. } },
         { kSplineWarpParamBoundaryCurveResolution, "Boundary Curve Resolution", kRender, { 4. } },
         { kSplineWarpParamPreviewResolution, "Preview Resolution", kRender, { 25. } },
         { kSplineWarpParamSolver, "Solver", kRender, { 0. } },
         { kResamplerParamFilterType, "Filter", kRender, { (double)Resampler::eFilterCubic } },
-        { kOfxMaskInvertParamName, "Invert Mask", kControls, { 0. } },
-        { kOfxMixParamName, "Mix", kControls, { 1. } },
+        { kOfxMaskInvertParamName, "Invert Mask", kWarp, { 0. } },
+        { kOfxMixParamName, "Mix", kWarp, { 1. } },
 
-        { kSplineWarpParamInvert, "Invert", kControls, { 0. } },
+        { kSplineWarpParamInvert, "Invert", kWarp, { 0. } },
         { kSplineWarpParamSmoothness, "Smoothness", kRender, { 0. } },
         { kSplineWarpParamFieldResolution, "Field Resolution", kRender, { 8. } },
         { kResamplerParamFilterClamp, "Clamp", kRender, { 0. } },
@@ -176,6 +176,6 @@ TEST_F(SplineWarpKnobsTest, EveryAuditedKnobHasItsNameLabelDefaultAndPage)
     EXPECT_EQ(std::string("Output Mask"), outputMask->getLabel());
     KnobPagePtr outputMaskPage = outputMask->getTopLevelPage();
     ASSERT_TRUE(bool(outputMaskPage));
-    EXPECT_EQ(std::string(kControls), outputMaskPage->getLabel());
+    EXPECT_EQ(std::string(kWarp), outputMaskPage->getLabel());
     EXPECT_EQ(std::string(kSplineWarpOutputMaskLayer) + "." + kSplineWarpOutputMaskChannel, outputMask->get());
 }

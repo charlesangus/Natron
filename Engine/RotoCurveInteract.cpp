@@ -1707,6 +1707,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
         menuKnobs.push_back(removeItemFeatherMenuAction.lock());
     }
     menuKnobs.push_back(lockShapeMenuAction.lock());
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {

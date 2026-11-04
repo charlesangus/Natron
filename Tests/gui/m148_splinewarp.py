@@ -1,6 +1,7 @@
 """SplineWarp viewer tools: the panel's Role and Linked To columns and warp actions, a destination
 drag with a draft frame, open and single-point links, a feathered boundary, a correspondence, and
-the Show and Output Warped settings.
+the Show and Output Warped settings. Then Z smooths a linked curve, the viewer's right-click menu
+on a curve runs Duplicate and Link and Link, and the point tool makes a linked pair of points.
 
 A CheckerBoard feeds a SplineWarp feeding the viewer, with the SplineWarp's settings panel open.
 Curves are made through the node's Roto context; the links are made from the curve list's context
@@ -36,6 +37,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
 
     import guitest as gt
@@ -234,6 +236,55 @@ try:
         x = header.sectionViewportPosition(0) + header.sectionSize(0) // 2
         pos = QPoint(x, tree.visualItemRect(item).center().y())
         send_mouse(tree.viewport(), QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
+
+    # The curve actions the viewer's right-click menu on a curve shares with the curve list.
+    CURVE_MENU_ACTIONS = ("Duplicate and Link", "Link", "Unlink", "Swap Source/Destination", "Toggle Boundary",
+                          "Toggle Cookie Cutter", "Link Transform to First", "Unlink Transform")
+
+    def menu_text(action):
+        return action.text().replace("&", "").split("\t")[0].strip()
+
+    def run_viewer_menu_action(pos, text, seen):
+        """Right-clicks the viewer at pos, on a curve, and triggers the menu action labelled text,
+        picked from a timer while the modal menu is up. seen gets each entry's enabled state."""
+        def pick():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                QTimer.singleShot(200, pick)
+                return
+            chosen = None
+            for act in popup.actions():
+                label = menu_text(act)
+                if label:
+                    seen[label] = act.isEnabled()
+                if label == text:
+                    chosen = act
+            popup.close()
+            if chosen is not None and chosen.isEnabled():
+                chosen.trigger()
+
+        QTimer.singleShot(MENU_MS, pick)
+        gl = visible_viewer()
+        send_mouse(gl, QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
+        send_mouse(gl, QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
+        send_mouse(gl, QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
+
+    def viewer_key(key):
+        """key through the viewer's window to the viewer, as a key press from a person arrives."""
+        gl = visible_viewer()
+        gl.setFocus(Qt.OtherFocusReason)
+        QTest.keyClick(gl.window().windowHandle(), key)
+        QApplication.processEvents()
+
+    def tangents(curve):
+        return [tuple(curve.getControlPointPosition(i, 1.0)) for i in range(curve.getNumControlPoints())]
+
+    def make_quad(x0, y0, x1, y1):
+        curve = hold(roto.createBezier(x0, y0, 1.0))
+        for x, y in ((x1, y0), (x1, y1), (x0, y1)):
+            curve.addControlPoint(x, y)
+        curve.setCurveFinished(True)
+        return curve
 
     def column_of(tree, header):
         h = tree.headerItem()
@@ -485,6 +536,97 @@ try:
         yield ("sleep", MENU_MS * 2)
         check(seen.get("Toggle Boundary") is False, "Toggle Boundary is greyed out for a linked curve")
         gt.shot("m148-panel-final.png")
+
+        # Canonical coordinates to viewer pixels, from where the destination rectangle, then on RECT,
+        # was drawn before the drag; the viewer has not been panned or zoomed since.
+        sx = (px1 - px0) / (RECT[2] - RECT[0])
+        sy = (py1 - py0) / (RECT[3] - RECT[1])
+
+        def to_viewer(cx, cy):
+            return QPoint(int(round(px0 + (cx - RECT[0]) * sx)), int(round(py1 - (cy - RECT[1]) * sy)))
+
+        gt.section("smooth-key")
+        # Smoothing a SplineWarp curve used to hang Natron: Z on a linked curve has to come back.
+        warp.getParam("SelectAllTool").trigger()
+        tree = fresh_tree(warp)
+        items = select_in_tree(tree, [dest])
+        require(len(items) == 1, "selected the linked destination in the curve list")
+        yield ("sleep", SETTLE_MS)
+        before_smooth = tangents(dest)
+        send_mouse(visible_viewer(), QEvent.MouseMove, to_viewer(250.0, 950.0), Qt.NoButton, Qt.NoButton)
+        viewer_key(Qt.Key_Z)
+        ok = yield ("until", lambda: tangents(dest) != before_smooth, POLL_TIMEOUT_S)
+        check(ok, "Z smoothed the linked destination and Natron came back")
+        if not ok:
+            report("NOTE Z did not reach the curve; running Smooth through its parameter")
+            warp.getParam("SmoothItemsAction").trigger()
+            ok = yield ("until", lambda: tangents(dest) != before_smooth, POLL_TIMEOUT_S)
+            check(ok, "Smooth on the linked destination came back and smoothed it")
+        report("NOTE destination points before/after smoothing: %r -> %r" % (before_smooth[:1], tangents(dest)[:1]))
+        yield ("sleep", RENDER_MS)
+        gt.shot("m148-smoothed.png")
+
+        gt.section("viewer-menu")
+        q1 = make_quad(100.0, 600.0, 400.0, 900.0)
+        q2 = make_quad(1450.0, 150.0, 1750.0, 450.0)
+        q3 = make_quad(1500.0, 950.0, 1800.0, 1050.0)
+        yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
+        items = select_in_tree(tree, [q1])
+        require(len(items) == 1, "selected a new closed curve")
+        seen = {}
+        run_viewer_menu_action(to_viewer(100.0, 750.0), "Duplicate and Link", seen)
+        ok = yield ("until", lambda: sw.getLink(q1) is not None, POLL_TIMEOUT_S)
+        report("NOTE the viewer menu on a curve: %r" % (seen,))
+        check(all(name in seen for name in CURVE_MENU_ACTIONS), "the viewer menu lists the curve list's warp actions")
+        check(seen.get("Duplicate and Link") is True and seen.get("Link") is False,
+              "the viewer menu enables Duplicate and Link, not Link, for one curve")
+        check(ok, "Duplicate and Link from the viewer menu linked the curve")
+        if ok:
+            check(sw.getLink(q1).getSource().getScriptName() == q1.getScriptName(),
+                  "the clicked curve is the source")
+        yield ("sleep", RENDER_MS)
+        gt.shot("m148-viewer-menu-duplicate.png")
+        tree = fresh_tree(warp)
+        items = select_in_tree(tree, [q2, q3])
+        require(len(items) == 2, "selected two new closed curves")
+        seen = {}
+        run_viewer_menu_action(to_viewer(1500.0, 1000.0), "Link", seen)
+        ok = yield ("until", lambda: sw.getLink(q2) is not None, POLL_TIMEOUT_S)
+        check(seen.get("Link") is True and seen.get("Duplicate and Link") is False,
+              "the viewer menu enables Link, not Duplicate and Link, for two curves")
+        check(ok, "Link from the viewer menu linked the two curves")
+        if ok:
+            link23 = sw.getLink(q2)
+            report("NOTE the viewer menu's Link made %s -> %s" % (link23.getSource().getScriptName(),
+                                                                  link23.getDestination().getScriptName()))
+        yield ("sleep", RENDER_MS)
+        gt.shot("m148-viewer-menu-link.png")
+
+        gt.section("point-tool")
+        warp.getParam("PointTool").trigger()
+        yield ("sleep", SETTLE_MS)
+        names_before = set(item.getScriptName() for item in roto.getBaseLayer().getChildren())
+        click = to_viewer(1150.0, 950.0)
+        gl = visible_viewer()
+        send_mouse(gl, QEvent.MouseButtonPress, click, Qt.LeftButton, Qt.LeftButton)
+        send_mouse(gl, QEvent.MouseButtonRelease, click, Qt.LeftButton, Qt.NoButton)
+        yield ("sleep", RENDER_MS)
+        made = [item for item in roto.getBaseLayer().getChildren() if item.getScriptName() not in names_before]
+        report("NOTE the point tool made %r" % ([m.getScriptName() for m in made],))
+        check(len(made) == 2, "one click with the point tool made two points")
+        linked = [m for m in made if sw.getLink(m) is not None]
+        check(len(linked) == 2, "the two points are linked")
+        if len(linked) == 2:
+            point_link = sw.getLink(linked[0])
+            src = point_link.getSource()
+            dst = point_link.getDestination()
+            check(src.getNumControlPoints() == 1 and dst.getNumControlPoints() == 1, "both are single points")
+            sp = src.getControlPointPosition(0, 1.0)
+            dp = dst.getControlPointPosition(0, 1.0)
+            check(abs(sp[0] - dp[0]) < 1e-6 and abs(sp[1] - dp[1]) < 1e-6, "the destination lies on the source")
+        warp.getParam("SelectAllTool").trigger()
+        gt.shot("m148-point-tool.png")
 
         faulthandler.cancel_dump_traceback_later()
 

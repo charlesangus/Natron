@@ -245,6 +245,45 @@ pointAtClosedArc(const std::vector<Point>& polygon,
     return makePoint(p.x + f * (q.x - p.x), p.y + f * (q.y - p.y));
 }
 
+// Pairs each interior control point k of the source with the destination's control point the
+// alignment puts with it, k after the start along the walk, when both curves have as many segments
+// and a closed destination starts on a control point. Empty otherwise: the walks pair by arc length.
+std::vector<Anchor>
+controlPointAnchors(const SplineWarpLinkSamplingInput& link,
+                    const LinkPlan& plan)
+{
+    std::vector<Anchor> anchors;
+    const int n = link.source->getSegmentCount();
+
+    if ((n < 2) || (link.destination->getSegmentCount() != n) || !(plan.source.length > 0.) || !(plan.destination.length > 0.)) {
+        return anchors;
+    }
+    double start = 0.;
+    if (plan.destination.closed) {
+        start = std::round(link.startOffset);
+        if (!(std::fabs(link.startOffset - start) < 1e-9)) {
+            return anchors;
+        }
+    }
+    for (int k = 1; k < n; ++k) {
+        double d;
+        if (plan.destination.closed) {
+            d = std::fmod(link.reversed ? start - k : start + k, (double)n);
+            if (d < 0.) {
+                d += n;
+            }
+        } else {
+            d = link.reversed ? n - k : k;
+        }
+        Anchor a;
+        a.source = plan.source.walkOfParam(k);
+        a.destination = plan.destination.walkOfParam(d);
+        anchors.push_back(a);
+    }
+
+    return anchors;
+}
+
 LinkPlan
 planLink(const SplineWarpLinkSamplingInput& link,
          double spacing)
@@ -305,6 +344,33 @@ planLink(const SplineWarpLinkSamplingInput& link,
     end.destination = ld;
     anchors.insert(anchors.begin(), start);
     anchors.push_back(end);
+
+    // Between consecutive user anchors, the control-point anchors that keep both walks moving
+    // forward: one crossing a neighbour on the destination would fold its span back.
+    const std::vector<Anchor> points = controlPointAnchors(link, plan);
+    if (!points.empty()) {
+        std::vector<Anchor> merged;
+        merged.reserve(anchors.size() + points.size());
+        std::size_t next = 0;
+        for (std::size_t i = 0; i + 1 < anchors.size(); ++i) {
+            const Anchor& lo = anchors[i];
+            const Anchor& hi = anchors[i + 1];
+            merged.push_back(lo);
+            double last = lo.destination;
+            for (; (next < points.size()) && (points[next].source < hi.source - eps); ++next) {
+                const Anchor& p = points[next];
+                if ((p.source > lo.source + eps) && (p.destination > last + eps) && (p.destination < hi.destination - eps)) {
+                    merged.push_back(p);
+                    last = p.destination;
+                }
+            }
+            while ((next < points.size()) && (points[next].source <= hi.source + eps)) {
+                ++next;
+            }
+        }
+        merged.push_back(anchors.back());
+        anchors.swap(merged);
+    }
 
     for (std::size_t i = 0; i + 1 < anchors.size(); ++i) {
         SpanPlan span;

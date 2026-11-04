@@ -29,12 +29,14 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <memory>
 #include <string>
 
 #include <QCoreApplication>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/UndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
@@ -99,6 +101,37 @@ private:
     int _indexInLayer;
     RotoCurveContextHostStatePtr _before;
     RotoCurveContextHostStatePtr _after;
+};
+
+/**
+ * @brief The point tool's click in SplineWarp: a one-point curve as the source of a link to a copy
+ * on it, the destination, which becomes the selection. One undo step removes both.
+ **/
+class SplineWarpMakeLinkedPointUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(SplineWarpMakeLinkedPointUndoCommand)
+
+public:
+    SplineWarpMakeLinkedPointUndoCommand(const RotoCurveInteractPtr& roto,
+                                         double x,
+                                         double y,
+                                         double time);
+
+    virtual ~SplineWarpMakeLinkedPointUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    // The source point, null before the first redo() or when it made nothing.
+    BezierPtr getSource() const;
+
+    // The destination point, the source's linked copy.
+    BezierPtr getDestination() const;
+
+private:
+    RotoCurveInteractWPtr _roto;
+    std::shared_ptr<MakePointCurveUndoCommand> _point;
+    std::shared_ptr<SplineWarpDuplicateAndLinkUndoCommand> _link;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -31,6 +31,8 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QPointF>
@@ -39,6 +41,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
+#include "Engine/RotoCurvePanelHook.h"
 
 #define kSplineWarpUIParamCorrespondenceTools "CorrespondenceTools"
 #define kSplineWarpUIParamCorrespondenceToolsLabel "Correspondence Tools"
@@ -187,6 +190,31 @@ public:
     std::string runAction(SplineWarpActionEnum action, UndoCommandPtr* pushed = 0);
 
     /**
+     * @brief The warp and transform link actions of the curve list's and the viewer's right-click
+     * menus, in menu order, each enabled when it would not refuse items.
+     **/
+    std::vector<RotoCurvePanelHook::MenuAction> getCurveMenuActions(const std::list<RotoItemPtr>& items) const;
+
+    /**
+     * @brief Runs the curve menu action actionId on items. The warp actions work on the
+     * selection, which items become first, in their order, so Link takes the first as the source;
+     * the transform link actions work on items, which may be layers.
+     **/
+    std::string runCurveMenuAction(const std::string& actionId, const std::list<RotoItemPtr>& items, UndoCommandPtr* pushed = 0);
+
+    /**
+     * @brief The base menu knobs, then a hidden button for each curve menu action, which the
+     * viewer's right-click menu on a curve lists.
+     **/
+    virtual void createRightClickMenuKnobs(const KnobPagePtr& page) OVERRIDE FINAL;
+
+    /**
+     * @brief The point tool's click: a one-point curve linked, as the source, to a copy on it,
+     * which becomes the selection. Returns the source.
+     **/
+    virtual BezierPtr makePointCurve(double x, double y, double time) OVERRIDE FINAL;
+
+    /**
      * @brief What the correspondence tool does on a press at pos, tolerance away at most: picks the
      * nearest correspondence end, or else makes a correspondence on the nearest linked curve,
      * paired with the matching point of the other curve. Returns false, with the selection
@@ -221,6 +249,7 @@ protected:
     virtual bool isCurveShown(const BezierPtr& curve) const OVERRIDE FINAL;
     virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const OVERRIDE FINAL;
     virtual void drawOverlayExtras(double time, double screenPixelRatio, const std::pair<double, double>& pixelScale) OVERRIDE FINAL;
+    virtual void appendCurveMenuActions(std::vector<KnobButtonPtr>* menuKnobs) OVERRIDE FINAL;
 
 private:
     std::string refuse(const QString& message);
@@ -237,6 +266,8 @@ private:
     // Drops the curves the show choice now hides from the selection.
     void deselectHiddenCurves();
 
+    // The curve menu buttons, by action id, in menu order.
+    std::vector<std::pair<std::string, KnobButtonWPtr>> _curveMenuButtons;
     std::weak_ptr<SplineWarpLink> _selectedLink;
     int _selectedIndex;
     bool _dragOnSource;

@@ -330,15 +330,24 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     EXPECT_EQ("Crop To Format", cropToFormat->getLabel());
     EXPECT_TRUE(cropToFormat->getValue());
 
-    // The warp's own controls on the first page, how it is rendered on the Render page.
+    // The whole warp's controls on the first page, what edits the selected curves and layers on
+    // the Selection page, how it is rendered on the Render page.
     KnobPagePtr controls = amount->getTopLevelPage();
     ASSERT_TRUE(bool(controls));
-    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox,
-                              kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
+    EXPECT_EQ("Warp", controls->getLabel());
+    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamBoundaryBBox, kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_EQ(controls, knob->getTopLevelPage()) << name;
     }
+    for (const char* name : { kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, "translate", "extraMatrix" }) {
+        KnobIPtr knob = node->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        KnobPagePtr page = knob->getTopLevelPage();
+        ASSERT_TRUE(bool(page)) << name;
+        EXPECT_EQ("Selection", page->getLabel()) << name;
+    }
+    EXPECT_FALSE(bool(node->getKnobByName("RotoTransformInteractive"))) << "the global preference sets how the transform handle updates";
     for (const char* name : { kSplineWarpParamSolver, kSplineWarpParamSmoothness, kSplineWarpParamCurveResolution,
                               kSplineWarpParamBoundaryCurveResolution, kSplineWarpParamFieldResolution, kResamplerParamFilterType,
                               kResamplerParamFilterClamp, kResamplerParamFilterBlackOutside, kSplineWarpParamBBox,
@@ -768,6 +777,48 @@ TEST_F(NativeSplineWarpTest, CookieCutterWritesTheMaskAndLeavesTheSource)
     ASSERT_TRUE(bool(outputMask));
     outputMask->setNone();
     EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+}
+
+// Output Mask names a layer of the output: the Source doesn't need it, the knob lists it, and
+// rendering it leaves no message on the node.
+TEST_F(NativeSplineWarpTest, OutputMaskCreatesItsLayerOnAnRgbSource)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceComponents(source, "rgb");
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(bool(warp));
+    SplineWarpContextPtr ctx = contextOf(warp);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr cutter = makeRectangle(ctx, 16., 12., 48., 36.);
+    ASSERT_TRUE(bool(cutter));
+    ctx->setCookieCutter(cutter, true);
+
+    KnobChannelSelectPtr outputMask = std::dynamic_pointer_cast<KnobChannelSelect>(warp->getKnobByName(kSplineWarpParamOutputMask));
+    ASSERT_TRUE(bool(outputMask));
+    outputMask->set(std::string(kSplineWarpOutputMaskLayer) + "." + kSplineWarpOutputMaskChannel);
+    EXPECT_TRUE(warp->isTargetLayerKnob(outputMask));
+
+    std::list<ImageLayerDesc> listed;
+    warp->listLayersForKnob(outputMask, kTime, ViewIdx(0), &listed);
+    ImageLayerDesc resolved;
+    int channel = -1;
+    EXPECT_TRUE(outputMask->resolve(listed, &resolved, &channel)) << "the knob lists the layer it writes";
+    EXPECT_EQ(std::string(kSplineWarpOutputMaskLayer), resolved.getLayerID());
+
+    EXPECT_FALSE(producesLayer(source, kSplineWarpOutputMaskLayer));
+    EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+    std::string message;
+    EXPECT_TRUE(warp->checkSelectedChannelsPresent(kTime, ViewIdx(0), &message)) << message;
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane mask;
+    ASSERT_TRUE(renderLayer(warp, window, outputMaskLayer(), &mask));
+    ASSERT_EQ(1u, mask.channels.size());
+    EXPECT_EQ(1.f, mask.pixels[(std::size_t)(24 - window.y1) * window.width() + (32 - window.x1)]) << "inside the cutter";
+    EXPECT_EQ(0.f, mask.pixels[(std::size_t)(4 - window.y1) * window.width() + (4 - window.x1)]) << "outside the cutter";
+    EXPECT_FALSE(warp->hasPersistentMessage());
 }
 
 // Crop To Format samples the Source only inside its format and keeps the output there; off, the

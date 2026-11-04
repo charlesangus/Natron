@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <QPointF>
 #include <QRectF>
@@ -506,7 +507,7 @@ public:
     /**
      * @brief Creates the right-click menu choice and its actions on page.
      **/
-    void createRightClickMenuKnobs(const KnobPagePtr& page);
+    virtual void createRightClickMenuKnobs(const KnobPagePtr& page);
 
     /**
      * @brief Keeps the selection and lock state in step with the curve context and redraws the
@@ -622,7 +623,7 @@ public:
      * @brief What the point tool does on a click: makes a finished open curve of one control
      * point at (x, y), selects it, and pushes the undo command.
      **/
-    BezierPtr makePointCurve(double x, double y, double time);
+    virtual BezierPtr makePointCurve(double x, double y, double time);
 
     BezierPtr getBezierBeingBuild() const;
 
@@ -698,6 +699,9 @@ protected:
 
     // Called first thing on pen down.
     virtual void onPenDownStarted(PenType /*pen*/) { }
+
+    // Adds the host's own actions to the right-click menu on a curve, after the curve interact's.
+    virtual void appendCurveMenuActions(std::vector<KnobButtonPtr>* /*menuKnobs*/) { }
 
     // Pen down with a tool the curve interact doesn't handle. Returns true if it did something.
     virtual bool onPaintToolPenDown(double /*time*/, const QPointF& /*pos*/, double /*pressure*/, double /*timestamp*/)

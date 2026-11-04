@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoLayer.h"
@@ -266,10 +267,31 @@ SplineWarp::getCurvePanelHook() const
 
 static SplineWarpContextPtr splineWarpContext(const SplineWarp& effect);
 
+namespace {
+// The layer of an outputMask value: false for None, a malformed value or a colour channel, which
+// is the warped Source's own.
+bool
+outputMaskLayerOf(const std::string& value,
+                  ImageLayerDesc* layer)
+{
+    const std::string::size_type dot = value.rfind('.');
+    if ((dot == std::string::npos) || (dot == 0) || (dot + 1 >= value.size())) {
+        return false;
+    }
+    const std::string layerID = value.substr(0, dot);
+    if (ImageLayerDesc::isColorLayer(layerID)) {
+        return false;
+    }
+    *layer = ImageLayerDesc(layerID, layerID, "", std::vector<std::string>(1, value.substr(dot + 1)));
+
+    return true;
+}
+} // anonymous namespace
+
 void
 SplineWarp::initializeKnobs()
 {
-    const KnobPagePtr page = createControlsPage();
+    const KnobPagePtr page = createKnob<KnobPage>(tr("Warp"));
 
     KnobDoublePtr amount = createKnob<KnobDouble>(tr("Amount"));
     amount->setName(kSplineWarpParamAmount);
@@ -291,6 +313,43 @@ SplineWarp::initializeKnobs()
     page->addKnob(invert);
     _invert = invert;
 
+    KnobBoolPtr boundaryBBox = createKnob<KnobBool>(tr("Boundary BBox"));
+    boundaryBBox->setName(kSplineWarpParamBoundaryBBox);
+    boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, without masking anything, so the warp "
+                                    "eases out toward them instead of moving the whole image."));
+    boundaryBBox->setDefaultValue(true);
+    boundaryBBox->setAnimationEnabled(false);
+    page->addKnob(boundaryBBox);
+    _boundaryBBox = boundaryBBox;
+
+    KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
+    cropToFormat->setName(kSplineWarpParamCropToFormat);
+    cropToFormat->setHintToolTip(tr("Sample the Source only inside its format, and keep the output inside it. Off, the "
+                                    "warp can pull in the Source's pixels outside the format, and the whole of the "
+                                    "Source's region of definition is warped, which costs more."));
+    cropToFormat->setDefaultValue(true);
+    cropToFormat->setAnimationEnabled(false);
+    page->addKnob(cropToFormat);
+    _cropToFormat = cropToFormat;
+
+    KnobChannelSelectPtr outputMask = createKnob<KnobChannelSelect>(tr("Output Mask"));
+    outputMask->setName(kSplineWarpParamOutputMask);
+    outputMask->setAnimationEnabled(false);
+    outputMask->setDefaultValue(outputMask->encode(std::string(kSplineWarpOutputMaskLayer) + "." + kSplineWarpOutputMaskChannel));
+    outputMask->setHintToolTip(tr("The channel the mask of the cookie cutter curves is written to, warped as the Source "
+                                  "is. A channel of a layer other than the colour layer, or None; the layer is added to "
+                                  "the output whether or not the Source has it. Enabled while some curve is a cookie "
+                                  "cutter."));
+    outputMask->setAllDimensionsEnabled(false);
+    // The channel names the layer this node produces, which the downstream layer menus list.
+    outputMask->setIsMetadataSlave(true);
+    page->addKnob(outputMask);
+    _outputMask = outputMask;
+    // The mask is written to a layer of the output, not read from an input.
+    getNode()->declareLayerKnob(outputMask, -1, LayerKnobSpec::eRoleTarget);
+
+    const KnobPagePtr selectionPage = createKnob<KnobPage>(tr("Selection"));
+
     KnobDoublePtr layerAmount = createKnob<KnobDouble>(tr("Layer Amount"));
     layerAmount->setName(kSplineWarpParamLayerAmount);
     layerAmount->setHintToolTip(tr("How far the links whose destination curves are in the selected layers move, on top of "
@@ -305,7 +364,7 @@ SplineWarp::initializeKnobs()
     layerAmount->setIsPersistent(false);
     layerAmount->setEvaluateOnChange(false);
     layerAmount->setAllDimensionsEnabled(false);
-    page->addKnob(layerAmount);
+    selectionPage->addKnob(layerAmount);
     _layerAmount = layerAmount;
 
     KnobDoublePtr linkAmount = createKnob<KnobDouble>(tr("Link Amount"));
@@ -321,44 +380,11 @@ SplineWarp::initializeKnobs()
     linkAmount->setIsPersistent(false);
     linkAmount->setEvaluateOnChange(false);
     linkAmount->setAllDimensionsEnabled(false);
-    page->addKnob(linkAmount);
+    selectionPage->addKnob(linkAmount);
     _linkAmount = linkAmount;
 
-    KnobChannelSelectPtr outputMask = createKnob<KnobChannelSelect>(tr("Output Mask"));
-    outputMask->setName(kSplineWarpParamOutputMask);
-    outputMask->setAnimationEnabled(false);
-    outputMask->setDefaultValue(outputMask->encode(std::string(kSplineWarpOutputMaskLayer) + "." + kSplineWarpOutputMaskChannel));
-    outputMask->setHintToolTip(tr("The channel the mask of the cookie cutter curves is written to, warped as the Source "
-                                  "is. A channel of a layer other than the colour layer, or None. Enabled while some "
-                                  "curve is a cookie cutter."));
-    outputMask->setAllDimensionsEnabled(false);
-    // The channel names the layer this node produces, which the downstream layer menus list.
-    outputMask->setIsMetadataSlave(true);
-    page->addKnob(outputMask);
-    _outputMask = outputMask;
-
-    KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
-    cropToFormat->setName(kSplineWarpParamCropToFormat);
-    cropToFormat->setHintToolTip(tr("Sample the Source only inside its format, and keep the output inside it. Off, the "
-                                    "warp can pull in the Source's pixels outside the format, and the whole of the "
-                                    "Source's region of definition is warped, which costs more."));
-    cropToFormat->setDefaultValue(true);
-    cropToFormat->setAnimationEnabled(false);
-    page->addKnob(cropToFormat);
-    _cropToFormat = cropToFormat;
-
-    KnobBoolPtr boundaryBBox = createKnob<KnobBool>(tr("Boundary BBox"));
-    boundaryBBox->setName(kSplineWarpParamBoundaryBBox);
-    boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, without masking anything, so the warp "
-                                    "eases out toward them instead of moving the whole image."));
-    boundaryBBox->setDefaultValue(true);
-    boundaryBBox->setAnimationEnabled(false);
-    page->addKnob(boundaryBBox);
-    _boundaryBBox = boundaryBBox;
-
-    const KnobPagePtr transformPage = createKnob<KnobPage>(tr("Transform"));
     if (RotoCurveContextPtr context = getNode()->getCurveContext()) {
-        context->createTransformKnobs(transformPage);
+        context->createTransformKnobs(selectionPage);
         const RotoCurveContext::TransformKnobs knobs = context->getTransformKnobs();
         getNode()->addTransformInteract(knobs.translate, knobs.scale, knobs.scaleUniform, knobs.rotate, knobs.skewX, knobs.skewY,
                                         knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/, knobs.interactive);
@@ -589,6 +615,7 @@ SplineWarp::initializeKnobs()
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     updateCookieKnobsEnabled();
+    registerOutputMaskLayer();
 } // SplineWarp::initializeKnobs
 
 void
@@ -656,6 +683,21 @@ SplineWarp::refreshOutputMaskLayer()
     _outputMaskLayer = produced;
     // A role change only rehashes and renders; the layer menus downstream follow the metadata.
     refreshMetadataSideEffects();
+}
+
+void
+SplineWarp::registerOutputMaskLayer()
+{
+    KnobChannelSelectPtr outputMask = _outputMask.lock();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ImageLayerDesc layer;
+
+    if (!outputMask || !project || !outputMaskLayerOf(outputMask->get(), &layer)) {
+        return;
+    }
+    std::string error;
+    project->addLayer(layer, LayerRegistryEntry::eOriginPlugin, &error);
 }
 
 namespace {
@@ -926,6 +968,7 @@ SplineWarp::onKnobsLoaded()
     syncAmountKnobs();
     syncTransformKnobs();
     updateCookieKnobsEnabled();
+    registerOutputMaskLayer();
     selectDefaultTool();
 }
 
@@ -936,8 +979,12 @@ SplineWarp::knobChanged(KnobI* k,
                         double time,
                         bool /*originatedFromMainThread*/)
 {
-    KnobChoicePtr filter = _filter.lock();
+    KnobChannelSelectPtr outputMask = _outputMask.lock();
+    if (outputMask && (k == outputMask.get())) {
+        registerOutputMaskLayer();
+    }
 
+    KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
         updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
@@ -1295,19 +1342,8 @@ SplineWarp::getOutputMaskLayer(double time,
     if (!outputMask || outputMask->isNone() || !context || !context->hasActiveCookieCutter(time)) {
         return false;
     }
-    const std::string value = outputMask->get();
-    const std::string::size_type dot = value.rfind('.');
-    if ((dot == std::string::npos) || (dot == 0) || (dot + 1 >= value.size())) {
-        return false;
-    }
-    const std::string layerID = value.substr(0, dot);
-    // A colour channel is the warped Source's own.
-    if (ImageLayerDesc::isColorLayer(layerID)) {
-        return false;
-    }
-    *layer = ImageLayerDesc(layerID, layerID, "", std::vector<std::string>(1, value.substr(dot + 1)));
 
-    return true;
+    return outputMaskLayerOf(outputMask->get(), layer);
 }
 
 bool

@@ -28,29 +28,9 @@
 #include "Engine/Bezier.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
-#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoItem.h"
 
 NATRON_NAMESPACE_ENTER
-
-namespace {
-struct ActionInfo {
-    SplineWarpActionEnum action;
-    const char* id;
-};
-
-const ActionInfo kActions[] = {
-    { eSplineWarpActionDuplicateAndLink, "duplicateAndLink" },
-    { eSplineWarpActionLink, "link" },
-    { eSplineWarpActionUnlink, "unlink" },
-    { eSplineWarpActionSwap, "swap" },
-    { eSplineWarpActionToggleBoundary, "toggleBoundary" },
-    { eSplineWarpActionToggleCookieCutter, "toggleCookieCutter" },
-};
-
-const char kLinkTransformId[] = "linkTransform";
-const char kUnlinkTransformId[] = "unlinkTransform";
-} // anonymous namespace
 
 SplineWarpPanelHook::SplineWarpPanelHook(const std::shared_ptr<SplineWarpInteract>& interact)
     : _interact(interact)
@@ -131,39 +111,10 @@ SplineWarpPanelHook::getItemText(const RotoItemPtr& item,
 std::vector<RotoCurvePanelHook::MenuAction>
 SplineWarpPanelHook::getItemMenuActions(const std::list<RotoItemPtr>& items) const
 {
-    std::vector<MenuAction> actions;
     std::shared_ptr<SplineWarpInteract> ui = _interact.lock();
 
-    if (!ui) {
-        return actions;
-    }
-    const QString labels[] = {
-        tr("Duplicate and Link"),
-        tr("Link"),
-        tr("Unlink"),
-        tr("Swap Source/Destination"),
-        tr("Toggle Boundary"),
-        tr("Toggle Cookie Cutter"),
-    };
-    for (std::size_t i = 0; i < sizeof(kActions) / sizeof(kActions[0]); ++i) {
-        MenuAction action;
-        action.id = kActions[i].id;
-        action.label = labels[i].toStdString();
-        action.enabled = ui->getRefusal(kActions[i].action, items).empty();
-        actions.push_back(action);
-    }
-    MenuAction link;
-    link.id = kLinkTransformId;
-    link.label = tr("Link Transform to First").toStdString();
-    link.enabled = ui->getTransformLinkRefusal(true, items).empty();
-    actions.push_back(link);
-    MenuAction unlink;
-    unlink.id = kUnlinkTransformId;
-    unlink.label = tr("Unlink Transform").toStdString();
-    unlink.enabled = ui->getTransformLinkRefusal(false, items).empty();
-    actions.push_back(unlink);
-
-    return actions;
+    // The viewer's right-click menu on a curve lists the same actions.
+    return ui ? ui->getCurveMenuActions(items) : std::vector<MenuAction>();
 }
 
 void
@@ -172,37 +123,8 @@ SplineWarpPanelHook::onItemMenuActionTriggered(const std::string& actionId,
 {
     std::shared_ptr<SplineWarpInteract> ui = _interact.lock();
 
-    if (!ui) {
-        return;
-    }
-    // Layers can take part, so these work on items rather than on the viewer's selection.
-    if (actionId == kLinkTransformId) {
-        ui->linkTransform(items);
-
-        return;
-    }
-    if (actionId == kUnlinkTransformId) {
-        ui->unlinkTransform(items);
-
-        return;
-    }
-    for (std::size_t i = 0; i < sizeof(kActions) / sizeof(kActions[0]); ++i) {
-        if (actionId != kActions[i].id) {
-            continue;
-        }
-        // The actions work on the viewer's selection, which the panel's items become, in their
-        // order, so Link takes the first as the source.
-        std::list<RotoDrawableItemPtr> drawables;
-        for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
-            RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
-            if (drawable) {
-                drawables.push_back(drawable);
-            }
-        }
-        ui->setSelection(drawables, std::list<std::pair<BezierCPPtr, BezierCPPtr>>());
-        ui->runAction(kActions[i].action);
-
-        return;
+    if (ui) {
+        ui->runCurveMenuAction(actionId, items);
     }
 }
 

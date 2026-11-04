@@ -2173,9 +2173,12 @@ public:
 
     /**
      * @brief Creates the translate, rotate, scale, skew, center and extra matrix knobs on page, tied
-     * to the selected items like the other context knobs, and their two reset buttons.
+     * to the selected items like the other context knobs, and their two reset buttons. Without
+     * withInteractive there is no Interactive knob, and the transform handle follows the
+     * "Refresh viewer only when editing is finished" preference.
      **/
-    void createTransformKnobs(const KnobPagePtr& transformPage)
+    void createTransformKnobs(const KnobPagePtr& transformPage,
+                              bool withInteractive = true)
     {
         EffectInstancePtr effect = node.lock()->getEffectInstance();
 
@@ -2279,14 +2282,17 @@ public:
         knobs.push_back(resetCenter);
         resetCenterKnob = resetCenter;
 
-        KnobBoolPtr transformInteractive = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoTransformInteractiveLabel), 1, true);
-        transformInteractive->setName(kRotoTransformInteractive);
-        transformInteractive->setHintToolTip(tr(kRotoTransformInteractiveHint));
-        transformInteractive->setDefaultValue(true);
-        transformInteractive->setAllDimensionsEnabled(false);
-        transformPage->addKnob(transformInteractive);
-        knobs.push_back(transformInteractive);
-        transformInteractiveKnob = transformInteractive;
+        KnobBoolPtr transformInteractive;
+        if (withInteractive) {
+            transformInteractive = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoTransformInteractiveLabel), 1, true);
+            transformInteractive->setName(kRotoTransformInteractive);
+            transformInteractive->setHintToolTip(tr(kRotoTransformInteractiveHint));
+            transformInteractive->setDefaultValue(true);
+            transformInteractive->setAllDimensionsEnabled(false);
+            transformPage->addKnob(transformInteractive);
+            knobs.push_back(transformInteractive);
+            transformInteractiveKnob = transformInteractive;
+        }
 
         KnobDoublePtr extraMatrix = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
         extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
@@ -2313,6 +2319,9 @@ public:
             translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, transformInteractive, extraMatrix, resetTransform
         };
         for (const KnobIPtr& k : created) {
+            if (!k) {
+                continue;
+            }
             transformKnobs.push_back(k);
             k->setDefaultAllDimensionsEnabled(false);
         }

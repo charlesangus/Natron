@@ -46,6 +46,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
@@ -55,6 +56,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -62,6 +64,7 @@
 #include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 
@@ -361,7 +364,7 @@ TEST_F(SplineWarpToolsTest, TheToolbarHoldsTheCurveAndCorrespondenceTools)
     EXPECT_EQ(eRotoRoleCorrespondence, role);
 }
 
-TEST_F(SplineWarpToolsTest, ThePointToolMakesAOnePointOpenCurve)
+TEST_F(SplineWarpToolsTest, ThePointToolMakesALinkedPairOfOnePointCurves)
 {
     NodePtr node = makeSplineWarp(NodePtr());
     ASSERT_TRUE(bool(node));
@@ -379,15 +382,121 @@ TEST_F(SplineWarpToolsTest, ThePointToolMakesAOnePointOpenCurve)
     const QPointF at = pointOf(point, 0.);
     EXPECT_DOUBLE_EQ(12., at.x());
     EXPECT_DOUBLE_EQ(34., at.y());
-    ASSERT_EQ(std::size_t(1), ui->selectedItems.size());
-    EXPECT_EQ(point, std::dynamic_pointer_cast<Bezier>(ui->selectedItems.front()));
 
-    // A single point links to a curve like any other.
-    BezierPtr quad = makeQuad(ctx, 10., 10., 16.);
-    ASSERT_TRUE(bool(quad));
-    select(ui, std::list<BezierPtr> { point, quad });
-    EXPECT_EQ(std::string(), ui->linkSelected());
-    EXPECT_TRUE(bool(ctx->getLink(point)));
+    // The point is the source of a link to a copy on it, which is selected, ready to drag.
+    SplineWarpLinkPtr link = ctx->getLink(point);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(point, link->getSource());
+    BezierPtr destination = link->getDestination();
+    ASSERT_TRUE(bool(destination));
+    EXPECT_NE(point, destination);
+    EXPECT_EQ(1, destination->getControlPointsCount());
+    EXPECT_TRUE(destination->isOpenBezier());
+    const QPointF destinationAt = pointOf(destination, 0.);
+    EXPECT_DOUBLE_EQ(12., destinationAt.x());
+    EXPECT_DOUBLE_EQ(34., destinationAt.y());
+    ASSERT_EQ(std::size_t(1), ui->selectedItems.size());
+    EXPECT_EQ(destination, std::dynamic_pointer_cast<Bezier>(ui->selectedItems.front()));
+    EXPECT_EQ(std::size_t(1), ctx->getLinks().size());
+
+    // One undo step makes both points and the link, and takes them all back.
+    const U64 hashBefore = ctx->getContentHash();
+    std::shared_ptr<SplineWarpMakeLinkedPointUndoCommand> command = std::make_shared<SplineWarpMakeLinkedPointUndoCommand>(ui, 50., 60., kTime);
+    command->redo();
+    BezierPtr source = command->getSource();
+    BezierPtr copy = command->getDestination();
+    ASSERT_TRUE(source && copy);
+    ASSERT_TRUE(bool(ctx->getLink(source)));
+    EXPECT_EQ(copy, ctx->getLink(source)->getDestination());
+    EXPECT_EQ(std::size_t(2), ctx->getLinks().size());
+    const U64 hashAfter = ctx->getContentHash();
+    EXPECT_NE(hashBefore, hashAfter);
+    const std::string sourceName = source->getScriptName();
+    const std::string copyName = copy->getScriptName();
+    command->undo();
+    EXPECT_FALSE(bool(ctx->getItemByName(sourceName)));
+    EXPECT_FALSE(bool(ctx->getItemByName(copyName)));
+    EXPECT_EQ(std::size_t(1), ctx->getLinks().size());
+    EXPECT_EQ(hashBefore, ctx->getContentHash());
+    command->redo();
+    EXPECT_EQ(source, std::dynamic_pointer_cast<Bezier>(ctx->getItemByName(sourceName)));
+    EXPECT_EQ(copy, std::dynamic_pointer_cast<Bezier>(ctx->getItemByName(copyName)));
+    ASSERT_TRUE(bool(ctx->getLink(source)));
+    EXPECT_EQ(copy, ctx->getLink(source)->getDestination());
+    EXPECT_EQ(hashAfter, ctx->getContentHash());
+    ASSERT_EQ(std::size_t(1), ui->selectedItems.size());
+    EXPECT_EQ(copy, std::dynamic_pointer_cast<Bezier>(ui->selectedItems.front()));
+}
+
+TEST_F(SplineWarpToolsTest, SmoothAndCuspReturnOnWarpCurves)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpInteractPtr ui = interactOf(node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(ui && ctx);
+
+    // Smoothing reads the curve transform, which SplineWarp composes through the curve's layer:
+    // it used to do so under the curve's own lock and hang.
+    BezierPtr source = makeQuad(ctx, 10., 10., 20.);
+    BezierPtr boundary = makeQuad(ctx, 0., 0., 80.);
+    BezierPtr plain = makeQuad(ctx, 40., 40., 10.);
+    ASSERT_TRUE(source && boundary && plain);
+    select(ui, source);
+    ASSERT_EQ(std::string(), ui->duplicateAndLink());
+    ASSERT_TRUE(bool(ctx->getLink(source)));
+    BezierPtr destination = ctx->getLink(source)->getDestination();
+    ASSERT_TRUE(bool(destination));
+    ctx->setBoundary(boundary, true);
+    ASSERT_EQ(std::string(), ui->linkTransform(std::list<RotoItemPtr> { boundary, plain }));
+
+    const std::pair<double, double> pixelScale(1., 1.);
+    const auto leftTangentOffset = [](const BezierPtr& curve, int index) {
+        BezierCPPtr cp = curve->getControlPointAtIndex(index);
+        double x = 0., y = 0., lx = 0., ly = 0.;
+        cp->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+        cp->getLeftBezierPointAtTime(false, kTime, ViewIdx(0), &lx, &ly);
+
+        return std::hypot(lx - x, ly - y);
+    };
+    const std::list<BezierPtr> curves { source, destination, boundary, plain };
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        const double before = leftTangentOffset(*it, 1);
+        (*it)->smoothPointAtIndex(1, kTime, pixelScale);
+        const double smoothed = leftTangentOffset(*it, 1);
+        EXPECT_GT(smoothed, before) << (*it)->getScriptName();
+        (*it)->cuspPointAtIndex(1, kTime, pixelScale);
+        EXPECT_LT(leftTangentOffset(*it, 1), smoothed) << (*it)->getScriptName();
+    }
+
+    // What Z and the Smooth menu entry push, over every point of the linked curves.
+    std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
+    const std::list<BezierPtr> linked { source, destination };
+    for (std::list<BezierPtr>::const_iterator it = linked.begin(); it != linked.end(); ++it) {
+        SmoothCuspUndoCommand::SmoothCuspCurveData data;
+        data.curve = *it;
+        const std::list<BezierCPPtr>& cps = (*it)->getControlPoints();
+        const std::list<BezierCPPtr>& fps = (*it)->getFeatherPoints();
+        std::list<BezierCPPtr>::const_iterator itFp = fps.begin();
+        for (std::list<BezierCPPtr>::const_iterator itCp = cps.begin(); itCp != cps.end(); ++itCp, ++itFp) {
+            data.newPoints.push_back(std::make_pair(*itCp, *itFp));
+        }
+        datas.push_back(data);
+    }
+    const double before = leftTangentOffset(destination, 2);
+    SmoothCuspUndoCommand smooth(ui, datas, kTime, false, pixelScale);
+    smooth.redo();
+    const double smoothed = leftTangentOffset(destination, 2);
+    EXPECT_GT(smoothed, before);
+    smooth.undo();
+    EXPECT_NEAR(before, leftTangentOffset(destination, 2), 1e-9);
+    smooth.redo();
+    EXPECT_NEAR(smoothed, leftTangentOffset(destination, 2), 1e-9);
+    SmoothCuspUndoCommand cusp(ui, datas, kTime, true, pixelScale);
+    cusp.redo();
+    EXPECT_LT(leftTangentOffset(destination, 2), smoothed);
+    cusp.undo();
+    EXPECT_NEAR(smoothed, leftTangentOffset(destination, 2), 1e-9);
 }
 
 TEST_F(SplineWarpToolsTest, DuplicateAndLinkStartsAtIdentityAndUndoes)
@@ -1124,6 +1233,96 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     link = ctx->getLink(b);
     ASSERT_TRUE(bool(link));
     EXPECT_EQ(b, link->getSource());
+}
+
+TEST_F(SplineWarpToolsTest, TheViewerMenuOnACurveRunsTheWarpActions)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpInteractPtr ui = interactOf(node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(ui && ctx);
+
+    BezierPtr a = makeQuad(ctx, 10., 10., 10.);
+    BezierPtr b = makeQuad(ctx, 30., 10., 10.);
+    BezierPtr open = makeOpenLine(ctx, 5., 40.);
+    ASSERT_TRUE(a && b && open);
+
+    // The menu lists the curve list's actions after the curve interact's own, enabled by the same
+    // rules, on the selection.
+    const auto menuFor = [&](const BezierPtr& curve) {
+        ui->showMenuForCurve(curve);
+        KnobChoicePtr menu = ui->rightClickMenuKnob.lock();
+        std::vector<std::string> names;
+        if (menu) {
+            const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                names.push_back(entries[i].id);
+            }
+        }
+
+        return names;
+    };
+    const auto check = [&](const std::list<BezierPtr>& selection, const BezierPtr& clicked) {
+        select(ui, selection);
+        const std::vector<std::string> names = menuFor(clicked);
+        const std::list<RotoItemPtr> items(selection.begin(), selection.end());
+        const std::vector<RotoCurvePanelHook::MenuAction> actions = ui->getCurveMenuActions(items);
+        ASSERT_EQ(std::size_t(8), actions.size());
+        ASSERT_GE(names.size(), actions.size());
+        EXPECT_NE(names.end(), std::find(names.begin(), names.end(), std::string("SmoothItemsAction")));
+        const std::size_t first = names.size() - actions.size();
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            EXPECT_EQ(actions[i].id + "MenuAction", names[first + i]);
+            KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(names[first + i]));
+            ASSERT_TRUE(bool(button)) << names[first + i];
+            EXPECT_EQ(actions[i].label, button->getLabel()) << names[first + i];
+            EXPECT_EQ(actions[i].enabled, button->isEnabled(0)) << names[first + i];
+        }
+    };
+    const auto trigger = [&](const char* name) {
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(button)) << name;
+        button->trigger();
+    };
+
+    check(std::list<BezierPtr> { a }, a);
+    KnobButtonPtr duplicate = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("duplicateAndLinkMenuAction"));
+    KnobButtonPtr linkButton = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("linkMenuAction"));
+    ASSERT_TRUE(duplicate && linkButton);
+    EXPECT_TRUE(duplicate->isEnabled(0));
+    EXPECT_FALSE(linkButton->isEnabled(0));
+
+    trigger("duplicateAndLinkMenuAction");
+    SplineWarpLinkPtr link = ctx->getLink(a);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(a, link->getSource());
+    ASSERT_EQ(std::size_t(1), ui->selectedItems.size());
+    EXPECT_EQ(link->getDestination(), std::dynamic_pointer_cast<Bezier>(ui->selectedItems.front()));
+
+    // Two selected curves, the first the source.
+    check(std::list<BezierPtr> { b, open }, open);
+    EXPECT_FALSE(duplicate->isEnabled(0));
+    EXPECT_TRUE(linkButton->isEnabled(0));
+    trigger("linkMenuAction");
+    link = ctx->getLink(b);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(b, link->getSource());
+    EXPECT_EQ(open, link->getDestination());
+
+    // A refused action changes nothing.
+    check(std::list<BezierPtr> { b }, b);
+    const U64 hash = ctx->getContentHash();
+    trigger("toggleBoundaryMenuAction");
+    EXPECT_FALSE(ctx->isBoundary(b));
+    EXPECT_EQ(hash, ctx->getContentHash());
+
+    trigger("swapMenuAction");
+    link = ctx->getLink(b);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(open, link->getSource());
+    trigger("unlinkMenuAction");
+    EXPECT_FALSE(bool(ctx->getLink(b)));
 }
 
 TEST_F(SplineWarpToolsTest, SplineWarpIsListedInTheTransformMenu)

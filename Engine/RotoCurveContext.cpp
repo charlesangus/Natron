@@ -763,7 +763,7 @@ void
 RotoCurveContext::createTransformKnobs(const KnobPagePtr& page)
 {
     assert(_imp->transformKnobs.empty());
-    _imp->createTransformKnobs(page);
+    _imp->createTransformKnobs(page, false /*withInteractive*/);
 }
 
 RotoCurveContext::TransformKnobs

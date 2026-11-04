@@ -2581,22 +2581,28 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
             fp = _imp->featherPoints.begin();
             std::advance(fp, index);
         }
-        assert( cp != _imp->points.end() && fp != _imp->featherPoints.end() );
-        if (isSmooth) {
-            keySet = (*cp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            if (useFeather) {
-                (*fp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            }
-        } else {
-            keySet = (*cp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            if (useFeather) {
-                (*fp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            }
-        }
+        assert(cp != _imp->points.end() && fp != _imp->featherPoints.end());
         editedCp = *cp;
         if (useFeather) {
             editedFp = *fp;
         }
+    }
+
+    // Outside itemMutex: smoothPoint() reads the curve transform, and a context's
+    // composeItemTransform may lock this item's itemMutex, which is not recursive.
+    if (isSmooth) {
+        keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        if (editedFp) {
+            editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        }
+    } else {
+        keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        if (editedFp) {
+            editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        }
+    }
+    {
+        QMutexLocker l(&itemMutex);
         keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 

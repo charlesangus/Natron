@@ -5013,6 +5013,8 @@ NodeGui::onRightClickMenuKnobPopulated()
             action->setCheckable(true);
             action->setChecked( button->getValue() );
         }
+        // A plug-in greys out an entry that would refuse the current selection.
+        action->setEnabled(button->isEnabled(0));
         QObject::connect( action, SIGNAL(triggered()), this, SLOT(onRightClickActionTriggered()) );
         m.addAction(action);
     }

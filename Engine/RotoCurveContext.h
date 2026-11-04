@@ -297,7 +297,9 @@ public:
 
     /**
      * @brief Creates the Transform page's knobs on page. The paint context makes them itself; any
-     * other host calls this once, from its initializeKnobs().
+     * other host calls this once, from its initializeKnobs(). Such a host gets no Interactive
+     * knob: its transform handle follows the global "Refresh viewer only when editing is
+     * finished" preference.
      **/
     void createTransformKnobs(const KnobPagePtr& page);
     TransformKnobs getTransformKnobs() const;

@@ -41,9 +41,11 @@
 #include "Engine/Bezier.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RotoItem.h"
 #include "Engine/RotoLayer.h"
 
@@ -204,6 +206,83 @@ TEST_F(SplineWarpSamplingTest, ACorrespondenceShiftsThePairing)
     ASSERT_EQ(11u, plain.pairs.size());
     EXPECT_NEAR(70., plain.pairs[7].destination.x, kAlongTolerance);
     EXPECT_NEAR(70., plain.pairs[7].source.x, kAlongTolerance);
+}
+
+TEST_F(SplineWarpSamplingTest, MovingOneDestinationPointLeavesTheUnchangedSegmentStill)
+{
+    ASSERT_TRUE(bool(_ctx));
+    Points source;
+    source.push_back(std::make_pair(0., 0.));
+    source.push_back(std::make_pair(50., 0.));
+    source.push_back(std::make_pair(100., 0.));
+    Points destination = source;
+    destination.back() = std::make_pair(100., 20.);
+    BezierPtr src = makeCurve(source, false);
+    BezierPtr dst = makeCurve(destination, false);
+    ASSERT_TRUE(bool(src));
+    ASSERT_TRUE(bool(dst));
+    ASSERT_TRUE(bool(_ctx->linkWithAlignment(src, dst, 0., false)));
+
+    const SplineWarpSampleSet set = sampleSplineWarp(*_ctx, settings(10.));
+
+    ASSERT_GT(set.pairs.size(), 0u);
+    bool middle = false;
+    for (std::size_t k = 0; k < set.pairs.size(); ++k) {
+        const SplineWarpSamplePair& p = set.pairs[k];
+        if (p.source.x <= 50. + 1e-6) {
+            EXPECT_NEAR(p.source.x, p.destination.x, 1e-6) << k;
+            EXPECT_NEAR(p.source.y, p.destination.y, 1e-6) << k;
+        }
+        if (std::fabs(p.source.x - 50.) < 1e-9) {
+            middle = true;
+            EXPECT_NEAR(50., p.destination.x, 1e-9) << k;
+            EXPECT_NEAR(0., p.destination.y, 1e-9) << k;
+        }
+    }
+    EXPECT_TRUE(middle);
+    // The moved end still pairs with its source.
+    EXPECT_NEAR(100., set.pairs.back().destination.x, 1e-9);
+    EXPECT_NEAR(20., set.pairs.back().destination.y, 1e-9);
+    EXPECT_NEAR(100., set.pairs.back().source.x, 1e-9);
+
+    // Below the unchanged segment, away from the moved one, nothing moves.
+    const SplineWarpMesh mesh = SplineWarpMesh::build(set.pairs, set.polylines, SplineWarpMesh::paddedBox(set.pairs, RectD()));
+    EXPECT_FALSE(mesh.isIdentity());
+    const double probes[3][2] = { { 25., -3. }, { 10., -2. }, { 40., -4. } };
+    for (int i = 0; i < 3; ++i) {
+        const Point s = mesh.evaluate(probes[i][0], probes[i][1]);
+        EXPECT_LT(std::hypot(s.x - probes[i][0], s.y - probes[i][1]), 0.05) << i;
+    }
+}
+
+TEST_F(SplineWarpSamplingTest, AClosedLinkAnchorsControlPointsPastItsStartOffset)
+{
+    ASSERT_TRUE(bool(_ctx));
+    // The destination starts two points along: its point 2 is the source's point 0.
+    Points destination;
+    destination.push_back(std::make_pair(120., 130.));
+    destination.push_back(std::make_pair(0., 100.));
+    destination.push_back(std::make_pair(0., 0.));
+    destination.push_back(std::make_pair(100., 0.));
+    BezierPtr src = makeCurve(square(0., 0., 100.), true);
+    BezierPtr dst = makeCurve(destination, true);
+    ASSERT_TRUE(bool(src));
+    ASSERT_TRUE(bool(dst));
+    ASSERT_TRUE(bool(_ctx->linkWithAlignment(src, dst, 2., false)));
+
+    const SplineWarpSampleSet set = sampleSplineWarp(*_ctx, settings(10.));
+
+    // The source's edges along y = 0 and x = 0 are unchanged on the destination.
+    int still = 0;
+    for (std::size_t k = 0; k < set.pairs.size(); ++k) {
+        const SplineWarpSamplePair& p = set.pairs[k];
+        if ((std::fabs(p.source.y) < 1e-9) || (std::fabs(p.source.x) < 1e-9)) {
+            ++still;
+            EXPECT_NEAR(p.source.x, p.destination.x, 1e-6) << k;
+            EXPECT_NEAR(p.source.y, p.destination.y, 1e-6) << k;
+        }
+    }
+    EXPECT_GE(still, 19);
 }
 
 TEST_F(SplineWarpSamplingTest, AmountLerpsTheDestinationTowardTheSource)

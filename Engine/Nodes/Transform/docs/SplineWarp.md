@@ -7,10 +7,12 @@ Rectangle, and a point tool that makes a curve of one point) and listed in the s
 
 The settings panel has three pages:
 
-- **Controls:** `amount`, `invert`, `layerAmount`, `linkAmount`, `outputMask`,
-  `cropToFormat`, `boundaryBBox`, and the mask and mix every staged node has.
-- **Transform:** the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`,
-  `skewx`, `skewy`, `skewOrder`, `center` and `extraMatrix`.
+- **Warp:** what applies to the whole warp: `amount`, `invert`, `boundaryBBox`, `cropToFormat`,
+  `outputMask`, and the mask and mix every staged node has.
+- **Selection:** what edits the items selected in the curve list: `layerAmount`, `linkAmount`, and
+  the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`, `skewx`, `skewy`,
+  `skewOrder`, `center` and `extraMatrix`. Whether dragging the transform handle updates the
+  viewer while it moves is the "Refresh viewer only when editing is finished" preference.
 - **Render:** `solver`, `smoothness`, `curveResolution`, `boundaryCurveResolution`,
   `fieldResolution`, `previewResolution`, `filter`, `clamp`, `black_outside`, `bbox`, and the
   motion blur settings `motionBlur`, `shutter`, `shutterOffset` and `shutterCustomOffset`.
@@ -50,6 +52,12 @@ Links and boundaries are made from a curve's context menu in the panel:
   the links of the selected items, which keep the values they followed.
 
 Actions that do not apply to the selection are greyed out. Each action is one undo step.
+
+**Pairing:** when the two curves of a link have the same number of points, and a closed
+destination starts on one of its points, each source point pairs with its destination
+counterpart, and the curve between two points pairs by length along it. Moving one destination
+point then warps only the curve on either side of it: where the destination still lies on the
+source, nothing moves. Curves with different numbers of points pair by length from end to end.
 
 **Correspondences** pin a point of a source curve to a point of its destination curve. With the
 correspondence tool, click a linked curve to add one there; its other end lands on the matching
@@ -98,14 +106,15 @@ At the default the field is four times as coarse and the curves are sampled half
 
 **Cookie cutters:** `outputMask` (default `SplineWarpMask.A`) is the channel the mask of the
 cookie cutter curves is written to, warped as the Source is; it can be None or a channel of a layer other than the colour layer.
-It is disabled while no curve is a cookie cutter. A linked cookie cutter uses its source
+The layer is added to the output, and to the project's layers, whether or not the Source has
+it; the menu lists the project's layers. It is disabled while no curve is a cookie cutter. A linked cookie cutter uses its source
 curve's shape.
 
 **Crop To Format:** `cropToFormat` (on by default) samples the Source only inside its format,
 counting what is outside as black, and keeps the output inside the format. Off, the warp can pull
 in the Source's pixels outside the format, and the whole region of definition is warped.
 
-**Transform page:** every curve and layer has its own transform, applied before the warp: a
+**Transform (Selection page):** every curve and layer has its own transform, applied before the warp: a
 transformed destination curve moves the warp with it. The page shows and edits the selected item's
 transform. A layer's transform applies to everything inside it, on top of their own. A transform
 link makes an item take another item's transform in place of its own (its layers still apply);

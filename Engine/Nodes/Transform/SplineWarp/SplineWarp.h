@@ -381,6 +381,10 @@ private:
     // appears, goes or is renamed.
     void refreshOutputMaskLayer();
 
+    // Adds the outputMask channel's layer to the project's layers, so the knob, which lists them,
+    // can show a layer no input carries.
+    void registerOutputMaskLayer();
+
     // The Source's region of definition at full scale, null without a Source or when it fails.
     RectD getSourceBounds(double time, ViewIdx view);
 

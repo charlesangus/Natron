@@ -178,4 +178,62 @@ SplineWarpDuplicateAndLinkUndoCommand::redo()
     roto->evaluate(true);
 }
 
+////////////////////////////
+
+SplineWarpMakeLinkedPointUndoCommand::SplineWarpMakeLinkedPointUndoCommand(const RotoCurveInteractPtr& roto,
+                                                                           double x,
+                                                                           double y,
+                                                                           double time)
+    : UndoCommand()
+    , _roto(roto)
+    , _point(std::make_shared<MakePointCurveUndoCommand>(roto, x, y, time))
+    , _link()
+{
+    setText(tr("Draw Point").toStdString());
+}
+
+SplineWarpMakeLinkedPointUndoCommand::~SplineWarpMakeLinkedPointUndoCommand()
+{
+}
+
+BezierPtr
+SplineWarpMakeLinkedPointUndoCommand::getSource() const
+{
+    return _point->getCurve();
+}
+
+BezierPtr
+SplineWarpMakeLinkedPointUndoCommand::getDestination() const
+{
+    return _link ? _link->getCopy() : BezierPtr();
+}
+
+void
+SplineWarpMakeLinkedPointUndoCommand::undo()
+{
+    if (_link) {
+        _link->undo();
+    }
+    _point->undo();
+}
+
+void
+SplineWarpMakeLinkedPointUndoCommand::redo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto) {
+        return;
+    }
+    _point->redo();
+    BezierPtr source = _point->getCurve();
+    if (!source) {
+        return;
+    }
+    if (!_link) {
+        _link = std::make_shared<SplineWarpDuplicateAndLinkUndoCommand>(roto, source);
+    }
+    _link->redo();
+}
+
 NATRON_NAMESPACE_EXIT

@@ -36,6 +36,7 @@
 #include <locale>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -118,6 +119,7 @@
 
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -188,6 +190,9 @@ namespace {
 // Set while this thread computes a hash. A hash read from inside it, such as an expression's
 // random seed, gets the stored hash: recomputing there would nest node locks in no fixed order.
 thread_local int hashComputeDepth = 0;
+
+// The hashes of the body nodes of the loop walkLoopBody() is hashing on this thread, if any.
+thread_local const std::function<U64(const Node&)>* enclosingLoopBodyHash = 0;
 
 class HashComputeScope {
 public:
@@ -1015,9 +1020,13 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 
 U64
 Node::computeContentHash(U64 projectDigest,
-                         const HashInputs& inputs) const
+                         const HashInputs& inputs,
+                         const std::function<U64(const Node&)>* inputHash) const
 {
     ContentHasher h;
+    auto hashOf = [inputHash](const Node& input) -> U64 {
+        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+    };
 
     h.appendString(getPluginID());
     if (_imp->plugin) {
@@ -1044,12 +1053,12 @@ Node::computeContentHash(U64 projectDigest,
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
             const NodePtr& input = inputs.bySlot[i].second;
-            h.appendU64(input ? input->getStoredContentHash() : 0);
+            h.appendU64(input ? hashOf(*input) : 0);
         }
     } else {
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
-            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
+            h.appendU64(hashOf(*inputs.bySlot[i].second));
         }
         h.appendU64(inputs.bySlot.size());
     }
@@ -1113,6 +1122,139 @@ Node::computeContentHash(U64 projectDigest,
     return h.finalize();
 } // Node::computeContentHash
 
+void
+Node::walkLoopBody(const std::vector<NodePtr>& begins,
+                   const NodePtr& tail,
+                   const NodePtr& end,
+                   U64* digest,
+                   std::vector<NodePtr>* outsideSources)
+{
+    // Stands for every one of begins, whatever they render: they all output the same iteration,
+    // and what their own hashes fold in is their inputs'.
+    const U64 kBeginTag = 0x6c6f6f70426567ULL;
+
+    if (digest) {
+        *digest = kBeginTag;
+    }
+    if (begins.empty() || !tail) {
+        return;
+    }
+    // The walk can run outside a hash refresh, and must not start one from inside its own hashing.
+    std::optional<HashComputeScope> computing;
+    if (digest) {
+        computing.emplace();
+    }
+    std::unordered_set<const Node*> beginSet;
+    for (const NodePtr& begin : begins) {
+        if (begin) {
+            beginSet.insert(begin.get());
+        }
+    }
+    const bool tailIsBegin = (beginSet.find(tail.get()) != beginSet.end());
+    // Downstream of begins, so only these can be in the body: the walk up from tail does not
+    // enter what feeds the body from outside.
+    std::unordered_set<const Node*> downstream;
+    {
+        std::vector<NodePtr> pending;
+        for (const NodePtr& begin : begins) {
+            if (begin) {
+                begin->appendOutputsWithGroupRedirection(&pending);
+            }
+        }
+        while (!pending.empty()) {
+            NodePtr node = std::move(pending.back());
+            pending.pop_back();
+            if (!node || (node == end) || (beginSet.find(node.get()) != beginSet.end()) || !downstream.insert(node.get()).second) {
+                continue;
+            }
+            node->appendOutputsWithGroupRedirection(&pending);
+        }
+    }
+    if (!tailIsBegin && (downstream.find(tail.get()) == downstream.end())) {
+        return;
+    }
+
+    std::unordered_map<const Node*, U64> bodyHashes;
+    const std::function<U64(const Node&)>* enclosing = enclosingLoopBodyHash;
+    const std::function<U64(const Node&)> hashOf = [&](const Node& node) -> U64 {
+        if (beginSet.find(&node) != beginSet.end()) {
+            return kBeginTag;
+        }
+        std::unordered_map<const Node*, U64>::const_iterator found = bodyHashes.find(&node);
+        if (found != bodyHashes.end()) {
+            return found->second;
+        }
+
+        return enclosing ? (*enclosing)(node) : node.getStoredContentHash();
+    };
+    const U64 projectDigest = digest ? tail->getApp()->getProject()->getContentDigest() : 0;
+    std::unordered_set<const Node*> sourcesSeen;
+    std::unordered_set<const Node*> entered;
+    // Post-order, so every body node is hashed after the body nodes it reads.
+    std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(tail, false));
+    HashInputs inputs;
+
+    struct LoopBodyHashScope {
+        const std::function<U64(const Node&)>* previous;
+        explicit LoopBodyHashScope(const std::function<U64(const Node&)>* current)
+            : previous(enclosingLoopBodyHash)
+        {
+            enclosingLoopBodyHash = current;
+        }
+
+        ~LoopBodyHashScope() { enclosingLoopBodyHash = previous; }
+    };
+    LoopBodyHashScope scope(&hashOf);
+    while (!stack.empty()) {
+        const NodePtr node = stack.back().first;
+        const bool expanded = stack.back().second;
+        if (beginSet.find(node.get()) != beginSet.end()) {
+            stack.pop_back();
+            continue;
+        }
+        if (expanded) {
+            stack.pop_back();
+            if (digest) {
+                node->getHashInputs(&inputs);
+                bodyHashes[node.get()] = node->computeContentHash(projectDigest, inputs, &hashOf);
+            } else {
+                bodyHashes[node.get()] = 0;
+            }
+            continue;
+        }
+        if (!entered.insert(node.get()).second) {
+            // Reached again through another path; a cycle leaves it to its first visit.
+            stack.pop_back();
+            continue;
+        }
+        stack.back().second = true;
+        node->getHashInputs(&inputs);
+        // A nested feedback loop's LoopBegin folds what feeds its body in: walked first, so it
+        // reads their hashes as this walk gives them.
+        std::vector<NodePtr> reads;
+        reads.reserve(inputs.bySlot.size() + inputs.extraSources.size());
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            reads.push_back(inputs.bySlot[i].second);
+        }
+        reads.insert(reads.end(), inputs.extraSources.begin(), inputs.extraSources.end());
+        for (const NodePtr& input : reads) {
+            if (!input || (beginSet.find(input.get()) != beginSet.end())) {
+                continue;
+            }
+            if (downstream.find(input.get()) != downstream.end()) {
+                if (entered.find(input.get()) == entered.end()) {
+                    stack.push_back(std::make_pair(input, false));
+                }
+            } else if (outsideSources && sourcesSeen.insert(input.get()).second) {
+                outsideSources->push_back(input);
+            }
+        }
+    }
+    if (digest && !tailIsBegin) {
+        *digest = hashOf(*tail);
+    }
+} // Node::walkLoopBody
+
 bool
 Node::dependsOnProjectFrameRange() const
 {
@@ -1168,6 +1310,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
+    _imp->effect->appendExtraHashDependents(dependents);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1195,6 +1338,7 @@ Node::getHashInputs(HashInputs* inputs) const
     inputs->isViewer = false;
     inputs->bySlot.clear();
     inputs->metadataSources.clear();
+    inputs->extraSources.clear();
     if (!_imp->effect) {
         return;
     }
@@ -1227,6 +1371,7 @@ Node::getHashInputs(HashInputs* inputs) const
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
     appendMetadataSources(&inputs->metadataSources, NULL);
+    _imp->effect->appendExtraHashSources(&inputs->extraSources);
 }
 
 bool
@@ -1603,6 +1748,7 @@ Node::flushHashDirtyMarks()
     std::vector<HashDirtyEntry>& batch = queue.batch;
     std::vector<NodePtr>& toExpand = queue.toExpand;
     std::vector<NodePtr>& dependents = queue.dependents;
+    std::vector<NodePtr> stopped;
     for (;;) {
         batch.clear();
         {
@@ -1622,7 +1768,12 @@ Node::flushHashDirtyMarks()
 
             return true;
         };
-        auto reach = [&visit, &toExpand](const NodePtr& node) {
+        // A feedback loop's LoopBegin folds its body's state in, not the body's hashes: a walk
+        // stopping at a dirty body node must still reach it, as it may be clean. Only a LoopEnd in
+        // Feedback mode or Cross Frame has its LoopBegins fold in its body or its knobs.
+        const bool feedbackLoops = LoopEnd::anyFeedbackExists();
+        std::optional<LoopEnd::FeedbackBeginsLookup> feedbackBegins;
+        auto reach = [&visit, &toExpand, &stopped, feedbackLoops](const NodePtr& node) {
             if (!node || !visit(node)) {
                 return;
             }
@@ -1633,6 +1784,8 @@ Node::flushHashDirtyMarks()
             // still pending, so the walk stops at dirty nodes that are not pending.
             if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
                 toExpand.push_back(node);
+            } else if (feedbackLoops) {
+                stopped.push_back(node);
             }
         };
         for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -1658,11 +1811,24 @@ Node::flushHashDirtyMarks()
                     }
                 }
             }
-            while (!toExpand.empty()) {
-                NodePtr node = std::move(toExpand.back());
-                toExpand.pop_back();
+            while (!toExpand.empty() || !stopped.empty()) {
                 dependents.clear();
-                node->getHashDependents(&dependents);
+                if (toExpand.empty()) {
+                    NodePtr node = std::move(stopped.back());
+                    stopped.pop_back();
+                    if (!feedbackBegins) {
+                        feedbackBegins.emplace();
+                    }
+                    feedbackBegins->appendFeedbackBeginsOf(node, &dependents);
+                    // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
+                    if (node->_imp->effect) {
+                        node->_imp->effect->appendExtraHashDependents(&dependents);
+                    }
+                } else {
+                    NodePtr node = std::move(toExpand.back());
+                    toExpand.pop_back();
+                    node->getHashDependents(&dependents);
+                }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
                     reach(dependents[d]);
                 }
@@ -1762,6 +1928,9 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         for (std::size_t i = 0; inputsClean && (i < inputs.metadataSources.size()); ++i) {
             inputsClean = !inputs.metadataSources[i]->isHashDirty();
         }
+        for (std::size_t i = 0; inputsClean && (i < inputs.extraSources.size()); ++i) {
+            inputsClean = !inputs.extraSources[i]->isHashDirty();
+        }
         if (!inputsClean && requireCleanInputs) {
             return false;
         }
@@ -1841,6 +2010,12 @@ Node::refreshDirtyHashes()
             }
             for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
                 const NodePtr& source = inputs.metadataSources[i];
+                if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
+                    stack.push_back(std::make_pair(source, false));
+                }
+            }
+            for (std::size_t i = 0; i < inputs.extraSources.size(); ++i) {
+                const NodePtr& source = inputs.extraSources[i];
                 if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
                     stack.push_back(std::make_pair(source, false));
                 }
@@ -2911,12 +3086,23 @@ Node::areAllProcessingThreadsQuit() const
         }
     }
 
+    if (isRotoPaintingNode()) {
+        RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get());
+        if (rotoPaint && rotoPaint->isObjectSelectEncoding()) {
+            return false;
+        }
+    }
+
     return true;
 }
 
 void
 Node::quitAnyProcessing_non_blocking()
 {
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(false);
+    }
+
     //If this effect has a RenderEngine, make sure it is finished
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );
 
@@ -2933,6 +3119,9 @@ Node::quitAnyProcessing_non_blocking()
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(false);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -2945,6 +3134,10 @@ void
 Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
 {
     QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
+
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(true);
+    }
 
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
@@ -2976,6 +3169,9 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(true);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -4401,6 +4597,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
 
@@ -4618,6 +4815,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    LoopEnd::onGraphChanged();
     emitLinksChanged(NodesList());
 
     ///If the node is a group, deactivate all nodes within the group
@@ -4710,6 +4908,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = true; //< flag it true before notifying the GUI because the gui rely on this flag (especially the Viewer)
     }
+    LoopEnd::onGraphChanged();
 
     NodeCollectionPtr group = getGroup();
     if (group) {
@@ -7872,6 +8071,10 @@ Node::hasAnimatedKnob() const
                 }
             }
         }
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get());
+        if (helper && helper->hasAnimatedDriver()) {
+            hasAnimation = true;
+        }
         if (hasAnimation) {
             break;
         }
@@ -7906,6 +8109,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
                     keyframes->push_back( it->getTime() );
                 }
             }
+        }
+        if (const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get())) {
+            helper->getDriverKeyTimes(keyframes);
         }
     }
 }
@@ -8125,6 +8331,7 @@ Node::dequeueActions()
     // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
     // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
+    bool outputsCommitted = false;
     {
         bool rendering;
         std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
@@ -8146,7 +8353,15 @@ Node::dequeueActions()
             }
             {
                 QMutexLocker k(&_imp->outputsMutex);
+                outputsCommitted = (_imp->outputs.size() != _imp->guiOutputs.size());
+                NodesWList::const_iterator gui = _imp->guiOutputs.begin();
+                for (NodesWList::const_iterator it = _imp->outputs.begin(); !outputsCommitted && it != _imp->outputs.end(); ++it, ++gui) {
+                    outputsCommitted = (it->lock() != gui->lock());
+                }
                 _imp->outputs = _imp->guiOutputs;
+            }
+            if (!inputChanges.empty() || outputsCommitted) {
+                LoopEnd::onGraphChanged();
             }
             // Before a render can start, as in connectInput().
             if (!inputChanges.empty()) {
@@ -8162,6 +8377,9 @@ Node::dequeueActions()
             onInputChanged(*it);
         }
         endInputEdition(true);
+    }
+    if (!inputChanges.empty() || outputsCommitted) {
+        Q_EMIT connectionsCommitted();
     }
     if (valuesChanged) {
         computeHash();

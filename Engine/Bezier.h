@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 // clang-format off
 CLANG_DIAG_OFF(deprecated-declarations)
@@ -41,10 +42,10 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/EngineFwd.h"
+#include "Engine/RectI.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 #define ROTO_BEZIER_EVAL_ITERATIVE
 
@@ -119,6 +120,13 @@ public:
                                       RectD *bbox);
 
     bool isOpenBezier() const;
+
+    /**
+     * @brief Rasterises the shape with its feather, as the Roto mask does but ignoring opacity, into
+     * coverage (0..1, roi.width() x roi.height(), row 0 at roi.y1). roi is in pixels at mipmapLevel.
+     * Returns false when the shape draws nothing (unfinished, inactive or too few points).
+     **/
+    bool rasterizeCoverage(double time, unsigned int mipmapLevel, const RectI& roi, std::vector<float>* coverage) const;
 
     /**
      * @brief Used to differentiate real shapes with feather of paint strokes which does not have a feather

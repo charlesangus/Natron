@@ -55,10 +55,12 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "Engine/Nodes/Filter/EdgeAware/Eigf.h"
+#include "Engine/Nodes/Filter/EdgeAware/PoissonHeal.h"
 #include "Engine/Nodes/Filter/EdgeAware/Wavelets.h"
 
 #define EDGEAWARE_GPU_TRY(expr)                          \
@@ -136,12 +138,15 @@ namespace {
     struct GpuHealParams {
         uint32_t width;
         uint32_t height;
-        uint32_t colour;
-        uint32_t groupsX;
+        uint32_t level;
+        uint32_t list;
+        uint32_t mode;
         uint32_t groups;
-        float epsilon;
+        uint32_t maxCycles;
+        uint32_t levels;
+        uint32_t count;
     };
-    static_assert(sizeof(GpuHealParams) == 24);
+    static_assert(sizeof(GpuHealParams) == 36);
 
     // The modes and constants of the kernels, as they define them.
     constexpr uint32_t kCopyPlain = 0;
@@ -156,8 +161,25 @@ namespace {
     constexpr uint32_t kBsplineBlur = 0;
     constexpr uint32_t kBsplineDecompose = 1;
     constexpr uint32_t kBsplineStep = 2;
-    constexpr uint32_t kHealGroupSide = 16;
-    constexpr uint32_t kHealReduceThreads = 256;
+    constexpr uint32_t kHealGroup = 256;
+    constexpr uint32_t kHealRow = 65536;
+    constexpr uint32_t kHealLevelWords = 10;
+    constexpr uint32_t kHealStateFloats = 24;
+    constexpr uint32_t kHealListAll = 0;
+    constexpr uint32_t kHealListColour0 = 1;
+    constexpr uint32_t kHealListColour1 = 2;
+    constexpr uint32_t kHealRelaxSweep = 0;
+    constexpr uint32_t kHealRelaxFromZero = 1;
+    constexpr uint32_t kHealScalarsInit = 0;
+    constexpr uint32_t kHealScalarsStart = 1;
+    constexpr uint32_t kHealScalarsAlpha = 2;
+    constexpr uint32_t kHealScalarsCheck = 3;
+    constexpr uint32_t kHealScalarsBeta = 4;
+    constexpr uint32_t kHealDotRz = 0;
+    constexpr uint32_t kHealDotStart = 1;
+    constexpr int kHealSmoothPairs = 2;
+    // Levels of at most this many active cells run their part of a cycle in one group.
+    constexpr uint32_t kHealTailCells = 4096;
 
     uint32_t
     divUp(uint64_t v,
@@ -513,20 +535,6 @@ namespace {
         return (uint32_t)std::clamp(mult, 0, std::max(width, height));
     }
 
-    GpuStatus
-    heal(GpuRecordContext& ctx,
-         GpuKernelId kernel,
-         const GpuBuffer& src,
-         const GpuBuffer& dest,
-         const GpuBuffer& mask,
-         const GpuBuffer& diff,
-         const GpuBuffer& state,
-         const GpuBuffer& partial,
-         const GpuHealParams& p,
-         std::array<uint32_t, 3> threads)
-    {
-        return ctx.dispatch(kernel, { &src, &dest, &mask, &diff, &state, &partial }, p, threads);
-    }
 } // namespace
 
 GpuStatus
@@ -919,7 +927,9 @@ recordDwtDecomposeScales(GpuRecordContext& ctx,
                          int scales,
                          std::span<const GpuBuffer* const> details,
                          const GpuBuffer& residual,
-                         int& bands)
+                         int& bands,
+                         int capWidth,
+                         int capHeight)
 {
     bands = 0;
     if ((width <= 0) || (height <= 0)) {
@@ -931,6 +941,8 @@ recordDwtDecomposeScales(GpuRecordContext& ctx,
     DwtParams params;
     params.width = width;
     params.height = height;
+    params.capWidth = capWidth;
+    params.capHeight = capHeight;
     const int count = std::max(0, std::min(scales, dwtMaxScale(params)));
     if (details.size() < (std::size_t)count) {
         return invalid("recordDwtDecomposeScales", "fewer detail buffers than bands");
@@ -1073,59 +1085,193 @@ recordDecompose2DBspline(GpuRecordContext& ctx,
     return {};
 }
 
+namespace {
+    // The threads of a dispatch over n list items, as the heal kernels index them.
+    std::array<uint32_t, 3>
+    healListThreads(uint32_t n)
+    {
+        return { std::clamp<uint32_t>(n, 1, kHealRow), std::max<uint32_t>(divUp(n, kHealRow), 1), 1 };
+    }
+
+    // A scratch buffer holding bytes, through updates of at most the 64 KiB vkCmdUpdateBuffer takes.
+    GpuStatus
+    uploadScratch(GpuRecordContext& ctx,
+                  std::span<const std::byte> bytes,
+                  GpuBuffer*& out)
+    {
+        EDGEAWARE_GPU_TRY(ctx.scratch(std::max<uint64_t>(bytes.size(), sizeof(float)), out));
+        const std::size_t chunk = 65536;
+        for (std::size_t offset = 0; offset < bytes.size(); offset += chunk) {
+            EDGEAWARE_GPU_TRY(ctx.updateBuffer(*out, offset, bytes.subspan(offset, std::min(chunk, bytes.size() - offset))));
+        }
+
+        return {};
+    }
+} // namespace
+
 GpuStatus
 recordPoissonHeal(GpuRecordContext& ctx,
                   const GpuBuffer& src,
                   const GpuBuffer& dest,
                   const GpuBuffer& mask,
+                  const float* hostMask,
                   int width,
                   int height,
-                  int maxIter)
+                  int maxCycles,
+                  int* dispatches)
 {
+    if (dispatches) {
+        *dispatches = 0;
+    }
     if ((width <= 0) || (height <= 0)) {
         return {};
     }
     if (!fits(width, height, 4)) {
         return invalid("recordPoissonHeal", "the buffers exceed 32-bit indexing");
     }
-    if (!ctx.device().info().pushDescriptor && (maxIter > kPoissonHealGpuMaxIterationsWithoutPushDescriptors)) {
-        return invalid("recordPoissonHeal", "too many iterations for a device without push descriptors");
+    HealGrid grid;
+    buildHealGrid(hostMask, width, height, &grid);
+    if (grid.levels.empty() || (grid.levels.front().listCount[kHealListAll] == 0)) {
+        return {};
     }
-    const uint32_t w = (uint32_t)width;
-    const uint32_t h = (uint32_t)height;
-    const uint32_t sweepWidth = divUp(w, 2);
-    GpuHealParams p = {};
-    p.width = w;
-    p.height = h;
-    p.groupsX = divUp(sweepWidth, kHealGroupSide);
-    p.groups = p.groupsX * divUp(h, kHealGroupSide);
-    // 0.1 / 255 in double, rounded to float, as the CPU computes it.
-    p.epsilon = (float)(0.1 / 255);
-
-    GpuBuffer* diff = nullptr;
-    GpuBuffer* state = nullptr;
-    GpuBuffer* partial = nullptr;
-    EDGEAWARE_GPU_TRY(scratchFloats(ctx, 4 * (uint64_t)w * h, diff));
-    EDGEAWARE_GPU_TRY(ctx.scratch(4 * sizeof(uint32_t), state));
-    EDGEAWARE_GPU_TRY(scratchFloats(ctx, 2 * (uint64_t)p.groups, partial));
-    const std::array<uint32_t, 4> zeros = {};
-    EDGEAWARE_GPU_TRY(ctx.updateBuffer(*state, 0, std::as_bytes(std::span<const uint32_t>(zeros))));
-
-    EDGEAWARE_GPU_TRY(heal(ctx, GpuKernelId::heal_setup, src, dest, mask, *diff, *state, *partial, p, { w, h, 1 }));
-    ctx.computeBarrier();
-    EDGEAWARE_GPU_TRY(heal(ctx, GpuKernelId::heal_params, src, dest, mask, *diff, *state, *partial, p, { 1, 1, 1 }));
-    ctx.computeBarrier();
-    for (int iter = 0; iter < maxIter; ++iter) {
-        for (uint32_t colour = 0; colour < 2; ++colour) {
-            p.colour = colour;
-            EDGEAWARE_GPU_TRY(heal(ctx, GpuKernelId::heal_sweep, src, dest, mask, *diff, *state, *partial, p, { sweepWidth, h, 1 }));
-            ctx.computeBarrier();
+    if (4 * (uint64_t)grid.totalCells > UINT32_MAX) {
+        return invalid("recordPoissonHeal", "the buffers exceed 32-bit indexing");
+    }
+    const uint32_t levels = (uint32_t)grid.levels.size();
+    std::vector<uint32_t> levelWords((std::size_t)levels * kHealLevelWords, 0);
+    uint32_t tail = levels - 1;
+    for (uint32_t l = 0; l < levels; ++l) {
+        const HealGridLevel& g = grid.levels[l];
+        uint32_t* const words = &levelWords[(std::size_t)l * kHealLevelWords];
+        words[0] = g.cellOffset;
+        words[1] = g.stride;
+        words[2] = (uint32_t)g.nx;
+        words[3] = (uint32_t)g.ny;
+        for (int list = 0; list < 3; ++list) {
+            words[4 + list] = g.listOffset[list];
+            words[7 + list] = g.listCount[list];
         }
-        EDGEAWARE_GPU_TRY(heal(ctx, GpuKernelId::heal_reduce, src, dest, mask, *diff, *state, *partial, p, { kHealReduceThreads, 1, 1 }));
-        ctx.computeBarrier();
+        if ((g.listCount[kHealListAll] <= kHealTailCells) && (l < tail)) {
+            tail = l;
+        }
     }
-    EDGEAWARE_GPU_TRY(heal(ctx, GpuKernelId::heal_finish, src, dest, mask, *diff, *state, *partial, p, { w, h, 1 }));
-    ctx.computeBarrier();
+
+    GpuBuffer* coef = nullptr;
+    GpuBuffer* cells = nullptr;
+    GpuBuffer* levelBuf = nullptr;
+    EDGEAWARE_GPU_TRY(uploadScratch(ctx, std::as_bytes(std::span<const float>(grid.coefficients)), coef));
+    EDGEAWARE_GPU_TRY(uploadScratch(ctx, std::as_bytes(std::span<const uint32_t>(grid.cells)), cells));
+    EDGEAWARE_GPU_TRY(uploadScratch(ctx, std::as_bytes(std::span<const uint32_t>(levelWords)), levelBuf));
+    const uint64_t fineFloats = 4 * (uint64_t)(width + 2) * (uint64_t)(height + 2);
+    const uint64_t allFloats = 4 * (uint64_t)grid.totalCells;
+    const uint32_t fineCount = grid.levels.front().listCount[kHealListAll];
+    GpuHealParams p = {};
+    p.width = (uint32_t)width;
+    p.height = (uint32_t)height;
+    p.groups = divUp(fineCount, kHealGroup);
+    p.maxCycles = (uint32_t)std::max(maxCycles, 0);
+    p.levels = levels;
+    p.count = (uint32_t)allFloats;
+    GpuBuffer* u = nullptr;
+    GpuBuffer* dir = nullptr;
+    GpuBuffer* b = nullptr;
+    GpuBuffer* e = nullptr;
+    GpuBuffer* t = nullptr;
+    GpuBuffer* partial = nullptr;
+    GpuBuffer* state = nullptr;
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, fineFloats, u));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, fineFloats, dir));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, allFloats, b));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, allFloats, e));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, allFloats, t));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, 8 * (uint64_t)p.groups, partial));
+    EDGEAWARE_GPU_TRY(scratchFloats(ctx, kHealStateFloats, state));
+    const std::array<float, kHealStateFloats> zeros = {};
+    EDGEAWARE_GPU_TRY(ctx.updateBuffer(*state, 0, std::as_bytes(std::span<const float>(zeros))));
+
+    int recorded = 0;
+    const auto run = [&](GpuKernelId kernel,
+                         std::array<uint32_t, 3> threads) -> GpuStatus {
+        ++recorded;
+        EDGEAWARE_GPU_TRY(ctx.dispatch(kernel, { &src, &dest, &mask, coef, cells, levelBuf, u, dir, b, e, t, partial, state }, p, threads));
+        ctx.computeBarrier();
+
+        return {};
+    };
+    const auto levelThreads = [&](uint32_t l,
+                                  uint32_t list) {
+        return healListThreads(grid.levels[l].listCount[list]);
+    };
+    const auto relax = [&](uint32_t l,
+                           uint32_t list,
+                           uint32_t mode) -> GpuStatus {
+        p.level = l;
+        p.list = list;
+        p.mode = mode;
+        return run(GpuKernelId::heal_relax, levelThreads(l, (mode == kHealRelaxFromZero) ? kHealListAll : list));
+    };
+    // e = M b on the finest level: one V-cycle, as Multigrid::cycle() runs it.
+    const auto cycle = [&]() -> GpuStatus {
+        for (uint32_t l = 0; l < tail; ++l) {
+            EDGEAWARE_GPU_TRY(relax(l, kHealListAll, kHealRelaxFromZero));
+            EDGEAWARE_GPU_TRY(relax(l, kHealListColour1, kHealRelaxSweep));
+            for (int i = 1; i < kHealSmoothPairs; ++i) {
+                EDGEAWARE_GPU_TRY(relax(l, kHealListColour0, kHealRelaxSweep));
+                EDGEAWARE_GPU_TRY(relax(l, kHealListColour1, kHealRelaxSweep));
+            }
+            p.level = l;
+            EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_residual, levelThreads(l, kHealListAll)));
+            EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_restrict, levelThreads(l + 1, kHealListAll)));
+        }
+        p.level = tail;
+        EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_tail, { kHealGroup, 1, 1 }));
+        for (uint32_t l = tail; l-- > 0;) {
+            p.level = l;
+            EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_prolong, levelThreads(l, kHealListAll)));
+            for (int i = 0; i < kHealSmoothPairs; ++i) {
+                EDGEAWARE_GPU_TRY(relax(l, kHealListColour1, kHealRelaxSweep));
+                EDGEAWARE_GPU_TRY(relax(l, kHealListColour0, kHealRelaxSweep));
+            }
+        }
+
+        return {};
+    };
+    const auto fine = [&](GpuKernelId kernel,
+                          uint32_t mode) -> GpuStatus {
+        p.level = 0;
+        p.mode = mode;
+        return run(kernel, healListThreads(fineCount));
+    };
+    const auto scalars = [&](uint32_t mode) -> GpuStatus {
+        p.mode = mode;
+        return run(GpuKernelId::heal_scalars, { kHealGroup, 1, 1 });
+    };
+
+    EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_clear, healListThreads(p.count)));
+    EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_setup, { p.width, p.height, 1 }));
+    EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_initial, 0));
+    EDGEAWARE_GPU_TRY(scalars(kHealScalarsInit));
+    EDGEAWARE_GPU_TRY(cycle());
+    EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_dot, kHealDotStart));
+    EDGEAWARE_GPU_TRY(scalars(kHealScalarsStart));
+    const int cycles = std::min(maxCycles, kPoissonHealGpuMaxCycles);
+    for (int i = 0; i < cycles; ++i) {
+        EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_apply, 0));
+        EDGEAWARE_GPU_TRY(scalars(kHealScalarsAlpha));
+        EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_update, 0));
+        EDGEAWARE_GPU_TRY(scalars(kHealScalarsCheck));
+        if (i + 1 == cycles) {
+            break;
+        }
+        EDGEAWARE_GPU_TRY(cycle());
+        EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_dot, kHealDotRz));
+        EDGEAWARE_GPU_TRY(scalars(kHealScalarsBeta));
+        EDGEAWARE_GPU_TRY(fine(GpuKernelId::heal_direction, 0));
+    }
+    EDGEAWARE_GPU_TRY(run(GpuKernelId::heal_finish, { p.width, p.height, 1 }));
+    if (dispatches) {
+        *dispatches = recorded;
+    }
 
     return {};
 }

@@ -83,6 +83,7 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobDriver_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
     KnobQueuedValueChange_Test.cpp
@@ -116,6 +117,8 @@ set(Tests_SOURCES
     Ai/ModelRegistry_Test.cpp
     Ai/ModelDownloader_Test.cpp
     Ai/ModelKnob_Test.cpp
+    Ai/Segmentation_Test.cpp
+    Ai/MaskTrace_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

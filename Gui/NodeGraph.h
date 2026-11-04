@@ -119,6 +119,13 @@ public:
 
     void centerOnItem(QGraphicsItem* item);
 
+    /**
+     * @brief Redraws the loop blocks once control returns to the event loop; topology also
+     * recomputes which nodes form each block, after a connection or a node came or went, and
+     * emits topologyChanged.
+     **/
+    void scheduleLoopBlockRefresh(bool topology);
+
     using PanelWidget::pushUndoCommand;
 
     /**
@@ -182,6 +189,14 @@ public:
     QPointF getRootPos() const;
 
     bool isDoingNavigatorRender() const;
+
+Q_SIGNALS:
+
+    /**
+     * @brief Emitted when a connection or a node of the graph came or went, which can change the
+     * nodes a loop's body holds.
+     **/
+    void topologyChanged();
 
 public Q_SLOTS:
 

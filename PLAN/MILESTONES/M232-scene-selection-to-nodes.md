@@ -75,7 +75,6 @@ model, drag hint on path knobs) and M228 - 3D Viewer Navigation (selection set).
 
 Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2.T3 (2026-11-01, PM).
 
-**Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in the replacement AppImage.
 - 2026-11-01 — P3 at b15e5b2ab: prim path set as the initial value on create-from-selection (root cause of the user's report unconfirmed — recheck in UAT); USDXformPrim Mode knob (Graft default, Wrap when created from a selection): /World/Box becomes /World/Wrap1/Box, links retargeted; Tab menu filtered by the selection's single output kind (any-kind nodes still shown, menu commands hidden while filtered). To confirm with the user: "current node" = last-opened panel (implementer).
 - 2026-11-02 — USDMaterial is a source (no scene input), so it is not offered when creating after a scene node; the scene-filtered Tab list is USDEditTransform, USDPrune and the other scene-input nodes (PM, from review; verify line amended).
 
@@ -93,3 +92,19 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
   - size: M
 - 2026-11-02 — P4.T1 at 70904f70c: the node-graph Tab menu keeps menu commands under a scene selection (the filter was in tabtabtab_natron.get_items). P4.T2 is not an M232 bug: every Natron edit layer authors the project up axis (M226 "Units on edit layers", kept by M241 as a user decision), so the composed stage reports Y-up below any scene node and the view, which follows the composed stage, turns 90° on X. Waiting on the user: edit layers inherit their input's metrics, the view follows the project axis, or Match Project Up Axis is the answer (PM).
 - 2026-11-02 — P4.T2 cancelled: Match Project Up Axis on such USDReads is the answer; no code change, the M226/M241 edit-layer rule stands (user).
+
+## Phase 232.5: On the plain panel
+
+- [ ] M232.P5.T1 — Rebase onto the stripped panel
+  - files: `Gui/SceneGraphPanel.cpp`, `Gui/ScenePrimPickerPopup.cpp`, `Gui/SceneNodeStageSource.cpp`, `Gui/SceneViewport.cpp`
+  - approach: bring in the stripped M231 - Scene Graph Panel branch and current main, and remove any remaining fold calls and references to `USDExpandHierarchy`. The picker's fully loaded stage stays for now; M334 - Knob Prim Tools changes it.
+  - verify: `scene_prim_picker.py`, `scene_set_on_node.py` and `scene_create_from_selection.py` pass; grep finds no fold API use.
+  - size: M
+
+- [ ] M232.P5.T2 — One consistent prim for path knobs, and flag USDAssignMaterial
+  - files: `Gui/SceneSelectionActions.cpp`, `Gui/KnobGuiString.cpp`, `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Tests/gui/scene_set_on_node.py`, `Tests/gui/scene_graph_drag.py`
+  - approach: a path knob takes the first prim of a multi-selection in every route (today drag takes the first and Set Selection takes the last, `SceneSelectionActions.cpp:203-243`), by sharing one write helper. Give USDAssignMaterial's Prim Pattern knob the prim-pattern hint.
+  - verify: GUI scripts — drag and Set Selection write the same prim to a path knob; dragging onto USDAssignMaterial's pattern sets it and Undo restores it.
+  - size: M
+
+**Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in a replacement AppImage built on the plain panel (this milestone has never been UAT-tested).

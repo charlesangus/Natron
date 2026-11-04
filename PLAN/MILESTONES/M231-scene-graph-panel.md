@@ -3,8 +3,7 @@
 A dockable Scene Graph panel. It shows the composed scene of the node the viewer is looking
 at, or of a node it is pinned to. It has a prim tree with type icons and search, two-way
 selection sync with the Viewer's 3D view, and a read-only attribute view that names the
-node whose layer authored each value. Prims can be dragged onto path knobs. Folding uses
-Katana-style deferred loading: a folded branch is not drawn in the viewer, only its bbox.
+node whose layer authored each value. Prims can be dragged onto path knobs.
 No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-26). Survey:
 `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
@@ -16,25 +15,19 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
 - Selection syncs both ways with the 3D view's selection set (M228 - 3D Viewer Navigation), with multi-select.
 - Attribute view for the current prim at the viewer's frame: name, type, value, time-sampled flag, and the authoring node (the strongest layer with an opinion, mapped back to its node).
 - Drag one or more prims onto any prim path/pattern knob. Several prims join with spaces.
-- Deferred loading. Folding a branch makes the viewer show only that branch's bbox, through a viewer-private session layer, never affecting USDRender or USDWrite. When the stage is under a prim budget (a preference, default 50,000 prims) the tree starts expanded and fully drawn; above it the tree starts folded at the top level.
 
 **Out:**
 - Editing attributes from the panel — none (edits are nodes; M52 - USD Layer-Stack Completion's USDEditPrim).
 - Picker buttons on knobs and create-node-from-selection — M232 - Scene Selection To Nodes.
-- Layer-stack/composition inspector panes — none.
-- Saving fold state in the project — none (per-session, per node).
+- Inspector tabs beyond attributes — M333 - Prim Inspector.
+- Deferred loading, draw states and boxes — M328 - Deferred Viewer Stage, M329 - Viewer Draw States.
+- Graph-authored expansion — M330 - Graph Draw Policy.
 
 **Edge cases:**
 - The viewed node changes kind (scene ↔ image): the panel shows "no scene" and keeps its pin if pinned.
 - The pinned node is deleted: the panel unpins and follows the viewer.
 - A 1M-prim stage: the tree populates children only on expand, and the filter searches incrementally on a worker thread with a cap and a "more…" row.
-- Folding a prim that is not a model kind: `model:drawMode = bounds` needs `model:applyDrawMode = true`, so the session layer authors both on the folded prim.
-- A selection in the viewer inside a folded branch (a picked bbox): it selects the folded prim.
 - A filtered tree: selection sync still works for prims hidden by the filter (they stay selected).
-
-**Assumptions:**
-- `UsdGeomModelAPI` draw-mode `bounds` on the viewer stage's session layer makes UsdImaging skip populating the folded subtree, so folding really lightens Storm. M231.P3.T1 measures it.
-- Payload prims in folded branches can stay unloaded (`UsdStage::Unload`) on the viewer stage, so heavy payloads never load until expanded.
 
 ## Phase 231.1: Panel and tree
 
@@ -77,6 +70,9 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
 ## Decisions
 
 - 2026-10-27: release gate green with the C++20 TfWeakPtr compare fix, the model re-entrancy fix and valid usda in the fold tests; next: GUI check and screenshots, then AppImage/UAT.
+- 2026-11-01 — P4 at 44144bd8b: closed tree row = prim drawn as its bbox (computed from children before payloads unload); twirl state is transient per viewed node (drops the per-node fold memory in Scope, per the user's words); USDRead Open Mode (Fully / First Levels) + Open Levels; new USDExpandHierarchy node (pattern; Fold / Expand / Expand Levels); folds stored as prim custom data natron:viewerFold / natron:viewerOpenLevels; Follow chooser Viewer (default) / Node Selection. PM calls: twirl opens one level (Katana) and USDWrite strips the viewer fold custom data — follow-up dispatched.
+- 2026-11-02 — The prim filter stays an incremental main-thread walk (8 ms slices per timer tick, the viewer's stage lock released between ticks, result cap and More... row) instead of a worker thread: the viewer's stage is reachable only through the main-thread renderer, which the viewport owns by value (PM, from review).
+- 2026-11-04 — All folding is removed from this milestone: it loaded every payload first, edited the scene on each twirl and stored display state in USD layers. Replaced by the design in PLAN/DESIGN/2026-11-04-scene-graph-design.md (user). Earlier fold tasks stay checked as history; Phase 231.5 removes their code.
 
 ## Phase 231.4: UAT folding model
 
@@ -92,6 +88,18 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
   - verify: The GUI test switches nodes and viewers in each mode and confirms the tree displays the chosen source.
   - size: M
 
-**Verification gate:** panel tests and fold performance pass; bbox folding, load-depth policy and follow mode are accepted from the replacement AppImage.
-- 2026-11-01 — P4 at 44144bd8b: closed tree row = prim drawn as its bbox (computed from children before payloads unload); twirl state is transient per viewed node (drops the per-node fold memory in Scope, per the user's words); USDRead Open Mode (Fully / First Levels) + Open Levels; new USDExpandHierarchy node (pattern; Fold / Expand / Expand Levels); folds stored as prim custom data natron:viewerFold / natron:viewerOpenLevels; Follow chooser Viewer (default) / Node Selection. PM calls: twirl opens one level (Katana) and USDWrite strips the viewer fold custom data — follow-up dispatched.
-- 2026-11-02 — The prim filter stays an incremental main-thread walk (8 ms slices per timer tick, the viewer's stage lock released between ticks, result cap and More... row) instead of a worker thread: the viewer's stage is reachable only through the main-thread renderer, which the viewport owns by value (PM, from review).
+## Phase 231.5: Strip folding
+
+- [ ] M231.P5.T1 — Remove graph-side folding
+  - files: `Engine/Nodes/Scene/USDRead.{h,cpp}`, `Engine/Nodes/Scene/docs/USDRead.md`, `Engine/Nodes/Scene/USDExpandHierarchy.*` and its docs (delete), `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDRead_Test.cpp`, `Tests/Scene/USDWrite_Test.cpp`, `Tests/Scene/USDExpandHierarchy_Test.cpp` (delete)
+  - approach: remove Open Mode, Open Levels and the `natron:viewerFold` and `natron:viewerOpenLevels` custom data, including USDWrite's strip. Delete USDExpandHierarchy and its registration. M330 - Graph Draw Policy rewrites it later and takes what it needs from history.
+  - verify: grep finds no `viewerFold`, `viewerOpenLevels` or `USDExpandHierarchy` in the tree; USDRead and USDWrite gtests pass; a USDWrite export carries no Natron custom data.
+  - size: M
+
+- [ ] M231.P5.T2 — Remove viewer folding
+  - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Gui/SceneViewport.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Engine/Settings.{h,cpp}`, `Tests/Scene/SceneFold_Test.cpp` (delete), `Tests/gui/scene_graph_fold.py` (delete)
+  - approach: remove `SceneStage`'s fold API, listener, session-layer draw-mode authoring and fold load rules, `computeViewerFolds`, the viewport's fold state, the panel's row mirroring and fold delegate, and the prim budget preference. Twirling becomes plain tree state that never reaches the stage. The viewer draws everything, exactly as main does.
+  - verify: `SceneGraphModel` gtests and `scene_graph_panel.py`, `scene_graph_follow.py`, `scene_graph_drag.py` pass; a GUI check that twirling a row produces no stage notice.
+  - size: L
+
+**Verification gate:** release gate green; panel GUI scripts pass under Xvfb; the plain panel (tree, filter, selection sync, attribute view, drag, follow and pin) is accepted from the replacement AppImage.

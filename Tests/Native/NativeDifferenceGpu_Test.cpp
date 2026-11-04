@@ -161,8 +161,9 @@ protected:
 
 #ifdef NATRON_HAVE_GPU
 
-// B against a clean plate partly outside it, with gain and offset, without the plate, with every
-// channel processed, and under a mask and mix, against the node's own render over its RoD.
+// B against a clean plate partly outside it, with black and white points and gain, a hard
+// threshold, without the plate, with every channel processed, and under a mask and mix, against
+// the node's own render over its RoD.
 TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -174,19 +175,22 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
     struct Case {
         const char* name;
         bool withA;
+        double blackPoint;
+        double whitePoint;
         double gain;
-        double offset;
         bool allChannels;
         bool masked;
         double mix;
     };
     const Case cases[] = {
-        { "defaults", true, 1., 0., false, false, 1. },
-        { "gain and offset", true, 7.5, 0.02, false, false, 1. },
-        { "negative offset", true, 1., -0.1, false, false, 1. },
-        { "no clean plate", false, 3., 0., false, false, 1. },
-        { "every channel", true, 1., 0., true, false, 1. },
-        { "mask and mix", true, 2., 0.01, false, true, 0.6 },
+        { "defaults", true, 0., 1., 1., false, false, 1. },
+        { "black, white and gain", true, 0.02, 0.4, 7.5, false, false, 1. },
+        { "negative black point", true, -0.1, 0.9, 1., false, false, 1. },
+        { "hard threshold", true, 0.1, 0.1, 2., false, false, 1. },
+        { "white below black", true, 0.1, 0.03, 1.5, false, false, 1. },
+        { "no clean plate", false, 0., 1., 3., false, false, 1. },
+        { "every channel", true, 0., 1., 1., true, false, 1. },
+        { "mask and mix", true, 0.01, 0.5, 2., false, true, 0.6 },
     };
     int nCase = 0;
 
@@ -215,7 +219,8 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", std::vector<double>(1, c.masked ? 1. : 0.))) << c.name;
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, std::vector<double>(1, c.mix))) << c.name;
         ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, std::vector<double>(1, c.gain))) << c.name;
-        ASSERT_TRUE(setKnobValues(node, kDifferenceParamOffset, std::vector<double>(1, c.offset))) << c.name;
+        ASSERT_TRUE(setKnobValues(node, kDifferenceParamBlackPoint, std::vector<double>(1, c.blackPoint))) << c.name;
+        ASSERT_TRUE(setKnobValues(node, kDifferenceParamWhitePoint, std::vector<double>(1, c.whitePoint))) << c.name;
         if (c.allChannels) {
             KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
             ASSERT_TRUE(bool(channels)) << c.name;
@@ -226,7 +231,7 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(effect->canRenderOnGpu(query)) << c.name;
 
         // The node's RoD, the union of its inputs': the engine renders nothing outside it, where a
-        // negative offset would otherwise give the GPU a matte the CPU leaves black.
+        // negative black point would otherwise give the GPU a matte the CPU leaves black.
         RectI window = paritySourceWindow(b, kTime, 0);
         if (a) {
             window.merge(paritySourceWindow(a, kTime, 0));

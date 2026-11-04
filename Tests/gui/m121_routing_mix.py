@@ -2,11 +2,12 @@
 
 Sections (each node is created from its plugin ID; sources are Constants; the Viewer is set to the
 Un-tone-mapped view so screen colours follow the image):
-  - keymix: B blue, A red. A white Mask Constant shows A (red), a black one (alpha 0, as the mask
-    reads rgba.A) shows B (blue), no Mask
-    shows A everywhere (red);
+  - keymix: B blue, A red. No Mask passes B through (blue); a white Mask Constant shows A (red),
+    a black one (alpha 0, as the mask reads rgba.A) shows B (blue), and unticking the mask's
+    enable passes B through again (blue);
   - difference: B bright grey, A dark grey, then Premult so the alpha shows as brightness. Different
-    inputs give a bright viewer, equal inputs a black one (alpha 0);
+    inputs give a bright viewer, a Black Point above their difference a black one, and equal inputs
+    a black one (alpha 0);
   - adjustbbox: a Constant cropped to a small square in the bottom-left corner of the format does
     not reach the viewer centre; AdjustBBox with Nearest boundary and a large Num Pixels grows the
     region so the centre shows the Constant's colour. The Python API has no region-of-definition
@@ -249,7 +250,7 @@ try:
         show(keymix)
         yield from panel_shot(keymix, "m121-keymix-panel.png")
         check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
-        yield from expect_colour("red", "without a Mask A covers everywhere, red")
+        yield from expect_colour("blue", "without a Mask the node passes B through, blue")
         connect(keymix, 2, white)
         # A connection made while the node renders is queued until the render ends, and the mask
         # enable follows the connection when it is applied.
@@ -263,6 +264,8 @@ try:
         yield from expect_colour("blue", "a black Mask shows B, blue")
         param(white, "color").set(1.0, 1.0, 1.0, 1.0)
         yield from expect_colour("red", "the Mask white again shows A, red")
+        enable_mask.setValue(False)
+        yield from expect_colour("blue", "a disabled Mask passes B through, blue")
 
     def section_difference():
         gt.section("difference")
@@ -277,6 +280,13 @@ try:
         yield from panel_shot(diff, "m121-difference-panel.png")
         yield from expect_colour("bright", "differing B and A give a high alpha, so Premult shows a bright image")
         gt.shot("m121-difference.png")
+        # The squared distance is 3 x 0.7^2 = 1.47; a Black Point above it gives alpha 0.
+        param(diff, "blackPoint").setValue(2.0)
+        param(diff, "whitePoint").setValue(3.0)
+        yield from expect_colour("dark", "a Black Point above the difference gives alpha 0, so Premult shows black")
+        param(diff, "blackPoint").setValue(0.0)
+        param(diff, "whitePoint").setValue(1.0)
+        yield from expect_colour("bright", "Black Point 0 and White Point 1 give the high alpha again")
         param(plate, "color").set(0.8, 0.8, 0.8, 1.0)
         yield from expect_colour("dark", "equal B and A give alpha 0, so Premult shows black")
 

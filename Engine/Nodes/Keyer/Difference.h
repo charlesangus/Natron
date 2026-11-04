@@ -34,7 +34,8 @@
 #define PLUGINID_NATRON_DIFFERENCE "Difference"
 #define PLUGIN_MAJOR_NATRON_DIFFERENCE 1
 
-#define kDifferenceParamOffset "offset"
+#define kDifferenceParamBlackPoint "blackPoint"
+#define kDifferenceParamWhitePoint "whitePoint"
 #define kDifferenceParamGain "gain"
 
 #define kDifferenceInputB 0
@@ -50,15 +51,20 @@ inline constexpr InputSpec kDifferenceInputs[] = {
 };
 
 /**
- * @brief Difference: a rough matte from a subject (B) and its clean plate (A). Colour is B's and
- * alpha is max(0, gain x sum over R, G, B of (B - A)^2 - offset), unclamped above so that
- * scene-linear differences above 1 stay meaningful. With A unconnected the plate is B itself, a
- * zero difference; with B unconnected the output is transparent black.
+ * @brief Difference: a rough matte from a subject (B) and its clean plate (A). Colour is B's. With
+ * d the sum over R, G, B of (B - A)^2, alpha is gain x max(0, (d - blackPoint) / (whitePoint -
+ * blackPoint)), unclamped above so that scene-linear differences above 1 stay meaningful; when
+ * whitePoint <= blackPoint it is a hard threshold, gain where d > blackPoint and 0 elsewhere. With A
+ * unconnected the plate is B itself, a zero difference; with B unconnected the output is
+ * transparent black.
  **/
 struct DifferenceOp {
     struct Params {
-        float offset;
+        float blackPoint;
+        // 1 / (whitePoint - blackPoint), unused for a hard threshold.
+        float scale;
         float gain;
+        bool threshold;
     };
 
     static constexpr NodeSpec kNodeSpec = {
@@ -66,7 +72,8 @@ struct DifferenceOp {
         .label = "Difference",
         .description = "Produces a rough matte from the difference of two images. B is the subject over the "
                        "background, A the background alone (the clean plate). Colour is copied from B and alpha "
-                       "is the squared distance between B's and A's colours, times Gain, minus Offset.",
+                       "is the squared distance between B's and A's colours, remapped so that Black Point gives 0 "
+                       "and White Point gives 1, times Gain.",
         .grouping = PLUGIN_GROUP_KEYER,
         .majorVersion = PLUGIN_MAJOR_NATRON_DIFFERENCE,
         .minorVersion = 0,
@@ -98,7 +105,8 @@ struct DifferenceOp {
 
     GpuOpRef gpu(const Params& params) const;
 
-    KnobDoubleWPtr offset;
+    KnobDoubleWPtr blackPoint;
+    KnobDoubleWPtr whitePoint;
     KnobDoubleWPtr gain;
 };
 

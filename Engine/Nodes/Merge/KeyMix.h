@@ -54,7 +54,8 @@ inline constexpr InputSpec kKeyMixInputs[] = {
 /**
  * @brief KeyMix: copies A's processed channels over B through the mask. Each processed channel
  * is B + (A - B) x mask x mix, the other channels are B's, and A reads zero outside its region.
- * With A unconnected the node is B; with neither connected it is transparent black.
+ * With A unconnected, or no mask applied (unconnected or disabled), the node is B; with B
+ * unconnected too it is transparent black.
  **/
 struct KeyMixOp {
     enum BBox {
@@ -71,8 +72,8 @@ struct KeyMixOp {
         .id = PLUGINID_NATRON_KEYMIX,
         .label = "KeyMix",
         .description = "Copies the selected channels of A over B where the mask is, B elsewhere. The mask's "
-                       "value blends between them, so a soft mask gives a soft transition; without a mask A "
-                       "covers everywhere. Unselected channels are B's.",
+                       "value blends between them, so a soft mask gives a soft transition; without a mask the "
+                       "node passes B through. Unselected channels are B's.",
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_KEYMIX,
         .minorVersion = 0,
@@ -123,8 +124,8 @@ public:
     virtual ~KeyMix();
 
     /**
-     * @brief B's region when the node is B (A unconnected, or a mix of 0); otherwise the union of
-     * A and B, B's or A's as setBBox chooses. The project format when the chosen inputs have none.
+     * @brief B's region when the node is B (A or the mask not applied, or a mix of 0); otherwise
+     * the union of A and B, B's or A's as setBBox chooses. The project format when the chosen inputs have none.
      **/
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,

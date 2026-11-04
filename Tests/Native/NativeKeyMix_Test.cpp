@@ -46,6 +46,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/KeyMix.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
@@ -195,11 +196,55 @@ protected:
         select->set("rgba.A");
     }
 
+    // Connects a constant 1 in every channel as the mask, read from its alpha.
+    void connectWhiteMask(const NodePtr& keyMix)
+    {
+        NodePtr mask = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        ASSERT_TRUE(bool(mask));
+        ASSERT_TRUE(setKnobValues(mask, kConstantParamColor, { 1., 1., 1., 1. }));
+        connectNodes(mask, keyMix, kKeyMixInputMask, true);
+        ASSERT_TRUE(setKnobValues(keyMix, "enableMask_Mask", { 1. }));
+        KnobChannelSelect* select = dynamic_cast<KnobChannelSelect*>(keyMix->getKnobByName("maskChannel_Mask").get());
+        ASSERT_TRUE(select != NULL);
+        select->set("rgba.A");
+    }
+
+    // The input KeyMix is an identity of at the case time, -1 for black, -2 when it renders.
+    int identityInput(const NodePtr& keyMix)
+    {
+        EffectInstancePtr effect = keyMix->getEffectInstance();
+        double inputTime = 0.;
+        ViewIdx inputView(0);
+        int inputNb = -3;
+        if (!effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, caseWindow(), ViewIdx(0), &inputTime, &inputView, &inputNb)) {
+            return -2;
+        }
+
+        return inputNb;
+    }
+
+    // Expects KeyMix to be B: an identity of B with B's region and B's pixels.
+    void expectB(const NodePtr& keyMix)
+    {
+        EXPECT_EQ(kKeyMixInputB, identityInput(keyMix));
+        EXPECT_EQ(RectI(0, 0, kParitySourceWidth, kParitySourceHeight), pixelRoD(keyMix));
+        const RectI window = caseWindow();
+        RenderedPlane plane;
+        ASSERT_TRUE(renderRGBA(keyMix, window, &plane));
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                const float* got = pixelAt(plane, x, y);
+                for (int c = 0; c < 4; ++c) {
+                    ASSERT_EQ(sourceValue(c, 0, 0, x, y), got[c]) << "channel " << c << " at (" << x << ", " << y << ")";
+                }
+            }
+        }
+    }
+
     // Expects every pixel of the window to be B + (A - B) x mask x mix on the processed channels
-    // and B on the others, as the host's mask/mix computes it.
+    // and B on the others, as the host's mask/mix computes it, with the soft mask connected.
     void expectKeyMix(const NodePtr& keyMix,
                       const bool processed[4],
-                      bool masked,
                       float mix)
     {
         const RectI window = caseWindow();
@@ -209,7 +254,7 @@ protected:
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
                 const bool inRoD = (x >= rod.x1) && (x < rod.x2) && (y >= rod.y1) && (y < rod.y2);
-                const float m = masked ? sourceValue(3, 0, 0, x, y) : 1.f;
+                const float m = sourceValue(3, 0, 0, x, y);
                 const float alpha = m * mix;
                 const float* got = pixelAt(plane, x, y);
                 for (int c = 0; c < 4; ++c) {
@@ -236,17 +281,47 @@ TEST_F(NativeKeyMixTest, Identity)
     expectNativeIdentity(PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, "KeyMix");
 }
 
-TEST_F(NativeKeyMixTest, AWithoutAMaskCoversBAndKeepsHdrValues)
+TEST_F(NativeKeyMixTest, WithoutAMaskItIsB)
 {
     resetProject();
     NodePtr keyMix = makeKeyMix(true, true);
     ASSERT_TRUE(bool(keyMix));
-    const bool all[4] = { true, true, true, true };
-    expectKeyMix(keyMix, all, false, 1.f);
+    expectB(keyMix);
+}
+
+TEST_F(NativeKeyMixTest, ADisabledMaskIsB)
+{
+    resetProject();
+    NodePtr keyMix = makeKeyMix(true, true);
+    ASSERT_TRUE(bool(keyMix));
+    connectSoftMask(keyMix);
+    EXPECT_EQ(-2, identityInput(keyMix));
+    ASSERT_TRUE(setKnobValues(keyMix, "enableMask_Mask", { 0. }));
+    expectB(keyMix);
+}
+
+TEST_F(NativeKeyMixTest, AWhiteMaskShowsAAndKeepsHdrValues)
+{
+    resetProject();
+    NodePtr keyMix = makeKeyMix(true, true);
+    ASSERT_TRUE(bool(keyMix));
+    connectWhiteMask(keyMix);
+    EXPECT_EQ(-2, identityInput(keyMix));
+
+    // Inside the project format, where the constant mask is 1, the output is A, zero outside A.
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(keyMix, window, &plane));
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float* got = pixelAt(plane, x, y);
+            for (int c = 0; c < 4; ++c) {
+                ASSERT_NEAR(sourceValue(c, kAOriginX, kAOriginY, x, y), got[c], 1e-6f) << "channel " << c << " at (" << x << ", " << y << ")";
+            }
+        }
+    }
 
     // The parity source's colour ramps run from -0.25 to 1.75; KeyMix must not clamp them.
-    RenderedPlane plane;
-    ASSERT_TRUE(renderRGBA(keyMix, caseWindow(), &plane));
     bool sawNegative = false;
     bool sawAboveOne = false;
     for (float v : plane.pixels) {
@@ -264,7 +339,7 @@ TEST_F(NativeKeyMixTest, SoftMaskBlendsAOverB)
     ASSERT_TRUE(bool(keyMix));
     connectSoftMask(keyMix);
     const bool all[4] = { true, true, true, true };
-    expectKeyMix(keyMix, all, true, 1.f);
+    expectKeyMix(keyMix, all, 1.f);
 }
 
 TEST_F(NativeKeyMixTest, MixScalesTheMask)
@@ -275,7 +350,7 @@ TEST_F(NativeKeyMixTest, MixScalesTheMask)
     connectSoftMask(keyMix);
     ASSERT_TRUE(setKnobValues(keyMix, "mix", { 0.5 }));
     const bool all[4] = { true, true, true, true };
-    expectKeyMix(keyMix, all, true, 0.5f);
+    expectKeyMix(keyMix, all, 0.5f);
 }
 
 TEST_F(NativeKeyMixTest, ChannelSubsetsTakeOnlyTheSelectedChannelsFromA)
@@ -290,12 +365,12 @@ TEST_F(NativeKeyMixTest, ChannelSubsetsTakeOnlyTheSelectedChannelsFromA)
     const std::vector<std::string> red = { "R" };
     channels->setLayer(0, kNatronColorViewRGBA, &red);
     const bool onlyRed[4] = { true, false, false, false };
-    expectKeyMix(keyMix, onlyRed, true, 1.f);
+    expectKeyMix(keyMix, onlyRed, 1.f);
 
     const std::vector<std::string> greenAlpha = { "G", "A" };
     channels->setLayer(0, kNatronColorViewRGBA, &greenAlpha);
     const bool greenAndAlpha[4] = { false, true, false, true };
-    expectKeyMix(keyMix, greenAndAlpha, true, 1.f);
+    expectKeyMix(keyMix, greenAndAlpha, 1.f);
 }
 
 TEST_F(NativeKeyMixTest, WithoutAItIsB)
@@ -366,11 +441,20 @@ TEST_F(NativeKeyMixTest, WithoutBAIsKeyedOverBlack)
     }
 }
 
+TEST_F(NativeKeyMixTest, WithoutBOrAMaskItIsBlack)
+{
+    resetProject();
+    NodePtr keyMix = makeKeyMix(false, true);
+    ASSERT_TRUE(bool(keyMix));
+    EXPECT_EQ(-1, identityInput(keyMix));
+}
+
 TEST_F(NativeKeyMixTest, SetBBoxChoosesTheRegion)
 {
     resetProject();
     NodePtr keyMix = makeKeyMix(true, true);
     ASSERT_TRUE(bool(keyMix));
+    connectSoftMask(keyMix);
 
     EXPECT_EQ(RectI(0, 0, kParitySourceWidth + kAOriginX, kParitySourceHeight + kAOriginY), pixelRoD(keyMix));
     ASSERT_TRUE(setKnobValue(keyMix, kKeyMixParamSetBBox, kKeyMixBBoxB));

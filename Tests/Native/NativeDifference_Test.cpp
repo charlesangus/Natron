@@ -44,6 +44,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Keyer/Difference.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -61,6 +62,16 @@ const double kTime = 1.;
 // A is B's source shifted, so that the two differ everywhere they overlap.
 const int kAOriginX = 2;
 const int kAOriginY = 1;
+
+// The value of a double knob of node, NaN when it has none.
+double
+getKnobDouble(const NodePtr& node,
+              const char* name)
+{
+    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+
+    return knob ? knob->getValue() : std::nan("");
+}
 
 bool
 isNative(const NodePtr& node)
@@ -130,12 +141,10 @@ caseWindow()
     return RectI(-4, -4, kParitySourceWidth + 4, kParitySourceHeight + 4);
 }
 
-// The matte as the node computes it, in float and in the same order.
+// The sum of the squared colour differences, in float and in the node's order.
 float
-matte(const float b[4],
-      const float a[4],
-      float gain,
-      float offset)
+squaredDistance(const float b[4],
+                const float a[4])
 {
     float sum = 0.f;
     for (int c = 0; c < 3; ++c) {
@@ -143,7 +152,32 @@ matte(const float b[4],
         sum += d * d;
     }
 
-    return std::max(0.f, gain * sum - offset);
+    return sum;
+}
+
+// Black point, white point and gain.
+struct Remap {
+    float blackPoint;
+    float whitePoint;
+    float gain;
+};
+
+const Remap kDefaultRemap = { 0.f, 1.f, 1.f };
+
+// The matte as specified: gain x max(0, (d - black) / (white - black)), or a hard threshold at
+// the black point when white <= black.
+float
+matte(const float b[4],
+      const float a[4],
+      const Remap& remap)
+{
+    const float sum = squaredDistance(b, a);
+
+    if (remap.whitePoint <= remap.blackPoint) {
+        return (sum > remap.blackPoint) ? remap.gain : 0.f;
+    }
+
+    return remap.gain * (float)std::max(0., ((double)sum - remap.blackPoint) / ((double)remap.whitePoint - remap.blackPoint));
 }
 
 } // namespace
@@ -190,15 +224,23 @@ protected:
         return node;
     }
 
+    void setRemap(const NodePtr& node,
+                  const Remap& remap)
+    {
+        ASSERT_TRUE(setKnobValues(node, kDifferenceParamBlackPoint, { remap.blackPoint }));
+        ASSERT_TRUE(setKnobValues(node, kDifferenceParamWhitePoint, { remap.whitePoint }));
+        ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { remap.gain }));
+    }
+
     // Expects B's colour and the matte of B against A (shifted by aOrigin, or B itself without A)
-    // everywhere in the window; each reads zero outside its region.
+    // everywhere in the window, within relTolerance; each reads zero outside its region.
     void expectDifference(const NodePtr& node,
                           bool withA,
                           int aOriginX,
                           int aOriginY,
-                          float gain,
-                          float offset,
-                          float* maxAlpha = NULL)
+                          const Remap& remap,
+                          float* maxAlpha = NULL,
+                          float relTolerance = 1e-5f)
     {
         const RectI window = caseWindow();
         RenderedPlane plane;
@@ -216,8 +258,8 @@ protected:
                 for (int c = 0; c < 3; ++c) {
                     ASSERT_EQ(b[c], got[c]) << "channel " << c << " at (" << x << ", " << y << ")";
                 }
-                const float want = matte(b, a, gain, offset);
-                ASSERT_NEAR(want, got[3], 1e-5f * std::max(1.f, std::fabs(want))) << "alpha at (" << x << ", " << y << ")";
+                const float want = matte(b, a, remap);
+                ASSERT_NEAR(want, got[3], relTolerance * std::max(1.f, std::fabs(want))) << "alpha at (" << x << ", " << y << ")";
                 largest = std::max(largest, got[3]);
             }
         }
@@ -237,17 +279,41 @@ TEST_F(NativeDifferenceTest, AlphaIsTheSquaredColourDistance)
     resetProject();
     NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
     ASSERT_TRUE(bool(node));
-    expectDifference(node, true, kAOriginX, kAOriginY, 1.f, 0.f);
+    // The defaults give exactly the squared distance, as the node did before Black Point and White
+    // Point replaced Offset.
+    EXPECT_EQ(0., getKnobDouble(node, kDifferenceParamBlackPoint));
+    EXPECT_EQ(1., getKnobDouble(node, kDifferenceParamWhitePoint));
+    EXPECT_EQ(1., getKnobDouble(node, kDifferenceParamGain));
+    EXPECT_FALSE(bool(node->getKnobByName("offset")));
+    expectDifference(node, true, kAOriginX, kAOriginY, kDefaultRemap, NULL, 0.f);
 }
 
-TEST_F(NativeDifferenceTest, GainAndOffset)
+TEST_F(NativeDifferenceTest, BlackAndWhitePointsRemapTheDistance)
 {
     resetProject();
     NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
     ASSERT_TRUE(bool(node));
-    ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { 3. }));
-    ASSERT_TRUE(setKnobValues(node, kDifferenceParamOffset, { 0.01 }));
-    expectDifference(node, true, kAOriginX, kAOriginY, 3.f, 0.01f);
+    const Remap remap = { 0.05f, 0.5f, 3.f };
+    setRemap(node, remap);
+    expectDifference(node, true, kAOriginX, kAOriginY, remap);
+
+    // A negative black point lifts a zero difference above 0.
+    const Remap lifted = { -0.25f, 0.75f, 1.f };
+    setRemap(node, lifted);
+    float largest = 0.f;
+    expectDifference(node, true, kAOriginX, kAOriginY, lifted, &largest);
+    EXPECT_GT(largest, 0.f);
+}
+
+TEST_F(NativeDifferenceTest, AWhitePointAtOrBelowTheBlackPointIsAHardThreshold)
+{
+    resetProject();
+    NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
+    ASSERT_TRUE(bool(node));
+    for (const Remap& remap : { Remap { 0.1f, 0.1f, 2.f }, Remap { 0.1f, 0.02f, 2.f } }) {
+        setRemap(node, remap);
+        expectDifference(node, true, kAOriginX, kAOriginY, remap, NULL, 0.f);
+    }
 }
 
 TEST_F(NativeDifferenceTest, MattesAboveOneAreNotClamped)
@@ -257,7 +323,7 @@ TEST_F(NativeDifferenceTest, MattesAboveOneAreNotClamped)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { 1000. }));
     float largest = 0.f;
-    expectDifference(node, true, kAOriginX, kAOriginY, 1000.f, 0.f, &largest);
+    expectDifference(node, true, kAOriginX, kAOriginY, Remap { 0.f, 1.f, 1000.f }, &largest);
     EXPECT_GT(largest, 1.f);
 }
 
@@ -269,7 +335,7 @@ TEST_F(NativeDifferenceTest, AZeroDifferenceGivesAlphaZero)
     NodePtr node = makeDifference(source, source);
     ASSERT_TRUE(bool(node));
     float largest = 1.f;
-    expectDifference(node, true, 0, 0, 1.f, 0.f, &largest);
+    expectDifference(node, true, 0, 0, kDefaultRemap, &largest);
     EXPECT_EQ(0.f, largest);
 }
 
@@ -280,7 +346,7 @@ TEST_F(NativeDifferenceTest, WithoutACleanPlateTheDifferenceIsZero)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { 5. }));
     float largest = 1.f;
-    expectDifference(node, false, 0, 0, 5.f, 0.f, &largest);
+    expectDifference(node, false, 0, 0, Remap { 0.f, 1.f, 5.f }, &largest);
     EXPECT_EQ(0.f, largest);
 }
 

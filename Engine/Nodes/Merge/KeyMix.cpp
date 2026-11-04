@@ -85,8 +85,8 @@ KeyMixOp::bake(const KnobReader& reader) const
 bool
 KeyMixOp::isIdentity(const Params& /*params*/) const
 {
-    // Whether A is connected is not in the Params: route() answers that identity. No channel
-    // selected, a mix of 0 and a mask missing the window are the host's.
+    // Whether A and the mask are connected is not in the Params: route() answers that identity.
+    // No channel selected, a mix of 0 and a mask missing the window are the host's.
     return false;
 }
 
@@ -94,7 +94,7 @@ Route
 KeyMixOp::route(const Params& /*params*/,
                 const RouteContext& context) const
 {
-    if (context.isConnected(kKeyMixInputA)) {
+    if (context.isConnected(kKeyMixInputA) && context.isMaskApplied(kKeyMixInputMask)) {
         return Route::none();
     }
 
@@ -185,7 +185,7 @@ KeyMix::getRegionOfDefinition(U64 /*hash*/,
     bool found = false;
     const Route answer = route(time, view);
 
-    if ((answer.kind == Route::Kind::Input) || (getMixValue(time, view) == 0.)) {
+    if ((answer.kind != Route::Kind::None) || (getMixValue(time, view) == 0.)) {
         found = getInputRoD(kKeyMixInputB, time, scale, view, rod);
     } else {
         KnobChoicePtr setBBoxKnob = op().setBBox.lock();

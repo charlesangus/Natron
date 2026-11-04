@@ -22,19 +22,25 @@ void keymix(uint3 tid : SV_DispatchThreadID)
     runCompositeStep<StepKeyMix>(op, tid);
 }
 
-// Difference: the result is B and the step's input A. Colour is B's and alpha the gained sum of
-// the squared colour differences less the offset, clamped below at 0. Absent channels read 0 in
-// both, so they add nothing. `precise` keeps the arithmetic unfused, in the CPU step's order.
+// Difference: the result is B and the step's input A. Colour is B's. Alpha remaps the sum of the
+// squared colour differences so that the black point gives 0 and the white point 1 (scale is
+// 1 / (white - black)), clamped below at 0 and times the gain; a hard threshold gives the gain
+// above the black point and 0 elsewhere. Absent channels read 0 in both, so they add nothing.
+// `precise` keeps the arithmetic unfused, in the CPU step's order.
 struct StepDifference : ICompositeStep
 {
+    float blackPoint;
+    float scale;
     float gain;
-    float offset;
+    uint threshold;
 
-    // Parameter block, in words: gain, offset.
+    // Parameter block, in words: black point, scale, gain, threshold (0 or 1).
     [mutating] void load(StructuredBuffer<uint> params)
     {
-        gain = wrapParamFloat(params, 0);
-        offset = wrapParamFloat(params, 1);
+        blackPoint = wrapParamFloat(params, 0);
+        scale = wrapParamFloat(params, 1);
+        gain = wrapParamFloat(params, 2);
+        threshold = params[3];
     }
 
     float4 apply(float4 result, float4 input, int2 xy)
@@ -44,8 +50,14 @@ struct StepDifference : ICompositeStep
         sum = sum + d.r * d.r;
         sum = sum + d.g * d.g;
         sum = sum + d.b * d.b;
-        precise float matte = gain * sum - offset;
-        return float4(result.rgb, max(0.0, matte));
+        precise float matte;
+        if (threshold != 0) {
+            matte = (sum > blackPoint) ? gain : 0.0;
+        } else {
+            precise float remapped = (sum - blackPoint) * scale;
+            matte = gain * max(0.0, remapped);
+        }
+        return float4(result.rgb, matte);
     }
 }
 

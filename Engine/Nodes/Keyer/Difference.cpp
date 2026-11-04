@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cstdint>
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
@@ -41,10 +42,12 @@ namespace {
 #ifdef NATRON_HAVE_GPU
 // The parameter block of StepDifference in routing.slang.
 struct DifferenceGpuParams {
+    float blackPoint;
+    float scale;
     float gain;
-    float offset;
+    std::uint32_t threshold;
 };
-static_assert(sizeof(DifferenceGpuParams) == 8, "must match StepDifference in routing.slang");
+static_assert(sizeof(DifferenceGpuParams) == 16, "must match StepDifference in routing.slang");
 #endif
 } // anonymous namespace
 
@@ -53,9 +56,11 @@ DifferenceOp::createKnobs(KnobHolder* holder,
                           const KnobPagePtr& page)
 {
     {
-        KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Offset").toStdString());
-        knob->setName(kDifferenceParamOffset);
-        knob->setHintToolTip(EffectInstance::tr("Subtracted from the gained difference before it is clamped at 0.").toStdString());
+        KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Black Point").toStdString());
+        knob->setName(kDifferenceParamBlackPoint);
+        knob->setHintToolTip(EffectInstance::tr("The squared difference that gives alpha 0; smaller differences "
+                                                "give 0 too.")
+                                 .toStdString());
         knob->setDefaultValue(0.);
         knob->setMinimum(-DBL_MAX);
         knob->setMaximum(DBL_MAX);
@@ -63,12 +68,28 @@ DifferenceOp::createKnobs(KnobHolder* holder,
         knob->setDisplayMaximum(1.);
         knob->setIncrement(0.005);
         page->addKnob(knob);
-        offset = knob;
+        blackPoint = knob;
+    }
+    {
+        KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("White Point").toStdString());
+        knob->setName(kDifferenceParamWhitePoint);
+        knob->setHintToolTip(EffectInstance::tr("The squared difference that gives alpha 1, before Gain; larger "
+                                                "differences go above 1. At or below Black Point the matte is a "
+                                                "hard threshold at Black Point.")
+                                 .toStdString());
+        knob->setDefaultValue(1.);
+        knob->setMinimum(-DBL_MAX);
+        knob->setMaximum(DBL_MAX);
+        knob->setDisplayMinimum(0.);
+        knob->setDisplayMaximum(1.);
+        knob->setIncrement(0.005);
+        page->addKnob(knob);
+        whitePoint = knob;
     }
     {
         KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Gain").toStdString());
         knob->setName(kDifferenceParamGain);
-        knob->setHintToolTip(EffectInstance::tr("Multiplies the squared difference.").toStdString());
+        knob->setHintToolTip(EffectInstance::tr("Multiplies the remapped difference.").toStdString());
         knob->setDefaultValue(1.);
         knob->setMinimum(-DBL_MAX);
         knob->setMaximum(DBL_MAX);
@@ -84,7 +105,11 @@ DifferenceOp::Params
 DifferenceOp::bake(const KnobReader& reader) const
 {
     Params params;
-    params.offset = (float)reader.valueOr(offset, 0.);
+    const double black = reader.valueOr(blackPoint, 0.);
+    const double white = reader.valueOr(whitePoint, 1.);
+    params.blackPoint = (float)black;
+    params.threshold = (white <= black);
+    params.scale = params.threshold ? 0.f : (float)(1. / (white - black));
     params.gain = (float)reader.valueOr(gain, 1.);
 
     return params;
@@ -139,7 +164,12 @@ DifferenceOp::step(const Params& params,
                 sum += d * d;
             }
         }
-        const float matte = std::max(0.f, params.gain * sum - params.offset);
+        float matte;
+        if (params.threshold) {
+            matte = (sum > params.blackPoint) ? params.gain : 0.f;
+        } else {
+            matte = params.gain * std::max(0.f, (sum - params.blackPoint) * params.scale);
+        }
         for (int c = 0; (c < nComps) && (c < 4); ++c) {
             if (processed[c]) {
                 dst[c] = isColor[c] ? b[c] : matte;
@@ -153,8 +183,10 @@ DifferenceOp::gpu(const Params& params) const
 {
 #ifdef NATRON_HAVE_GPU
     DifferenceGpuParams block = {};
+    block.blackPoint = params.blackPoint;
+    block.scale = params.scale;
     block.gain = params.gain;
-    block.offset = params.offset;
+    block.threshold = params.threshold ? 1u : 0u;
 
     return GpuOpRef::compiled((int)gpu::GpuKernelId::difference, block);
 #else

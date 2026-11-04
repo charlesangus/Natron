@@ -161,8 +161,9 @@ protected:
 
 #ifdef NATRON_HAVE_GPU
 
-// A over B with all channels and with subsets, without a mask, with a soft mask, an inverted one
-// and a mix, and with A partly outside B, against the node's own render over parity sources.
+// A over B with all channels and with subsets, with a soft mask, an inverted one and a mix, and
+// with A partly outside B, against the node's own render over parity sources. Without a mask the
+// node is an identity of B and never renders (NativeKeyMix_Test).
 TEST_F(NativeKeyMixGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -174,17 +175,15 @@ TEST_F(NativeKeyMixGpuTest, MatchesTheCpuRender)
     struct Case {
         const char* name;
         std::vector<std::string> channels;
-        bool masked;
         bool inverted;
         double mix;
     };
     const Case cases[] = {
-        { "all channels", {}, false, false, 1. },
-        { "soft mask", {}, true, false, 1. },
-        { "inverted mask", {}, true, true, 1. },
-        { "mask and mix", {}, true, false, 0.4 },
-        { "R only", { "R" }, true, false, 1. },
-        { "G and A", { "G", "A" }, false, false, 0.7 },
+        { "soft mask", {}, false, 1. },
+        { "inverted mask", {}, true, 1. },
+        { "mask and mix", {}, false, 0.4 },
+        { "R only", { "R" }, false, 1. },
+        { "G and A", { "G", "A" }, false, 0.7 },
     };
     int nCase = 0;
 
@@ -197,16 +196,13 @@ TEST_F(NativeKeyMixGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(bool(b) && bool(a)) << c.name;
         connectNodes(b, keyMix, kKeyMixInputB, true);
         connectNodes(a, keyMix, kKeyMixInputA, true);
-        NodePtr mask;
-        if (c.masked) {
-            mask = makeSource(5, 3);
-            ASSERT_TRUE(bool(mask)) << c.name;
-            connectNodes(mask, keyMix, kKeyMixInputMask, true);
-            KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(keyMix->getKnobByName("maskChannel_Mask").get());
-            ASSERT_TRUE(maskChannel != NULL) << c.name;
-            maskChannel->set("rgba.A");
-        }
-        ASSERT_TRUE(setKnobValues(keyMix, "enableMask_Mask", std::vector<double>(1, c.masked ? 1. : 0.))) << c.name;
+        NodePtr mask = makeSource(5, 3);
+        ASSERT_TRUE(bool(mask)) << c.name;
+        connectNodes(mask, keyMix, kKeyMixInputMask, true);
+        KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(keyMix->getKnobByName("maskChannel_Mask").get());
+        ASSERT_TRUE(maskChannel != NULL) << c.name;
+        maskChannel->set("rgba.A");
+        ASSERT_TRUE(setKnobValues(keyMix, "enableMask_Mask", std::vector<double>(1, 1.))) << c.name;
         ASSERT_TRUE(setKnobValues(keyMix, kOfxMaskInvertParamName, std::vector<double>(1, c.inverted ? 1. : 0.))) << c.name;
         ASSERT_TRUE(setKnobValues(keyMix, kOfxMixParamName, std::vector<double>(1, c.mix))) << c.name;
         if (!c.channels.empty()) {
@@ -230,7 +226,7 @@ TEST_F(NativeKeyMixGpuTest, MatchesTheCpuRender)
             inputs[k] = imageOf(plane);
         }
         GpuParityImage maskImage;
-        if (c.masked) {
+        {
             RenderedPlane plane;
             ASSERT_TRUE(renderRgba(mask, paritySourceWindow(mask, kTime, 0), &plane)) << c.name;
             maskImage = imageOf(plane);

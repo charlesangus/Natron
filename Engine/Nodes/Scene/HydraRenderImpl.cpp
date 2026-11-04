@@ -85,6 +85,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -1901,6 +1902,9 @@ cameraFrustum(const UsdStageRefPtr& stage,
     case eFitModeVertical:
         policy = CameraUtilMatchVertically;
         break;
+    case eFitModeExpand:
+        policy = CameraUtilFit;
+        break;
     }
     CameraUtilConformWindow(&gfCamera, policy, aspect);
     *frustum = gfCamera.GetFrustum();
@@ -2419,6 +2423,8 @@ struct ProgressiveRender::Implementation {
     View view;
     bool hasView = false;
     int maxSamples = 0;
+    // The settings of the stage's render settings prim for the renderer (setSettings()).
+    RendererSettings settings;
     bool stopped = false;
     bool quit = false;
     // Bumped by each edit; a pass begun under another is not published.
@@ -2434,6 +2440,9 @@ struct ProgressiveRender::Implementation {
     std::mutex engineMutex;
     EnginePtr engine;
     std::string engineRenderer;
+    // The settings the engine was made under, and the AOV its depth is read from.
+    RendererSettings engineSettings;
+    TfToken depthAov;
     std::string rendererName;
     std::string failedRenderer;
     TfToken samplesKey;
@@ -2491,6 +2500,7 @@ struct ProgressiveRender::Implementation {
     bool makeEngine(const std::string& id,
                     bool cycles,
                     int threads,
+                    const RendererSettings& primSettings,
                     int* defaultCap,
                     std::string* error)
     {
@@ -2519,21 +2529,37 @@ struct ProgressiveRender::Implementation {
             return false;
         }
         made->SetEnablePresentation(false);
+        const bool moonRay = MoonRayAovs::isMoonRay(id);
         if (cycles) {
             CyclesAovs::configureEngine(made.get());
+        } else if (moonRay) {
+            // Its AOVs and thread budget, as a USDRender's MoonRay engine has them.
+            MoonRayAovs::configureEngine(made.get(), threads);
         }
-        const RendererSettings settings = rendererSettings(id);
+        // The prim's settings, then those set for tests, as a USDRender's engine takes them.
+        RendererSettings settings = primSettings;
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
+            settings[setting.first] = setting.second;
+        }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
-        const TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
+        const TfTokenVector aovs = moonRay ? MoonRayAovs::aovs() : TfTokenVector { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
         if (!made->SetRendererAovs(aovs)) {
-            *error = name + " offers no color, depth, primId and instanceId AOVs.";
+            std::string names;
+            for (std::size_t i = 0; i < aovs.size(); ++i) {
+                if (i > 0) {
+                    names += (i + 1 == aovs.size()) ? " and " : ", ";
+                }
+                names += aovs[i].GetString();
+            }
+            *error = name + " offers no " + names + " AOVs.";
 
             return false;
         }
         const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
-        const TfToken key = samplesSettingKey(list);
+        // MoonRay's samples per pixel is a scene variable its delegate does not declare.
+        const TfToken key = moonRay ? TfToken(MoonRaySettings::samplesKey()) : samplesSettingKey(list);
         int cap = 0;
         if (!key.IsEmpty()) {
             cap = intOf(made->GetRendererSetting(key), 0);
@@ -2546,6 +2572,8 @@ struct ProgressiveRender::Implementation {
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
         engineRenderer = id;
+        engineSettings = primSettings;
+        depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
         engineThreads = threads;
         rendererName = name;
         samplesKey = key;
@@ -2593,18 +2621,20 @@ struct ProgressiveRender::Implementation {
             }
         }
         {
-            MappedAov depth(engine.get(), rendererName, width, height, HdAovTokens->depth, error);
+            MappedAov depth(engine.get(), rendererName, width, height, depthAov, error);
             if (!depth.valid()) {
                 return false;
             }
             const HdFormat componentFormat = HdGetComponentFormat(depth.format());
             out->depth.assign(pixels, 1.f);
-            if (CyclesAovs::isCycles(engineRenderer)) {
-                // Cycles' depth is the distance along the view axis: through the projection to the
-                // window depth.
+            const bool cycles = CyclesAovs::isCycles(engineRenderer);
+            if (cycles || MoonRayAovs::isMoonRay(engineRenderer)) {
+                // Cycles' depth and MoonRay's cameraDepth are the distance along the view axis:
+                // through the projection to the window depth.
                 const GfMatrix4d projection = v.frustum.ComputeProjectionMatrix();
                 for (std::size_t i = 0; i < pixels; ++i) {
-                    const double distance = CyclesAovs::depthToDistance(componentToFloat(componentFormat, depth.pixel(i)));
+                    const float value = componentToFloat(componentFormat, depth.pixel(i));
+                    const double distance = cycles ? CyclesAovs::depthToDistance(value) : MoonRayAovs::cameraDepth(value);
                     if (!std::isfinite(distance)) {
                         continue;
                     }
@@ -2684,9 +2714,13 @@ ProgressiveRender::Implementation::run()
             }
             const std::string id = renderer;
             const std::function<int()> threadsFn = threadsOf;
+            const RendererSettings primSettings = settings;
             lock.unlock();
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
+            if (MoonRayAovs::isMoonRay(id)) {
+                threads = threadsFn ? std::max(0, threadsFn()) : 0;
+            }
             if (cycles) {
                 askThreads(threadsFn);
                 if (!CyclesThreads::instance().open(&threads)) {
@@ -2698,7 +2732,7 @@ ProgressiveRender::Implementation::run()
             }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, cycles, threads, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, primSettings, &cap, &error);
             lock.lock();
             if (!made) {
                 failedRenderer = id;
@@ -2735,6 +2769,15 @@ ProgressiveRender::Implementation::run()
                 keepFrame = true;
                 continue;
             }
+        }
+        if (settings != engineSettings) {
+            // Some settings, such as Cycles' integrator's, restart a render only when the engine
+            // is made under them: it is made again, the frame shown kept until the new one.
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
         }
         status.active = true;
 
@@ -3014,6 +3057,18 @@ ProgressiveRender::invalidate()
 {
     std::lock_guard<std::mutex> l(_imp->mutex);
 
+    _imp->edited();
+}
+
+void
+ProgressiveRender::setSettings(const std::map<std::string, VtValue>& settings)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (settings == _imp->settings) {
+        return;
+    }
+    _imp->settings = settings;
     _imp->edited();
 }
 

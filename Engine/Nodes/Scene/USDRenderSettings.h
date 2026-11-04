@@ -118,6 +118,10 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    // The renderer tabs' knobs are hashed under their namespaces, scoped to the prim path.
+    virtual bool getHashNamespaceScope(std::string* path,
+                                       std::string* defaultRenderer,
+                                       bool* active) const OVERRIDE FINAL;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;

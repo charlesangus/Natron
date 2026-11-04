@@ -73,10 +73,12 @@
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "SceneTestEffect.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
@@ -429,10 +431,7 @@ protected:
 
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
         KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !diffuse || !renderCamera || !size || !par) {
+        if (!file || !diffuse) {
             return NodePtr();
         }
         file->setValue(std::string(kFixture));
@@ -466,12 +465,18 @@ protected:
         connectNodes(transform, merge, 1, true);
         connectNodes(rig, merge, 2, true);
         connectNodes(merge, prune, 0, true);
-        connectNodes(prune, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption(kRenderCamera, kRenderCamera, ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(prune, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, kRenderCamera, kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createReferenceGraph
@@ -501,10 +506,7 @@ protected:
         }
 
         KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!diffuse || !renderCamera || !size || !par) {
+        if (!diffuse) {
             return NodePtr();
         }
         diffuse->setValue(0.8, ViewSpec::all(), 0);
@@ -534,12 +536,18 @@ protected:
         connectNodes(right, merge, 1, true);
         connectNodes(camera, merge, 2, true);
         connectNodes(light, merge, 3, true);
-        connectNodes(merge, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createPrimitivesGraph
@@ -574,10 +582,7 @@ protected:
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
         KnobColor* redDiffuse = knob<KnobColor>(red, kUSDMaterialParamDiffuseColor);
         KnobChoice* strengthKnob = knob<KnobChoice>(assign, kUSDAssignMaterialParamStrength);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !redDiffuse || !strengthKnob || !renderCamera || !size || !par) {
+        if (!file || !redDiffuse || !strengthKnob) {
             return NodePtr();
         }
         file->setValue(assetPath.toStdString());
@@ -616,12 +621,18 @@ protected:
         connectNodes(moved, merge, 0, true);
         connectNodes(camera, merge, 1, true);
         connectNodes(light, merge, 2, true);
-        connectNodes(merge, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createAssignMaterialGraph

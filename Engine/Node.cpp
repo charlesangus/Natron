@@ -925,7 +925,8 @@ Node::computeHashInternal(U64 projectDigest,
 
     // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
-    const U64 contentHash = computeContentHash(projectDigest, inputs);
+    HashNamespacesConstPtr namespaces;
+    const U64 contentHash = computeContentHash(projectDigest, inputs, &namespaces);
 
     U64 oldContentHash;
     {
@@ -933,11 +934,37 @@ Node::computeHashInternal(U64 projectDigest,
 
         oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
+        _imp->hashNamespaces = namespaces;
     }
     *newContentHash = contentHash;
 
     return oldContentHash != contentHash;
 } // Node::computeHashInternal
+
+namespace {
+// The digest of the entries in hashNamespace; empty is the knobs of the content hash.
+template <class Entries>
+U64
+digestKnobsDigestEntries(const Entries& entries,
+                         const std::string& hashNamespace)
+{
+    ContentHasher h;
+    U64 count = 0;
+
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].hashNamespace != hashNamespace) {
+            continue;
+        }
+        h.appendString(entries[i].name);
+        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
+        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        ++count;
+    }
+    h.appendU64(count);
+
+    return h.finalize();
+}
+} // anon namespace
 
 U64
 Node::getKnobsContentDigest(bool* hasExpression) const
@@ -967,6 +994,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
             Implementation::KnobsDigestEntry entry;
             entry.name = knob->getName();
             entry.hash = 0;
+            entry.hashNamespace = knob->getHashNamespace();
             // A knob owned by another holder invalidates that holder's generation, not this one,
             // so it is hashed live like a knob that reads another knob or a file.
             if (readsOutsideKnob || (knob->getHolder() != holder)) {
@@ -986,13 +1014,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         _imp->knobsDigestGeneration = generation;
         _imp->knobsDigestValid = true;
         if (!anyLive) {
-            ContentHasher h;
-            h.appendU64(entries.size());
-            for (std::size_t i = 0; i < entries.size(); ++i) {
-                h.appendString(entries[i].name);
-                h.appendU64(entries[i].hash);
-            }
-            _imp->knobsDigest = h.finalize();
+            _imp->knobsDigest = digestKnobsDigestEntries(entries, std::string());
         }
     }
 
@@ -1001,21 +1023,61 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         return _imp->knobsDigest;
     }
 
+    return digestKnobsDigestEntries(_imp->knobsDigestEntries, std::string());
+} // Node::getKnobsContentDigest
+
+std::map<std::string, U64>
+Node::getKnobsNamespaceDigests() const
+{
+    std::map<std::string, U64> digests;
+
+    if (!_imp->effect) {
+        return digests;
+    }
+    // Brings the entries up to date.
+    bool hasExpression = false;
+    (void)getKnobsContentDigest(&hasExpression);
+
+    QMutexLocker l(&_imp->knobsDigestMutex);
     const std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
-    ContentHasher h;
-    h.appendU64(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        h.appendString(entries[i].name);
-        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
-        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        const std::string& hashNamespace = entries[i].hashNamespace;
+        if (!hashNamespace.empty() && !digests.count(hashNamespace)) {
+            digests[hashNamespace] = digestKnobsDigestEntries(entries, hashNamespace);
+        }
     }
 
-    return h.finalize();
-} // Node::getKnobsContentDigest
+    return digests;
+}
+
+HashNamespacesConstPtr
+Node::getHashNamespaces() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->hashNamespaces;
+}
+
+void
+HashNamespaces::appendAll(ContentHasher& h) const
+{
+    h.appendU64(scopes.size());
+    for (std::map<std::string, Scope>::const_iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        h.appendString(scope->first);
+        h.appendString(scope->second.defaultRenderer);
+        h.appendU64(scope->second.digests.size());
+        for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+            h.appendString(digest->first);
+            h.appendU64(digest->second);
+        }
+    }
+    h.appendString(active);
+}
 
 U64
 Node::computeContentHash(U64 projectDigest,
-                         const HashInputs& inputs) const
+                         const HashInputs& inputs,
+                         HashNamespacesConstPtr* namespaces) const
 {
     ContentHasher h;
 
@@ -1052,6 +1114,9 @@ Node::computeContentHash(U64 projectDigest,
             h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
         }
         h.appendU64(inputs.bySlot.size());
+    }
+    if (namespaces) {
+        *namespaces = mergeHashNamespaces(inputs);
     }
 
     // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
@@ -1112,6 +1177,71 @@ Node::computeContentHash(U64 projectDigest,
 
     return h.finalize();
 } // Node::computeContentHash
+
+HashNamespacesConstPtr
+Node::mergeHashNamespaces(const HashInputs& inputs) const
+{
+    // The inputs' tables, a renderer from a lower slot kept over a higher one's, then the node's
+    // own on top.
+    std::shared_ptr<HashNamespaces> merged;
+    HashNamespacesConstPtr only;
+    int tables = 0;
+    for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+        const NodePtr& input = inputs.bySlot[i].second;
+        HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
+        if (!table) {
+            continue;
+        }
+        if (tables++ == 0) {
+            only = table;
+            continue;
+        }
+        if (!merged) {
+            merged = std::make_shared<HashNamespaces>(*only);
+        }
+        for (std::map<std::string, HashNamespaces::Scope>::const_iterator scope = table->scopes.begin(); scope != table->scopes.end(); ++scope) {
+            HashNamespaces::Scope& into = merged->scopes[scope->first];
+            for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+                ContentHasher h;
+                h.appendU64(into.digests[digest->first]);
+                h.appendU64(digest->second);
+                into.digests[digest->first] = h.finalize();
+            }
+            if (into.defaultRenderer.empty()) {
+                into.defaultRenderer = scope->second.defaultRenderer;
+            }
+        }
+        // Which input's stage metadata the merged stage keeps is not known here: two actives
+        // leave none, which makes a consumer fold every scope.
+        if (merged->active != table->active) {
+            merged->active.clear();
+        }
+    }
+
+    std::string path, defaultRenderer;
+    bool active = false;
+    if (!_imp->effect || !_imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active)) {
+        return merged ? HashNamespacesConstPtr(merged) : only;
+    }
+    if (!merged) {
+        merged = only ? std::make_shared<HashNamespaces>(*only) : std::make_shared<HashNamespaces>();
+    }
+    HashNamespaces::Scope& own = merged->scopes[path];
+    const std::map<std::string, U64> digests = getKnobsNamespaceDigests();
+    for (std::map<std::string, U64>::const_iterator digest = digests.begin(); digest != digests.end(); ++digest) {
+        // What upstream authors on the prim stays where this node authors nothing.
+        ContentHasher h;
+        h.appendU64(own.digests[digest->first]);
+        h.appendU64(digest->second);
+        own.digests[digest->first] = h.finalize();
+    }
+    own.defaultRenderer = defaultRenderer;
+    if (active) {
+        merged->active = path;
+    }
+
+    return merged;
+} // Node::mergeHashNamespaces
 
 bool
 Node::dependsOnProjectFrameRange() const

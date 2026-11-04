@@ -996,6 +996,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
     std::map<std::string, std::string> disabled;
 
     renderer.id = rendererId;
+    const std::vector<std::string> namespaces = RenderSettingsPrim::namespaces(rendererId);
     RenderDelegates::Delegate delegate;
     const std::string pageLabel = RenderDelegates::find(rendererId, &delegate) ? delegate.displayName : labelFromScriptName(prefix, std::string());
     KnobPagePtr page = AppManager::createKnob<KnobPage>(_imp->holder, pageLabel);
@@ -1045,6 +1046,17 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         }
         k->setHintToolTip(hint);
         k->setAnimationEnabled(false);
+        // Hashed with the namespace it is authored in, so that only a render with this renderer
+        // re-keys on it (Node::getHashNamespaces()).
+        const std::string attribute = RenderSettingsPrim::attributeName(rendererId, key);
+        std::string hashNamespace = namespaces.empty() ? prefix : namespaces.front();
+        for (const std::string& ns : namespaces) {
+            if (attribute.compare(0, ns.size() + 1, ns + ":") == 0) {
+                hashNamespace = ns;
+                break;
+            }
+        }
+        k->setHashNamespace(hashNamespace);
         if (range && range->hasRange) {
             if (KnobInt* i = dynamic_cast<KnobInt*>(k.get())) {
                 i->setMinimum(clampToInt(range->minimum));

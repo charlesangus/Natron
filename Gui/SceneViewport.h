@@ -478,11 +478,18 @@ public:
 
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
-     * empty id. A change destroys the engine, so it needs the context of render() current.
+     * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
+     * settings prim names (natron:renderer), Storm's without one, following it as the stage
+     * changes. A change destroys the engine, so it needs the context of render() current.
      **/
     void setRendererId(const std::string& id);
 
+    // The renderer chosen: a delegate's id, or kRenderDelegateSceneDefaultId.
     const std::string& getRendererId() const;
+
+    // The delegate rendering: the one chosen, or for Scene Default the one the prim names as of
+    // the last render.
+    const std::string& getActiveRendererId() const;
 
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
     const std::string& getRendererError() const;

@@ -26,10 +26,12 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -52,10 +54,12 @@
 #include <QSurfaceFormat>
 
 #include "Engine/AppManager.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Gui/GuiGLRequirements.h"
+#include "Tests/Scene/CyclesTestUtils.h"
 
 NATRON_NAMESPACE_USING
 
@@ -113,6 +117,43 @@ referenceScene()
     layer->InsertSubLayerPath(file->GetIdentifier());
 
     return SceneOps::appendLayer(ScenePayload(), layer, 0x5ce7e5ULL);
+}
+
+// base with a layer on top authoring /Render/rs, a RenderSettings prim the stage's
+// renderSettingsPrimPath names: natron:renderer when renderer is not empty, and Cycles' and
+// MoonRay's samples. hash tells the layers apart.
+ScenePayload
+withSettingsPrim(const ScenePayload& base,
+                 const std::string& renderer,
+                 int cyclesSamples,
+                 int moonRaySamples,
+                 U64 hash)
+{
+    std::string text = "#usda 1.0\n"
+                       "(\n"
+                       "    renderSettingsPrimPath = \"/Render/rs\"\n"
+                       ")\n"
+                       "def Scope \"Render\"\n"
+                       "{\n"
+                       "    def RenderSettings \"rs\"\n"
+                       "    {\n";
+    if (!renderer.empty()) {
+        text += "        uniform token natron:renderer = \"" + renderer + "\"\n";
+    }
+    text += "        int cycles:samples = " + std::to_string(cyclesSamples) + "\n"
+                                                                              "        bool cycles:integrator:use_adaptive_sampling = 0\n"
+                                                                              "        int moonray:sceneVariable:pixel_samples = "
+        + std::to_string(moonRaySamples) + "\n"
+                                           "    }\n"
+                                           "}\n";
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportSettings");
+    if (!layer->ImportFromString(text)) {
+        ADD_FAILURE() << "cannot read the render settings layer";
+
+        return base;
+    }
+
+    return SceneOps::appendLayer(base, layer, hash);
 }
 
 struct Rgb {
@@ -251,6 +292,37 @@ protected:
         }
 
         return n;
+    }
+
+    // Renders until done says the refinement is where it should be, the delegate fails, or the
+    // time is up. True if done said so.
+    bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+
+        while (std::chrono::steady_clock::now() < end) {
+            (void)_renderer.render(_fbo->handle(), kSize, kSize);
+            if (!_renderer.getRendererError().empty()) {
+                ADD_FAILURE() << _renderer.getRendererError();
+
+                return false;
+            }
+            if (done(_renderer.getRefineStatus())) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ADD_FAILURE() << "the refinement did not get there in 120 s";
+
+        return false;
+    }
+
+    // The refinement converged on cap samples.
+    bool refineTo(int cap)
+    {
+        return refineUntil([cap](const SceneViewportRenderer::RefineStatus& status) {
+            return status.active && status.converged && (status.maxSamples == cap) && (status.samples == cap);
+        });
     }
 
     bool _skip = false;
@@ -822,4 +894,84 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// Scene Default renders with the renderer the stage's active render settings prim names
+// (natron:renderer), Storm without one, and follows the prim as the scene changes.
+TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+
+    _renderer.setRendererId(kRenderDelegateSceneDefaultId);
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim without natron:renderer: still Storm.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim naming a renderer that is not installed: the view says so instead of drawing.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_EQ(stub, _renderer.getActiveRendererId());
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
+
+    // The prim gone, Storm again.
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+    EXPECT_TRUE(_renderer.getRendererError().empty()) << _renderer.getRendererError();
+
+    // A renderer chosen beats the prim's.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateStormId);
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+}
+
+// The active prim's settings for the viewer's renderer reach its refinement: Cycles refines to
+// the prim's cycles:samples, Max Samples applies over them, an edit of MoonRay's settings alone
+// does not restart the refinement, and one of Cycles' makes it take the new samples.
+TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(6));
+
+    _renderer.setMaxSamples(3);
+    ASSERT_TRUE(refineTo(3));
+    const U64 restarts = _renderer.getRefineStatus().restarts;
+    const U64 frames = _renderer.getRefineStatus().frames;
+
+    // The MoonRay tab's edit: only /Render changes, in a namespace Cycles does not read.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < end) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(restarts, _renderer.getRefineStatus().restarts);
+    EXPECT_EQ(frames, _renderer.getRefineStatus().frames);
+    EXPECT_TRUE(_renderer.getRefineStatus().converged);
+
+    // The Cycles tab's edit, without the cap: the prim's new samples.
+    _renderer.setMaxSamples(0);
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
+    ASSERT_TRUE(refineTo(9));
+    EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
 }

@@ -394,8 +394,9 @@ public:
     QWaitCondition mustQuitPreviewCond;
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
-    mutable QReadWriteLock contentHashMutex; //< protects contentHash
+    mutable QReadWriteLock contentHashMutex; //< protects contentHash and hashNamespaces
     U64 contentHash; //< 0 until first computed
+    HashNamespacesConstPtr hashNamespaces;
 
     // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a
     // recompute records the generation and the global hash epoch it started from, so an edit
@@ -421,6 +422,7 @@ public:
         // reached through expression rechecks with no effect to resolve against.
         KnobIWPtr liveKnob; //< null when hash below is memoized
         U64 hash;
+        std::string hashNamespace; //< empty for a knob of the content hash
     };
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
     mutable bool knobsDigestValid = false;

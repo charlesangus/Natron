@@ -81,7 +81,9 @@ enum FitModeEnum {
     // The aperture's width is kept and its height follows the format (CameraUtilMatchHorizontally).
     eFitModeHorizontal,
     // The aperture's height is kept and its width follows the format (CameraUtilMatchVertically).
-    eFitModeVertical
+    eFitModeVertical,
+    // The aperture grows to the format's aspect, so all of it is seen (CameraUtilFit).
+    eFitModeExpand
 };
 
 /**
@@ -409,7 +411,15 @@ public:
     // Restarts: the stage was edited in a way its change notices do not show.
     void invalidate();
 
-    // The sample cap; <= 0 for the delegate's default. A change restarts.
+    /**
+     * @brief The renderer settings of the stage's active render settings prim for the renderer
+     * (RenderSettingsPrim::settings()), set on its engine before anything else. A change makes
+     * the engine again, keeping the frame shown until the next one; the same settings change
+     * nothing. The sample cap of setMaxSamples() applies over the prim's samples.
+     **/
+    void setSettings(const std::map<std::string, PXR_NS::VtValue>& settings);
+
+    // The sample cap; <= 0 for the delegate's default, the prim's samples if it sets them. A change restarts.
     void setMaxSamples(int samples);
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.

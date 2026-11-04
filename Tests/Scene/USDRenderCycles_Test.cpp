@@ -69,8 +69,10 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
 
@@ -255,25 +257,24 @@ protected:
     }
 
     /**
-     * The fixture read by a USDRead into a USDRender rendering it through Cycles from its camera,
-     * kSize x kSize. Returns the USDRender, null after a gtest failure; *reader gets the USDRead.
+     * The fixture read by a USDRead into a USDRenderSettings whose prim frames the fixture's
+     * camera at kSize x kSize, into a USDRender whose Renderer knob picks Cycles. Returns the
+     * USDRender, null after a gtest failure; *reader gets the USDRead.
      **/
     NodePtr createGraph(NodePtr* reader = nullptr,
                         const char* fixture = kFixture)
     {
         NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!read || !render) {
+        if (!read || !settings || !render) {
             ADD_FAILURE() << "a 3D node is not registered";
 
             return NodePtr();
         }
         KnobFile* file = knob<KnobFile>(read, kUSDReadParamFile);
         KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
-        KnobChoice* camera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !renderer || !camera || !size || !par) {
+        if (!file || !renderer) {
             return NodePtr();
         }
         file->setValue(std::string(fixture));
@@ -282,11 +283,11 @@ protected:
 
             return NodePtr();
         }
-        connectNodes(read, render, 0, true);
-        camera->setActiveEntry(ChoiceOption(kCamera, kCamera, ""));
-        size->setValue(kSize, ViewSpec::all(), 0);
-        size->setValue(kSize, ViewSpec::all(), 1);
-        par->setValue(1.);
+        connectNodes(read, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, kCamera, kSize, kSize)) {
+            return NodePtr();
+        }
         if (reader) {
             *reader = read;
         }
@@ -670,12 +671,13 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
 }
 
 namespace {
+// The Cycles knobs of the USDRenderSettings node feeding the USDRender node.
 const RenderSettingsKnobs*
 cyclesSettingsOf(const NodePtr& node)
 {
-    USDRender* render = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    USDRenderSettings* settings = RenderSettingsTestUtils::settingsOf(node);
 
-    return render ? render->renderSettings() : nullptr;
+    return settings ? settings->renderSettings() : nullptr;
 }
 
 // What Cycles' engine for node reports for key; empty if node has no engine.

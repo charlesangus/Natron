@@ -33,6 +33,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
@@ -357,6 +358,31 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
 
     return true;
 } // USDRenderSettings::authorLayer
+
+bool
+USDRenderSettings::getHashNamespaceScope(std::string* path,
+                                         std::string* defaultRenderer,
+                                         bool* active) const
+{
+    KnobStringPtr primPath = _primPath.lock();
+    KnobChoicePtr renderer = _defaultRenderer.lock();
+    KnobBoolPtr makeActive = _makeActive.lock();
+    NodePtr node = getNode();
+
+    // A disabled node authors nothing: its scope would hide what upstream makes active.
+    if (!primPath || !renderer || !makeActive || !node || node->isNodeDisabled()) {
+        return false;
+    }
+    *path = primPath->getValue();
+    if (!PXR_NS::SdfPath::IsValidPathString(*path)) {
+        return false;
+    }
+    *path = PXR_NS::SdfPath(*path).GetString();
+    *defaultRenderer = renderer->getActiveEntry().id;
+    *active = makeActive->getValue();
+
+    return true;
+}
 
 StatusEnum
 USDRenderSettings::renderScene(const SceneRenderActionArgs& args,

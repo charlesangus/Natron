@@ -32,6 +32,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -88,6 +89,30 @@ CLANG_DIAG_ON(deprecated)
 
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The content of the knobs given a hash namespace (KnobI::setHashNamespace()), on a node
+ * and everything upstream of it. Those knobs stay out of the content hash, so an edit to one
+ * re-keys only the nodes that fold the table's entries for its namespace in, as USDRender does for
+ * the namespaces of the renderer it renders with.
+ *
+ * Scopes are render settings prims, by path. An entry merges the digests of every node that
+ * authors the namespace on that prim, from upstream down.
+ **/
+struct HashNamespaces {
+    struct Scope {
+        std::map<std::string, U64> digests; //< by namespace
+        std::string defaultRenderer; //< the renderer the nearest node downstream names, empty if none
+    };
+
+    std::map<std::string, Scope> scopes; //< by path
+    std::string active; //< the scope the nearest node downstream makes the stage's active one, empty if none
+
+    // Every scope, namespace and renderer.
+    void appendAll(ContentHasher& h) const;
+};
+
+typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;
 
 class Node
     : public QObject
@@ -291,6 +316,18 @@ public:
      * does not move when an input changes.
      **/
     U64 getKnobsContentDigest(bool* hasExpression) const;
+
+    /**
+     * @brief Digest of the knobs with a hash namespace, which getKnobsContentDigest() leaves out,
+     * by namespace. Empty when the node has none.
+     **/
+    std::map<std::string, U64> getKnobsNamespaceDigests() const;
+
+    /**
+     * @brief The node's and its inputs' namespaced knobs as of the last content hash computation
+     * (see HashNamespaces). Null before the first, or when neither has any.
+     **/
+    HashNamespacesConstPtr getHashNamespaces() const;
 
     /**
      * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
@@ -2175,7 +2212,11 @@ private:
      **/
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
+    // namespaces, when not null, is set to the node's HashNamespaces.
+    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs, HashNamespacesConstPtr* namespaces = nullptr) const;
+
+    // The inputs' HashNamespaces with the node's own on top.
+    HashNamespacesConstPtr mergeHashNamespaces(const HashInputs& inputs) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

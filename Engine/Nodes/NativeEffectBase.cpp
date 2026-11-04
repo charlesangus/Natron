@@ -977,6 +977,13 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     h.appendI64(getMinorVersion());
     bool hasExpression = false;
     h.appendU64(node->getKnobsContentDigest(&hasExpression));
+    // The knobs the content hash leaves to a namespace author the layer all the same.
+    const std::map<std::string, U64> namespaces = node->getKnobsNamespaceDigests();
+    h.appendU64(namespaces.size());
+    for (std::map<std::string, U64>::const_iterator it = namespaces.begin(); it != namespaces.end(); ++it) {
+        h.appendString(it->first);
+        h.appendU64(it->second);
+    }
     appendNodeContentHash(h);
     // Same reason as Node::computeContentHash(): an expression resolves names relative to the
     // node, so the same expression under another name can author something else.

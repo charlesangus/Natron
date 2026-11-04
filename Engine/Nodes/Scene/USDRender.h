@@ -41,17 +41,18 @@
 
 #define PLUGINID_NATRON_USDRENDER "USDRender"
 
-#define kUSDRenderParamCamera "camera"
-#define kUSDRenderParamFitMode "fitMode"
+#define kUSDRenderParamSettingsPrim "settingsPrim"
 #define kUSDRenderParamRenderer "renderer"
+
+// The id of the Settings Prim entry that renders with the stage's active render settings prim
+// (its renderSettingsPrimPath metadata).
+#define kUSDRenderSettingsPrimStageDefault "stageDefault"
 
 // The frame metadata key of the prim path behind a primId.id value: this prefix followed by the
 // value's bits as eight lowercase hexadecimal digits.
 #define kUSDRenderMetadataPrimIdPrefix "primId/"
 
 NATRON_NAMESPACE_ENTER
-
-class RenderSettingsKnobs;
 
 class USDRender
     : public NativeEffectBase {
@@ -63,13 +64,16 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDRENDER,
         .label = "USDRender",
-        .description = "Render the input scene through a camera with a Hydra render delegate, Storm (USD's OpenGL "
-                       "renderer) unless another is chosen, into the rgba, depth.Z and primId.id layers. Other "
-                       "delegates render on the CPU. rgba is as the delegate shades it, in the project's working space "
+        .description = "Render the input scene with a Hydra render delegate as a render settings prim of the scene "
+                       "says: its camera, resolution, aspect ratio conform policy, renderer and that renderer's "
+                       "settings (see USDRenderSettings). The renderer is the one the node names, else the one the "
+                       "prim names, else Storm (USD's OpenGL renderer); the others render on the CPU. The render "
+                       "fills the rgba, depth.Z and primId.id layers: rgba is as the delegate shades it, in the project's working space "
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. A scene without lights is lit from the camera.",
+                       "frame metadata maps each hash to its path. A scene without lights is lit from the camera. "
+                       "Without a render settings prim, the scene's first camera renders the project's format.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -136,17 +140,19 @@ public:
     virtual void purgeCaches() OVERRIDE FINAL;
 
     /**
-     * @brief Fills the camera menu with every camera of the input scene at the current frame,
-     * keeping the chosen one even when the scene no longer has it. Main thread only; the node
-     * calls it itself, queued, whenever its input or anything upstream changes.
+     * @brief Fills the Settings Prim menu with Stage Default and every RenderSettings prim under
+     * /Render of the input scene at the current frame, keeping the chosen one even when the scene
+     * no longer has it. Main thread only; the node calls it itself, queued, whenever its input or
+     * anything upstream changes.
      **/
-    void refreshCameraMenu();
+    void refreshSettingsPrimMenu();
 
-    // The knobs of every renderer's settings; null before the knobs are made.
-    const RenderSettingsKnobs* renderSettings() const
-    {
-        return _settings.get();
-    }
+    /**
+     * @brief The renderer a render at time and view uses: the Renderer knob's, else the one the
+     * active render settings prim names, else Storm's. False with *error set when the prim names
+     * a renderer no plug-in has, or the Settings Prim names no RenderSettings prim.
+     **/
+    bool activeRenderer(double time, ViewIdx view, std::string* rendererId, std::string* error) const;
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -159,21 +165,34 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    // Of the render settings knobs upstream (HashNamespaces), the active prim's in the active
+    // renderer's namespaces.
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void scheduleCameraMenuRefresh();
+    void scheduleSettingsPrimMenuRefresh();
 
     // Keeps a loaded renderer that is not installed as an entry of its own, so the project keeps it.
     void keepLoadedRenderer();
 
-    // The chosen delegate's id, Storm's if none is.
-    std::string rendererId() const;
+    // The Renderer knob's id: a delegate's, or kRenderDelegateSceneDefaultId.
+    std::string rendererOverride() const;
 
-    // What a render at time, view and mipmap level asks Storm for; defined where USD is included.
+    // The Settings Prim knob's path, empty for Stage Default.
+    std::string settingsPrimOverride() const;
+
+    // What a render at time, view and mipmap level asks the delegate for; defined where USD is included.
     struct RenderSetup;
+
+    // The input scene at time and view and what its active render settings prim says; defined
+    // where USD is included.
+    struct ActiveSettings;
+
+    // False with *error set to the message the node shows if the scene or its prim cannot be read.
+    bool readActiveSettings(double time, ViewIdx view, ActiveSettings* active, std::string* error) const;
 
     // The render of time, view and level as the node's settings and input scene make it. False with
     // *error set to the message the node shows if it cannot render.
@@ -183,17 +202,13 @@ private:
                        RenderSetup* setup,
                        std::string* error);
 
-    // The output format in pixels and its pixel aspect ratio, from the format knobs.
+    // The output format in pixels and its pixel aspect ratio: the active prim's resolution and
+    // pixel aspect ratio, the project's format without one.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 
-    KnobChoiceWPtr _camera;
-    KnobChoiceWPtr _fitMode;
+    KnobChoiceWPtr _settingsPrim;
     KnobChoiceWPtr _renderer;
-    KnobChoiceWPtr _format;
-    KnobIntWPtr _formatSize;
-    KnobDoubleWPtr _formatPar;
-    std::atomic<bool> _cameraMenuRefreshPending;
-    std::unique_ptr<RenderSettingsKnobs> _settings;
+    std::atomic<bool> _settingsPrimMenuRefreshPending;
 };
 
 NATRON_NAMESPACE_EXIT

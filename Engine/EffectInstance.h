@@ -413,6 +413,18 @@ public:
     }
 
     /**
+     * @brief For an effect with hash-namespaced knobs (KnobI::setHashNamespace()): the path of the
+     * render settings prim they author, the renderer it names and whether the node makes it the
+     * stage's active one (HashNamespaces). False when the effect authors none. Any thread.
+     **/
+    virtual bool getHashNamespaceScope(std::string* /*path*/,
+                                       std::string* /*defaultRenderer*/,
+                                       bool* /*active*/) const
+    {
+        return false;
+    }
+
+    /**
      * @brief Forwarded to the node's name
      **/
     const std::string & getScriptName() const WARN_UNUSED_RETURN;

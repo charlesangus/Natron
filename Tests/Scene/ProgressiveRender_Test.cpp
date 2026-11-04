@@ -167,8 +167,9 @@ protected:
         }
     }
 
-    // Starts a Cycles render of the fixture through its camera, kSize pixels square.
-    bool start()
+    // Starts a Cycles render of the fixture through its camera, kSize pixels square, with a render
+    // settings prim's settings.
+    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>())
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
@@ -189,6 +190,7 @@ protected:
         _view.time = PXR_NS::UsdTimeCode::Default();
         SceneStage* stage = _stage.get();
         _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
+        _render->setSettings(settings);
         _render->setRenderer(kRenderDelegateCyclesId);
         _render->setThreads([]() { return 2; });
         _render->setView(_view);
@@ -456,4 +458,47 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     EXPECT_EQ(kSamples, _render->getFrame()->samples);
     EXPECT_EQ(kSamples, second->getFrame()->samples);
     second.reset();
+}
+
+// A render settings prim's settings are set on the engine: its cycles:samples is the cap the
+// render refines to, a sample cap set applies over it, the same settings again restart nothing,
+// and others make the engine again under them.
+TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    // The fixed sampling without its samples, which would override the prim's.
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> prim;
+    prim["cycles:samples"] = PXR_NS::VtValue(12);
+    ASSERT_TRUE(start(prim));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(&frames));
+    EXPECT_EQ(12, _render->getMaxSamples());
+    EXPECT_EQ(12, frames.back()->samples);
+
+    _render->setMaxSamples(5);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(&frames));
+    EXPECT_EQ(5, _render->getMaxSamples());
+    EXPECT_EQ(5, frames.back()->samples);
+
+    const U64 restarts = _render->getRestartCount();
+    const U64 builds = HydraRender::getEngineBuildCount();
+    _render->setSettings(prim);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(restarts, _render->getRestartCount());
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    _render->setMaxSamples(0);
+    prim["cycles:samples"] = PXR_NS::VtValue(7);
+    _render->setSettings(prim);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(&frames));
+    EXPECT_EQ(7, _render->getMaxSamples());
+    EXPECT_EQ(7, frames.back()->samples);
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
 }

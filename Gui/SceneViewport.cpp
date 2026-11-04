@@ -62,9 +62,10 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -95,6 +96,8 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
+#include <pxr/base/tf/notice.h>
+#include <pxr/base/tf/weakBase.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/glf/simpleLight.h>
@@ -102,6 +105,7 @@
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
+#include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
@@ -281,6 +285,50 @@ refineThreads()
 
     return std::max(1, AppManager::computeNCPUsAvailable(poolMax, 0, 0, perEffect) - 1);
 }
+/**
+ * @brief Collects, while it lives, whether the stage's change notices touched anything outside
+ * /Render, where the render settings prims are. Anything that is not a prim's property or a prim
+ * under /Render counts, the pseudo-root included.
+ **/
+class StageChangePaths
+    : public TfWeakBase {
+public:
+    explicit StageChangePaths(const UsdStageRefPtr& stage)
+    {
+        if (stage) {
+            _key = TfNotice::Register(TfCreateWeakPtr(this), &StageChangePaths::changed, UsdStageWeakPtr(stage));
+        }
+    }
+
+    ~StageChangePaths()
+    {
+        TfNotice::Revoke(_key);
+    }
+
+    StageChangePaths(const StageChangePaths&) = delete;
+    StageChangePaths& operator=(const StageChangePaths&) = delete;
+
+    bool any = false;
+    bool outsideRender = false;
+
+private:
+    void changed(const UsdNotice::ObjectsChanged& notice)
+    {
+        static const SdfPath render("/Render");
+        const auto collect = [this](const UsdNotice::ObjectsChanged::PathRange& paths) {
+            for (UsdNotice::ObjectsChanged::PathRange::const_iterator it = paths.begin(); it != paths.end(); ++it) {
+                any = true;
+                if (!it->GetPrimPath().HasPrefix(render)) {
+                    outsideRender = true;
+                }
+            }
+        };
+        collect(notice.GetResyncedPaths());
+        collect(notice.GetChangedInfoOnlyPaths());
+    }
+
+    TfNotice::Key _key;
+};
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -323,9 +371,24 @@ struct SceneViewportRenderer::Implementation {
     std::vector<std::string> selected;
     std::unique_ptr<UsdImagingGLEngine> engine;
     U64 engineCount = 0;
-    // The delegate the next engine is made with, and why it could not be, if it could not.
+    // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
+    // next engine is made with, the chosen one or the one the stage's render settings prim names;
+    // and why it could not be, if it could not.
+    std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
     std::string rendererError;
+    // The stage's active render settings prim as of an edit count: its path, empty without one,
+    // and the renderer it names, Storm's without one. Then the prim's settings for a renderer at
+    // a time. All need stageMutex.
+    bool scenePrimValid = false;
+    U64 scenePrimEditCount = 0;
+    SdfPath scenePrimPath;
+    std::string sceneRenderer = kRenderDelegateStormId;
+    bool sceneSettingsValid = false;
+    U64 sceneSettingsEditCount = 0;
+    std::string sceneSettingsRenderer;
+    double sceneSettingsTime = 0.;
+    RenderSettingsPrim::Values sceneSettings;
 
     // The guide prims of the stage as of an edit count, and their guides as of a time: both need
     // stageMutex.
@@ -405,6 +468,90 @@ struct SceneViewportRenderer::Implementation {
     UsdStageRefPtr currentStage() const
     {
         return (shown && sceneStage) ? sceneStage->getStage() : UsdStageRefPtr();
+    }
+
+    // Reads the stage's active render settings prim again after the stage is edited. Needs stageMutex.
+    void refreshScenePrim()
+    {
+        const UsdStageRefPtr stage = currentStage();
+        const U64 editCount = sceneStage ? sceneStage->getEditCount() : 0;
+        if (scenePrimValid && (scenePrimEditCount == editCount)) {
+            return;
+        }
+        scenePrimValid = true;
+        scenePrimEditCount = editCount;
+        scenePrimPath = SdfPath();
+        sceneRenderer = kRenderDelegateStormId;
+        const UsdRenderSettings prim = stage ? RenderSettingsPrim::activePrim(stage, std::string(), nullptr) : UsdRenderSettings();
+        if (!prim) {
+            return;
+        }
+        scenePrimPath = prim.GetPath();
+        std::string id;
+        std::string error;
+        if (!RenderSettingsPrim::rendererFor(prim.GetPrim(), &id, &error)) {
+            // A renderer that is not installed is kept, so that the view says why it cannot render.
+            const UsdAttribute attribute = prim.GetPrim().GetAttribute(TfToken(kRenderSettingsPrimRendererAttribute));
+            TfToken token;
+            if (attribute && attribute.Get(&token)) {
+                id = token.GetString();
+            }
+        }
+        if (!id.empty()) {
+            sceneRenderer = id;
+        }
+    }
+
+    // The delegate renders are made with: the one chosen, or for Scene Default the prim's. Needs stageMutex.
+    std::string effectiveRenderer()
+    {
+        if (rendererChoice != kRenderDelegateSceneDefaultId) {
+            return rendererChoice;
+        }
+        refreshScenePrim();
+
+        return sceneRenderer;
+    }
+
+    // The active prim's settings for renderer at the time shown. Needs stageMutex.
+    const RenderSettingsPrim::Values& sceneSettingsFor(const std::string& renderer)
+    {
+        refreshScenePrim();
+        const double time = timeCode();
+        if (sceneSettingsValid && (sceneSettingsEditCount == scenePrimEditCount) && (sceneSettingsRenderer == renderer) && (sceneSettingsTime == time)) {
+            return sceneSettings;
+        }
+        sceneSettingsValid = true;
+        sceneSettingsEditCount = scenePrimEditCount;
+        sceneSettingsRenderer = renderer;
+        sceneSettingsTime = time;
+        sceneSettings.clear();
+        const UsdStageRefPtr stage = currentStage();
+        if (stage && !scenePrimPath.IsEmpty()) {
+            sceneSettings = RenderSettingsPrim::settings(stage->GetPrimAtPath(scenePrimPath), renderer, UsdTimeCode(time));
+        }
+
+        return sceneSettings;
+    }
+
+    /**
+     * @brief Renders with renderer from the next render on: a change destroys the engine, so it
+     * needs the context of render() current. Needs stageMutex.
+     **/
+    void switchRenderer(const std::string& renderer)
+    {
+        if (renderer == rendererId) {
+            return;
+        }
+        rendererId = renderer;
+        rendererError.clear();
+        // No Hgi to collect with: the engine's own goes with it, collecting as it does.
+        StormGLSection section;
+        engine.reset();
+        // The last delegate's refinement engine goes; another has its own default cap, and starts
+        // refining.
+        progressive->setRenderer(std::string());
+        refineRenderer.clear();
     }
 
     // Finds the guide prims again after the stage is edited. Needs stageMutex.
@@ -1260,7 +1407,17 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         // In the same step as the sync, so no frame shows the scene without the drag.
         _imp->clearPreviewLocked();
     }
-    if (_imp->sceneStage->sync(payload)) {
+    bool restart = false;
+    {
+        StageChangePaths changes(_imp->sceneStage->getStage());
+        if (_imp->sceneStage->sync(payload)) {
+            // An edit of the render settings prims alone restarts nothing here: what of it the
+            // render takes, the active prim's settings for its renderer, reaches it through
+            // ProgressiveRender::setSettings(), which makes the engine again when they differ.
+            restart = changes.outsideRender || !changes.any;
+        }
+    }
+    if (restart) {
         _imp->progressive->invalidate();
     }
     const SceneMetadata& metadata = payload.getMetadata();
@@ -2146,6 +2303,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return eRenderStatusDone;
     }
+    // Scene Default follows the renderer the stage's render settings prim names.
+    _imp->switchRenderer(_imp->effectiveRenderer());
     if (_imp->rendererId != kRenderDelegateStormId) {
         return renderProgressive(fbo, width, height);
     }
@@ -2226,6 +2385,9 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 
         return eRenderStatusDone;
     }
+    // The prim's settings for the renderer first, so that its engine is made under them; the
+    // view's own sample cap applies over its samples.
+    progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
     if (_imp->refineRenderer != _imp->rendererId) {
         progressive.setRenderer(_imp->rendererId);
         _imp->refineRenderer = _imp->rendererId;
@@ -2476,25 +2638,21 @@ void
 SceneViewportRenderer::setRendererId(const std::string& id)
 {
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
-    const std::string renderer = id.empty() ? std::string(kRenderDelegateStormId) : id;
 
+    _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
     // The error is cleared even for the same id, so that choosing it again retries it.
     _imp->rendererError.clear();
-    if (renderer == _imp->rendererId) {
-        return;
-    }
-    _imp->rendererId = renderer;
-    // No Hgi to collect with: the engine's own goes with it, collecting as it does.
-    StormGLSection section;
-    _imp->engine.reset();
-    // The last delegate's refinement engine goes; another has its own default cap, and starts
-    // refining.
-    _imp->progressive->setRenderer(std::string());
-    _imp->refineRenderer.clear();
+    _imp->switchRenderer(_imp->effectiveRenderer());
 }
 
 const std::string&
 SceneViewportRenderer::getRendererId() const
+{
+    return _imp->rendererChoice;
+}
+
+const std::string&
+SceneViewportRenderer::getActiveRendererId() const
 {
     return _imp->rendererId;
 }
@@ -3342,6 +3500,8 @@ SceneViewport::publishState()
     setProperty("natronSceneLockView", _imp->lockView);
     setProperty("natronSceneLockMessage", _imp->lockMessage);
     setProperty("natronSceneRenderer", QString::fromStdString(_imp->renderer.getRendererId()));
+    // The delegate rendering: the chosen one, or for Scene Default the one the stage's prim names.
+    setProperty("natronSceneActiveRenderer", QString::fromStdString(_imp->renderer.getActiveRendererId()));
     setProperty("natronSceneRendererError", QString::fromStdString(_imp->renderer.getRendererError()));
     // The display settings: the draw mode's and lighting mode's script names, and the proxy,
     // render and guide purposes shown.
@@ -4158,7 +4318,7 @@ SceneViewport::paintGL()
         // The worker is syncing; it asks for a repaint when it is done. A background render
         // passing holds the lock too, and asks for one only once it has a frame: this paint's
         // camera or size must still reach it.
-        if (_imp->renderer.getRendererId() != kRenderDelegateStormId) {
+        if (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId) {
             QTimer::singleShot(10, this, [this]() { update(); });
         }
 
@@ -4173,6 +4333,14 @@ SceneViewport::paintGL()
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
+    {
+        // Under Scene Default the delegate follows the stage's prim: the render row follows it.
+        const QString active = QString::fromStdString(_imp->renderer.getActiveRendererId());
+        if (property("natronSceneActiveRenderer").toString() != active) {
+            setProperty("natronSceneActiveRenderer", active);
+            Q_EMIT rendererChanged(QString::fromStdString(_imp->renderer.getRendererId()));
+        }
+    }
     // Whether the stage's own lights lit this paint, and the guides it drew: path, kind and a
     // point on each in widget pixels.
     setProperty("natronSceneSceneLit", _imp->renderer.isSceneLit());
@@ -4791,6 +4959,18 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QMenu* renderers = menu.addMenu(tr("Renderer"));
     QActionGroup* rendererGroup = new QActionGroup(renderers);
     const std::string& rendererId = _imp->renderer.getRendererId();
+    {
+        QAction* action = renderers->addAction(tr("Scene Default"));
+        action->setCheckable(true);
+        action->setChecked(rendererId == kRenderDelegateSceneDefaultId);
+        action->setActionGroup(rendererGroup);
+        action->setToolTip(tr("Renders with the renderer the scene's active render settings prim names, "
+                              "Storm without one, and with that prim's settings for it."));
+        QObject::connect(action, &QAction::triggered, this, [this]() {
+            setRendererId(QString::fromUtf8(kRenderDelegateSceneDefaultId));
+        });
+        renderers->addSeparator();
+    }
     for (const RenderDelegates::Delegate& delegate : RenderDelegates::list()) {
         QString label = QString::fromStdString(delegate.displayName);
         if (!delegate.available) {

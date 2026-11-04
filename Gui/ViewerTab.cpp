@@ -1783,7 +1783,7 @@ ViewerTab::refreshSceneRenderRow()
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
     }
-    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getRendererId() != kRenderDelegateStormId);
+    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
     _imp->sceneRenderRow->setVisible(topVisible && progressive);
     refreshRefineSamplesLabel();

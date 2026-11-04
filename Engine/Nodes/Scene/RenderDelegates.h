@@ -36,6 +36,10 @@
 // Storm's HdRendererPlugin type name, the renderer every consumer starts with.
 #define kRenderDelegateStormId "HdStormRendererPlugin"
 
+// The id of a Renderer menu entry that renders with the renderer the active render settings prim
+// names (natron:renderer), Storm when it names none. No Hydra plug-in has it.
+#define kRenderDelegateSceneDefaultId "sceneDefault"
+
 NATRON_NAMESPACE_ENTER
 
 /**

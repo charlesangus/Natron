@@ -69,8 +69,10 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
@@ -303,25 +305,23 @@ protected:
     }
 
     /**
-     * fixture read by a USDRead into a USDRender rendering it through MoonRay from its camera,
-     * kSize x kSize. Returns the USDRender, null after a gtest failure; *reader gets the USDRead.
+     * fixture read by a USDRead into a USDRenderSettings whose prim frames its camera at kSize x
+     * kSize, into a USDRender whose Renderer knob picks MoonRay. Returns the USDRender, null after a gtest failure; *reader gets the USDRead.
      **/
     NodePtr createGraph(const char* fixture = kFixture,
                         NodePtr* reader = nullptr)
     {
         NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!read || !render) {
+        if (!read || !settings || !render) {
             ADD_FAILURE() << "a 3D node is not registered";
 
             return NodePtr();
         }
         KnobFile* file = knob<KnobFile>(read, kUSDReadParamFile);
         KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
-        KnobChoice* camera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !renderer || !camera || !size || !par) {
+        if (!file || !renderer) {
             return NodePtr();
         }
         file->setValue(std::string(fixture));
@@ -330,11 +330,11 @@ protected:
 
             return NodePtr();
         }
-        connectNodes(read, render, 0, true);
-        camera->setActiveEntry(ChoiceOption(kCamera, kCamera, ""));
-        size->setValue(kSize, ViewSpec::all(), 0);
-        size->setValue(kSize, ViewSpec::all(), 1);
-        par->setValue(1.);
+        connectNodes(read, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, kCamera, kSize, kSize)) {
+            return NodePtr();
+        }
         if (reader) {
             *reader = read;
         }
@@ -612,12 +612,13 @@ TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
 }
 
 namespace {
+// The MoonRay knobs of the USDRenderSettings node feeding the USDRender node.
 const RenderSettingsKnobs*
 moonRaySettingsOf(const NodePtr& node)
 {
-    USDRender* render = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    USDRenderSettings* settings = RenderSettingsTestUtils::settingsOf(node);
 
-    return render ? render->renderSettings() : nullptr;
+    return settings ? settings->renderSettings() : nullptr;
 }
 
 // What MoonRay's engine for node reports for key; empty if node has no engine.

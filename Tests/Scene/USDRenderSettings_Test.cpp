@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -41,12 +42,17 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/CyclesSettings.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -275,4 +281,90 @@ TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
             }
         }
     }
+}
+
+namespace {
+// Moves an int, float or bool knob to a value it did not have.
+bool
+nudge(const KnobIPtr& k)
+{
+    if (KnobBool* b = dynamic_cast<KnobBool*>(k.get())) {
+        b->setValue(!b->getValue());
+    } else if (KnobInt* i = dynamic_cast<KnobInt*>(k.get())) {
+        i->setValue(i->getValue() + 1);
+    } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k.get())) {
+        d->setValue(d->getValue() + 0.5);
+    } else {
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
+// A USDRender's hash folds the knobs of the active prim's renderer only: a MoonRay knob edited
+// while the prim names Cycles leaves it as it was, a Cycles knob does not; once the prim names
+// MoonRay it is the other way round.
+TEST_F(USDRenderSettingsTest, TheRenderHashFoldsTheActiveRenderersKnobsOnly)
+{
+    const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
+    const bool haveCycles = std::find(ids.begin(), ids.end(), std::string(kRenderDelegateCyclesId)) != ids.end();
+    const bool haveMoonRay = std::find(ids.begin(), ids.end(), std::string(kMoonRayRendererId)) != ids.end();
+    if (!haveCycles || !haveMoonRay) {
+        std::printf("[  SKIPPED ] needs both Cycles and MoonRay installed\n");
+
+        return;
+    }
+    NodePtr node = settings(camera("/Cam"));
+    ASSERT_TRUE(bool(node));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(node, 0));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    KnobIPtr cyclesSamples = knobs->knob(kRenderDelegateCyclesId, CyclesSettings::samplesKey());
+    KnobIPtr moonRaySamples = knobs->knob(kMoonRayRendererId, MoonRaySettings::samplesKey());
+    ASSERT_TRUE(bool(cyclesSamples));
+    ASSERT_TRUE(bool(moonRaySamples));
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(renderer != nullptr);
+    (void)renderer->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateCyclesId), renderer->getActiveEntry().id);
+
+    // Cycles is active.
+    U64 hash = render->getHashValue();
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_EQ(hash, render->getHashValue()) << "a MoonRay knob changed the hash of a Cycles render";
+    ASSERT_TRUE(nudge(cyclesSamples));
+    EXPECT_NE(hash, render->getHashValue()) << "a Cycles knob left the hash of a Cycles render";
+
+    // MoonRay is active.
+    hash = render->getHashValue();
+    (void)renderer->setValueFromID(kMoonRayRendererId, 0);
+    ASSERT_EQ(std::string(kMoonRayRendererId), renderer->getActiveEntry().id);
+    EXPECT_NE(hash, render->getHashValue());
+    hash = render->getHashValue();
+    ASSERT_TRUE(nudge(cyclesSamples));
+    EXPECT_EQ(hash, render->getHashValue()) << "a Cycles knob changed the hash of a MoonRay render";
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_NE(hash, render->getHashValue()) << "a MoonRay knob left the hash of a MoonRay render";
+
+    // USDRender's Renderer knob picks the namespaces as the prim's renderer does.
+    KnobChoice* rendererKnob = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+    ASSERT_TRUE(rendererKnob != nullptr);
+    (void)rendererKnob->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateCyclesId), rendererKnob->getActiveEntry().id);
+    hash = render->getHashValue();
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_EQ(hash, render->getHashValue()) << "a MoonRay knob changed the hash of a render the node makes with Cycles";
+    ASSERT_TRUE(nudge(cyclesSamples));
+    EXPECT_NE(hash, render->getHashValue());
+
+    // A disabled settings node is no prim: every knob of it is out of the hash.
+    node->setNodeDisabled(true);
+    hash = render->getHashValue();
+    ASSERT_TRUE(nudge(cyclesSamples));
+    EXPECT_EQ(hash, render->getHashValue());
 }

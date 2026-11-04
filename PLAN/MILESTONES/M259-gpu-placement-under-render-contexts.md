@@ -70,3 +70,4 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 - 2026-11-02 — The 64-iteration 4K GPU-host timing is dropped from the gate: placement no longer uses cost seeds (user).
 - 2026-11-03 — The intermittent RenderIsolation taskgraph hang is not from the loop stack: it reproduces on main-equivalent code (render-thread count race in OutputSchedulerThread). Filed as M321 - Render Thread Count Race; it no longer blocks this milestone.
 - 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.
+- 2026-11-04 — The loop stack (M180, M181, M182, M190, M259) lands as one PR from the M259 branch, squash-merged with each milestone listed in the message (user).

@@ -385,7 +385,7 @@ USDRender::appendNodeContentHash(ContentHasher& h) const
     // Of the render settings knobs upstream, which every other node folds whole, only those the
     // render reads are folded in (consumesHashNamespaces()): the active prim's in the namespaces
     // of the renderer it renders with. When the active prim is none a node authors (a file's, or not known here),
-    // every one is.
+    // or the table is uncertain about it or its renderer, every one is.
     NodePtr node = getNode();
     NodePtr input = node ? node->getInput(0) : NodePtr();
     const HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
@@ -399,7 +399,9 @@ USDRender::appendNodeContentHash(ContentHasher& h) const
     const std::string chosenPrim = settingsPrimOverride();
     const std::string path = chosenPrim.empty() ? table->active : chosenPrim;
     std::map<std::string, HashNamespaces::Scope>::const_iterator scope = path.empty() ? table->scopes.end() : table->scopes.find(path);
-    if (scope == table->scopes.end()) {
+    // An uncertain table knows only the prims and the active one a node over all of it settled.
+    const bool known = !table->uncertain || ((scope != table->scopes.end()) && scope->second.settled && (!chosenPrim.empty() || table->activeSettled));
+    if ((scope == table->scopes.end()) || !known) {
         h.appendBool(false);
         table->appendAll(h);
 

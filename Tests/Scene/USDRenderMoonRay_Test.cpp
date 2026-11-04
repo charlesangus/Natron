@@ -50,7 +50,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <pxr/base/plug/registry.h>
 
@@ -750,6 +752,48 @@ TEST_F(USDRenderMoonRayTest, PixelSamplesKnobChangesTheHashAndTheRender)
     planes.clear();
     ASSERT_TRUE(renderAll(node, &planes, true));
     EXPECT_EQ(PXR_NS::VtValue(3), moonRayReported(node, MoonRaySettings::samplesKey()));
+}
+
+// A prim in a file cannot reach what Natron keeps for itself: the reserved cores and retries an
+// engine reports are Natron's, whatever the prim authors.
+TEST_F(USDRenderMoonRayTest, APrimDoesNotOverrideReservedSettings)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString filePath = tmp.path() + QString::fromUtf8("/reserved.usda");
+    const std::string size = std::to_string(kSize);
+    std::string text = "#usda 1.0\n(\n    renderSettingsPrimPath = \"/Render/shot\"\n    upAxis = \"Y\"\n";
+    text += std::string("    subLayers = [@") + kFixture + "@]\n)\n";
+    text += "def Scope \"Render\"\n{\n    def RenderSettings \"shot\"\n    {\n";
+    text += std::string("        rel camera = <") + kCamera + ">\n";
+    text += "        uniform int2 resolution = (" + size + ", " + size + ")\n";
+    text += "        int moonray:localReservedCores = 9999\n";
+    text += "        int moonray:maxConnectRetries = 7\n";
+    text += "    }\n}\n";
+    {
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(text.c_str()), 0);
+    }
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(read && node);
+    KnobFile* file = knob<KnobFile>(read, kUSDReadParamFile);
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderParamRenderer);
+    ASSERT_TRUE(file && renderer);
+    file->setValue(filePath.toStdString());
+    ASSERT_TRUE(selectRenderer(renderer, kMoonRayRendererId));
+    connectNodes(read, node, 0, true);
+
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes, true));
+    const PXR_NS::VtValue reserved = moonRayReported(node, "localReservedCores");
+    ASSERT_TRUE(reserved.IsHolding<int>());
+    EXPECT_NE(9999, reserved.UncheckedGet<int>());
+    EXPECT_EQ(PXR_NS::VtValue(0), moonRayReported(node, "maxConnectRetries"));
 }
 
 // Each knob of the MoonRay group sends its setting, which MoonRay's engine reports back.

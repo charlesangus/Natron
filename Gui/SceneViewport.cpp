@@ -395,6 +395,9 @@ struct SceneViewportRenderer::Implementation {
     std::string sceneSettingsRenderer;
     double sceneSettingsTime = 0.;
     RenderSettingsPrim::Values sceneSettings;
+    // The prim's settings the Storm engine numbered stormSettingsEngine was last given.
+    RenderSettingsPrim::Values stormSettings;
+    U64 stormSettingsEngine = 0;
 
     // The guide prims of the stage as of an edit count, and their guides as of a time: both need
     // stageMutex.
@@ -538,6 +541,42 @@ struct SceneViewportRenderer::Implementation {
         }
 
         return sceneSettings;
+    }
+
+    // Gives the Storm engine the active prim's settings for it, as a USDRender's engine has them.
+    // Unlike that engine it is kept across a change: remaking it would resync the whole stage on
+    // each edit, so a setting the prim stops authoring goes back to the delegate's default. Needs
+    // stageMutex.
+    void applyStormSettings()
+    {
+        const RenderSettingsPrim::Values& wanted = sceneSettingsFor(rendererId);
+        const bool sameEngine = stormSettingsEngine == engineCount;
+
+        if (sameEngine && (wanted == stormSettings)) {
+            return;
+        }
+        if (sameEngine) {
+            const UsdImagingGLRendererSettingsList declared = engine->GetRendererSettingsList();
+            for (const std::pair<const std::string, VtValue>& setting : stormSettings) {
+                if (wanted.count(setting.first)) {
+                    continue;
+                }
+                const TfToken key(setting.first);
+                VtValue value;
+                for (const UsdImagingGLRendererSetting& d : declared) {
+                    if (d.key == key) {
+                        value = d.defValue;
+                        break;
+                    }
+                }
+                engine->SetRendererSetting(key, value);
+            }
+        }
+        for (const std::pair<const std::string, VtValue>& setting : wanted) {
+            engine->SetRendererSetting(TfToken(setting.first), setting.second);
+        }
+        stormSettings = wanted;
+        stormSettingsEngine = engineCount;
     }
 
     /**
@@ -2343,6 +2382,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->applyStormSettings();
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);

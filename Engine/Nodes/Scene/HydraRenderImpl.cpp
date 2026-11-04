@@ -1136,15 +1136,16 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             return nullptr;
         }
         entry.engine->SetEnablePresentation(false);
+        for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
+            entry.engine->SetRendererSetting(TfToken(it->first), it->second);
+        }
+        // Last: a prim's settings must not override these.
         if (CyclesAovs::isCycles(renderer)) {
             CyclesAovs::configureEngine(entry.engine.get());
         } else if (MoonRayAovs::isMoonRay(renderer)) {
             MoonRayAovs::configureEngine(entry.engine.get(), request.threads);
         }
         entry.threads = request.threads;
-        for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
-            entry.engine->SetRendererSetting(TfToken(it->first), it->second);
-        }
         entry.settings = settings;
         TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
         entry.depthAov = HdAovTokens->depth;
@@ -2535,12 +2536,6 @@ struct ProgressiveRender::Implementation {
         }
         made->SetEnablePresentation(false);
         const bool moonRay = MoonRayAovs::isMoonRay(id);
-        if (cycles) {
-            CyclesAovs::configureEngine(made.get());
-        } else if (moonRay) {
-            // Its AOVs and thread budget, as a USDRender's MoonRay engine has them.
-            MoonRayAovs::configureEngine(made.get(), threads);
-        }
         // The prim's settings, then those set for tests, as a USDRender's engine takes them.
         RendererSettings settings = primSettings;
         for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
@@ -2548,6 +2543,13 @@ struct ProgressiveRender::Implementation {
         }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
+        }
+        // Last: a prim's settings must not override these.
+        if (cycles) {
+            CyclesAovs::configureEngine(made.get());
+        } else if (moonRay) {
+            // Its AOVs and thread budget, as a USDRender's MoonRay engine has them.
+            MoonRayAovs::configureEngine(made.get(), threads);
         }
         const TfTokenVector aovs = moonRay ? MoonRayAovs::aovs() : TfTokenVector { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
         if (!made->SetRendererAovs(aovs)) {

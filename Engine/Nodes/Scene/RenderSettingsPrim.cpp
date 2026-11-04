@@ -62,6 +62,30 @@ knownKeys(const std::string& rendererId)
 
     return keys;
 }
+
+// The attributes that name a key Natron sets itself or keeps off, in each of the renderer's namespaces.
+std::set<std::string>
+reservedAttributes(const std::string& rendererId)
+{
+    std::set<std::string> attributes;
+    const RenderSettingsKnobs::Curated* curated = RenderSettingsKnobs::curatedFor(rendererId);
+
+    if (!curated) {
+        return attributes;
+    }
+    std::vector<std::string> keys = curated->excludedKeys;
+    for (const std::pair<std::string, std::string>& disabled : curated->disabledKeys) {
+        keys.push_back(disabled.first);
+    }
+    const std::vector<std::string> spaces = RenderSettingsPrim::namespaces(rendererId);
+    for (const std::string& key : keys) {
+        for (const std::string& ns : spaces) {
+            attributes.insert(startsWithNamespace(key, ns) ? key : ns + ":" + key);
+        }
+    }
+
+    return attributes;
+}
 } // anon namespace
 
 namespace RenderSettingsPrim {
@@ -136,6 +160,7 @@ settings(const UsdPrim& prim,
         spaces.push_back(TfToken(ns));
     }
     const std::map<std::string, VtValue> keys = knownKeys(rendererId);
+    const std::set<std::string> reserved = reservedAttributes(rendererId);
     // UsdRenderComputeNamespacedSettings reads default values only, so each attribute, including
     // one with time samples alone, is read again at time.
     std::map<std::string, VtValue> found;
@@ -150,7 +175,7 @@ settings(const UsdPrim& prim,
     }
     for (const std::pair<const std::string, VtValue>& entry : found) {
         const std::string key = keyFromAttribute(rendererId, entry.first);
-        if (key.empty()) {
+        if (key.empty() || reserved.count(entry.first)) {
             continue;
         }
         VtValue value = entry.second;

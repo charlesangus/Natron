@@ -74,7 +74,8 @@ std::string keyFromAttribute(const std::string& rendererId,
 /**
  * @brief The renderer's settings prim authors, by delegate key, valued at time: the attributes
  * UsdRenderComputeNamespacedSettings() finds in the renderer's namespaces. A value whose type
- * differs from the type the delegate declares is cast to it when it can be.
+ * differs from the type the delegate declares is cast to it when it can be. Keys the renderer's
+ * curated group excludes or disables are left out: Natron sets those itself or keeps them off.
  **/
 Values settings(const PXR_NS::UsdPrim& prim,
                 const std::string& rendererId,

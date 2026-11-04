@@ -425,6 +425,16 @@ public:
     }
 
     /**
+     * @brief True for an effect whose output stage may hold render settings prims that no
+     * hash-namespaced knob authors, such as a file's: its HashNamespaces are then uncertain, so a
+     * consumer folds every entry. Any thread.
+     **/
+    virtual bool mayAuthorUntrackedRenderSettings() const
+    {
+        return false;
+    }
+
+    /**
      * @brief True for an effect that folds what it reads of its inputs' HashNamespaces into its
      * hash itself (appendNodeContentHash()) and outputs no stage: the node then neither folds the
      * table nor passes it on. Otherwise the node folds every entry. Any thread.

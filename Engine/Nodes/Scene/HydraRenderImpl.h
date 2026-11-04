@@ -413,7 +413,7 @@ public:
 
     /**
      * @brief The renderer settings of the stage's active render settings prim for the renderer
-     * (RenderSettingsPrim::settings()), set on its engine before anything else. A change makes
+     * (RenderSettingsPrim::settings()), set on its engine before it renders. A change makes
      * the engine again, keeping the frame shown until the next one; the same settings change
      * nothing. The sample cap of setMaxSamples() applies over the prim's samples.
      **/

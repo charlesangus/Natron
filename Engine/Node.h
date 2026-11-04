@@ -103,14 +103,21 @@ NATRON_NAMESPACE_ENTER
 struct HashNamespaces {
     struct Scope {
         std::map<std::string, U64> digests; //< by namespace
-        std::string defaultRenderer; //< the renderer the nearest node downstream names, empty if none
+        std::string defaultRenderer; //< the renderer the strongest node names, empty if none
+        bool settled = false; //< when uncertain, whether a node over all of it named the renderer
     };
 
     std::map<std::string, Scope> scopes; //< by path
-    std::string active; //< the scope the nearest node downstream makes the stage's active one, empty if none
+    std::string active; //< the scope the strongest node makes the stage's active one, empty if none
+    // The stage may hold render settings the table does not track (a file's), or inputs disagree
+    // on a renderer or the active prim: only the settled scopes and active prim are known.
+    bool uncertain = false;
+    bool activeSettled = false; //< when uncertain, whether a node over all of it made active the active prim
 
     // Every scope, namespace and renderer.
     void appendAll(ContentHasher& h) const;
+    // Marks the table uncertain and nothing in it settled.
+    void unsettle();
 };
 
 typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;

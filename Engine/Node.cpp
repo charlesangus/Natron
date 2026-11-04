@@ -1075,6 +1075,7 @@ HashNamespaces::appendAll(ContentHasher& h) const
     for (std::map<std::string, Scope>::const_iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
         h.appendString(scope->first);
         h.appendString(scope->second.defaultRenderer);
+        h.appendBool(scope->second.settled);
         h.appendU64(scope->second.digests.size());
         for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
             h.appendString(digest->first);
@@ -1082,6 +1083,18 @@ HashNamespaces::appendAll(ContentHasher& h) const
         }
     }
     h.appendString(active);
+    h.appendBool(uncertain);
+    h.appendBool(activeSettled);
+}
+
+void
+HashNamespaces::unsettle()
+{
+    uncertain = true;
+    activeSettled = false;
+    for (std::map<std::string, Scope>::iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        scope->second.settled = false;
+    }
 }
 
 U64
@@ -1211,11 +1224,12 @@ Node::computeContentHash(U64 projectDigest,
 HashNamespacesConstPtr
 Node::mergeHashNamespaces(const HashInputs& inputs) const
 {
-    // The inputs' tables, a renderer from a lower slot kept over a higher one's, then the node's
-    // own on top.
+    // The inputs' tables, weakest first, as USDMerge stacks a later input's layers over an
+    // earlier one's, then the node's own on top.
     std::shared_ptr<HashNamespaces> merged;
     HashNamespacesConstPtr only;
     int tables = 0;
+    bool unsettled = false;
     for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
         const NodePtr& input = inputs.bySlot[i].second;
         HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
@@ -1228,7 +1242,9 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
         }
         if (!merged) {
             merged = std::make_shared<HashNamespaces>(*only);
+            unsettled = only->uncertain;
         }
+        unsettled = unsettled || table->uncertain;
         for (std::map<std::string, HashNamespaces::Scope>::const_iterator scope = table->scopes.begin(); scope != table->scopes.end(); ++scope) {
             HashNamespaces::Scope& into = merged->scopes[scope->first];
             for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
@@ -1237,24 +1253,43 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
                 h.appendU64(digest->second);
                 into.digests[digest->first] = h.finalize();
             }
-            if (into.defaultRenderer.empty()) {
-                into.defaultRenderer = scope->second.defaultRenderer;
+            if (scope->second.defaultRenderer.empty()) {
+                continue;
             }
+            // A layer two inputs share keeps its weakest position in the merge, so the later
+            // input is not stronger for what it shares: two renderers on a prim stay unsettled.
+            if (!into.defaultRenderer.empty() && (into.defaultRenderer != scope->second.defaultRenderer)) {
+                unsettled = true;
+            }
+            into.defaultRenderer = scope->second.defaultRenderer;
         }
-        // Which input's stage metadata the merged stage keeps is not known here: two actives
-        // leave none, which makes a consumer fold every scope.
-        if (merged->active != table->active) {
-            merged->active.clear();
+        if (!table->active.empty()) {
+            if (!merged->active.empty() && (merged->active != table->active)) {
+                unsettled = true;
+            }
+            merged->active = table->active;
         }
+    }
+
+    // A file read may author render settings prims, naming another renderer or active prim.
+    if (_imp->effect && _imp->effect->mayAuthorUntrackedRenderSettings()) {
+        unsettled = true;
     }
 
     std::string path, defaultRenderer;
     bool active = false;
-    if (!_imp->effect || !_imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active)) {
+    const bool authors = _imp->effect && _imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
+    if (!authors && !unsettled) {
         return merged ? HashNamespacesConstPtr(merged) : only;
     }
     if (!merged) {
         merged = only ? std::make_shared<HashNamespaces>(*only) : std::make_shared<HashNamespaces>();
+    }
+    if (unsettled) {
+        merged->unsettle();
+    }
+    if (!authors) {
+        return merged;
     }
     HashNamespaces::Scope& own = merged->scopes[path];
     const std::map<std::string, U64> digests = getKnobsNamespaceDigests();
@@ -1265,9 +1300,12 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
         h.appendU64(digest->second);
         own.digests[digest->first] = h.finalize();
     }
+    // The node's layer is over everything upstream, so what it authors is settled.
     own.defaultRenderer = defaultRenderer;
+    own.settled = true;
     if (active) {
         merged->active = path;
+        merged->activeSettled = true;
     }
 
     return merged;

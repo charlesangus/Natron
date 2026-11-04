@@ -32,6 +32,7 @@
 #include <gtest/gtest.h>
 
 #include "BaseTest.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -178,6 +179,37 @@ TEST_F(RenderSettingsPrimTest, SettingsAreTheRenderersNamespaceOnly)
     ASSERT_EQ(1u, values.size());
     EXPECT_EQ(VtValue(16), values["cycles:samples"]);
     EXPECT_TRUE(RenderSettingsPrim::settings(stage->GetPrimAtPath(SdfPath("/Render/B")), kRenderer, UsdTimeCode::Default()).empty());
+}
+
+// The keys Natron sets itself or keeps off stay out of what a prim sends, whichever way they are
+// spelled, and the rest of its settings are sent.
+TEST_F(RenderSettingsPrimTest, SettingsLeaveOutReservedAndDisabledKeys)
+{
+    UsdStageRefPtr stage = stageFrom("#usda 1.0\n"
+                                     "def RenderSettings \"Prim\"\n"
+                                     "{\n"
+                                     "    int moonray:localReservedCores = 9999\n"
+                                     "    int moonray:maxConnectRetries = 7\n"
+                                     "    bool moonray:useRemoteHosts = true\n"
+                                     "    string moonray:remoteHosts = \"farm\"\n"
+                                     "    int moonray:someSetting = 3\n"
+                                     "    bool cycles:integrator:denoise_use_gpu = true\n"
+                                     "    int cycles:samples = 16\n"
+                                     "}\n");
+    ASSERT_TRUE(bool(stage));
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/Prim"));
+    ASSERT_TRUE(bool(prim));
+
+    const RenderSettingsPrim::Values moonRay = RenderSettingsPrim::settings(prim, kMoonRayRendererId, UsdTimeCode::Default());
+    for (const char* key : { "localReservedCores", "maxConnectRetries", "useRemoteHosts", "remoteHosts" }) {
+        EXPECT_EQ(0u, moonRay.count(key)) << key;
+        EXPECT_EQ(0u, moonRay.count(std::string("moonray:") + key)) << key;
+    }
+    EXPECT_EQ(1u, moonRay.size());
+
+    const RenderSettingsPrim::Values cycles = RenderSettingsPrim::settings(prim, "HdCyclesPlugin", UsdTimeCode::Default());
+    EXPECT_EQ(0u, cycles.count("cycles:integrator:denoise_use_gpu"));
+    EXPECT_EQ(1u, cycles.size());
 }
 
 // An override path beats the stage's renderSettingsPrimPath; with neither there is no prim, and a

@@ -29,6 +29,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <list>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -37,13 +39,18 @@
 
 #include <QString>
 
+#include <pxr/base/plug/registry.h>
+
 #include "BaseTest.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -52,13 +59,17 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
+#include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "ofxNatron.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -353,6 +364,27 @@ TEST_F(USDRenderSettingsTest, TheRenderHashFoldsTheActiveRenderersKnobsOnly)
     ASSERT_TRUE(nudge(moonRaySamples));
     EXPECT_NE(hash, render->getHashValue()) << "a MoonRay knob left the hash of a MoonRay render";
 
+    // The render after the edit is made with the edited value, not a cached one.
+    KnobInt* moonRaySamplesInt = dynamic_cast<KnobInt*>(moonRaySamples.get());
+    ASSERT_TRUE(moonRaySamplesInt != nullptr);
+    if (PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray")) {
+        ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 16, 16));
+        HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+        std::list<ImageLayerDesc> rgba;
+        rgba.push_back(ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        // Bypassing the cache would empty the caches after the render, releasing the engine asked next.
+        appPTR->clearAllCaches();
+        ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, 16, 16), rgba, &planes, &error, false)) << error;
+        PXR_NS::VtValue reported;
+        ASSERT_TRUE(HydraRender::engineSetting(dynamic_cast<USDRender*>(render->getEffectInstance().get()), MoonRaySettings::samplesKey(), &reported));
+        EXPECT_EQ(PXR_NS::VtValue(moonRaySamplesInt->getValue()), reported);
+        HydraRender::releaseAllCpuEngines();
+    } else {
+        std::printf("[  SKIPPED ] rendering: OpenUSD has no hd_moonray plug-in registered\n");
+    }
+
     // USDRender's Renderer knob picks the namespaces as the prim's renderer does.
     KnobChoice* rendererKnob = knob<KnobChoice>(render, kUSDRenderParamRenderer);
     ASSERT_TRUE(rendererKnob != nullptr);
@@ -427,4 +459,102 @@ TEST_F(USDRenderSettingsTest, OtherNodesFoldEveryRenderersKnobs)
     EXPECT_NE(pruneHash, prune->getHashValue());
     EXPECT_NE(writerHash, writer->getHashValue());
     EXPECT_NE(renderHash, render->getHashValue());
+}
+
+// Two settings nodes authoring the same prim through a USDMerge: the later input is stronger, so
+// its renderer is the one a Scene Default USDRender renders with, and an edit to that renderer's
+// knobs moves the render's hash.
+TEST_F(USDRenderSettingsTest, TheStrongerInputsRendererKeysTheRender)
+{
+    const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
+    const bool haveCycles = std::find(ids.begin(), ids.end(), std::string(kRenderDelegateCyclesId)) != ids.end();
+    const bool haveMoonRay = std::find(ids.begin(), ids.end(), std::string(kMoonRayRendererId)) != ids.end();
+    if (!haveCycles || !haveMoonRay) {
+        std::printf("[  SKIPPED ] needs both Cycles and MoonRay installed\n");
+
+        return;
+    }
+    NodePtr weaker = settings(camera("/Cam"));
+    NodePtr stronger = settings(camera("/Cam2"));
+    ASSERT_TRUE(weaker && stronger);
+    KnobChoice* weakerRenderer = knob<KnobChoice>(weaker, kUSDRenderSettingsParamDefaultRenderer);
+    KnobChoice* strongerRenderer = knob<KnobChoice>(stronger, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(weakerRenderer && strongerRenderer);
+    (void)weakerRenderer->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateCyclesId), weakerRenderer->getActiveEntry().id);
+    (void)strongerRenderer->setValueFromID(kMoonRayRendererId, 0);
+    ASSERT_EQ(std::string(kMoonRayRendererId), strongerRenderer->getActiveEntry().id);
+
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(bool(merge));
+    ASSERT_TRUE(merge->connectInput(weaker, 0));
+    ASSERT_TRUE(merge->connectInput(stronger, 1));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(merge, 0));
+    KnobChoice* renderRenderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+    ASSERT_TRUE(renderRenderer != nullptr);
+    ASSERT_EQ(std::string(kRenderDelegateSceneDefaultId), renderRenderer->getActiveEntry().id);
+
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(stronger->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    KnobIPtr moonRaySamples = knobs->knob(kMoonRayRendererId, MoonRaySettings::samplesKey());
+    ASSERT_TRUE(bool(moonRaySamples));
+
+    const U64 hash = render->getHashValue();
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_NE(hash, render->getHashValue()) << "a MoonRay knob of the stronger input left the hash of the render it keys";
+}
+
+// A file may name another renderer or active prim than the nodes do. Merged with one, the render
+// folds every renderer's knobs; a settings node over the file settles both, so it folds its own
+// renderer's only.
+TEST_F(USDRenderSettingsTest, AFileMakesTheRenderFoldEveryRendererUntilANodeSettlesIt)
+{
+    const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
+    const bool haveCycles = std::find(ids.begin(), ids.end(), std::string(kRenderDelegateCyclesId)) != ids.end();
+    const bool haveMoonRay = std::find(ids.begin(), ids.end(), std::string(kMoonRayRendererId)) != ids.end();
+    if (!haveCycles || !haveMoonRay) {
+        std::printf("[  SKIPPED ] needs both Cycles and MoonRay installed\n");
+
+        return;
+    }
+    NodePtr node = settings(camera("/Cam"));
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(node && read && merge && render);
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(renderer != nullptr);
+    (void)renderer->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateCyclesId), renderer->getActiveEntry().id);
+    ASSERT_TRUE(merge->connectInput(node, 0));
+    ASSERT_TRUE(merge->connectInput(read, 1));
+    ASSERT_TRUE(render->connectInput(merge, 0));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    KnobIPtr moonRaySamples = effect->renderSettings()->knob(kMoonRayRendererId, MoonRaySettings::samplesKey());
+    ASSERT_TRUE(bool(moonRaySamples));
+
+    U64 hash = render->getHashValue();
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_NE(hash, render->getHashValue()) << "a MoonRay knob left the hash of a render a file may send to MoonRay";
+
+    // A settings node over the file: the prim's renderer and the active prim are its own.
+    NodePtr over = settings(read);
+    NodePtr overRender = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(over && overRender);
+    KnobChoice* overRenderer = knob<KnobChoice>(over, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(overRenderer != nullptr);
+    (void)overRenderer->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_TRUE(overRender->connectInput(over, 0));
+    USDRenderSettings* overEffect = dynamic_cast<USDRenderSettings*>(over->getEffectInstance().get());
+    ASSERT_TRUE(overEffect != nullptr);
+    KnobIPtr overSamples = overEffect->renderSettings()->knob(kMoonRayRendererId, MoonRaySettings::samplesKey());
+    ASSERT_TRUE(bool(overSamples));
+    hash = overRender->getHashValue();
+    ASSERT_TRUE(nudge(overSamples));
+    EXPECT_EQ(hash, overRender->getHashValue()) << "a MoonRay knob changed the hash of a Cycles render over a file";
 }

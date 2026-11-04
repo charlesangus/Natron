@@ -1139,6 +1139,11 @@ Node::walkLoopBody(const std::vector<NodePtr>& begins,
     if (begins.empty() || !tail) {
         return;
     }
+    // The walk can run outside a hash refresh, and must not start one from inside its own hashing.
+    std::optional<HashComputeScope> computing;
+    if (digest) {
+        computing.emplace();
+    }
     std::unordered_set<const Node*> beginSet;
     for (const NodePtr& begin : begins) {
         if (begin) {

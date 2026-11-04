@@ -619,6 +619,8 @@ TEST_F(NativeLoopCrossFrameTest, AnUntickedLoopBeginPassesItsInputThrough)
     ASSERT_FALSE(end->feedsBack(source));
     ASSERT_TRUE(t.merge->replaceInput(source, 1));
     EXPECT_EQ(2u, end->getLoopBegins().size());
+    // Wiring the body refreshes the LoopEnd once the event loop runs.
+    QCoreApplication::processEvents();
     EXPECT_FALSE(t.end->getKnobByName(kLoopEndParamPassThroughBegins)->getIsSecret());
     EXPECT_FALSE(static_cast<const LoopBegin*>(source->getEffectInstance().get())->feedsBack());
     EXPECT_EQ(std::vector<NodePtr>({ t.begin }), end->getChainingBegins());

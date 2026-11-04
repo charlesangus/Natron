@@ -811,7 +811,23 @@ LoopEnd::simulationHash() const
     const EffectInstancePtr input = inputNode ? inputNode->getEffectInstance() : EffectInstancePtr();
     h.appendBool(bool(input));
     if (input) {
-        h.appendU64(input->getHash());
+        // Refreshes the hashes the walk below reads as they are stored.
+        const U64 inputHash = input->getHash();
+        const std::vector<NodePtr> begins = getChainingBegins();
+        if (begins.empty()) {
+            h.appendU64(inputHash);
+        } else {
+            // The chaining LoopBegins' hashes fold in the bake state, which a frame's stamp must not
+            // follow, or the bake itself would make its frames stale: the body with them left out,
+            // and what feeds them.
+            U64 body = 0;
+            Node::walkLoopBody(begins, inputNode, getNode(), &body, 0);
+            h.appendU64(body);
+            for (const NodePtr& begin : begins) {
+                const NodePtr source = begin->getInput(0);
+                h.appendU64(source ? source->getHashValue() : 0);
+            }
+        }
     }
 
     return h.finalize();

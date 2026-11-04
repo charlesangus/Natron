@@ -474,8 +474,12 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                 continue;
                             }
 
-                            if (roiIsInRequestPass) {
-                                frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi);
+                            if (roiIsInRequestPass && !frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi)) {
+                                // The request planned this input under this context at other frames only, as for a Feedback
+                                // iteration a time offset in the body moves. Left to the render action, the input would be
+                                // pulled from inside it, and a chain it drives would render this same effect again.
+                                const RoIMap::const_iterator ownRoI = inputRois.find(inputEffect);
+                                roi = (ownRoI != inputRois.end()) ? ownRoI->second : RectD();
                             }
 
                             const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;

@@ -59,10 +59,10 @@ def class_name(w):
     return w.metaObject().className().split("::")[-1]
 
 
-def viewer_up():
+def widget_up(name):
     for w in QApplication.allWidgets():
         try:
-            if class_name(w) == "ViewerGL" and w.isVisible():
+            if class_name(w) == name and w.isVisible():
                 return True
         except RuntimeError:
             continue
@@ -93,9 +93,20 @@ deadline = time.time() + STARTUP_TIMEOUT_S
 
 
 @guarded
-def wait_for_viewer():
-    if viewer_up():
+def wait_for_graph():
+    # A fresh project has no Viewer node, so no viewer shows until one is created.
+    if widget_up("NodeGraph"):
         build_graph()
+    elif time.time() > deadline:
+        mark("error the node graph never came up")
+    else:
+        QTimer.singleShot(200, wait_for_graph)
+
+
+@guarded
+def wait_for_viewer():
+    if widget_up("ViewerGL"):
+        QTimer.singleShot(RENDER_SETTLE_MS, after_render)
     elif time.time() > deadline:
         mark("error the viewer never came up")
     else:
@@ -109,7 +120,7 @@ def build_graph():
     constant = app.createNode("net.sf.openfx.ConstantPlugin")
     constant.getParam("color").set(0.2, 0.6, 0.3, 1.0)
     viewer.connectInput(0, constant)
-    QTimer.singleShot(RENDER_SETTLE_MS, after_render)
+    wait_for_viewer()
 
 
 @guarded
@@ -130,7 +141,7 @@ def after_render():
         QTimer.singleShot(PLAYBACK_SETTLE_MS, guarded(lambda: mark("ready %.6f" % time.time())))
 
 
-QTimer.singleShot(0, wait_for_viewer)
+QTimer.singleShot(0, wait_for_graph)
 '''
 
 try:
@@ -161,6 +172,19 @@ try:
         except OSError:
             return ""
 
+    def seed_config(name):
+        """A configuration directory for one child with the one-time questions already answered: a
+        Natron that starts on settings from before the current appearance version asks whether to
+        use the new default appearance, and that modal question stops the child's script from
+        ever running. The parent's own settings file is left alone."""
+        config_home = os.path.join(OUT_DIR, name + ".config")
+        conf_dir = os.path.join(config_home, "INRIA")
+        if not os.path.isdir(conf_dir):
+            os.makedirs(conf_dir)
+        with open(os.path.join(conf_dir, "Natron.conf"), "w") as f:
+            f.write("[General]\ncheckForUpdates=false\nappearanceVersion=1\n")
+        return config_home
+
     def run_case(name, mode, signals, expected_rc, limit_s):
         gt.section(name)
         marker = os.path.join(OUT_DIR, name + ".marker")
@@ -168,6 +192,7 @@ try:
             if os.path.exists(stale):
                 os.remove(stale)
         env = dict(os.environ)
+        env["XDG_CONFIG_HOME"] = seed_config(name)
         env["M322_CHILD_MODE"] = mode
         env["M322_CHILD_MARKER"] = marker
         env["M322_CHILD_PROJECT"] = os.path.join(OUT_DIR, name + ".ntp")

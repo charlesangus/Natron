@@ -317,11 +317,15 @@ onTerminationSignal(int signalId)
     armShutdownWatchdog("quitting after a termination signal");
 
     if (!manager->isBackground()) {
-        // The quit itself runs on the main thread. qApp->quit() also covers a signal that arrives before the first
-        // project exists, when quitApplication() has nothing to close and so never ends the event loop.
+        // File > Quit's path without its save question: it stops the viewers and then waits for the renders off the
+        // main thread. quitApplication() would wait on the main thread instead, and deadlock against a playback
+        // scheduler blocked in requestExecutionOnMainThread(). The last closed project ends the event loop; the
+        // explicit qApp->quit() is only for a signal that arrives before the first project exists, because quitting
+        // the loop while a close is still waiting would leave ~AppManager to close that project with the same
+        // blocking wait.
         QMetaObject::invokeMethod(manager, [manager]() {
-            manager->quitApplication();
-            if (qApp) {
+            manager->exitApp(false);
+            if (qApp && (manager->getNumInstances() == 0)) {
                 qApp->quit();
             } }, Qt::QueuedConnection);
 

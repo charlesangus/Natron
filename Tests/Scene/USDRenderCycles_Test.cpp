@@ -295,12 +295,18 @@ protected:
         return render;
     }
 
-    // Renders node's rgba, depth, primId and normal planes, in that order.
+    // Renders node's rgba, depth, primId and normal planes, in that order. Bypassing the cache
+    // empties the caches after the render too, which releases the render engines, so with
+    // keepEngine they are emptied before only, and the engine is there to ask for its settings.
     static bool renderAll(const NodePtr& node,
-                          std::vector<RenderedPlane>* planes)
+                          std::vector<RenderedPlane>* planes,
+                          bool keepEngine = false)
     {
         std::string error;
-        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error);
+        if (keepEngine) {
+            appPTR->clearAllCaches();
+        }
+        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine);
         EXPECT_TRUE(ok) << error;
         EXPECT_FALSE(node->hasPersistentMessage());
         if (!ok) {
@@ -732,13 +738,13 @@ TEST_F(USDRenderCyclesTest, SamplesKnobChangesTheHashAndTheRender)
     samples->setValue(3);
     const U64 hash = node->getHashValue();
     std::vector<RenderedPlane> planes;
-    ASSERT_TRUE(renderAll(node, &planes));
+    ASSERT_TRUE(renderAll(node, &planes, true));
     EXPECT_EQ(PXR_NS::VtValue(3), cyclesReported(node, CyclesSettings::samplesKey()));
 
     samples->setValue(5);
     EXPECT_NE(hash, node->getHashValue());
     planes.clear();
-    ASSERT_TRUE(renderAll(node, &planes));
+    ASSERT_TRUE(renderAll(node, &planes, true));
     EXPECT_EQ(PXR_NS::VtValue(5), cyclesReported(node, CyclesSettings::samplesKey()));
 }
 
@@ -775,7 +781,7 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
     samples->setValue(2);
     nudged.push_back(CyclesSettings::samplesKey());
     std::vector<RenderedPlane> planes;
-    ASSERT_TRUE(renderAll(node, &planes));
+    ASSERT_TRUE(renderAll(node, &planes, true));
     RenderSettingsKnobs::Values sent = settings->values(kRenderDelegateCyclesId);
     for (const std::string& key : nudged) {
         ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
@@ -788,7 +794,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
     planes.clear();
     std::string error;
     // Without OpenImageDenoise the render may fail; the setting still reaches the delegate.
-    (void)renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error);
+    appPTR->clearAllCaches();
+    (void)renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error, false);
     EXPECT_EQ(PXR_NS::VtValue(true), cyclesReported(node, denoise)) << error;
 }
 

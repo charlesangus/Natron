@@ -288,7 +288,9 @@ refineThreads()
 /**
  * @brief Collects, while it lives, whether the stage's change notices touched anything outside
  * /Render, where the render settings prims are. Anything that is not a prim's property or a prim
- * under /Render counts, the pseudo-root included.
+ * under /Render counts, but for info-only changes of the pseudo-root: a sublayer swap reports
+ * there every metadata field the swapped layers author, changed or not, though only the root
+ * layer's compose into the stage's, and those are compared by the caller (SceneMetadata).
  **/
 class StageChangePaths
     : public TfWeakBase {
@@ -315,16 +317,18 @@ private:
     void changed(const UsdNotice::ObjectsChanged& notice)
     {
         static const SdfPath render("/Render");
-        const auto collect = [this](const UsdNotice::ObjectsChanged::PathRange& paths) {
+        const auto collect = [this](const UsdNotice::ObjectsChanged::PathRange& paths,
+                                    bool infoOnly) {
             for (UsdNotice::ObjectsChanged::PathRange::const_iterator it = paths.begin(); it != paths.end(); ++it) {
                 any = true;
-                if (!it->GetPrimPath().HasPrefix(render)) {
-                    outsideRender = true;
+                if (it->GetPrimPath().HasPrefix(render) || (infoOnly && it->IsAbsoluteRootPath())) {
+                    continue;
                 }
+                outsideRender = true;
             }
         };
-        collect(notice.GetResyncedPaths());
-        collect(notice.GetChangedInfoOnlyPaths());
+        collect(notice.GetResyncedPaths(), false);
+        collect(notice.GetChangedInfoOnlyPaths(), true);
     }
 
     TfNotice::Key _key;
@@ -1409,12 +1413,18 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     }
     bool restart = false;
     {
+        // The active prim's path is left out: what the render takes of it reaches it through its
+        // settings.
+        SceneMetadata before = _imp->sceneStage->getPayload().getMetadata();
+        SceneMetadata after = payload.getMetadata();
+        before.renderSettingsPrimPath.clear();
+        after.renderSettingsPrimPath.clear();
         StageChangePaths changes(_imp->sceneStage->getStage());
         if (_imp->sceneStage->sync(payload)) {
             // An edit of the render settings prims alone restarts nothing here: what of it the
             // render takes, the active prim's settings for its renderer, reaches it through
             // ProgressiveRender::setSettings(), which makes the engine again when they differ.
-            restart = changes.outsideRender || !changes.any;
+            restart = changes.outsideRender || !changes.any || (before != after);
         }
     }
     if (restart) {
@@ -2303,8 +2313,13 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return eRenderStatusDone;
     }
-    // Scene Default follows the renderer the stage's render settings prim names.
-    _imp->switchRenderer(_imp->effectiveRenderer());
+    {
+        // Scene Default follows the renderer the stage's render settings prim names. Dropping
+        // the Storm engine here, inside Qt's paint, touches the GL state Qt draws the widget with
+        // afterwards, as rendering with it does.
+        StormGLStateGuard guard;
+        _imp->switchRenderer(_imp->effectiveRenderer());
+    }
     if (_imp->rendererId != kRenderDelegateStormId) {
         return renderProgressive(fbo, width, height);
     }

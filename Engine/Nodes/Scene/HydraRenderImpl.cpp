@@ -3122,6 +3122,11 @@ ProgressiveRender::getStatus() const
     std::lock_guard<std::mutex> l(_imp->mutex);
     Status status = _imp->status;
 
+    // An edit waits out the quiet period before the worker restarts; until then the last frame
+    // is not what the render converges to.
+    if (_imp->pending) {
+        status.converged = false;
+    }
     status.stopped = _imp->stopped;
     status.maxSamples = (_imp->maxSamples > 0) ? _imp->maxSamples : _imp->defaultMaxSamples;
 

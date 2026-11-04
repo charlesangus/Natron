@@ -804,6 +804,7 @@ TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
     makeActive->setValue(false);
     (void)defaultRenderer->setValueFromID(kStubRendererId, 0);
     ASSERT_TRUE(RenderSettingsTestUtils::configure(second, "/World/Cam", 64, 32));
+    disconnectNodes(first, node, true);
     connectNodes(first, second, 0, true);
     connectNodes(second, node, 0, true);
 
@@ -977,7 +978,9 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
     std::vector<RenderedPlane> planes;
     std::list<ImageLayerDesc> rgba;
     rgba.push_back(ImageLayerDesc::getRGBAComponents());
-    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 32), rgba, &planes, &error)) << error;
+    // Bypassing the cache would empty the caches after the render, releasing the engine asked next.
+    appPTR->clearAllCaches();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 32), rgba, &planes, &error, false)) << error;
     PXR_NS::VtValue samples;
     ASSERT_TRUE(HydraRender::engineSetting(effect, "cycles:samples", &samples));
     EXPECT_EQ(PXR_NS::VtValue(3), samples);

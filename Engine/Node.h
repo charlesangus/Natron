@@ -311,6 +311,13 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief The stored content hash without the HashNamespaces folded in, which is what a
+     * downstream node folds of its inputs: their namespaces reach it through its own table instead,
+     * so an effect consuming them sees only the ones it folds itself.
+     **/
+    U64 getStoredBaseContentHash() const;
+
+    /**
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
@@ -2214,8 +2221,12 @@ private:
      **/
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    // namespaces, when not null, is set to the node's HashNamespaces.
-    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs, HashNamespacesConstPtr* namespaces = nullptr) const;
+    // namespaces, when not null, is set to the node's HashNamespaces, and baseHash to the hash
+    // without them.
+    U64 computeContentHash(U64 projectDigest,
+                           const HashInputs& inputs,
+                           HashNamespacesConstPtr* namespaces = nullptr,
+                           U64* baseHash = nullptr) const;
 
     // The inputs' HashNamespaces with the node's own on top.
     HashNamespacesConstPtr mergeHashNamespaces(const HashInputs& inputs) const;

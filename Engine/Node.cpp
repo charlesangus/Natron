@@ -854,6 +854,14 @@ Node::getStoredContentHash() const
     return _imp->contentHash;
 }
 
+U64
+Node::getStoredBaseContentHash() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->baseContentHash;
+}
+
 bool
 Node::getHashValueIfUpToDate(U64* hash) const
 {
@@ -926,7 +934,8 @@ Node::computeHashInternal(U64 projectDigest,
     // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
     HashNamespacesConstPtr namespaces;
-    const U64 contentHash = computeContentHash(projectDigest, inputs, &namespaces);
+    U64 baseContentHash = 0;
+    const U64 contentHash = computeContentHash(projectDigest, inputs, &namespaces, &baseContentHash);
 
     U64 oldContentHash;
     {
@@ -934,6 +943,7 @@ Node::computeHashInternal(U64 projectDigest,
 
         oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
+        _imp->baseContentHash = baseContentHash;
         _imp->hashNamespaces = namespaces;
     }
     *newContentHash = contentHash;
@@ -1077,7 +1087,8 @@ HashNamespaces::appendAll(ContentHasher& h) const
 U64
 Node::computeContentHash(U64 projectDigest,
                          const HashInputs& inputs,
-                         HashNamespacesConstPtr* namespaces) const
+                         HashNamespacesConstPtr* namespaces,
+                         U64* baseHash) const
 {
     ContentHasher h;
 
@@ -1106,28 +1117,14 @@ Node::computeContentHash(U64 projectDigest,
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
             const NodePtr& input = inputs.bySlot[i].second;
-            h.appendU64(input ? input->getStoredContentHash() : 0);
+            h.appendU64(input ? input->getStoredBaseContentHash() : 0);
         }
     } else {
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
-            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
+            h.appendU64(inputs.bySlot[i].second->getStoredBaseContentHash());
         }
         h.appendU64(inputs.bySlot.size());
-    }
-    // The namespaced knobs upstream are in the stage this node reads, so every node folds them
-    // all, but an effect that folds what it reads of them itself and outputs no stage.
-    HashNamespacesConstPtr table;
-    const bool consumesNamespaces = _imp->effect->consumesHashNamespaces();
-    if (!consumesNamespaces) {
-        table = mergeHashNamespaces(inputs);
-    }
-    h.appendBool(bool(table));
-    if (table) {
-        table->appendAll(h);
-    }
-    if (namespaces) {
-        *namespaces = table;
     }
 
     // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
@@ -1186,7 +1183,29 @@ Node::computeContentHash(U64 projectDigest,
 
     h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
 
-    return h.finalize();
+    // The namespaced knobs upstream are in the stage this node reads, so every node folds them
+    // all, but an effect that folds what it reads of them itself and outputs no stage. They are
+    // folded last and kept out of the base hash: the inputs' base hashes are what a node folds, so
+    // a consumer is not moved by the namespaces it leaves out.
+    HashNamespacesConstPtr table;
+    if (!_imp->effect->consumesHashNamespaces()) {
+        table = mergeHashNamespaces(inputs);
+    }
+    if (namespaces) {
+        *namespaces = table;
+    }
+    const U64 base = h.finalize();
+    if (baseHash) {
+        *baseHash = base;
+    }
+    if (!table) {
+        return base;
+    }
+    ContentHasher full;
+    full.appendU64(base);
+    table->appendAll(full);
+
+    return full.finalize();
 } // Node::computeContentHash
 
 HashNamespacesConstPtr

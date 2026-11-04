@@ -195,6 +195,7 @@ public:
         , renderInstancesSharedMutex()
         , contentHashMutex()
         , contentHash(0)
+        , baseContentHash(0)
         , nodeLinksMutex()
         , nodeLinks()
         , nodeSettingsPage()
@@ -394,8 +395,9 @@ public:
     QWaitCondition mustQuitPreviewCond;
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
-    mutable QReadWriteLock contentHashMutex; //< protects contentHash and hashNamespaces
+    mutable QReadWriteLock contentHashMutex; //< protects contentHash, baseContentHash and hashNamespaces
     U64 contentHash; //< 0 until first computed
+    U64 baseContentHash; //< contentHash without hashNamespaces folded; 0 until first computed
     HashNamespacesConstPtr hashNamespaces;
 
     // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a

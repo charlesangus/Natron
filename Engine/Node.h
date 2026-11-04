@@ -357,8 +357,8 @@ public:
      * knobs' read sources and getExtraContextReads() name, and the same for every node it
      * reads, through inputs and through expressions and links, less, for an input, the variables
      * the effect sets on it under every context (see
-     * EffectInstance::getOverriddenContextVariables(); not subtracted when the input reads this
-     * node back through an expression, the two then sharing one read-set). Memoized until the next
+     * EffectInstance::getOverriddenContextVariables()). Nodes reading each other in a cycle get the
+     * least sets satisfying this for each of them. Memoized until the next
      * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
      **/
     RenderContextReadSetConstPtr getUpstreamContextReadSet() const;

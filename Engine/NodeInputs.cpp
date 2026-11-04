@@ -2157,9 +2157,10 @@ Node::getUpstreamContextReadSet() const
     static const RenderContextReadSetConstPtr emptyReads = std::make_shared<const RenderContextReadSet>();
 
     // Tarjan's strongly connected components, iteratively so that a deep graph cannot overflow
-    // the stack. Expressions can make the graph cyclic; the nodes of a cycle read each other, so
-    // they share one read-set. Every node walked gets its memo, so asking each node of a graph
-    // in turn walks the graph once.
+    // the stack. Expressions and Feedback LoopBegins can make the graph cyclic. An edge of a cycle
+    // can override variables, as the LoopEnd of a loop nested in a Feedback body does, so the nodes
+    // of a cycle read different sets: each component is solved to its least fixed point. Every
+    // node walked gets its memo, so asking each node of a graph in turn walks the graph once.
     struct Visit {
         const Node* node;
         NodePtr hold;
@@ -2219,19 +2220,42 @@ Node::getUpstreamContextReadSet() const
 
         callStack.pop_back();
         if (visits[v].lowlink == visits[v].index) {
-            RenderContextReadSet componentReads;
             std::size_t first = componentStack.size();
             do {
                 --first;
-                componentReads.merge(visits[componentStack[first]].reads);
             } while (componentStack[first] != v);
-            const RenderContextReadSetConstPtr closure = componentReads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(std::move(componentReads));
+            // Each member's reads hold what leaves the component so far. Reads flow against the
+            // edges and discovery order follows them, so walking it backwards takes few passes.
+            bool changed = (componentStack.size() - first) > 1;
+            while (changed) {
+                changed = false;
+                for (std::size_t i = componentStack.size(); i-- > first;) {
+                    Visit& member = visits[componentStack[i]];
+                    for (std::size_t edge = 0; edge < member.successors.size(); ++edge) {
+                        std::unordered_map<const Node*, std::size_t>::const_iterator found = visitOf.find(member.successors[edge].get());
+                        if ((found == visitOf.end()) || !visits[found->second].onStack || (found->second == componentStack[i])) {
+                            continue;
+                        }
+                        const bool readAll = member.reads.readsAll();
+                        const std::size_t nNames = member.reads.names().size();
+                        mergeSuccessorReads(&member.reads, visits[found->second].reads, member.overridden[edge]);
+                        changed = changed || (member.reads.readsAll() != readAll) || (member.reads.names().size() != nNames);
+                    }
+                }
+            }
+            RenderContextReadSetConstPtr closure;
+            for (std::size_t i = first; i < componentStack.size(); ++i) {
+                Visit& member = visits[componentStack[i]];
+                if (!closure || (*closure != member.reads)) {
+                    closure = member.reads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(member.reads);
+                }
+                member.closure = closure;
+                member.node->setMemoizedContextReads(generation, closure);
+            }
             for (std::size_t i = first; i < componentStack.size(); ++i) {
                 Visit& member = visits[componentStack[i]];
                 member.onStack = false;
-                member.closure = closure;
                 member.reads = RenderContextReadSet();
-                member.node->setMemoizedContextReads(generation, closure);
             }
             componentStack.resize(first);
         }

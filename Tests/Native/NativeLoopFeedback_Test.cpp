@@ -64,6 +64,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/TimeLine.h"
@@ -1026,6 +1027,18 @@ TEST_F(NativeLoopFeedbackTest, NestedFeedbackLoops)
     ASSERT_TRUE(innerEnd->connectInput(body, 0));
     ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
     cacheEverything({ outerBegin, innerBegin, body, innerEnd, outerEnd });
+
+    // The outer feedback edge puts the inner LoopEnd on a cycle, yet what it sets stays out of its
+    // read-set: an outer iteration is one image whichever inner iteration asks for it.
+    const RenderContextName innerT = RenderContextName::loops("inner", "t");
+    const RenderContextName outerT = RenderContextName::loops("outer", "t");
+    EXPECT_TRUE(body->getUpstreamContextReadSet()->contains(innerT));
+    EXPECT_TRUE(body->getUpstreamContextReadSet()->contains(outerT));
+    EXPECT_FALSE(innerEnd->getUpstreamContextReadSet()->contains(innerT));
+    EXPECT_TRUE(innerEnd->getUpstreamContextReadSet()->contains(outerT));
+    EXPECT_FALSE(outerBegin->getUpstreamContextReadSet()->contains(innerT));
+    EXPECT_TRUE(outerBegin->getUpstreamContextReadSet()->contains(outerT));
+    EXPECT_FALSE(outerEnd->getUpstreamContextReadSet()->contains(outerT));
 
     const U64 outerHash = outerBegin->getContentHash();
     const U64 innerHash = innerBegin->getContentHash();

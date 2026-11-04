@@ -389,6 +389,7 @@ future core work has solid ground to build on.
 | M319 | Group Node Direct Render | todo | - |  | E14 | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
 | M320 | Write All Input Metadata | todo | - |  | E3 | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
 | M321 | Render Thread Count Race | done | - | bosley-native-nodes | E2 | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |
+| M322 | NVIDIA Exit Deadlock Fix | todo | - |  | E14 | [M322-nvidia-exit-deadlock-fix.md](PLAN/MILESTONES/M322-nvidia-exit-deadlock-fix.md) |
 
 # Epics
 
@@ -415,7 +416,7 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
-- **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs).
+- **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03).
 - M231 - Scene Graph Panel (bosley-native-nodes): on hold, not to merge (user, 2026-11-02: "more thoughts trying it again"); waiting for the user's feedback. M232 - Scene Selection To Nodes is stacked on it and waits too.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
 - **NatronRenderer and [Project] (PM, 2026-11-02):** `NatronRenderer -w Write 3-3 defocus_retime.ntpz` fails with "Could not open [Project]/../…": the Write path's [Project] is not expanded when the renderer opens an .ntpz directly (seen on the M125 branch, before M245 - Write Path Variables). Re-check once M245 is on main; if it persists, file it.

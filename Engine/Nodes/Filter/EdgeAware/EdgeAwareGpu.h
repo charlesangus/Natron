@@ -46,8 +46,8 @@ NATRON_NAMESPACE_ENTER
  * Inputs must be visible to compute reads when recording starts; the outputs are visible to
  * later dispatches when a function returns. Intermediates are scratch buffers ctx holds, so ctx
  * needs a buffer pool. A buffer of more than 2^32 floats is refused. The results match the CPU's
- * to rounding: GPU division and transcendental functions are not correctly rounded, and the error
- * sums of the heal and the colour guided filter's tiles run in another order.
+ * to rounding: GPU division and transcendental functions are not correctly rounded, and the sums
+ * of the heal and the colour guided filter's tiles run in another order.
  **/
 namespace EdgeAware {
 /// boxMean(), in place.
@@ -167,6 +167,7 @@ gpu::GpuStatus recordEigfSurfaceBlur(gpu::GpuRecordContext& ctx,
 /**
  * @brief dwtDecomposeScales(): bands is set to the number of detail bands, which go to the first
  * entries of details, finest first; details must hold at least min(scales, dwtMaxScale()) buffers.
+ * capWidth and capHeight are DwtParams' for a crop of a larger image.
  **/
 gpu::GpuStatus recordDwtDecomposeScales(gpu::GpuRecordContext& ctx,
                                         const gpu::GpuBuffer& in,
@@ -175,7 +176,9 @@ gpu::GpuStatus recordDwtDecomposeScales(gpu::GpuRecordContext& ctx,
                                         int scales,
                                         std::span<const gpu::GpuBuffer* const> details,
                                         const gpu::GpuBuffer& residual,
-                                        int& bands);
+                                        int& bands,
+                                        int capWidth = 0,
+                                        int capHeight = 0);
 
 /// bsplineDecomposeScales(), details holding at least scales buffers.
 gpu::GpuStatus recordBsplineDecomposeScales(gpu::GpuRecordContext& ctx,
@@ -212,21 +215,26 @@ gpu::GpuStatus recordDecompose2DBspline(gpu::GpuRecordContext& ctx,
                                         int height,
                                         int mult);
 
+/// The most cycles recordPoissonHeal() records; the CPU solve converges well within them.
+const int kPoissonHealGpuMaxCycles = 64;
+
 /**
- * @brief poissonHeal(), in place on dest. Records three dispatches an iteration, all maxIter of
- * them: the ones after convergence return at once. A device without push descriptors refuses more
- * than kPoissonHealGpuMaxIterationsWithoutPushDescriptors iterations, which would exhaust a
- * kernel's descriptor pool.
+ * @brief poissonHealMultigrid(), in place on dest, without a guess. hostMask is mask's contents,
+ * from which the multigrid hierarchy is built and uploaded while recording. The smoothing sweeps
+ * touch the masked cells only, and the levels of at most a few thousand cells run in a single
+ * dispatch a cycle, so a cycle is tens of dispatches. min(maxCycles, kPoissonHealGpuMaxCycles)
+ * cycles are recorded; those after convergence return at once. dispatches, when not null, is set
+ * to the dispatches recorded.
  **/
 gpu::GpuStatus recordPoissonHeal(gpu::GpuRecordContext& ctx,
                                  const gpu::GpuBuffer& src,
                                  const gpu::GpuBuffer& dest,
                                  const gpu::GpuBuffer& mask,
+                                 const float* hostMask,
                                  int width,
                                  int height,
-                                 int maxIter);
-
-const int kPoissonHealGpuMaxIterationsWithoutPushDescriptors = 500;
+                                 int maxCycles,
+                                 int* dispatches = nullptr);
 } // namespace EdgeAware
 
 NATRON_NAMESPACE_EXIT

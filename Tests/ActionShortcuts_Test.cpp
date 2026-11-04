@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QSettings>
@@ -328,13 +329,23 @@ TEST(Viewer3DNavigationPresetTest, ResetGivesTheCurrentPresetsBinding)
 TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
 {
     const std::vector<Viewer3DKeyBinding>& keys = getViewer3DDefaultKeyBindings();
-    ASSERT_EQ(std::size_t(15), keys.size());
+    ASSERT_EQ(std::size_t(22), keys.size());
+    std::vector<std::pair<std::string, std::pair<int, int>>> bound;
     for (std::size_t i = 0; i < keys.size(); ++i) {
         EXPECT_NE(nullptr, keys[i].description) << keys[i].actionID;
         for (std::size_t j = i + 1; j < keys.size(); ++j) {
             EXPECT_NE(std::string(keys[i].actionID), std::string(keys[j].actionID));
-            EXPECT_FALSE((keys[i].modifiers == keys[j].modifiers) && (keys[i].key == keys[j].key))
-                << keys[i].actionID << " and " << keys[j].actionID << " share a key";
+        }
+        if (keys[i].key) {
+            bound.push_back(std::make_pair(std::string(keys[i].actionID), std::make_pair(int(keys[i].modifiers), int(keys[i].key))));
+        }
+        if (keys[i].altKey) {
+            bound.push_back(std::make_pair(std::string(keys[i].actionID), std::make_pair(int(keys[i].altModifiers), int(keys[i].altKey))));
+        }
+    }
+    for (std::size_t i = 0; i < bound.size(); ++i) {
+        for (std::size_t j = i + 1; j < bound.size(); ++j) {
+            EXPECT_NE(bound[i].second, bound[j].second) << bound[i].first << " and " << bound[j].first << " share a key";
         }
     }
     bool lockView = false;

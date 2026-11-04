@@ -871,8 +871,9 @@ private:
                 return fail(taskIndex, "the node has no GPU path");
             }
             std::vector<GpuTaskPlane> planes;
-            if (!makeGpuTaskPlanes(task, *_context, &planes)) {
-                return fail(taskIndex, "the node cannot render these settings on the GPU");
+            std::string refusal;
+            if (!makeGpuTaskPlanes(task, *_context, &planes, &refusal)) {
+                return fail(taskIndex, refusal.empty() ? std::string("the node cannot render these settings on the GPU") : refusal);
             }
             if ((task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
                 return fail(taskIndex, "the node renders at full scale");
@@ -3309,6 +3310,26 @@ regionShapeKey(const FrameGraph& graph, int region)
     return key;
 }
 
+// What renderRoI() does for a task it renders, since a member the region delivered never goes through it: a
+// render that delivers its image retires the channel-selector error of an older one. An identity member
+// returns before renderRoI()'s channel check and so retires nothing there either.
+void
+retireChannelSelectorMessages(const FrameRenderContextPtr& context,
+                              const FrameGraph& graph,
+                              int regionIndex)
+{
+    const AbortableRenderInfoPtr& abortInfo = context->getAbortInfo();
+    const U64 renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
+    const bool aborted = isContextAborted(context);
+
+    for (int member : graph.regions[regionIndex].members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        if (!task.isIdentity && task.key.node) {
+            task.key.node->clearChannelSelectorMessageFromRender(renderSequence, aborted);
+        }
+    }
+}
+
 #endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -3377,6 +3398,9 @@ runGpuRegion(const FrameRenderContextPtr& context,
                     report->retries = retries;
                     if (serial || (forcedRows > 0)) {
                         stripMemory().remember(generation, shapeKey, { forcedRows, serial });
+                    }
+                    if (code == EffectInstance::eRenderRoIRetCodeOk) {
+                        retireChannelSelectorMessages(context, graph, region);
                     }
 
                     return code;

@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
@@ -67,6 +68,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -119,6 +121,7 @@ gpuCapableIds()
         PLUGINID_NATRON_COLORLOOKUP,
         PLUGINID_NATRON_COLORCORRECT,
         PLUGINID_NATRON_COLORBALANCERGB,
+        PLUGINID_NATRON_COLOREQUALIZER,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
@@ -182,6 +185,7 @@ gpuCapableIds()
         PLUGINID_NATRON_TIMEBLUR,
         PLUGINID_NATRON_APPENDCLIP,
         PLUGINID_NATRON_SLITSCAN,
+        PLUGINID_NATRON_VECTORBLUR,
     };
 
     return ids;

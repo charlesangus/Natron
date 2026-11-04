@@ -194,7 +194,7 @@ future core work has solid ground to build on.
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
-| M259 | GPU Placement Under Render Contexts | doing | M180, M181, M182 | bosley-native-nodes | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
+| M259 | GPU Placement Under Render Contexts | done | M180, M181, M182 | bosley-native-nodes | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | doing | M226 | bosley-native-nodes | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
@@ -280,9 +280,9 @@ future core work has solid ground to build on.
 | M176 | Splice-Vertical Regression | done | - |  | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
 | M178 | Render Context Core | done | M167 |  | E13 | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
-| M180 | Loop Block Core | doing | M178 | bosley-native-nodes | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
-| M181 | Loop Drivers And UI | doing | M180, M71 | bosley-native-nodes | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
-| M182 | Loop Feedback | doing | M180 | bosley-native-nodes | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
+| M180 | Loop Block Core | done | M178 | bosley-native-nodes | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
+| M181 | Loop Drivers And UI | done | M180, M71 | bosley-native-nodes | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
+| M182 | Loop Feedback | done | M180 | bosley-native-nodes | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
 | M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | done | M113, M184 |  | E15 | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
@@ -290,7 +290,7 @@ future core work has solid ground to build on.
 | M187 | Variable Sharpen And Glow | blocked | M123, M184 |  | E15 | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
-| M190 | Cross-Frame Feedback | doing | M182 | bosley-native-nodes | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
+| M190 | Cross-Frame Feedback | done | M182 | bosley-native-nodes | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
 | M191 | Native VectorBlur | done | M120, M137 | bosley-native-nodes | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |

@@ -62,3 +62,4 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 - 2026-11-02 — The loop name lives on LoopBegin, which is fine (user).
 - 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.
 - 2026-11-04 — Loop name knob lives on LoopEnd (user, confirming the approved build; supersedes the 2026-11-02 note that said LoopBegin).
+- 2026-11-04 — Merged with the loop stack as 08cc4a8d8 (PR #189; user approved).

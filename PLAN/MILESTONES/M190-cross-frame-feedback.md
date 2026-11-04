@@ -113,3 +113,4 @@ Acceptance sketch:
 - 2026-11-02 — P4/P5 at 3dc5f5f30: the render planner now plans a single-time range at its exact (possibly fractional) time (Engine/ParallelRenderArgs.cpp framesToRenderAhead). Known gap: Engine/EffectInstanceRenderDeep.cpp still falls back to the current frame for a fractional range, so fractional loop samples over deep images aren't planned (PM).
 - 2026-11-03 — Round 3 UAT: one AppImage for the stack, build/appimages/Natron-m259-gpu-loops.AppImage (3595cc0eb, main merged in; GUI checks m180/m181/m190 green). Steps: each milestone's .md, Round 3.
 - 2026-11-04 — User approved M190 and asked to merge the loop stack (M180, M181, M182, M190, M259): main merged up the chain, gate on M259, then squash-merge in order.
+- 2026-11-04 — Merged with the loop stack as 08cc4a8d8 (PR #189; user approved).

@@ -20,6 +20,7 @@ set(_natron_serial_suites
 set(_natron_core_hogging_suites
     NativeDenoiseProfiledReferenceTest
     NativeDenoiseProfiledGpuTest
+    NativeLoopFoldGpuTest
 )
 
 # Suites whose cases add up to more than the default 300 s, at three times the slower of the

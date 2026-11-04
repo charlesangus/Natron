@@ -151,6 +151,13 @@ public:
 
     virtual ~AppManager();
 
+    /**
+     * @brief Ends the process with rc once the manager is gone: flushes the profile sink, the log and the standard
+     * streams, then calls _exit(), so neither atexit handlers nor library destructors run. A termination signal that
+     * was accepted overrides rc with 128 + signal.
+     **/
+    [[noreturn]] static void exitWithoutLibraryDestructors(int rc);
+
     static AppManager* instance()
     {
         return _instance;

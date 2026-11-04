@@ -294,20 +294,20 @@ protected:
         return n;
     }
 
-    // Renders until done says the refinement is where it should be, the delegate fails, or the
-    // time is up. True if done said so.
+    // Renders until done says the refinement is where it should be and the render drew its
+    // converged frame, the delegate fails, or the time is up. True if both held.
     bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
     {
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
 
         while (std::chrono::steady_clock::now() < end) {
-            (void)_renderer.render(_fbo->handle(), kSize, kSize);
+            const bool drawn = _renderer.render(_fbo->handle(), kSize, kSize);
             if (!_renderer.getRendererError().empty()) {
                 ADD_FAILURE() << _renderer.getRendererError();
 
                 return false;
             }
-            if (done(_renderer.getRefineStatus())) {
+            if (drawn && done(_renderer.getRefineStatus())) {
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

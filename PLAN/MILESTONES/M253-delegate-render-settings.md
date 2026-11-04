@@ -99,7 +99,7 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
     - The plugin id is the key `HdRendererPluginRegistry` and the Renderer knobs already use.
   - verify: `rendererFor(prim)` returns the authored id; an unknown id is a named error, not a silent fallback to Storm
   - size: M
-- [ ] M253.P2.T7 — Make USDRender a thin consumer: Settings Prim choice and Renderer override
+- [x] M253.P2.T7 — Make USDRender a thin consumer: Settings Prim choice and Renderer override (4fe9eb7af, gate pending)
   - files: `Engine/Nodes/Scene/USDRender.{h,cpp}`, `HydraRenderImpl.{h,cpp}`, `Tests/Scene/USDRender_Test.cpp`, `USDRenderCycles_Test.cpp`, `USDRenderMoonRay_Test.cpp`
   - approach:
     - Remove `_settings` (USDRender.cpp:197-234, 538) and the camera, format and fit knobs.
@@ -109,22 +109,22 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
     - Build the request from T3: settings go through `SetRendererSetting` (HydraRenderImpl.cpp:848), and the camera, resolution and conform policy come from the prim. Map conform policy to `FitModeEnum` and add `expandAperture`. `adjustPixelAspect` warns.
   - verify: a precedence test (override > prim > Storm; Settings Prim override > metadata); a test that loads a hand-written .usda's /Render prim through USDRead and sees its cycles:samples, resolution and camera honoured
   - size: L
-- [ ] M253.P2.T8 — Hash only the active delegate's namespaces
+- [x] M253.P2.T8 — Hash only the active delegate's namespaces (4fe9eb7af, gate pending)
   - files: `Engine/Knob.h`, `Engine/Node.{h,cpp}`, `RenderSettingsKnobs.cpp`, `USDRender.cpp`, `Tests/Scene/USDRenderSettings_Test.cpp`
   - approach: renderer-tab knobs get a hash namespace. `getKnobsContentDigest` (Node.cpp:~900) skips them and folds them instead into a per-(prim, namespace) digest side table. That table also carries the node's default renderer and Make Active. `computeContentHash` (:950) merges it down the inputs. The node's `SceneLayerMemo` key still includes these knobs. USDRender's `appendNodeContentHash` folds only the active entry's digests; when the active prim isn't in the table (it comes from a file), it folds every namespace.
   - verify: editing a MoonRay knob while Cycles is active leaves USDRender's hash unchanged; switching to MoonRay afterwards changes it and renders the edited value (no stale cache hit)
   - size: L
-- [ ] M253.P2.T9 — Viewer reads the active prim
+- [x] M253.P2.T9 — Viewer reads the active prim (4fe9eb7af, gate pending)
   - files: `Gui/SceneViewport.{h,cpp}`, `Tests/SceneViewport_Test.cpp`
   - approach: the viewer applies T3's settings for its renderer from the stage's active prim. M254 - Progressive Viewer Render's Max Samples and Stop stay viewer-local and are applied last, over `cycles:samples` / `moonray:sceneVariable:pixel_samples`. Add a "Scene Default" entry to the dropdown, keeping Storm as the default per the M248 user decision of 2026-10-27. Restart only when the changed paths touch the active namespaces or anything outside /Render. MoonRay in the progressive viewer too: the viewer engine calls `MoonRayAovs::configureEngine` (its AOVs and thread budget), as USDRender's does; M254 was built before MoonRay landed.
   - verify: strict GUI runner: a Cycles viewer takes the prim's samples, Max Samples overrides it, and a MoonRay-tab edit does not restart refinement
   - size: M
-- [ ] M253.P2.T10 — GUI check
+- [x] M253.P2.T10 — GUI check (4fe9eb7af, gate pending)
   - files: `Tests/gui/m253_render_settings.py`
   - approach: a remote GUI check (`build.sh --gui`) at 1920x1080: a USDRenderSettings panel with Cycles, MoonRay and Storm tabs, USDRender's thin panel, and the viewer dropdown
   - verify: screenshots shared one per file; the user OKs them
   - size: M
-- [ ] M253.P2.T11 — Docs
+- [x] M253.P2.T11 — Docs (4fe9eb7af, gate pending)
   - files: new `Engine/Nodes/Scene/docs/USDRenderSettings.md`, `docs/USDRender.md`
   - approach: describe the node, tabs, `natron:renderer`, precedence, the hash rule, and loading external /Render prims
   - verify: the docs build; the knob labels match the script names
@@ -144,3 +144,4 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 - 2026-11-03 — User: Cycles can't really be tested without render settings; proceed with Phase 253.2 and UAT M249/M251/M252/M254 together with M253 (one AppImage). M252 and M254 merged in (merges 2026-11-03).
 - 2026-11-03 — T1: neither delegate consumes HdRenderSettings prims; both take settings only through SetRenderSetting, so the host translates the prim. Cycles charlesangus/cycles@c8d449e6 (v5.2.0+deep): src/hydra/render_delegate.cpp:58-64,168 (Bprims renderBuffer/openvdbAsset only), no GetRenderSettingsNamespaces; settings via SetRenderSetting (cpp:133, 401). MoonRay openmoonray v2026.29.1/d96c6e30, hdMoonray@986121db: lib/hydramoonray/RenderDelegate.cc:187-193 (Bprims renderBuffer/openvdbAsset), no namespaces or SetRenderSetting override (base store; RenderSettings.cc:70,86,109).
 - 2026-11-03 — T3: UsdRenderComputeNamespacedSettings reads defaults only, so settings() reads each attribute at the requested time. T5: author(prim) takes the prim, not the layer edit.
+- 2026-11-03 — T7–T11 at 4fe9eb7af. USDRender reads only camera, resolution, pixel aspect and conform policy from the prim; Data Window and the motion-blur/DoF switches are authored but not yet consumed (documented). Follow-up in progress: consumers other than USDRender fold every namespace digest so USDWrite etc. see renderer-tab edits.

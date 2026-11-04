@@ -455,9 +455,21 @@ public:
 
     /**
      * @brief render(), unless a sync holds the viewer lock, in which case nothing is drawn and the
-     * framebuffer keeps what it had. For paints, which must not wait for a sync.
+     * framebuffer keeps what it had. For paints, which must not wait for a sync. It keeps the
+     * renderer it has: when Scene Default's prim names another, it draws with the old one and
+     * hasPendingRendererSwitch() turns true until followSceneRenderer() makes the switch.
      **/
     RenderStatusEnum renderIfIdle(unsigned int fbo, int width, int height);
+
+    /**
+     * @brief Under Scene Default, renders with the renderer the stage's prim names from the next
+     * render on; true if that changed the renderer. A change destroys the engine, so it needs the
+     * context of render() current.
+     **/
+    bool followSceneRenderer();
+
+    // Whether the last renderIfIdle() drew with a renderer Scene Default no longer names.
+    bool hasPendingRendererSwitch() const;
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
@@ -529,7 +541,7 @@ public:
     int getLastUploadPixels() const;
 
 private:
-    RenderStatusEnum renderLocked(unsigned int fbo, int width, int height);
+    RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);
 
     RenderStatusEnum renderProgressive(unsigned int fbo, int width, int height);
 
@@ -778,6 +790,15 @@ private:
 
     // Main thread: the worker synced request serial, with error set on failure.
     void onSynced(U64 serial, bool ok, const QString& error);
+
+    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names.
+    void followSceneRenderer();
+
+    /**
+     * @brief Publishes the delegate rendering and emits rendererChanged() if it changed. Never from
+     * paintGL(): the render row it shows or hides resizes this widget.
+     **/
+    void publishActiveRenderer();
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

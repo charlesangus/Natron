@@ -381,6 +381,8 @@ struct SceneViewportRenderer::Implementation {
     std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
     std::string rendererError;
+    // Whether the last render that kept its renderer found Scene Default naming another.
+    bool rendererSwitchPending = false;
     // The stage's active render settings prim as of an edit count: its path, empty without one,
     // and the renderer it names, Storm's without one. Then the prim's settings for a renderer at
     // a time. All need stageMutex.
@@ -2288,7 +2290,7 @@ SceneViewportRenderer::render(unsigned int fbo,
 {
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
-    return renderLocked(fbo, width, height) == eRenderStatusDone;
+    return renderLocked(fbo, width, height, true) == eRenderStatusDone;
 }
 
 SceneViewportRenderer::RenderStatusEnum
@@ -2302,24 +2304,26 @@ SceneViewportRenderer::renderIfIdle(unsigned int fbo,
         return eRenderStatusBusy;
     }
 
-    return renderLocked(fbo, width, height);
+    return renderLocked(fbo, width, height, false);
 }
 
 SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderLocked(unsigned int fbo,
                                     int width,
-                                    int height)
+                                    int height,
+                                    bool followScene)
 {
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return eRenderStatusDone;
     }
-    {
-        // Scene Default follows the renderer the stage's render settings prim names. Dropping
-        // the Storm engine here, inside Qt's paint, touches the GL state Qt draws the widget with
-        // afterwards, as rendering with it does.
+    // Scene Default follows the renderer the stage's render settings prim names. A paint keeps
+    // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
+    const std::string effective = _imp->effectiveRenderer();
+    if (followScene) {
         StormGLStateGuard guard;
-        _imp->switchRenderer(_imp->effectiveRenderer());
+        _imp->switchRenderer(effective);
     }
+    _imp->rendererSwitchPending = (effective != _imp->rendererId);
     if (_imp->rendererId != kRenderDelegateStormId) {
         return renderProgressive(fbo, width, height);
     }
@@ -2658,6 +2662,24 @@ SceneViewportRenderer::setRendererId(const std::string& id)
     // The error is cleared even for the same id, so that choosing it again retries it.
     _imp->rendererError.clear();
     _imp->switchRenderer(_imp->effectiveRenderer());
+}
+
+bool
+SceneViewportRenderer::followSceneRenderer()
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const std::string before = _imp->rendererId;
+
+    _imp->switchRenderer(_imp->effectiveRenderer());
+    _imp->rendererSwitchPending = false;
+
+    return _imp->rendererId != before;
+}
+
+bool
+SceneViewportRenderer::hasPendingRendererSwitch() const
+{
+    return _imp->rendererSwitchPending;
 }
 
 const std::string&
@@ -3157,6 +3179,8 @@ struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
     QString error;
     bool glInitialized = false;
+    // The delegate rendering as of the last rendererChanged().
+    std::string announcedRenderer = kRenderDelegateStormId;
 
     // What a drag of the pressed button does.
     enum DragRoleEnum {
@@ -3408,6 +3432,8 @@ SceneViewport::onSynced(U64 serial,
                         const QString& error)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    // The synced stage may name another renderer for Scene Default.
+    followSceneRenderer();
     if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
         // A good sync normally drops the preview with the stage update; this covers a failed one
         // and one synced before the drag's write was known to the renderer.
@@ -3436,6 +3462,26 @@ SceneViewport::onSynced(U64 serial,
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
     publishState();
     update();
+}
+
+void
+SceneViewport::followSceneRenderer()
+{
+    // Dropping the old engine needs its context, which a view not yet shown has not made: it has
+    // no engine then either.
+    const bool current = _imp->glInitialized && context();
+    if (current) {
+        makeCurrent();
+    }
+    const bool changed = _imp->renderer.followSceneRenderer();
+    if (current) {
+        doneCurrent();
+    }
+    if (changed) {
+        publishState();
+        publishActiveRenderer();
+        update();
+    }
 }
 
 bool
@@ -3636,7 +3682,21 @@ SceneViewport::setRendererId(const QString& id)
     doneCurrent();
     publishState();
     update();
+    _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
     Q_EMIT rendererChanged(id);
+}
+
+void
+SceneViewport::publishActiveRenderer()
+{
+    // Under Scene Default the delegate follows the stage's prim: the render row follows it.
+    const std::string& active = _imp->renderer.getActiveRendererId();
+
+    if (_imp->announcedRenderer != active) {
+        _imp->announcedRenderer = active;
+        setProperty("natronSceneActiveRenderer", QString::fromStdString(active));
+        Q_EMIT rendererChanged(QString::fromStdString(_imp->renderer.getRendererId()));
+    }
 }
 
 void
@@ -4339,6 +4399,10 @@ SceneViewport::paintGL()
 
         return;
     }
+    if (_imp->renderer.hasPendingRendererSwitch()) {
+        // A sync landed between the last one followed and this paint.
+        QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
+    }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
@@ -4348,13 +4412,10 @@ SceneViewport::paintGL()
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
-    {
-        // Under Scene Default the delegate follows the stage's prim: the render row follows it.
-        const QString active = QString::fromStdString(_imp->renderer.getActiveRendererId());
-        if (property("natronSceneActiveRenderer").toString() != active) {
-            setProperty("natronSceneActiveRenderer", active);
-            Q_EMIT rendererChanged(QString::fromStdString(_imp->renderer.getRendererId()));
-        }
+    if (_imp->announcedRenderer != _imp->renderer.getActiveRendererId()) {
+        // The render row shown or hidden resizes this widget, which inside its paint frees the
+        // texture Qt then composes the window from.
+        QTimer::singleShot(0, this, [this]() { publishActiveRenderer(); });
     }
     // Whether the stage's own lights lit this paint, and the guides it drew: path, kind and a
     // point on each in widget pixels.

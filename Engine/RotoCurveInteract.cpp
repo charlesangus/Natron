@@ -1675,6 +1675,8 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
     }
     menuKnobs.push_back(showInCurveEditorMenuAction.lock());
     menuKnobs.push_back(removeFromCurveEditorMenuAction.lock());
+    // The click selected the point's curve, which the host's actions work on.
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {

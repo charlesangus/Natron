@@ -1325,6 +1325,61 @@ TEST_F(SplineWarpToolsTest, TheViewerMenuOnACurveRunsTheWarpActions)
     EXPECT_FALSE(bool(ctx->getLink(b)));
 }
 
+TEST_F(SplineWarpToolsTest, TheViewerMenuOnAControlPointListsTheWarpActions)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpInteractPtr ui = interactOf(node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(ui && ctx);
+
+    BezierPtr a = makeQuad(ctx, 10., 10., 10.);
+    BezierPtr b = makeQuad(ctx, 30., 10., 10.);
+    ASSERT_TRUE(a && b);
+
+    // The point menu ends with the same entries as the curve menu, enabled by the same rules on
+    // the selection, which the click on the point sets to the point's curve.
+    const auto check = [&](const std::list<BezierPtr>& selection, const BezierPtr& clicked) {
+        select(ui, selection);
+        ui->showMenuForControlPoint(clicked->getControlPointAtIndex(0));
+        KnobChoicePtr menu = ui->rightClickMenuKnob.lock();
+        ASSERT_TRUE(bool(menu));
+        std::vector<std::string> names;
+        const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            names.push_back(entries[i].id);
+        }
+        const std::list<RotoItemPtr> items(selection.begin(), selection.end());
+        const std::vector<RotoCurvePanelHook::MenuAction> actions = ui->getCurveMenuActions(items);
+        ASSERT_EQ(std::size_t(8), actions.size());
+        ASSERT_GE(names.size(), actions.size());
+        EXPECT_NE(names.end(), std::find(names.begin(), names.end(), std::string("SmoothItemsAction")));
+        const std::size_t first = names.size() - actions.size();
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            EXPECT_EQ(actions[i].id + "MenuAction", names[first + i]);
+            KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(names[first + i]));
+            ASSERT_TRUE(bool(button)) << names[first + i];
+            EXPECT_EQ(actions[i].enabled, button->isEnabled(0)) << names[first + i];
+        }
+    };
+
+    check(std::list<BezierPtr> { a }, a);
+    KnobButtonPtr duplicate = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("duplicateAndLinkMenuAction"));
+    KnobButtonPtr linkButton = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("linkMenuAction"));
+    ASSERT_TRUE(duplicate && linkButton);
+    EXPECT_TRUE(duplicate->isEnabled(0));
+    EXPECT_FALSE(linkButton->isEnabled(0));
+
+    check(std::list<BezierPtr> { a, b }, b);
+    EXPECT_FALSE(duplicate->isEnabled(0));
+    EXPECT_TRUE(linkButton->isEnabled(0));
+    linkButton->trigger();
+    SplineWarpLinkPtr link = ctx->getLink(a);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(a, link->getSource());
+    EXPECT_EQ(b, link->getDestination());
+}
+
 TEST_F(SplineWarpToolsTest, SplineWarpIsListedInTheTransformMenu)
 {
     const PluginsMap& plugins = appPTR->getPluginsList();

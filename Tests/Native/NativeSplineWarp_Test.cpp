@@ -330,22 +330,22 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     EXPECT_EQ("Crop To Format", cropToFormat->getLabel());
     EXPECT_TRUE(cropToFormat->getValue());
 
-    // The whole warp's controls on the first page, what edits the selected curves and layers on
-    // the Selection page, how it is rendered on the Render page.
+    // The whole warp's controls on the first page, what transforms the selected curves and layers on
+    // the Transform page, how it is rendered on the Render page.
     KnobPagePtr controls = amount->getTopLevelPage();
     ASSERT_TRUE(bool(controls));
     EXPECT_EQ("Warp", controls->getLabel());
-    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamBoundaryBBox, kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
+    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox, kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_EQ(controls, knob->getTopLevelPage()) << name;
     }
-    for (const char* name : { kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, "translate", "extraMatrix" }) {
+    for (const char* name : { "translate", "extraMatrix" }) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         KnobPagePtr page = knob->getTopLevelPage();
         ASSERT_TRUE(bool(page)) << name;
-        EXPECT_EQ("Selection", page->getLabel()) << name;
+        EXPECT_EQ("Transform", page->getLabel()) << name;
     }
     EXPECT_FALSE(bool(node->getKnobByName("RotoTransformInteractive"))) << "the global preference sets how the transform handle updates";
     for (const char* name : { kSplineWarpParamSolver, kSplineWarpParamSmoothness, kSplineWarpParamCurveResolution,

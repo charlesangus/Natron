@@ -53,7 +53,7 @@ struct KnobRow {
 };
 
 const char* const kWarp = "Warp";
-const char* const kSelection = "Selection";
+const char* const kTransform = "Transform";
 const char* const kRender = "Render";
 
 // The audit table of the Nuke port, then the Natron extras it keeps. The mask and Resampler
@@ -66,18 +66,18 @@ auditRows()
         { kSplineWarpParamBoundaryBBox, "Boundary BBox", kWarp, { 1. } },
         { kSplineWarpUIParamOutputWarped, "Output Warped", kWarp, { 1. } },
         { kSplineWarpParamAmount, "Amount", kWarp, { 1. } },
-        { kSplineWarpParamLayerAmount, "Layer Amount", kSelection, { 1. } },
-        { kSplineWarpParamLinkAmount, "Link Amount", kSelection, { 1. } },
-        { "translate", "Translate", kSelection, { 0., 0. } },
-        { "rotate", "Rotate", kSelection, { 0. } },
-        { "scale", "Scale", kSelection, { 1., 1. } },
-        { "uniform", "Uniform", kSelection, { 1. } },
-        { "skewx", "Skew X", kSelection, { 0. } },
-        { "skewy", "Skew Y", kSelection, { 0. } },
-        { "skewOrder", "Skew Order", kSelection, { 0. } },
+        { kSplineWarpParamLayerAmount, "Layer Amount", kWarp, { 1. } },
+        { kSplineWarpParamLinkAmount, "Link Amount", kWarp, { 1. } },
+        { "translate", "Translate", kTransform, { 0., 0. } },
+        { "rotate", "Rotate", kTransform, { 0. } },
+        { "scale", "Scale", kTransform, { 1., 1. } },
+        { "uniform", "Uniform", kTransform, { 1. } },
+        { "skewx", "Skew X", kTransform, { 0. } },
+        { "skewy", "Skew Y", kTransform, { 0. } },
+        { "skewOrder", "Skew Order", kTransform, { 0. } },
         // Normalized: a new curve's centre is set to the Source format's centre.
-        { "center", "Center", kSelection, { 0.5, 0.5 } },
-        { "extraMatrix", "Extra Matrix", kSelection, { 1., 0., 0., 0., 1., 0., 0., 0., 1. } },
+        { "center", "Center", kTransform, { 0.5, 0.5 } },
+        { "extraMatrix", "Extra Matrix", kTransform, { 1., 0., 0., 0., 1., 0., 0., 0., 1. } },
         { kSplineWarpParamCurveResolution, "Curve Resolution", kRender, { 4. } },
         { kSplineWarpParamBoundaryCurveResolution, "Boundary Curve Resolution", kRender, { 4. } },
         { kSplineWarpParamPreviewResolution, "Preview Resolution", kRender, { 25. } },

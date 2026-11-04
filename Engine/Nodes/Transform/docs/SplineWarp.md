@@ -7,10 +7,9 @@ Rectangle, and a point tool that makes a curve of one point) and listed in the s
 
 The settings panel has three pages:
 
-- **Warp:** what applies to the whole warp: `amount`, `invert`, `boundaryBBox`, `cropToFormat`,
+- **Warp:** what applies to the whole warp: `amount`, `invert`, `layerAmount`, `linkAmount`, `boundaryBBox`, `cropToFormat`,
   `outputMask`, and the mask and mix every staged node has.
-- **Selection:** what edits the items selected in the curve list: `layerAmount`, `linkAmount`, and
-  the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`, `skewx`, `skewy`,
+- **Transform:** what transforms the items selected in the curve list: the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`, `skewx`, `skewy`,
   `skewOrder`, `center` and `extraMatrix`. Whether dragging the transform handle updates the
   viewer while it moves is the "Refresh viewer only when editing is finished" preference.
 - **Render:** `solver`, `smoothness`, `curveResolution`, `boundaryCurveResolution`,
@@ -114,7 +113,7 @@ curve's shape.
 counting what is outside as black, and keeps the output inside the format. Off, the warp can pull
 in the Source's pixels outside the format, and the whole region of definition is warped.
 
-**Transform (Selection page):** every curve and layer has its own transform, applied before the warp: a
+**Transform page:** every curve and layer has its own transform, applied before the warp: a
 transformed destination curve moves the warp with it. The page shows and edits the selected item's
 transform. A layer's transform applies to everything inside it, on top of their own. A transform
 link makes an item take another item's transform in place of its own (its layers still apply);

@@ -603,6 +603,23 @@ try:
         yield ("sleep", RENDER_MS)
         gt.shot("m148-viewer-menu-link.png")
 
+        gt.section("viewer-point-menu")
+        q4 = make_quad(700.0, 150.0, 1000.0, 350.0)
+        yield ("sleep", SETTLE_MS)
+        tree = fresh_tree(warp)
+        items = select_in_tree(tree, [q4])
+        require(len(items) == 1, "selected a new closed curve for the point menu")
+        seen = {}
+        run_viewer_menu_action(to_viewer(700.0, 150.0), "Duplicate and Link", seen)
+        ok = yield ("until", lambda: sw.getLink(q4) is not None, POLL_TIMEOUT_S)
+        report("NOTE the viewer menu on a control point: %r" % (seen,))
+        check(all(name in seen for name in CURVE_MENU_ACTIONS), "the viewer menu on a control point lists the warp actions")
+        check(seen.get("Duplicate and Link") is True and seen.get("Link") is False,
+              "the point menu enables Duplicate and Link, not Link, for one curve")
+        check(ok, "Duplicate and Link from the point menu linked the point's curve")
+        yield ("sleep", RENDER_MS)
+        gt.shot("m148-viewer-point-menu-duplicate.png")
+
         gt.section("point-tool")
         warp.getParam("PointTool").trigger()
         yield ("sleep", SETTLE_MS)

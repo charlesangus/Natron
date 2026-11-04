@@ -700,7 +700,7 @@ protected:
     // Called first thing on pen down.
     virtual void onPenDownStarted(PenType /*pen*/) { }
 
-    // Adds the host's own actions to the right-click menu on a curve, after the curve interact's.
+    // Adds the host's own actions to the right-click menu on a curve or one of its control points, after the curve interact's.
     virtual void appendCurveMenuActions(std::vector<KnobButtonPtr>* /*menuKnobs*/) { }
 
     // Pen down with a tool the curve interact doesn't handle. Returns true if it did something.

@@ -313,6 +313,39 @@ SplineWarp::initializeKnobs()
     page->addKnob(invert);
     _invert = invert;
 
+    KnobDoublePtr layerAmount = createKnob<KnobDouble>(tr("Layer Amount"));
+    layerAmount->setName(kSplineWarpParamLayerAmount);
+    layerAmount->setHintToolTip(tr("How far the links whose destination curves are in the selected layers move, on top of "
+                                   "Amount and each link's own amount; nested layers multiply. Enabled when only layers "
+                                   "and the curves inside them are selected, and edits every selected layer."));
+    layerAmount->setDefaultValue(1.);
+    layerAmount->setMinimum(0.);
+    layerAmount->setMaximum(1.);
+    layerAmount->setDisplayMinimum(0.);
+    layerAmount->setDisplayMaximum(1.);
+    // The amount lives on the layers; the knob only shows and edits the selected ones.
+    layerAmount->setIsPersistent(false);
+    layerAmount->setEvaluateOnChange(false);
+    layerAmount->setAllDimensionsEnabled(false);
+    page->addKnob(layerAmount);
+    _layerAmount = layerAmount;
+
+    KnobDoublePtr linkAmount = createKnob<KnobDouble>(tr("Link Amount"));
+    linkAmount->setName(kSplineWarpParamLinkAmount);
+    linkAmount->setHintToolTip(tr("How far the links of the selected curves move their destinations toward their sources, "
+                                  "on top of Amount and the layers' amounts. Enabled when every selected curve is "
+                                  "linked."));
+    linkAmount->setDefaultValue(1.);
+    linkAmount->setMinimum(0.);
+    linkAmount->setMaximum(1.);
+    linkAmount->setDisplayMinimum(0.);
+    linkAmount->setDisplayMaximum(1.);
+    linkAmount->setIsPersistent(false);
+    linkAmount->setEvaluateOnChange(false);
+    linkAmount->setAllDimensionsEnabled(false);
+    page->addKnob(linkAmount);
+    _linkAmount = linkAmount;
+
     KnobBoolPtr boundaryBBox = createKnob<KnobBool>(tr("Boundary BBox"));
     boundaryBBox->setName(kSplineWarpParamBoundaryBBox);
     boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, without masking anything, so the warp "
@@ -348,43 +381,10 @@ SplineWarp::initializeKnobs()
     // The mask is written to a layer of the output, not read from an input.
     getNode()->declareLayerKnob(outputMask, -1, LayerKnobSpec::eRoleTarget);
 
-    const KnobPagePtr selectionPage = createKnob<KnobPage>(tr("Selection"));
-
-    KnobDoublePtr layerAmount = createKnob<KnobDouble>(tr("Layer Amount"));
-    layerAmount->setName(kSplineWarpParamLayerAmount);
-    layerAmount->setHintToolTip(tr("How far the links whose destination curves are in the selected layers move, on top of "
-                                   "Amount and each link's own amount; nested layers multiply. Enabled when only layers "
-                                   "and the curves inside them are selected, and edits every selected layer."));
-    layerAmount->setDefaultValue(1.);
-    layerAmount->setMinimum(0.);
-    layerAmount->setMaximum(1.);
-    layerAmount->setDisplayMinimum(0.);
-    layerAmount->setDisplayMaximum(1.);
-    // The amount lives on the layers; the knob only shows and edits the selected ones.
-    layerAmount->setIsPersistent(false);
-    layerAmount->setEvaluateOnChange(false);
-    layerAmount->setAllDimensionsEnabled(false);
-    selectionPage->addKnob(layerAmount);
-    _layerAmount = layerAmount;
-
-    KnobDoublePtr linkAmount = createKnob<KnobDouble>(tr("Link Amount"));
-    linkAmount->setName(kSplineWarpParamLinkAmount);
-    linkAmount->setHintToolTip(tr("How far the links of the selected curves move their destinations toward their sources, "
-                                  "on top of Amount and the layers' amounts. Enabled when every selected curve is "
-                                  "linked."));
-    linkAmount->setDefaultValue(1.);
-    linkAmount->setMinimum(0.);
-    linkAmount->setMaximum(1.);
-    linkAmount->setDisplayMinimum(0.);
-    linkAmount->setDisplayMaximum(1.);
-    linkAmount->setIsPersistent(false);
-    linkAmount->setEvaluateOnChange(false);
-    linkAmount->setAllDimensionsEnabled(false);
-    selectionPage->addKnob(linkAmount);
-    _linkAmount = linkAmount;
+    const KnobPagePtr transformPage = createKnob<KnobPage>(tr("Transform"));
 
     if (RotoCurveContextPtr context = getNode()->getCurveContext()) {
-        context->createTransformKnobs(selectionPage);
+        context->createTransformKnobs(transformPage);
         const RotoCurveContext::TransformKnobs knobs = context->getTransformKnobs();
         getNode()->addTransformInteract(knobs.translate, knobs.scale, knobs.scaleUniform, knobs.rotate, knobs.skewX, knobs.skewY,
                                         knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/, knobs.interactive);

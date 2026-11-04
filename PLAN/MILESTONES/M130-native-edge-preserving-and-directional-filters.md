@@ -163,6 +163,20 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: reviewed at the gate against the node code.
   - size: S
 
+## Phase 129.5: UAT round 2 (user, 2026-11-04)
+
+Median and Bilateral approved (user).
+
+- [ ] M130.P5.T1 — Split the transform path out of DirBlur into a native GodRays node
+  - files: `Engine/Nodes/Filter/DirBlur.{h,cpp}`, new `Engine/Nodes/Filter/GodRays.{h,cpp,reg.inc}`, `Engine/Gpu/Kernels/dirblur.slang` (or a godrays kernel), docs, tests
+  - approach: DirBlur keeps only Directional, Radial and Zoom. The transform-path accumulation (translate/rotate/scale/skew/center path with steps, the GodRays-style mode) becomes its own native GodRays node, porting every openfx-misc GodRays control and default (a port means every control, incl. fromColor/toColor and gamma; params→knob audit attached). Retire `net.sf.openfx.GodRays` to the native node. CPU and GPU, parity test, mask/mix.
+  - verify: GodRays and DirBlur tests pass; the params→knob audit lists every OFX GodRays param; GUI screenshots.
+  - size: L
+- [ ] M130.P5.T2 — DirBlur shows only the knobs its mode uses
+  - approach: hide knobs per mode (e.g. Target does nothing in Zoom, so it isn't shown there); audit every knob against each mode.
+  - verify: a test per mode checks which knobs are visible; GUI screenshots per mode.
+  - size: M
+
 ## Decisions
 
 - 2026-11-02: audit (plan state caught up with the branch). Phases 1-3 committed and pushed; no PR. P4.T1 is not done: no Engine/OfxRetired markers, and the CImg Median/Bilateral, DirBlur and GodRays IDs are still in OfxEffectInstance.cpp's lists. P4.T2 is partial: docs/DirBlur.md only. There is no Xvfb GUI script for the gate yet. The last remote build (9d4e7cddc) failed ctest (legacy scheduler).

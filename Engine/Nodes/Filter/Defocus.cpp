@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +50,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/PoolParallelFor.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -227,6 +230,94 @@ unboostWorker(const DefocusStatePtr& state)
     };
 }
 
+// The fewest pixel rows a band of cells gathers together, so that its rows keep the threads busy.
+const int kMinBandRows = 32;
+
+/**
+ * @brief What the passes of a render with lens aberrations share besides DefocusState: the lens
+ * and, for the band being gathered, the runs of each group's kernel per cell, which kernel gives
+ * for a group and a cell's clip.
+ **/
+struct DefocusLensState {
+    explicit DefocusLensState(const LensAberration& lensIn)
+        : lens(lensIn)
+    {
+    }
+
+    DefocusStatePtr base;
+    LensAberration lens;
+    std::function<BokehRunCache::Runs(int, const BokehClip&)> kernel;
+    LensBandRuns band;
+};
+
+using DefocusLensStatePtr = std::shared_ptr<DefocusLensState>;
+
+/// The kernels of band b, spread over the lines, replacing the band before.
+std::function<PassRowFn(const PassScratch&)>
+lensBuildWorker(const DefocusLensStatePtr& state,
+                const LensBand& b)
+{
+    return [state, b](const PassScratch& scratch) -> PassRowFn {
+        DefocusLensState* s = state.get();
+        const int nLines = scratch.height;
+        const unsigned used = s->lens.groupsOf(scratch.channelBits.data(), scratch.nPlanes);
+
+        return [s, b, nLines, used](int line) {
+            std::size_t first = 0;
+            std::size_t end = 0;
+            spreadItems(line, nLines, s->band.size(b), &first, &end);
+            for (std::size_t k = first; k < end; ++k) {
+                int group = 0;
+                int i = 0;
+                int j = 0;
+                s->band.item(b, k, &group, &i, &j);
+                s->band.runs[k] = (used & (1u << group)) ? s->kernel(group, s->lens.clip(i, j)) : BokehRunCache::Runs();
+            }
+        };
+    };
+}
+
+/// Slot 1 over band b's rows of the render window: the gather of the boosted source, cell by cell.
+std::function<PassRowFn(const PassScratch&)>
+lensGatherWorker(const DefocusLensStatePtr& state,
+                 const LensBand& b)
+{
+    return [state, b](const PassScratch& scratch) -> PassRowFn {
+        DefocusState* base = state->base.get();
+        base->reserve(scratch);
+        const DefocusLensState* s = state.get();
+        const double* const tables = base->tables.get();
+        const std::size_t planeSize = DefocusState::tablePlaneSize(scratch);
+        const PassScratch* buffers = &scratch;
+        const int x1 = std::clamp(base->window.x1 - scratch.rect.x1, 0, scratch.width);
+        const int x2 = std::clamp(base->window.x2 - scratch.rect.x1, x1, scratch.width);
+        const int y1 = std::clamp(b.y1 - scratch.rect.y1, 0, scratch.height);
+        const int y2 = std::clamp(b.y2 - scratch.rect.y1, y1, scratch.height);
+        std::shared_ptr<std::vector<double>> acc = std::make_shared<std::vector<double>>((std::size_t)std::max(1, x2 - x1));
+
+        return [s, b, tables, planeSize, buffers, x1, x2, y1, y2, acc](int line) {
+            const int width = buffers->width;
+            const int height = buffers->height;
+            const int rows = y2 - y1;
+            std::size_t first = 0;
+            std::size_t end = 0;
+            spreadItems(line, buffers->nPlanes * height, (std::size_t)buffers->nPlanes * rows, &first, &end);
+            for (std::size_t item = first; item < end; ++item) {
+                const int p = (int)(item / (std::size_t)rows);
+                const int y = y1 + (int)(item % (std::size_t)rows);
+                const int group = s->lens.groupOf(buffers->channelBits[p]);
+                const int j = s->lens.rowOf(buffers->rect.y1 + y);
+                const double* const planeTables = tables + (std::size_t)p * planeSize;
+                float* const dst = buffers->plane(1, p) + (std::size_t)y * width;
+                s->lens.forEachSegment(buffers->rect.x1 + x1, buffers->rect.x1 + x2, [&](int xa, int xb, int i) {
+                    const int a = xa - buffers->rect.x1;
+                    bokehGatherRow(planeTables, width, height, s->band.at(b, group, i, j), y, a, xb - buffers->rect.x1, acc->data(), dst + a);
+                });
+            }
+        };
+    };
+}
+
 BokehShape
 shapeOf(int kernelType)
 {
@@ -244,9 +335,13 @@ shapeOf(int kernelType)
 // The largest halo, in pixels, the GPU records; a larger defocus stays on the CPU.
 const int kGpuMaxHalo = 256;
 
-// Mirror kBlock and kBoost in Kernels/defocus.slang.
+// Mirror kBlock, kBoost and kLens in Kernels/defocus.slang.
 const uint32_t kGpuBlock = 256;
 const uint32_t kGpuBoost = 1;
+const uint32_t kGpuLens = 2;
+// The most bytes of kernel runs and cell tables the GPU uploads for a render with lens aberrations;
+// more stays on the CPU, which holds a band of cells' kernels at a time.
+const uint64_t kGpuMaxLensBytes = (uint64_t)256 << 20;
 
 // Mirrors DefocusParams in Kernels/defocus.slang, which has no padding between members.
 struct DefocusGpuParams {
@@ -274,8 +369,14 @@ struct DefocusGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t cellTable;
+    uint32_t columnMap;
+    uint32_t rowMap;
+    uint32_t cellColumns;
+    uint32_t cellRows;
+    uint32_t channelGroups;
 };
-static_assert(sizeof(DefocusGpuParams) == 96);
+static_assert(sizeof(DefocusGpuParams) == 120);
 static_assert(offsetof(DefocusGpuParams, srcX1) == 48);
 static_assert(offsetof(DefocusGpuParams, outX1) == 72);
 
@@ -322,23 +423,35 @@ dispatchDefocus(gpu::GpuRecordContext& ctx,
 }
 
 /**
+ * @brief What the gather of a render with lens aberrations reads besides the runs: the cell
+ * tables of appendLensRunTable() and appendLensCellMaps() in the run buffer, and each channel's
+ * group.
+ **/
+struct DefocusGpuLens {
+    uint32_t cellTable = 0;
+    uint32_t columnMap = 0;
+    uint32_t rowMap = 0;
+    uint32_t cellColumns = 1;
+    uint32_t cellRows = 1;
+    uint32_t channelGroups = 0;
+};
+
+/**
  * @brief The passes of Defocus::passes() as the GPU records them over io.domain, the CPU's
  * scratch rect: the boosted source into the work buffer, each row's block prefixes and block
- * totals, then the gather of every output pixel, unboosted, into io.filtered.
+ * totals, then the gather of every output pixel, unboosted, into io.filtered. packed holds the
+ * runs, four words each, and with lens the cell tables, which select each output pixel's runs.
  **/
 StatusEnum
 recordDefocusGpu(const PassGpuIO& io,
                  const DefocusParams& params,
-                 const BokehKernel& kernel)
+                 const std::vector<uint32_t>& packed,
+                 const DefocusGpuLens* lens)
 {
     gpu::GpuRecordContext& ctx = io.context;
     const RectI& domain = io.domain;
     const int nComps = io.nComps;
-    if (PassExec::isEmptyRect(domain) || (nComps < 1) || (nComps > 4) || !io.filtered.buffer) {
-        return eStatusFailed;
-    }
-    const std::vector<BokehRun> runs = kernel.runs();
-    if (runs.empty()) {
+    if (PassExec::isEmptyRect(domain) || (nComps < 1) || (nComps > 4) || !io.filtered.buffer || packed.empty() || (packed.size() > UINT32_MAX)) {
         return eStatusFailed;
     }
     const uint64_t width = (uint64_t)domain.width();
@@ -352,14 +465,6 @@ recordDefocusGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
 
-    std::vector<uint32_t> packed;
-    packed.reserve(runs.size() * 4);
-    for (const BokehRun& run : runs) {
-        packed.push_back((uint32_t)run.dy);
-        packed.push_back((uint32_t)run.dx0);
-        packed.push_back((uint32_t)run.length);
-        packed.push_back(std::bit_cast<uint32_t>(run.weight));
-    }
     gpu::GpuBuffer* runBuffer = nullptr;
     gpu::GpuBuffer* work = nullptr;
     const std::size_t runBytes = packed.size() * sizeof(uint32_t);
@@ -389,8 +494,17 @@ recordDefocusGpu(const PassGpuIO& io,
     base.nBlocks = (uint32_t)nBlocks;
     base.localOffset = (uint32_t)slotFloats;
     base.totalOffset = (uint32_t)(slotFloats + localFloats);
-    base.runCount = (uint32_t)runs.size();
+    base.runCount = (uint32_t)(packed.size() / 4);
     base.flags = params.highlight.isActive() ? kGpuBoost : 0u;
+    if (lens) {
+        base.flags |= kGpuLens;
+        base.cellTable = lens->cellTable;
+        base.columnMap = lens->columnMap;
+        base.rowMap = lens->rowMap;
+        base.cellColumns = lens->cellColumns;
+        base.cellRows = lens->cellRows;
+        base.channelGroups = lens->channelGroups;
+    }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
@@ -452,7 +566,9 @@ Defocus::Defocus(NodePtr node)
     , _kernelChannel()
     , _highlightThreshold()
     , _highlightGain()
+    , _bokehKnobs()
     , _shapeCache(new ShapeCache)
+    , _runCache(std::make_shared<BokehRunCache>())
 {
 }
 
@@ -565,6 +681,8 @@ Defocus::initializeKnobs()
     page->addKnob(roundnessKnob);
     _roundness = roundnessKnob;
 
+    _bokehKnobs.addTextureKnobs(this, page);
+
     KnobChannelSelectPtr channelKnob = AppManager::createKnob<KnobChannelSelect>(this, tr("Kernel Channel"));
     channelKnob->setName(kDefocusParamKernelChannel);
     channelKnob->setAnimationEnabled(false);
@@ -572,6 +690,8 @@ Defocus::initializeKnobs()
     channelKnob->setHintToolTip(tr("Image kernel only: the channel of the Kernel input, in any of its layers, that holds the bokeh. A channel the input does not have, or None, reads 0."));
     page->addKnob(channelKnob);
     _kernelChannel = channelKnob;
+
+    _bokehKnobs.addLensKnobs(this, page);
 
     KnobDoublePtr thresholdKnob = AppManager::createKnob<KnobDouble>(this, tr("Highlight Threshold"));
     thresholdKnob->setName(kDefocusParamHighlightThreshold);
@@ -615,6 +735,8 @@ Defocus::getParams(double time,
     params.shape.blades = std::max(3, (int)reader.value(_blades));
     params.shape.rotation = reader.value(_rotation);
     params.shape.roundness = reader.value(_roundness);
+    _bokehKnobs.readTexture(reader, &params.shape);
+    params.lens = _bokehKnobs.readLens(reader);
     params.highlight.threshold = (float)std::max(0., reader.value(_highlightThreshold));
     params.highlight.gain = (float)std::max(1., reader.value(_highlightGain));
     if (!std::isfinite(params.highlight.threshold) || !std::isfinite(params.highlight.gain)) {
@@ -630,11 +752,23 @@ Defocus::radii(const DefocusParams& params,
                double* radiusX,
                double* radiusY)
 {
+    radii(params, context, 1., radiusX, radiusY);
+}
+
+void
+Defocus::radii(const DefocusParams& params,
+               const PassContext& context,
+               double scale,
+               double* radiusX,
+               double* radiusY)
+{
     const OfxPointD rs = context.scale.toOfxPointD();
     const double par = (context.pixelAspectRatio > 0.) ? context.pixelAspectRatio : 1.;
+    // Each channel's size clamps on its own.
+    const double size = (scale == 1.) ? params.size : std::min(kMaxSize, params.size * scale);
 
-    *radiusX = std::min(kMaxRadius, rs.x * params.size * params.aspectRatio / 2. / par);
-    *radiusY = std::min(kMaxRadius, rs.y * params.size / 2.);
+    *radiusX = std::min(kMaxRadius, rs.x * size * params.aspectRatio / 2. / par);
+    *radiusY = std::min(kMaxRadius, rs.y * size / 2.);
 }
 
 PassList
@@ -646,7 +780,7 @@ Defocus::passes(const DefocusParams& params,
     PassList list;
     double rx = 0.;
     double ry = 0.;
-    radii(params, context, &rx, &ry);
+    radii(params, context, params.lens.maxScale(), &rx, &ry);
     if (BokehKernel::isIdentityRadius(rx, ry)) {
         return list;
     }
@@ -688,6 +822,72 @@ Defocus::passes(const DefocusParams& params,
     return list;
 } // Defocus::passes
 
+PassList
+Defocus::lensPasses(const DefocusParams& params,
+                    const PassContext& context,
+                    const LensAberration& lens,
+                    const std::function<BokehRunCache::Runs(int group, const BokehClip& clip)>& kernel,
+                    const RectI& window)
+{
+    PassList list;
+    double rx = 0.;
+    double ry = 0.;
+    radii(params, context, params.lens.maxScale(), &rx, &ry);
+    if (BokehKernel::isIdentityRadius(rx, ry)) {
+        return list;
+    }
+    const int haloX = BokehKernel::extent(rx);
+    const int haloY = BokehKernel::extent(ry);
+    using Worker = std::function<PassRowFn(const PassScratch&)>;
+
+    DefocusStatePtr base = std::make_shared<DefocusState>();
+    base->highlight = params.highlight;
+    base->window = window;
+    DefocusLensStatePtr state = std::make_shared<DefocusLensState>(lens);
+    state->base = base;
+    state->kernel = kernel;
+    state->band.cells = lens.cells(window);
+    state->band.groups = lens.groupCount();
+
+    list.scratchSlots = 2;
+    list.resultSlot = 1;
+
+    // The whole halo, once, as passes() gives it for the region actions.
+    Pass extent = Pass::gather(haloX, haloY, true, Worker());
+    extent.slot = 1;
+    extent.tapsPerSample = (std::size_t)(2 * (2 * haloY + 1));
+    list.passes.push_back(extent);
+
+    Pass boost = Pass::point(true, boostWorker(base));
+    boost.slot = 1;
+    list.passes.push_back(boost);
+
+    Pass prefix = Pass::point(true, prefixWorker(base));
+    prefix.slot = 1;
+    list.passes.push_back(prefix);
+
+    // A band of cells at a time, so that only its kernels are held.
+    const std::vector<LensBand> bands = lens.bands(window, kMinBandRows);
+    state->band.reserve(bands);
+    for (const LensBand& b : bands) {
+        Pass build = Pass::point(false, lensBuildWorker(state, b));
+        build.slot = 1;
+        list.passes.push_back(build);
+
+        Pass gather = Pass::point(true, lensGatherWorker(state, b));
+        gather.slot = 1;
+        list.passes.push_back(gather);
+    }
+
+    if (params.highlight.isActive()) {
+        Pass unboost = Pass::point(true, unboostWorker(base));
+        unboost.slot = 1;
+        list.passes.push_back(unboost);
+    }
+
+    return list;
+} // Defocus::lensPasses
+
 bool
 Defocus::fitsGpu(const DefocusParams& params,
                  const PassList& passes)
@@ -714,32 +914,126 @@ Defocus::fitsGpu(const DefocusParams& params,
 StatusEnum
 Defocus::recordPassesGpu(const PassGpuIO& io,
                          const DefocusParams& params,
-                         const PassContext& context)
+                         const PassContext& context,
+                         const RectI& format,
+                         const std::shared_ptr<BokehRunCache>& cache)
 {
 #ifdef NATRON_HAVE_GPU
     if (params.shape.shape == BokehShape::Image) {
         return eStatusFailed;
     }
-    double rx = 0.;
-    double ry = 0.;
-    radii(params, context, &rx, &ry);
-    if (BokehKernel::isIdentityRadius(rx, ry)) {
+    if (!params.lens.isActive()) {
+        double rx = 0.;
+        double ry = 0.;
+        radii(params, context, &rx, &ry);
+        if (BokehKernel::isIdentityRadius(rx, ry)) {
+            return eStatusFailed;
+        }
+        const BokehKernel kernel = BokehKernel::gatherKernel(params.shape, rx, ry);
+        if ((kernel.haloX() > kGpuMaxHalo) || (kernel.haloY() > kGpuMaxHalo)) {
+            return eStatusFailed;
+        }
+        const std::vector<BokehRun> runs = kernel.runs();
+        std::vector<uint32_t> packed;
+        packed.reserve(runs.size() * 4);
+        for (const BokehRun& run : runs) {
+            packed.push_back((uint32_t)run.dy);
+            packed.push_back((uint32_t)run.dx0);
+            packed.push_back((uint32_t)run.length);
+            packed.push_back(std::bit_cast<uint32_t>(run.weight));
+        }
+
+        return recordDefocusGpu(io, params, packed, nullptr);
+    }
+
+    // The lens aberrations: the runs of each group's kernel in each cell of the output.
+    const OfxPointD rs = context.scale.toOfxPointD();
+    const LensAberration lens(params.lens, format, context.pixelAspectRatio, rs.x, rs.y);
+    const int groups = lens.groupCount();
+    std::vector<std::pair<double, double>> groupRadii(groups);
+    for (int g = 0; g < groups; ++g) {
+        radii(params, context, lens.groupScale(g), &groupRadii[g].first, &groupRadii[g].second);
+        if ((BokehKernel::extent(groupRadii[g].first) > kGpuMaxHalo) || (BokehKernel::extent(groupRadii[g].second) > kGpuMaxHalo)) {
+            return eStatusFailed;
+        }
+    }
+    LensBandRuns kernels;
+    kernels.cells = lens.cells(io.output);
+    kernels.groups = groups;
+    LensBand all;
+    all.j1 = kernels.cells.j1;
+    all.j2 = kernels.cells.j1 + kernels.cells.rows;
+    all.y1 = io.output.y1;
+    all.y2 = io.output.y2;
+    const std::size_t count = kernels.size(all);
+    if (count > (std::size_t)INT_MAX) {
         return eStatusFailed;
     }
-    const BokehKernel kernel = BokehKernel::shaped(params.shape, rx, ry);
-    if ((kernel.haloX() > kGpuMaxHalo) || (kernel.haloY() > kGpuMaxHalo)) {
+    kernels.runs.assign(count, BokehRunCache::Runs());
+    int channelBits[4] = { 0, 0, 0, 0 };
+    const int nChannels = std::clamp(io.nComps, 0, 4);
+    for (int c = 0; c < nChannels; ++c) {
+        channelBits[c] = pixelKernelChannelBit(io.nComps, c);
+    }
+    const unsigned used = lens.groupsOf(channelBits, nChannels);
+    // The cell table and the cell maps, then the runs as they are built, so that an upload that
+    // cannot fit stops the build rather than waiting for all of it.
+    const uint64_t limit = std::min<uint64_t>(kGpuMaxLensBytes, io.context.maxScratchBytes());
+    LensRunTally tally(((uint64_t)2 * count + (uint64_t)io.output.width() + (uint64_t)io.output.height()) * sizeof(uint32_t), limit);
+    const BokehShapeParams shape = params.shape;
+    parallelForOnGlobalPool((int)count, appPTR->getNCPUsAvailableForEffect(), [&](int k) {
+        if (tally.over()) {
+            return;
+        }
+        int group = 0;
+        int i = 0;
+        int j = 0;
+        kernels.item(all, (std::size_t)k, &group, &i, &j);
+        if (!(used & (1u << group))) {
+            return;
+        }
+        BokehShapeParams clipped = shape;
+        clipped.clip = lens.clip(i, j);
+        const std::pair<double, double>& r = groupRadii[group];
+        kernels.runs[k] = cache ? cache->runs(clipped, r.first, r.second) : std::make_shared<const std::vector<BokehRun>>(BokehKernel::gatherKernel(clipped, r.first, r.second).runs());
+        tally.add(0, kernels.runs[k]);
+    });
+    if (tally.over()) {
         return eStatusFailed;
     }
 
-    return recordDefocusGpu(io, params, kernel);
+    std::vector<uint32_t> packed;
+    std::size_t table = 0;
+    std::size_t columnMap = 0;
+    std::size_t rowMap = 0;
+    appendLensRunTable(kernels, all, &packed, &table);
+    appendLensCellMaps(lens, kernels.cells, io.output, &packed, &columnMap, &rowMap);
+    const uint64_t bytes = (uint64_t)packed.size() * sizeof(uint32_t);
+    if ((bytes > kGpuMaxLensBytes) || (bytes > io.context.maxScratchBytes())) {
+        return eStatusFailed;
+    }
+    DefocusGpuLens tables;
+    tables.cellTable = (uint32_t)table;
+    tables.columnMap = (uint32_t)columnMap;
+    tables.rowMap = (uint32_t)rowMap;
+    tables.cellColumns = (uint32_t)kernels.cells.columns;
+    tables.cellRows = (uint32_t)kernels.cells.rows;
+    for (int c = 0; c < std::min(io.nComps, 4); ++c) {
+        tables.channelGroups |= (uint32_t)lens.groupOf(pixelKernelChannelBit(io.nComps, c)) << (2 * c);
+    }
+    tables.channelGroups |= (uint32_t)groups << 8;
+
+    return recordDefocusGpu(io, params, packed, &tables);
 #else
     Q_UNUSED(io);
     Q_UNUSED(params);
     Q_UNUSED(context);
+    Q_UNUSED(format);
+    Q_UNUSED(cache);
 
     return eStatusFailed;
 #endif
-}
+} // Defocus::recordPassesGpu
 
 std::string
 Defocus::kernelNotConnectedMessage()
@@ -792,8 +1086,14 @@ Defocus::opPasses(double time,
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && fitsGpu(params, list)) {
-        list.gpu = [params, context](const PassGpuIO& io) -> StatusEnum {
-            return recordPassesGpu(io, params, context);
+        RectI format;
+        if (params.lens.isActive()) {
+            NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+            format = metadata ? metadata->getOutputFormat() : RectI();
+        }
+        const std::shared_ptr<BokehRunCache> cache = _runCache;
+        list.gpu = [params, context, format, cache](const PassGpuIO& io) -> StatusEnum {
+            return recordPassesGpu(io, params, context, format, cache);
         };
     }
 #endif
@@ -860,7 +1160,8 @@ Defocus::buildKernel(const DefocusParams& params,
                      ViewIdx view,
                      const RenderScale& scale,
                      std::shared_ptr<const BokehKernel>* kernel,
-                     bool* empty)
+                     bool* empty,
+                     std::shared_ptr<const DefocusKernelImage>* kernelImage)
 {
     double rx = 0.;
     double ry = 0.;
@@ -870,11 +1171,9 @@ Defocus::buildKernel(const DefocusParams& params,
     if (params.shape.shape != BokehShape::Image) {
         ShapeCache& cache = *_shapeCache;
         const std::lock_guard<std::mutex> lock(cache.mutex);
-        const BokehShapeParams& s = cache.shape;
-        const bool hit = cache.kernel && (cache.radiusX == rx) && (cache.radiusY == ry) && (s.shape == params.shape.shape)
-            && (s.blades == params.shape.blades) && (s.rotation == params.shape.rotation) && (s.roundness == params.shape.roundness);
+        const bool hit = cache.kernel && (cache.radiusX == rx) && (cache.radiusY == ry) && (cache.shape == params.shape);
         if (!hit) {
-            cache.kernel = std::make_shared<const BokehKernel>(BokehKernel::shaped(params.shape, rx, ry));
+            cache.kernel = std::make_shared<const BokehKernel>(BokehKernel::gatherKernel(params.shape, rx, ry));
             cache.shape = params.shape;
             cache.radiusX = rx;
             cache.radiusY = ry;
@@ -920,15 +1219,21 @@ Defocus::buildKernel(const DefocusParams& params,
 
         return eStatusOK;
     }
+    std::shared_ptr<DefocusKernelImage> read = std::make_shared<DefocusKernelImage>();
     const int width = frame.width();
     const int height = frame.height();
     const int nComps = (int)image->getComponentsCount();
-    std::vector<float> values((std::size_t)width * height);
+    read->width = width;
+    read->height = height;
+    read->values.resize((std::size_t)width * height);
     Image::ReadAccess access(image.get());
     for (int y = 0; y < height; ++y) {
-        PassExec::readChannelRow(image.get(), &access, bounds, nComps, channel, frame.x1, frame.y1 + y, width, 0.f, &values[(std::size_t)y * width]);
+        PassExec::readChannelRow(image.get(), &access, bounds, nComps, channel, frame.x1, frame.y1 + y, width, 0.f, &read->values[(std::size_t)y * width]);
     }
-    *kernel = std::make_shared<const BokehKernel>(BokehKernel::fromImage(values.data(), width, height, rx, ry, empty));
+    *kernel = std::make_shared<const BokehKernel>(BokehKernel::fromImage(read->values.data(), width, height, rx, ry, empty));
+    if (kernelImage) {
+        *kernelImage = read;
+    }
 
     return eStatusOK;
 } // Defocus::buildKernel
@@ -945,19 +1250,58 @@ Defocus::renderOp(const RenderActionArgs& args,
     const DefocusParams params = getParams(args.time, args.view);
     const PassContext context = getPassContext(args.time, args.view, args.mappedScale);
     std::shared_ptr<const BokehKernel> kernel;
+    std::shared_ptr<const DefocusKernelImage> kernelImage;
     bool empty = false;
-    const StatusEnum status = buildKernel(params, context, args.time, args.view, args.mappedScale, &kernel, &empty);
-    if (status != eStatusOK) {
-        return status;
+    // With the lens aberrations an analytic kernel is only built per group and cell.
+    if (!params.lens.isActive() || (params.shape.shape == BokehShape::Image)) {
+        const StatusEnum status = buildKernel(params, context, args.time, args.view, args.mappedScale, &kernel, &empty, &kernelImage);
+        if (status != eStatusOK) {
+            return status;
+        }
     }
     if (params.shape.shape == BokehShape::Image) {
         setKernelWarning(empty ? kernelEmptyMessage() : std::string());
+        if (!kernelImage || empty) {
+            return runPassesCpu(*this, plan, args, PassList());
+        }
     }
-    if (!kernel || kernel->isIdentity()) {
-        return runPassesCpu(*this, plan, args, PassList());
+    if (!params.lens.isActive()) {
+        if (!kernel || kernel->isIdentity()) {
+            return runPassesCpu(*this, plan, args, PassList());
+        }
+
+        return runPassesCpu(*this, plan, args, passes(params, context, kernel, args.roi));
     }
 
-    return runPassesCpu(*this, plan, args, passes(params, context, kernel, args.roi));
+    // The lens aberrations: a kernel per channel group and cell.
+    NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const RectI format = metadata ? metadata->getOutputFormat() : RectI();
+    const OfxPointD rs = args.mappedScale.toOfxPointD();
+    const LensAberration lens(params.lens, format, context.pixelAspectRatio, rs.x, rs.y);
+    std::vector<std::pair<double, double>> groupRadii(lens.groupCount());
+    for (int g = 0; g < lens.groupCount(); ++g) {
+        radii(params, context, lens.groupScale(g), &groupRadii[g].first, &groupRadii[g].second);
+    }
+    std::function<BokehRunCache::Runs(int, const BokehClip&)> build;
+    const std::shared_ptr<BokehRunCache> cache = _runCache;
+    if (params.shape.shape == BokehShape::Image) {
+        const uint64_t hash = BokehRunCache::imageHash(kernelImage->values.data(), kernelImage->width, kernelImage->height);
+        build = [cache, kernelImage, hash, groupRadii](int group, const BokehClip& clip) -> BokehRunCache::Runs {
+            const DefocusKernelImage& image = *kernelImage;
+
+            return cache->imageRuns(image.values.data(), image.width, image.height, hash, groupRadii[group].first, groupRadii[group].second, clip);
+        };
+    } else {
+        const BokehShapeParams shape = params.shape;
+        build = [cache, shape, groupRadii](int group, const BokehClip& clip) -> BokehRunCache::Runs {
+            BokehShapeParams clipped = shape;
+            clipped.clip = clip;
+
+            return cache->runs(clipped, groupRadii[group].first, groupRadii[group].second);
+        };
+    }
+
+    return runPassesCpu(*this, plan, args, lensPasses(params, context, lens, build, args.roi));
 }
 
 void

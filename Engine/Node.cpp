@@ -3075,6 +3075,13 @@ Node::areAllProcessingThreadsQuit() const
         }
     }
 
+    if (isRotoPaintingNode()) {
+        RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get());
+        if (rotoPaint && rotoPaint->isObjectSelectEncoding()) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -3097,6 +3104,9 @@ Node::quitAnyProcessing_non_blocking()
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(false);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -3140,6 +3150,9 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(true);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -4103,6 +4116,11 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         return;
     }
 
+    // Disable, lifetime, caching, preview and the info page act on an image a node outputs; a
+    // viewer outputs none, so its panel holds its own knobs and the label.
+    if (dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+        return;
+    }
 
     ///find in all knobs a page param to set this param into
     const KnobsVec & knobs = _imp->effect->getKnobs();
@@ -8485,6 +8503,10 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     {
         std::list<const Node*> markedNodes;
         addIdentityNodesRecursively(this, this, time, view, &outputs, &markedNodes);
+    }
+    // A viewer without the GUI never pulls images, so it does not count as a reference.
+    if (appPTR->isBackground()) {
+        outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
     }
     std::size_t sz = outputs.size();
 

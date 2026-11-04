@@ -1963,4 +1963,35 @@ markerToValue(const SliderRange& range,
     return range.rangeMin + t * (range.rangeMax - range.rangeMin);
 }
 
+PolarValue
+applyPolarEdit(const PolarValue& v, const ColorEdit& edit, double maxRadius)
+{
+    PolarValue out = v;
+    double x = v.radius * std::cos(v.hueDegrees / kDegreesPerRadian);
+    double y = v.radius * std::sin(v.hueDegrees / kDegreesPerRadian);
+    if (edit.axis == eColorAxisTrackball) {
+        x += edit.d1;
+        y += edit.d2;
+        out.radius = std::hypot(x, y);
+        if (out.radius > 0.0) {
+            out.hueDegrees = std::atan2(y, x) * kDegreesPerRadian;
+        }
+    } else if (edit.axis == eColorAxisHue && edit.absolute) {
+        out.hueDegrees = edit.d1;
+    } else if (edit.axis == eColorAxisSat && edit.absolute) {
+        out.radius = edit.d1;
+    } else {
+        return out;
+    }
+    out.hueDegrees = std::fmod(out.hueDegrees, 360.0);
+    if (out.hueDegrees < 0.0) {
+        out.hueDegrees += 360.0;
+    }
+    if (out.hueDegrees >= 360.0) {
+        out.hueDegrees = 0.0;
+    }
+    out.radius = std::max(0.0, std::min(maxRadius, out.radius));
+    return out;
+}
+
 NATRON_NAMESPACE_EXIT

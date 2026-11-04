@@ -25,6 +25,7 @@
 
 #include "PyGuiApp.h"
 
+#include <initializer_list>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -35,9 +36,10 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/PyNodeGroup.h"
 #include "Engine/PyNode.h"
+#include "Engine/PyNodeGroup.h"
 #include "Engine/PyParameter.h" // ColorTuple
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/ScriptObject.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -55,6 +57,22 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
+
+// The viewer setters write the viewer node's knobs: record them so the edit undoes like a
+// parameter set from Python. False leaves a Python error set and nothing must change.
+static bool
+recordViewerKnobEdits(ViewerInstance* viewer,
+                      std::initializer_list<const char*> names)
+{
+    for (const char* name : names) {
+        KnobIPtr knob = viewer->getKnobByName(name);
+        if (knob && !recordPythonKnobEdit(knob)) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 GuiApp::GuiApp(const GuiAppInstancePtr& app)
     : App(app)
@@ -278,6 +296,24 @@ GuiApp::getRGBColorDialog() const
     }
 
     return ret;
+}
+
+Effect*
+GuiApp::createNodeInGraph(const QString& pluginID,
+                          int majorVersion,
+                          Group* group,
+                          const NodeCreationPropertyMap& props) const
+{
+    GuiAppInstancePtr app = getInternalGuiApp();
+    NodeCollectionPtr collection;
+    if (!group && app && !app->getNodeCreationContextCollection() && app->getGui()) {
+        collection = app->getGui()->getLastSelectedNodeCollection();
+    }
+    if (!collection) {
+        collection = getCollectionFromGroup(group);
+    }
+
+    return createNodeInCollection(pluginID, majorVersion, collection, props, true);
 }
 
 std::list<Effect*>
@@ -710,6 +746,9 @@ PyViewer::setFrameRange(int firstFrame,
     if ( !getInternalNode()->isActivated() ) {
         return;
     }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamInPoint, kViewerParamOutPoint })) {
+        return;
+    }
     _viewer->setFrameRange(firstFrame, lastFrame);
 }
 
@@ -758,6 +797,9 @@ PyViewer::setCompositingOperator(ViewerCompositingOperatorEnum op)
     if ( !getInternalNode()->isActivated() ) {
         return;
     }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamOperation })) {
+        return;
+    }
     _viewer->setCompositingOperator(op);
 }
 
@@ -780,7 +822,7 @@ PyViewer::setAInput(int index)
         return;
     }
     EffectInstancePtr input = _viewer->getInternalNode()->getInput(index);
-    if (!input) {
+    if (!input || !recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamAInput })) {
         return;
     }
     _viewer->setInputA(index);
@@ -805,7 +847,7 @@ PyViewer::setBInput(int index)
         return;
     }
     EffectInstancePtr input = _viewer->getInternalNode()->getInput(index);
-    if (!input) {
+    if (!input || !recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamBInput })) {
         return;
     }
     _viewer->setInputB(index);
@@ -815,6 +857,9 @@ void
 PyViewer::setChannels(DisplayChannelsEnum channels)
 {
     if ( !getInternalNode()->isActivated() ) {
+        return;
+    }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamDisplayChannels, kViewerParamDisplayChannelsB })) {
         return;
     }
     std::string c = ViewerTab::getChannelsString(channels);
@@ -837,6 +882,9 @@ PyViewer::setProxyModeEnabled(bool enabled)
     if ( !getInternalNode()->isActivated() ) {
         return;
     }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamEnableDownscale })) {
+        return;
+    }
     _viewer->setRenderScaleActivated(enabled);
 }
 
@@ -854,6 +902,9 @@ void
 PyViewer::setProxyIndex(int index)
 {
     if ( !getInternalNode()->isActivated() ) {
+        return;
+    }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamEnableDownscale, kViewerParamDownscaleLevel })) {
         return;
     }
     _viewer->setMipmapLevel(index + 1);
@@ -876,6 +927,9 @@ PyViewer::setCurrentView(int index)
         return;
     }
     if ( !getInternalNode()->isActivated() ) {
+        return;
+    }
+    if (!recordViewerKnobEdits(_viewer->getInternalNode(), { kViewerParamActiveView })) {
         return;
     }
     _viewer->setCurrentView( ViewIdx(index) );

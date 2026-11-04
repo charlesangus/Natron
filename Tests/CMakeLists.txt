@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -85,6 +85,7 @@ set(Tests_SOURCES
     KnobContentHash_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
+    KnobQueuedValueChange_Test.cpp
     LazyHash_Test.cpp
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
@@ -112,6 +113,9 @@ set(Tests_SOURCES
     Ai/OrtLoader_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
+    Ai/ModelRegistry_Test.cpp
+    Ai/ModelDownloader_Test.cpp
+    Ai/ModelKnob_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -127,6 +131,7 @@ set(Tests_SOURCES
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
@@ -140,9 +145,13 @@ set(Tests_SOURCES
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
+    RFVMetadata_Test.cpp
+    RFVPatternMatch_Test.cpp
     RFVPython_Test.cpp
+    RFVRead_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp
+    RFVSwitch_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
@@ -202,6 +211,7 @@ target_link_libraries(Tests
         NatronEngine
         Qt::Core
         Qt::Concurrent
+        Qt::Network
         Python3::Python
         openMVG
         rawspeed::rawspeed
@@ -265,6 +275,7 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ActionShortcuts_Test.cpp
     ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
     ColorKnobUndoMerge_Test.cpp
@@ -278,6 +289,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
+    EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
@@ -288,11 +300,15 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
+    NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
+    SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
@@ -304,7 +320,7 @@ set(GuiTests_SOURCES
 )
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui
@@ -345,6 +361,24 @@ natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
 natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
+# SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
+# from the configure step is written to an include that ctest runs just before it.
+# A build configured with a MoonRay install bundles it, so MoonRayDelegate must fail, not skip, if
+# the plug-in is not registered (the test itself skips on a CPU the runtime gate refuses).
+if(NATRON_MOONRAY_PREFIX)
+    set(NATRON_MOONRAY_BUNDLED ON)
+else()
+    set(NATRON_MOONRAY_BUNDLED OFF)
+endif()
+# A build whose OpenUSD install carries the Cycles delegate (tools/ci/local/build-cycles.sh) bundles
+# it, so CyclesDelegate must fail, not skip, if the plug-in is not registered.
+if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
+    set(NATRON_CYCLES_BUNDLED ON)
+else()
+    set(NATRON_CYCLES_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)

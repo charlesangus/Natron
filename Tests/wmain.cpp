@@ -13,8 +13,8 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -91,9 +91,6 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
-    // The background AppManager does not register the Viewer, and the Viewer is the one image input
-    // that takes raw, so ViewerRaw_Test.cpp needs it registered by hand.
-    registerTestBuiltInPlugin<ViewerInstance>();
 }
 
 void
@@ -211,6 +208,15 @@ registerCacheStressTestPlugins()
     registerTestBuiltInPlugin<StaleMemoTestEffect>();
     // A filter whose knob edits queue under a render, for the queued-edit tests.
     registerTestBuiltInPlugin<QueuedEditTestEffect>();
+    // A filter that stores an actions-cache answer from onInputChanged().
+    registerTestBuiltInPlugin<InputChangedTestEffect>();
+}
+
+void
+registerAiTestPlugins()
+{
+    // A constant generator that carries a model knob, for the ModelKnob tests.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
 }
 }
 
@@ -267,6 +273,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerCacheStressTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

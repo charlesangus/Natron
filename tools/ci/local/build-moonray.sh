@@ -103,13 +103,29 @@ else
     fetch_submodule moonray/hydra/moonray_sdr_plugins
 fi
 
-# OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool),
-# which both hdMoonray plug-ins still mark override; it loses the keyword. Applied only when
-# present, so a tag that has caught up builds unpatched.
+# OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool)
+# and made IsSupported(const HdRendererCreateArgsSchema &, std::string *) pure. Both hdMoonray
+# plug-ins still mark the bool overload override and lack the new one, so they cannot be
+# instantiated. The bool overload loses the keyword, and the new override is added next to it,
+# delegating to it with its old default. Upstream has no fix for API 103 (its unmerged
+# test/usd263-issupported-override branch targets the removed HdRendererCreateArgs). Applied only
+# when the plug-in still lacks the new overload; a missing anchor fails the build.
 if grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
     for plugin in hd_moonray hd_moonray_debug; do
         file="${src}/moonray/hydra/hdMoonray/plugin/${plugin}/RendererPlugin.cc"
-        sed -i 's/bool IsSupported(bool gpuEnabled = true) const override {/bool IsSupported(bool gpuEnabled = true) const {/' "$file"
+        if grep -q 'HdRendererCreateArgsSchema' "$file"; then
+            continue
+        fi
+        anchor='    bool IsSupported(bool gpuEnabled = true) const override {'
+        if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+            echo "build-moonray: IsSupported(bool) anchor not found exactly once in ${file}" >&2
+            exit 1
+        fi
+        sed -i 's/^    bool IsSupported(bool gpuEnabled = true) const override {$/    bool IsSupported(const pxr::HdRendererCreateArgsSchema \&, std::string * = nullptr) const override {\n        return IsSupported(true);\n    }\n    bool IsSupported(bool gpuEnabled = true) const {/' "$file"
+        grep -qF 'bool IsSupported(const pxr::HdRendererCreateArgsSchema &, std::string * = nullptr) const override {' "$file" || {
+            echo "build-moonray: IsSupported patch did not apply to ${file}" >&2
+            exit 1
+        }
     done
 fi
 
@@ -232,7 +248,12 @@ if grep -q 'not found' <<<"$raw"; then
     echo "build-moonray: unresolved dependency" >&2
     exit 1
 fi
-deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u)"
+# ldd prints the path as the RUNPATH spelled it, so one file can appear as lib64/x.so and
+# rdl2dso/../lib64/x.so. Canonicalise each path first: the same file then collapses, while two
+# distinct files for one soname still stay apart and fail the check below.
+deps="$(awk '/=>/ { print $1, $3 }' <<<"$raw" | sort -u | while read -r soname path; do
+    echo "${soname} $(realpath -e "$path" 2>/dev/null || echo "$path")"
+done | sort -u)"
 split="$(awk '{ print $1 }' <<<"$deps" | uniq -d)"
 if [ -n "$split" ]; then
     echo "build-moonray: resolved to more than one file: ${split}" >&2

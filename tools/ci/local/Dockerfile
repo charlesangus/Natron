@@ -30,7 +30,9 @@
 FROM aswf/ci-vfxall:2027-clang21.1
 
 # --- Cycles: the Hydra render delegate, CPU devices only ------------------
-# Built from the upstream standalone repository against this image's USD,
+# Built from the project's Cycles fork (charlesangus/cycles natron/deep-5.2:
+# upstream v5.2.0 plus the deep EXR commits from Niik-l/cycles) against this
+# image's USD,
 # OpenImageIO, OpenEXR, TBB, Embree and OpenImageDenoise, and installed into
 # USD's plug-in directory as /usr/local/plugin/usd/hdCycles.so, where USD
 # finds it with no PXR_PLUGINPATH_NAME and tools/release/stage-bundle.sh
@@ -38,11 +40,14 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # of the two slowest layers (the CPU kernels) and the least often changed.
 # NATRON_CYCLES_OIDN=OFF drops the OpenImageDenoise denoiser and the ~45 MB
 # compressed it adds to the AppImage.
-ARG NATRON_CYCLES_VERSION=v5.2.0
-ARG NATRON_CYCLES_SHA256=a63756e042e819c0492440306869ea5a29d669b789c0a89f7d170a1741378551
+# NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
+ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
+ARG NATRON_CYCLES_COMMIT=c8d449e6bdf16d74d3075061afcf5add027df823
+ARG NATRON_CYCLES_SHA256=f7250c44d5d0d73473441fcaa3bff142235b471c84c6fe7aba528e926df891ad
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
-RUN NATRON_CYCLES_VERSION="$NATRON_CYCLES_VERSION" \
+RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
+    NATRON_CYCLES_COMMIT="$NATRON_CYCLES_COMMIT" \
     NATRON_CYCLES_SHA256="$NATRON_CYCLES_SHA256" \
     NATRON_CYCLES_OIDN="$NATRON_CYCLES_OIDN" \
     bash /tmp/build-cycles.sh && rm -f /tmp/build-cycles.sh

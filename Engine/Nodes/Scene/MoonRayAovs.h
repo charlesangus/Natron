@@ -90,6 +90,16 @@ std::vector<std::pair<PXR_NS::TfToken, PXR_NS::VtValue>> renderSettings(int thre
 void configureEngine(PXR_NS::UsdImagingGLEngine* engine,
                      int threadBudget);
 
+/**
+ * @brief Has Hydra tessellate the implicit surfaces (UsdGeom's Cube, Sphere, Cone, Cylinder,
+ * Capsule and Plane) into meshes for every MoonRay engine made after it. hdMoonray takes only
+ * mesh, basisCurves, points and volume rprims, and only Storm registers the scene index that
+ * turns implicit surfaces into meshes, so MoonRay would render none of them. Must run before the
+ * engine is made: its render index builds its scene index chain once. Safe to call any number of
+ * times from any thread.
+ **/
+void registerSceneIndices();
+
 // A message MoonRay logged.
 struct Notice {
     enum LevelEnum {

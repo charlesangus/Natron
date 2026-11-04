@@ -51,7 +51,9 @@ NATRON_NAMESPACE_ENTER
  * programs) belong to the context that created them and an engine must render where it was
  * made, a GL context is current on at most one thread at a time, and Storm makes no promise that
  * two engines can render at once in one process; serializing on one context is what it supports.
- * The GPU, not the calling threads, bounds the throughput anyway.
+ * The GPU, not the calling threads, bounds the throughput anyway. The thread's Storm work runs
+ * in StormGLSections, as the scene view's on the main thread does, since every HgiGL of the
+ * process shares one garbage collector.
  *
  * Each owner (a USDRender node) keeps one SceneStage and one UsdImagingGLEngine there between
  * renders, all engines sharing the thread's one HgiGL. A render syncs the owner's stage to the
@@ -122,8 +124,8 @@ struct Request {
     // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
-    // calling task; any count when 0. Cycles and MoonRay take it when the owner's engine is
-    // made.
+    // calling task; any count when 0. Cycles and MoonRay take it when an engine is made; every
+    // Cycles engine made under another budget is made again.
     int threads = 0;
     // The delegate's settings (UsdImagingGLEngine::SetRendererSetting) that differ from its
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
@@ -140,8 +142,8 @@ struct Result {
     // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
     // delegate renders no normal AOV, as Storm.
     std::vector<float> normal;
-    // What the delegate could not render of the scene, one line per kind of prim, for the node's
-    // warning; empty if it rendered everything or does not say.
+    // What the delegate cannot render of the scene, one line per kind of prim, material or light,
+    // for the node's warning; empty if it renders everything or is not checked, as Storm.
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;

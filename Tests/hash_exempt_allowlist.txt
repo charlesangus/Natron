@@ -9,3 +9,4 @@
 # the host rewrites from another knob that the sweep perturbs instead. A knob whose
 # change does not reach the hash is a hash gap: fix the hash instead of listing it here.
 # The sweep fails on an entry that no longer matches a knob, or whose knob now passes.
+Retime newOut  # shows the end the speed derives until Use Out Mapping is on; NativeRetimeTest.MappedEndsMoveTheHash covers it mapped

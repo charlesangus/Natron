@@ -39,7 +39,7 @@ encodePresetYaml(const std::list<NodeSerializationPtr>& nodes)
     em << YAML::Value << YAML::BeginSeq;
     for (const NodeSerializationPtr& node : nodes) {
         if (node) {
-            emitNodeMap(em, std::list<NodeSerializationPtr>(1, node), std::string(), sink, &usedPaths);
+            emitNodeMap(em, std::list<NodeSerializationPtr>(1, node), std::string(), sink, &usedPaths, false);
         }
     }
     em << YAML::EndSeq;

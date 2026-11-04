@@ -53,6 +53,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/AddPathVariableDialog.h"
 #include "Gui/BackdropGui.h"
 #include "Gui/Button.h"
 #include "Gui/ComboBox.h"
@@ -112,6 +113,7 @@ ProjectGui::create(ProjectPtr projectInternal,
     QObject::connect( projectInternal.get(), SIGNAL(knobsInitialized()), this, SLOT(initializeKnobsGui()) );
     // Queued: the dialog rebuilds the page holding the button that emitted the signal.
     QObject::connect(projectInternal.get(), SIGNAL(mustEditVariables()), this, SLOT(editVariables()), Qt::QueuedConnection);
+    QObject::connect(projectInternal.get(), SIGNAL(mustAddPathVariable()), this, SLOT(addPathVariable()), Qt::QueuedConnection);
 
     _panel = new DockablePanel(_gui,
                                projectInternal.get(),
@@ -148,6 +150,18 @@ ProjectGui::editVariables()
         return;
     }
     ManageUserParamsDialog dialog(_panel, _panel, group);
+    ignore_result(dialog.exec());
+}
+
+void
+ProjectGui::addPathVariable()
+{
+    ProjectPtr project = _project.lock();
+
+    if (!project || !_gui) {
+        return;
+    }
+    AddPathVariableDialog dialog(_gui, project, QString(), QString(), _gui);
     ignore_result(dialog.exec());
 }
 

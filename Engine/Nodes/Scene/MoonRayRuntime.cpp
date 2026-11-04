@@ -25,6 +25,8 @@
 
 #include "MoonRayRuntime.h"
 
+#include <cpuid.h>
+
 #include <cstdlib>
 #include <iostream>
 
@@ -43,16 +45,6 @@ isFile(const std::string& path)
     return (::stat(path.c_str(), &info) == 0) && S_ISREG(info.st_mode);
 }
 
-// MoonRay is compiled with -march=core-avx2 throughout, so loading any of it on an older CPU
-// faults on the first such instruction.
-bool
-cpuRunsMoonRay()
-{
-    __builtin_cpu_init();
-
-    return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-}
-
 void
 prependToEnv(const char* name,
              const std::string& dir)
@@ -69,6 +61,29 @@ prependToEnv(const char* name,
 } // anon namespace
 
 namespace MoonRayRuntime {
+// MoonRay is compiled with -march=core-avx2 throughout, so loading any of it on an older CPU
+// faults on the first such instruction. Every feature that march implies is checked: SSE4.2,
+// POPCNT, AVX, AVX2, FMA, F16C, BMI1 and BMI2 through GCC's CPU probe, which also checks that the OS
+// saves the AVX register state, and LZCNT and MOVBE through CPUID, as the probe has no reliable
+// name for them across the GCC versions the build images carry.
+bool
+cpuRunsMoonRay()
+{
+    __builtin_cpu_init();
+    if (!(__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt") && __builtin_cpu_supports("avx") && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi") && __builtin_cpu_supports("bmi2"))) {
+        return false;
+    }
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx) || !(ecx & bit_MOVBE)) {
+        return false;
+    }
+    if (!__get_cpuid(0x80000001, &eax, &ebx, &ecx, &edx) || !(ecx & bit_LZCNT)) {
+        return false;
+    }
+
+    return true;
+}
+
 std::string
 setUp(const std::string& applicationDirPath)
 {
@@ -91,7 +106,7 @@ setUp(const std::string& applicationDirPath)
             std::free(resolved);
         }
         if (!cpuRunsMoonRay()) {
-            std::cerr << "MoonRay needs a CPU with AVX2; its render delegate is not registered" << std::endl;
+            std::cerr << "MoonRay needs a CPU with AVX2, FMA, BMI1/2, F16C, LZCNT and MOVBE; its render delegate is not registered" << std::endl;
 
             return std::string();
         }

@@ -84,8 +84,16 @@ NATRON_NAMESPACE_USING
  * along the view, the Left cube (z = +1.2) in columns 6-13 and the Right one (z = -1.2) in columns
  * 19-26 of rows 12-19, and nothing at the centre column. MoonRay sends its fine passes at the
  * render outputs' default half precision, so depth is held to 0.01 (a half's step at 5.25 is
- * 0.004) and the face normal to 0.01 per component. MoonRay renders the same samples whatever its
- * thread count, so a second render on the same host is compared exactly.
+ * 0.004) and the face normal to 0.01 per component.
+ *
+ * MoonRay draws the same samples on every run, its samplers seeded from pixel and frame, but it
+ * cannot add them up in the same order. Arras renders progressively (its render computation
+ * offers no batch mode): each pixel takes its samples over several passes, nothing holds a
+ * tile's next pass back until its last one is done, and every pass, and in vectorized execution
+ * every ray bundle, atomically adds into the pixel. Float addition does not associate, so the
+ * sums differ in their last bits from run to run, and the half-float fine passes round some of
+ * them to the neighbouring half. A second render is held to one half step; prim ids, which are
+ * not summed, are compared exactly.
  */
 
 namespace {
@@ -127,6 +135,24 @@ bitsOf(float value)
     std::memcpy(&bits, &value, sizeof(bits));
 
     return bits;
+}
+
+bool
+withinHalfStep(float a,
+               float b)
+{
+    if (bitsOf(a) == bitsOf(b)) {
+        return true;
+    }
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+        return false;
+    }
+    int exponent = 0;
+    (void)std::frexp(std::max(std::fabs(a), std::fabs(b)), &exponent);
+    // A half has 10 mantissa bits; its smallest step is 2^-24.
+    const float step = std::ldexp(1.f, std::max(exponent - 11, -24));
+
+    return std::fabs(a - b) <= step;
 }
 
 std::size_t
@@ -554,8 +580,8 @@ TEST_F(USDRenderMoonRayTest, RendersWithinTheThreadBudget)
     EXPECT_GE(unbudgeted - budgeted, (hardware - 3) / 2) << "budgeted " << budgeted << ", unbudgeted " << unbudgeted;
 }
 
-// The fixture rendered twice, by engines made apart, gives the same image: the same frame seeds
-// the same samples.
+// The fixture rendered twice, by engines made apart, gives the same image to within the order
+// MoonRay sums its samples in.
 TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
 {
     if (!moonRayOrSkip()) {
@@ -569,10 +595,17 @@ TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
     ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
     std::vector<RenderedPlane> second;
     ASSERT_TRUE(renderAll(node, &second));
+    const std::size_t primIdPlane = 2;
     for (std::size_t plane = 0; plane < first.size(); ++plane) {
         std::size_t differing = 0;
         for (std::size_t i = 0; i < first[plane].pixels.size(); ++i) {
-            differing += (bitsOf(first[plane].pixels[i]) != bitsOf(second[plane].pixels[i])) ? 1 : 0;
+            const float a = first[plane].pixels[i];
+            const float b = second[plane].pixels[i];
+            const bool same = (plane == primIdPlane) ? (bitsOf(a) == bitsOf(b)) : withinHalfStep(a, b);
+            if (!same && (differing == 0)) {
+                ADD_FAILURE() << "plane " << plane << " value " << i << ": " << a << " then " << b;
+            }
+            differing += same ? 0 : 1;
         }
         EXPECT_EQ(0u, differing) << "plane " << plane << " differs between two renders on this host";
     }

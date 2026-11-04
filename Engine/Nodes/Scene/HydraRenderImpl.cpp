@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -75,6 +76,7 @@
 #endif
 
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
@@ -82,6 +84,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -93,6 +96,9 @@ const int kMaxRenderPasses = 8;
 
 // How long a render of another delegate waits between its passes, polling for convergence.
 const std::chrono::milliseconds kConvergencePoll(10);
+
+// How long a render with no abort callback may take to converge.
+const std::chrono::seconds kUnabortableRenderLimit(600);
 
 // The GPU memory the engines may hold together by default.
 const std::size_t kDefaultMemoryBudget = (std::size_t)2 << 30;
@@ -133,6 +139,10 @@ struct EngineEntry {
     TfToken depthAov;
     bool normal = false;
     bool normalInCameraSpace = false;
+    // What DelegateSupport finds the delegate cannot render of the stage, and whether that was
+    // found since the stage or the delegate last changed.
+    std::string supportWarning;
+    bool supportChecked = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -142,8 +152,8 @@ struct EngineEntry {
     bool rendered = false;
     std::uint64_t serial = 0;
     U64 writeCount = 0;
-    // What the delegate could not render of that render's stage, and the errors it logged naming
-    // no prim of it; empty for a delegate that reports neither.
+    // What the delegate could not render of that render's stage, by DelegateSupport and by its
+    // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
     UsdTimeCode time;
@@ -156,6 +166,11 @@ struct EngineEntry {
     bool idsDecoded = false;
     std::vector<float> primId;
     std::map<std::uint32_t, std::string> primPaths;
+
+    // A CPU engine's render converted by cpuFrame(), for the windows of the render with serial
+    // cpuSerial, so tiles and planes do not each convert the whole frame.
+    std::uint64_t cpuSerial = 0;
+    HydraRender::Result cpuResult;
 };
 
 // Packs a window of a plane of Storm's AOVs into a buffer, the one conversion every way USDRender
@@ -380,6 +395,8 @@ public:
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
             } else {
+                // An HgiGL that goes collects every thread's garbage.
+                StormGLSection section;
                 _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);
                 if (!_hgi || !_hgi->IsBackendSupported()) {
                     _contextError = "Storm cannot draw through OpenGL on " + _context->description() + ".";
@@ -427,9 +444,15 @@ public:
         if (found == _engines.end()) {
             return;
         }
+        std::optional<StormGLSection> section;
+        if (_gl) {
+            section.emplace();
+        }
         if (_gl && (!_context || !_context->makeCurrent())) {
             // Its GL objects cannot be freed without the context; leak them with the engine.
             (void)found->second.engine.release();
+        } else if (_gl) {
+            section->collectWith(_hgi.get());
         }
         _engines.erase(found);
         _engineCount = _engines.size();
@@ -440,6 +463,27 @@ public:
         while (!_engines.empty()) {
             releaseEngine(_engines.begin()->first);
         }
+    }
+
+    /**
+     * Drops every Cycles engine unless they were all made under threads. A Cycles session sizes
+     * its CPU device once, when it is made, from TaskScheduler::max_concurrency(), which is the
+     * TBB arena concurrency the first live session was made in for as long as any session lives;
+     * nothing changes it afterwards. So a session follows a new budget only if it is made when no
+     * other lives. The engines keep their stages, and the next render of each makes it again.
+     **/
+    void dropCyclesEnginesUnlessMadeFor(int threads)
+    {
+        if (threads == _cyclesThreads) {
+            return;
+        }
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && CyclesAovs::isCycles(it->second.renderer)) {
+                it->second.engine.reset();
+                it->second.rendered = false;
+            }
+        }
+        _cyclesThreads = threads;
     }
 
     // Drops the least recently used engines other than keep's while they hold more than the budget.
@@ -526,6 +570,17 @@ private:
     explicit RenderThread(bool gl)
         : _gl(gl)
     {
+    }
+
+    // Storm's thread enters the process's HgiGL section, collecting with its Hgi. The other
+    // delegates' thread draws nothing through HgiGL, and must not hold the section through a
+    // render that runs until it converges.
+    void enterGLSection(std::optional<StormGLSection>* section)
+    {
+        if (_gl) {
+            section->emplace();
+            (*section)->collectWith(_hgi.get());
+        }
     }
 
     // Lets a barrier write that is waiting for the running job through, then carries on: called by
@@ -630,6 +685,8 @@ private:
     HgiUniquePtr _hgi;
     std::map<const void*, EngineEntry> _engines;
     std::atomic<std::size_t> _engineCount { 0 };
+    // The thread budget every live Cycles engine was made under; see dropCyclesEnginesUnlessMadeFor().
+    int _cyclesThreads = 0;
     GLuint _framebuffer = 0;
     GLuint _renderbuffers[2] = { 0, 0 };
     std::uint64_t _renderSerial = 0;
@@ -764,11 +821,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
     EngineEntry& entry = _engines[request.owner];
     _engineCount = _engines.size();
-    if (entry.engine && (entry.renderer != renderer)) {
-        entry.engine.reset();
-        entry.rendered = false;
-    }
-    if (entry.renderer != renderer) {
+    const bool rendererChanged = (entry.renderer != renderer);
+    if (rendererChanged) {
         RenderDelegates::Delegate delegate;
         entry.renderer = renderer;
         entry.rendererName = RenderDelegates::find(renderer, &delegate) ? delegate.displayName : renderer;
@@ -784,6 +838,17 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
     }
     const bool edited = entry.stage->sync(request.scene);
+    if (edited || rendererChanged) {
+        entry.supportWarning.clear();
+        entry.supportChecked = false;
+    }
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
+    // A Storm engine goes inside the section: its HgiGL garbage is shared with the main thread's.
+    if (rendererChanged && entry.engine) {
+        entry.engine.reset();
+        entry.rendered = false;
+    }
     const UsdStageRefPtr& stage = entry.stage->getStage();
     // The headlight is Storm's: a path tracer lights a stage without lights as it does itself, and
     // MoonRay, which renders no Hydra simple light, leaves it black.
@@ -794,6 +859,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     RendererSettings settings = request.settings;
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
+    }
+    if (CyclesAovs::isCycles(renderer)) {
+        dropCyclesEnginesUnlessMadeFor(request.threads);
     }
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
     // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
@@ -813,6 +881,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // touches GL.
             parameters.gpuEnabled = false;
         }
+        CyclesAovs::registerSceneIndices();
+        MoonRayAovs::registerSceneIndices();
         std::string startError;
         const std::function<void()> make = [&]() {
             TfErrorMark mark;
@@ -931,6 +1001,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         if (MoonRayAovs::isMoonRay(renderer)) {
             log.reset(new MoonRayAovs::LogCapture);
         }
+        // Without an abort callback nothing could stop a delegate that never converges.
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         for (;;) {
             engine->Render(stage->GetPseudoRoot(), params);
             if (engine->IsConverged()) {
@@ -940,6 +1012,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             const std::string failure = log ? MoonRayAovs::sessionFailure(engine->GetRenderStats(), log->notices()) : std::string();
             if (!failure.empty()) {
                 *error = failure;
+                entry.engine.reset();
+                entry.rendered = false;
+
+                return nullptr;
+            }
+            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
+                *error = "The " + entry.rendererName + " render did not converge within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
                 entry.engine.reset();
                 entry.rendered = false;
 
@@ -962,11 +1041,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
-        entry.warning.clear();
+        // Only Cycles is probed: making a delegate to ask it its types may start a render.
+        if (!entry.supportChecked) {
+            entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();
+            entry.supportChecked = true;
+        }
+        entry.warning = entry.supportWarning;
         entry.errors.clear();
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
-            entry.warning = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
+            const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
+            if (!logged.empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + logged;
+            }
             entry.errors = MoonRayAovs::errorText(stage, notices);
         }
     }
@@ -1115,10 +1202,15 @@ RenderThread::cpuWindow(EngineEntry& entry,
                         std::vector<float>* pixels,
                         std::string* error)
 {
-    HydraRender::Result frame;
-    if (!cpuFrame(entry, &frame, error)) {
-        return false;
+    if (entry.cpuSerial != entry.serial) {
+        HydraRender::Result converted;
+        if (!cpuFrame(entry, &converted, error)) {
+            return false;
+        }
+        entry.cpuResult = std::move(converted);
+        entry.cpuSerial = entry.serial;
     }
+    const HydraRender::Result& frame = entry.cpuResult;
     const int width = entry.width;
     const int height = entry.height;
     const int nComps = window.nComps;
@@ -1156,6 +1248,8 @@ bool
 RenderThread::decodeIds(EngineEntry& entry,
                         std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     if (entry.idsDecoded) {
         return true;
     }
@@ -1211,6 +1305,8 @@ RenderThread::frame(EngineEntry& entry,
                     HydraRender::Result* result,
                     std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     std::string packError;
     if (!_gl || !packAvailable(&packError)) {
         return cpuFrame(entry, result, error);
@@ -1331,6 +1427,8 @@ RenderThread::pack(EngineEntry& entry,
                    GLuint buffer,
                    std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     if (!packAvailable(error)) {
         return false;
     }
@@ -1416,6 +1514,8 @@ RenderThread::readWindow(EngineEntry& entry,
                          std::vector<float>* pixels,
                          std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     const std::size_t count = window.floatCount();
     pixels->assign(count, 0.f);
     if (count == 0) {

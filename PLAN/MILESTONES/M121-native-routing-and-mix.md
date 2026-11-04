@@ -159,11 +159,11 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 120.5: UAT round 2 (user, 2026-11-04)
 
-- [ ] M121.P5.T1 — KeyMix with no mask connected passes B through
+- [x] M121.P5.T1 — KeyMix with no mask connected passes B through (74f478c80, f63fc469b; gate green)
   - approach: an unconnected mask means "mask disabled", not "mask = 1": KeyMix shows A through the mask, so with no mask it does nothing and outputs B (supersedes the Scope line "with the mask unconnected, A covers everywhere"). CPU and GPU; tests and docs.
   - verify: test with A and B connected, mask unconnected → output equals B; connecting a white mask → A.
   - size: S
-- [ ] M121.P5.T2 — Difference: Black Point, White Point and Gain instead of Offset and Gain
+- [x] M121.P5.T2 — Difference: Black Point, White Point and Gain instead of Offset and Gain (74f478c80, f63fc469b; gate green)
   - approach: alpha = gain · max(0, (d − blackPoint) / (whitePoint − blackPoint)) with d the current difference measure, defaults blackPoint 0, whitePoint 1, gain 1 (identical to today's default output); whitePoint ≤ blackPoint handled as a hard threshold at blackPoint. Remove offset (no backward compat). CPU and GPU, tests, docs.
   - verify: tests at default match the old default output; black/white points remap as specified; GPU parity.
   - size: S

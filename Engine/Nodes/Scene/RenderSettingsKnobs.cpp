@@ -35,15 +35,17 @@
 #include <set>
 #include <sstream>
 
-#include <QDateTime>
 #include <QString>
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2i.h>
@@ -333,40 +335,6 @@ escape(const std::string& text)
 }
 
 std::string
-unescape(const std::string& text)
-{
-    std::string out;
-
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if ((text[i] == '\\') && (i + 1 < text.size())) {
-            ++i;
-            out += (text[i] == 't') ? '\t' : (text[i] == 'n') ? '\n'
-                                                              : text[i];
-        } else {
-            out += text[i];
-        }
-    }
-
-    return out;
-}
-
-std::vector<std::string>
-splitTabs(const std::string& line)
-{
-    std::vector<std::string> fields;
-    std::size_t start = 0;
-
-    for (;;) {
-        const std::size_t tab = line.find('\t', start);
-        fields.push_back(line.substr(start, (tab == std::string::npos) ? std::string::npos : tab - start));
-        if (tab == std::string::npos) {
-            return fields;
-        }
-        start = tab + 1;
-    }
-}
-
-std::string
 capitalized(std::string word)
 {
     if (!word.empty()) {
@@ -376,18 +344,25 @@ capitalized(std::string word)
     return word;
 }
 
+// What a delegate declares: its settings, and the namespaces of its render settings prim attributes.
+struct Declared {
+    RenderSettingsKnobs::DescriptorList list;
+    std::vector<std::string> namespaces;
+};
+
 std::mutex gDescriptorsMutex;
-std::map<std::string, RenderSettingsKnobs::DescriptorList> gDescriptors;
+std::map<std::string, Declared> gDescriptors;
 std::map<std::string, RenderSettingsKnobs::DescriptorList> gTestDescriptors;
 
-RenderSettingsKnobs::DescriptorList
+Declared
 declaredBy(const std::string& rendererId)
 {
-    RenderSettingsKnobs::DescriptorList list;
+    Declared declared;
+    RenderSettingsKnobs::DescriptorList& list = declared.list;
     RenderDelegates::Delegate delegate;
 
     if (!RenderDelegates::find(rendererId, &delegate) || !delegate.available) {
-        return list;
+        return declared;
     }
     TfErrorMark mark;
     {
@@ -411,6 +386,9 @@ declaredBy(const std::string& rendererId)
                     descriptor.defaultValue = d.defaultValue;
                     list.push_back(descriptor);
                 }
+                for (const TfToken& ns : made->GetRenderSettingsNamespaces()) {
+                    declared.namespaces.push_back(ns.GetString());
+                }
             };
             if (CyclesAovs::isCycles(rendererId)) {
                 CyclesAovs::withThreadBudget(1, make);
@@ -421,7 +399,19 @@ declaredBy(const std::string& rendererId)
     }
     mark.Clear();
 
-    return list;
+    return declared;
+}
+
+const Declared&
+cachedDeclared(const std::string& rendererId)
+{
+    std::map<std::string, Declared>::const_iterator found = gDescriptors.find(rendererId);
+
+    if (found == gDescriptors.end()) {
+        found = gDescriptors.insert(std::make_pair(rendererId, declaredBy(rendererId))).first;
+    }
+
+    return found->second;
 }
 } // anon namespace
 
@@ -434,12 +424,32 @@ RenderSettingsKnobs::descriptors(const std::string& rendererId)
     if (test != gTestDescriptors.end()) {
         return test->second;
     }
-    std::map<std::string, DescriptorList>::const_iterator found = gDescriptors.find(rendererId);
-    if (found == gDescriptors.end()) {
-        found = gDescriptors.insert(std::make_pair(rendererId, declaredBy(rendererId))).first;
+
+    return cachedDeclared(rendererId).list;
+}
+
+const RenderSettingsKnobs::Curated*
+RenderSettingsKnobs::curatedFor(const std::string& rendererId)
+{
+    if (CyclesAovs::isCycles(rendererId)) {
+        return &CyclesSettings::curated();
+    } else if (MoonRayAovs::isMoonRay(rendererId)) {
+        return &MoonRaySettings::curated();
     }
 
-    return found->second;
+    return nullptr;
+}
+
+std::vector<std::string>
+RenderSettingsKnobs::declaredNamespaces(const std::string& rendererId)
+{
+    std::lock_guard<std::mutex> l(gDescriptorsMutex);
+
+    if (gTestDescriptors.count(rendererId)) {
+        return std::vector<std::string>();
+    }
+
+    return cachedDeclared(rendererId).namespaces;
 }
 
 void
@@ -657,19 +667,15 @@ struct RenderSettingsKnobs::Impl {
 
     struct Renderer {
         std::string id;
-        std::vector<KnobIWPtr> knobs; // groups and settings, shown together
+        KnobPageWPtr page;
         std::vector<std::string> declared;
         std::vector<std::string> excluded;
     };
 
     KnobHolder* holder;
-    KnobPagePtr page;
     std::vector<Setting> settings;
     std::map<const KnobI*, std::size_t> byKnob;
     std::vector<Renderer> renderers;
-    KnobStringWPtr store;
-    // renderer, key -> value text, of the stored settings that have no knob here.
-    std::map<std::pair<std::string, std::string>, std::string> orphans;
     bool applying = false;
 
     const Setting* find(const std::string& renderer,
@@ -862,40 +868,6 @@ struct RenderSettingsKnobs::Impl {
         }
     } // setKnobValue
 
-    // Every non-default setting and every orphan, one per line, ordered by renderer and key.
-    std::string storeText() const
-    {
-        std::map<std::pair<std::string, std::string>, std::string> entries = orphans;
-
-        for (const Setting& s : settings) {
-            const VtValue v = knobValue(s);
-            if (!v.IsEmpty() && (v != s.knobDefault)) {
-                entries[std::make_pair(s.renderer, s.key)] = valueText(v);
-            }
-        }
-        std::string text;
-        for (const std::pair<const std::pair<std::string, std::string>, std::string>& e : entries) {
-            text += escape(e.first.first) + "\t" + escape(e.first.second) + "\t" + escape(e.second) + "\n";
-        }
-
-        return text;
-    }
-
-    void writeStore()
-    {
-        KnobStringPtr k = store.lock();
-
-        if (!k) {
-            return;
-        }
-        const std::string text = storeText();
-        if (k->getValue() != text) {
-            applying = true;
-            (void)k->setValue(text);
-            applying = false;
-        }
-    }
-
     // Sets the knobs of the settings that follow the one at index to its value.
     void syncFollowers(std::size_t index)
     {
@@ -1002,12 +974,10 @@ struct RenderSettingsKnobs::Impl {
     } // makeKnob
 };
 
-RenderSettingsKnobs::RenderSettingsKnobs(KnobHolder* holder,
-                                         const KnobPagePtr& page)
+RenderSettingsKnobs::RenderSettingsKnobs(KnobHolder* holder)
     : _imp(new Impl)
 {
     _imp->holder = holder;
-    _imp->page = page;
 }
 
 RenderSettingsKnobs::~RenderSettingsKnobs()
@@ -1026,6 +996,12 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
     std::map<std::string, std::string> disabled;
 
     renderer.id = rendererId;
+    RenderDelegates::Delegate delegate;
+    const std::string pageLabel = RenderDelegates::find(rendererId, &delegate) ? delegate.displayName : labelFromScriptName(prefix, std::string());
+    KnobPagePtr page = AppManager::createKnob<KnobPage>(_imp->holder, pageLabel);
+    page->setName(prefix);
+    renderer.page = page;
+    names.insert(prefix);
     names.insert(prefix + "Settings");
     names.insert(prefix + "OtherSettings");
     for (const Descriptor& d : declared) {
@@ -1061,7 +1037,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             return;
         }
         k->setName(scriptName);
-        std::string hint = tooltip + "\n\nSent to the renderer as " + key + ".";
+        std::string hint = tooltip + "\n\nAuthored as " + RenderSettingsPrim::attributeName(rendererId, key) + " on the render settings prim, and sent to the renderer as " + key + ".";
         if (!disabledReason.empty()) {
             hint += "\n\n" + disabledReason;
             k->setDefaultAllDimensionsEnabled(false);
@@ -1091,7 +1067,6 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.knob = k;
         _imp->byKnob[k.get()] = _imp->settings.size();
         _imp->settings.push_back(setting);
-        renderer.knobs.push_back(k);
     };
 
     if (curated) {
@@ -1100,8 +1075,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         group->setName(groupName);
         group->setHintToolTip(curated->tooltip);
         group->setDefaultValue(true);
-        _imp->page->addKnob(group);
-        renderer.knobs.push_back(group);
+        page->addKnob(group);
         for (const CuratedSetting& c : curated->settings) {
             VtValue delegateDefault = c.defaultValue;
             for (const Descriptor& d : declared) {
@@ -1132,8 +1106,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             other->setName(groupName);
             other->setHintToolTip(std::string("Every other setting the renderer declares, as it names them."));
             other->setDefaultValue(false);
-            _imp->page->addKnob(other);
-            renderer.knobs.push_back(other);
+            page->addKnob(other);
         }
         std::map<std::string, std::string>::const_iterator off = disabled.find(d.key);
         addSetting(other, d.key, prefix + capitalized(camelCaseFromKey(d.key, false)), d.name, d.defaultValue, d.defaultValue,
@@ -1143,98 +1116,31 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
     _imp->renderers.push_back(renderer);
 } // RenderSettingsKnobs::addRenderer
 
-void
-RenderSettingsKnobs::finish()
-{
-    KnobStringPtr store = AppManager::createKnob<KnobString>(_imp->holder, std::string("Renderer Settings"));
-
-    store->setName(kRenderSettingsParamStore);
-    store->setHintToolTip(std::string("Every renderer's settings that differ from their defaults, kept even for a "
-                                      "renderer or setting this installation lacks."));
-    store->setSecretByDefault(true);
-    store->setEvaluateOnChange(false);
-    store->setHashExempt(true);
-    store->setAnimationEnabled(false);
-    _imp->page->addKnob(store);
-    _imp->store = store;
-}
-
-void
-RenderSettingsKnobs::showRenderer(const std::string& rendererId)
+KnobPagePtr
+RenderSettingsKnobs::page(const std::string& rendererId) const
 {
     for (const Impl::Renderer& r : _imp->renderers) {
-        for (const KnobIWPtr& weak : r.knobs) {
-            if (KnobIPtr k = weak.lock()) {
-                k->setSecret(r.id != rendererId);
-            }
+        if (r.id == rendererId) {
+            return r.page.lock();
         }
     }
+
+    return KnobPagePtr();
 }
 
 bool
 RenderSettingsKnobs::knobChanged(KnobI* knob)
 {
-    KnobStringPtr store = _imp->store.lock();
-
-    if (store && (knob == store.get())) {
-        return true;
-    }
     std::map<const KnobI*, std::size_t>::const_iterator found = _imp->byKnob.find(knob);
     if (found == _imp->byKnob.end()) {
         return false;
     }
     if (!_imp->applying) {
         _imp->syncFollowers(found->second);
-        _imp->writeStore();
     }
 
     return true;
 }
-
-void
-RenderSettingsKnobs::knobsLoaded(const std::string& nodeName)
-{
-    KnobStringPtr store = _imp->store.lock();
-
-    if (!store) {
-        return;
-    }
-    _imp->orphans.clear();
-    std::string report;
-    std::istringstream lines(store->getValue());
-    std::string line;
-    while (std::getline(lines, line)) {
-        const std::vector<std::string> fields = splitTabs(line);
-        if (fields.size() != 3) {
-            continue;
-        }
-        const std::string renderer = unescape(fields[0]);
-        const std::string key = unescape(fields[1]);
-        const std::string text = unescape(fields[2]);
-        const Impl::Setting* s = _imp->find(renderer, key);
-        if (s) {
-            _imp->applying = true;
-            const bool set = _imp->setKnobValue(*s, parseValue(text, s->knobDefault));
-            _imp->applying = false;
-            if (set) {
-                continue;
-            }
-        }
-        _imp->orphans[std::make_pair(renderer, key)] = text;
-        report += "\n" + renderer + " " + key + " = " + text;
-    }
-    for (std::size_t i = 0; i < _imp->settings.size(); ++i) {
-        _imp->syncFollowers(i);
-    }
-    if (!report.empty()) {
-        appPTR->writeToErrorLog_mt_safe(QString::fromStdString(nodeName), QDateTime::currentDateTime(),
-                                        QString::fromStdString("These renderer settings have no knob here, because "
-                                                               "their renderer is not installed or no longer declares "
-                                                               "them; they are kept in the project unchanged:"
-                                                               + report));
-    }
-    _imp->writeStore();
-} // RenderSettingsKnobs::knobsLoaded
 
 RenderSettingsKnobs::Values
 RenderSettingsKnobs::values(const std::string& rendererId) const
@@ -1286,16 +1192,27 @@ RenderSettingsKnobs::audit(const std::string& rendererId) const
     return out;
 }
 
-std::vector<std::vector<std::string>>
-RenderSettingsKnobs::orphans() const
+bool
+RenderSettingsKnobs::author(const UsdPrim& prim,
+                            std::string* errorMessage) const
 {
-    std::vector<std::vector<std::string>> out;
+    for (const Impl::Renderer& r : _imp->renderers) {
+        for (const std::pair<const std::string, VtValue>& setting : values(r.id)) {
+            const std::string name = RenderSettingsPrim::attributeName(r.id, setting.first);
+            const SdfValueTypeName type = SdfSchema::GetInstance().FindType(setting.second);
+            UsdAttribute attribute;
+            if (type && SdfPath::IsValidNamespacedIdentifier(name)) {
+                attribute = prim.CreateAttribute(TfToken(name), type, true);
+            }
+            if (!attribute || !attribute.Set(setting.second)) {
+                *errorMessage = "USD could not author the setting " + setting.first + " of " + r.id + " as " + name + " on " + prim.GetPath().GetString() + ".";
 
-    for (const std::pair<const std::pair<std::string, std::string>, std::string>& e : _imp->orphans) {
-        out.push_back(std::vector<std::string> { e.first.first, e.first.second, e.second });
+                return false;
+            }
+        }
     }
 
-    return out;
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

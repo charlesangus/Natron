@@ -38,17 +38,13 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include <pxr/base/vt/value.h>
 
-// The hidden knob holding every renderer's settings that differ from their defaults, as text, so
-// that the values of a renderer or setting this installation lacks survive a load and a save.
-#define kRenderSettingsParamStore "rendererSettings"
-
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The knobs of the settings Hydra render delegates declare
  * (HdRenderDelegate::GetRenderSettingDescriptors): for each renderer, an optional curated group of
- * hand-labelled knobs and an "Other Settings" group with a knob for every other declared setting.
- * Only the chosen renderer's groups are shown; the others keep their values.
+ * hand-labelled knobs and an "Other Settings" group with a knob for every other declared setting,
+ * on a page of the renderer's own. Every renderer's page is shown.
  *
  * A knob's script name is the renderer's prefix (scriptPrefix()) followed by the setting's name in
  * camel case; its label is that name without the prefix, made readable (labelFromScriptName()).
@@ -109,6 +105,12 @@ public:
      **/
     static DescriptorList descriptors(const std::string& rendererId);
 
+    // What the same delegate returns from HdRenderDelegate::GetRenderSettingsNamespaces().
+    static std::vector<std::string> declaredNamespaces(const std::string& rendererId);
+
+    // The curated group of the renderer: Cycles' or MoonRay's, null for any other.
+    static const Curated* curatedFor(const std::string& rendererId);
+
     // Every available delegate's declared settings, one per line: renderer, key, type, default, name.
     static std::string dump();
 
@@ -131,26 +133,20 @@ public:
     static std::string valueText(const PXR_NS::VtValue& value);
     static bool isSupported(const PXR_NS::VtValue& value);
 
-    RenderSettingsKnobs(KnobHolder* holder, const KnobPagePtr& page);
+    explicit RenderSettingsKnobs(KnobHolder* holder);
     ~RenderSettingsKnobs();
 
-    // Makes the renderer's groups. Call for each renderer, then finish().
+    /**
+     * @brief Makes the renderer's page, named scriptPrefix(rendererId) and labelled with the
+     * renderer's name, holding its groups.
+     **/
     void addRenderer(const std::string& rendererId, const DescriptorList& declared, const Curated* curated);
 
-    // Makes the hidden store, after every renderer's knobs so that a load sets it last.
-    void finish();
+    // The page addRenderer() made for rendererId, null if none.
+    KnobPagePtr page(const std::string& rendererId) const;
 
-    // Shows rendererId's groups and hides the others'.
-    void showRenderer(const std::string& rendererId);
-
-    // Keeps the store in step with a setting's knob; true if knob is one of the settings'.
+    // Sets the knobs of the settings that follow knob's; true if knob is one of the settings'.
     bool knobChanged(KnobI* knob);
-
-    /**
-     * @brief Restores from the store the values of settings whose knob the file lacked, and keeps
-     * those of settings without a knob, reporting them once to the error log.
-     **/
-    void knobsLoaded(const std::string& nodeName);
 
     // The settings of rendererId to send its delegate: those that differ from the delegate's default.
     Values values(const std::string& rendererId) const;
@@ -161,8 +157,11 @@ public:
     // For each key rendererId declares, the script name of the knob reaching it, or empty if none does.
     std::vector<std::pair<std::string, std::string>> audit(const std::string& rendererId) const;
 
-    // The stored entries whose renderer or setting has no knob here: renderer, key, value text.
-    std::vector<std::vector<std::string>> orphans() const;
+    /**
+     * @brief Authors on prim every renderer's values() as attributes named by
+     * RenderSettingsPrim::attributeName(). False with *errorMessage set if one cannot be authored.
+     **/
+    bool author(const PXR_NS::UsdPrim& prim, std::string* errorMessage) const;
 
 private:
     struct Impl;

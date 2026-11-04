@@ -589,6 +589,11 @@ authorStageMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     } else {
         layer->SetDefaultPrim(PXR_NS::TfToken(metadata.defaultPrim));
     }
+    if (metadata.renderSettingsPrimPath.empty()) {
+        layer->EraseField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath);
+    } else {
+        layer->SetField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, metadata.renderSettingsPrimPath);
+    }
     layer->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
     layer->SetFramesPerSecond(framesPerSecond);
     layer->SetStartTimeCode(startTime);

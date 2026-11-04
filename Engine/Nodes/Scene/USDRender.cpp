@@ -45,11 +45,9 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
-#include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
-#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -91,18 +89,6 @@ primIdKey(std::uint32_t hash)
     std::snprintf(hex, sizeof(hex), "%08x", hash);
 
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
-}
-
-const RenderSettingsKnobs::Curated*
-curatedSettings(const std::string& rendererId)
-{
-    if (CyclesAovs::isCycles(rendererId)) {
-        return &CyclesSettings::curated();
-    } else if (MoonRayAovs::isMoonRay(rendererId)) {
-        return &MoonRaySettings::curated();
-    }
-
-    return nullptr;
 }
 } // anon namespace
 
@@ -194,12 +180,10 @@ USDRender::initializeKnobs()
     page->addKnob(renderer);
     _renderer = renderer;
 
-    _settings.reset(new RenderSettingsKnobs(this, page));
+    _settings.reset(new RenderSettingsKnobs(this));
     for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
-        _settings->addRenderer(id, RenderSettingsKnobs::descriptors(id), curatedSettings(id));
+        _settings->addRenderer(id, RenderSettingsKnobs::descriptors(id), RenderSettingsKnobs::curatedFor(id));
     }
-    _settings->finish();
-    _settings->showRenderer(rendererId());
 } // USDRender::initializeKnobs
 
 void
@@ -207,10 +191,6 @@ USDRender::onKnobsLoaded()
 {
     NativeEffectBase::onKnobsLoaded();
     keepLoadedRenderer();
-    if (_settings) {
-        _settings->knobsLoaded(getNode()->getScriptName_mt_safe());
-        _settings->showRenderer(rendererId());
-    }
     scheduleCameraMenuRefresh();
 }
 
@@ -224,10 +204,6 @@ USDRender::knobChanged(KnobI* k,
     KnobChoicePtr renderer = _renderer.lock();
 
     if (renderer && (k == renderer.get())) {
-        if (_settings) {
-            _settings->showRenderer(rendererId());
-        }
-
         return true;
     }
 

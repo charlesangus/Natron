@@ -33,7 +33,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The Cycles group of USDRender's settings: the controls a Cycles user reaches for first,
+ * @brief The Cycles group of USDRenderSettings' Cycles page: the controls a Cycles user reaches for first,
  * bound to the keys Cycles' Hydra delegate declares. Cycles declares no pixel filter: its filter
  * belongs to the film, which the delegate does not expose.
  **/

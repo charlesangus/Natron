@@ -48,8 +48,12 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
-#include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
+#include "Engine/ScenePayload.h"
+#include "Engine/ViewIdx.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -214,24 +218,41 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         getApp()->getProject()->reset(false, true);
+        SceneQueryPool::instance().releaseIdle();
         RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList());
         RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, RenderSettingsKnobs::DescriptorList());
         BaseTest::TearDown();
     }
 
-    NodePtr createRender()
+    NodePtr createSettings()
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        EXPECT_TRUE(bool(node)) << "USDRender is not registered";
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        EXPECT_TRUE(bool(node)) << "USDRenderSettings is not registered";
 
         return node;
     }
 
     static const RenderSettingsKnobs* settingsOf(const NodePtr& node)
     {
-        USDRender* render = node ? dynamic_cast<USDRender*>(node->getEffectInstance().get()) : nullptr;
+        USDRenderSettings* settings = node ? dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get()) : nullptr;
 
-        return render ? render->renderSettings() : nullptr;
+        return settings ? settings->renderSettings() : nullptr;
+    }
+
+    // The node's render settings prim, as the scene it outputs composes it.
+    static UsdPrim authoredPrim(const NodePtr& node,
+                                SceneQueryPool::Lease* lease)
+    {
+        ScenePayload payload;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+            << error;
+        *lease = SceneQueryPool::instance().borrow(payload, &error);
+        UsdStageRefPtr stage = lease->getStage();
+        EXPECT_TRUE(bool(stage)) << error;
+
+        return stage ? stage->GetPrimAtPath(SdfPath(kUSDRenderSettingsDefaultPrimPath)) : UsdPrim();
     }
 
     bool saveResetLoad(const QTemporaryDir& tmp)
@@ -271,7 +292,7 @@ TEST_F(RenderSettingsKnobsTest, NamesAndLabels)
 TEST_F(RenderSettingsKnobsTest, BuildsAKnobForEverySupportedType)
 {
     RenderSettingsKnobs::setDescriptorsForTests(kRenderer, everyType());
-    NodePtr node = createRender();
+    NodePtr node = createSettings();
     ASSERT_TRUE(bool(node));
     const RenderSettingsKnobs* settings = settingsOf(node);
     ASSERT_TRUE(settings != nullptr);
@@ -282,9 +303,17 @@ TEST_F(RenderSettingsKnobsTest, BuildsAKnobForEverySupportedType)
         EXPECT_EQ(std::string(c.scriptName), k->getName());
         EXPECT_EQ(k.get(), node->getKnobByName(c.scriptName).get());
         EXPECT_EQ(RenderSettingsKnobs::labelFromScriptName(c.scriptName, "natronTestSettingsRenderer"), k->getLabel());
-        // The renderer is not the chosen one, so its knobs are hidden.
-        EXPECT_TRUE(k->getIsSecret()) << c.key;
+        // Every renderer's knobs are shown, on its own page.
+        EXPECT_FALSE(k->getIsSecret()) << c.key;
+        KnobIPtr group = k->getParentKnob();
+        ASSERT_TRUE(bool(group)) << c.key;
+        EXPECT_EQ(settings->page(kRenderer), group->getParentKnob()) << c.key;
     }
+    KnobPagePtr page = settings->page(kRenderer);
+    ASSERT_TRUE(bool(page));
+    EXPECT_EQ(std::string("natronTestSettingsRenderer"), page->getName());
+    EXPECT_EQ(page.get(), node->getKnobByName("natronTestSettingsRenderer").get());
+    EXPECT_FALSE(page->getIsSecret());
     EXPECT_TRUE(dynamic_cast<KnobBool*>(settings->knob(kRenderer, "test:flag").get()) != nullptr);
     EXPECT_TRUE(dynamic_cast<KnobInt*>(settings->knob(kRenderer, "test:count").get()) != nullptr);
     EXPECT_TRUE(dynamic_cast<KnobDouble*>(settings->knob(kRenderer, "test:gain").get()) != nullptr);
@@ -311,7 +340,10 @@ TEST_F(RenderSettingsKnobsTest, BuildsAKnobForEverySupportedType)
 TEST_F(RenderSettingsKnobsTest, ValuesRoundTripThroughSaveAndLoad)
 {
     RenderSettingsKnobs::setDescriptorsForTests(kRenderer, everyType());
-    NodePtr node = createRender();
+    RenderSettingsKnobs::DescriptorList other;
+    other.push_back(descriptor("test:gain", VtValue(0.5f)));
+    RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, other);
+    NodePtr node = createSettings();
     ASSERT_TRUE(bool(node));
     const std::string name = node->getScriptName();
     U64 hash = node->getHashValue();
@@ -321,6 +353,7 @@ TEST_F(RenderSettingsKnobsTest, ValuesRoundTripThroughSaveAndLoad)
         EXPECT_NE(hash, changed) << c.key;
         hash = changed;
     }
+    setKnob(node, "natronTestOtherSettingsRendererGain", VtValue(0.25f));
     const RenderSettingsKnobs* settings = settingsOf(node);
     ASSERT_TRUE(settings != nullptr);
     RenderSettingsKnobs::Values sent = settings->values(kRenderer);
@@ -341,78 +374,54 @@ TEST_F(RenderSettingsKnobsTest, ValuesRoundTripThroughSaveAndLoad)
     for (const Case& c : cases()) {
         EXPECT_EQ(c.changed, sent[c.key]) << c.key << ": " << RenderSettingsKnobs::valueText(sent[c.key]);
     }
-    EXPECT_TRUE(loadedSettings->orphans().empty());
+    sent = loadedSettings->values(kOtherRenderer);
+    ASSERT_EQ(1u, sent.size());
+    EXPECT_EQ(VtValue(0.25f), sent["test:gain"]);
 }
 
-// The values of a setting the delegate no longer declares, and of a renderer that is not
-// installed, stay in the project across a load and a save, and come back with their knobs.
-TEST_F(RenderSettingsKnobsTest, SettingsWithoutAKnobAreKept)
+// The changed settings of every renderer are authored on the prim, each named as
+// RenderSettingsPrim::attributeName() names it, and read back as the values sent; the defaults are not.
+TEST_F(RenderSettingsKnobsTest, ValuesAreAuthoredInEachRenderersNamespace)
 {
-    RenderSettingsKnobs::DescriptorList both;
-    both.push_back(descriptor("test:count", VtValue(3)));
-    both.push_back(descriptor("test:gone", VtValue(1)));
+    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, everyType());
     RenderSettingsKnobs::DescriptorList other;
     other.push_back(descriptor("test:gain", VtValue(0.5f)));
-    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, both);
+    other.push_back(descriptor("test:count", VtValue(3)));
     RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, other);
-    NodePtr node = createRender();
+    NodePtr node = createSettings();
     ASSERT_TRUE(bool(node));
-    const std::string name = node->getScriptName();
-    setKnob(node, "natronTestSettingsRendererCount", VtValue(5));
-    setKnob(node, "natronTestSettingsRendererGone", VtValue(9));
+    const RenderSettingsKnobs* settings = settingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    {
+        SceneQueryPool::Lease lease;
+        const UsdPrim prim = authoredPrim(node, &lease);
+        ASSERT_TRUE(bool(prim));
+        EXPECT_TRUE(RenderSettingsPrim::settings(prim, kRenderer, UsdTimeCode::Default()).empty());
+        EXPECT_TRUE(RenderSettingsPrim::settings(prim, kOtherRenderer, UsdTimeCode::Default()).empty());
+    }
+    for (const Case& c : cases()) {
+        setKnob(node, c.scriptName, c.changed);
+    }
     setKnob(node, "natronTestOtherSettingsRendererGain", VtValue(0.25f));
 
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    RenderSettingsKnobs::DescriptorList countOnly;
-    countOnly.push_back(descriptor("test:count", VtValue(3)));
-    {
-        ProjectPtr project = getApp()->getProject();
-        QString saved;
-        ASSERT_TRUE(project->saveProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("kept.ntpz"), &saved));
-        project->reset(false, true);
-        RenderSettingsKnobs::setDescriptorsForTests(kRenderer, countOnly);
-        RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, RenderSettingsKnobs::DescriptorList());
-        ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("kept.ntpz")));
+    SceneQueryPool::Lease lease;
+    const UsdPrim prim = authoredPrim(node, &lease);
+    ASSERT_TRUE(bool(prim));
+    for (const Case& c : cases()) {
+        const std::string name = std::string("natronTestSettingsRenderer:") + c.key;
+        EXPECT_EQ(name, RenderSettingsPrim::attributeName(kRenderer, c.key));
+        const UsdAttribute attribute = prim.GetAttribute(TfToken(name));
+        ASSERT_TRUE(bool(attribute)) << name;
+        VtValue authored;
+        EXPECT_TRUE(attribute.Get(&authored)) << name;
+        EXPECT_EQ(c.changed, authored) << name;
     }
-    NodePtr loaded = getApp()->getProject()->getNodeByName(name);
-    ASSERT_TRUE(bool(loaded));
-    const RenderSettingsKnobs* settings = settingsOf(loaded);
-    ASSERT_TRUE(settings != nullptr);
-    EXPECT_FALSE(bool(loaded->getKnobByName("natronTestSettingsRendererGone")));
-    EXPECT_FALSE(bool(loaded->getKnobByName("natronTestOtherSettingsRendererGain")));
-    RenderSettingsKnobs::Values sent = settings->values(kRenderer);
-    ASSERT_EQ(1u, sent.size());
-    EXPECT_EQ(VtValue(5), sent["test:count"]);
-    const std::vector<std::vector<std::string>> orphans = settings->orphans();
-    ASSERT_EQ(2u, orphans.size());
-    EXPECT_EQ((std::vector<std::string> { kOtherRenderer, "test:gain", "0.25" }), orphans[0]);
-    EXPECT_EQ((std::vector<std::string> { kRenderer, "test:gone", "9" }), orphans[1]);
-    KnobString* store = dynamic_cast<KnobString*>(loaded->getKnobByName(kRenderSettingsParamStore).get());
-    ASSERT_TRUE(store != nullptr);
-    EXPECT_TRUE(store->getIsSecret());
-    EXPECT_NE(std::string::npos, store->getValue().find("test:gone\t9")) << store->getValue();
-
-    // Saved again without their knobs, then loaded where both are declared again.
-    {
-        ProjectPtr project = getApp()->getProject();
-        QString saved;
-        ASSERT_TRUE(project->saveProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("again.ntpz"), &saved));
-        project->reset(false, true);
-        RenderSettingsKnobs::setDescriptorsForTests(kRenderer, both);
-        RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, other);
-        ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("again.ntpz")));
-    }
-    loaded = getApp()->getProject()->getNodeByName(name);
-    ASSERT_TRUE(bool(loaded));
-    settings = settingsOf(loaded);
-    ASSERT_TRUE(settings != nullptr);
-    EXPECT_TRUE(settings->orphans().empty());
-    sent = settings->values(kRenderer);
-    EXPECT_EQ(VtValue(5), sent["test:count"]);
-    EXPECT_EQ(VtValue(9), sent["test:gone"]);
-    sent = settings->values(kOtherRenderer);
-    EXPECT_EQ(VtValue(0.25f), sent["test:gain"]);
+    EXPECT_EQ(settings->values(kRenderer), RenderSettingsPrim::settings(prim, kRenderer, UsdTimeCode::Default()));
+    const RenderSettingsPrim::Values otherValues = RenderSettingsPrim::settings(prim, kOtherRenderer, UsdTimeCode::Default());
+    EXPECT_EQ(settings->values(kOtherRenderer), otherValues);
+    ASSERT_EQ(1u, otherValues.size());
+    EXPECT_EQ(VtValue(0.25f), otherValues.at("test:gain"));
+    EXPECT_FALSE(prim.HasAttribute(TfToken("natronTestOtherSettingsRenderer:test:count")));
 }
 
 // Prints every installed delegate's declared settings: the list the curated groups are built from.

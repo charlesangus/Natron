@@ -33,7 +33,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The MoonRay group of USDRender's settings. hdMoonray declares only its own options; the
+ * @brief The MoonRay group of USDRenderSettings' MoonRay page. hdMoonray declares only its own options; the
  * sampling, depth and filter controls are MoonRay scene variables, which it takes as
  * "moonray:sceneVariable:<name>" settings without declaring them. MoonRay has no seed setting.
  **/

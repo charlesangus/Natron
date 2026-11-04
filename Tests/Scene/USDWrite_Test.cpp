@@ -634,3 +634,55 @@ TEST_F(USDWriteTest, CorrectedReadsRoundTripInBothModes)
         }
     }
 }
+
+// A file's renderSettingsPrimPath stage metadata reaches the composed stage through USDRead and
+// the written file's root layer through USDWrite, in either mode.
+TEST_F(USDWriteTest, RenderSettingsPrimPathRoundTripsInBothModes)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString filePath = tmp.path() + QString::fromUtf8("/render.usda");
+    writeTextFile(filePath, "#usda 1.0\n"
+                            "(\n"
+                            "    renderSettingsPrimPath = \"/Render/Final\"\n"
+                            ")\n"
+                            "def Xform \"World\"\n{\n}\n"
+                            "def Scope \"Render\"\n{\n"
+                            "    def RenderSettings \"Final\"\n    {\n"
+                            "        uniform int2 resolution = (320, 240)\n"
+                            "    }\n}\n");
+
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(reader));
+    KnobFile* file = getKnob<KnobFile>(reader, kUSDReadParamFile);
+    ASSERT_TRUE(file != NULL);
+    file->setValue(filePath.toStdString());
+
+    PXR_NS::UsdStageRefPtr composed = composeOutput(reader);
+    ASSERT_TRUE(static_cast<bool>(composed));
+    const PXR_NS::UsdRenderSettings active = PXR_NS::UsdRenderSettings::GetStageRenderSettings(composed);
+    ASSERT_TRUE(static_cast<bool>(active));
+    EXPECT_EQ(PXR_NS::SdfPath("/Render/Final"), active.GetPath());
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const QString path = tmp.path() + QString::fromUtf8(mode == USDWrite::eExportModeLayered ? "/out/layered.usda" : "/out/flattened.usda");
+        NodePtr writer = createWriter(reader, path, mode, 1, 1);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+
+        PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(written));
+        std::string value;
+        EXPECT_TRUE(written->HasField(PXR_NS::SdfPath::AbsoluteRootPath(), PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &value)) << (int)mode;
+        EXPECT_EQ(std::string("/Render/Final"), value) << (int)mode;
+
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(stage));
+        const PXR_NS::UsdRenderSettings reopened = PXR_NS::UsdRenderSettings::GetStageRenderSettings(stage);
+        ASSERT_TRUE(static_cast<bool>(reopened)) << (int)mode;
+        PXR_NS::GfVec2i resolution;
+        EXPECT_TRUE(reopened.GetResolutionAttr().Get(&resolution));
+        EXPECT_EQ(PXR_NS::GfVec2i(320, 240), resolution);
+    }
+}

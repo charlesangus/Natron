@@ -1,7 +1,8 @@
 """SplineWarp viewer tools: the panel's Role and Linked To columns and warp actions, a destination
 drag with a draft frame, open and single-point links, a feathered boundary, a correspondence, and
 the Show and Output Warped settings. Then Z smooths a linked curve, the viewer's right-click menu
-on a curve runs Duplicate and Link and Link, and the point tool makes a linked pair of points.
+opens on every click and on a curve runs Duplicate and Link and Link, and the point tool makes a
+linked pair of points.
 
 A CheckerBoard feeds a SplineWarp feeding the viewer, with the SplineWarp's settings panel open.
 Curves are made through the node's Roto context; the links are made from the curve list's context
@@ -26,6 +27,8 @@ WATCHDOG_S = 300
 SETTLE_MS = 500
 RENDER_MS = 1500
 MENU_MS = 600
+# Long enough for an unanswered viewer menu poll to have given up: MENU_MS, then ten 200 ms polls.
+MENU_GONE_MS = 3000
 DRAG_STEPS = 12
 SHOW_SOURCE, SHOW_DESTINATION, SHOW_BOTH = 0, 1, 2
 MIN_INK = 40  # pixels on a 2-pixel sampling grid
@@ -38,7 +41,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QToolButton, QTreeWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -246,11 +249,17 @@ try:
 
     def run_viewer_menu_action(pos, text, seen):
         """Right-clicks the viewer at pos, on a curve, and triggers the menu action labelled text,
-        picked from a timer while the modal menu is up. seen gets each entry's enabled state."""
+        picked from a timer while the modal menu is up; text None only dismisses the menu. seen gets
+        each entry's enabled state. The poll gives up, so a click that opened no menu cannot be
+        answered by the menu of a later click."""
+        polls = [10]
+
         def pick():
             popup = QApplication.activePopupWidget()
             if popup is None:
-                QTimer.singleShot(200, pick)
+                polls[0] -= 1
+                if polls[0] > 0:
+                    QTimer.singleShot(200, pick)
                 return
             chosen = None
             for act in popup.actions():
@@ -269,6 +278,15 @@ try:
         send_mouse(gl, QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
         send_mouse(gl, QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
 
+    def check_menu_opens_repeatedly(pos, what):
+        """Right-clicks pos three times with the same entries, dismissing the menu each time."""
+        for attempt in (1, 2, 3):
+            shown = {}
+            run_viewer_menu_action(pos, None, shown)
+            yield ("sleep", MENU_GONE_MS)
+            check(all(name in shown for name in CURVE_MENU_ACTIONS),
+                  "right-click %d on %s opens the viewer menu" % (attempt, what))
+
     def viewer_key(key):
         """key through the viewer's window to the viewer, as a key press from a person arrives."""
         gl = visible_viewer()
@@ -276,10 +294,24 @@ try:
         QTest.keyClick(gl.window().windowHandle(), key)
         QApplication.processEvents()
 
+    def select_tool(text):
+        """Selects a viewer toolbar tool the way its button does; the tool knobs are checkable, so
+        triggering the parameter from a script never changes the tool."""
+        for button in QApplication.allWidgets():
+            if isinstance(button, QToolButton) and button.isVisible():
+                for act in button.actions():
+                    if act.text() == text:
+                        button.setDefaultAction(act)
+                        button.triggered.emit(act)
+                        QApplication.processEvents()
+                        return True
+        report("NOTE no viewer toolbar button offers %s" % text)
+        return False
+
     def tangents(curve):
         return [tuple(curve.getControlPointPosition(i, 1.0)) for i in range(curve.getNumControlPoints())]
 
-    def make_quad(x0, y0, x1, y1):
+    def make_quad(roto, x0, y0, x1, y1):
         curve = hold(roto.createBezier(x0, y0, 1.0))
         for x, y in ((x1, y0), (x1, y1), (x0, y1)):
             curve.addControlPoint(x, y)
@@ -567,13 +599,14 @@ try:
         gt.shot("m148-smoothed.png")
 
         gt.section("viewer-menu")
-        q1 = make_quad(100.0, 600.0, 400.0, 900.0)
-        q2 = make_quad(1450.0, 150.0, 1750.0, 450.0)
-        q3 = make_quad(1500.0, 950.0, 1800.0, 1050.0)
+        q1 = make_quad(roto, 100.0, 600.0, 400.0, 900.0)
+        q2 = make_quad(roto, 1450.0, 150.0, 1750.0, 450.0)
+        q3 = make_quad(roto, 1450.0, 500.0, 1750.0, 650.0)
         yield ("sleep", SETTLE_MS)
         tree = fresh_tree(warp)
         items = select_in_tree(tree, [q1])
         require(len(items) == 1, "selected a new closed curve")
+        yield from check_menu_opens_repeatedly(to_viewer(100.0, 750.0), "a curve")
         seen = {}
         run_viewer_menu_action(to_viewer(100.0, 750.0), "Duplicate and Link", seen)
         ok = yield ("until", lambda: sw.getLink(q1) is not None, POLL_TIMEOUT_S)
@@ -591,8 +624,9 @@ try:
         items = select_in_tree(tree, [q2, q3])
         require(len(items) == 2, "selected two new closed curves")
         seen = {}
-        run_viewer_menu_action(to_viewer(1500.0, 1000.0), "Link", seen)
+        run_viewer_menu_action(to_viewer(1600.0, 650.0), "Link", seen)
         ok = yield ("until", lambda: sw.getLink(q2) is not None, POLL_TIMEOUT_S)
+        report("NOTE the viewer menu on two curves: %r" % (seen,))
         check(seen.get("Link") is True and seen.get("Duplicate and Link") is False,
               "the viewer menu enables Link, not Duplicate and Link, for two curves")
         check(ok, "Link from the viewer menu linked the two curves")
@@ -604,11 +638,12 @@ try:
         gt.shot("m148-viewer-menu-link.png")
 
         gt.section("viewer-point-menu")
-        q4 = make_quad(700.0, 150.0, 1000.0, 350.0)
+        q4 = make_quad(roto, 700.0, 150.0, 1000.0, 350.0)
         yield ("sleep", SETTLE_MS)
         tree = fresh_tree(warp)
         items = select_in_tree(tree, [q4])
         require(len(items) == 1, "selected a new closed curve for the point menu")
+        yield from check_menu_opens_repeatedly(to_viewer(700.0, 150.0), "a control point")
         seen = {}
         run_viewer_menu_action(to_viewer(700.0, 150.0), "Duplicate and Link", seen)
         ok = yield ("until", lambda: sw.getLink(q4) is not None, POLL_TIMEOUT_S)
@@ -621,10 +656,10 @@ try:
         gt.shot("m148-viewer-point-menu-duplicate.png")
 
         gt.section("point-tool")
-        warp.getParam("PointTool").trigger()
+        select_tool("Point Tool")
         yield ("sleep", SETTLE_MS)
         names_before = set(item.getScriptName() for item in roto.getBaseLayer().getChildren())
-        click = to_viewer(1150.0, 950.0)
+        click = to_viewer(1600.0, 800.0)
         gl = visible_viewer()
         send_mouse(gl, QEvent.MouseButtonPress, click, Qt.LeftButton, Qt.LeftButton)
         send_mouse(gl, QEvent.MouseButtonRelease, click, Qt.LeftButton, Qt.NoButton)
@@ -632,17 +667,19 @@ try:
         made = [item for item in roto.getBaseLayer().getChildren() if item.getScriptName() not in names_before]
         report("NOTE the point tool made %r" % ([m.getScriptName() for m in made],))
         check(len(made) == 2, "one click with the point tool made two points")
-        linked = [m for m in made if sw.getLink(m) is not None]
-        check(len(linked) == 2, "the two points are linked")
-        if len(linked) == 2:
-            point_link = sw.getLink(linked[0])
+        made_names = set(m.getScriptName() for m in made)
+        new_links = [lk for lk in sw.getLinks() if lk.getSource().getScriptName() in made_names]
+        check(len(new_links) == 1 and new_links[0].getDestination().getScriptName() in made_names,
+              "the two points are linked")
+        if len(new_links) == 1:
+            point_link = new_links[0]
             src = point_link.getSource()
             dst = point_link.getDestination()
             check(src.getNumControlPoints() == 1 and dst.getNumControlPoints() == 1, "both are single points")
             sp = src.getControlPointPosition(0, 1.0)
             dp = dst.getControlPointPosition(0, 1.0)
             check(abs(sp[0] - dp[0]) < 1e-6 and abs(sp[1] - dp[1]) < 1e-6, "the destination lies on the source")
-        warp.getParam("SelectAllTool").trigger()
+        select_tool("Select All Tool")
         gt.shot("m148-point-tool.png")
 
         faulthandler.cancel_dump_traceback_later()

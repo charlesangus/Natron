@@ -676,9 +676,12 @@ public:
      * Otherwise the internal menu entries will be merged with the given entries according to this equality functor.
      * @param mergingData Can be passed when mergingFunctor is not null to speed up the comparisons.
      *
+     * @param notifyIfUnchanged Emit populated() even if the entries are the same as the current ones. A right-click
+     * menu knob needs this, since populated() is what opens its menu.
+     *
      * @returns true if something changed, false otherwise.
      **/
-    bool populateChoices(const std::vector<ChoiceOption> &entries);
+    bool populateChoices(const std::vector<ChoiceOption>& entries, bool notifyIfUnchanged = false);
 
     void resetChoices();
 

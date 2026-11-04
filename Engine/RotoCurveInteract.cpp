@@ -1683,8 +1683,7 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
         choices[i].id = menuKnobs[i]->getName();
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
-    menu->populateChoices(choices);
-
+    menu->populateChoices(choices, true);
 } // showMenuForControlPoint
 
 void
@@ -1717,7 +1716,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
 
-    menu->populateChoices(choices);
+    menu->populateChoices(choices, true);
 } // showMenuForCurve
 
 bool

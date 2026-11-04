@@ -34,6 +34,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QObject>
 #include <QPointF>
 #include <QString>
 #include <QTemporaryDir>
@@ -1378,6 +1379,50 @@ TEST_F(SplineWarpToolsTest, TheViewerMenuOnAControlPointListsTheWarpActions)
     ASSERT_TRUE(bool(link));
     EXPECT_EQ(a, link->getSource());
     EXPECT_EQ(b, link->getDestination());
+}
+
+TEST_F(SplineWarpToolsTest, EveryRightClickOpensTheMenuWithCurrentEnabledStates)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpInteractPtr ui = interactOf(node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(ui && ctx);
+
+    BezierPtr a = makeQuad(ctx, 10., 10., 10.);
+    BezierPtr b = makeQuad(ctx, 30., 10., 10.);
+    ASSERT_TRUE(a && b);
+    KnobButtonPtr duplicate = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("duplicateAndLinkMenuAction"));
+    KnobButtonPtr linkButton = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName("linkMenuAction"));
+    ASSERT_TRUE(duplicate && linkButton);
+
+    int opened = 0;
+    QObject receiver;
+    QObject::connect(node.get(), &Node::rightClickMenuKnobPopulated, &receiver, [&opened]() { ++opened; });
+
+    select(ui, std::list<BezierPtr> { a });
+    ui->showMenuForCurve(a);
+    EXPECT_EQ(1, opened);
+    EXPECT_TRUE(duplicate->isEnabled(0));
+    EXPECT_FALSE(linkButton->isEnabled(0));
+
+    select(ui, std::list<BezierPtr> { a, b });
+    ui->showMenuForCurve(b);
+    EXPECT_EQ(2, opened);
+    EXPECT_FALSE(duplicate->isEnabled(0));
+    EXPECT_TRUE(linkButton->isEnabled(0));
+
+    select(ui, std::list<BezierPtr> { a });
+    ui->showMenuForControlPoint(a->getControlPointAtIndex(0));
+    EXPECT_EQ(3, opened);
+    EXPECT_TRUE(duplicate->isEnabled(0));
+    EXPECT_FALSE(linkButton->isEnabled(0));
+
+    select(ui, std::list<BezierPtr> { a, b });
+    ui->showMenuForControlPoint(b->getControlPointAtIndex(0));
+    EXPECT_EQ(4, opened);
+    EXPECT_FALSE(duplicate->isEnabled(0));
+    EXPECT_TRUE(linkButton->isEnabled(0));
 }
 
 TEST_F(SplineWarpToolsTest, SplineWarpIsListedInTheTransformMenu)

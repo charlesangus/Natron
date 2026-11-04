@@ -511,6 +511,15 @@ private Q_SLOTS:
 
     void onProjectLoaded();
 
+    void onMaxSamplesBoxChanged(double value);
+
+    void onRefinementPausedButtonClicked(bool paused);
+
+    // Shows the scene view's renderer row only for a progressive renderer.
+    void refreshSceneRenderRow();
+
+    void refreshRefineSamplesLabel();
+
 private:
     // Shows the viewer node's knobs in the widgets and in the GL viewer, with no widget signal.
     void refreshFromViewerKnob(const std::string& name);
@@ -523,6 +532,8 @@ private:
     void refreshProcessingButtonsFromKnobs();
     void refreshWipeAndRoIFromKnobs();
     void refreshViewsMenuFromKnob();
+    // Also hands Max Samples and Refinement Paused to the scene view.
+    void refreshSceneRenderFromKnobs();
 
     // The fps playback runs at: the input's or the project's while the fps is locked.
     double getLockedFps() const;

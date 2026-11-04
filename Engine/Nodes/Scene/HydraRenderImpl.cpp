@@ -134,6 +134,8 @@ struct EngineEntry {
     bool headlight = false;
     // The render settings the engine was made with (setRendererSettings()).
     std::map<std::string, VtValue> settings;
+    // The thread budget a MoonRay engine was made with: its Arras session takes its cores when it starts.
+    int threads = 0;
     // The AOV depth is read from, and whether the delegate renders the normal AOV, which only some
     // do, and whether it writes that in camera space rather than Hydra's world space.
     TfToken depthAov;
@@ -848,8 +850,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
     // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
-    // when they change, so an engine is made again under new ones too.
-    if (!entry.engine || (headlight != entry.headlight) || (settings != entry.settings)) {
+    // when they change, so an engine is made again under new ones too, as a MoonRay engine is under
+    // a new thread budget.
+    const bool budgetChanged = MoonRayAovs::isMoonRay(renderer) && (request.threads != entry.threads);
+    if (!entry.engine || (headlight != entry.headlight) || (settings != entry.settings) || budgetChanged) {
         entry.engine.reset();
         entry.rendered = false;
         // Named even for Storm: with no id the engine takes USD's default delegate, the first by
@@ -898,6 +902,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         } else if (MoonRayAovs::isMoonRay(renderer)) {
             MoonRayAovs::configureEngine(entry.engine.get(), request.threads);
         }
+        entry.threads = request.threads;
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             entry.engine->SetRendererSetting(TfToken(it->first), it->second);
         }

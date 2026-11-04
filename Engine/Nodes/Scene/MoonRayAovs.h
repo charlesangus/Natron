@@ -117,7 +117,8 @@ struct Notice {
  * @brief While alive, takes what MoonRay logs in this process away from the console: every message
  * goes to the natron.render.moonray logging category at debug level, and is kept for notices().
  * Several may be alive at once, each keeping every message. Without log4cplus in the build it
- * keeps nothing and MoonRay prints as it would.
+ * keeps nothing and MoonRay prints as it would. Either way Arras's traces are switched off for good;
+ * its errors still print.
  **/
 class LogCapture {
 public:

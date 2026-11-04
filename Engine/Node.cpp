@@ -36,6 +36,7 @@
 #include <locale>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -1763,8 +1764,10 @@ Node::flushHashDirtyMarks()
             return true;
         };
         // A feedback loop's LoopBegin folds its body's state in, not the body's hashes: a walk
-        // stopping at a dirty body node must still reach it, as it may be clean.
-        const bool feedbackLoops = LoopEnd::anyExists();
+        // stopping at a dirty body node must still reach it, as it may be clean. Only a LoopEnd in
+        // Feedback mode has its LoopBegins fold in its body or its knobs.
+        const bool feedbackLoops = LoopEnd::anyFeedbackExists();
+        std::optional<LoopEnd::FeedbackBeginsLookup> feedbackBegins;
         auto reach = [&visit, &toExpand, &stopped, feedbackLoops](const NodePtr& node) {
             if (!node || !visit(node)) {
                 return;
@@ -1808,7 +1811,10 @@ Node::flushHashDirtyMarks()
                 if (toExpand.empty()) {
                     NodePtr node = std::move(stopped.back());
                     stopped.pop_back();
-                    LoopEnd::appendFeedbackBeginsOf(node, &dependents);
+                    if (!feedbackBegins) {
+                        feedbackBegins.emplace();
+                    }
+                    feedbackBegins->appendFeedbackBeginsOf(node, &dependents);
                     // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
                     if (node->_imp->effect) {
                         node->_imp->effect->appendExtraHashDependents(&dependents);
@@ -4795,6 +4801,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    LoopEnd::onGraphChanged();
     emitLinksChanged(NodesList());
 
     ///If the node is a group, deactivate all nodes within the group
@@ -4887,6 +4894,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = true; //< flag it true before notifying the GUI because the gui rely on this flag (especially the Viewer)
     }
+    LoopEnd::onGraphChanged();
 
     NodeCollectionPtr group = getGroup();
     if (group) {
@@ -8337,6 +8345,9 @@ Node::dequeueActions()
                     outputsCommitted = (it->lock() != gui->lock());
                 }
                 _imp->outputs = _imp->guiOutputs;
+            }
+            if (!inputChanges.empty() || outputsCommitted) {
+                LoopEnd::onGraphChanged();
             }
             // Before a render can start, as in connectInput().
             if (!inputChanges.empty()) {

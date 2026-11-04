@@ -393,6 +393,7 @@ future core work has solid ground to build on.
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |
 | M324 | SplineWarp STMap And IDistort Outputs | todo | M274 |  | E3 | [M324-splinewarp-stmap-idistort-outputs.md](PLAN/MILESTONES/M324-splinewarp-stmap-idistort-outputs.md) |
 | M325 | MoonRay Fork | todo | M252 |  | E9 | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
+| M326 | Legible Viewer Warning Banner | todo | - |  | E10 | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
 
 # Epics
 

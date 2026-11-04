@@ -36,7 +36,9 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/BokehKernel.h"
+#include "Engine/Nodes/Filter/BokehKnobs.h"
 #include "Engine/Nodes/Filter/DepthOfField.h"
+#include "Engine/Nodes/Filter/LensAberration.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
@@ -87,11 +89,14 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct DefocusKernelImage;
+
 struct ZDefocusParams {
     DepthOfFieldParams dof;
     int layers = 16;
     double aspectRatio = 1.;
     BokehShapeParams shape;
+    LensAberrationParams lens;
     BokehHighlight highlight;
     bool focalPlaneOutput = false;
 };
@@ -136,6 +141,17 @@ public:
                       double* radiusY);
 
     /**
+     * @brief radii() for a channel whose circle of confusion is scale times coc, clamped on its
+     * own to params' Max Size; a scale of 1 is radii() exactly.
+     **/
+    static void radii(const ZDefocusParams& params,
+                      const PassContext& context,
+                      double coc,
+                      double scale,
+                      double* radiusX,
+                      double* radiusY);
+
+    /**
      * @brief The slices, nearest first, at context's scale: one in focus and the others spread
      * evenly over the circles of confusion in front of it and behind it, in proportion to those
      * ranges. Empty when no slice blurs at this scale.
@@ -171,14 +187,18 @@ public:
 
     /**
      * @brief Records the passes for params at context's scale on the GPU over io.domain, reading
-     * the depth from io.layerInputs. Fails, so that the CPU renders, without a GPU, for an image
-     * kernel, or when a buffer exceeds the kernels' 32-bit indices.
+     * the depth from io.layerInputs; with lens aberrations over format, every slice's kernel per
+     * channel group and cell of io.output, from cache when there is one. Fails, so that the CPU
+     * renders, without a GPU, for an image kernel, when a buffer exceeds the kernels' 32-bit
+     * indices, or when the lens kernels' runs exceed the upload cap.
      **/
     static StatusEnum recordPassesGpu(const PassGpuIO& io,
                                       const ZDefocusParams& params,
                                       const PassContext& context,
                                       const ImageLayerDesc& depthLayer,
-                                      int depthChannel) WARN_UNUSED_RETURN;
+                                      int depthChannel,
+                                      const RectI& format,
+                                      const std::shared_ptr<BokehRunCache>& cache) WARN_UNUSED_RETURN;
 
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
@@ -261,6 +281,13 @@ private:
                             std::vector<std::shared_ptr<const BokehKernel>>* kernels,
                             bool* empty);
 
+    /**
+     * @brief The Image kernel for a render with lens aberrations, null when it is missing, empty
+     * or black, which also sets the kernel warning.
+     **/
+    StatusEnum readLensKernelImage(const RenderActionArgs& args,
+                                   std::shared_ptr<const DefocusKernelImage>* image);
+
     /// Sets the Focal Plane to the depth under the Focal Point, rendered on this thread.
     void sampleFocalPoint(double time);
 
@@ -289,9 +316,11 @@ private:
     KnobDoubleWPtr _highlightThreshold;
     KnobDoubleWPtr _highlightGain;
     KnobChoiceWPtr _output;
+    BokehKnobs _bokehKnobs;
 
     struct KernelCache;
     std::unique_ptr<KernelCache> _kernelCache;
+    std::shared_ptr<BokehRunCache> _runCache;
 };
 
 NATRON_NAMESPACE_EXIT

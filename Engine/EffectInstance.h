@@ -425,6 +425,16 @@ public:
     }
 
     /**
+     * @brief True for an effect that folds what it reads of its inputs' HashNamespaces into its
+     * hash itself (appendNodeContentHash()) and outputs no stage: the node then neither folds the
+     * table nor passes it on. Otherwise the node folds every entry. Any thread.
+     **/
+    virtual bool consumesHashNamespaces() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Forwarded to the node's name
      **/
     const std::string & getScriptName() const WARN_UNUSED_RETURN;

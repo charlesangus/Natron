@@ -52,8 +52,10 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -367,4 +369,62 @@ TEST_F(USDRenderSettingsTest, TheRenderHashFoldsTheActiveRenderersKnobsOnly)
     hash = render->getHashValue();
     ASSERT_TRUE(nudge(cyclesSamples));
     EXPECT_EQ(hash, render->getHashValue());
+}
+
+// Every node but USDRender folds every renderer's knobs: a MoonRay knob edited while the prim
+// names Cycles is in the stage the settings node, a node forwarding it and a USDWrite output, so
+// it moves their hashes, while a Cycles render below the same node keeps its own.
+TEST_F(USDRenderSettingsTest, OtherNodesFoldEveryRenderersKnobs)
+{
+    const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
+    const bool haveCycles = std::find(ids.begin(), ids.end(), std::string(kRenderDelegateCyclesId)) != ids.end();
+    const bool haveMoonRay = std::find(ids.begin(), ids.end(), std::string(kMoonRayRendererId)) != ids.end();
+    if (!haveCycles || !haveMoonRay) {
+        std::printf("[  SKIPPED ] needs both Cycles and MoonRay installed\n");
+
+        return;
+    }
+    NodePtr node = settings(camera("/Cam"));
+    ASSERT_TRUE(bool(node));
+    NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
+    ASSERT_TRUE(bool(prune));
+    ASSERT_TRUE(prune->connectInput(node, 0));
+    NodePtr writer = createNode(QString::fromUtf8(PLUGINID_NATRON_USDWRITE));
+    ASSERT_TRUE(bool(writer));
+    ASSERT_TRUE(writer->connectInput(prune, 0));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(prune, 0));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    KnobIPtr cyclesSamples = knobs->knob(kRenderDelegateCyclesId, CyclesSettings::samplesKey());
+    KnobIPtr moonRaySamples = knobs->knob(kMoonRayRendererId, MoonRaySettings::samplesKey());
+    ASSERT_TRUE(bool(cyclesSamples));
+    ASSERT_TRUE(bool(moonRaySamples));
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(renderer != nullptr);
+    (void)renderer->setValueFromID(kRenderDelegateCyclesId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateCyclesId), renderer->getActiveEntry().id);
+
+    U64 settingsHash = node->getHashValue();
+    U64 pruneHash = prune->getHashValue();
+    U64 writerHash = writer->getHashValue();
+    U64 renderHash = render->getHashValue();
+    ASSERT_TRUE(nudge(moonRaySamples));
+    EXPECT_NE(settingsHash, node->getHashValue()) << "a MoonRay knob left the hash of the node authoring it";
+    EXPECT_NE(pruneHash, prune->getHashValue()) << "a MoonRay knob left the hash of a node forwarding the stage";
+    EXPECT_NE(writerHash, writer->getHashValue()) << "a MoonRay knob left the hash of a USDWrite writing it";
+    EXPECT_EQ(renderHash, render->getHashValue()) << "a MoonRay knob changed the hash of a Cycles render";
+
+    // A Cycles knob moves all four.
+    settingsHash = node->getHashValue();
+    pruneHash = prune->getHashValue();
+    writerHash = writer->getHashValue();
+    ASSERT_TRUE(nudge(cyclesSamples));
+    EXPECT_NE(settingsHash, node->getHashValue());
+    EXPECT_NE(pruneHash, prune->getHashValue());
+    EXPECT_NE(writerHash, writer->getHashValue());
+    EXPECT_NE(renderHash, render->getHashValue());
 }

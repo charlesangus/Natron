@@ -168,6 +168,10 @@ private:
     // Of the render settings knobs upstream (HashNamespaces), the active prim's in the active
     // renderer's namespaces.
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual bool consumesHashNamespaces() const OVERRIDE FINAL
+    {
+        return true;
+    }
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;

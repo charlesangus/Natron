@@ -1596,8 +1596,10 @@ public:
     /**
      * @brief Puts a render-hashed knob in a hash namespace, such as the attribute namespace of a
      * render delegate ("cycles"): the node keeps its content out of the node hash and digests it
-     * per namespace instead (Node::getHashNamespaces()), so that only the nodes reading that
-     * namespace fold it in. Empty, the default, is no namespace. Set once at creation.
+     * per namespace instead (Node::getHashNamespaces()). Every node downstream folds every
+     * namespace, but one that reads only some, such as USDRender
+     * (EffectInstance::consumesHashNamespaces()). Empty, the default, is no namespace. Set once
+     * at creation.
      **/
     virtual void setHashNamespace(const std::string& hashNamespace) = 0;
     virtual std::string getHashNamespace() const = 0;

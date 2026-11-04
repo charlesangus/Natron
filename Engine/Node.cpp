@@ -1115,8 +1115,19 @@ Node::computeContentHash(U64 projectDigest,
         }
         h.appendU64(inputs.bySlot.size());
     }
+    // The namespaced knobs upstream are in the stage this node reads, so every node folds them
+    // all, but an effect that folds what it reads of them itself and outputs no stage.
+    HashNamespacesConstPtr table;
+    const bool consumesNamespaces = _imp->effect->consumesHashNamespaces();
+    if (!consumesNamespaces) {
+        table = mergeHashNamespaces(inputs);
+    }
+    h.appendBool(bool(table));
+    if (table) {
+        table->appendAll(h);
+    }
     if (namespaces) {
-        *namespaces = mergeHashNamespaces(inputs);
+        *namespaces = table;
     }
 
     // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The

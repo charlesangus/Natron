@@ -92,9 +92,10 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The content of the knobs given a hash namespace (KnobI::setHashNamespace()), on a node
- * and everything upstream of it. Those knobs stay out of the content hash, so an edit to one
- * re-keys only the nodes that fold the table's entries for its namespace in, as USDRender does for
- * the namespaces of the renderer it renders with.
+ * and everything upstream of it. Those knobs stay out of the knobs' digest; the content hash folds
+ * the whole table instead, except on an effect that consumes it
+ * (EffectInstance::consumesHashNamespaces()), as USDRender folds only the namespaces of the
+ * renderer it renders with. An edit to one then re-keys every node but those.
  *
  * Scopes are render settings prims, by path. An entry merges the digests of every node that
  * authors the namespace on that prim, from upstream down.
@@ -325,7 +326,8 @@ public:
 
     /**
      * @brief The node's and its inputs' namespaced knobs as of the last content hash computation
-     * (see HashNamespaces). Null before the first, or when neither has any.
+     * (see HashNamespaces). Null before the first, when neither has any, or when the effect
+     * consumes them (EffectInstance::consumesHashNamespaces()).
      **/
     HashNamespacesConstPtr getHashNamespaces() const;
 

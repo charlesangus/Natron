@@ -382,9 +382,9 @@ USDRender::activeRenderer(double time,
 void
 USDRender::appendNodeContentHash(ContentHasher& h) const
 {
-    // The render settings knobs upstream are left out of every hash but this one's, and only
-    // those the render reads are folded in: the active prim's in the namespaces of the renderer it
-    // renders with. When the active prim is none a node authors (a file's, or not known here),
+    // Of the render settings knobs upstream, which every other node folds whole, only those the
+    // render reads are folded in (consumesHashNamespaces()): the active prim's in the namespaces
+    // of the renderer it renders with. When the active prim is none a node authors (a file's, or not known here),
     // every one is.
     NodePtr node = getNode();
     NodePtr input = node ? node->getInput(0) : NodePtr();

@@ -168,10 +168,12 @@ GpuParityRuntime::buffer(int slot,
 }
 
 bool
-createRuntime(std::unique_ptr<GpuParityRuntime>& runtime)
+createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
+              bool pushDescriptors)
 {
     std::unique_ptr<GpuParityRuntime> created(new GpuParityRuntime);
     gpu::GpuRuntimeOptions options;
+    options.device.disablePushDescriptor = !pushDescriptors;
     const gpu::GpuStatus status = gpu::GpuRuntime::create(options, created->_impl->runtime);
     if (!status) {
         reportNoGpu(status.message);
@@ -587,7 +589,8 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                const NodePtr& root,
                const RectI& window,
                double time,
-               const GpuContextReady& onGpuContext)
+               const GpuContextReady& onGpuContext,
+               const GpuFrameDone& onGpuFrame)
 {
     EndToEndResult result;
     result.window = window;
@@ -662,6 +665,9 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
 #ifdef NATRON_HAVE_GPU
         result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
 #endif
+    }
+    if (onGpuFrame) {
+        onGpuFrame();
     }
 
     appPTR->clearAllCaches();

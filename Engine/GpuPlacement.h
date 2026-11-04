@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -181,12 +182,15 @@ struct GpuTaskPlane {
  * it is not a native image effect, the effect refuses the query of a plane it produces, or cannot say which layers it
  * reads, a layer it reads beyond getGpuInputLayer()'s is not one its input is asked for and carries, an output it
  * requests under a context and reads is not one that output carries in the layer getGpuInputLayer() names for
- * FrameViewRequest::TaskEdge::kContextRequestInputNb, or a plane it passes through is not asked of the pass-through
- * input at the time and view it is read at. Placement and the region engine both ask it, so they agree.
+ * FrameViewRequest::TaskEdge::kContextRequestInputNb, a plane it passes through is not asked of the pass-through
+ * input at the time and view it is read at, or a channel the node selects is missing from its input. Placement and
+ * the region engine both ask it, so they agree. When given, `refusal` names the reason a refusal has a specific one
+ * for, and is left empty otherwise.
  **/
 bool makeGpuTaskPlanes(const FrameGraph::Task& task,
                        const FrameRenderContext& context,
-                       std::vector<GpuTaskPlane>* planes);
+                       std::vector<GpuTaskPlane>* planes,
+                       std::string* refusal = nullptr);
 
 /**
  * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, each task weighs what

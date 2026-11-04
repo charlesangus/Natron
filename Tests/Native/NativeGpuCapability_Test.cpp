@@ -68,6 +68,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -186,6 +187,7 @@ gpuCapableIds()
         PLUGINID_NATRON_TIMEBLUR,
         PLUGINID_NATRON_APPENDCLIP,
         PLUGINID_NATRON_SLITSCAN,
+        PLUGINID_NATRON_VECTORBLUR,
     };
 
     return ids;

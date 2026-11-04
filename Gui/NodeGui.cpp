@@ -2446,13 +2446,13 @@ NodeGui::showGui()
             output->doRefreshEdgesGUI();
         }
     }
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(true);
+    }
     ViewerInstance* viewer = node->isEffectViewer();
     if (viewer) {
         _graph->getGui()->activateViewerTab(viewer);
     } else {
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(true);
-        }
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->setNodeViewerInterface(thisShared);
 
@@ -2523,6 +2523,10 @@ NodeGui::hideGui()
         it->arrow->hide();
     }
     NodePtr node = getNode();
+    _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(false);
+    }
     ViewerInstance* isViewer = node ? node->isEffectViewer() : NULL;
     if (isViewer) {
         ViewerGL* viewerGui = dynamic_cast<ViewerGL*>( isViewer->getUiContext() );
@@ -2531,11 +2535,6 @@ NodeGui::hideGui()
             _graph->getGui()->deactivateViewerTab(isViewer);
         }
     } else {
-        _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(false);
-        }
-
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->removeNodeViewerInterface(thisShared, false);
 

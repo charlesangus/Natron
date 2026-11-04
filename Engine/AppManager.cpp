@@ -1204,13 +1204,16 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
                     wasKilled = false;
                 }
             }
-            if (!wasKilled) {
+            // The interpreter reset its projects before Python finalised; resetting again would run
+            // the close callback without Python.
+            if (!wasKilled && (_imp->_appType != eAppTypeInterpreter)) {
                 try {
                     mainInstance->getProject()->reset(true/*aboutToQuit*/, true /*blocking*/);
                 } catch (std::logic_error&) {
                     // ignore
                 }
-
+            }
+            if (!wasKilled) {
                 try {
                     mainInstance->quitNow();
                 } catch (std::logic_error&) {
@@ -3444,6 +3447,52 @@ AppManager::initBuiltinPythonModules()
     }
 }
 
+namespace {
+// Py_Main finalises Python before it returns, and resetting a project runs Python: its close
+// callback and the removal of each node's variable. The projects are reset from Python's exit
+// handlers instead, which run before it finalises.
+PyObject*
+resetProjectsBeforePythonExit(PyObject* /*self*/,
+                              PyObject* /*args*/)
+{
+    if (appPTR) {
+        // A node's processing may need the Python lock to finish.
+        PythonGILUnlocker unlocker;
+        const AppInstanceVec instances = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+            // No exception may cross Python's frames.
+            try {
+                (*it)->getProject()->reset(true /*aboutToQuit*/, true /*blocking*/);
+            } catch (const std::exception& e) {
+                std::cerr << "Resetting a project before Python exits failed: " << e.what() << std::endl;
+            }
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+PyMethodDef resetProjectsBeforePythonExitDef = { "resetProjectsBeforePythonExit", resetProjectsBeforePythonExit, METH_NOARGS, nullptr };
+
+bool
+registerProjectsResetAtPythonExit()
+{
+    PyObject* atexitModule = PyImport_ImportModule("atexit");
+    PyObject* function = atexitModule ? PyCFunction_New(&resetProjectsBeforePythonExitDef, nullptr) : nullptr;
+    PyObject* result = function ? PyObject_CallMethod(atexitModule, "register", "O", function) : nullptr;
+
+    Py_XDECREF(result);
+    Py_XDECREF(function);
+    Py_XDECREF(atexitModule);
+    if (!result) {
+        PyErr_Print();
+
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
 void
 AppManager::launchPythonInterpreter()
 {
@@ -3462,6 +3511,10 @@ AppManager::launchPythonInterpreter()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+
+    if (!registerProjectsResetAtPythonExit()) {
+        throw std::runtime_error("AppManager::launchPythonInterpreter(): could not register the projects' reset with Python's atexit.");
+    }
 
     Py_Main(1, &_imp->commandLineArgsWide[0]);
 }

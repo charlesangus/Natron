@@ -240,16 +240,20 @@ threadCount(int pid)
     return 0;
 }
 
-// Runs job while sampling the execComp children: the most threads any of them had.
+// Runs job while sampling the execComp children it starts: the most threads any of them had. A
+// child alive before, such as one a replaced engine's session is still ending, is not counted.
 int
 peakRenderThreads(const std::function<bool()>& job)
 {
+    const std::vector<int> before = execCompChildren();
     std::atomic<bool> done(false);
     std::atomic<int> peak(0);
     std::thread sampler([&]() {
         while (!done.load()) {
             for (int pid : execCompChildren()) {
-                peak = std::max(peak.load(), threadCount(pid));
+                if (std::find(before.begin(), before.end(), pid) == before.end()) {
+                    peak = std::max(peak.load(), threadCount(pid));
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -578,6 +582,60 @@ TEST_F(USDRenderMoonRayTest, RendersWithinTheThreadBudget)
     ASSERT_GT(unbudgeted, 0) << error;
     // The unbudgeted render reserves one core, the budgeted one hardware - 2.
     EXPECT_GE(unbudgeted - budgeted, (hardware - 3) / 2) << "budgeted " << budgeted << ", unbudgeted " << unbudgeted;
+}
+
+// One owner's engine follows a changed thread budget: the engine is made again, and its session
+// renders on the new budget's threads, both when the budget grows and when it shrinks.
+TEST_F(USDRenderMoonRayTest, FollowsAChangedThreadBudget)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int hardware = (int)std::thread::hardware_concurrency();
+    if (hardware < 6) {
+        std::printf("[  SKIPPED ] %d hardware threads leave no room to tell a budget of 2 apart\n", hardware);
+
+        return;
+    }
+    NodePtr reader;
+    NodePtr node = createGraph(kFixture, &reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
+    std::string error;
+    const auto renderPeak = [&](int threads) {
+        request.threads = threads;
+
+        return peakRenderThreads([&]() {
+            HydraRender::Result result;
+
+            return HydraRender::render(request, &result, &error);
+        });
+    };
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const int budgeted = renderPeak(2);
+    ASSERT_GT(budgeted, 0) << error;
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+    // The same budget again reuses the engine.
+    request.threads = 2;
+    {
+        HydraRender::Result result;
+        ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    }
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+
+    const int unbudgeted = renderPeak(0);
+    ASSERT_GT(unbudgeted, 0) << error;
+    EXPECT_EQ(builds + 2, HydraRender::getEngineBuildCount());
+    EXPECT_GE(unbudgeted - budgeted, (hardware - 3) / 2) << "budgeted " << budgeted << ", unbudgeted " << unbudgeted;
+
+    const int rebudgeted = renderPeak(2);
+    ASSERT_GT(rebudgeted, 0) << error;
+    EXPECT_EQ(builds + 3, HydraRender::getEngineBuildCount());
+    EXPECT_GE(unbudgeted - rebudgeted, (hardware - 3) / 2) << "rebudgeted " << rebudgeted << ", unbudgeted " << unbudgeted;
+    HydraRender::release(&owner);
 }
 
 // The fixture rendered twice, by engines made apart, gives the same image to within the order

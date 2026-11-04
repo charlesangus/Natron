@@ -51,6 +51,8 @@
 #include <pxr/usdImaging/usdImaging/primAdapter.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
+#include <dlfcn.h>
+
 #ifdef NATRON_HAVE_LOG4CPLUS
 #include <log4cplus/appender.h>
 #include <log4cplus/logger.h>
@@ -245,13 +247,38 @@ namespace {
     void
     LogRouter::install()
     {
+        // Arras's own logger prints every level-0 trace (session launch, connect, ...) whatever the
+        // log level hdMoonray sets; the delegate made it the default logger when it was created.
+        if (void* library = ::dlopen("libarras4_log.so", RTLD_NOW | RTLD_NOLOAD)) {
+            // arras4::log::Logger::instance() and Logger::setTraceThreshold(int).
+            typedef void* (*InstanceFunction)();
+            typedef void (*SetTraceThresholdFunction)(void*, int);
+            const InstanceFunction instance = reinterpret_cast<InstanceFunction>(::dlsym(library, "_ZN6arras43log6Logger8instanceEv"));
+            const SetTraceThresholdFunction setTraceThreshold = reinterpret_cast<SetTraceThresholdFunction>(::dlsym(library, "_ZN6arras43log6Logger17setTraceThresholdEi"));
+            if (instance && setTraceThreshold) {
+                setTraceThreshold(instance(), -1);
+            }
+            ::dlclose(library);
+        }
 #ifdef NATRON_HAVE_LOG4CPLUS
+        // scene_rdl2 attaches these console appenders to the root logger the first time MoonRay
+        // logs; they would print every warning a scene produces. Its logging is set up now, while
+        // the delegate is loaded, so that they are there to be taken off.
+        if (void* library = ::dlopen("librender_logging.so", RTLD_NOW | RTLD_NOLOAD)) {
+            // scene_rdl2::logging::initializeLogging(), which does nothing once it has run.
+            typedef void (*InitializeFunction)();
+            const InitializeFunction initialize = reinterpret_cast<InitializeFunction>(::dlsym(library, "_ZN10scene_rdl27logging17initializeLoggingEv"));
+            if (initialize) {
+                initialize();
+            }
+            ::dlclose(library);
+        }
         log4cplus::Logger root = log4cplus::Logger::getRoot();
-
-        // scene_rdl2 attaches these console appenders to the root logger when MoonRay's libraries
-        // load; they would print every warning a scene produces.
         for (const char* name : { "DEBUG", "INFO", "WARN", "ERROR", "FATAL" }) {
-            root.removeAppender(LOG4CPLUS_C_STR_TO_TSTRING(name));
+            const log4cplus::tstring appender = LOG4CPLUS_C_STR_TO_TSTRING(name);
+            if (root.getAppender(appender)) {
+                root.removeAppender(appender);
+            }
         }
         if (!_installed) {
             root.addAppender(log4cplus::SharedAppenderPtr(new RouterAppender));

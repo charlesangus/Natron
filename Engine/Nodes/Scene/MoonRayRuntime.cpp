@@ -28,6 +28,7 @@
 #include <cpuid.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 #include <sys/stat.h>
@@ -57,6 +58,42 @@ prependToEnv(const char* name,
         value += current;
     }
     ::setenv(name, value.c_str(), 1);
+}
+
+// The unquoted value of one /etc/os-release field, or fallback when the file or field is missing.
+std::string
+osReleaseField(const std::string& field,
+               const std::string& fallback)
+{
+    std::ifstream file("/etc/os-release");
+    std::string line;
+    const std::string key = field + "=";
+
+    while (std::getline(file, line)) {
+        if (line.compare(0, key.size(), key) != 0) {
+            continue;
+        }
+        std::string value = line.substr(key.size());
+        if ((value.size() >= 2) && ((value.front() == '"') || (value.front() == '\'')) && (value.back() == value.front())) {
+            value = value.substr(1, value.size() - 2);
+        }
+        if (!value.empty()) {
+            return value;
+        }
+    }
+
+    return fallback;
+}
+
+void
+setEnvIfEmpty(const char* name,
+              const std::string& value)
+{
+    const char* current = std::getenv(name);
+
+    if (!current || !*current) {
+        ::setenv(name, value.c_str(), 1);
+    }
 }
 } // anon namespace
 
@@ -115,6 +152,10 @@ setUp(const std::string& applicationDirPath)
         prependToEnv("RDL2_DSO_PATH", prefix + "/rdl2dso");
         prependToEnv("ARRAS_SESSION_PATH", prefix + "/sessions");
         prependToEnv("PATH", prefix + "/bin");
+        // Arras runs lsb_release, which many distributions do not install, unless both are set; it
+        // only reports them in its session requests.
+        setEnvIfEmpty("ARRAS_OS_DISTRIBUTION", osReleaseField("ID", "linux"));
+        setEnvIfEmpty("ARRAS_OS_VERSION", osReleaseField("VERSION_ID", "unknown"));
 
         if (PXR_NS::PlugRegistry::GetInstance().RegisterPlugins(prefix + pluginInfo).empty()) {
             std::cerr << "MoonRay at " << prefix << " registered no USD plug-ins" << std::endl;

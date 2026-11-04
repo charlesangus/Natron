@@ -129,6 +129,40 @@ if grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
     done
 fi
 
+# mcrt_dataio's frame-buffer receiver has an unconditional "for debug" block that writes the
+# session's host names to stderr whenever the MCRT count grows, which is at every render's start.
+# The write is dropped; the count it keeps stays. A missing anchor fails the build.
+file="${src}/moonray/moonray_arras/mcrt_dataio/lib/client/receiver/ClientReceiverFb.cc"
+anchor='std::cerr << mGlobalNodeInfo.showAllHostsName()'
+if [ "$(grep -cF "$anchor" "$file")" != 1 ]; then
+    echo "build-moonray: host-name debug print not found exactly once in ${file}" >&2
+    exit 1
+fi
+sed -i '/std::cerr << mGlobalNodeInfo\.showAllHostsName()/d' "$file"
+if grep -qF 'showAllHostsName' "$file"; then
+    echo "build-moonray: host-name debug print patch did not apply to ${file}" >&2
+    exit 1
+fi
+
+# HdxTaskController adds a "depth" AOV next to "color" for any non-Storm delegate. hdMoonray maps
+# both depth and cameraDepth to RESULT_DEPTH, and an unnamed RenderOutput takes its channel name from
+# its result ("Z"), so MoonRay skips one of the two with an error-level "both target channel" log on
+# every render. The depth AOV (the remapped clip-space one, which Natron does not read) gets its own
+# channel name; cameraDepth keeps "Z". A missing anchor fails the build.
+file="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/RenderBuffer.cc"
+anchor='                            mDepth = true; // process to OpenGL type clip space'
+if ! grep -qF 'ro.setChannelName("hydraDepth");' "$file"; then
+    if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+        echo "build-moonray: depth AOV anchor not found exactly once in ${file}" >&2
+        exit 1
+    fi
+    sed -i 's|^                            mDepth = true; // process to OpenGL type clip space$|&\n                            ro.setChannelName("hydraDepth");|' "$file"
+fi
+if [ "$(grep -cF 'ro.setChannelName("hydraDepth");' "$file")" != 1 ]; then
+    echo "build-moonray: depth AOV channel patch did not apply to ${file}" >&2
+    exit 1
+fi
+
 # USD sorts render delegates by ascending priority and defaults to the first that loads, so
 # upstream's 99 keeps MoonRay behind Storm (0); it is only used when asked for by id.
 for plugin in hd_moonray hd_moonray_debug; do
@@ -219,6 +253,31 @@ for file in plugin/hd_moonray.so plugin/hd_moonray_debug.so plugin/pxr/plugInfo.
         echo "build-moonray: ${prefix}/${file} was not installed" >&2
         exit 1
     fi
+done
+# Arras starts execComp, the render process, with its output on Natron's console, at the session
+# definition's log level (resources.logLevel, 3, info, when unset) and trace level (traceThreshold,
+# 0 when unset, which prints every level-0 trace). Each computation is set to errors only and no
+# traces, so only a failing render prints.
+python3 - "${prefix}/sessions/hd_single.sessiondef" "${prefix}/sessions/hd_multi.sessiondef" <<'PY'
+import json
+import sys
+
+for path in sys.argv[1:]:
+    with open(path) as f:
+        definition = json.load(f)
+    computations = {name: computation for name, computation in definition["computations"].items() if name != "(client)"}
+    if "mcrt" not in computations:
+        sys.exit("build-moonray: no mcrt computation in " + path)
+    for computation in computations.values():
+        computation["traceThreshold"] = -1
+        computation.setdefault("requirements", {}).setdefault("resources", {})["logLevel"] = 1
+    with open(path, "w") as f:
+        json.dump(definition, f, indent=4)
+        f.write("\n")
+PY
+for file in hd_single hd_multi; do
+    grep -q '"traceThreshold": -1' "${prefix}/sessions/${file}.sessiondef"
+    grep -q '"logLevel": 1' "${prefix}/sessions/${file}.sessiondef"
 done
 grep -q '"HdMoonrayRendererPlugin"' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
 grep -q '"priority": 99' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"

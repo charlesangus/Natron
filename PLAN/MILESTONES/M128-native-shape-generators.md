@@ -240,3 +240,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-11-02 — UAT round 1: Radial showed Interactive Update and HiDPI knobs; removed from M128's nodes (M95 removes them everywhere) (user).
 - 2026-11-02 — b34014cec: Ramp/Radial/Rectangle/ColorWheel have no Interactive Update/HiDPI knobs (ExtentPolicy::interactiveKnobs = false). Note: nothing calls addRampInteract — confirm the Ramp overlay path at the GUI re-check (PM).
 - 2026-11-05 — UAT approved (user).
+- 2026-11-05 — Review round closed at b81532fa8 (Claude reviewer): Ramp's overlay works through RampNode::initializeKnobs; curved-edge distance caps at the shorter radius, so past it the centre is a flat plateau (PM).

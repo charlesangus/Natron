@@ -121,7 +121,7 @@ try:
         require(ok, "the main window is active")
         gt.close_all_panels()
 
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         # The overlay is drawn only while the settings panel is open.
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}

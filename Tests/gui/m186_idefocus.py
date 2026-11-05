@@ -33,8 +33,8 @@ SETTLE_MS = 500
 RENDER_MS = 2500
 VIEW_NAME = "Un-tone-mapped"
 LIT_LEVEL = 60
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
-PLUGIN_CROP = "net.sf.openfx.CropPlugin"
+PLUGIN_CONSTANT = "Constant"
+PLUGIN_CROP = "Crop"
 PLUGIN_MERGE = "Merge"
 PLUGIN_IDEFOCUS = "IDefocus"
 INPUT_SOURCE, INPUT_KERNEL, INPUT_MAP = 0, 2, 3
@@ -118,7 +118,7 @@ try:
         return crop
 
     def viewer_node():
-        return app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 600, 700)
+        return app.getNode("Viewer1") or create("Viewer", 600, 700)
 
     def show(node):
         viewer = viewer_node()
@@ -283,7 +283,7 @@ try:
         connect(source, 0, with_left)
         connect(source, 1, right_sq)
 
-        roto = create("fr.inria.built-in.Roto", 400, 100)
+        roto = create("Roto", 400, 100)
         ctx = roto.getRotoContext()
         require(ctx is not None, "the Roto node has a roto context")
         ellipse = ctx.createEllipse(ELLIPSE_X, ELLIPSE_Y, ELLIPSE_DIAMETER, True, 1.0)

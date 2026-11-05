@@ -41,7 +41,7 @@ try:
         return node
 
     app.getProjectParam("frameRange").set(FIRST, LAST)
-    constant = make("net.sf.openfx.ConstantPlugin", 0, 0)
+    constant = make("Constant", 0, 0)
     material = make("USDEmissiveMaterial", 0, 100)
     card = make("USDCard", 0, 200)
     color = constant.getParam("color")
@@ -53,7 +53,7 @@ try:
             color.set(0.0, 1.0, 0.0, 1.0, frame)
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(0, 300)
 

@@ -602,6 +602,8 @@ private:
 
     // The Map over mapWindow() of the full Map range, as getRegionsOfInterest() asks for it.
     virtual RectI opPassesInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

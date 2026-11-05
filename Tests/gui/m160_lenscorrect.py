@@ -26,12 +26,12 @@ SETTLE_MS = 700
 FALLBACK_SIZE = (1920.0, 1080.0)
 ALL_SECTIONS = ("plugin-id", "metadata", "raw", "settings-panel")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
-PLUGIN_MODIFY = "fr.natron.ModifyMetadata"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_VIEWER = "Viewer"
+PLUGIN_MODIFY = "ModifyMetadata"
 PLUGIN_LENS = "LensCorrect"
-READ_ID = "fr.inria.built-in.Read"
-CHAIN_LAST_ID = "fr.natron.RawColorCalibration"
+READ_ID = "Read"
+CHAIN_LAST_ID = "RawColorCalibration"
 
 # ModifyMetadata's operation and type indices: Set, Double and String.
 OPERATION_SET = 1

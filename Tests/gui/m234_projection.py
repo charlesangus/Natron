@@ -58,7 +58,7 @@ try:
         require(p is not None, "%s has a %s parameter" % (node.getLabel(), name))
         return p
 
-    checker = make("net.sf.openfx.CheckerBoardPlugin", 0, 0)
+    checker = make("CheckerBoard", 0, 0)
     camera = make("USDCamera", 200, 0)
     project = make("USDProject3D", 0, 100)
     card = make("USDCard", 0, 200)
@@ -67,7 +67,7 @@ try:
     edit = make("USDEditTransform", 400, 200)
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(0, 300)
 

@@ -50,15 +50,4 @@ value for it, so the scene reports the project's metrics from this node on.
 to the file's (fallbacks where unauthored), as one undoable edit. It is a one-shot
 copy, and is disabled while no file is set.
 
-## Open mode
-
-Open Mode sets how much of the file the viewer draws when it opens. Fully (the
-default) draws every prim. First Levels draws the first Open Levels levels of
-prims (1: the root prims, their children folded; 0: the root prims folded) and
-folds each prim below them: the viewer draws it as its bounding box and leaves
-its payloads unloaded until the Scene Graph panel or a USDExpandHierarchy node
-opens it. The node authors this as custom data on the root prims
-(`natron:viewerOpenLevels`, or `natron:viewerFold` for 0 levels); renders draw
-every prim.
-
 Tolerance: none recorded.

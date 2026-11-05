@@ -24,7 +24,6 @@
 // ***** END PYTHON BLOCK *****
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
-#include <pxr/usd/usd/primRange.h>
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -54,7 +53,6 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -637,35 +635,12 @@ TEST_F(USDWriteTest, CorrectedReadsRoundTripInBothModes)
     }
 }
 
-// The folds USDRead's Open Mode authors are how the Viewer shows a scene: composed they are in
-// the scene, but no written file, in either mode, carries them.
-TEST_F(USDWriteTest, ViewerFoldCustomDataIsNotWritten)
+TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     NodePtr merge = createGraph(kReferenceScene, 0.);
     ASSERT_TRUE(bool(merge));
-    NodePtr reader = merge->getInput(0) ? merge->getInput(0)->getInput(0) : NodePtr();
-    ASSERT_TRUE(bool(reader));
-    KnobChoice* openMode = getKnob<KnobChoice>(reader, kUSDReadParamOpenMode);
-    KnobInt* openLevels = getKnob<KnobInt>(reader, kUSDReadParamOpenLevels);
-    ASSERT_TRUE(openMode != NULL && openLevels != NULL);
-    openMode->setValue((int)USDRead::eOpenModeFirstLevels);
-    openLevels->setValue(1);
-
-    const PXR_NS::TfToken foldKey(SceneStage::kViewerFoldKey);
-    const PXR_NS::TfToken levelsKey(SceneStage::kViewerOpenLevelsKey);
-    const auto authorsFolds = [&](const PXR_NS::UsdStageRefPtr& stage) {
-        bool found = false;
-        for (const PXR_NS::UsdPrim& prim : stage->TraverseAll()) {
-            found = found || prim.HasAuthoredCustomDataKey(foldKey) || prim.HasAuthoredCustomDataKey(levelsKey);
-        }
-
-        return found;
-    };
-    PXR_NS::UsdStageRefPtr scene = composeOutput(merge);
-    ASSERT_TRUE(static_cast<bool>(scene));
-    ASSERT_TRUE(authorsFolds(scene));
 
     const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
     for (USDWrite::ExportModeEnum mode : modes) {
@@ -678,21 +653,13 @@ TEST_F(USDWriteTest, ViewerFoldCustomDataIsNotWritten)
 
         PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
         ASSERT_TRUE(static_cast<bool>(stage));
-        EXPECT_TRUE(static_cast<bool>(stage->GetPrimAtPath(PXR_NS::SdfPath("/Transform1/World/Box")))) << (int)mode;
-        EXPECT_FALSE(authorsFolds(stage)) << (int)mode;
+        for (const PXR_NS::UsdPrim& prim : stage->TraverseAll()) {
+            for (const std::pair<const std::string, PXR_NS::VtValue>& entry : prim.GetCustomData()) {
+                EXPECT_TRUE(entry.first.rfind("natron:", 0) != 0) << prim.GetPath().GetString() << " " << entry.first;
+            }
+        }
         for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
-            EXPECT_FALSE(file.second.contains("viewerFold")) << file.first.toStdString();
-            EXPECT_FALSE(file.second.contains("viewerOpenLevels")) << file.first.toStdString();
-            // USDRead's layer holds /World only for the folds: stripped, no over of it is left.
-            const QString suffix = QFileInfo(file.first).suffix();
-            if ((suffix != QString::fromUtf8("usda")) && (suffix != QString::fromUtf8("usdc")) && (suffix != QString::fromUtf8("usd"))) {
-                continue;
-            }
-            PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::FindOrOpen(QDir(dir).filePath(file.first).toStdString());
-            const PXR_NS::SdfPrimSpecHandle world = written ? written->GetPrimAtPath(PXR_NS::SdfPath("/World")) : PXR_NS::SdfPrimSpecHandle();
-            if (world && (world->GetSpecifier() == PXR_NS::SdfSpecifierOver)) {
-                EXPECT_FALSE(world->GetNameChildren().empty() && world->GetProperties().empty()) << file.first.toStdString();
-            }
+            EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
         }
     }
 }

@@ -99,10 +99,6 @@ public:
 
     bool hasPreviewTransforms() const;
 
-    // Prim customData keys USDRead and USDExpandHierarchy author and USDWrite strips.
-    static constexpr const char* kViewerFoldKey = "natron:viewerFold";
-    static constexpr const char* kViewerOpenLevelsKey = "natron:viewerOpenLevels";
-
 private:
     struct PreviewPrim {
         PXR_NS::SdfPath path;

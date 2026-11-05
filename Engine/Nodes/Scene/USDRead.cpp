@@ -31,7 +31,6 @@
 #include <QStringList>
 
 #include "Engine/AppInstance.h"
-#include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
@@ -40,7 +39,6 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
@@ -210,38 +208,6 @@ USDRead::initializeKnobs()
     useFileMetrics->setAllDimensionsEnabled(false);
     page->addKnob(useFileMetrics);
     _useFileMetrics = useFileMetrics;
-
-    KnobChoicePtr openMode = createKnob<KnobChoice>(tr("Open Mode"));
-    openMode->setName(kUSDReadParamOpenMode);
-    openMode->setHintToolTip(tr("How much of the file the viewer draws in full when it opens. Renders always draw every prim."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("fully", tr("Fully").toStdString(),
-                                       tr("Every prim is drawn, every payload loaded.").toStdString()));
-        options.push_back(ChoiceOption("firstLevels", tr("First Levels").toStdString(),
-                                       tr("The first Open Levels levels of prims are drawn; each prim below them is "
-                                          "folded, drawn as its bounding box with its payloads unloaded, until it is "
-                                          "opened in the Scene Graph or by a USDExpandHierarchy node.")
-                                           .toStdString()));
-        openMode->populateChoices(options);
-    }
-    openMode->setDefaultValue((int)eOpenModeFully);
-    openMode->setAnimationEnabled(false);
-    openMode->setAddNewLine(false);
-    page->addKnob(openMode);
-    _openMode = openMode;
-
-    KnobIntPtr openLevels = createKnob<KnobInt>(tr("Open Levels"));
-    openLevels->setName(kUSDReadParamOpenLevels);
-    openLevels->setHintToolTip(tr("With Open Mode First Levels, how many levels of prims below the root are drawn: 1 "
-                                  "draws the root prims and folds their children; 0 folds the root prims."));
-    openLevels->setMinimum(0);
-    openLevels->setDisplayMinimum(0);
-    openLevels->setDisplayMaximum(10);
-    openLevels->setDefaultValue(2);
-    openLevels->setAnimationEnabled(false);
-    page->addKnob(openLevels);
-    _openLevels = openLevels;
 }
 
 void
@@ -412,7 +378,6 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
                      double frameOffset,
                      bool matchUpAxis,
                      bool matchUnits,
-                     int openLevels,
                      std::string* errorMessage)
 {
     // One layer per file, shared with every other consumer through USD's layer registry, and
@@ -474,28 +439,6 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
         }
     }
 
-    if (openLevels >= 0) {
-        // The root prims are those the file's whole layer stack composes, which its own root
-        // specs may not list; nothing is loaded to find them.
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
-        if (!stage) {
-            *errorMessage = tr("USD could not compose %1.").arg(QString::fromStdString(path)).toStdString();
-
-            return false;
-        }
-        const PXR_NS::TfToken key(openLevels == 0 ? SceneStage::kViewerFoldKey : SceneStage::kViewerOpenLevelsKey);
-        const PXR_NS::VtValue value = (openLevels == 0) ? PXR_NS::VtValue(true) : PXR_NS::VtValue(openLevels - 1);
-        for (const PXR_NS::UsdPrim& child : stage->GetPseudoRoot().GetChildren()) {
-            PXR_NS::UsdPrim over = stage->OverridePrim(child.GetPath());
-            if (!over) {
-                *errorMessage = tr("USD could not author over %1.").arg(QString::fromStdString(child.GetPath().GetString())).toStdString();
-
-                return false;
-            }
-            over.SetCustomDataByKey(key, value);
-        }
-    }
-
     _imp->source.hold(fileLayer);
     if (edit.sublayerLinks) {
         *edit.sublayerLinks = _imp->source.getLinks();
@@ -529,16 +472,12 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
     KnobBoolPtr matchUnitsKnob = _matchUnits.lock();
     const bool matchUpAxis = matchUpAxisKnob && matchUpAxisKnob->getValue();
     const bool matchUnits = matchUnitsKnob && matchUnitsKnob->getValue();
-    KnobChoicePtr openModeKnob = _openMode.lock();
-    KnobIntPtr openLevelsKnob = _openLevels.lock();
-    const bool firstLevels = openModeKnob && (openModeKnob->getValue() == (int)eOpenModeFirstLevels);
-    const int openLevels = firstLevels ? std::max(0, openLevelsKnob ? openLevelsKnob->getValue() : 0) : -1;
 
     // Nothing is sampled over the project's frame range: the offset is authored once.
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
     reads.frameRange = false;
-    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset, matchUpAxis, matchUnits, openLevels](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, matchUpAxis, matchUnits, openLevels, error); }, outputScene, errorMessage)) {
+    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset, matchUpAxis, matchUnits](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, matchUpAxis, matchUnits, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

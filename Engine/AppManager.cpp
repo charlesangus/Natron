@@ -421,6 +421,14 @@ AppManager::loadFromArgs(const CLArgs& cl)
         }
     }
 
+    // Before Python or a scene asks OpenUSD for its resolver, which reads the registered ones once.
+    {
+        std::string liveTextureError;
+        if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
+            std::cerr << liveTextureError << std::endl;
+        }
+    }
+
     try {
         initPython(); // calls Py_InitializeEx(), which calls setlocale()
     } catch (const std::runtime_error& e) {
@@ -1428,6 +1436,7 @@ void
 AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines();
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
@@ -1468,6 +1477,7 @@ AppManager::clearAllCaches()
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
     SceneCaches::releaseCpuRenderEngines();
 
     ///for each app instance clear all its nodes cache

@@ -1366,6 +1366,19 @@ Settings::initializeKnobsViewers()
                                                 "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
                                                 "undo step."));
     _viewersTab->addKnob(_viewer3DTransformTarget);
+
+    _viewer3DLighting = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Lighting"));
+    _viewer3DLighting->setName("viewer3DLighting");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("auto", "Auto", tr("The scene's lights when it has any, else a light at the camera.").toStdString()));
+        entries.push_back(ChoiceOption("scene", "Scene Lights", tr("Only the scene's lights: a scene with none shows its lit surfaces black, as USDRender does by default.").toStdString()));
+        entries.push_back(ChoiceOption("headlight", "Headlight", tr("Only a light at the camera.").toStdString()));
+        _viewer3DLighting->populateChoices(entries);
+    }
+    _viewer3DLighting->setHintToolTip(tr("What lights the shaded mode of the viewer's 3D views, all of them alike. Also chosen from "
+                                         "the 3D view's Display > Lighting menu."));
+    _viewersTab->addKnob(_viewer3DLighting);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1812,6 +1825,7 @@ Settings::setDefaultValues()
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
+    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2709,6 +2723,19 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+Settings::Viewer3DLightingEnum
+Settings::getViewer3DLighting() const
+{
+    return (Viewer3DLightingEnum)_viewer3DLighting->getValue();
+}
+
+void
+Settings::setViewer3DLighting(Viewer3DLightingEnum lighting)
+{
+    _viewer3DLighting->setValue((int)lighting);
+    saveSetting(_viewer3DLighting.get());
 }
 
 GpuComputeModeEnum

@@ -200,6 +200,7 @@ ViewerTab::refreshDisplayTransformMenus()
     if (_imp->viewer) {
         _imp->viewer->refreshDisplayTransform();
     }
+    refreshSceneDisplayTransform();
 }
 
 void

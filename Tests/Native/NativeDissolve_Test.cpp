@@ -511,7 +511,7 @@ TEST_F(NativeDissolveTest, AnimatedWhichBlendsByItsValueAtEachFrame)
 
     const RectI window(0, 0, 8, 8);
     for (const double time : { 1., 4., 6., 11. }) {
-        const double w = which->getValueAtTime(time, 0, ViewSpec::all());
+        const double w = which->getValueAtTime(time, 0, ViewSpec::current());
         if ((time > 1.) && (time < 11.)) {
             ASSERT_GT(w, 0.) << time;
             ASSERT_LT(w, 1.) << time;

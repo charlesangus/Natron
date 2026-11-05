@@ -61,6 +61,29 @@ M253 - Delegate Render Settings.
 
 **Verification gate:** CI green including the Cycles test; a Cycles USDRender comp renders headless with `NatronRenderer -w`; a rendered frame and its `depth.Z`, `normal` and `primId.id` views are shared with the user; Storm references unchanged.
 
+## Phase 251.2: UsdPreviewSurface translation (Lobby UAT, 2026-11-05)
+
+- [ ] M251.P2.T1 — Apply UsdUVTexture scale and bias, and route normals through a normal-map node
+  - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), tools/ci/local/build-cycles.sh (NATRON_CYCLES_COMMIT), Tests/ fixture and reference
+  - approach: `scale` and `bias` have no mapping (358 warnings each), so a normal map's 0..1 values are never remapped to -1..1, and `UsdPreviewSurface.normal` goes straight to the principled normal. With the 92 `normal` connections cut, the black vase, reception desk and wall sculpture light correctly.
+  - verify: a normal-mapped fixture matches a recorded reference; the Lobby's vase, desk and sculpture are lit correctly with normal maps connected.
+  - size: M
+- [ ] M251.P2.T2 — Restore emission
+  - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), Tests/ fixture and reference
+  - approach: `emissiveColor` warns `Could not find parameter` on all 151 Lobby surfaces: the mapping names `emission`, which is not a socket on the node. Map it to the actual emission sockets.
+  - verify: an emissive fixture renders lit with no parameter warning.
+  - size: M
+- [ ] M251.P2.T3 — Implement or silence the remaining dropped UsdPreviewSurface inputs
+  - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), Tests/
+  - approach: `opacityThreshold`, `useSpecularWorkflow`, `specularColor`, `occlusion`, `displacement`, `clearcoat` and `fallback` are dropped; with the above that is about 2,000 warnings per Lobby render. Decide per input, record the choice in `## Decisions`.
+  - verify: a Lobby render logs no warning for an input that is handled or deliberately ignored; a fixture covers each implemented input.
+  - size: M
+- [ ] M251.P2.T4 — Report a fallback material on the node
+  - files: Engine USDRender and Cycles delegate warning path, a test
+  - approach: After M249.P3.T1 a material with no usable network falls back. Raise a node warning naming the material, as MoonRay's prim warning does.
+  - verify: rendering the M249.P3.T1 fixture shows a warning on the node naming the material.
+  - size: M
+
 ## Decisions
 
 - 2026-10-28: Cycles rendered empty: on USD 26.08 the engine runs on scene indices and UsdGeom Cube/Sphere/Cone/Cylinder/Capsule/Plane reach the delegate as implicit surfaces; Cycles 5.2 accepts only mesh/basisCurves/points/volume and only Storm registers ImplicitSurfaceSceneIndexPlugin. CyclesAovs::registerSceneIndices() registers HdsiImplicitSurfaceSceneIndex for Cycles, called before every UsdImagingGLEngine (hdsi linked). MoonRay (M252) likely needs the same. The fixture's metersPerUnit 0.01 is irrelevant (stageMetersPerUnit scales camera and geometry together).

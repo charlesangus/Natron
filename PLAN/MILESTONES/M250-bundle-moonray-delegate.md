@@ -61,6 +61,14 @@ set than Cycles, so this milestone is mostly dependency work; no Natron node cod
 
 **Verification gate:** CI green; image and AppImage contain a MoonRay delegate that is listed and instantiates; no duplicate public libraries load; image-size and build-time deltas are reported to the user.
 
+## Phase 250.2: MoonRay frame-range abort (Lobby UAT, 2026-11-05)
+
+- [ ] M250.P2.T1 — Root-cause and fix the MoonRay abort on a frame range
+  - files: tools/ci/local/build-moonray.sh (patches), Engine USDRender frame scheduling if parallel frames are the trigger, a delegate test
+  - approach: USDRender frames 1 to 6 of the Lobby wrote only frames 1 and 3, then `terminate called without an active exception` under `arras4::client::Client::createLocal`, from `hdMoonray::ArrasRenderer::connect`, from `endUpdate`. A single frame works; eight frames of `scene-cycles.usda` work. Not root-caused: that message usually means a joinable `std::thread` destroyed or assigned over, so start at `LocalSession::start` and its members, with a symbol build. Parallel frame renders are one suspect, since 1 and 3 were written without 2. The delegate runs in Natron's process, so this loses the user's session.
+  - verify: USDRender frames 1 to 6 of the Lobby through MoonRay writes all six frames with no abort, and a test covers the identified cause.
+  - size: L
+
 ## Decisions
 
 - 2026-10-28: Implemented (image build + gate pending). openmoonray v2026.29.1 (Apache-2.0) built CPU-only into /opt/moonray (CUDA/OptiX off; ISPC v1.21.0 downloaded for the build only; -DUDPSYSLOG_NO_BOOST). Dropped: distributed Arras, sdr plug-ins (USD 26.08 removed Ndr), Houdini plug-ins, moonshine_usd, profile viewer, upstream tests. hdMoonray's removed IsSupported override stripped by the build script. Plug-in priority kept at upstream's 99: USD sorts delegates by ascending priority and defaults to the first that loads (the hf/pluginDesc.h comment says the opposite), so 99 keeps Storm (0) the default; an earlier patch to -1 was wrong and reverted. MoonRay is compiled -march=core-avx2: registered only on AVX2 CPUs. Registered directly at start-up (PXR_PLUGINPATH_NAME is read once at USD load, too late); MoonRay dirs first on RDL2_DSO_PATH/ARRAS_SESSION_PATH/PATH. Debug delegate in the image, not the bundle. Estimate +60–100 MB compressed AppImage. Will conflict with M249 in stage-bundle.sh and check-startup.sh (both add an OpenImageDenoise block).

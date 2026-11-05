@@ -112,6 +112,7 @@ USDAssignMaterial::initializeKnobs()
                                    "may use * (any run of characters) and ? (any one character), such as /Asset/geo/*. "
                                    "Their descendants take the material too, unless their own binding is stronger."));
     primPattern->setAnimationEnabled(false);
+    primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
     page->addKnob(primPattern);
     _primPattern = primPattern;
 

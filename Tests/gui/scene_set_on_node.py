@@ -8,6 +8,10 @@ Checks:
   - with Box and Ball selected, Ctrl+Shift+E on the 3D view sets the USDPrune's pattern to both
     and they are pruned (/World holds only Cam); one Undo brings them back;
   - the same key on the Scene Graph panel's tree does the same;
+  - with a USDScopePrim's settings panel open (a path knob), Box then Ball selected, the key sets
+    its Prim Path to the first prim, /World/Box; one Undo restores it;
+  - with a USDAssignMaterial's settings panel open, the key sets its Prim Pattern to both prims;
+    one Undo restores it;
   - with a Blur's settings panel opened last, the key changes nothing, and the action is disabled
     in both the 3D view's and the Scene Graph panel's context menus, with a hint as its tooltip.
 
@@ -257,6 +261,40 @@ try:
         undo()
         ok = yield ("until", lambda: world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         require(ok, "after Undo the scene is whole again (got %r)" % (world_children(),))
+
+        # A path knob takes the first prim of a multi-selection.
+        scope = app.createNode("USDScopePrim", -1, None, props)
+        require(scope is not None, "create USDScopePrim", plugin_problem("USDScopePrim"))
+        scope.setPosition(200, 100)
+        scope_path = scope.getParam("primPath")
+        require(scope_path is not None, "USDScopePrim has a primPath parameter")
+        before = str(scope_path.getValue())
+        QApplication.processEvents()
+        select([BOX, BALL])
+        ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
+        require(ok, "Box and Ball are selected (got %r)" % (viewer_selection(),))
+        press_set_key(view())
+        check(str(scope_path.getValue()) == BOX,
+              "Set Selection writes the first selected prim to a path knob (got %r)" % (scope_path.getValue(),))
+        undo()
+        check(str(scope_path.getValue()) == before,
+              "one Undo restores the path knob (got %r, want %r)" % (scope_path.getValue(), before))
+
+        # USDAssignMaterial's pattern takes all the selected prims.
+        assign = app.createNode("USDAssignMaterial", -1, None, props)
+        require(assign is not None, "create USDAssignMaterial", plugin_problem("USDAssignMaterial"))
+        assign.setPosition(400, 100)
+        assign_pattern = assign.getParam("primPattern")
+        require(assign_pattern is not None, "USDAssignMaterial has a primPattern parameter")
+        assign_before = str(assign_pattern.getValue())
+        QApplication.processEvents()
+        press_set_key(view())
+        got = str(assign_pattern.getValue())
+        check(got.split(" ") == [BOX, BALL],
+              "Set Selection writes both prims, in order, to USDAssignMaterial's pattern (got %r)" % (got,))
+        undo()
+        check(str(assign_pattern.getValue()) == assign_before,
+              "one Undo restores USDAssignMaterial's pattern (got %r, want %r)" % (assign_pattern.getValue(), assign_before))
 
         # An image node's panel opened last blocks the action.
         blur = app.createNode(BLUR_ID, -1, None, props)

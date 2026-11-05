@@ -82,6 +82,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/ScenePrimPickerPopup.h"
+#include "Gui/SceneSelectionActions.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
 #include "Gui/ThemedIcon.h"
@@ -610,9 +611,8 @@ KnobGuiString::dropPrimPaths(const QStringList& paths)
     if (!knob || paths.isEmpty() || !acceptsPrimPaths()) {
         return;
     }
-    const QString text = (knob->getPrimPathHint() == KnobString::ePrimPathHintPath) ? paths.front() : paths.join(QLatin1Char(' '));
     const std::string oldText = knob->getValue(0);
-    const std::string newText = text.trimmed().toStdString();
+    const std::string newText = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
     if (oldText != newText) {
         pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldText, newText));
     }

@@ -97,25 +97,6 @@ private:
     std::string _newValue;
 };
 
-std::string
-knobText(bool takesPattern,
-         const QStringList& paths)
-{
-    if (paths.isEmpty()) {
-        return std::string();
-    }
-    const QString text = takesPattern ? paths.join(QLatin1Char(' ')) : paths.back();
-
-    return text.trimmed().toStdString();
-}
-
-std::string
-knobText(const KnobStringPtr& knob,
-         const QStringList& paths)
-{
-    return knobText(knob->getPrimPathHint() != KnobString::ePrimPathHintPath, paths);
-}
-
 // Gives the prim knob of the node args create paths as its initial value; a USDXformPrim wraps
 // the prim rather than defining one there.
 void
@@ -128,7 +109,7 @@ addInitialPrims(CreateNodeArgs& args,
     if (!plugin || plugin->getPrimPathKnob().empty() || paths.isEmpty()) {
         return;
     }
-    args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), knobText(plugin->getPrimPathKnobTakesPattern(), paths));
+    args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), primPathsText(plugin->getPrimPathKnobTakesPattern() ? KnobString::ePrimPathHintPattern : KnobString::ePrimPathHintPath, paths));
     if (pluginID == QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM)) {
         args.addParamDefaultValue<int>(kSceneReparentParamMode, (int)eSceneReparentModeWrap);
     }
@@ -142,7 +123,7 @@ pushSet(Gui* gui,
         const QStringList& paths)
 {
     UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
-    const std::string text = knobText(knob, paths);
+    const std::string text = primPathsText(knob->getPrimPathHint(), paths);
 
     if (!history || (text == knob->getValue(0))) {
         return false;
@@ -156,6 +137,18 @@ pushSet(Gui* gui,
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 namespace SceneSelectionActions {
+std::string
+primPathsText(KnobString::PrimPathHintEnum hint,
+              const QStringList& paths)
+{
+    if (paths.isEmpty()) {
+        return std::string();
+    }
+    const QString text = (hint == KnobString::ePrimPathHintPath) ? paths.front() : paths.join(QLatin1Char(' '));
+
+    return text.trimmed().toStdString();
+}
+
 QStringList
 keepSelectionOrder(const QStringList& order,
                    const QStringList& selected)

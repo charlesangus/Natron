@@ -31,7 +31,10 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <string>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/KnobTypes.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -66,13 +69,19 @@ KnobStringPtr primKnob(const NodePtr& node);
 QStringList keepSelectionOrder(const QStringList& order, const QStringList& selected);
 
 /**
+ * @brief The text a prim knob with hint holds for paths: the first path for a path knob, all of
+ * them joined with spaces in their order otherwise. Every writer of a prim knob uses it.
+ **/
+std::string primPathsText(KnobString::PrimPathHintEnum hint, const QStringList& paths);
+
+/**
  * @brief Why paths can't be set on the current node now, or empty when they can.
  **/
 QString setOnNodeBlocker(Gui* gui, const QStringList& paths);
 
 /**
- * @brief Writes paths into primKnob(currentNode(gui)) as one undo step: the last path, the
- * current prim, for a path knob, all of them joined with spaces in their order for a pattern knob.
+ * @brief Writes paths into primKnob(currentNode(gui)) as one undo step: the first path
+ * for a path knob, all of them joined with spaces in their order for a pattern knob.
  * When it can't, shows why in the status bar and returns false.
  **/
 bool setOnCurrentNode(Gui* gui, const QStringList& paths);
@@ -86,7 +95,7 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
  * @brief Opens the tab menu listing the node types that take a scene and prims. The node chosen
  * is inserted after viewed, taking its outputs, with its prim knob set to paths, as one undo step.
  * The knob holds paths before the node first evaluates, as setOnCurrentNode() writes them. A
- * USDXformPrim is created in wrap mode, wrapping the last path.
+ * USDXformPrim is created in wrap mode, wrapping the first path.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
 

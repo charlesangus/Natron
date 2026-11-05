@@ -10,3 +10,4 @@ Acceptance sketch:
 - charlesangus forks with a `natron/` branch holding each patch as a commit with its reason.
 - build-moonray.sh has no source patches; it pins the fork's commit and records it in a SOURCE file, like build-cycles.sh.
 - The dev image rebuilds and the MoonRay tests pass unchanged.
+- The fork's hdMoonray overrides `GetMaterialRenderContexts` to return `moonray`, so it reads `outputs:moonray:surface` and falls back to universal outputs (needed by M344 - Camera Projection In Delegates; user asked for native shader support, 2026-11-05).

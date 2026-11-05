@@ -411,6 +411,7 @@ future core work has solid ground to build on.
 | M341 | Per-Placement Geometry Projection | todo | M234 |  | E9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
 | M342 | Sticky Projections On Deforming Geometry | todo | M234 |  | E9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 | M343 | Live Textures In Delegates | todo | M233, M251, M252, M254 |  | E9 | | [M343-live-textures-in-delegates.md](PLAN/MILESTONES/M343-live-textures-in-delegates.md) |
+| M344 | Camera Projection In Delegates | todo | M234, M325, M343 |  | E9 | | [M344-camera-projection-in-delegates.md](PLAN/MILESTONES/M344-camera-projection-in-delegates.md) |
 
 # Epics
 

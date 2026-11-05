@@ -11,8 +11,9 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 - A live texture that can't be served gives a node warning naming the source node, and the render continues with the `UsdUVTexture` fallback.
 
 **Out:**
-- MaterialX `image` nodes and bespoke shaders' texture inputs: the materials work that follows the MaterialX discussion (not filed yet).
-- USDProject3D in Cycles and MoonRay: Unconfirmed, see Assumptions.
+- MaterialX `image` nodes: none, MaterialX is set aside (user, 2026-11-05).
+- Native shader nodes' texture inputs: the native shader work (not filed yet), which reuses this route.
+- USDProject3D in Cycles and MoonRay: M344 - Camera Projection In Delegates.
 - `<UDIM>` live textures in delegates: M311 - UDIM Live Textures extends this once both have landed.
 - Natron Utility: M281 - Utility Materials And Lights reads `natron://` through `HioImage`.
 - MoonRay's rejection of untiled files on disk: M252 - MoonRay Rendering (inbox Lobby report, finding 3). This milestone serves only live images.
@@ -27,7 +28,6 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 - Large image: size is the input's RoD, with no cap (no hand-holding size caps). Out of shared memory gives the fallback and a warning naming the node.
 
 **Assumptions:**
-- Unconfirmed: "live Natron materials" means node images as textures. USDProject3D's glslfx projection stays Storm-only here and gets its own milestone if wanted. moonshine has a `ProjectCameraMap`, and Cycles has no direct equivalent.
 - Cycles and `execComp` both load an OIIO that honours plug-in search paths, built from the same pinned version. T1 proves it.
 - M233.P2.T1's pre-render collects URIs whichever delegate is active. T1 confirms it; a miss means a fix in T2.
 
@@ -79,3 +79,4 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 - 2026-11-05 — **Filed outside the materials discussion (user):** "we definitely need to support live natron materials", regardless of the MaterialX outcome.
 - 2026-11-05 — **Planned route: one OIIO plug-in over shared memory (cat-plan, proven by M343.P1.T1):** an in-process store can't reach `execComp`, and hdCycles and hdMoonray have no shared Hydra-side image path, but both open images through OIIO.
+- 2026-11-05 — **Projection goes in its own milestone (user: "absolutely"; split by cat-plan):** M344 - Camera Projection In Delegates builds on this one.

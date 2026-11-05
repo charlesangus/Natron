@@ -239,3 +239,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-11-02 — main merged in; gate green (run 41556822898); m128_shapes GUI check 181/181, screenshots shared; AppImage + steps in build/appimages/Natron-m128-native-shape-generators.*; awaiting user UAT (PM).
 - 2026-11-02 — UAT round 1: Radial showed Interactive Update and HiDPI knobs; removed from M128's nodes (M95 removes them everywhere) (user).
 - 2026-11-02 — b34014cec: Ramp/Radial/Rectangle/ColorWheel have no Interactive Update/HiDPI knobs (ExtentPolicy::interactiveKnobs = false). Note: nothing calls addRampInteract — confirm the Ramp overlay path at the GUI re-check (PM).
+- 2026-11-05 — UAT approved (user).

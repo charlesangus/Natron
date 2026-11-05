@@ -25,10 +25,19 @@ RWStructuredBuffer<uint> levelBuf;
 RWStructuredBuffer<float> uBuf;
 RWStructuredBuffer<float> pBuf;
 // Every level's right-hand side, correction and scratch; on the finest level the residual r, the
-// preconditioned residual z and A p.
+// preconditioned residual z and A p. heal_tail alone reads, within a dispatch, what other invocations
+// of its group wrote, and a barrier reaches such writes only on Coherent memory: without it RADV
+// reads through a cache its other waves do not update, and the result changes from run to run. The
+// other kernels read across dispatch barriers, so they keep the cache.
+#ifdef HEAL_READS_WITHIN_DISPATCH
+globallycoherent RWStructuredBuffer<float> bBuf;
+globallycoherent RWStructuredBuffer<float> eBuf;
+globallycoherent RWStructuredBuffer<float> tBuf;
+#else
 RWStructuredBuffer<float> bBuf;
 RWStructuredBuffer<float> eBuf;
 RWStructuredBuffer<float> tBuf;
+#endif
 // Each group's sums, 8 floats a group.
 RWStructuredBuffer<float> partialBuf;
 // The solve's scalars: see the kState constants.
@@ -128,18 +137,17 @@ uint listCount(uint l, uint list)
     return levelBuf[l * kLevelWords + kLevelListCount + list];
 }
 
-float4 load4(RWStructuredBuffer<float> buf, uint g)
-{
-    return float4(buf[4 * g], buf[4 * g + 1], buf[4 * g + 2], buf[4 * g + 3]);
-}
+// Macros because Slang rejects a globallycoherent buffer as a function argument.
+#define load4(buf, g) float4(buf[4 * (g)], buf[4 * (g) + 1], buf[4 * (g) + 2], buf[4 * (g) + 3])
 
-void store4(RWStructuredBuffer<float> buf, uint g, float4 v)
-{
-    buf[4 * g] = v.x;
-    buf[4 * g + 1] = v.y;
-    buf[4 * g + 2] = v.z;
-    buf[4 * g + 3] = v.w;
-}
+#define store4(buf, g, v)            \
+    do {                             \
+        const float4 stored = (v);   \
+        buf[4 * (g)] = stored.x;     \
+        buf[4 * (g) + 1] = stored.y; \
+        buf[4 * (g) + 2] = stored.z; \
+        buf[4 * (g) + 3] = stored.w; \
+    } while (false)
 
 uint itemIndex(uint3 tid)
 {
@@ -180,18 +188,19 @@ void writePartials(uint index, uint group, float4 a, float4 b)
     }
 }
 
-float4 applyAt(RWStructuredBuffer<float> v, Level level, uint g)
+float4 applyStencil(uint s, uint g, float4 west, float4 east, float4 north, float4 south, float4 centre)
 {
-    const uint s = level.stride;
     const float cw = coefBuf[4 * (g - 1) + 2];
     const float ce = coefBuf[4 * g + 2];
     const float cn = coefBuf[4 * (g - s) + 3];
     const float cs = coefBuf[4 * g + 3];
     const float d = coefBuf[4 * g];
-    precise float4 around = cw * load4(v, g - 1) + ce * load4(v, g + 1) + cn * load4(v, g - s) + cs * load4(v, g + s);
-    precise float4 out = d * load4(v, g) - around;
+    precise float4 around = cw * west + ce * east + cn * north + cs * south;
+    precise float4 out = d * centre - around;
     return out;
 }
+
+#define applyAt(buf, s, g) applyStencil(s, g, load4(buf, (g) - 1), load4(buf, (g) + 1), load4(buf, (g) - (s)), load4(buf, (g) + (s)), load4(buf, g))
 
 void relaxAt(Level level, uint g)
 {
@@ -234,7 +243,7 @@ void residualAt(Level level, uint k)
         store4(tBuf, g, float4(0.0f));
         return;
     }
-    precise float4 v = load4(bBuf, g) - applyAt(eBuf, level, g);
+    precise float4 v = load4(bBuf, g) - applyAt(eBuf, level.stride, g);
     store4(tBuf, g, v);
 }
 
@@ -356,7 +365,8 @@ void heal_apply(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint in
     if (i < listCount(0, 0))
     {
         const uint g = cellBuf[listOffset(0, 0) + i];
-        const float4 q = applyAt(pBuf, levelAt(0), g);
+        const uint s = levelAt(0).stride;
+        const float4 q = applyAt(pBuf, s, g);
         store4(tBuf, g, q);
         precise float4 v = load4(pBuf, g) * q;
         pq = v;

@@ -158,3 +158,4 @@ ChromaKeyer: works poorly but stays as is for M95 (user, 2026-11-02); a proper t
 - 2026-10-12 — **ChromaKeyer added back (user), as a scene-linear fix rather than the alpha-only redesign:** P4.T5 removes the Rec.709 encoding and the HDR clamps and moves it to the host mask/mix (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`). The Keyer's "same plugin ID, major 3" answer is superseded by the plain-ID rule: M107 - Native Node Identity Cleanup renames it to `Keyer` at major 1.
 - 2026-11-02 — Release gate green at 23a2bb83a (main merged in, run 41555644848); AppImage + steps at build/appimages/Natron-m95-knob-cleanup-and-keyer.{AppImage,md}; awaiting user UAT (PM).
 - 2026-11-05 — UAT approved (user). P5.T1, P6.T1 and P6.T2 are in the accepted build; their boxes were stale (PM).
+- 2026-11-05 — Review round closed at 41ddae7a4 (Claude reviewer) (PM).

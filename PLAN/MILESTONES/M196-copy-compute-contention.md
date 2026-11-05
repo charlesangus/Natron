@@ -104,3 +104,5 @@ Scouted facts (2026-10-25; re-check at promotion):
   - **Copy rates:** new copies all use transfer family 2. Same-boot GpuBench transfer family: 45.2 up, 41–44 down (41.5 beside compute). keying_grade and cg_multipass copies reach 0.83–1.23× of it (most ≥0.89). defocus_retime's reach only 0.53–0.81× (23–37 GB/s), against base's compute-queue 1.0–8.7 GB/s. Compute-queue GpuBench floor: 10.3–10.5 up, 11.5–11.8 down.
   - **Gate:** exposed transfer passes by a wide margin. The 10% copy-rate clause holds for keying_grade and cg_multipass, but not for defocus_retime. Its residual exposed transfer is 31 ms of 3.1 s (UHD) and 115 ms of 12.3 s (8K), about 1% of wall time.
 
+- 2026-11-05 — **Residual accepted (user):** defocus_retime's copy rate (0.53–0.81× of the same-boot transfer-queue rate) misses the gate's 10% clause, and the user accepts it. The residual is about 1% of that comp's wall time. Why those copies run slower was not identified.
+

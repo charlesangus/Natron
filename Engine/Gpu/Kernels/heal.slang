@@ -137,17 +137,46 @@ uint listCount(uint l, uint list)
     return levelBuf[l * kLevelWords + kLevelListCount + list];
 }
 
-// Macros because Slang rejects a globallycoherent buffer as a function argument.
-#define load4(buf, g) float4(buf[4 * (g)], buf[4 * (g) + 1], buf[4 * (g) + 2], buf[4 * (g) + 3])
+// Slang rejects a globallycoherent buffer as an argument and a globallycoherent parameter, so each
+// buffer gets its own accessors. They stay functions because store4's value must arrive by value:
+// copied through a plain local in a macro, a precise local loses NoContraction on what fed it.
+#define load4(buf, g) load4_##buf(g)
+#define store4(buf, g, v) store4_##buf(g, v)
+#define applyAt(buf, level, g) applyAt_##buf(level, g)
 
-#define store4(buf, g, v)            \
-    do {                             \
-        const float4 stored = (v);   \
-        buf[4 * (g)] = stored.x;     \
-        buf[4 * (g) + 1] = stored.y; \
-        buf[4 * (g) + 2] = stored.z; \
-        buf[4 * (g) + 3] = stored.w; \
-    } while (false)
+#define HEAL_ACCESSORS(buf)                                                            \
+    float4 load4_##buf(uint g)                                                         \
+    {                                                                                  \
+        return float4(buf[4 * g], buf[4 * g + 1], buf[4 * g + 2], buf[4 * g + 3]);     \
+    }                                                                                  \
+    void store4_##buf(uint g, float4 v)                                                \
+    {                                                                                  \
+        buf[4 * g] = v.x;                                                              \
+        buf[4 * g + 1] = v.y;                                                          \
+        buf[4 * g + 2] = v.z;                                                          \
+        buf[4 * g + 3] = v.w;                                                          \
+    }                                                                                  \
+    float4 applyAt_##buf(Level level, uint g)                                          \
+    {                                                                                  \
+        const uint s = level.stride;                                                   \
+        const float cw = coefBuf[4 * (g - 1) + 2];                                     \
+        const float ce = coefBuf[4 * g + 2];                                           \
+        const float cn = coefBuf[4 * (g - s) + 3];                                     \
+        const float cs = coefBuf[4 * g + 3];                                           \
+        const float d = coefBuf[4 * g];                                                \
+        precise float4 around = cw * load4(buf, g - 1) + ce * load4(buf, g + 1)        \
+                                + cn * load4(buf, g - s) + cs * load4(buf, g + s);     \
+        precise float4 out = d * load4(buf, g) - around;                               \
+        return out;                                                                    \
+    }
+
+HEAL_ACCESSORS(uBuf)
+HEAL_ACCESSORS(pBuf)
+HEAL_ACCESSORS(bBuf)
+HEAL_ACCESSORS(eBuf)
+HEAL_ACCESSORS(tBuf)
+HEAL_ACCESSORS(partialBuf)
+HEAL_ACCESSORS(stateBuf)
 
 uint itemIndex(uint3 tid)
 {
@@ -187,20 +216,6 @@ void writePartials(uint index, uint group, float4 a, float4 b)
         store4(partialBuf, 2 * group + 1, sumsB[0]);
     }
 }
-
-float4 applyStencil(uint s, uint g, float4 west, float4 east, float4 north, float4 south, float4 centre)
-{
-    const float cw = coefBuf[4 * (g - 1) + 2];
-    const float ce = coefBuf[4 * g + 2];
-    const float cn = coefBuf[4 * (g - s) + 3];
-    const float cs = coefBuf[4 * g + 3];
-    const float d = coefBuf[4 * g];
-    precise float4 around = cw * west + ce * east + cn * north + cs * south;
-    precise float4 out = d * centre - around;
-    return out;
-}
-
-#define applyAt(buf, s, g) applyStencil(s, g, load4(buf, (g) - 1), load4(buf, (g) + 1), load4(buf, (g) - (s)), load4(buf, (g) + (s)), load4(buf, g))
 
 void relaxAt(Level level, uint g)
 {
@@ -243,7 +258,7 @@ void residualAt(Level level, uint k)
         store4(tBuf, g, float4(0.0f));
         return;
     }
-    precise float4 v = load4(bBuf, g) - applyAt(eBuf, level.stride, g);
+    precise float4 v = load4(bBuf, g) - applyAt(eBuf, level, g);
     store4(tBuf, g, v);
 }
 
@@ -365,8 +380,7 @@ void heal_apply(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint in
     if (i < listCount(0, 0))
     {
         const uint g = cellBuf[listOffset(0, 0) + i];
-        const uint s = levelAt(0).stride;
-        const float4 q = applyAt(pBuf, s, g);
+        const float4 q = applyAt(pBuf, levelAt(0), g);
         store4(tBuf, g, q);
         precise float4 v = load4(pBuf, g) * q;
         pq = v;

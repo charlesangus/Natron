@@ -15,10 +15,10 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-BLUR_ID = "net.sf.cimg.CImgBlur"
-BEGIN_ID = "fr.natron.LoopBegin"
-END_ID = "fr.natron.LoopEnd"
+CONSTANT_ID = "Constant"
+BLUR_ID = "Blur"
+BEGIN_ID = "LoopBegin"
+END_ID = "LoopEnd"
 
 try:
     from PySide6.QtWidgets import QApplication

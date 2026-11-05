@@ -34,8 +34,8 @@
 #define PLUGINID_NATRON_OCIOCOLORSPACE "OCIOColorSpace"
 #define PLUGIN_MAJOR_NATRON_OCIOCOLORSPACE 1
 
-#define kOCIOColorSpaceParamInputSpace "in_colorspace"
-#define kOCIOColorSpaceParamOutputSpace "out_colorspace"
+#define kOCIOColorSpaceParamInputSpace "inputColorspace"
+#define kOCIOColorSpaceParamOutputSpace "outputColorspace"
 #define kOCIOColorSpaceParamPreset "preset"
 
 // The preset menu's option ids.
@@ -52,9 +52,10 @@ inline constexpr InputSpec kOCIOColorSpaceInputs[] = {
 
 /**
  * @brief OCIOColorSpace: converts RGB from the input to the output colourspace of the project's
- * config, with the Context variables. An empty space is the working space. The preset menu sets
- * both spaces to the compositing_log and scene_linear roles, in either direction, which is what
- * OCIOLogConvert did; changing a space by hand afterwards returns it to Custom.
+ * config, with the context variables. Each space's Project default entry is the working space.
+ * The preset menu sets both spaces to the colourspaces of the compositing_log and scene_linear
+ * roles, in either direction, which is what OCIOLogConvert did; changing a space by hand
+ * afterwards returns it to Custom.
  **/
 struct OCIOColorSpaceOp
     : public OcioOp<OCIOColorSpaceOp> {
@@ -76,6 +77,12 @@ struct OCIOColorSpaceOp
     OCIO_NAMESPACE::ConstTransformRcPtr transform(const KnobReader& reader) const;
 
     /**
+     * @brief The colourspaces of the config \p preset converts between, input then output; both
+     * empty for Custom and for a config without the roles.
+     **/
+    std::pair<std::string, std::string> presetSpaces(const std::string& preset) const;
+
+    /**
      * @brief Sets both spaces from the preset menu's current option; Custom leaves them.
      **/
     void applyPreset();
@@ -86,8 +93,8 @@ struct OCIOColorSpaceOp
     void spacesChosen();
 
     KnobChoiceWPtr preset;
-    KnobStringWPtr inputSpace;
-    KnobStringWPtr outputSpace;
+    KnobChoiceWPtr inputSpace;
+    KnobChoiceWPtr outputSpace;
     // Set while applyPreset() writes the spaces, which must not turn the preset back to Custom.
     bool applyingPreset = false;
 };

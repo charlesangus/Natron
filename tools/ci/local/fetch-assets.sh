@@ -150,7 +150,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # #2-#3.
 #
 # This revision excludes the OFX Shuffle plugin, so Natron does not ship it
-# alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
+# alongside the native Shuffle and ShuffleCopy.
 #
 # It also has Grade, Premult/Unpremult, ColorCorrect, ColorSuppress,
 # ContactSheet and LayerContactSheet accept alpha-only (1-component) images,
@@ -165,9 +165,9 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # This revision excludes the OFX Grade, ColorCorrect, Saturation, Clamp,
 # Invert, Add, Multiply and Gamma plugins; the native nodes in Engine/Nodes/Color
 # take their IDs. It also excludes Merge (with its presets, MergeRoto and the
-# Merge 1.0 compat factories), Dissolve, Constant (Solid) and CheckerBoard,
+# Merge 1.0 compat factories), Dissolve, Constant, Solid and CheckerBoard,
 # which the native nodes in Engine/Nodes/Merge and Engine/Nodes/Generator take over.
-# It also excludes Transform and TransformMasked (DirBlur stays OFX), Crop, Position,
+# It also excludes Transform, TransformMasked (DirBlur stays OFX), Crop, Position,
 # Reformat (with its 1.1 compat factory) and CImgBlur, which the native nodes in
 # Engine/Nodes/Transform and Engine/Nodes/Filter take over.
 # It also excludes Keyer, ChromaKeyer, ColorLookup, CImgErode, CImgDilate and

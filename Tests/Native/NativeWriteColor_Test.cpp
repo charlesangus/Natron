@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -67,10 +68,8 @@ const char* const kGamma22Space = "Gamma 2.2 Encoded Rec.709";
 const char* const kLinearRec709Space = "Linear Rec.709 (sRGB)";
 const char* const kRuleSpace = "ACES2065-1";
 
-const char* const kOutputSpaceKnob = "ocioOutputSpace";
-const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
-const char* const kOutputContextKnob = "Context";
-const char* const kOutputSpaceSetKnob = "ocioOutputSpaceSet";
+const char* const kOutputSpaceMenuKnob = "colorspace";
+const char* const kOutputContextKnob = "ocioContext";
 const char* const kWorkingSpaceKnob = "ocioWorkingSpace";
 
 const int kWidth = 16;
@@ -200,13 +199,14 @@ protected:
         return knob ? knob->getValue() : std::string();
     }
 
-    bool userSet(const NodePtr& node) const
+    // The colourspace the Write writes in: the one picked, or the one Project default stands for.
+    std::string fileSpace(const NodePtr& node) const
     {
-        KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kOutputSpaceSetKnob));
+        NativeWrite* write = dynamic_cast<NativeWrite*>(node->getEffectInstance().get());
 
-        EXPECT_TRUE(bool(knob));
+        EXPECT_TRUE(write != NULL);
 
-        return knob && knob->getValue();
+        return write ? write->colorspace() : std::string();
     }
 
     std::string menuValue(const NodePtr& node) const
@@ -215,7 +215,12 @@ protected:
 
         EXPECT_TRUE(bool(menu));
 
-        return menu ? menu->getEntry(menu->getValue()).id : std::string();
+        return menu ? menu->getActiveEntry().id : std::string();
+    }
+
+    bool userSet(const NodePtr& node) const
+    {
+        return menuValue(node) != OcioSpaceKnobs::projectDefaultID();
     }
 
     void userPicksOutputSpace(const NodePtr& node,
@@ -240,7 +245,7 @@ protected:
         } else {
             menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
         }
-        ASSERT_EQ(std::string(space), stringValue(node, kOutputSpaceKnob));
+        ASSERT_EQ(std::string(space), fileSpace(node));
     }
 
     // The same calls, in the same order, as the Gui's "Reset to default" on one knob.
@@ -314,11 +319,14 @@ TEST_F(NativeWriteColorTest, AnEightBitPngTakesTheProjectEightBitDefault)
     setProjectSpace("colorSpace8Bit", kSRGBSpace);
     setFile(_writer, pathOf("out.png"));
 
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), stringValue(_writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(_writer));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), fileSpace(_writer));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(_writer));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(_writer, kWorkingSpaceKnob));
     EXPECT_FALSE(userSet(_writer));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(_writer->getKnobByName(kOutputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kSRGBSpace) + ")", menu->getEntry(0).label);
 }
 
 TEST_F(NativeWriteColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
@@ -328,8 +336,8 @@ TEST_F(NativeWriteColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
 
     setFile(_writer, pathOf("out.exr"));
 
-    EXPECT_EQ(std::string(kRuleSpace), stringValue(_writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kRuleSpace), menuValue(_writer));
+    EXPECT_EQ(std::string(kRuleSpace), fileSpace(_writer));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(_writer));
     EXPECT_FALSE(userSet(_writer));
 }
 
@@ -341,13 +349,13 @@ TEST_F(NativeWriteColorTest, AFileWithoutARuleTakesTheDefaultOfItsDataType)
     ASSERT_TRUE(IoColorSpace::fileRuleColorSpace(config(), "/shots/plate.tif").empty());
 
     setFile(_writer, pathOf("out.tif"));
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(_writer, kOutputSpaceKnob)) << "tif is 16-bit";
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(_writer)) << "tif is 16-bit";
 
     setBitDepth(_writer, "8i");
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
 
     setBitDepth(_writer, "32f");
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(_writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(_writer));
     EXPECT_FALSE(userSet(_writer));
 }
 
@@ -360,8 +368,8 @@ TEST_F(NativeWriteColorTest, ATenBitDpxTakesTheLogDefault)
     setFile(_writer, pathOf("out.dpx"));
     setBitDepth(_writer, "10i");
 
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(_writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kLinearRec709Space), menuValue(_writer));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(_writer));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(_writer));
 }
 
 TEST_F(NativeWriteColorTest, MidGrayWrittenToAnEightBitPngEncodesToCode118)
@@ -369,7 +377,7 @@ TEST_F(NativeWriteColorTest, MidGrayWrittenToAnEightBitPngEncodesToCode118)
     setProjectSpace("colorSpace8Bit", kSRGBSpace);
     const std::string path = pathOf("gray.png");
     setFile(_writer, path);
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
 
     render(_writer);
 
@@ -417,7 +425,7 @@ TEST_F(NativeWriteColorTest, TheFileCarriesItsColourspace)
     const std::string path = pathOf("tagged.exr");
     setFile(_writer, path);
     setBitDepth(_writer, "32f");
-    ASSERT_EQ(std::string(kRuleSpace), stringValue(_writer, kOutputSpaceKnob));
+    ASSERT_EQ(std::string(kRuleSpace), fileSpace(_writer));
 
     render(_writer);
 
@@ -433,23 +441,29 @@ TEST_F(NativeWriteColorTest, TheFileCarriesItsColourspace)
     EXPECT_TRUE(nearlyEqual(decoded.pixels[0], converted(kRuleSpace), 1e-5f));
 }
 
-TEST_F(NativeWriteColorTest, AnExistingWriteKeepsItsSpaceAcrossADefaultChangeAndReload)
+TEST_F(NativeWriteColorTest, AWriteOnProjectDefaultFollowsADefaultChangeAcrossReload)
 {
     setProjectSpace("colorSpace8Bit", kSRGBSpace);
     setFile(_writer, pathOf("keep.png"));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
     const std::string name = _writer->getScriptName_mt_safe();
+    const U64 before = _writer->getEffectInstance()->getHash();
 
     setProjectSpace("colorSpace8Bit", kGamma22Space);
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(_writer));
+    EXPECT_NE(before, _writer->getEffectInstance()->getHash());
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(_writer->getKnobByName(kOutputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kGamma22Space) + ")", menu->getEntry(0).label);
+    EXPECT_EQ("Project default (" + std::string(kGamma22Space) + ")", menu->getActiveEntry().label);
 
     saveResetAndLoad("keep.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     NodePtr loaded = project()->getNodeByName(name);
     ASSERT_TRUE(bool(loaded));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(loaded, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(loaded));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(loaded));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(loaded));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(loaded, kWorkingSpaceKnob));
 }
 
@@ -463,7 +477,7 @@ TEST_F(NativeWriteColorTest, AUserPickSticksAcrossAFilenameChange)
     setFile(_writer, pathOf("other.jpg"));
     setBitDepth(_writer, "8i");
 
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(_writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(_writer));
     EXPECT_TRUE(userSet(_writer));
 }
 
@@ -481,19 +495,18 @@ TEST_F(NativeWriteColorTest, ResettingTheOutputColourspaceReturnsToTheAutomaticS
     restoreDefaultAsTheGuiDoes(_writer->getKnobByName(kOutputSpaceMenuKnob));
 
     EXPECT_FALSE(userSet(_writer));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(_writer, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(_writer));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
     render(_writer);
     const long reset = std::lround(firstSample(path) * 255.f);
     EXPECT_NE(picked, reset);
     EXPECT_EQ(std::lround(converted(kSRGBSpace) * 255.f), reset);
 }
 
-TEST_F(NativeWriteColorTest, ReselectingTheShownEntryRecordsAUserChoice)
+TEST_F(NativeWriteColorTest, PickingTheSpaceProjectDefaultStandsForRecordsAUserChoice)
 {
     setProjectSpace("colorSpace8Bit", kSRGBSpace);
     setFile(_writer, pathOf("reselect.png"));
-    ASSERT_EQ(std::string(kSRGBSpace), menuValue(_writer));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(_writer));
     ASSERT_FALSE(userSet(_writer));
 
     userPicksOutputSpace(_writer, kSRGBSpace);
@@ -588,8 +601,8 @@ protected:
                     const char* value)
     {
         const std::string n = std::to_string(pair);
-        KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("key" + n));
-        KnobStringPtr valueKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("value" + n));
+        KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextKey" + n));
+        KnobStringPtr valueKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextValue" + n));
 
         ASSERT_TRUE(bool(keyKnob));
         ASSERT_TRUE(bool(valueKnob));

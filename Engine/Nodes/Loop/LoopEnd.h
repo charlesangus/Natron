@@ -46,7 +46,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RenderContext.h"
 
-#define PLUGINID_NATRON_LOOPEND "fr.natron.LoopEnd"
+#define PLUGINID_NATRON_LOOPEND "LoopEnd"
 #define PLUGIN_MAJOR_NATRON_LOOPEND 1
 
 #define kLoopEndParamName "name"

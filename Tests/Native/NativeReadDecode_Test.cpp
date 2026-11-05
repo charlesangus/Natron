@@ -192,9 +192,7 @@ protected:
         ASSERT_TRUE(file != NULL);
         file->setValue(path);
         // These tests compare with OIIO's own decode, so the file is read without conversion.
-        KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-        ASSERT_TRUE(inputSpace != NULL);
-        inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+        fileInWorkingSpace(node);
         node->getEffectInstance()->dropCachedMetadata();
     }
 

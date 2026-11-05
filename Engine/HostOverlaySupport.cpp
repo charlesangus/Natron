@@ -161,7 +161,7 @@ HostOverlayKnobsTransform::describeOverlayKnobs()
 {
     describeKnob(eKnobsEnumerationTranslate, KnobDouble::typeNameStatic(), 2);
     describeKnob(eKnobsEnumerationScale, KnobDouble::typeNameStatic(), 2);
-    describeKnob(eKnobsEnumerationUniform, KnobBool::typeNameStatic(), 1);
+    describeKnob(eKnobsEnumerationUniform, KnobBool::typeNameStatic(), 1, true);
     describeKnob(eKnobsEnumerationRotate, KnobDouble::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationSkewx, KnobDouble::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationSkewy, KnobDouble::typeNameStatic(), 1);

@@ -105,7 +105,7 @@ try:
     require(merge.connectInput(1, light), "connect RedLight into the merge")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(75, 260)
 

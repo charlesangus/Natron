@@ -5,7 +5,7 @@ Sections:
     renderOnEditingFinished preference together, and setting the preference flips the action back.
   - transform-drag: dragging a Transform's centre handle in the viewer re-renders during the drag
     with interactive updates on, and only on release with them off.
-  - no-overlay-knobs: Transform, RotoPaint, CornerPin and Ramp have no visible interactive or hidpi
+  - no-overlay-knobs: Transform, RotoPaint, CornerPin, Ramp and DirBlur have no visible interactive or hidpi
     knob (a native node has none at all; an OFX plug-in's are hidden and host-driven).
   - footer-order: panel shots of Grade, Saturation and ColorLookup, with Clamp Black and Clamp White
     side by side above Mix. KnobFooterOrder_Test covers the OFX footer, as no bundled OFX colour
@@ -35,16 +35,17 @@ CHANGED_PIXELS_MIN = 100
 HELD_PIXELS_MAX = 2000
 
 PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
-PLUGIN_TRANSFORM = "net.sf.openfx.TransformPlugin"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_CONSTANT = "Constant"
+PLUGIN_TRANSFORM = "Transform"
 PLUGIN_CORNERPIN = "CornerPin"
 PLUGIN_ROTOPAINT = "fr.inria.built-in.RotoPaint"
-PLUGIN_RAMP = "net.sf.openfx.Ramp"
-PLUGIN_GRADE = "net.sf.openfx.GradePlugin"
-PLUGIN_SATURATION = "net.sf.openfx.SaturationPlugin"
-PLUGIN_COLORLOOKUP = "net.sf.openfx.ColorLookupPlugin"
-PLUGIN_KEYER = "net.sf.openfx.KeyerPlugin"
+PLUGIN_RAMP = "Ramp"
+PLUGIN_DIRBLUR = "net.sf.openfx.DirBlur"
+PLUGIN_GRADE = "Grade"
+PLUGIN_SATURATION = "Saturation"
+PLUGIN_COLORLOOKUP = "ColorLookup"
+PLUGIN_KEYER = "Keyer"
 KEYER_SOURCES = ["luminance", "red", "green", "blue"]
 STRIP_PREFIX = "TrapezoidStrip_"
 STRIP_BUTTON_PREFIXES = {"Recentre": "TrapezoidRecentre_", "Smooth": "TrapezoidSmooth_", "Reset Zoom": "TrapezoidResetZoom_"}
@@ -370,7 +371,7 @@ try:
 
     def section_no_overlay_knobs():
         gt.section("no-overlay-knobs")
-        for plugin_id, native in ((PLUGIN_TRANSFORM, True), (PLUGIN_ROTOPAINT, True), (PLUGIN_CORNERPIN, True), (PLUGIN_RAMP, False)):
+        for plugin_id, native in ((PLUGIN_TRANSFORM, True), (PLUGIN_ROTOPAINT, True), (PLUGIN_CORNERPIN, True), (PLUGIN_RAMP, True), (PLUGIN_DIRBLUR, False)):
             if plugin_id not in gt._plugin_ids:
                 check(False, "%s is registered" % plugin_id)
                 continue

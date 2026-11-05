@@ -269,26 +269,21 @@ TEST_F(NodePresetApply, APresetKeepsAWritersFileSublabelLabelAndDisableSwitch)
     ASSERT_TRUE(source && target);
     KnobOutputFilePtr sourceFile = knob<KnobOutputFile>(source, kOfxImageEffectFileParamName);
     KnobOutputFilePtr file = knob<KnobOutputFile>(target, kOfxImageEffectFileParamName);
-    KnobStringPtr sourceSublabel = knob<KnobString>(source, kNatronOfxParamStringSublabelName);
-    KnobStringPtr sublabel = knob<KnobString>(target, kNatronOfxParamStringSublabelName);
-    ASSERT_TRUE(sourceFile && file && sourceSublabel && sublabel);
+    ASSERT_TRUE(sourceFile && file);
     sourceFile->setValue(std::string("/tmp/preset_source.####.exr"));
-    sourceSublabel->setValue(std::string("preset sublabel"));
     knob<KnobString>(source, kUserLabelKnobName)->setValue(std::string("preset label"));
     knob<KnobBool>(source, kDisableNodeKnobName)->setValue(true);
     file->setValue(std::string("/tmp/preset_target.####.exr"));
-    sublabel->setValue(std::string("target sublabel"));
     knob<KnobString>(target, kUserLabelKnobName)->setValue(std::string("target label"));
 
     const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
     ASSERT_TRUE(carries(preset, kOfxImageEffectFileParamName));
-    ASSERT_TRUE(carries(preset, kNatronOfxParamStringSublabelName));
     ASSERT_TRUE(carries(preset, kUserLabelKnobName));
     ASSERT_TRUE(carries(preset, kDisableNodeKnobName));
     target->applyPresetSerialization(preset, Node::ePresetApplyModePreset, NULL);
 
     EXPECT_EQ(std::string("/tmp/preset_target.####.exr"), file->getValue());
-    EXPECT_EQ(std::string("target sublabel"), sublabel->getValue());
+    EXPECT_EQ(std::string("preset_target.####.exr"), target->getSublabel());
     EXPECT_EQ(std::string("target label"), knob<KnobString>(target, kUserLabelKnobName)->getValue());
     EXPECT_FALSE(knob<KnobBool>(target, kDisableNodeKnobName)->getValue());
 }

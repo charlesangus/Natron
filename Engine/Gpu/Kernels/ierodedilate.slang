@@ -1,6 +1,6 @@
 import mapremap;
 
-// IErode's and IDilate's filter, the definition of IErodeDilateKernels::filterPlane() in
+// IErodeDilate's filter, one stage at a time, the definition of IErodeDilateKernels::filterPlane() in
 // Engine/Nodes/Filter/IErodeDilate.cpp, one component at a time: the row tables of the whole
 // domain at once, which the GPU's radius cap of 255 keeps small, where the CPU bounds its memory
 // with batches. The work buffer covers the CPU's scratch rect, the domain of domWidth x domHeight
@@ -46,7 +46,8 @@ StructuredBuffer<uint> srcBuf;
 StructuredBuffer<uint> mapBuf;
 StructuredBuffer<MorphConstants> constBuf;
 RWStructuredBuffer<float> workBuf;
-// filter: outWidth x outHeight pixels at (outX1, outY1), the first at dstOffset.
+// filter: outWidth x outHeight pixels at (outX1, outY1), the first at dstOffset: the output, or
+// for a stage before the last the domain, which the next stage loads as its source.
 RWStructuredBuffer<float> outBuf;
 
 struct MorphParams
@@ -60,7 +61,7 @@ struct MorphParams
     uint comp;
     // level: the level it builds.
     uint level;
-    // kDisc and kTakeMax.
+    // kDisc, kTakeMax and the stage at kStageShift.
     uint flags;
     // load: the source pixels that exist, the first at srcOffset; empty when there are none.
     int srcX1;
@@ -81,6 +82,7 @@ struct MorphParams
 // Mirrored in Engine/Nodes/Filter/IErodeDilate.cpp.
 static const uint kDisc = 1;
 static const uint kTakeMax = 2;
+static const uint kStageShift = 2;
 static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
@@ -122,6 +124,27 @@ float axisAt(float black, float white, float m)
     precise float s = m * d;
     precise float r = black + s;
     return min(max(r, min(black, white)), max(black, white));
+}
+
+// IErodeDilateKernels::stageRadii().
+float positivePart(float v)
+{
+    return (v > 0.0) ? v : 0.0;
+}
+
+void stageRadii(uint stage, float rx, float ry, out float sx, out float sy)
+{
+    const bool opposite = (rx > 0.0 && ry < 0.0) || (rx < 0.0 && ry > 0.0);
+    const bool dilate = (stage & 1u) != 0u;
+    const float x = dilate ? -rx : rx;
+    const float y = dilate ? -ry : ry;
+    if (stage < 2u) {
+        sx = positivePart(x);
+        sy = opposite ? 0.0 : positivePart(y);
+    } else {
+        sx = 0.0;
+        sy = opposite ? positivePart(y) : 0.0;
+    }
 }
 
 // IErodeDilateKernels::ellipseHalfWidth(), for radii of at most 255 so that 32 bits hold it.
@@ -220,8 +243,9 @@ void ierodedilate_filter(uint3 tid : SV_DispatchThreadID)
     float m = k.outside;
     if ((k.mapFlags & kMapRead) != 0u && ax >= k.mapX1 && ax < k.mapX2 && ay >= k.mapY1 && ay < k.mapY2)
         m = remapMap(k, asfloat(mapBuf[k.mapOffset + uint(ay - k.mapY1) * k.mapStride + uint(ax - k.mapX1) * k.mapChannels + k.mapChannel]));
-    const float rxf = axisAt(k.blackRx, k.whiteRx, m);
-    const float ryf = axisAt(k.blackRy, k.whiteRy, m);
+    float rxf;
+    float ryf;
+    stageRadii(params.flags >> kStageShift, axisAt(k.blackRx, k.whiteRx, m), axisAt(k.blackRy, k.whiteRy, m), rxf, ryf);
     const float fx = floor(rxf);
     const float fy = floor(ryf);
     precise float tx = rxf - fx;

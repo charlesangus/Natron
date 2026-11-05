@@ -68,7 +68,6 @@ NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
-const int kOfxConstantMajor = 1;
 const int kNativeConstantMajor = PLUGIN_MAJOR_NATRON_CONSTANT;
 const double kTime = 1.;
 
@@ -175,23 +174,18 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, width, height, name, par));
     }
 
-    // Both versions of a generator with nothing connected. The parity source is only there
+    // A generator with nothing connected. The parity source is only there
     // because compareParity() requires one; every case passes its own window.
     ParityPair makeGeneratorPair(const std::string& id)
     {
         ParityPair pair;
 
         pair.id = id;
-        pair.ofxMajor = kOfxConstantMajor;
         pair.nativeMajor = kNativeConstantMajor;
         pair.app = getApp();
         pair.source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-        if (isPluginMajorRegistered(id, kOfxConstantMajor)) {
-            pair.ofx = createNodeAtMajor(getApp(), id, kOfxConstantMajor);
-        }
         pair.native = createNodeAtMajor(getApp(), id, kNativeConstantMajor);
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX " << id << " is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -208,7 +202,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, kConstantTolerance, record, options);
             EXPECT_TRUE(r.ok) << pair.id << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] " << pair.id << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -301,14 +294,6 @@ TEST_F(NativeConstantTest, ChannelsOutsideTheTargetSelectionAreZero)
     }
 }
 
-TEST_F(NativeConstantTest, SolidIsOpaque)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_SOLID);
-    ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.3, 0.6, 0.9 }));
-    expectParity(pair, "default", true);
-}
-
 TEST_F(NativeConstantTest, NewGeneratorSpansTheProjectRange)
 {
     resetProject();
@@ -385,16 +370,12 @@ TEST_F(NativeConstantTest, RectangleOverlayIsEnabledInSizeExtentOnly)
     EXPECT_TRUE(node->getKnobByName(kNativeGeneratorParamSize)->getIsSecret());
 }
 
-TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerators)
+TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerator)
 {
-    const char* const ids[2] = { PLUGINID_NATRON_CONSTANT, PLUGINID_NATRON_SOLID };
-
-    for (int i = 0; i < 2; ++i) {
-        NodePtr unversioned = createNode(QString::fromUtf8(ids[i]));
-        ASSERT_TRUE(bool(unversioned)) << ids[i];
-        EXPECT_TRUE(isNative(unversioned)) << ids[i];
-        EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion()) << ids[i];
-    }
+    NodePtr unversioned = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(unversioned));
+    EXPECT_TRUE(isNative(unversioned));
+    EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion());
 }
 
 TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
@@ -436,7 +417,6 @@ TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
 TEST_F(NativeConstantTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT, "Constant");
-    expectNativeIdentity(PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT, "Solid");
 }
 
 // A Size extent that reformats, with its rectangle keyed to two sizes, is each frame's format,

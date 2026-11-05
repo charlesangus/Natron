@@ -177,9 +177,10 @@ class MapInput {
 public:
     /**
      * @brief Adds Size At Black to page. sizeDimensions is the dimension count of the node's size
-     * knob, which it matches.
+     * knob, which it matches. A signed size runs from -kMapInputMaxSize, for a node whose sign
+     * picks its operation.
      **/
-    void createSizeAtBlackKnob(KnobHolder* holder, const KnobPagePtr& page, int sizeDimensions);
+    void createSizeAtBlackKnob(KnobHolder* holder, const KnobPagePtr& page, int sizeDimensions, bool isSigned = false);
 
     /**
      * @brief Adds the Map's channel, invert, response and gamma knobs to page, the response and
@@ -227,6 +228,9 @@ public:
     /// A size held to [0, kMapInputMaxSize]; NaN is 0.
     static double clampSize(double size) WARN_UNUSED_RETURN;
 
+    /// A size held to [-kMapInputMaxSize, kMapInputMaxSize]; NaN is 0.
+    static double clampSignedSize(double size) WARN_UNUSED_RETURN;
+
     /**
      * @brief Fills plane over window with channel of a float image, remapped by params; a null
      * image, or a pixel outside its bounds, reads params.remap(0), as a black pixel inside it does.
@@ -244,6 +248,7 @@ private:
     KnobDoubleWPtr _gamma;
     KnobDoubleWPtr _sizeAtBlack;
     int _sizeDimensions = 0;
+    bool _signedSize = false;
 };
 
 NATRON_NAMESPACE_EXIT

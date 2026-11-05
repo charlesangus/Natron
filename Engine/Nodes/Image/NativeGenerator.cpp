@@ -48,6 +48,7 @@ generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent)
     policy.reformatToggle = true;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = false;
+    policy.frameRange = true;
 
     return policy;
 }

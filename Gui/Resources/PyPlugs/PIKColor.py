@@ -238,7 +238,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Grade11"
-    lastNode = app.createNode("net.sf.openfx.GradePlugin", 2, group)
+    lastNode = app.createNode("Grade", 1, group)
     lastNode.setScriptName("Grade11")
     lastNode.setLabel("Grade11")
     lastNode.setPosition(14, -192)
@@ -280,7 +280,7 @@ def createInstance(app,group):
     # End of node "Grade11"
 
     # Start of node "Clamp2"
-    lastNode = app.createNode("net.sf.openfx.Clamp", 2, group)
+    lastNode = app.createNode("Clamp", 1, group)
     lastNode.setScriptName("Clamp2")
     lastNode.setLabel("Clamp2")
     lastNode.setPosition(14, -118)
@@ -302,7 +302,7 @@ def createInstance(app,group):
     # End of node "Clamp2"
 
     # Start of node "Invert1"
-    lastNode = app.createNode("net.sf.openfx.Invert", 2, group)
+    lastNode = app.createNode("Invert", 1, group)
     lastNode.setScriptName("Invert1")
     lastNode.setLabel("Invert1")
     lastNode.setPosition(126, -33)
@@ -351,7 +351,7 @@ def createInstance(app,group):
     # End of node "Erode1"
 
     # Start of node "Dot1"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot1")
     lastNode.setLabel("Dot1")
     lastNode.setPosition(187, -224)
@@ -363,7 +363,7 @@ def createInstance(app,group):
     # End of node "Dot1"
 
     # Start of node "Dot2"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot2")
     lastNode.setLabel("Dot2")
     lastNode.setPosition(59, -226)
@@ -375,7 +375,7 @@ def createInstance(app,group):
     # End of node "Dot2"
 
     # Start of node "ShuffleCopy3"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("ShuffleCopy3")
     lastNode.setLabel("ShuffleCopy3")
     lastNode.setPosition(272, 35)
@@ -405,7 +405,7 @@ def createInstance(app,group):
     # End of node "ShuffleCopy3"
 
     # Start of node "Dot3"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot3")
     lastNode.setLabel("Dot3")
     lastNode.setPosition(317, -224)
@@ -441,7 +441,7 @@ def createInstance(app,group):
     # End of node "Unpremult4"
 
     # Start of node "Clamp1"
-    lastNode = app.createNode("net.sf.openfx.Clamp", 2, group)
+    lastNode = app.createNode("Clamp", 1, group)
     lastNode.setScriptName("Clamp1")
     lastNode.setLabel("Clamp1")
     lastNode.setPosition(700, 225)
@@ -476,7 +476,7 @@ def createInstance(app,group):
     # End of node "Clamp1"
 
     # Start of node "ChannelCopy1"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("ChannelCopy1")
     lastNode.setLabel("ChannelCopy1")
     lastNode.setPosition(411, 292)
@@ -506,7 +506,7 @@ def createInstance(app,group):
     # End of node "ChannelCopy1"
 
     # Start of node "Dot4"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot4")
     lastNode.setLabel("Dot4")
     lastNode.setPosition(317, 299)
@@ -518,7 +518,7 @@ def createInstance(app,group):
     # End of node "Dot4"
 
     # Start of node "ShuffleCopy2"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("ShuffleCopy2")
     lastNode.setLabel("ShuffleCopy2")
     lastNode.setPosition(413, 602)
@@ -560,7 +560,7 @@ def createInstance(app,group):
     # End of node "Unpremult1"
 
     # Start of node "Invert2"
-    lastNode = app.createNode("net.sf.openfx.Invert", 2, group)
+    lastNode = app.createNode("Invert", 1, group)
     lastNode.setScriptName("Invert2")
     lastNode.setLabel("Invert2")
     lastNode.setPosition(700, 328)
@@ -582,7 +582,7 @@ def createInstance(app,group):
     # End of node "Invert2"
 
     # Start of node "Switch1"
-    lastNode = app.createNode("fr.natron.Switch", 1, group)
+    lastNode = app.createNode("Switch", 1, group)
     lastNode.setScriptName("Switch1")
     lastNode.setLabel("Switch1")
     lastNode.setPosition(690, 602)
@@ -633,7 +633,7 @@ def createInstance(app,group):
     # End of node "Merge1"
 
     # Start of node "ChannelCopy2"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("ChannelCopy2")
     lastNode.setLabel("ChannelCopy2")
     lastNode.setPosition(272, 886)
@@ -658,7 +658,7 @@ def createInstance(app,group):
     # End of node "ChannelCopy2"
 
     # Start of node "Dot6"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot6")
     lastNode.setLabel("Dot6")
     lastNode.setPosition(171, 894)
@@ -670,7 +670,7 @@ def createInstance(app,group):
     # End of node "Dot6"
 
     # Start of node "Grade1"
-    lastNode = app.createNode("net.sf.openfx.GradePlugin", 2, group)
+    lastNode = app.createNode("Grade", 1, group)
     lastNode.setScriptName("Grade1")
     lastNode.setLabel("Grade1")
     lastNode.setPosition(272, 946)
@@ -695,7 +695,7 @@ def createInstance(app,group):
     # End of node "Grade1"
 
     # Start of node "Source"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("Source")
     lastNode.setLabel("Source")
     lastNode.setPosition(145, -282)
@@ -707,7 +707,7 @@ def createInstance(app,group):
     # End of node "Source"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output")
     lastNode.setPosition(272, 1014)
     lastNode.setSize(104, 30)
@@ -750,7 +750,7 @@ def createInstance(app,group):
     # End of node "PIK2"
 
     # Start of node "Blur2"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 4, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("Blur2")
     lastNode.setLabel("Blur1")
     lastNode.setPosition(411, 351)
@@ -783,7 +783,7 @@ def createInstance(app,group):
     # End of node "Blur2"
 
     # Start of node "Blur4"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 4, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("Blur4")
     lastNode.setLabel("Blur4")
     lastNode.setPosition(272, 159)
@@ -816,7 +816,7 @@ def createInstance(app,group):
     # End of node "Blur4"
 
     # Start of node "InM"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("InM")
     lastNode.setLabel("InM")
     lastNode.setPosition(-171, -35)
@@ -838,7 +838,7 @@ def createInstance(app,group):
     # End of node "InM"
 
     # Start of node "Dot7"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot7")
     lastNode.setLabel("Dot7")
     lastNode.setPosition(317, 370)
@@ -850,7 +850,7 @@ def createInstance(app,group):
     # End of node "Dot7"
 
     # Start of node "BlurBox1"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 4, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("BlurBox1")
     lastNode.setLabel("BlurBox1")
     lastNode.setPosition(579, 509)
@@ -883,7 +883,7 @@ def createInstance(app,group):
     # End of node "BlurBox1"
 
     # Start of node "BlurBox2"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 4, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("BlurBox2")
     lastNode.setLabel("BlurBox2")
     lastNode.setPosition(803, 511)
@@ -933,7 +933,7 @@ def createInstance(app,group):
     # End of node "Unpremult2"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(418, 225)
@@ -959,7 +959,7 @@ def createInstance(app,group):
     # End of node "Shuffle1"
 
     # Start of node "DilateFast1"
-    lastNode = app.createNode("net.sf.cimg.CImgDilate", 2, group)
+    lastNode = app.createNode("ErodeDilate", 1, group)
     lastNode.setScriptName("DilateFast1")
     lastNode.setLabel("DilateFast1")
     lastNode.setPosition(579, 428)
@@ -985,14 +985,14 @@ def createInstance(app,group):
 
     param = lastNode.getParam("userTextArea")
     if param is not None:
-        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">(size/5)*multi*2</font>")
+        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">-(size/5)*multi*2</font>")
         del param
 
     del lastNode
     # End of node "DilateFast1"
 
     # Start of node "DilateFast2"
-    lastNode = app.createNode("net.sf.cimg.CImgDilate", 2, group)
+    lastNode = app.createNode("ErodeDilate", 1, group)
     lastNode.setScriptName("DilateFast2")
     lastNode.setLabel("DilateFast2")
     lastNode.setPosition(803, 431)
@@ -1007,8 +1007,8 @@ def createInstance(app,group):
 
     param = lastNode.getParam("size")
     if param is not None:
-        param.setValue(2, 0)
-        param.setValue(2, 1)
+        param.setValue(-2, 0)
+        param.setValue(-2, 1)
         del param
 
     param = lastNode.getParam("expandRoD")
@@ -1018,7 +1018,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("userTextArea")
     if param is not None:
-        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">size/5</font>")
+        param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">-size/5</font>")
         del param
 
     del lastNode
@@ -1110,12 +1110,12 @@ def createInstance(app,group):
     param.setExpression("(thisGroup.size.get()/5)*2", False, 1)
     del param
     param = groupDilateFast1.getParam("size")
-    param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 0)
-    param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 1)
+    param.setExpression("-(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 0)
+    param.setExpression("-(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 1)
     del param
     param = groupDilateFast2.getParam("size")
-    param.setExpression("thisGroup.size.get()/5", False, 0)
-    param.setExpression("thisGroup.size.get()/5", False, 1)
+    param.setExpression("-thisGroup.size.get()/5", False, 0)
+    param.setExpression("-thisGroup.size.get()/5", False, 1)
     del param
 
     # Applies the callback once so the initial mapping matches screenType even though

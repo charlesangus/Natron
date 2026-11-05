@@ -8,10 +8,10 @@ Tolerance:
 
 `OCIOFileTransform` (`OCIOFileTransform.h`, plug-in ID `OCIOFileTransform`) applies a transform
 OpenColorIO reads from `file` (a LUT, a matrix, a CDL, a CLF...) to RGB, `direction` forward or
-inverse, with `interpolation` (nearest, linear, tetrahedral or best) and the Context variables.
-Alpha is left as it is. No file is an identity.
+inverse, with `interpolation` (nearest, linear, tetrahedral or best) and the context variables of the `ocioContext` group (`contextKey1`..`contextKey4` with
+`contextValue1`..`contextValue4`), which a `$VARIABLE` in the file name reads too. Alpha is left as it is. No file is an identity.
 
-- **CCC id.** For a `.ccc` or `.cdl`, `cccid` picks the correction; `cccid_menu` lists the
+- **CCC id.** For a `.ccc` or `.cdl`, `cccId` picks the correction; `cccIdMenu` lists the
   file's ids.
 - **Reload.** `reload` reads the file again through the project's colour management, so a file
   changed on disk is what the node applies.

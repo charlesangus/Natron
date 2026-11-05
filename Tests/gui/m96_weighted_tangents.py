@@ -262,13 +262,13 @@ try:
         yield ("sleep", SETTLE_MS)
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 2400)
         dpr = QApplication.instance().devicePixelRatio()
         report("NOTE device-pixel ratio %.2f" % dpr)
 
-        grade = create("net.sf.openfx.GradePlugin", 0, 0)
+        grade = create("Grade", 0, 0)
         white = grade.getParam("white")
         gt.require(white is not None, "the Grade has a white parameter")
         grade_label = grade.getLabel()

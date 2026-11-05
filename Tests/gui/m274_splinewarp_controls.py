@@ -302,15 +302,15 @@ try:
 
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 900)
-        checker = app.createNode("net.sf.openfx.CheckerBoardPlugin")
+        checker = app.createNode("CheckerBoard")
         require(checker is not None, "created a CheckerBoard",
-                gt.plugin_problem("net.sf.openfx.CheckerBoardPlugin"))
+                gt.plugin_problem("CheckerBoard"))
         checker.setPosition(0, 0)
-        shift = app.createNode("net.sf.openfx.TransformPlugin")
-        require(shift is not None, "created a Transform", gt.plugin_problem("net.sf.openfx.TransformPlugin"))
+        shift = app.createNode("Transform")
+        require(shift is not None, "created a Transform", gt.plugin_problem("Transform"))
         shift.setPosition(0, 300)
         warp = app.createNode("SplineWarp")
         require(warp is not None, "created a SplineWarp", gt.plugin_problem("SplineWarp"))

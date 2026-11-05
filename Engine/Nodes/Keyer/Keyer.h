@@ -35,8 +35,8 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_KEYER "net.sf.openfx.KeyerPlugin"
-#define PLUGIN_MAJOR_NATRON_KEYER 3
+#define PLUGINID_NATRON_KEYER "Keyer"
+#define PLUGIN_MAJOR_NATRON_KEYER 1
 
 #define kKeyerParamKeySource "keySource"
 #define kKeyerParamLuminanceMath "luminanceMath"
@@ -100,7 +100,7 @@ struct KeyerOp {
         .grouping = PLUGIN_GROUP_KEYER,
         .majorVersion = PLUGIN_MAJOR_NATRON_KEYER,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Keyer.png",
         .inputs = kKeyerInputs,
     };
 
@@ -123,7 +123,6 @@ struct KeyerOp {
                           const float* rgb);
 
     KnobHolder* holder = nullptr;
-    KnobStringWPtr subLabel;
     KnobChoiceWPtr keySource;
     KnobChoiceWPtr luminanceMath;
     KnobDoubleWPtr range;
@@ -158,6 +157,8 @@ public:
                   const RowIO& io) const;
 
 private:
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

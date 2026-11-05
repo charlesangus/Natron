@@ -42,7 +42,7 @@ void
 ConstantOp::createKnobs(KnobHolder* holder,
                         const KnobPagePtr& page)
 {
-    const int dims = opaque ? 3 : 4;
+    const int dims = 4;
     KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, EffectInstance::tr("Color").toStdString(), dims);
 
     knob->setName(kConstantParamColor);
@@ -62,11 +62,8 @@ ConstantOp::Params
 ConstantOp::bake(const KnobReader& reader) const
 {
     Params params;
-    const int dims = opaque ? 3 : 4;
 
-    params.rgba[0] = params.rgba[1] = params.rgba[2] = 0.f;
-    params.rgba[3] = opaque ? 1.f : 0.f;
-    for (int i = 0; i < dims; ++i) {
+    for (int i = 0; i < 4; ++i) {
         params.rgba[i] = knobValueAsFloat(reader.valueOr(color, 0., i));
     }
 

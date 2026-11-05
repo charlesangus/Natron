@@ -28,13 +28,13 @@ def createInstance(app,group):
 
     del lastNode
 
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     groupOutput1 = lastNode
 
     del lastNode
 
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("Source")
     lastNode.setLabel("Source")
     groupSource = lastNode

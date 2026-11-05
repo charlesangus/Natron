@@ -251,14 +251,12 @@ TEST_F(NativeKeyerTest, ControlsAndDefaults)
     expectTrapezoid(trapezoidOf(keyer), 0., 0.1, 0.9, 1.);
 
     // Luminance Math shows only for the Luminance key source, and the sublabel names the source.
-    KnobStringPtr subLabel = std::dynamic_pointer_cast<KnobString>(keyer->getKnobByName(kNatronOfxParamStringSublabelName));
-    ASSERT_TRUE(bool(subLabel));
     EXPECT_FALSE(math->getIsSecret());
-    EXPECT_EQ("Luminance", subLabel->getValue());
+    EXPECT_EQ("Luminance", keyer->getSublabel());
     for (int i = 1; i < 4; ++i) {
         ASSERT_TRUE(setKnobValue(keyer, kKeyerParamKeySource, sourceIds[i]));
         EXPECT_TRUE(math->getIsSecret()) << sourceIds[i];
-        EXPECT_EQ(sourceLabels[i], subLabel->getValue());
+        EXPECT_EQ(sourceLabels[i], keyer->getSublabel());
     }
     ASSERT_TRUE(setKnobValue(keyer, kKeyerParamKeySource, "luminance"));
     EXPECT_FALSE(math->getIsSecret());

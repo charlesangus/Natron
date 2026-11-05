@@ -60,7 +60,10 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -402,12 +405,12 @@ TEST_F(FrameGraphBuild, ChainOfFiftyWalksEachNodeOnce)
     const AppInstancePtr app = getApp();
     std::vector<NodePtr> chain;
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "ChainConstant");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "ChainConstant");
     ASSERT_TRUE(bool(constant));
     ASSERT_NO_FATAL_FAILURE(setColor(constant, "color", 0.5, 0.5, 0.5, 1.));
     chain.push_back(constant);
     for (int i = 1; i < 50; ++i) {
-        NodePtr grade = createNamedNode(app, PLUGINID_OFX_GRADE, "ChainGrade" + std::to_string(i));
+        NodePtr grade = createNamedNode(app, PLUGINID_NATRON_GRADE, "ChainGrade" + std::to_string(i));
         ASSERT_TRUE(bool(grade));
         ASSERT_TRUE(grade->connectInput(chain.back(), 0));
         ASSERT_NO_FATAL_FAILURE(setGradeMultiply(grade, 1.01));
@@ -445,12 +448,12 @@ TEST_F(FrameGraphBuild, DeepChainRequestPassFitsAPoolThreadStack)
     std::vector<NodePtr> chain;
 
     const std::chrono::steady_clock::time_point buildStart = std::chrono::steady_clock::now();
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "DeepConstant");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "DeepConstant");
     ASSERT_TRUE(bool(constant));
     ASSERT_NO_FATAL_FAILURE(setColor(constant, "color", 0.5, 0.5, 0.5, 1.));
     chain.push_back(constant);
     for (int i = 1; i <= nGrades; ++i) {
-        NodePtr grade = createNamedNode(app, PLUGINID_OFX_GRADE, "DeepGrade" + std::to_string(i));
+        NodePtr grade = createNamedNode(app, PLUGINID_NATRON_GRADE, "DeepGrade" + std::to_string(i));
         ASSERT_TRUE(bool(grade));
         ASSERT_TRUE(grade->connectInput(chain.back(), 0));
         ASSERT_NO_FATAL_FAILURE(setGradeMultiply(grade, 1.01));
@@ -552,14 +555,14 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr previous = createNamedNode(app, PLUGINID_OFX_CONSTANT, "LadderRoot");
+    NodePtr previous = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "LadderRoot");
     ASSERT_TRUE(bool(previous));
     ASSERT_NO_FATAL_FAILURE(setColor(previous, "color", 0.25, 0.5, 0.75, 1.));
     std::vector<NodePtr> joins;
     for (int i = 0; i < 20; ++i) {
         const std::string suffix = std::to_string(i);
-        NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderLeft" + suffix);
-        NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderRight" + suffix);
+        NodePtr left = createNamedNode(app, PLUGINID_NATRON_GRADE, "LadderLeft" + suffix);
+        NodePtr right = createNamedNode(app, PLUGINID_NATRON_GRADE, "LadderRight" + suffix);
         NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "LadderJoin" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
@@ -573,7 +576,7 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
         joins.push_back(join);
         previous = join;
     }
-    NodePtr bottom = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderBottom");
+    NodePtr bottom = createNamedNode(app, PLUGINID_NATRON_GRADE, "LadderBottom");
     ASSERT_TRUE(bool(bottom));
     ASSERT_NO_FATAL_FAILURE(setGradeMultiply(bottom, 1.01));
     ASSERT_TRUE(bottom->connectInput(previous, 0));
@@ -598,7 +601,7 @@ TEST_F(FrameGraphBuild, FrameWindowOverAnOffsetHonoursThePreFetchCap)
     const AppInstancePtr app = getApp();
     const double time = 10.;
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "BlendConstant");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "BlendConstant");
     NodePtr offset = createNamedNode(app, kNatronTestFrameWindowPluginID, "BlendOffset");
     NodePtr blend = createNamedNode(app, kNatronTestFrameWindowPluginID, "BlendFrames");
     ASSERT_TRUE(bool(constant));
@@ -675,10 +678,10 @@ TEST_F(FrameGraphBuild, DisabledNodeIsASingleAliasEdge)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "DisabledConstant");
-    NodePtr upper = createNamedNode(app, PLUGINID_OFX_GRADE, "DisabledUpper");
-    NodePtr disabled = createNamedNode(app, PLUGINID_OFX_GRADE, "DisabledMiddle");
-    NodePtr lower = createNamedNode(app, PLUGINID_OFX_GRADE, "DisabledLower");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "DisabledConstant");
+    NodePtr upper = createNamedNode(app, PLUGINID_NATRON_GRADE, "DisabledUpper");
+    NodePtr disabled = createNamedNode(app, PLUGINID_NATRON_GRADE, "DisabledMiddle");
+    NodePtr lower = createNamedNode(app, PLUGINID_NATRON_GRADE, "DisabledLower");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(upper));
     ASSERT_TRUE(bool(disabled));
@@ -717,10 +720,10 @@ TEST_F(FrameGraphBuild, ConcatenatedTransformsSkipTheUpstreamTransform)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "TransformConstant");
-    NodePtr first = createNamedNode(app, PLUGINID_OFX_TRANSFORM, "TransformFirst");
-    NodePtr second = createNamedNode(app, PLUGINID_OFX_TRANSFORM, "TransformSecond");
-    NodePtr grade = createNamedNode(app, PLUGINID_OFX_GRADE, "TransformGrade");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "TransformConstant");
+    NodePtr first = createNamedNode(app, PLUGINID_NATRON_TRANSFORM, "TransformFirst");
+    NodePtr second = createNamedNode(app, PLUGINID_NATRON_TRANSFORM, "TransformSecond");
+    NodePtr grade = createNamedNode(app, PLUGINID_NATRON_GRADE, "TransformGrade");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(first));
     ASSERT_TRUE(bool(second));
@@ -760,9 +763,9 @@ TEST_F(FrameGraphBuild, MergeMaskInputIsAnEdge)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr background = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskBackground");
-    NodePtr foreground = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskForeground");
-    NodePtr matte = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskMatte");
+    NodePtr background = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "MaskBackground");
+    NodePtr foreground = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "MaskForeground");
+    NodePtr matte = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "MaskMatte");
     NodePtr merge = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "MaskMerge");
     ASSERT_TRUE(bool(background));
     ASSERT_TRUE(bool(foreground));
@@ -810,10 +813,10 @@ TEST_F(FrameGraphBuild, ExpressionDependencyIsNotAnEdge)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "ExprConstant");
-    NodePtr grade = createNamedNode(app, PLUGINID_OFX_GRADE, "ExprGrade");
-    NodePtr otherConstant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "ExprOtherConstant");
-    NodePtr otherGrade = createNamedNode(app, PLUGINID_OFX_GRADE, "ExprOtherGrade");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "ExprConstant");
+    NodePtr grade = createNamedNode(app, PLUGINID_NATRON_GRADE, "ExprGrade");
+    NodePtr otherConstant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "ExprOtherConstant");
+    NodePtr otherGrade = createNamedNode(app, PLUGINID_NATRON_GRADE, "ExprOtherGrade");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(otherConstant));

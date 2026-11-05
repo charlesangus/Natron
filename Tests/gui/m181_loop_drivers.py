@@ -37,10 +37,10 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 280
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-BLUR_ID = "net.sf.cimg.CImgBlur"
-BEGIN_ID = "fr.natron.LoopBegin"
-END_ID = "fr.natron.LoopEnd"
+CONSTANT_ID = "Constant"
+BLUR_ID = "Blur"
+BEGIN_ID = "LoopBegin"
+END_ID = "LoopEnd"
 DRIVE_ITEM = "Drive from loop"
 SET_KEY_ITEM = "Set Key"
 STALE_WARNING = "no loop around this node sets"
@@ -386,7 +386,7 @@ try:
         if "v" not in _py_viewer:
             viewer = app.getNode("Viewer1")
             if viewer is None:
-                viewer = app.createNode("fr.inria.built-in.Viewer")
+                viewer = app.createNode("Viewer")
             require(viewer is not None, "a viewer exists to move the timeline")
             py_viewer = app.getViewer(viewer.getScriptName())
             require(py_viewer is not None, "the viewer has a Python handle")

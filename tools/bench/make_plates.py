@@ -67,7 +67,7 @@ def report(stem, files, seconds):
 
 
 def image(index):
-    cb = make("net.sf.openfx.CheckerBoardPlugin")
+    cb = make("CheckerBoard")
     set_choice(cb, "extent", "project")
     color = param(cb, "color0")
     for f in range(1, FRAMES + 1):
@@ -89,8 +89,7 @@ def pin_output_space(writer):
     working = param(writer, "ocioWorkingSpace").get()
     if not working:
         raise RuntimeError("%s has no working colourspace to pin the output to" % writer.getScriptName())
-    param(writer, "ocioOutputSpace").set(working)
-    param(writer, "ocioOutputSpaceSet").set(True)
+    param(writer, "colorspace").set(working)
 
 
 def render(writer, stem, files):
@@ -138,10 +137,10 @@ def deep(width, height):
     param(z, "point1").set(float(width), float(height))
     param(z, "color0").set(1.0, 1.0, 1.0, 1.0)
     param(z, "color1").set(100.0, 100.0, 100.0, 1.0)
-    d = make("fr.natron.DeepFromImage")
+    d = make("DeepFromImage")
     d.connectInput(0, src)
     d.connectInput(1, z)
-    w = make("fr.natron.DeepWrite")
+    w = make("DeepWrite")
     param(w, "filename").set(os.path.join(PLATES, stem + ".####.exr"))
     w.connectInput(0, d)
     render(w, stem, files)

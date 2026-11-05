@@ -178,22 +178,22 @@ try:
         os.makedirs(OUT_DIR, exist_ok=True)
         for stale in glob.glob(os.path.join(OUT_DIR, "fg_*.png")):
             os.remove(stale)
-        constant = app.createNode("net.sf.openfx.ConstantPlugin")
-        require(constant is not None, "create a Constant", gt.plugin_problem("net.sf.openfx.ConstantPlugin"))
+        constant = app.createNode("Constant")
+        require(constant is not None, "create a Constant", gt.plugin_problem("Constant"))
         constant.setPosition(200, 100)
         constant.getParam("color").set(0.1, 0.8, 0.1, 1.0)
-        blur = app.createNode("net.sf.cimg.CImgBlur")
-        require(blur is not None, "create a Blur", gt.plugin_problem("net.sf.cimg.CImgBlur"))
+        blur = app.createNode("Blur")
+        require(blur is not None, "create a Blur", gt.plugin_problem("Blur"))
         blur.setPosition(200, 200)
         blur.connectInput(0, constant)
         size = blur.getParam("size")
         if size is not None:
             size.set(150, 150)
-        grade = app.createNode("net.sf.openfx.GradePlugin")
-        require(grade is not None, "create a Grade", gt.plugin_problem("net.sf.openfx.GradePlugin"))
+        grade = app.createNode("Grade")
+        require(grade is not None, "create a Grade", gt.plugin_problem("Grade"))
         grade.setPosition(200, 300)
         grade.connectInput(0, blur)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         viewer.setPosition(500, 400)
         viewer.connectInput(0, grade)
         state.update(constant=constant, blur=blur, grade=grade, viewer=viewer)
@@ -380,7 +380,7 @@ try:
 
     # The viewer widget only exists once a Viewer node does.
     if app.getNode("Viewer1") is None:
-        app.createNode("fr.inria.built-in.Viewer")
+        app.createNode("Viewer")
     gt.run(steps())
 except Exception:
     try:

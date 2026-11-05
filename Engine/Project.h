@@ -784,6 +784,10 @@ Q_SIGNALS:
 
     void projectLayersChanged();
 
+    // The colourspaces a Read or Write following the project's defaults takes may have changed:
+    // the config was loaded again or a file default was edited.
+    void fileColorSpacesChanged();
+
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                               const std::string& ocioSource,

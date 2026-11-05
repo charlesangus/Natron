@@ -33,7 +33,7 @@ several stops over 1 within the model's range.
 |---|---|---|
 | `scale` | 2x | The factor, 2x or 4x |
 | `model` | the registry's default `upscale-2x` model | The model; `upscale-2x` models first, then `upscale-4x` |
-| `modelColourspace` | follows the model | The OpenColorIO space the model runs in |
+| `modelColourspace` | Project default, which follows the model | The OpenColorIO space the model runs in |
 | `alphaFilter` | Cubic | How alpha and unchecked channels are enlarged: Cubic or Lanczos |
 | `tileSize` | 0 | Tile size in Source pixels; 0 is the model's own size, or 512 |
 

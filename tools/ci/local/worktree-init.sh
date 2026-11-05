@@ -90,6 +90,7 @@ assets_current() {
         [[ -f "${ASSETS_DIR}/${bundle}.ofx.bundle/Contents/Linux-x86-64/${bundle##*/}.ofx" ]] || return 1
     done
     [[ -f "${ASSETS_DIR}/rawspeed/lib/librawspeed.a" && -f "${ASSETS_DIR}/rawspeed/share/rawspeed/cameras.xml" ]] || return 1
+    [[ -f "${ASSETS_DIR}/lensfun/lib/liblensfun.a" && -d "${ASSETS_DIR}/lensfun/share/lensfun/version_2" ]] || return 1
     [[ -f "${ASSETS_DIR}/onnxruntime/include/onnxruntime_c_api.h" ]] || return 1
     "${FETCH_ASSETS}" --check-pins > /dev/null 2>&1 || return 1
     return 0

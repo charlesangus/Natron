@@ -5486,8 +5486,10 @@ KnobHelper::cloneOneCurve(KnobI* other,
             thisCurve->clone(*otherCurve, offset, range);
         }
     }
-    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension);
-    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension);
+    // Each side's own GUI curve, as for the internal curves: through a master, a slaved source
+    // would hand back the GUI curve being refreshed, and the clone would leave it stale.
+    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension, true);
+    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension, true);
     if (guiCurve) {
         if (otherGuiCurve) {
             if (!range) {
@@ -5549,8 +5551,8 @@ KnobHelper::cloneOneCurveAndCheckIfChanged(KnobI* other,
         cloningCurveChanged |= thisCurve->cloneAndCheckIfChanged(*otherCurve);
     }
 
-    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension);
-    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension);
+    CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension, true);
+    CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension, true);
     // A source with no curve at all cannot animate: the internal curve above is left as it is, and so is
     // the GUI curve, which must keep mirroring it.
     if (guiCurve) {
@@ -8199,9 +8201,12 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
             hashes[i] = h.finalize();
             continue;
         }
-        appendValueContentHash(h, i);
-
+        // An animated dimension reads its curve, never its static value, and a project saves the
+        // curve's value in place of the static one, so hashing it would change the hash on reload.
         CurvePtr curve = _imp->curves[i];
+        const bool animated = curve && curve->isAnimated();
+        appendValueContentHash(h, i, !animated);
+
         h.appendBool(bool(curve));
         if (curve) {
             curve->appendContentHash(h);
@@ -8339,6 +8344,7 @@ struct KnobHolder::KnobHolderPrivate
     bool knobsFrozen;
     DockablePanelI* settingsPanel;
     std::atomic<U64> knobsContentGeneration { 0 };
+    std::atomic<U64> knobListGeneration { 0 };
     mutable QMutex rfvDeclarationsMutex; // protects rfvDeclarations
     RFVDeclarationsConstPtr rfvDeclarations;
 
@@ -8487,6 +8493,7 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
 }
@@ -8511,6 +8518,7 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
 }
@@ -8523,6 +8531,7 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
     for (KnobsVec::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         if (it->get() == knob) {
             _imp->knobs.erase(it);
+            _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
             bumpKnobsContentGeneration(knob);
             KnobHelper::moveHashedMetadataSourcesGeneration();
 
@@ -8535,6 +8544,12 @@ U64
 KnobHolder::getKnobsContentGeneration() const
 {
     return _imp->knobsContentGeneration.load(std::memory_order_acquire);
+}
+
+U64
+KnobHolder::getKnobListGeneration() const
+{
+    return _imp->knobListGeneration.load(std::memory_order_acquire);
 }
 
 void
@@ -8633,6 +8648,7 @@ KnobHolder::deleteKnob(KnobI* knob,
         for (KnobsVec::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
             if (it2->get() == knob) {
                 _imp->knobs.erase(it2);
+                _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
                 break;
             }
         }

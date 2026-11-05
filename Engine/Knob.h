@@ -2248,10 +2248,11 @@ protected:
     }
 
     /**
-     * @brief Appends the static value of the dimension and anything else the value type keeps
-     * per dimension, as stored by this knob (never through a master).
+     * @brief Appends the static value of the dimension, unless withStaticValue is false, and
+     * anything else the value type keeps per dimension, as stored by this knob (never through a
+     * master).
      **/
-    virtual void appendValueContentHash(ContentHasher& h, int dimension) const = 0;
+    virtual void appendValueContentHash(ContentHasher& h, int dimension, bool withStaticValue) const = 0;
 
     /**
      * @brief Appends the data a derived knob keeps for the dimension beside its value, curve
@@ -2905,7 +2906,7 @@ protected:
 
     virtual void resetExtraToDefaultValue(int /*dimension*/) {}
 
-    virtual void appendValueContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+    virtual void appendValueContentHash(ContentHasher& h, int dimension, bool withStaticValue) const OVERRIDE FINAL;
 
 private:
 
@@ -3528,6 +3529,12 @@ public:
      * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
      **/
     U64 getKnobsContentGeneration() const;
+
+    /**
+     * @brief Moves whenever a knob is added to or removed from getKnobs(), and on nothing else:
+     * reordering and value changes leave it alone. MT-safe.
+     **/
+    U64 getKnobListGeneration() const;
 
     /**
      * @brief The Reverse-Flow Variables the holder declares, as RFV::refreshDeclarationSnapshot()

@@ -49,12 +49,14 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
+#include "Gui/SceneTransformTarget.h"
 #include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_USING
@@ -563,4 +565,85 @@ TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)
     });
     _viewport->refreshTransformHandles();
     EXPECT_FALSE(_viewport->getRenderer().hasTransformHandles());
+}
+
+// Which node the viewer's transform handles edit for a prim of a cube read through a USDEditTransform.
+class SceneTransformOwnerTest
+    : public ::testing::Test {
+protected:
+    void SetUp() override
+    {
+        _app = appPTR->getTopLevelInstance();
+        ASSERT_TRUE(bool(_app));
+        _app->getProject()->reset(false, true);
+        CreateNodeArgs cubeArgs(PLUGINID_NATRON_USDCUBE, _app->getProject());
+        _cube = _app->createNode(cubeArgs);
+        CreateNodeArgs transformArgs(PLUGINID_NATRON_USDEDITTRANSFORM, _app->getProject());
+        _transform = _app->createNode(transformArgs);
+        ASSERT_TRUE(_cube && _transform);
+        KnobString* primPath = dynamic_cast<KnobString*>(_cube->getKnobByName(kSceneParamPrimPath).get());
+        ASSERT_TRUE(primPath != NULL);
+        primPath->setValue(std::string("/Box"));
+        ASSERT_TRUE(_transform->connectInput(_cube, 0));
+    }
+
+    void TearDown() override
+    {
+        SceneQueryPool::instance().releaseIdle();
+        if (_app) {
+            _app->getProject()->reset(false, true);
+        }
+        QThreadPool::globalInstance()->waitForDone();
+    }
+
+    void setPattern(const std::string& pattern)
+    {
+        KnobString* knob = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(pattern);
+    }
+
+    void setMode(const char* id)
+    {
+        KnobChoice* mode = dynamic_cast<KnobChoice*>(_transform->getKnobByName(kUSDEditTransformParamMode).get());
+
+        ASSERT_TRUE(mode != NULL);
+        mode->setValueFromID(id, 0);
+    }
+
+    void evaluate()
+    {
+        ScenePayload payload;
+        std::string error;
+
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  _transform->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+            << error;
+    }
+
+    AppInstancePtr _app;
+    NodePtr _cube, _transform;
+};
+
+TEST_F(SceneTransformOwnerTest, AReplaceTransformOwnsThePrimsItsTypePredicateSelects)
+{
+    setMode("replace");
+    setPattern("//{isa:Mesh}");
+    evaluate();
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+
+    // A predicate the mesh fails leaves the cube's own transform as the owner.
+    setPattern("//{isa:Camera}");
+    evaluate();
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
+
+    // A pattern edited since the last evaluation is judged on the scene that evaluation read.
+    setPattern("/Box{isa:Mesh}");
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+
+    // An Append-mode transform composes over the cube's, which stays the owner.
+    setMode("append");
+    evaluate();
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
 }

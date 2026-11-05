@@ -1,9 +1,11 @@
 # USDProjectUV
 
 Writes texture coordinates on the meshes of its Scene input that Prim Pattern
-names, by projecting their points through a camera.
-The pattern is a list of absolute prim paths separated by spaces, whose names may
-use `*` and `?`, as in USDEditTransform. The result is a `faceVarying` primvar
+selects, by projecting their points through a camera.
+The pattern is a USD path expression: absolute prim paths separated by spaces,
+whose names may use `*` and `?` within one level (`/World/Geo/*`), `//` for any
+depth (`/World//*`, `//*Card*`), `{isa:Mesh}` and the other predicates, and `+`,
+`&`, `-` and `~` to combine them. The result is a `faceVarying` primvar
 named by Primvar Name (`st` by default, which `UsdPreviewSurface` textures read),
 indexed per face vertex, authored as an over on each mesh. Texture it with a
 USDEmissiveMaterial, unlit as USDProject3D is, or a USDMaterial. The UVs are per vertex, so a projection onto coarse geometry warps
@@ -46,7 +48,8 @@ Use Frame Hold projects through the camera as it is at Frame Hold on every frame
 the meshes still move. When a mesh or the (unheld) camera moves, the UVs are a
 time sample at every frame of the project range; otherwise a default value.
 
-A pattern that matches nothing passes the scene through with a warning. Matched
+A pattern that does not parse sets a node error. A pattern that matches nothing
+passes the scene through with a warning. Matched
 prims that are not geometry (xforms, scopes) are skipped; matched geometry that
 is not a mesh, and meshes with invalid topology, are named in a warning. The
 node's knobs are not animatable.

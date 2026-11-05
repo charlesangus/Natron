@@ -2393,6 +2393,13 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool ret = curve->addKeyFrame(key);
 
     if (!useGuiCurve) {
+        // A slaved knob writes the master's curve, but its own values and key removals stay on its own
+        // curve; a holder that mirrors the slave back into the master (the roto context does, for the
+        // selected item) would otherwise copy back a curve missing this key.
+        CurvePtr ownCurve = getCurve(view, dimension, true);
+        if (ownCurve && (ownCurve != curve)) {
+            ownCurve->addKeyFrame(key);
+        }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
     }
@@ -3297,20 +3304,23 @@ appendKnobValueToContentHash(ContentHasher& h,
 template <typename T>
 void
 Knob<T>::appendValueContentHash(ContentHasher& h,
-                                int dimension) const
+                                int dimension,
+                                bool withStaticValue) const
 {
-    T value;
-    {
-        QMutexLocker k(&_valueMutex);
-        value = _values[dimension];
-    }
     T mini, maxi;
     {
         QReadLocker k(&_minMaxMutex);
         mini = _minimums[dimension];
         maxi = _maximums[dimension];
     }
-    appendKnobValueToContentHash(h, value);
+    if (withStaticValue) {
+        T value;
+        {
+            QMutexLocker k(&_valueMutex);
+            value = _values[dimension];
+        }
+        appendKnobValueToContentHash(h, value);
+    }
     appendKnobValueToContentHash(h, mini);
     appendKnobValueToContentHash(h, maxi);
 }

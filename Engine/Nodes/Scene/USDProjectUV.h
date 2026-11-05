@@ -34,6 +34,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -60,7 +61,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Writes texture coordinates on the meshes a prim pattern names in its scene by projecting
+ * @brief Writes texture coordinates on the meshes a prim pattern (a USD path expression) selects in its scene by projecting
  * their points through a camera: in Perspective mode a point's UV is
  * where it lands in the camera's aperture, conformed to the Format by Fit Mode, (0, 0) at the
  * bottom left and (1, 1) at the top right. Planar, Spherical and Cylindrical map the points in
@@ -101,8 +102,8 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDPROJECTUV,
         .label = "USDProjectUV",
-        .description = "Write texture coordinates on the meshes a pattern names (paths, with * and ? wildcards) in the "
-                       "input scene by projecting their points through a camera. The camera "
+        .description = "Write texture coordinates on the meshes a pattern selects (a USD path expression: paths with * and ? "
+                       "wildcards, // for any depth, set operators) in the input scene by projecting their points through a camera. The camera "
                        "comes from the Camera input, or from the scene when that input is not connected. The UVs are a "
                        "faceVarying primvar (st by default) that any renderer reads; texture them with a USDMaterial. "
                        "They are per vertex, so a projection onto coarse geometry warps between vertices. A moving "
@@ -162,7 +163,7 @@ private:
     std::unique_ptr<Implementation> _imp;
 
     SceneCameraPathKnobs _camera;
-    KnobStringWPtr _primPattern;
+    PrimSelector _primPattern;
     KnobChoiceWPtr _projection;
     KnobChoiceWPtr _plane;
     KnobChoiceWPtr _projectOn;

@@ -53,12 +53,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 bool
-isBlank(const std::string& s)
-{
-    return s.find_first_not_of(" \t\r\n") == std::string::npos;
-}
-
-bool
 attributeMightVary(const PXR_NS::UsdAttribute& attribute)
 {
     return attribute && attribute.ValueMightBeTimeVarying();
@@ -449,15 +443,9 @@ USDProjectUV::initializeKnobs()
                       "not have yet is kept, with a warning, and the scene passes through unchanged until a camera at "
                       "that path reaches the node."));
 
-    KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kUSDProjectUVParamPrimPattern);
-    primPattern->setHintToolTip(tr("The meshes to project onto: absolute prim paths separated by spaces, whose names may use * "
-                                   "(any run of characters) and ? (any one character), such as /World/Geo/*. Matched prims "
-                                   "that are not geometry are skipped; matched geometry that is not a mesh is named in a "
-                                   "warning."));
-    primPattern->setAnimationEnabled(false);
-    page->addKnob(primPattern);
-    _primPattern = primPattern;
+    _primPattern.create(this, page, kUSDProjectUVParamPrimPattern, tr("Prim Pattern"),
+                        tr("The meshes to project onto. Matched prims that are not geometry are skipped; matched "
+                           "geometry that is not a mesh is named in a warning."));
 
     KnobChoicePtr projection = createKnob<KnobChoice>(tr("Projection"));
     projection->setName(kUSDProjectUVParamProjection);
@@ -764,7 +752,6 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     const bool cameraInput = bool(getInput(1));
     const ScenePayload cameraScene = cameraInput ? args.getInputScene(1) : upstream;
 
-    KnobStringPtr patternKnob = _primPattern.lock();
     KnobChoicePtr projectionKnob = _projection.lock();
     KnobChoicePtr planeKnob = _plane.lock();
     KnobChoicePtr projectOnKnob = _projectOn.lock();
@@ -777,7 +764,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     KnobChoicePtr fitKnob = _fitMode.lock();
     KnobBoolPtr useFrameHoldKnob = _useFrameHold.lock();
     KnobDoublePtr frameHoldKnob = _frameHold.lock();
-    if (!patternKnob || !projectionKnob || !planeKnob || !projectOnKnob || !frustumCullingKnob || !invertUKnob || !invertVKnob
+    if (!projectionKnob || !planeKnob || !projectOnKnob || !frustumCullingKnob || !invertUKnob || !invertVKnob
         || !uScaleKnob || !vScaleKnob || !primvarKnob || !fitKnob || !useFrameHoldKnob || !frameHoldKnob) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
@@ -785,7 +772,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     }
 
     Settings settings;
-    settings.pattern = patternKnob->getValue();
+    settings.pattern = _primPattern.getExpression();
     settings.cameraPath = _camera.getPath();
     settings.projection = (ProjectionEnum)std::clamp(projectionKnob->getValue(), (int)eProjectionOff, (int)eProjectionCylindrical);
     settings.plane = (PlaneEnum)std::clamp(planeKnob->getValue(), (int)ePlaneXY, (int)ePlaneZX);
@@ -803,7 +790,12 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     settings.useFrameHold = useFrameHoldKnob->getValue();
     settings.frameHold = frameHoldKnob->getValue();
 
-    if ((settings.projection == eProjectionOff) || upstream.isEmpty() || isBlank(settings.pattern)) {
+    if (!PrimSelector::validate(settings.pattern, errorMessage)) {
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
+    }
+    if ((settings.projection == eProjectionOff) || upstream.isEmpty() || PrimSelector::isBlank(settings.pattern)) {
         *outputScene = upstream;
         clearPersistentMessage(false);
 
@@ -936,7 +928,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
         std::vector<PXR_NS::SdfPath> found;
-        if (computed->missingCamera.empty() && !SceneNodeAuthoring::matchPrims(stage, settings.pattern, &found, errorMessage)) {
+        if (computed->missingCamera.empty() && !SceneOps::selectPrims(stage, settings.pattern, &found, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

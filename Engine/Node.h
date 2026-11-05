@@ -187,6 +187,12 @@ public:
     void fromSerialization(const Serialization::NodeSerialization& serialization,
                            bool updateKnobGui = false);
 
+    /**
+     * @brief Whether fromSerialization() is restoring the knobs, so a value change comes from the
+     * saved state rather than an edit. Main thread only.
+     **/
+    bool isRestoringKnobs() const;
+
     enum PresetApplyModeEnum {
         // A preset file. Knobs it leaves out are reset. The label, the sublabel, the disable
         // switch, a reader's or writer's file paths, the roto shapes and tracks and the node's
@@ -1861,7 +1867,8 @@ public:
      * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
      * the draft flag, which is settled here for every node reached. The nodes whose settings panel
      * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown. Main thread only.
+     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
+     * only.
      **/
     void refreshShownDownstreamInputRelatedData();
 

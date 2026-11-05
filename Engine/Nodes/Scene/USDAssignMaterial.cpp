@@ -184,8 +184,8 @@ USDAssignMaterial::initializeKnobs()
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
     primPattern->setName(kUSDAssignMaterialParamPrimPattern);
-    primPattern->setHintToolTip(tr("The prims to bind the material to: absolute prim paths separated by spaces, whose names "
-                                   "may use * (any run of characters) and ? (any one character), such as /Asset/geo/*. "
+    primPattern->setHintToolTip(tr("The prims to bind the material to: a USD path expression, such as /Asset/geo/* or "
+                                   "/World//*Light*, where // spans any depth and spaces join several paths. "
                                    "Their descendants take the material too, unless their own binding is stronger."));
     primPattern->setAnimationEnabled(false);
     primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
@@ -347,7 +347,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             }
         }
         std::vector<PXR_NS::SdfPath> found;
-        if (!SceneNodeAuthoring::matchPrims(stage, pattern, &found, errorMessage)) {
+        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

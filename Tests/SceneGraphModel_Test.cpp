@@ -423,7 +423,8 @@ TEST(SceneGraphModel, ALargeRootPopulatesQuickly)
 
     EXPECT_EQ(SceneGraphModel::kFetchBatchSize, model.rowCount());
     EXPECT_TRUE(model.canFetchMore(QModelIndex()));
-    EXPECT_LT(elapsed, 50) << "populating the root of " << kPrims << " prims took " << elapsed << " ms";
+    // Debug builds on loaded runners take tens of ms; an eager walk of the stage takes seconds.
+    EXPECT_LT(elapsed, 500) << "populating the root of " << kPrims << " prims took " << elapsed << " ms";
 
     // A prim far down the list is found by reading the rows up to it.
     const QModelIndex last = model.indexOfPath(QString::fromUtf8("/P099999"), true);
@@ -461,7 +462,7 @@ TEST(SceneGraphPrimWalk, ASliceEndsInsideALongChildList)
     timer.start();
     stepWalk(*source, &walk, 8, INT_MAX, &found);
     const qint64 elapsed = timer.elapsed();
-    EXPECT_LT(elapsed, 50) << "one slice over " << kChildren << " children took " << elapsed << " ms";
+    EXPECT_LT(elapsed, 500) << "one slice over " << kChildren << " children took " << elapsed << " ms";
 
     const int slices = finishWalk(*source, &walk, 0, &found);
     EXPECT_GT(slices, 1);

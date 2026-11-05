@@ -47,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class RotoCurveContextHostState;
 class RotoCurveInteract;
 class RotoPaintInteract;
 
@@ -157,6 +158,8 @@ private:
     BezierPtr _curve;
     int _index;
     double _t;
+    std::shared_ptr<RotoCurveContextHostState> _hostBefore;
+    std::shared_ptr<RotoCurveContextHostState> _hostAfter;
 };
 
 
@@ -201,6 +204,7 @@ private:
 
     bool _firstRedoCalled;
     std::list<CurveDesc > _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 
@@ -230,6 +234,7 @@ private:
     RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     std::list<RemovedCurve> _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 class AddStrokeUndoCommand
@@ -405,6 +410,7 @@ private:
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 class SmoothCuspUndoCommand
@@ -552,6 +558,83 @@ private:
     double _fromx, _fromy;
     double _tox, _toy;
     double _time;
+};
+
+// The point tool's click: a finished open curve of one control point.
+class MakePointCurveUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(MakePointCurveUndoCommand)
+
+public:
+    MakePointCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                              double x,
+                              double y,
+                              double time);
+
+    virtual ~MakePointCurveUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    BezierPtr getCurve() const
+    {
+        return _curve;
+    }
+
+private:
+    bool _firstRedoCalled;
+    RotoCurveInteractWPtr _roto;
+    RotoLayerPtr _parentLayer;
+    int _indexInLayer;
+    BezierPtr _curve;
+    double _x, _y;
+    double _time;
+};
+
+/**
+ * @brief Links control points to a track, or unlinks them with or without baking. Undo puts back
+ * every point of the curves involved, since baking keys whole curves.
+ **/
+class TrackLinkUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(TrackLinkUndoCommand)
+
+public:
+    enum ActionEnum {
+        eActionLink,
+        eActionUnlink,
+        eActionUnlinkAndBake
+    };
+
+    // A control point by curve and index.
+    typedef std::pair<BezierPtr, int> PointRef;
+
+    TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
+                         const std::list<PointRef>& points,
+                         ActionEnum action,
+                         const TrackMarkerPtr& marker,
+                         double time);
+
+    virtual ~TrackLinkUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    struct CurveState {
+        BezierPtr curve;
+        std::list<BezierCPPtr> points, before, after;
+    };
+
+    void restore(bool after);
+
+    RotoCurveInteractWPtr _roto;
+    std::list<PointRef> _points;
+    ActionEnum _action;
+    TrackMarkerPtr _marker;
+    double _time;
+    bool _done;
+    std::list<CurveState> _curves;
 };
 
 struct RotoObjectSelectSession;

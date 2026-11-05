@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <QPointF>
 #include <QRectF>
@@ -129,6 +130,14 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
+#define kRotoUIParamOpenBezierToolButtonAction "OpenBezierTool"
+#define kRotoUIParamOpenBezierToolButtonActionLabel "Open Bezier Tool"
+#define kRotoUIParamOpenBezierToolButtonActionHint "Draw an open Bezier. Press Escape or pick another tool to end it"
+
+#define kRotoUIParamPointToolButtonAction "PointTool"
+#define kRotoUIParamPointToolButtonActionLabel "Point Tool"
+#define kRotoUIParamPointToolButtonActionHint "Each click makes a curve of a single point"
+
 #define kRotoUIParamResetCloneOffset "resetCloneOffsetButton"
 #define kRotoUIParamResetCloneOffsetLabel "Reset Clone Offset"
 #define kRotoUIParamResetCloneOffsetHint "Reset the transform applied before cloning to identity"
@@ -158,6 +167,18 @@ struct PluginActionShortcut;
 
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeather "removeItemsFeatherAction"
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel "Remove Selected item(s) Feather"
+
+#define kRotoUIParamRightClickMenuActionLinkToTrack "linkToTrack"
+#define kRotoUIParamRightClickMenuActionLinkToTrackLabel "Link To Track..."
+#define kRotoUIParamRightClickMenuActionLinkToTrackHint "Makes the selected control points follow a track, keeping their offsets from the track at the current frame"
+
+#define kRotoUIParamRightClickMenuActionUnlinkTrack "unlinkTrack"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackLabel "Unlink Track"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackHint "Stops the selected control points following their track; their own animation applies again"
+
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBake "unlinkTrackAndBake"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeLabel "Unlink Track And Bake"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeHint "Stops the selected control points following their track, keying them where the track took them at every frame of its keyed range"
 
 #define kRotoUIParamRightClickMenuActionNudgeLeft "nudgeLeftAction"
 #define kRotoUIParamRightClickMenuActionNudgeLeftLabel "Nudge Left"
@@ -260,6 +281,7 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    eEventStateDraggingCorrespondence,
     // A host's two-point line tool (eRotoToolDrawLine) is dragging the line's end.
     eEventStateBuildingLine,
 };
@@ -290,6 +312,7 @@ enum RotoRoleEnum {
     eRotoRoleCloneBrush,
     eRotoRoleEffectBrush,
     eRotoRoleMergeBrush,
+    eRotoRoleCorrespondence,
     eRotoRoleObjectSelect
 };
 
@@ -325,7 +348,10 @@ enum RotoToolEnum {
     eRotoToolDodge,
     eRotoToolBurn,
 
+    eRotoToolDrawPoint,
+    eRotoToolCorrespondence,
     eRotoToolObjectSelect,
+
     // A two-point open curve drawn by a click and drag. The curve interact leaves it to the host's
     // interact, through the paint hooks (AutoStraighten's guide lines).
     eRotoToolDrawLine
@@ -337,8 +363,11 @@ enum RotoCurveToolSetEnum {
     eRotoCurveToolSetPointsEdition = 0x2,
     eRotoCurveToolSetShapesDrawing = 0x4,
     eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing,
+    // Extra tools of the Shapes Drawing group, which eRotoCurveToolSetAll leaves out.
+    eRotoCurveToolSetOpenBezier = 0x8,
+    eRotoCurveToolSetPoint = 0x10,
     // The AI object select tool; it needs the host's input 0 as its Source.
-    eRotoCurveToolSetObjectSelect = 0x8
+    eRotoCurveToolSetObjectSelect = 0x20
 };
 
 /**
@@ -408,6 +437,8 @@ public:
     KnobButtonWPtr drawBezierAction;
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
+    KnobButtonWPtr drawOpenBezierAction;
+    KnobButtonWPtr drawPointAction;
 
     KnobGroupWPtr objectSelectToolGroup;
     KnobButtonWPtr objectSelectAction;
@@ -421,6 +452,7 @@ public:
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
+    KnobButtonWPtr linkToTrackMenuAction, unlinkTrackMenuAction, unlinkTrackAndBakeMenuAction;
     KnobButtonWPtr showInCurveEditorMenuAction, removeFromCurveEditorMenuAction;
 
     // Right click on curve
@@ -506,7 +538,7 @@ public:
     /**
      * @brief Creates the right-click menu choice and its actions on page.
      **/
-    void createRightClickMenuKnobs(const KnobPagePtr& page);
+    virtual void createRightClickMenuKnobs(const KnobPagePtr& page);
 
     /**
      * @brief Creates the object select tool's knobs on page, after the host's own viewer knobs.
@@ -675,11 +707,26 @@ public:
 
     void setBuiltBezier(const BezierPtr& curve);
 
+    /**
+     * @brief What the point tool does on a click: makes a finished open curve of one control
+     * point at (x, y), selects it, and pushes the undo command.
+     **/
+    virtual BezierPtr makePointCurve(double x, double y, double time);
+
     BezierPtr getBezierBeingBuild() const;
 
     bool smoothSelectedCurve();
     bool cuspSelectedCurve();
     bool removeFeatherForSelectedCurve();
+
+    // The selected control points as curve and index.
+    std::list<std::pair<BezierPtr, int>> getSelectedPointRefs() const;
+
+    // Asks which track to follow, among every track in the project, and links the selected
+    // control points to it.
+    bool linkSelectedPointsToTrack(double time);
+
+    bool unlinkSelectedPoints(bool bake);
     bool lockSelectedCurves();
 
     /**
@@ -723,8 +770,26 @@ protected:
     // Draws the paint tool cursor, after the curves.
     virtual void drawPaintToolOverlay(double /*screenPixelRatio*/, const std::pair<double, double>& /*viewportSize*/) { }
 
+    // Whether the overlay draws curve and lets the pointer pick it.
+    virtual bool isCurveShown(const BezierPtr& /*curve*/) const
+    {
+        return true;
+    }
+
+    // The colour the overlay draws an unlocked curve in.
+    virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const;
+
+    // Draws what the host adds over the curves, in the passive overlay too.
+    virtual void drawOverlayExtras(double /*time*/, double /*screenPixelRatio*/, const std::pair<double, double>& /*pixelScale*/) { }
+
+    // The nearest shown curve within tolerance of pos, as RotoCurveContext::isNearbyBezier() finds it.
+    BezierPtr nearbyShownBezier(const QPointF& pos, double tolerance, int* index, double* t, bool* feather) const;
+
     // Called first thing on pen down.
     virtual void onPenDownStarted(PenType /*pen*/) { }
+
+    // Adds the host's own actions to the right-click menu on a curve or one of its control points, after the curve interact's.
+    virtual void appendCurveMenuActions(std::vector<KnobButtonPtr>* /*menuKnobs*/) { }
 
     // Pen down with a tool the curve interact doesn't handle. Returns true if it did something.
     virtual bool onPaintToolPenDown(double /*time*/, const QPointF& /*pos*/, double /*pressure*/, double /*timestamp*/)

@@ -257,11 +257,10 @@ void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
                        const SceneMetadata* applied);
 
 /**
- * @brief Opens a stage on root with every payload loaded, and session as its session layer, none
- * by default. Every stage Natron composes is opened here, so getStageOpenCount() counts them all.
+ * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
+ * composes is opened here, so getStageOpenCount() counts them all.
  **/
-PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root,
-                                 const PXR_NS::SdfLayerHandle& session = PXR_NS::SdfLayerHandle());
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
 
 /**
  * @brief How many stages openStage() has opened in this process.

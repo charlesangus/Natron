@@ -28,9 +28,7 @@
 
 #include "Global/Macros.h"
 
-#include <cstddef>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -185,31 +183,6 @@ public:
 
     // The shown stage's edit count, without the lock: 0 before the first sync.
     U64 getStageEditCount() const;
-
-    /**
-     * @brief The viewer's own folds over those the scene's customData authors
-     * (SceneStage::computeViewerFolds): overrides fold (true) or open (false) prims, and defaults
-     * fold prims as customData would. Every sync folds the stage before it composes, to the last
-     * folds, and after, to the new scene's; applyNow folds it at once as well, waiting for a sync
-     * under way.
-     **/
-    void setFoldState(const std::map<std::string, bool>& overrides,
-                      const std::vector<std::string>& defaults,
-                      bool applyNow);
-
-    std::map<std::string, bool> getFoldOverrides() const;
-
-    // The prims the last fold of the stage drew as bounding boxes.
-    std::vector<std::string> getFoldedPrims() const;
-
-    // Whether the scene's customData folded any prim at the last fold of the stage.
-    bool hasAuthoredFolds() const;
-
-    // How many prims the shown stage has, counting no further than cap + 1.
-    std::size_t countPrims(std::size_t cap) const;
-
-    // The paths of the shown stage's root prims.
-    std::vector<std::string> getRootPrims() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -511,10 +484,6 @@ public:
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
 
-    // Folds the stage again: to the last folds, or, with recompute, to those of the stage's
-    // scene and the fold state. Needs stageMutex.
-    bool applyFoldsLocked(bool recompute);
-
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };
@@ -667,24 +636,9 @@ public:
      **/
     void releaseEngine();
 
-    /**
-     * @brief The prims drawn as their bounding boxes: those the scene's customData folds (USDRead's
-     * Open Mode, USDExpandHierarchy), or, when it folds none and the scene is over the Viewer 3D
-     * Prim Budget preference, its root prims; then the folds setFolded() made, which last while
-     * the viewer shows the same node.
-     **/
-    QStringList getFoldedPrims() const;
-
-    // Folds or opens paths until the viewer shows another node; opening a prim opens one level: its
-    // children show, folded unless the scene's customData opens them.
-    void setFolded(const QStringList& paths, bool folded);
-
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
-
-    // The folded prims changed (main thread).
-    void foldsChanged();
 
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();

@@ -398,17 +398,17 @@ namespace {
 }
 
 PXR_NS::UsdStageRefPtr
-openStage(const PXR_NS::SdfLayerRefPtr& root,
-          const PXR_NS::SdfLayerHandle& session)
+openStage(const PXR_NS::SdfLayerRefPtr& root)
 {
     if (!root) {
         return PXR_NS::UsdStageRefPtr();
     }
     ++stageOpenCount;
 
-    // The session layer is always passed, null when there is none: the Open overload without one
-    // creates an anonymous session layer (stage.h). Nothing edits these stages but their owner.
-    return PXR_NS::UsdStage::Open(root, session, PXR_NS::UsdStage::LoadAll);
+    // The session layer is passed explicitly as null: the Open overload without one creates an
+    // anonymous session layer (stage.h). Nothing edits these stages but their owner, through the
+    // root layer.
+    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
 }
 
 U64

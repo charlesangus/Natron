@@ -1365,15 +1365,6 @@ Settings::initializeKnobsViewers()
                                                 "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
                                                 "undo step."));
     _viewersTab->addKnob(_viewer3DTransformTarget);
-
-    _viewer3DPrimBudget = AppManager::createKnob<KnobInt>(this, tr("Viewer 3D Prim Budget"));
-    _viewer3DPrimBudget->setName("viewer3DPrimBudget");
-    _viewer3DPrimBudget->disableSlider();
-    _viewer3DPrimBudget->setMinimum(0);
-    _viewer3DPrimBudget->setHintToolTip(tr("When a viewer first shows a node's scene, a scene with more prims than this is shown with each "
-                                           "top-level prim folded to its bounding box, its payloads unloaded. Unfold prims from the Scene "
-                                           "Graph panel. 0 never folds."));
-    _viewersTab->addKnob(_viewer3DPrimBudget);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1820,7 +1811,6 @@ Settings::setDefaultValues()
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
-    _viewer3DPrimBudget->setDefaultValue(50000);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2697,12 +2687,6 @@ Settings::Viewer3DTransformTargetEnum
 Settings::getViewer3DTransformTarget() const
 {
     return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
-}
-
-int
-Settings::getViewer3DPrimBudget() const
-{
-    return _viewer3DPrimBudget->getValue();
 }
 
 bool

@@ -123,6 +123,9 @@ public:
     // How many times the model has been reset since it was made.
     int getResetCount() const;
 
+    // How many change notices the stages it has shown have sent since it started listening to them.
+    U64 getStageNoticeCount() const;
+
     QModelIndex index(int row, int column, const QModelIndex& parent = QModelIndex()) const override;
     QModelIndex parent(const QModelIndex& index) const override;
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;

@@ -51,16 +51,11 @@ class SceneGraphModel;
  * the viewer's frame, with the node that authored each one. Rows drag their prim paths onto prim
  * path and pattern knobs.
  *
- * When the rows are the viewer's prims, a closed row is a prim the viewer draws as its bounding
- * box: the rows open down to the viewer's folds, and closing or opening a row, or Fold and Unfold
- * (buttons and the tree's context menu), folds or opens prims until the viewer shows another node
- * (SceneViewport::setFolded).
- *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphResults, sceneGraphFilter,
- * sceneGraphPin, sceneGraphFollow, sceneGraphFold, sceneGraphUnfold, sceneGraphNode,
- * sceneGraphStatus and sceneGraphAttributes. It mirrors its state into the
- * natronSceneGraphPinned, natronSceneGraphFollow ("viewer" or "selection"), natronSceneGraphNode,
- * natronSceneGraphHasScene, natronSceneGraphFilterBusy and natronSceneGraphFolded properties.
+ * sceneGraphPin, sceneGraphFollow, sceneGraphNode, sceneGraphStatus and sceneGraphAttributes. It
+ * mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow ("viewer" or
+ * "selection"), natronSceneGraphNode, natronSceneGraphHasScene, natronSceneGraphFilterBusy,
+ * natronSceneGraphStageEditCount and natronSceneGraphStageNotices properties.
  **/
 class SceneGraphPanel
     : public QWidget,

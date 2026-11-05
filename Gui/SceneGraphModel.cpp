@@ -26,6 +26,7 @@
 #include "SceneGraphModel.h"
 
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -122,8 +123,14 @@ iconForType(const QString& type)
 class StageListener
     : public TfWeakBase {
 public:
+    explicit StageListener(std::atomic<U64>* noticeCount)
+        : noticeCount(noticeCount)
+    {
+    }
+
     void onObjectsChanged(const UsdNotice::ObjectsChanged& notice)
     {
+        ++*noticeCount;
         std::lock_guard<std::mutex> lock(mutex);
 
         for (const SdfPath& path : notice.GetResyncedPaths()) {
@@ -150,6 +157,7 @@ public:
         return overflow || !resynced.empty() || !infoOnly.empty();
     }
 
+    std::atomic<U64>* noticeCount;
     std::mutex mutex;
     SdfPathVector resynced;
     SdfPathVector infoOnly;
@@ -235,6 +243,7 @@ struct SceneGraphModel::Implementation {
     SceneGraphStageSourcePtr source;
     Item root;
     UsdStageWeakPtr listenedStage;
+    std::atomic<U64> stageNoticeCount { 0 };
     std::unique_ptr<StageListener> listener;
     TfNotice::Key key;
     U64 lastEditCount = 0;
@@ -302,7 +311,7 @@ struct SceneGraphModel::Implementation {
     void listen(const UsdStageRefPtr& stage)
     {
         stopListening();
-        listener.reset(new StageListener);
+        listener.reset(new StageListener(&stageNoticeCount));
         key = TfNotice::Register(TfCreateWeakPtr(listener.get()), &StageListener::onObjectsChanged, UsdStageWeakPtr(stage));
         listenedStage = stage;
     }
@@ -764,6 +773,12 @@ int
 SceneGraphModel::getResetCount() const
 {
     return _imp->resetCount;
+}
+
+U64
+SceneGraphModel::getStageNoticeCount() const
+{
+    return _imp->stageNoticeCount;
 }
 
 QModelIndex

@@ -8,6 +8,8 @@ QModelIndex alone.
 
 Checks:
   - the tree lists /World with Box, Ball and Cam under it, with their types;
+  - closing and opening a row stays in the tree: the stage's edit count and change notices do not
+    move, and the viewer is not asked to sync again;
   - selecting the box's row selects /World/Box in the viewer, and a click on the ball in the
     viewer selects the ball's row;
   - the filter lists the prims whose names match, and clearing it brings the tree back;
@@ -175,6 +177,17 @@ try:
         viewer.disconnectInput(0)
         return viewer.connectInput(0, node)
 
+    def stage_marks():
+        """What an edit of the viewer's stage, or a new sync of it, moves."""
+        p = panel()
+        v = view()
+        return {
+            "natronSceneGraphStageEditCount": p.property("natronSceneGraphStageEditCount"),
+            "natronSceneGraphStageNotices": p.property("natronSceneGraphStageNotices"),
+            "natronSceneSyncRequests": v.property("natronSceneSyncRequests"),
+            "natronSceneSyncedAtMs": v.property("natronSceneSyncedAtMs"),
+        }
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -209,6 +222,22 @@ try:
               "the type column reads Cube, Sphere and Camera (got %r)" % (types,))
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-docked.png")
+
+        # Twirling.
+        before = stage_marks()
+        require(all(value is not None for value in before.values()), "the stage marks are published (got %r)" % (before,))
+        check(before["natronSceneGraphStageEditCount"] > 0, "the stage's edit count counts the sync (got %r)" % (before,))
+        for _ in range(3):
+            tree().collapse(find(WORLD))
+            check(not tree().isExpanded(find(WORLD)), "the /World row closes")
+            yield ("sleep", 0)
+            tree().expand(find(WORLD))
+            check(tree().isExpanded(find(WORLD)), "the /World row opens")
+            yield ("sleep", 0)
+        yield ("sleep", SETTLE_MS)
+        check(tree().isExpanded(find(WORLD)), "the /World row stays open")
+        after = stage_marks()
+        check(after == before, "twirling leaves the stage and the viewer's sync alone (%r, then %r)" % (before, after))
 
         # Tree to viewer.
         box = find(BOX)

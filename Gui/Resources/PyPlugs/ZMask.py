@@ -402,18 +402,13 @@ def createInstance(app,group):
     # End of node "InputSource"
 
     # Start of node "Switch1"
-    lastNode = app.createNode("net.sf.openfx.switchPlugin", 1, group)
+    lastNode = app.createNode("fr.natron.Switch", 1, group)
     lastNode.setScriptName("Switch1")
     lastNode.setLabel("Switch1")
     lastNode.setPosition(764, 638)
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupSwitch1 = lastNode
-
-    param = lastNode.getParam("channels")
-    if param is not None:
-        param.setLayer("rgba")
-        del param
 
     param = lastNode.getParam("which")
     if param is not None:

@@ -170,6 +170,7 @@ USDReference::initializeKnobs()
     file->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to reference."));
     file->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
     file->setAnimationEnabled(false);
+    file->setShowsReloadButton(false);
     file->setAddNewLine(false);
     page->addKnob(file);
     _file = file;

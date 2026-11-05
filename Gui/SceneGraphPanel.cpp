@@ -710,16 +710,71 @@ struct SceneGraphPanel::Implementation {
         results->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
         if (current.isValid()) {
             results->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+        } else {
+            results->selectionModel()->clearCurrentIndex();
         }
+        syncingSelection = wasSyncing;
+    }
+
+    void selectTreeRows(const QStringList& paths)
+    {
+        const bool wasSyncing = syncingSelection;
+        const bool wasRestoring = restoringExpansion;
+        QItemSelection selection;
+        QSet<QString> selected;
+        QModelIndex current;
+
+        syncingSelection = true;
+        restoringExpansion = true;
+        // A path shown twice keeps its last place, so the current prim stays last.
+        const QStringList ordered = paths;
+        selectionOrder.clear();
+        {
+            QSet<QString> seen;
+            for (int i = (int)ordered.size() - 1; i >= 0; --i) {
+                if (!seen.contains(ordered[i])) {
+                    seen.insert(ordered[i]);
+                    selectionOrder.prepend(ordered[i]);
+                }
+            }
+        }
+        // The current prim is last; the cap keeps it.
+        for (int i = std::max(0, (int)ordered.size() - kShownSelectionCap); i < ordered.size(); ++i) {
+            const QString& path = ordered[i];
+            const QModelIndex index = model->indexOfPath(path, true);
+            if (!index.isValid()) {
+                continue;
+            }
+            if (!selected.contains(path)) {
+                selected.insert(path);
+                for (QModelIndex parent = index.parent(); parent.isValid(); parent = parent.parent()) {
+                    if (tree->isExpanded(parent)) {
+                        break;
+                    }
+                    tree->expand(parent);
+                }
+                selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
+            }
+            current = index;
+        }
+        tree->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
+        if (current.isValid()) {
+            tree->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+            tree->scrollTo(current);
+        }
+        restoringExpansion = wasRestoring;
         syncingSelection = wasSyncing;
     }
 
     QString currentPath() const
     {
+        // A selected prim the filter hides has no result row, only its row in the tree.
         if (stack->currentWidget() == results) {
             const QModelIndex current = results->selectionModel()->currentIndex();
 
-            return (current.isValid() && !resultsModel->isMoreRow(current)) ? current.data().toString() : QString();
+            if (current.isValid() && !resultsModel->isMoreRow(current)) {
+                return current.data().toString();
+            }
         }
 
         return model->pathOf(tree->selectionModel()->currentIndex());
@@ -869,6 +924,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
     QObject::connect(&_imp->attributeRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshAttributes);
+    // Each page has its own current row, and showing a page changes neither of them.
+    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, &_imp->attributeRefresh, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->pinnedPoll, &QTimer::timeout, this, &SceneGraphPanel::onPinnedPoll);
     QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
     QObject::connect(&_imp->selectionPoll, &QTimer::timeout, this, &SceneGraphPanel::onSelectionPoll);
@@ -1011,55 +1068,10 @@ SceneGraphPanel::getShownNode() const
 void
 SceneGraphPanel::showSelection(const QStringList& paths)
 {
-    const bool wasSyncing = _imp->syncingSelection;
-
-    const bool wasRestoring = _imp->restoringExpansion;
-    _imp->syncingSelection = true;
-    _imp->restoringExpansion = true;
-    // A path shown twice keeps its last place, so the current prim stays last.
-    _imp->selectionOrder.clear();
-    {
-        QSet<QString> ordered;
-        for (int i = (int)paths.size() - 1; i >= 0; --i) {
-            const QString& path = paths[i];
-            if (!ordered.contains(path)) {
-                ordered.insert(path);
-                _imp->selectionOrder.prepend(path);
-            }
-        }
-    }
-    QItemSelection selection;
-    QSet<QString> selected;
-    QModelIndex current;
-    // The current prim is last; the cap keeps it.
-    for (int i = std::max(0, (int)paths.size() - kShownSelectionCap); i < paths.size(); ++i) {
-        const QString& path = paths[i];
-        const QModelIndex index = _imp->model->indexOfPath(path, true);
-        if (!index.isValid()) {
-            continue;
-        }
-        if (!selected.contains(path)) {
-            selected.insert(path);
-            for (QModelIndex parent = index.parent(); parent.isValid(); parent = parent.parent()) {
-                if (_imp->tree->isExpanded(parent)) {
-                    break;
-                }
-                _imp->tree->expand(parent);
-            }
-            selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
-        }
-        current = index;
-    }
-    _imp->tree->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
-    if (current.isValid()) {
-        _imp->tree->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
-        _imp->tree->scrollTo(current);
-    }
+    _imp->selectTreeRows(paths);
     if (!_imp->filterPattern.isEmpty()) {
         _imp->selectResults(paths);
     }
-    _imp->restoringExpansion = wasRestoring;
-    _imp->syncingSelection = wasSyncing;
     _imp->attributeRefresh.start();
 }
 
@@ -1141,6 +1153,7 @@ SceneGraphPanel::onResultsSelectionChanged()
     _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(viewerSelection, paths);
     _imp->syncingSelection = true;
     _imp->viewport->setSelection(_imp->selectionOrder);
+    _imp->selectTreeRows(_imp->selectionOrder);
     _imp->syncingSelection = false;
 }
 

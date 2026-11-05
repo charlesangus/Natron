@@ -16,7 +16,7 @@ Checks:
     viewer selects the ball's row;
   - the filter lists the prims whose names match, and clearing it brings the tree back;
   - the attribute list shows the current prim's attributes, with their types and the node that
-    authored them;
+    authored them, also for a prim a filter hides and once the filter is cleared;
   - pinned to the USDRead, the tree stays on its scene when the viewer is switched to the
     camera; deleting the USDRead unpins the panel, which then shows the camera's scene.
 
@@ -38,6 +38,7 @@ WORLD = "/World"
 BOX = "/World/Box"
 BALL = "/World/Ball"
 CAM = "/World/Cam"
+OWN_ATTRIBUTE = {BOX: "size", BALL: "radius", CAM: "focalLength"}
 
 try:
     import NatronEngine
@@ -278,6 +279,8 @@ try:
         check(ok, "the pick selects its row behind the filter (got %r, want %r)" % (selected_rows(), picked))
         check_revealed(picked[0], "picked with the filter hiding it")
         check(results.isVisible(), "the result list stays up")
+        ok = yield ("until", lambda: OWN_ATTRIBUTE[picked[0]] in attribute_rows(), POLL_TIMEOUT_S)
+        check(ok, "the attribute list shows the prim the filter hides (got %r)" % (sorted(attribute_rows().keys())[:12],))
 
         # Selecting what a new filter lists adds to the hidden prim instead of replacing it.
         other = BALL if picked[0] != BALL else BOX
@@ -292,6 +295,9 @@ try:
         line.setText("")
         ok = yield ("until", lambda: tree().isVisible(), POLL_TIMEOUT_S)
         check(ok, "clearing the filter shows the tree again")
+        check(selected_rows() == wanted, "the tree selects what the result list added (got %r, want %r)" % (selected_rows(), wanted))
+        ok = yield ("until", lambda: OWN_ATTRIBUTE[other] in attribute_rows(), POLL_TIMEOUT_S)
+        check(ok, "with the filter cleared, the attribute list shows the current prim (got %r)" % (sorted(attribute_rows().keys())[:12],))
         tree().selectionModel().clearSelection()
         ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
         check(ok, "clearing the rows clears the viewer's selection (got %r)" % (viewer_selection(),))

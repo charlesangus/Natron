@@ -114,6 +114,12 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
   - size: M
 
+- [ ] M240.P3.T6 — PoissonHeal parity on RADV
+  - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, `Engine/Gpu/Kernels/heal.slang`, `Engine/Gpu/Kernels/exactdivide.slang`, the matching CPU code
+  - approach: On RADV at main 5fd4824e3, `EdgeAwareGpu.PoissonHeal` and `PoissonHealLongRunWithoutPushDescriptors` fail exact parity (64x48 random dest, 1 cycle: 6260 of 12288 floats differ, worst 0.23; 5 cycles: worst 3e-3). lavapipe passes. Find the GPU step that differs from the CPU and make them agree, or bound the comparison with a recorded reason if it is inherent.
+  - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
+  - size: L
+
 ## Decisions
 
 - 2026-10-26 — **Started alongside M184 (user):** the user asked for it to be picked up in parallel. P1 is read-only and runs now. P2 starts once M184 - Variable-Size Filter Kit has merged (it brings `knobValueAsFloat`), on a branch rebased onto main.

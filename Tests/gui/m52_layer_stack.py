@@ -28,6 +28,7 @@ Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
 import os
+import shutil
 import sys
 import traceback
 
@@ -45,7 +46,7 @@ FOCAL_LENGTH = 85.0
 try:
     from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, Qt
     from PySide6.QtGui import QGuiApplication, QKeyEvent
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPlainTextEdit, QTabBar, QTextEdit
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QPlainTextEdit, QTabBar, QTextEdit
     from pxr import Sdf, Usd
 
     from guitest import FIXTURES, OUT, check, class_name, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
@@ -425,6 +426,32 @@ try:
         check(reference.getPersistentMessage() == "", "USDReference reports no error (%r)" % reference.getPersistentMessage())
         yield from open_panel(reference)
         shot("m52_reference_panel.png")
+
+        # The file knob's own reload icon is hidden so the panel's one reload control is the Reload button.
+        buttons = panel_of(reference).findChildren(QAbstractButton)
+        icons = [b for b in buttons if b.toolTip().startswith("Reload the file")]
+        check(len(icons) == 0, "the file knob shows no reload icon (%d)" % len(icons))
+        reloads = [b for b in buttons if b.text().strip() == "Reload"]
+        check(len(reloads) == 1, "the panel has exactly one Reload button (%d)" % len(reloads))
+
+        # Reload rereads a file rewritten on disk. A temp copy is rewritten, never the fixture.
+        copy_path = os.path.join(work_dir, "reload-reference.usda")
+        shutil.copyfile(referenced_path, copy_path)
+        param(reference, "file").setValue(copy_path)
+        ok = yield ("until", lambda: "/World/Ext/Marker" in prim_paths(flattened(reference)), POLL_TIMEOUT_S)
+        require(ok, "the copied file composes its Marker")
+        with open(copy_path) as handle:
+            contents = handle.read()
+        with open(copy_path, "w") as handle:
+            handle.write(contents.replace('"Marker"', '"Renamed"'))
+        require(param(reference, "reload") is not None, "USDReference has a Reload button")
+        param(reference, "reload").trigger()
+        ok = yield ("until", lambda: "/World/Ext/Renamed" in prim_paths(flattened(reference)), POLL_TIMEOUT_S)
+        paths = prim_paths(flattened(reference))
+        check(ok and "/World/Ext/Marker" not in paths, "Reload picks up the rewritten file (%r)" % (paths,))
+        param(reference, "file").setValue(referenced_path)
+        ok = yield ("until", lambda: "/World/Ext/Marker" in prim_paths(flattened(reference)), POLL_TIMEOUT_S)
+        check(ok, "the fixture is referenced again")
 
         # 6. USDSetAttribute sets typed values.
         param(set_attr, "primPattern").setValue("/World/Asset/Geo")

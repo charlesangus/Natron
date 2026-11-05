@@ -285,8 +285,21 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
+        if (_imp->_evtState == eEventStateCutting) {
+            clearCutLine();
+            _imp->_evtState = eEventStateNone;
+            update();
+        }
         cancelSplice();
+        rollBackKisses();
+        _imp->_kissCancelled = true;
+        cancelNodeDrag();
         dropPickedUpArrow();
+    }
+
+    if ((key == Qt::Key_Control) && !e->isAutoRepeat() && (_imp->_evtState == eEventStateDraggingNode)) {
+        setKissAiming(true);
+        update();
     }
 
     if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, modifiers, key) ) {

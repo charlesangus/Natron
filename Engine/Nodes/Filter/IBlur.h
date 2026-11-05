@@ -203,6 +203,8 @@ private:
 
     // The Map over the source's region of interest, as getRegionsOfInterest() asks for it.
     virtual RectI opPassesInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

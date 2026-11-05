@@ -1635,10 +1635,18 @@ EffectInstance::getImage(int inputNb,
         inputImages.insert(std::make_pair(renderedComps, storedImages.front()));
     } else {
         // Store images in another depth or storage go through renderRoI(), which finds them by key and converts them.
-        EffectInstance::InputImagesMap seededInputImages;
+        // Only this input's images: identical inputs share an image key, and the image pre-rendered for
+        // another one covers that input's region, not this one's.
+        EffectInstance::InputImagesMap thisInputImages;
+        if (!inputImagesThreadLocal.empty()) {
+            ImageList& images = thisInputImages[inputNb];
+            EffectInstance::InputImagesMap::const_iterator preRendered = inputImagesThreadLocal.find(inputNb);
+            if (preRendered != inputImagesThreadLocal.end()) {
+                images = preRendered->second;
+            }
+        }
         if (fromStore) {
-            seededInputImages = inputImagesThreadLocal;
-            ImageList& seeded = seededInputImages[inputNb];
+            ImageList& seeded = thisInputImages[inputNb];
             seeded.insert(seeded.end(), storedImages.begin(), storedImages.end());
         }
         RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
@@ -1654,7 +1662,7 @@ EffectInstance::getImage(int inputNb,
                                                                         this,
                                                                         returnStorage,
                                                                         thisEffectRenderTime,
-                                                                        fromStore ? seededInputImages : inputImagesThreadLocal),
+                                                                        thisInputImages),
                                                           &inputImages);
 
         if (retCode != eRenderRoIRetCodeOk) {

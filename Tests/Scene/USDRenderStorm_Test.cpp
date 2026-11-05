@@ -75,6 +75,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
@@ -113,6 +114,22 @@ const char* const kGoldenCasePrimitives = "StormPrimitives";
 const char* const kGoldenCaseProject3DWorld = "StormProject3DWorld";
 const char* const kGoldenCaseProject3DGeometryHeld = "StormProject3DGeometryHeld";
 const char* const kGoldenCaseProject3DOverscan = "StormProject3DOverscan";
+// A crop, not the whole frame: <dir>/USDRender/StormAssignMaterial.exr, half float, zip.
+const char* const kGoldenCaseAssignMaterial = "StormAssignMaterial";
+
+// An asset whose box is bound directly to a grey material of its own.
+const char* const kGreyAsset = "#usda 1.0\n"
+                               "def Xform \"Asset\"\n{\n"
+                               "    def Cube \"Box\" (\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n    )\n    {\n"
+                               "        double size = 2\n"
+                               "        rel material:binding = </Asset/Looks/Grey>\n    }\n"
+                               "    def Scope \"Looks\"\n    {\n"
+                               "        def Material \"Grey\"\n        {\n"
+                               "            token outputs:surface.connect = </Asset/Looks/Grey/Surface.outputs:surface>\n"
+                               "            def Shader \"Surface\"\n            {\n"
+                               "                uniform token info:id = \"UsdPreviewSurface\"\n"
+                               "                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+                               "                token outputs:surface\n            }\n        }\n    }\n}\n";
 
 /**
  * How far the colour may drift from the reference: GL drivers rasterise and shade with their own
@@ -1101,6 +1118,28 @@ protected:
         return render;
     } // createProjectionGraph
 
+    // Moves the projection off the card's Material input onto a USDAssignMaterial naming the card,
+    // between the card and the merge.
+    NodePtr assignProjectionToCard(const NodePtr& render,
+                                   const NodePtr& projector,
+                                   const NodePtr& card)
+    {
+        NodePtr merge = render->getInput(0);
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        if (!merge || !assign || !setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card")) {
+            ADD_FAILURE() << "could not set up the assign";
+
+            return NodePtr();
+        }
+        card->disconnectInput(0);
+        merge->disconnectInput(0);
+        connectNodes(card, assign, kUSDAssignMaterialInputScene, true);
+        connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+        connectNodes(assign, merge, 0, true);
+
+        return assign;
+    }
+
     // Renders the projection scene at frame, failing on a render error, a node message or a shader
     // Storm reports it could not build, and checks the checker lands where it should.
     static void renderProjection(const NodePtr& render,
@@ -1153,6 +1192,88 @@ protected:
         ASSERT_EQ((std::size_t)kWidth * kHeight * 4, planes[0].pixels.size()) << what;
         *rgba = planes[0].pixels;
     }
+
+    /**
+     * The shared-material graph of USDWrite's round trip, rendered: an asset whose box is bound
+     * directly to a grey material, a USDAssignMaterial binding a red USDMaterial to /Asset with
+     * strength, optionally a second binding a blue one to /Asset/Box, the result moved under a
+     * USDXformPrim /T1, and a camera at (0, 0, 10) looking down -Z with a key light. Returns the
+     * USDRender, kWidth x kHeight, null after a gtest failure.
+     **/
+    NodePtr createAssignMaterialGraph(const QString& assetPath,
+                                      USDAssignMaterial::StrengthEnum strength,
+                                      bool secondAssign)
+    {
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr red = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        NodePtr blue = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL)) : NodePtr();
+        NodePtr assignOver = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL)) : NodePtr();
+        NodePtr moved = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!reader || !red || !assign || (secondAssign && (!blue || !assignOver)) || !moved || !camera || !light || !merge || !render) {
+            ADD_FAILURE() << "a 3D node is not registered";
+
+            return NodePtr();
+        }
+
+        KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+        KnobColor* redDiffuse = knob<KnobColor>(red, kUSDMaterialParamDiffuseColor);
+        KnobChoice* strengthKnob = knob<KnobChoice>(assign, kUSDAssignMaterialParamStrength);
+        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!file || !redDiffuse || !strengthKnob || !renderCamera || !size || !par) {
+            return NodePtr();
+        }
+        file->setValue(assetPath.toStdString());
+        redDiffuse->setValue(0.8, ViewSpec::all(), 0);
+        redDiffuse->setValue(0.1, ViewSpec::all(), 1);
+        redDiffuse->setValue(0.1, ViewSpec::all(), 2);
+        strengthKnob->setValue((int)strength);
+
+        bool ok = true;
+        ok = ok && setString(red, kSceneParamPrimPath, "/Red");
+        ok = ok && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Asset");
+        ok = ok && setString(moved, kSceneParamPrimPath, "/T1");
+        ok = ok && setTriple(moved, kSceneParamTranslate, 0., 0., 0.);
+        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
+        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
+        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        if (!ok) {
+            return NodePtr();
+        }
+        connectNodes(reader, assign, kUSDAssignMaterialInputScene, true);
+        connectNodes(red, assign, kUSDAssignMaterialInputMaterial, true);
+        NodePtr last = assign;
+        if (secondAssign) {
+            KnobColor* blueDiffuse = knob<KnobColor>(blue, kUSDMaterialParamDiffuseColor);
+            if (!blueDiffuse || !setString(blue, kSceneParamPrimPath, "/Blue") || !setString(assignOver, kUSDAssignMaterialParamPrimPattern, "/Asset/Box")) {
+                return NodePtr();
+            }
+            blueDiffuse->setValue(0.1, ViewSpec::all(), 0);
+            blueDiffuse->setValue(0.1, ViewSpec::all(), 1);
+            blueDiffuse->setValue(0.8, ViewSpec::all(), 2);
+            connectNodes(assign, assignOver, kUSDAssignMaterialInputScene, true);
+            connectNodes(blue, assignOver, kUSDAssignMaterialInputMaterial, true);
+            last = assignOver;
+        }
+        connectNodes(last, moved, 0, true);
+        connectNodes(moved, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, render, 0, true);
+
+        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+        size->setValue(kWidth, ViewSpec::all(), 0);
+        size->setValue(kHeight, ViewSpec::all(), 1);
+        par->setValue(1.);
+
+        return render;
+    } // createAssignMaterialGraph
 
     static std::list<ImageLayerDesc> allPlanes()
     {
@@ -1632,6 +1753,22 @@ TEST_F(USDRenderStormTest, StormProject3DWorld)
     renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DWorld);
 }
 
+// The direct connection's reference is the expected image: the assign must change nothing.
+TEST_F(USDRenderStormTest, StormProject3DWorldThroughAssignMaterial)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr assign = assignProjectionToCard(render, projector, card);
+    ASSERT_TRUE(assign != nullptr);
+
+    renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DWorld);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
 // The projection is unlit and alpha-blended: a half-transparent premultiplied plate, held straight
 // in its live texture, shows as itself over the empty background, whether or not the scene has a
 // light.
@@ -1725,6 +1862,36 @@ TEST_F(USDRenderStormTest, StormProject3DGeometryHeld)
     // The card covers render pixels 40..200 by 10..90; World space would leave the checker
     // 40 plate pixels, 1.6 squares, behind.
     renderProjection(render, projector, 11., shift, RectI(36, 6, 200, 94), kGoldenCaseProject3DGeometryHeld);
+}
+
+TEST_F(USDRenderStormTest, StormProject3DGeometryHeldThroughAssignMaterial)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobChoice* space = knob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(projector, kUSDProject3DParamFrameHold);
+    KnobDouble* translate = knob<KnobDouble>(card, kSceneParamTranslate);
+    ASSERT_TRUE(space && useHold && hold && translate);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    const double shift = 2.;
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., shift, ViewSpec::all(), 0);
+    NodePtr assign = assignProjectionToCard(render, projector, card);
+    ASSERT_TRUE(assign != nullptr);
+
+    renderProjection(render, projector, 11., shift, RectI(36, 6, 200, 94), kGoldenCaseProject3DGeometryHeld);
+    EXPECT_FALSE(assign->hasPersistentMessage());
 }
 
 // The plate's data reaches 50 pixels beyond its format on every side; its format still fills the
@@ -2020,3 +2187,58 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
     EXPECT_GT(formatLeft[0], 0.9) << "0 < u < 0.5 is the format's left half, red " << formatLeft[0];
     EXPECT_LT(formatRight[0], 0.05) << "0.5 < u < 1 is the format's right half the image does not cover, red " << formatRight[0];
 }
+
+TEST_F(USDRenderStormTest, ASharedMaterialAssignedByPatternRendersAsBound)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString assetPath = tmp.filePath(QString::fromUtf8("asset.usda"));
+    {
+        QFile f(assetPath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(kGreyAsset);
+    }
+
+    struct Case {
+        USDAssignMaterial::StrengthEnum strength;
+        bool secondAssign;
+        int dominant; // the channel the box's colour is led by, or -1 for grey
+    };
+    // Stronger overrides the box's own grey binding; Weaker leaves it; a later assign wins.
+    const Case cases[] = {
+        { USDAssignMaterial::eStrengthStrongerThanDescendants, false, 0 },
+        { USDAssignMaterial::eStrengthWeakerThanDescendants, false, -1 },
+        { USDAssignMaterial::eStrengthStrongerThanDescendants, true, 2 },
+    };
+    for (const Case& c : cases) {
+        NodePtr node = createAssignMaterialGraph(assetPath, c.strength, c.secondAssign);
+        ASSERT_TRUE(node != nullptr);
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+        EXPECT_FALSE(node->hasPersistentMessage());
+        ASSERT_EQ(3u, planes.size());
+
+        const Coverage box = coverageOf("/T1/Asset/Box", planes[0].pixels, planes[1].pixels, planes[2].pixels);
+        ASSERT_GT(box.count, 100) << "case " << c.dominant;
+        const std::string colour = "box colour " + std::to_string(box.rgb[0]) + ", " + std::to_string(box.rgb[1]) + ", " + std::to_string(box.rgb[2]);
+        if (c.dominant < 0) {
+            EXPECT_GT(box.rgb[0], 0.1) << colour;
+            EXPECT_NEAR(box.rgb[0], box.rgb[1], 0.05) << colour;
+            EXPECT_NEAR(box.rgb[0], box.rgb[2], 0.05) << colour;
+        } else {
+            for (int k = 0; k < 3; ++k) {
+                if (k != c.dominant) {
+                    EXPECT_GT(box.rgb[c.dominant], 3. * box.rgb[k]) << colour;
+                }
+            }
+        }
+        if ((c.strength == USDAssignMaterial::eStrengthStrongerThanDescendants) && !c.secondAssign) {
+            // The middle of the frame, where the box stands.
+            checkCropAgainstReference(planes[0], RectI(kWidth / 2 - 32, kHeight / 2 - 32, kWidth / 2 + 32, kHeight / 2 + 32), kGoldenCaseAssignMaterial);
+        }
+    }
+} // TEST_F

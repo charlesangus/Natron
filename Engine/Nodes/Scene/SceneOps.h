@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -55,6 +56,8 @@ struct SceneLayerEdit {
     // The project's scene units, which the layer authors as its stage metadata.
     SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
     double metersPerUnit = 1.;
+    // The project's shared materials root prim name, empty when off.
+    std::string materialsScope;
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;
@@ -81,6 +84,11 @@ struct SceneReparentArgs {
     std::string destinationType;
     std::string ancestorType;
     bool autoRename = false;
+    // A root prim name, such as the project's materials scope, that every input defining it keeps
+    // at its own path, /<name>, instead of grafting it: never renamed, and the relationships and
+    // connections into it re-pointed there. Inputs sharing it compose, the later one stronger.
+    // Empty grafts every root.
+    std::string passThroughRoot;
     // Optional: authors the destination's own opinions, such as its transform, into a layer of its
     // own, memoized on overridesKey. It may only author "over" specs, so an edit of it changes
     // properties without resyncing the grafted subtree. Handed no upstream: the key cannot see it.
@@ -99,6 +107,10 @@ struct SceneRootGraft {
     std::size_t inputIndex = 0;
     std::string sourcePath;
     std::string graftedPath;
+    // Whether the root is the args' passThroughRoot, left at its own path.
+    bool passedThrough = false;
+    // Whether, passed through, it holds a UsdGeomGprim, which a materials scope should not.
+    bool holdsGprim = false;
 };
 
 /**
@@ -208,9 +220,13 @@ ScenePayload appendEntry(const ScenePayload& base,
  * property's grafted path, each target moved to where its root was grafted from the same input.
  * Targets under no root of that input are left out and listed in unmappedLinks, when given.
  *
+ * A root named args.passThroughRoot is defined at its own path instead, referencing the same
+ * root of the wrapper, and maps to itself, so links into it from grafted roots are re-pointed
+ * there; it may be the destination itself.
+ *
  * When grafts is given, it receives where each input root landed. Returns false with
  * *errorMessage set, keeping memo's layers, when the destination is not an absolute prim path, an
- * input root is the destination itself, or authoring fails.
+ * input root other than a passed-through one is the destination itself, or authoring fails.
  **/
 bool reparentRoots(const SceneReparentArgs& args,
                    SceneGraftMemo* memo,
@@ -343,6 +359,28 @@ double getMetricsCorrectionScale(const SceneMetricsCorrection& correction);
 std::size_t authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
                                     const PXR_NS::UsdStageRefPtr& source,
                                     const SceneMetricsCorrection& correction);
+
+/**
+ * @brief Records the node that authored the layers of payload, its top layer alone when topOnly,
+ * for authoringNodeOf(). Holds neither the layers nor the node; a layer re-recorded keeps its
+ * latest owner. MT-safe.
+ **/
+void setLayerOwner(const ScenePayload& payload,
+                   const NodePtr& owner,
+                   bool topOnly);
+
+// The node recorded as layer's author, or null.
+NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
+
+/**
+ * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
+ * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
+ * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty
+ * for a fallback.
+ **/
+NodePtr authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                        PXR_NS::UsdTimeCode time,
+                        std::string* layerIdentifier);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

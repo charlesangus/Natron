@@ -543,7 +543,7 @@ clipTimeSamples(const PXR_NS::SdfLayerRefPtr& layer,
     std::vector<Bound> bounds;
     {
         // The layer composed on its own interpolates its samples as a stage reading the file will.
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::UsdStage::LoadNone);
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
         for (const PXR_NS::SdfPath& path : animated) {
             const std::set<double> times = layer->ListTimeSamplesForPath(path);
             const PXR_NS::UsdAttribute attribute = stage ? stage->GetAttributeAtPath(path) : PXR_NS::UsdAttribute();
@@ -746,9 +746,15 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
             continue;
         }
-        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
-        if (material && projections.count(material.GetPath())) {
-            bound[material.GetPath()].push_back(prim);
+        // A material can be bound for one purpose only, and a mesh baked under any of them keeps
+        // its projection in the export.
+        const PXR_NS::UsdShadeMaterialBindingAPI binding(prim);
+        for (const PXR_NS::TfToken& purpose : { PXR_NS::UsdShadeTokens->allPurpose, PXR_NS::UsdShadeTokens->full, PXR_NS::UsdShadeTokens->preview }) {
+            const PXR_NS::UsdShadeMaterial material = binding.ComputeBoundMaterial(purpose);
+            if (material && projections.count(material.GetPath())) {
+                bound[material.GetPath()].push_back(prim);
+                break;
+            }
         }
     }
 

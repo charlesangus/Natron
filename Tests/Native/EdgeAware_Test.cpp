@@ -896,3 +896,207 @@ TEST(EdgeAware, PoissonHealKeepsNonFiniteSamples)
         }
     }
 }
+
+namespace {
+// A heal case: a wavy src under a dest with a different, smooth colour, and a band mask of
+// width bandWidth, vertical or at 45 degrees, leaving a margin of unmasked pixels.
+struct HealCase {
+    int width = 0;
+    int height = 0;
+    std::vector<float> src;
+    std::vector<float> dest;
+    std::vector<float> mask;
+};
+
+HealCase
+makeHealCase(int width,
+             int height,
+             int bandWidth,
+             bool diagonal)
+{
+    HealCase h;
+    const std::size_t pixels = (std::size_t)width * height;
+
+    h.width = width;
+    h.height = height;
+    h.src.resize(pixels * 4);
+    h.dest.resize(pixels * 4);
+    h.mask.assign(pixels, 0.f);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t p = (std::size_t)y * width + x;
+            for (int c = 0; c < 4; ++c) {
+                h.src[4 * p + c] = 0.3f + 0.2f * std::sin(0.31f * x + 0.17f * y + c);
+                h.dest[4 * p + c] = 0.6f + 0.1f * c + 0.002f * x - 0.001f * y;
+            }
+            const int along = diagonal ? (x - y + height) : x;
+            const int centre = diagonal ? (width + height) / 2 : width / 2;
+            const bool inBand = std::abs(along - centre) < bandWidth / 2;
+            const bool inMargin = (x >= 3) && (y >= 3) && (x < width - 3) && (y < height - 3);
+            h.mask[p] = (inBand && inMargin) ? 1.f : 0.f;
+        }
+    }
+
+    return h;
+}
+} // namespace
+
+TEST(EdgeAware, PoissonHealMultigridFillsAHoleWithTheHarmonicRamp)
+{
+    const int width = 47;
+    const int height = 40;
+    const std::size_t pixels = (std::size_t)width * height;
+    const std::vector<float> src(pixels * 4, 0.f);
+    std::vector<float> ramp(pixels * 4);
+    std::vector<float> mask(pixels, 0.f);
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t p = (std::size_t)y * width + x;
+            for (int c = 0; c < 4; ++c) {
+                ramp[4 * p + c] = 0.2f + 0.5f * x / width + 0.3f * y / height + 0.05f * c;
+            }
+            mask[p] = ((x >= 12) && (x < 35) && (y >= 10) && (y < 28)) ? 1.f : 0.f;
+        }
+    }
+    std::vector<float> dest = ramp;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        if (mask[p] != 0.f) {
+            for (int c = 0; c < 4; ++c) {
+                dest[4 * p + c] = 5.f;
+            }
+        }
+    }
+    const int cycles = poissonHealMultigrid(src.data(), dest.data(), mask.data(), width, height, 100, kSerial);
+    EXPECT_GT(cycles, 0);
+    EXPECT_LT(cycles, 30);
+    EXPECT_LT(maxAbsDiff(dest, ramp), 1e-4);
+}
+
+TEST(EdgeAware, PoissonHealMultigridMatchesConvergedSorOnSmallMasks)
+{
+    for (int diagonal = 0; diagonal < 2; ++diagonal) {
+        HealCase h = makeHealCase(64, 48, 15, diagonal != 0);
+        std::vector<float> sor = h.dest;
+        std::vector<float> multigrid = h.dest;
+        poissonHeal(h.src.data(), sor.data(), h.mask.data(), h.width, h.height, kPoissonHealDefaultIterations, kSerial);
+        poissonHealMultigrid(h.src.data(), multigrid.data(), h.mask.data(), h.width, h.height, 100, kSerial);
+        EXPECT_LT(maxAbsDiff(multigrid, sor), 2e-4) << diagonal;
+    }
+}
+
+TEST(EdgeAware, PoissonHealMultigridConvergesWhereSorStops)
+{
+    // A mask too large for darktable's capped SOR to converge.
+    HealCase h = makeHealCase(120, 400, 41, false);
+    std::vector<float> sor = h.dest;
+    std::vector<float> multigrid = h.dest;
+
+    poissonHeal(h.src.data(), sor.data(), h.mask.data(), h.width, h.height, kPoissonHealDefaultIterations, kSerial);
+    const int cycles = poissonHealMultigrid(h.src.data(), multigrid.data(), h.mask.data(), h.width, h.height, 100, kSerial);
+    EXPECT_LT(cycles, 30);
+    const double sorResidual = poissonHealResidual(h.src.data(), sor.data(), h.mask.data(), h.width, h.height);
+    const double multigridResidual = poissonHealResidual(h.src.data(), multigrid.data(), h.mask.data(), h.width, h.height);
+    EXPECT_LE(multigridResidual, sorResidual);
+    EXPECT_LT(multigridResidual, 1e-3);
+}
+
+TEST(EdgeAware, PoissonHealMultigridDoesNotDependOnTheThreadSplit)
+{
+    for (int diagonal = 0; diagonal < 2; ++diagonal) {
+        HealCase h = makeHealCase(150, 300, 61, diagonal != 0);
+        std::vector<float> a = h.dest;
+        std::vector<float> b = h.dest;
+        const int cyclesA = poissonHealMultigrid(h.src.data(), a.data(), h.mask.data(), h.width, h.height, 100, kSerial);
+        const int cyclesB = poissonHealMultigrid(h.src.data(), b.data(), h.mask.data(), h.width, h.height, 100, reverseFor);
+        EXPECT_EQ(cyclesA, cyclesB) << diagonal;
+        EXPECT_EQ(maxAbsDiff(a, b), 0.) << diagonal;
+    }
+}
+
+TEST(EdgeAware, PoissonHealMultigridKeepsNonFiniteSamples)
+{
+    const int width = 20;
+    const int height = 16;
+    const std::size_t pixels = (std::size_t)width * height;
+    std::vector<float> src = randomImage(pixels * 4, 73);
+    std::vector<float> dest = randomImage(pixels * 4, 79);
+    std::vector<float> mask(pixels, 0.f);
+
+    for (int y = 4; y < 12; ++y) {
+        for (int x = 5; x < 15; ++x) {
+            mask[(std::size_t)y * width + x] = 1.f;
+        }
+    }
+    mask[0] = std::numeric_limits<float>::quiet_NaN();
+    const std::size_t inside = 4 * (8 * width + 9);
+    const std::size_t outside = 4 * (1 * width + 1) + 2;
+    dest[inside] = std::numeric_limits<float>::infinity();
+    src[outside] = std::numeric_limits<float>::quiet_NaN();
+    const float destOutside = dest[outside];
+    poissonHealMultigrid(src.data(), dest.data(), mask.data(), width, height, 100, kSerial);
+    EXPECT_TRUE(std::isinf(dest[inside]));
+    EXPECT_EQ(dest[outside], destOutside);
+    for (std::size_t i = 0; i < dest.size(); ++i) {
+        if ((i != inside) && (i != outside)) {
+            EXPECT_TRUE(std::isfinite(dest[i])) << i;
+        }
+    }
+}
+
+TEST(EdgeAware, PoissonHealMultigridConvergesWithTheWholeImageMasked)
+{
+    // No boundary at all: dest - src settles on a constant, and stays finite.
+    HealCase h = makeHealCase(40, 30, 0, false);
+    std::fill(h.mask.begin(), h.mask.end(), 1.f);
+    std::vector<float> dest = h.dest;
+
+    poissonHealMultigrid(h.src.data(), dest.data(), h.mask.data(), h.width, h.height, 100, kSerial);
+    for (int c = 0; c < 4; ++c) {
+        float lo = std::numeric_limits<float>::max();
+        float hi = std::numeric_limits<float>::lowest();
+        for (std::size_t p = 0; p < h.mask.size(); ++p) {
+            const float d = dest[4 * p + c] - h.src[4 * p + c];
+            ASSERT_TRUE(std::isfinite(d));
+            lo = std::min(lo, d);
+            hi = std::max(hi, d);
+        }
+        EXPECT_LT(hi - lo, 1e-3) << c;
+    }
+}
+
+TEST(EdgeAware, PoissonHealMultigridWarmStartsFromAGuess)
+{
+    HealCase h = makeHealCase(120, 300, 41, true);
+    const std::size_t samples = h.dest.size();
+    std::vector<float> cold = h.dest;
+
+    poissonHealMultigrid(h.src.data(), cold.data(), h.mask.data(), h.width, h.height, 100, kSerial);
+    std::vector<float> guess(samples);
+    for (std::size_t i = 0; i < samples; ++i) {
+        guess[i] = cold[i] - h.src[i];
+    }
+    // From the converged difference, nothing is left to solve.
+    std::vector<float> warm = h.dest;
+    const int warmCycles = poissonHealMultigrid(h.src.data(), warm.data(), h.mask.data(), h.width, h.height, 100, kSerial, guess.data());
+    EXPECT_LE(warmCycles, 1);
+    EXPECT_LT(maxAbsDiff(warm, cold), 1e-4);
+
+    // A capped solve from a nearby guess lands closer than one from scratch.
+    std::vector<float> nudged(samples);
+    for (std::size_t i = 0; i < samples; ++i) {
+        nudged[i] = guess[i] + 0.05f;
+    }
+    std::vector<float> fromGuess = h.dest;
+    std::vector<float> fromScratch = h.dest;
+    poissonHealMultigrid(h.src.data(), fromGuess.data(), h.mask.data(), h.width, h.height, 2, kSerial, nudged.data());
+    poissonHealMultigrid(h.src.data(), fromScratch.data(), h.mask.data(), h.width, h.height, 2, kSerial);
+    EXPECT_LT(maxAbsDiff(fromGuess, cold), maxAbsDiff(fromScratch, cold));
+
+    // A non-finite guess sample falls back to the plain starting value.
+    std::vector<float> partial = guess;
+    std::fill(partial.begin(), partial.begin() + samples / 2, std::numeric_limits<float>::quiet_NaN());
+    std::vector<float> fromPartial = h.dest;
+    poissonHealMultigrid(h.src.data(), fromPartial.data(), h.mask.data(), h.width, h.height, 100, kSerial, partial.data());
+    EXPECT_LT(maxAbsDiff(fromPartial, cold), 1e-4);
+}

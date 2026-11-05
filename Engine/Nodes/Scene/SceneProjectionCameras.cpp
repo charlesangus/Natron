@@ -32,20 +32,20 @@
 NATRON_NAMESPACE_ENTER
 
 namespace SceneProjectionCameras {
-namespace {
-    bool
-    transformMightVary(const PXR_NS::UsdPrim& prim)
-    {
-        for (PXR_NS::UsdPrim p = prim; p && !p.IsPseudoRoot(); p = p.GetParent()) {
-            const PXR_NS::UsdGeomXformable xformable(p);
-            if (xformable && xformable.TransformMightBeTimeVarying()) {
-                return true;
-            }
+bool
+transformMightVary(const PXR_NS::UsdPrim& prim)
+{
+    for (PXR_NS::UsdPrim p = prim; p && !p.IsPseudoRoot(); p = p.GetParent()) {
+        const PXR_NS::UsdGeomXformable xformable(p);
+        if (xformable && xformable.TransformMightBeTimeVarying()) {
+            return true;
         }
-
-        return false;
     }
 
+    return false;
+}
+
+namespace {
     bool
     attributeMightVary(const PXR_NS::UsdAttribute& attribute)
     {

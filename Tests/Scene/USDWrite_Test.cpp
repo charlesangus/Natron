@@ -25,6 +25,8 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usd/primRange.h>
+
 #include "Global/Macros.h"
 
 #include <algorithm>
@@ -58,6 +60,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
@@ -483,6 +486,91 @@ TEST_F(USDWriteTest, SidecarsAreStableAndStaleOnesAreRemoved)
     EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Transform2/Card/Red"))));
 }
 
+// A shared material assigned and then moved with the asset under a USDXformPrim writes, in either
+// mode, one material in the Materials Scope that the moved prims stay bound to, with no layer
+// naming an anonymous one and, layered, every reference relative to the written file.
+TEST_F(USDWriteTest, ASharedMaterialAssignmentRoundTripsInBothModes)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    ASSERT_TRUE(reader && material && assign && transform);
+    KnobFile* file = getKnob<KnobFile>(reader, kUSDReadParamFile);
+    ASSERT_TRUE(file != NULL);
+    file->setValue(std::string(kReferenceScene));
+    setString(material, kSceneParamPrimPath, "/Material1");
+    setString(assign, kUSDAssignMaterialParamPrimPattern, "/World/Box /World/Ball");
+    setString(transform, kSceneParamPrimPath, "/T1");
+    ASSERT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(material, kUSDAssignMaterialInputMaterial));
+    ASSERT_TRUE(transform->connectInput(assign, 0));
+
+    const char* const boundPrims[] = { "/T1/World/Box", "/T1/World/Ball" };
+    const PXR_NS::UsdStageRefPtr original = composeOutput(transform);
+    ASSERT_TRUE(static_cast<bool>(original));
+    for (const char* prim : boundPrims) {
+        const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(original->GetPrimAtPath(PXR_NS::SdfPath(prim))).ComputeBoundMaterial();
+        ASSERT_TRUE(static_cast<bool>(bound)) << prim;
+        ASSERT_EQ(PXR_NS::SdfPath("/materials/Material1"), bound.GetPath()) << prim;
+    }
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const bool layered = (mode == USDWrite::eExportModeLayered);
+        const QString outDir = tmp.path() + QString::fromUtf8(layered ? "/layered" : "/flattened");
+        const QString path = outDir + QString::fromUtf8(layered ? "/scene.usda" : "/scene.usdc");
+        NodePtr writer = createWriter(transform, path, mode, 1, 24);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+        ASSERT_TRUE(QFile::exists(path));
+
+        EXPECT_EQ(exportStage(original), readBack(path)) << "mode " << (int)mode;
+
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(stage));
+        // Exactly one copy of the material, in the scope, and none carried along under /T1.
+        int materials = 0;
+        for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+            if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                ++materials;
+                EXPECT_EQ(PXR_NS::SdfPath("/materials/Material1"), prim.GetPath());
+            }
+        }
+        EXPECT_EQ(1, materials) << "mode " << (int)mode;
+        for (const char* prim : boundPrims) {
+            const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath(prim))).ComputeBoundMaterial();
+            ASSERT_TRUE(static_cast<bool>(bound)) << prim << " mode " << (int)mode;
+            EXPECT_EQ(PXR_NS::SdfPath("/materials/Material1"), bound.GetPath()) << prim << " mode " << (int)mode;
+        }
+
+        for (const QString& name : fileNames(outDir)) {
+            PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(QDir(outDir).filePath(name).toStdString());
+            ASSERT_TRUE(static_cast<bool>(layer)) << name.toStdString();
+            std::string text;
+            ASSERT_TRUE(layer->ExportToString(&text));
+            EXPECT_EQ(std::string::npos, text.find("anon:")) << name.toStdString() << "\n"
+                                                             << text;
+            if (!layered) {
+                continue;
+            }
+            for (const PXR_NS::SdfPrimSpecHandle& root : layer->GetRootPrims()) {
+                PXR_NS::SdfReferenceListOp referenceList;
+                if (!layer->HasField(root->GetPath(), PXR_NS::SdfFieldKeys->References, &referenceList)) {
+                    continue;
+                }
+                for (const PXR_NS::SdfReference& reference : referenceList.GetAppliedItems()) {
+                    if (!reference.GetAssetPath().empty()) {
+                        EXPECT_TRUE(QDir::isRelativePath(QString::fromStdString(reference.GetAssetPath()))) << reference.GetAssetPath();
+                    }
+                }
+            }
+        }
+    }
+}
+
 // A read corrected to the project's metrics writes as it composes in both modes: flattened bakes
 // the corrective ops in, layered keeps them over the file, which it still sublayers by relative
 // path, and both carry the project's metrics. An uncorrected read keeps the file's.
@@ -801,6 +889,56 @@ protected:
     NodePtr card;
 };
 
+// The bake finds the mesh through whichever purpose the assign bound the projection for.
+TEST_F(USDWriteProjectionTest, AnAssignedProjectionIsBakedAsADirectOneIs)
+{
+    createRig();
+    ASSERT_TRUE(bool(card));
+    card->disconnectInput(0);
+    const std::pair<USDAssignMaterial::PurposeEnum, PXR_NS::TfToken> purposes[] = {
+        { USDAssignMaterial::ePurposeAll, PXR_NS::UsdShadeTokens->allPurpose },
+        { USDAssignMaterial::ePurposeFull, PXR_NS::UsdShadeTokens->full },
+        { USDAssignMaterial::ePurposePreview, PXR_NS::UsdShadeTokens->preview },
+    };
+    for (const std::pair<USDAssignMaterial::PurposeEnum, PXR_NS::TfToken>& purpose : purposes) {
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        ASSERT_TRUE(bool(assign));
+        getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/Card1");
+        getKnob<KnobChoice>(assign, kUSDAssignMaterialParamPurpose)->setValue((int)purpose.first);
+        ASSERT_TRUE(assign->connectInput(card, kUSDAssignMaterialInputScene));
+        ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+        const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(assign, path, USDWrite::eExportModeFlattened, 1, 3);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+        EXPECT_FALSE(writer->hasPersistentMessage()) << purpose.second.GetString() << ": " << messageOf(writer).toStdString();
+
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(bool(stage));
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        ASSERT_TRUE(bool(st)) << purpose.second.GetString();
+        const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st);
+        EXPECT_NEAR(0.f, bounds.first[0], 1e-4f);
+        EXPECT_NEAR(0.f, bounds.first[1], 1e-4f);
+        EXPECT_NEAR(1.f, bounds.second[0], 1e-4f);
+        EXPECT_NEAR(1.f, bounds.second[1], 1e-4f);
+
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1"))).ComputeBoundMaterial(purpose.second);
+        ASSERT_TRUE(bool(material)) << purpose.second.GetString();
+        const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource();
+        ASSERT_TRUE(bool(surface));
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(surface.GetShaderId(&id));
+        EXPECT_EQ(std::string("UsdPreviewSurface"), id.GetString());
+
+        assign->disconnectInput(kUSDAssignMaterialInputMaterial);
+        assign->disconnectInput(kUSDAssignMaterialInputScene);
+    }
+}
+
 // Exported, the projection is the plate's texture on a preview surface, read through UVs that put
 // the frame's corners at (0, 0) and (1, 1); the Storm shader is left inactive.
 TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
@@ -999,4 +1137,33 @@ TEST_F(USDWriteProjectionTest, AnOverscanPlateBakesUVsSpanningItsFormat)
     EXPECT_NEAR(1100.f / 1200.f, bounds.second[1], 1e-4f);
     // The exported texture holds the whole data window, overscan included.
     EXPECT_EQ(std::make_pair(2400, 1200), sizeOf(tmp.path() + QString::fromUtf8("/scene_textures/Plate1_rgba.exr")));
+}
+
+TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const QString dir = tmp.path() + QString::fromUtf8(mode == USDWrite::eExportModeLayered ? "/layered" : "/flattened");
+        const QString path = dir + QString::fromUtf8("/out.usda");
+        NodePtr writer = createWriter(merge, path, mode, 1, 1);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+        ASSERT_TRUE(QFile::exists(path));
+
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(stage));
+        for (const PXR_NS::UsdPrim& prim : stage->TraverseAll()) {
+            for (const std::pair<const std::string, PXR_NS::VtValue>& entry : prim.GetCustomData()) {
+                EXPECT_TRUE(entry.first.rfind("natron:", 0) != 0) << prim.GetPath().GetString() << " " << entry.first;
+            }
+        }
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
+        }
+    }
 }

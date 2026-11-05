@@ -548,6 +548,7 @@ struct SceneViewportRenderer::Implementation {
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
+    std::atomic<U64> stageEditCount { 0 };
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -1534,6 +1535,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     _imp->metersPerUnit = metadata.metersPerUnit;
     _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
     _imp->shown = !payload.isEmpty();
+    _imp->stageEditCount = _imp->sceneStage->getEditCount();
 
     return true;
 }
@@ -1574,6 +1576,21 @@ bool
 SceneViewportRenderer::hasScene() const
 {
     return _imp->shown;
+}
+
+void
+SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
+    read(shown ? _imp->sceneStage.get() : nullptr);
+}
+
+U64
+SceneViewportRenderer::getStageEditCount() const
+{
+    return _imp->stageEditCount;
 }
 
 double
@@ -2041,7 +2058,7 @@ SceneViewportRenderer::tumble(double azimuthDegrees,
                               double elevationDegrees)
 {
     _imp->lookThrough.clear();
-    // Tumbling an orthographic view leaves its axis, as in Nuke.
+    // Tumbling an orthographic view leaves its axis.
     _imp->freeCamera.viewMode = eViewModePerspective;
     _imp->freeCamera.azimuth = std::fmod(_imp->freeCamera.azimuth + azimuthDegrees, 360.);
     _imp->freeCamera.elevation = std::max(kMinElevation, std::min(kMaxElevation, _imp->freeCamera.elevation + elevationDegrees));
@@ -3412,6 +3429,7 @@ SceneViewport::onSynced(U64 serial,
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
     publishState();
     update();
+    Q_EMIT sceneSynced();
 }
 
 bool
@@ -3952,8 +3970,8 @@ SceneViewport::beginCameraLock()
     }
     const bool scaled = (std::abs(s[0]) > 1e-12) && (std::abs(s[1]) > 1e-12) && (std::abs(s[2]) > 1e-12);
     if (!translate || !rotate || !rotateOrder || !havePose || !scaled) {
-        // The view stays locked to the camera and does not move, as Nuke's does for a camera
-        // read from a file.
+        // The view stays locked to the camera and does not move for a camera read from a
+        // file.
         lock.refused = true;
         _imp->lockMessage = tr("%1 has no Camera node to move: the view is locked to it").arg(QString::fromStdString(path));
         publishState();
@@ -4404,7 +4422,7 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
         return;
     }
     const QPoint pos = e->position().toPoint();
-    // A marquee may start on a prim, as in Nuke: a drag selects by rectangle wherever it starts,
+    // A marquee may start on a prim: a drag selects by rectangle wherever it starts,
     // and a release without a drag selects what is under the press.
     if (clickSelects) {
         _imp->pressPrim = pickPrimAt(pos);

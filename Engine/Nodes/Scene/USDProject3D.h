@@ -109,10 +109,10 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDPROJECT3D,
         .label = "USDProject3D",
-        .description = "Author a material that projects the Image input through a camera, as Nuke's Project3D does: each "
+        .description = "Author a material that projects the Image input through a camera: each "
                        "point of the surface shows the image where it lands in the camera's frame, per pixel and "
                        "perspective-correct, unlit and alpha-blended over what is behind it. Connect it to the Material "
-                       "input of a geometry node, or bind it as any material is bound. The camera comes from the "
+                       "input of a geometry node or USDAssignMaterial, or bind it as any material is bound. The camera comes from the "
                        "Camera input, by path, and is stored in the material as values. In World space the "
                        "projection stays where the camera is while the geometry moves through it; in Geometry space "
                        "it is fixed to the geometry where it is connected, so transforms after that carry it along. "

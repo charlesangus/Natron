@@ -62,6 +62,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -2516,6 +2517,7 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
         }
+        LoopFrameBudget::refreshShared();
         setCachingLabels();
     } else if (k == _diskCachePath.get()) {
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());

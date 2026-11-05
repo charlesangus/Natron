@@ -83,6 +83,7 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobDriver_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
     KnobQueuedValueChange_Test.cpp
@@ -116,6 +117,8 @@ set(Tests_SOURCES
     Ai/ModelRegistry_Test.cpp
     Ai/ModelDownloader_Test.cpp
     Ai/ModelKnob_Test.cpp
+    Ai/Segmentation_Test.cpp
+    Ai/MaskTrace_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -131,6 +134,7 @@ set(Tests_SOURCES
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
@@ -288,6 +292,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
+    EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
@@ -298,12 +303,15 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
+    NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
+    SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
@@ -314,15 +322,18 @@ set(GuiTests_SOURCES
     WindowPlacement_Test.cpp
     guimain.cpp
 )
+# QAbstractItemModelTester checks the item models.
+find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui
         NatronEngine
         Qt::Core
         Qt::Widgets
+        Qt::Test
         Python3::Python
         ${NATRON_USD_ENGINE_LIBRARIES}
 )

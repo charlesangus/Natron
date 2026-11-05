@@ -61,7 +61,7 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Writes texture coordinates on the meshes a prim pattern names in its scene by projecting
- * their points through a camera, as Nuke's UVProject does: in Perspective mode a point's UV is
+ * their points through a camera: in Perspective mode a point's UV is
  * where it lands in the camera's aperture, conformed to the Format by Fit Mode, (0, 0) at the
  * bottom left and (1, 1) at the top right. Planar, Spherical and Cylindrical map the points in
  * the camera's space. The result is a faceVarying primvar (st by default) indexed per face
@@ -102,7 +102,7 @@ public:
         .id = PLUGINID_NATRON_USDPROJECTUV,
         .label = "USDProjectUV",
         .description = "Write texture coordinates on the meshes a pattern names (paths, with * and ? wildcards) in the "
-                       "input scene by projecting their points through a camera, as Nuke's UVProject does. The camera "
+                       "input scene by projecting their points through a camera. The camera "
                        "comes from the Camera input, or from the scene when that input is not connected. The UVs are a "
                        "faceVarying primvar (st by default) that any renderer reads; texture them with a USDMaterial. "
                        "They are per vertex, so a projection onto coarse geometry warps between vertices. A moving "
@@ -149,7 +149,7 @@ private:
 
     void scheduleCameraMenuRefresh();
 
-    // Greys out the knobs the chosen projection does not read, as Nuke does.
+    // Greys out the knobs the chosen projection does not read.
     void refreshProjectionKnobs();
 
     // The format the UVs map the camera's aperture to, as a width over height in square pixels.

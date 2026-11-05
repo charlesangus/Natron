@@ -30,9 +30,11 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
@@ -62,7 +64,12 @@ struct GraftSlot {
     // Sublayers input's stack; created once the input has roots.
     PXR_NS::SdfLayerRefPtr wrapper;
     std::string destinationPath;
-    // The name each root is grafted under, index for index with rootNames.
+    // The root left at its own path rather than grafted, empty for none.
+    std::string passThroughRoot;
+    // Whether the input's passThroughRoot holds a UsdGeomGprim; checked when the input has it.
+    bool passThroughHoldsGprim = false;
+    // The name each root is grafted under, index for index with rootNames; a passed-through
+    // root keeps its own.
     std::vector<std::string> childNames;
     // Null layer for an input without roots.
     SceneLayerEntry graft;
@@ -812,6 +819,123 @@ authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
 } // authorMetricsCorrection
 
 namespace {
+    struct LayerOwner {
+        // Expired once the layer is gone, so an entry outliving its layer never answers for
+        // another layer allocated at the same address.
+        PXR_NS::SdfLayerHandle layer;
+        NodeWPtr owner;
+    };
+
+    struct LayerOwnerRegistry {
+        std::mutex mutex;
+        std::unordered_map<const PXR_NS::SdfLayer*, LayerOwner> owners;
+        std::size_t sweepAt = 1024;
+    };
+
+    LayerOwnerRegistry&
+    layerOwnerRegistry()
+    {
+        static LayerOwnerRegistry registry;
+
+        return registry;
+    }
+
+    void
+    recordLayerOwner(LayerOwnerRegistry& registry,
+                     const PXR_NS::SdfLayerHandle& layer,
+                     const NodePtr& owner)
+    {
+        if (!layer) {
+            return;
+        }
+        LayerOwner& entry = registry.owners[PXR_NS::get_pointer(layer)];
+        entry.layer = layer;
+        entry.owner = owner;
+        if (registry.owners.size() >= registry.sweepAt) {
+            for (auto it = registry.owners.begin(); it != registry.owners.end();) {
+                if (!it->second.layer || it->second.owner.expired()) {
+                    it = registry.owners.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            registry.sweepAt = std::max<std::size_t>(1024, registry.owners.size() * 2);
+        }
+    }
+} // anonymous namespace
+
+void
+setLayerOwner(const ScenePayload& payload,
+              const NodePtr& owner,
+              bool topOnly)
+{
+    if (payload.isEmpty() || !owner) {
+        return;
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (topOnly) {
+        const std::shared_ptr<const ScenePayloadImpl>& impl = payload.getImpl();
+        if (impl) {
+            recordLayerOwner(registry, impl->top.layer, owner);
+        }
+
+        return;
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        recordLayerOwner(registry, entry.layer, owner);
+    }
+}
+
+NodePtr
+getLayerOwner(const PXR_NS::SdfLayerHandle& layer)
+{
+    if (!layer) {
+        return NodePtr();
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.owners.find(PXR_NS::get_pointer(layer));
+
+    if ((found == registry.owners.end()) || (found->second.layer != layer)) {
+        return NodePtr();
+    }
+
+    return found->second.owner.lock();
+}
+
+NodePtr
+authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                PXR_NS::UsdTimeCode time,
+                std::string* layerIdentifier)
+{
+    if (layerIdentifier) {
+        layerIdentifier->clear();
+    }
+    if (!attribute) {
+        return NodePtr();
+    }
+    for (const PXR_NS::SdfPropertySpecHandle& spec : attribute.GetPropertyStack(time)) {
+        if (!spec) {
+            continue;
+        }
+        const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+        const PXR_NS::SdfAttributeSpecHandle attributeSpec = PXR_NS::TfDynamic_cast<PXR_NS::SdfAttributeSpecHandle>(spec);
+        const bool holdsValue = spec->HasDefaultValue() || (layer && (layer->GetNumTimeSamplesForPath(spec->GetPath()) > 0)) || (attributeSpec && attributeSpec->HasSpline());
+        if (!holdsValue) {
+            continue;
+        }
+        if (layerIdentifier && layer) {
+            *layerIdentifier = layer->GetIdentifier();
+        }
+
+        return getLayerOwner(layer);
+    }
+
+    return NodePtr();
+}
+
+namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under
     // them its link index lists whose composed targets leave their root. Pure overs define nothing
     // to graft, and classes stay where the input's inherits expect them.
@@ -868,6 +992,55 @@ namespace {
         return true;
     }
 
+    bool
+    isPassedThrough(const GraftSlot& slot,
+                    std::size_t rootIndex)
+    {
+        return !slot.passThroughRoot.empty() && (slot.rootNames[rootIndex] == slot.passThroughRoot);
+    }
+
+    PXR_NS::SdfPath
+    graftedRootOf(const GraftSlot& slot,
+                  const PXR_NS::SdfPath& destination,
+                  std::size_t rootIndex)
+    {
+        if (isPassedThrough(slot, rootIndex)) {
+            return PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(slot.rootNames[rootIndex]));
+        }
+
+        return destination.AppendChild(PXR_NS::TfToken(slot.childNames[rootIndex]));
+    }
+
+    bool
+    rootHoldsGprim(const ScenePayload& input,
+                   const std::string& name,
+                   bool* holdsGprim,
+                   std::string* errorMessage)
+    {
+        *holdsGprim = false;
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        if (!lease.isValid()) {
+            return false;
+        }
+        const PXR_NS::UsdPrim root = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(name)));
+        if (!root) {
+            return true;
+        }
+        if (root.IsA<PXR_NS::UsdGeomGprim>()) {
+            *holdsGprim = true;
+
+            return true;
+        }
+        for (const PXR_NS::UsdPrim& prim : root.GetDescendants()) {
+            if (prim.IsA<PXR_NS::UsdGeomGprim>()) {
+                *holdsGprim = true;
+                break;
+            }
+        }
+
+        return true;
+    }
+
     // Where path lies once slot's roots are grafted under destination; the empty path when it lies
     // under none of them.
     PXR_NS::SdfPath
@@ -882,7 +1055,7 @@ namespace {
         }
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             if (slot.rootNames[i] == root.GetName()) {
-                return path.ReplacePrefix(root, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+                return path.ReplacePrefix(root, graftedRootOf(slot, destination, i));
             }
         }
 
@@ -967,10 +1140,10 @@ namespace {
         return layer;
     }
 
-    // Defines destination/<child name> for each of slot's roots, referencing the root in slot's
-    // wrapper. Everything above the children is an "over": the structure layer defines it, and an
-    // over sent or withdrawn with this layer changes no prim's definition, so swapping this layer
-    // resyncs only the grafted roots.
+    // Defines destination/<child name> for each of slot's roots, or /<root> for a passed-through
+    // one, referencing the root in slot's wrapper. Everything above the children is an "over": the
+    // structure layer defines it, and an over sent or withdrawn with this layer changes no prim's
+    // definition, so swapping this layer resyncs only the grafted roots.
     PXR_NS::SdfLayerRefPtr
     authorGraftLayer(const GraftSlot& slot,
                      const PXR_NS::SdfPath& destination,
@@ -987,7 +1160,7 @@ namespace {
         carryAuthoredMetadata(slot.input, layer);
         const std::string& wrapperIdentifier = slot.wrapper->GetIdentifier();
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
-            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, graftedRootOf(slot, destination, i));
             if (!child) {
                 return PXR_NS::SdfLayerRefPtr();
             }
@@ -1049,6 +1222,7 @@ namespace {
              std::vector<bool>* consumed,
              const ScenePayload& input,
              const std::string* destinationPath,
+             const std::string* passThroughRoot,
              const std::vector<std::string>* childNames)
     {
         for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -1057,6 +1231,9 @@ namespace {
                 continue;
             }
             if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
+                continue;
+            }
+            if (passThroughRoot && (slot.passThroughRoot != *passThroughRoot)) {
                 continue;
             }
             if (childNames && (slot.childNames != *childNames)) {
@@ -1114,16 +1291,25 @@ reparentRoots(const SceneReparentArgs& args,
         GraftSlot& slot = slots[i];
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
-        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL)) {
+        slot.passThroughRoot = args.passThroughRoot;
+        bool gprimChecked = false;
+        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
+            if (previous->passThroughRoot == slot.passThroughRoot) {
+                slot.passThroughHoldsGprim = previous->passThroughHoldsGprim;
+                gprimChecked = true;
+            }
         } else if (!readInput(slot.input, &slot.rootNames, &slot.links, errorMessage)) {
+            return false;
+        }
+        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, slot.passThroughRoot, &slot.passThroughHoldsGprim, errorMessage)) {
             return false;
         }
         if (destination.IsRootPrimPath()) {
             for (const std::string& root : slot.rootNames) {
-                if (root == destination.GetName()) {
+                if ((root == destination.GetName()) && (root != slot.passThroughRoot)) {
                     if (errorMessage) {
                         *errorMessage = "Input " + std::to_string(i + 1) + " has a root prim at " + args.destinationPath + ", the path its roots are grafted under: it would be grafted inside itself.";
                     }
@@ -1135,12 +1321,17 @@ reparentRoots(const SceneReparentArgs& args,
     }
 
     // Names in input order: with autoRename, a root whose name an earlier input took gets the
-    // first "_<n>" suffix free of every name taken so far and of its own input's root names.
+    // first "_<n>" suffix free of every name taken so far and of its own input's root names. A
+    // passed-through root is never renamed: every input's composes at its own path.
     std::set<std::string> taken;
     for (GraftSlot& slot : slots) {
         const std::set<std::string> own(slot.rootNames.begin(), slot.rootNames.end());
         for (const std::string& root : slot.rootNames) {
             std::string name = root;
+            if (root == slot.passThroughRoot) {
+                slot.childNames.push_back(name);
+                continue;
+            }
             if (args.autoRename && taken.count(name)) {
                 for (U64 n = 1;; ++n) {
                     const std::string candidate = root + "_" + std::to_string(n);
@@ -1181,7 +1372,7 @@ reparentRoots(const SceneReparentArgs& args,
         if (slot.rootNames.empty()) {
             continue;
         }
-        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.childNames)) {
+        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.passThroughRoot, &slot.childNames)) {
             slot.wrapper = previous->wrapper;
             slot.graft = previous->graft;
             continue;
@@ -1207,6 +1398,7 @@ reparentRoots(const SceneReparentArgs& args,
         h.appendString("graft");
         h.appendU64(slot.input.getStackHash());
         h.appendString(slot.destinationPath);
+        h.appendString(slot.passThroughRoot);
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             h.appendString(slot.rootNames[i]);
             h.appendString(slot.childNames[i]);
@@ -1275,7 +1467,9 @@ reparentRoots(const SceneReparentArgs& args,
                 SceneRootGraft graft;
                 graft.inputIndex = i;
                 graft.sourcePath = "/" + slot.rootNames[j];
-                graft.graftedPath = destination.AppendChild(PXR_NS::TfToken(slot.childNames[j])).GetString();
+                graft.graftedPath = graftedRootOf(slot, destination, j).GetString();
+                graft.passedThrough = isPassedThrough(slot, j);
+                graft.holdsGprim = graft.passedThrough && slot.passThroughHoldsGprim;
                 grafts->push_back(graft);
             }
         }
@@ -1310,6 +1504,7 @@ struct SceneLayerMemo::Implementation {
     U64 layerHash = 0;
     ScenePayload output;
     U64 authorCount = 0;
+    NodeWPtr owner;
 };
 
 SceneLayerMemo::SceneLayerMemo()
@@ -1352,6 +1547,7 @@ SceneLayerMemo::produce(const Key& key,
     h.appendDouble(key.framesPerSecond);
     h.appendI64((std::int64_t)key.upAxis);
     h.appendDouble(key.metersPerUnit);
+    h.appendString(key.materialsScope);
     const U64 layerHash = h.finalize();
 
     if (!SceneOps::checkUsdRuntime(errorMessage)) {
@@ -1386,6 +1582,7 @@ SceneLayerMemo::produce(const Key& key,
     edit.framesPerSecond = key.framesPerSecond;
     edit.upAxis = key.upAxis;
     edit.metersPerUnit = key.metersPerUnit;
+    edit.materialsScope = key.materialsScope;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
     LiveTextureSourceList liveTextures;
@@ -1431,6 +1628,7 @@ SceneLayerMemo::produce(const Key& key,
         u.appendU64(++unmemoized);
         entry.hash = u.finalize();
         *output = SceneOps::appendEntry(upstream, entry);
+        SceneOps::setLayerOwner(*output, _imp->owner.lock(), true);
 
         return true;
     }
@@ -1438,6 +1636,7 @@ SceneLayerMemo::produce(const Key& key,
     _imp->layerHash = layerHash;
     _imp->valid = true;
     *output = _imp->output;
+    SceneOps::setLayerOwner(_imp->output, _imp->owner.lock(), true);
 
     return true;
 } // SceneLayerMemo::produce
@@ -1449,6 +1648,14 @@ SceneLayerMemo::invalidate()
 
     _imp->valid = false;
     _imp->output = ScenePayload();
+}
+
+void
+SceneLayerMemo::setOwner(const NodePtr& owner)
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    _imp->owner = owner;
 }
 
 U64

@@ -98,6 +98,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER;
 
+class KnobDriverRow;
 
 struct KnobGuiPrivate
 {
@@ -122,6 +123,8 @@ struct KnobGuiPrivate
 
     // True if this KnobGui is used in the viewer
     bool isInViewerUIKnob;
+    // The row standing in for the knob's widgets while it is driven; null for a knob that cannot be.
+    KnobDriverRow* driverRow;
 
     KnobGuiPrivate(KnobGuiContainerI* container);
 

@@ -1,7 +1,7 @@
 # USDProjectUV
 
 Writes texture coordinates on the meshes of its Scene input that Prim Pattern
-names, by projecting their points through a camera, as Nuke's UVProject does.
+names, by projecting their points through a camera.
 The pattern is a list of absolute prim paths separated by spaces, whose names may
 use `*` and `?`, as in USDEditTransform. The result is a `faceVarying` primvar
 named by Primvar Name (`st` by default, which `UsdPreviewSurface` textures read),

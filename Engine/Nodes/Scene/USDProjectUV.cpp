@@ -894,7 +894,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
                 }
             }
             if (cameraPath.empty()) {
-                // Without a camera the other projections map in world space, as Nuke's do.
+                // Without a camera the other projections map in world space.
                 if (settings.projection == eProjectionPerspective) {
                     *errorMessage = (cameraInput ? tr("The Camera input has no camera to project through.")
                                                  : tr("The scene has no camera to project through: connect one to the Camera input."))

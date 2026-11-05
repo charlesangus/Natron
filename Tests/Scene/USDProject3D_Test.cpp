@@ -60,6 +60,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -799,4 +800,140 @@ TEST_F(USDProject3DTest, InWorldSpaceTheGeometryLeavesTheProjectionAlone)
     const PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial().ComputeSurfaceSource();
     ASSERT_TRUE(bool(shader));
     EXPECT_FALSE(bool(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame))));
+}
+
+// One projection assigned to one of two cards: that card binds the material, and its shader and
+// live texture are those a direct connection to a card gets.
+TEST_F(USDProject3DTest, AssignedToSelectedPrimsItBindsThereAsADirectConnectionDoes)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr direct = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr selected = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(direct && selected && other && merge && assign);
+    ASSERT_TRUE(direct->connectInput(projector, 0));
+    ASSERT_TRUE(merge->connectInput(selected, 0));
+    ASSERT_TRUE(merge->connectInput(other, 1));
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(selected).GetString());
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    ScenePayload directPayload, assignedPayload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(direct, &directPayload, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(assign, &assignedPayload, &error)) << error;
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const PXR_NS::UsdStageRefPtr directStage = SceneOps::compose(directPayload);
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(assignedPayload);
+    ASSERT_TRUE(directStage && stage);
+
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(getNodePath(selected))).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    EXPECT_EQ(PXR_NS::SdfPath("/materials/Project1"), bound.GetPath());
+    EXPECT_FALSE(bool(PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(getNodePath(other))).ComputeBoundMaterial()));
+
+    const PXR_NS::UsdShadeShader assigned = bound.ComputeSurfaceSource();
+    const PXR_NS::UsdShadeShader expected = PXR_NS::UsdShadeMaterialBindingAPI(directStage->GetPrimAtPath(getNodePath(direct))).ComputeBoundMaterial().ComputeSurfaceSource();
+    ASSERT_TRUE(assigned && expected);
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(assigned.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx")));
+    EXPECT_EQ(USDProject3D::getShaderPath(), asset.GetAssetPath());
+    EXPECT_TRUE(PXR_NS::GfIsClose(getMatrix(expected), getMatrix(assigned), 1e-12));
+    EXPECT_EQ(getInt(expected, kUSDProject3DInputProjectionSpace), getInt(assigned, kUSDProject3DInputProjectionSpace));
+    for (const char* name : { "projectOn", "crop", "outside" }) {
+        EXPECT_EQ(getInt(expected, name), getInt(assigned, name)) << name;
+    }
+
+    const LiveTextureSourceList directSources = SceneOps::getLiveTextures(directPayload);
+    const LiveTextureSourceList assignedSources = SceneOps::getLiveTextures(assignedPayload);
+    ASSERT_EQ((std::size_t)1, directSources.size());
+    ASSERT_EQ((std::size_t)1, assignedSources.size());
+    EXPECT_EQ(directSources[0].getUri(1.), assignedSources[0].getUri(1.));
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(assigned.GetInput(PXR_NS::TfToken("plate")).GetConnectedSource(&source, &sourceName, &sourceType));
+    PXR_NS::SdfAssetPath file;
+    ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetInput(PXR_NS::TfToken("file")).Get(&file));
+    EXPECT_EQ(assignedSources[0].getUri(1.), file.GetAssetPath());
+}
+
+// The material sits apart from the geometry, so the assign gives a Geometry projection the
+// placement a geometry node would.
+TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(card && assign);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., 1., ViewSpec::all(), 0);
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(card).GetString());
+    ASSERT_TRUE(assign->connectInput(card, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
+    PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
+    ASSERT_TRUE(prim && shader);
+    PXR_NS::UsdShadeInput frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    ASSERT_TRUE(bool(frame));
+    EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
+    PXR_NS::GfMatrix4d geometryFrame(0.);
+    ASSERT_TRUE(frame.Get(&geometryFrame));
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)), geometryFrame, 1e-9));
+    EXPECT_FALSE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.)), geometryFrame, 1e-9));
+
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(false);
+    stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    prim = stage->GetPrimAtPath(getNodePath(card));
+    shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
+    ASSERT_TRUE(prim && shader);
+    frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    ASSERT_TRUE(bool(frame));
+    const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
+    EXPECT_EQ(frames, frame.GetAttr().GetNumTimeSamples());
+    ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.)), geometryFrame, 1e-9));
+}
+
+TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartItFollowsTheFirstAndWarns)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    NodePtr near = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr far = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(near && far && merge && assign);
+    getKnob<KnobDouble>(far, kSceneParamTranslate)->setValue(3., ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(near, 0));
+    ASSERT_TRUE(merge->connectInput(far, 1));
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(near).GetString() + " " + getNodePath(far).GetString());
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).contains(QString::fromStdString(getNodePath(far).GetString()))) << getMessage(assign).toStdString();
+    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
+    ASSERT_TRUE(bool(shader));
+    PXR_NS::GfMatrix4d geometryFrame(0.);
+    ASSERT_TRUE(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)).Get(&geometryFrame));
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(getNodePath(near))).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)), geometryFrame, 1e-9));
 }

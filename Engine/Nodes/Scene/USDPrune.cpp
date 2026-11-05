@@ -60,6 +60,7 @@ USDPrune::initializeKnobs()
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
     primPattern->setName(kUSDPruneParamPrimPattern);
+    primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
     primPattern->setHintToolTip(tr("The prims to remove: absolute prim paths separated by spaces, whose names may use * "
                                    "(any run of characters) and ? (any one character), such as /World/Geo/*."));
     primPattern->setAnimationEnabled(false);

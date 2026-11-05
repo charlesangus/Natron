@@ -310,6 +310,8 @@ public Q_SLOTS:
 
     void moveProgressPanelHere();
 
+    void moveSceneGraphHere();
+
     void onSplitHorizontally()
     {
         splitHorizontally();

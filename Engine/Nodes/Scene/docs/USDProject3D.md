@@ -1,9 +1,10 @@
 # USDProject3D
 
 Projects its Image input through a camera onto whatever the material it authors is
-bound to, as Nuke's Project3D does. The output is a material: connect it to a
-geometry node's Material input, or bind it by its path as any material in the
-scene is bound (a collection binding included). The projection is per fragment and perspective
+bound to. The output is a material: connect it to a geometry node's Material
+input, to USDAssignMaterial's Material input to project onto the prims a pattern
+names, or bind it by its path as any material in the scene is bound (a collection
+binding included). The projection is per fragment and perspective
 correct, so coarse geometry does not warp it. It is a Storm (glslfx) surface: it
 shows in the Viewer's 3D view and in USDRender; USDWrite bakes it to UVs and a
 `UsdPreviewSurface` for other renderers. The surface is unlit and emissive: it shows
@@ -32,12 +33,14 @@ Controls:
 
 - Projection Space: World fixes the projection where the camera is, so geometry
   moving after it slides through the image. Geometry fixes it to the geometry as
-  the geometry node it is the material of places it: transforms after that node
+  the node it is connected to places it: transforms after that node
   carry the image along. With Use Frame Hold on, the geometry is also taken at
-  Frame Hold, so the image sticks to the geometry's own animation too, as Nuke's
-  Project3D with a held camera does. Only the primitive nodes (USDCard, USDCube,
-  USDSphere, USDCylinder) place a projection; bound any other way, a Geometry
-  projection takes the camera in the geometry's own coordinates.
+  Frame Hold, so the image sticks to the geometry's own animation too. The primitive
+  nodes (USDCard, USDCube, USDSphere, USDCylinder) and USDAssignMaterial's Material
+  input place a projection; bound any other way, a Geometry projection takes the
+  camera in the geometry's own coordinates. USDAssignMaterial places it where the
+  matched geometry is at that node. The material holds one placement, so matches
+  at different places follow the first, with a node warning.
 - Project On: Both, Front (faces facing the camera) or Back.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
   image has no data, black. Off, the image's data beyond its format shows there, and

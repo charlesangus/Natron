@@ -40,6 +40,9 @@ NATRON_NAMESPACE_ENTER
  * definition, which the returned image covers and may exceed.
  *
  * Returns NULL in the cases sampleNodeColor() returns false.
+ *
+ * abortInfo, if set, lets another thread stop the render with setAborted(); the call then returns
+ * NULL. Without it the render cannot be aborted.
  **/
 ImagePtr renderNodeImage(const NodePtr& node,
                          double time,
@@ -47,7 +50,8 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          unsigned int mipmapLevel,
                          const RectI& pixelRect,
                          const ImageLayerDesc& layer,
-                         RectI* renderedRect);
+                         RectI* renderedRect,
+                         const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
  * @brief The part of node's image at time a texture of it holds, in full-scale pixel coordinates,

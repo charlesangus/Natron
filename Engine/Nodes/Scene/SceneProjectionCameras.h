@@ -43,6 +43,9 @@ NATRON_NAMESPACE_ENTER
  * sampled values and never a relationship's target.
  **/
 namespace SceneProjectionCameras {
+// True when the prim's world transform may change over time: its own or one above it.
+bool transformMightVary(const PXR_NS::UsdPrim& prim);
+
 // True when the camera's projection may change over time: its attributes or a transform above it.
 bool cameraMightVary(const PXR_NS::UsdGeomCamera& camera);
 

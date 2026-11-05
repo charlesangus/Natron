@@ -188,6 +188,7 @@ renderNodeImageImpl(const NodePtr& node,
                     const ImageLayerDesc& layer,
                     const RectI* window,
                     RectI* renderedRect,
+                    const AbortableRenderInfoPtr& abortInfoArg,
                     bool* rendered)
 {
     *rendered = false;
@@ -208,7 +209,7 @@ renderNodeImageImpl(const NodePtr& node,
         break;
     }
 
-    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    AbortableRenderInfoPtr abortInfo = abortInfoArg ? abortInfoArg : AbortableRenderInfo::create(false, 0);
     AbortableThread* isAbortable = dynamic_cast<AbortableThread*>(QThread::currentThread());
     if (isAbortable) {
         isAbortable->setAbortInfo(true /*isRenderUserInteraction*/, abortInfo, node->getEffectInstance());
@@ -242,11 +243,12 @@ renderNodeImage(const NodePtr& node,
                 unsigned int mipmapLevel,
                 const RectI& pixelRect,
                 const ImageLayerDesc& layer,
-                RectI* renderedRect)
+                RectI* renderedRect,
+                const AbortableRenderInfoPtr& abortInfo)
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, &rendered);
 }
 
 bool
@@ -303,7 +305,7 @@ renderNodeImageOverWindow(const NodePtr& node,
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), &rendered);
 
     return rendered;
 }

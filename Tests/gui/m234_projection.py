@@ -6,12 +6,14 @@ Graph: CheckerBoard1 (red/blue squares) into USDProject3D1's Image input, USDCam
 input, USDProject3D1 into USDCard1's Material input, USDCard1 into Viewer1. The Viewer is switched to
 the Un-tone-mapped view so screen colours are the image's. The checks:
   - the card shows saturated red and blue squares, not the fallback grey;
+  - the projection assigned through USDAssignMaterial1 instead of USDCard1's Material input shows the
+    same squares;
   - Projection Space = Geometry with Use Frame Hold on, then the card translated: the coloured squares
     move with the card (the card's colour pattern is unchanged, its position is not);
-  - USDProjectUV1 (Scene = USDCard1, Camera = USDCamera1) has the Nuke UVProject knobs and its panel
+  - USDProjectUV1 (Scene = USDCard1, Camera = USDCamera1) has its projection knobs and its panel
     opens.
 
-Screenshots: m234_world.png, m234_geometry_moved.png, m234_projectuv_panel.png (full window), each
+Screenshots: m234_world.png, m234_assigned.png, m234_geometry_moved.png, m234_projectuv_panel.png (full window), each
 scene shot with a _viewer.png crop.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -58,6 +60,7 @@ try:
     project = make("USDProject3D", 0, 100)
     card = make("USDCard", 0, 200)
     project_uv = make("USDProjectUV", 200, 200)
+    assign = make("USDAssignMaterial", 200, 100)
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -221,6 +224,30 @@ try:
         save_shots("m234_world")
         before = signature(coloured_pixels())
         check(before is not None, "the card is a region of red and blue pixels in the scene view")
+
+        card.disconnectInput(0)
+        param(assign, "primPattern").set("/*")
+        require(assign.connectInput(0, card), "connect USDCard1 to USDAssignMaterial1's Scene input")
+        require(assign.connectInput(1, project), "connect USDProject3D1 to USDAssignMaterial1's Material input")
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, assign), "connect the Viewer to USDAssignMaterial1")
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: scene_drawn() and card_shows_checker(), POLL_TIMEOUT_S)
+        check(ok, "assigned through USDAssignMaterial, the card shows the projected squares (%r)" % (patch_hues(),))
+        yield ("sleep", SETTLE_MS)
+        save_shots("m234_assigned")
+        assigned = signature(coloured_pixels())
+        require(before is not None and assigned is not None, "the assigned card shows red and blue pixels")
+        agreement = pattern_agreement(before, assigned)
+        check(agreement >= 0.75,
+              "the assigned projection looks like the direct one (%.0f%% of cells agree)" % (100 * agreement))
+        viewer.disconnectInput(0)
+        assign.disconnectInput(1)
+        assign.disconnectInput(0)
+        require(card.connectInput(0, project), "reconnect USDProject3D1 to USDCard1's Material input")
+        require(viewer.connectInput(0, card), "reconnect the Viewer to USDCard1")
+        ok = yield ("until", lambda: scene_drawn() and card_shows_checker(), POLL_TIMEOUT_S)
+        require(ok, "the card shows the projection through its own Material input again")
 
         param(project, "projectionSpace").set(1)
         param(project, "useFrameHold").set(True)

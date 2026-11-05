@@ -41,6 +41,41 @@
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 
+// Script names of the Viewer node's knobs.
+#define kViewerParamEnableGain "enableGain"
+#define kViewerParamGain "gain"
+#define kViewerParamEnableGamma "enableGamma"
+#define kViewerParamGamma "gamma"
+#define kViewerParamAutoContrast "autoContrast"
+#define kViewerParamCheckerboard "enableCheckerBoard"
+#define kViewerParamDisplay "display"
+#define kViewerParamView "view"
+#define kViewerParamLook "look"
+#define kViewerParamDisplayChannels "displayChannels"
+#define kViewerParamDisplayChannelsB "displayChannelsB"
+#define kViewerParamLayer "layer"
+#define kViewerParamAlphaChannel "alphaChannel"
+#define kViewerParamAInput "aInput"
+#define kViewerParamBInput "bInput"
+#define kViewerParamOperation "operation"
+#define kViewerParamWipeCenter "wipeCenter"
+#define kViewerParamWipeAmount "wipeAmount"
+#define kViewerParamWipeAngle "wipeAngle"
+#define kViewerParamActiveView "activeView"
+#define kViewerParamEnableFps "enableFps"
+#define kViewerParamFps "desiredFps"
+// The playback timer divides by the frame rate; 0.1 is the fps box's smallest step.
+#define kViewerMinimumFps 0.1
+#define kViewerParamInPoint "inPoint"
+#define kViewerParamOutPoint "outPoint"
+#define kViewerParamEnableUserRoI "enableRegionOfInterest"
+#define kViewerParamUserRoIBottomLeft "userRoIBottomLeft"
+#define kViewerParamUserRoISize "userRoISize"
+#define kViewerParamClipToFormat "clipToFormat"
+#define kViewerParamFullFrame "fullFrame"
+#define kViewerParamEnableDownscale "enableDownscale"
+#define kViewerParamDownscaleLevel "downscaleLevel"
+
 NATRON_NAMESPACE_ENTER
 
 class UpdateViewerParams; // ViewerInstancePrivate
@@ -258,8 +293,6 @@ public:
 
     void updateViewer(UpdateViewerParamsPtr & frame);
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
-
     /**
      *@brief Bypasses the cache so the next frame will be rendered fully
      **/
@@ -346,8 +379,16 @@ public:
     void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
 
     /**
-     * @brief The processor for the current display, view and look, from the project's working
-     * space. Null when the config cannot build it. MT-safe.
+     * @brief The display, view and look the viewer renders with. An empty display or view, or a
+     * name the project's config lacks, falls back to the project's defaults, then to the config's,
+     * then to its first entry; a look the config lacks renders as none. The knobs keep the names
+     * they hold. MT-safe.
+     **/
+    void getResolvedDisplayTransform(std::string* display, std::string* view, std::string* look) const;
+
+    /**
+     * @brief The processor for getResolvedDisplayTransform(), from the project's working space.
+     * Null when the config cannot build it. MT-safe.
      **/
     ProjectColorManagement::DisplayProcessorPtr getDisplayProcessor() const;
 
@@ -434,6 +475,20 @@ public:
 
     bool isViewerPaused(int texIndex) const;
 
+    /**
+     * @brief How many renders knob edits have asked for since the viewer was created, whether or
+     * not a viewer UI was there to run them. Lets a test tell processing knobs, which re-render,
+     * from display state that only redraws or is only stored. Main thread only.
+     **/
+    unsigned int getKnobRenderRequestCount() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Knob edits made between these ask for one render at the outermost endKnobEdits()
+     * instead of one per changed knob or dimension. Main thread only.
+     **/
+    void beginKnobEdits();
+    void endKnobEdits();
+
 public Q_SLOTS:
 
 
@@ -456,6 +511,15 @@ public Q_SLOTS:
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
+
+private Q_SLOTS:
+
+    // Keeps the aInput/bInput knobs equal to the inspector's active inputs, which input
+    // connections also move.
+    void onInspectorActiveInputsChanged();
+
+    // Applies the saved aInput/bInput knobs to the inspector once a load has restored every input.
+    void onProjectLoaded();
 
 Q_SIGNALS:
 
@@ -566,6 +630,23 @@ private:
 
 
     virtual RenderEngine* createRenderEngine() OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // Re-resolves the layer and alpha knobs against what the A input carries; a value that
+    // resolves to nothing keeps the previous description. Returns whether a description changed.
+    bool refreshResolvedLayers();
+
+    void requestRenderFromKnob();
+    void redrawOrRenderForColorChange();
+    // Makes inputNb the inspector's active input on side 0 (A) or 1 (B), without touching the knob.
+    void applyActiveInput(int side, int inputNb);
 
 private:
 

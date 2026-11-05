@@ -91,13 +91,13 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
 
 ## Phase 231.5: Strip folding
 
-- [ ] M231.P5.T1 — Remove graph-side folding
+- [x] M231.P5.T1 — Remove graph-side folding
   - files: `Engine/Nodes/Scene/USDRead.{h,cpp}`, `Engine/Nodes/Scene/docs/USDRead.md`, `Engine/Nodes/Scene/USDExpandHierarchy.*` and its docs (delete), `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDRead_Test.cpp`, `Tests/Scene/USDWrite_Test.cpp`, `Tests/Scene/USDExpandHierarchy_Test.cpp` (delete)
   - approach: remove Open Mode, Open Levels and the `natron:viewerFold` and `natron:viewerOpenLevels` custom data, including USDWrite's strip. Delete USDExpandHierarchy and its registration. M330 - Graph Draw Policy rewrites it later and takes what it needs from history.
   - verify: grep finds no `viewerFold`, `viewerOpenLevels` or `USDExpandHierarchy` in the tree; USDRead and USDWrite gtests pass; a USDWrite export carries no Natron custom data.
   - size: M
 
-- [ ] M231.P5.T2 — Remove viewer folding
+- [x] M231.P5.T2 — Remove viewer folding
   - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Gui/SceneViewport.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Engine/Settings.{h,cpp}`, `Tests/Scene/SceneFold_Test.cpp` (delete), `Tests/gui/scene_graph_fold.py` (delete)
   - approach: remove `SceneStage`'s fold API, listener, session-layer draw-mode authoring and fold load rules, `computeViewerFolds`, the viewport's fold state, the panel's row mirroring and fold delegate, and the prim budget preference. Twirling becomes plain tree state that never reaches the stage. The viewer draws everything, exactly as main does.
   - verify: `SceneGraphModel` gtests and `scene_graph_panel.py`, `scene_graph_follow.py`, `scene_graph_drag.py` pass; a GUI check that twirling a row produces no stage notice.

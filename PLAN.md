@@ -126,12 +126,12 @@ future core work has solid ground to build on.
 | M79 | Layered Document Readers | blocked | M75 | bosley-native-nodes | E3 | response | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | done | M75, M85, M120, M137 | bosley-native-nodes | E3 | | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
 | M159 | Kind-Agnostic Groups | done | - | bosley-native-nodes | E3 | | [M159-kind-agnostic-groups.md](PLAN/MILESTONES/M159-kind-agnostic-groups.md) |
-| M160 | Lensfun Lens Correction | doing | M80, M113 | bosley-native-nodes | E3 | | [M160-lensfun-lens-correction.md](PLAN/MILESTONES/M160-lensfun-lens-correction.md) |
+| M160 | Lensfun Lens Correction | done | M80, M113 | bosley-native-nodes | E3 | | [M160-lensfun-lens-correction.md](PLAN/MILESTONES/M160-lensfun-lens-correction.md) |
 | M82 | Render Cost Profiling | done |  |  | E6 | | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | done |  |  | E5 | | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | done |  |  | E5 | | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M101 | Clean-Sheet Merge Node | done | M84, M137, M158 |  | E3 | | [M101-clean-sheet-merge-node.md](PLAN/MILESTONES/M101-clean-sheet-merge-node.md) |
-| M111 | Native Node Identity Cleanup | doing | M76, M101, M120, M184 | bosley-native-nodes | E3 | | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
+| M111 | Native Node Identity Cleanup | done | M76, M101, M120, M184 | bosley-native-nodes | E3 | | [M111-native-node-identity-cleanup.md](PLAN/MILESTONES/M111-native-node-identity-cleanup.md) |
 | M112 | Native Node Behaviour Fixes | done | - | bosley-native-nodes | E3 | | [M112-native-node-behaviour-fixes.md](PLAN/MILESTONES/M112-native-node-behaviour-fixes.md) |
 | M81 | Raw GPU Kernels | done | M80, M85 | gpu | E5 | | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | done | M84 | gpu | E5 | | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
@@ -179,8 +179,8 @@ future core work has solid ground to build on.
 | M335 | Viewer Render Draw States | todo | M254, M329 |  | E9 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
 | M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M337 | Geometry Spreadsheet | todo | M54, M333 |  | E9 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
-| M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
-| M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
+| M233 | Live Node Textures | done | M19, M20 | bosley-native-nodes | E9 | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
+| M234 | Camera Projection Nodes | done | M227, M233 | bosley-native-nodes | E9 | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |

@@ -167,7 +167,7 @@ future core work has solid ground to build on.
 | M229 | 3D Viewer Guides And Display | done | M228 | bosley-native-nodes | E9 | | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | done | M226, M229 | bosley-native-nodes | E9 | | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | done | M229 | bosley-native-nodes | E9 | | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
-| M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
+| M232 | Scene Selection To Nodes | done | M226, M231 | bosley-native-nodes | E9 | | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
 | M327 | Heavy Scene Spike | todo | M231, M232 |  | E9 | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
 | M328 | Deferred Viewer Stage | todo | M327 |  | E9 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
 | M329 | Viewer Draw States | todo | M327, M328 |  | E9 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |

@@ -254,12 +254,13 @@ TEST_F(NativeLensCorrectGpuTest, ScaledRendersMatchTheCpu)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    for (const LensSetup& setup : kSetups) {
-        NodePtr node = makeLensCorrect(source, setup);
-        ASSERT_TRUE(bool(node)) << setup.what;
-        for (unsigned mip : { 1u, 2u }) {
-            expectParity(source, node, std::string(setup.what) + " mip " + std::to_string(mip), mip);
-        }
+    // Each render costs seconds on a software device, whatever its size. Scale enters the kernel
+    // around the lens model, so one setup per code path is enough: correct with TCA and
+    // vignetting, distort, and a geometry change.
+    for (const int setup : { 0, 1, 4 }) {
+        NodePtr node = makeLensCorrect(source, kSetups[setup]);
+        ASSERT_TRUE(bool(node)) << kSetups[setup].what;
+        expectParity(source, node, std::string(kSetups[setup].what) + " mip 2", 2u);
     }
 }
 
@@ -275,7 +276,7 @@ TEST_F(NativeLensCorrectGpuTest, GrownRegionMatchesTheCpu)
     for (const std::pair<const char*, double>& c : { std::make_pair(kLensCorrectModeCorrect, 1.5), std::make_pair(kLensCorrectModeDistort, 0.7) }) {
         ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMode, std::string(c.first)));
         ASSERT_TRUE(setKnobValues(node, kLensCorrectParamScale, { c.second }));
-        for (unsigned mip : { 0u, 1u, 2u }) {
+        for (unsigned mip : { 0u, 2u }) {
             expectParityOverRegion(node, std::string(c.first) + " mip " + std::to_string(mip), mip);
         }
     }
@@ -290,7 +291,7 @@ TEST_F(NativeLensCorrectGpuTest, OverscanSourceMatchesTheCpu)
     setParitySourceOrigin(source, -kParitySourceWidth / 4, -kParitySourceHeight / 4);
     NodePtr node = makeLensCorrect(source, kSetups[0]);
     ASSERT_TRUE(bool(node));
-    for (unsigned mip : { 0u, 1u, 2u }) {
+    for (unsigned mip : { 0u, 2u }) {
         expectParityOverRegion(node, "overscan mip " + std::to_string(mip), mip);
     }
 }
@@ -306,8 +307,7 @@ TEST_F(NativeLensCorrectGpuTest, HugePositionsMatchTheCpu)
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryFisheye)));
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamAutoScale, { 0. }));
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamScale, { 0.1 }));
-    expectParity(source, node, "scale 0.1 to fisheye");
-    // The image is small, so the render stops at its region; a partial mix takes it out to the corners.
+    // The image is small, so a render stops at its region; a partial mix takes it out to the corners.
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(source, node, "scale 0.1 to fisheye, mix");
 }

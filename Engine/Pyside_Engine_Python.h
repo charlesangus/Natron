@@ -46,7 +46,7 @@
 #include <GlobalDefines.h>
 #include <Enums.h>
 
-//Engine
+// Engine
 #include "MergingEnum.h"
 #include "PyAppInstance.h"
 #include "PyExprUtils.h"

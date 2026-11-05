@@ -277,6 +277,11 @@ public:
         Q_EMIT linkChanged();
     }
 
+    void s_driverChanged(int dimension)
+    {
+        Q_EMIT driverChanged(dimension);
+    }
+
 public Q_SLOTS:
 
     /**
@@ -381,6 +386,9 @@ Q_SIGNALS:
     /// Emitted when a dimension of the knob joins or leaves a link group, is unlinked or re-linked,
     /// or when another member of one of its link groups does.
     void linkChanged();
+
+    /// Emitted when a driver is set on or removed from the dimension (see KnobHelper::setDriver()).
+    void driverChanged(int dimension);
 };
 
 struct KnobChange
@@ -2119,6 +2127,46 @@ public:
                                  RenderContextPtr* context = 0) const;
 
     /**
+     * @brief Whether this knob's dimensions take a driver (see KnobDriver): those of Int, Double
+     * and Color knobs, choices and parametric knobs excepted.
+     **/
+    bool canHaveDriver() const;
+
+    /**
+     * @brief Gives dimension a driver, or removes its own with a null one, and registers the
+     * driver as a read source of the knob. Returns false, changing nothing, for a dimension out
+     * of range or a knob that cannot have one. MT-safe.
+     **/
+    bool setDriver(int dimension, const KnobDriverPtr& driver);
+    KnobDriverPtr getDriver(int dimension) const;
+    bool hasDrivers() const;
+
+    /**
+     * @brief Whether a driver of any dimension has a keyed start or end. MT-safe.
+     **/
+    bool hasAnimatedDriver() const;
+
+    /**
+     * @brief The variables the drivers of every dimension read. MT-safe.
+     **/
+    RenderContextReadSet getDriverReadSet() const;
+
+    /**
+     * @brief The times of every dimension's driver start and end keys, for the timeline.
+     **/
+    void getDriverKeyTimes(std::list<SequenceTime>* times) const;
+
+    /**
+     * @brief Whether the node's timeline marks show this knob's keys.
+     **/
+    bool showsKeysOnTimeline() const;
+
+private:
+    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
+    static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
+
+public:
+    /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
      * them: its own read sources' and, transitively, those of what its expressions and links read.
      * Walks them all even when called while such a gathering runs.
@@ -2150,11 +2198,30 @@ public:
     RenderContextReadSet getRFVReadSet() const;
 
     /**
-     * @brief Has every project variable an expression of this knob reads of rfv listened to by
-     * the expression's dimension, as setting the expression does, for the variables the project
-     * declares after the expression was set. Listeners already registered are kept as they are.
+     * @brief Has every project variable an expression of this knob reads of rfv, or a driver of
+     * it falls back to, listened to by that dimension, as setting the expression or the driver
+     * does, for the variables the project declares after it was set. Listeners already registered
+     * are kept as they are.
      **/
     void refreshRFVListeners();
+
+    /**
+     * @brief Has dimension depend on what the Python source reads, as if it were the dimension's
+     * expression (parameters through getValue() and the like, node metadata, project variables
+     * through rfv), without the source giving the dimension its value. For a holder that
+     * evaluates Python of its own from a knob's content: an edit of anything the source reads
+     * then moves this knob's content hash and reaches it as a listener. Replaces what the
+     * previous source registered; an empty source registers nothing. While the dimension has an
+     * expression, its dependencies are the expression's and the source only waits for it to be
+     * cleared. Setting the source it already has does nothing. Main thread only; never throws.
+     **/
+    void setReadDependencyExpression(int dimension, const std::string& source);
+
+    /**
+     * @brief Registers the read dependencies of every dimension's setReadDependencyExpression()
+     * source again, for the knobs and nodes that exist now (once a project is loaded).
+     **/
+    void refreshReadDependencies();
 
     /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
@@ -2164,6 +2231,13 @@ public:
     void setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation);
 
 protected:
+    /**
+     * @brief The value the driver of dimension gives at time and view under the render context
+     * the holder is queried under on the calling thread, and true; false without a driver or a
+     * context holding its variable.
+     **/
+    bool getDriverValue(double time, ViewIdx view, int dimension, double* value) const;
+
     /**
      * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
      * their content hash then covers nothing, whatever GUI state their value carries.
@@ -2295,6 +2369,24 @@ public:
     /// The expression must put its result in the Python variable named "ret"
     /// The Python GIL must be held before calling this, so the the PyObject remains valid.
     static bool executeExpression(const std::string& expr, PyObject** ret, std::string* error);
+
+    /**
+     * @brief Compiles source, a single Python expression, into a function with the environment of an
+     * expression of this knob: bare node names, thisNode, thisParam, rfv and app. It takes (frame, view)
+     * then the parameters named, and returns the expression's value. The result is a new reference, null
+     * with error set when the source or the environment cannot be compiled; a syntax error names
+     * sourceName and the source's own line. Call it with callExpressionFunction(). The Python GIL must
+     * be held.
+     **/
+    PyObject* compileExpressionSource(const std::string& source, const std::string& sourceName, const std::vector<std::string>& parameters, std::string* error) const;
+
+    /**
+     * @brief Calls a function from compileExpressionSource() the way an expression of this knob is
+     * evaluated at time and view: the knobs it reads without a time read at time, and rfv reads the
+     * context of this knob's node. arguments, a tuple, follow the frame and the view. The result is a new
+     * reference, null with error set when the call raised. The Python GIL must be held.
+     **/
+    bool callExpressionFunction(PyObject* function, double time, ViewIdx view, PyObject* arguments, PyObject** ret, std::string* error) const;
 
     virtual std::pair<int, KnobIPtr> getMaster(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isSlave(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2441,6 +2533,19 @@ protected:
 private:
 
     void expressionChanged(int dimension);
+
+    // Stops the dimension listening to the knobs its expression depends on and forgets them, or
+    // only to dependency when it is given; every node metadata dependency goes too when it is not.
+    void removeExpressionDependencies(int dimension, const KnobI* dependency);
+
+    // Undoes the listener a driver the dimension no longer has registered on the project
+    // variable name falls back to, unless the dimension's expression or read dependency source
+    // reads that variable too.
+    void unregisterDriverRFVListener(int dimension, const std::string& name);
+
+    // Re-registers the dependencies of the dimension's read dependency source, if it has one and
+    // no expression.
+    void registerReadDependencies(int dimension);
 
     // Recomputes getRFVReadSet() and swaps the context read source holding it.
     void refreshRFVReads();
@@ -2869,6 +2974,8 @@ private:
 
 
     bool getValueFromExpression(double time, ViewIdx view, int dimension, bool clamp, T* ret);
+
+    bool getValueFromDriver(double time, ViewIdx view, int dimension, bool clamp, T* ret) const;
 
     bool getValueFromExpression_pod(double time, ViewIdx view, int dimension, bool clamp, double* ret);
 

@@ -781,6 +781,12 @@ Knob<T>::getValue(int dimension,
     if ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
     }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(getCurrentTime(), expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
+    }
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
         T ret;
@@ -817,6 +823,34 @@ Knob<T>::getValue(int dimension,
         } else {
             return _values[dimension];
         }
+    }
+}
+
+template <typename T>
+bool
+Knob<T>::getValueFromDriver(double time,
+                            ViewIdx view,
+                            int dimension,
+                            bool clamp,
+                            T* ret) const
+{
+    if constexpr (std::is_same<T, std::string>::value) {
+        return false;
+    } else {
+        double value;
+        if (!getDriverValue(time, view, dimension, &value)) {
+            return false;
+        }
+        if constexpr (std::is_same<T, int>::value) {
+            *ret = (int)std::lround(value);
+        } else {
+            *ret = (T)value;
+        }
+        if (clamp) {
+            *ret = clampToMinMax(*ret, dimension);
+        }
+
+        return true;
     }
 }
 
@@ -917,6 +951,12 @@ Knob<T>::getValueAtTime(double time,
     ExpressionReadRecorder::record(this, dimension);
     if  ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
+    }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(time, expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
     }
 
     bool useGuiValues = QThread::currentThread() == qApp->thread();
@@ -2387,7 +2427,8 @@ Knob<T>::onTimeChanged(bool isPlayback,
     if ( getIsSecret() ) {
         return;
     }
-    bool shouldRefresh = false;
+    // A keyed driver start or end changes the value with the frame too.
+    bool shouldRefresh = hasAnimatedDriver();
     for (int i = 0; i < dims; ++i) {
         if ( _signalSlotHandler && ( isAnimated( i, ViewIdx(0) ) || !getExpression(i).empty() ) ) {
             shouldRefresh = true;

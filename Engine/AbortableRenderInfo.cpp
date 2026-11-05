@@ -53,6 +53,8 @@ struct AbortableRenderInfoPrivate {
     std::atomic<bool> superseded;
     mutable QMutex threadsMutex;
     ThreadSet threadsForThisRender;
+    QMutex keptAliveMutex;
+    std::vector<std::shared_ptr<void>> keptAlive;
 
     AbortableRenderInfoPrivate(bool canAbort,
                                U64 age)
@@ -63,6 +65,8 @@ struct AbortableRenderInfoPrivate {
         , superseded(false)
         , threadsMutex()
         , threadsForThisRender()
+        , keptAliveMutex()
+        , keptAlive()
     {
     }
 };
@@ -80,6 +84,14 @@ AbortableRenderInfo::AbortableRenderInfo(bool canAbort,
 
 AbortableRenderInfo::~AbortableRenderInfo()
 {
+}
+
+void
+AbortableRenderInfo::keepAliveWithRender(const std::shared_ptr<void>& object)
+{
+    QMutexLocker k(&_imp->keptAliveMutex);
+
+    _imp->keptAlive.push_back(object);
 }
 
 U64

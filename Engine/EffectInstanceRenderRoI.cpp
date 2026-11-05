@@ -65,6 +65,7 @@
 #include "Engine/PluginMemory.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
@@ -686,6 +687,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             return eRenderRoIRetCodeOk;
         } // if (identity)
 
+        {
+            const RectI forwardedRoI = args.roi.intersect(pixelRod);
+            std::map<ImageLayerDesc, ImagePtr> forwarded;
+            RenderRoIRetCode forwardCode = eRenderRoIRetCodeOk;
+            if (!forwardedRoI.isNull() && forwardsOutput(args, requestedComponents, forwardedRoI, &forwarded, &forwardCode)) {
+                if (forwardCode == eRenderRoIRetCodeOk) {
+                    outputLayers->insert(forwarded.begin(), forwarded.end());
+                }
+
+                return forwardCode;
+            }
+        }
+
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         ////////////////////////////// End identity check ///////////////////////////////////////////////////////////////
 
@@ -872,7 +886,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
     bool createInCache;
     // Do not use the cache for OpenGL rendering
-    if (useOpenGL) {
+    if (useOpenGL || renderContextHasLoopVariables(frameArgs->context)) {
         createInCache = false;
     } else {
         // in Analysis, the node upstream of the analysis node should always cache

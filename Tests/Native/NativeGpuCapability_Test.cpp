@@ -78,6 +78,8 @@
 #include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -178,6 +180,8 @@ gpuCapableIds()
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
         PLUGINID_NATRON_SPLINEWARP,
+        PLUGINID_NATRON_LOOPBEGIN,
+        PLUGINID_NATRON_LOOPEND,
         PLUGINID_NATRON_TIMEWARP,
         PLUGINID_NATRON_RETIME,
         PLUGINID_NATRON_CONTRASTTEXTURE,

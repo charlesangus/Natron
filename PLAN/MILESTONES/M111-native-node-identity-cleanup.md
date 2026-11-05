@@ -158,7 +158,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.5: Read and Write knob names
 
-- [ ] M111.P5.T1 — Give Read and Write native knob names and one colourspace knob
+- [x] M111.P5.T1 — Give Read and Write native knob names and one colourspace knob
   - files: `Engine/Nodes/IO/NativeRead.{h,cpp}`, `Engine/Nodes/IO/NativeWrite.{h,cpp}`, `Engine/Project.cpp` (`:304`), `Engine/WriteNode.cpp` (`:812`, if it still exists after M76), the Read/Write tests that pin knob names
   - approach:
     - Rename the openfx-io knob names to camelCase native names that describe the behaviour (e.g. `before` → `beforeFirstFrame`, `frameMode` + `startingTime` + `timeOffset` → a clear frame-offset pair). Decide the final names in the task and list them in the report.
@@ -169,7 +169,7 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Phase 107.6: Close-out
 
-- [ ] M111.P6.T1 — UAT
+- [x] M111.P6.T1 — UAT
   - files: none (user acceptance)
   - approach: hand the user a build and a checklist:
     - the tab menu shows one entry per node (Merge presets excepted)
@@ -199,3 +199,4 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 - 2026-11-02 — P3.T2: x and y sizes may have opposite signs, run as separate x then y passes (user). P5.T1: 'follow the project default' is a visible 'Project default' entry in the single colourspace menu (user).
 - 2026-11-02 — P5.T1 at dee877d5d (Read/Write renames as approved; Project default resolves live via file rules → file tag → project default). Follow-ups (user): the 'Project default' entry shows what it resolved to; the OCIO nodes get the same treatment (ocioContext/contextKeyN, single colourspace choice menus) — OCIOColorSpace keeps two menus, input and output space.
 - 2026-11-02 — 4104b5a6e: Project default shows its resolution; OCIO nodes converted (OCIOColorSpace input/output menus). Also (user): snake_case knobs renamed to camelCase; OCIOFileTransform gets an OCIO context group.
+- 2026-11-05 — UAT approved (user). P5.T1 landed at dee877d5d and 4104b5a6e; its box was stale (PM).

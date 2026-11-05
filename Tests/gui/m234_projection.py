@@ -8,8 +8,9 @@ the Un-tone-mapped view so screen colours are the image's. The checks:
   - the card shows saturated red and blue squares, not the fallback grey;
   - the projection assigned through USDAssignMaterial1 instead of USDCard1's Material input shows the
     same squares;
-  - Projection Space = Geometry with Use Frame Hold on, then the card translated: the coloured squares
-    move with the card (the card's colour pattern is unchanged, its position is not);
+  - Projection Space = Geometry with Use Frame Hold on, then the card moved by USDEditTransform1 after
+    USDCard1: the coloured squares move with the card (the card's colour pattern is unchanged, its
+    position is not);
   - USDProjectUV1 (Scene = USDCard1, Camera = USDCamera1) has its projection knobs and its panel
     opens.
 
@@ -30,7 +31,9 @@ SETTLE_MS = 800
 STARTUP_TIMEOUT_S = 60.0
 UNTONED_VIEW = "Un-tone-mapped"
 BOX_SIZE = 480.0
-CARD_SHIFT = 1.5
+# The edit's op applies inside the card's own 16:9 scale, so this moves the card one world unit. Much
+# further and the short scene view clips too much of the card to compare its pattern.
+EDIT_SHIFT = 0.5625
 
 PROJECTUV_KNOBS = ("camera", "cameraPath", "primPattern", "projection", "plane", "projectOn", "frustumCulling", "invertU",
                    "invertV", "uScale", "vScale", "primvarName", "fitMode", "useFrameHold", "frameHold")
@@ -61,6 +64,7 @@ try:
     card = make("USDCard", 0, 200)
     project_uv = make("USDProjectUV", 200, 200)
     assign = make("USDAssignMaterial", 200, 100)
+    edit = make("USDEditTransform", 400, 200)
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -131,8 +135,15 @@ try:
         total = sum(counts.values())
         return total > 0 and counts["r"] >= 0.1 * total and counts["b"] >= 0.1 * total
 
+    def card_pixels(points, step=8):
+        """The points with coloured neighbours: the view's red and blue axes are thin lines, not regions."""
+        hues = set((x, y) for x, y, _h in points)
+        return [(x, y, h) for x, y, h in points
+                if sum((x + dx, y + dy) in hues for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step))) >= 2]
+
     def signature(points, grid=8):
-        """The coloured pixels' bounding box, centroid and a grid x grid map of their hues inside it."""
+        """The card's bounding box, centroid and a grid x grid map of its hues inside the box."""
+        points = card_pixels(points)
         if len(points) < 20:
             return None
         xs = [p[0] for p in points]
@@ -143,7 +154,8 @@ try:
             gx = min(grid - 1, (x - x0) * grid // max(1, x1 - x0 + 1))
             gy = min(grid - 1, (y - y0) * grid // max(1, y1 - y0 + 1))
             cells.setdefault((gx, gy), []).append(h)
-        pattern = {k: max(set(v), key=v.count) for k, v in cells.items()}
+        # Sorted so that a tied cell gets the same hue in every run: set order varies with the hash seed.
+        pattern = {k: max(sorted(set(v)), key=v.count) for k, v in cells.items()}
         return {"box": (x0, y0, x1, y1), "centroid": (sum(xs) / len(xs), sum(ys) / len(ys)), "pattern": pattern}
 
     def pattern_agreement(a, b):
@@ -255,11 +267,22 @@ try:
         yield ("sleep", SETTLE_MS)
         ok = yield ("until", lambda: scene_drawn() and card_shows_checker(), POLL_TIMEOUT_S)
         check(ok, "Geometry space with Frame Hold still shows the projected squares (%r)" % (patch_hues(),))
-        held = signature(coloured_pixels())
-
-        param(card, "translate").set(CARD_SHIFT, 0.0, 0.0)
         yield ("sleep", SETTLE_MS)
-        ok = yield ("until", lambda: scene_drawn() and card_shows_checker(), POLL_TIMEOUT_S)
+        held = signature(coloured_pixels())
+        require(held is not None, "the held projection shows red and blue pixels")
+
+        def card_moved():
+            current = signature(coloured_pixels())
+            return scene_drawn() and current is not None and abs(current["centroid"][0] - held["centroid"][0]) > 20
+
+        # Through the card's own translate this would move the placement the projection takes as well,
+        # and the image would stay where the camera is: the frame held is the card as its node places it.
+        param(edit, "primPattern").set("/*")
+        param(edit, "translate").set(EDIT_SHIFT, 0.0, 0.0)
+        viewer.disconnectInput(0)
+        require(edit.connectInput(0, card), "connect USDCard1 to USDEditTransform1's Scene input")
+        require(viewer.connectInput(0, edit), "connect the Viewer to USDEditTransform1")
+        yield ("until", card_moved, POLL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
         save_shots("m234_geometry_moved")
         moved = signature(coloured_pixels())

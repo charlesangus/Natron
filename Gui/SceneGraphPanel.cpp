@@ -380,11 +380,11 @@ struct SceneGraphPanel::Implementation {
         return sequences.empty() ? QKeySequence() : sequences.front();
     }
 
-    // Whether the panel's selection can create a node now; when it can't, the create key is left
-    // to the view, where Tab moves the focus.
-    bool canCreateFromSelection(const QStringList& paths) const
+    // Whether a node can be created from the panel's selection now, even an empty one; when it
+    // can't, the create key is left to the view, where Tab moves the focus.
+    bool canCreateFromSelection() const
     {
-        return !paths.isEmpty() && SceneSelectionActions::createBlocker(gui, panel->getShownNode()).isEmpty();
+        return SceneSelectionActions::createBlocker(gui, panel->getShownNode()).isEmpty();
     }
 
     void runSelectionAction(int action,
@@ -851,7 +851,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
         create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
         create->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
-        create->setEnabled(_imp->canCreateFromSelection(selection));
+        create->setEnabled(_imp->canCreateFromSelection());
         QAction* chosen = menu.exec(_imp->tree->viewport()->mapToGlobal(pos));
         if (!chosen) {
             return;
@@ -1382,7 +1382,7 @@ SceneGraphPanel::eventFilter(QObject* watched,
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
         const int action = Implementation::selectionActionForKey(k->modifiers(), k->key());
         const QStringList selection = (action != 0) ? getSelection() : QStringList();
-        if ((action == 1) || ((action == 2) && _imp->canCreateFromSelection(selection))) {
+        if ((action == 1) || ((action == 2) && _imp->canCreateFromSelection())) {
             e->accept();
             if (e->type() == QEvent::KeyPress) {
                 _imp->runSelectionAction(action, selection);

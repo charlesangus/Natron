@@ -46,16 +46,14 @@ NATRON_NAMESPACE_ENTER
  **/
 namespace TabMenuBridge {
 /**
- * @brief A launch that lists only the node types that can take some data, and inserts the one
- * chosen after a node.
+ * @brief A launch that lists only the node types that can take some data, and hands the one
+ * chosen to the caller.
  **/
 struct LaunchContext {
     // Only node types whose first input takes this kind are listed, and no commands.
     DataKindEnum inputKind = eDataKindScene;
     // Only node types that declare a prim path or pattern knob are listed.
     bool needsPrimPathKnob = false;
-    // The node the created node is inserted after, taking its outputs as the graph's insert does.
-    NodeWPtr insertAfter;
     // Adds to the creation arguments of the node the chosen action creates, such as initial knob
     // values, which are in place before the node first evaluates.
     std::function<void(CreateNodeArgs& args)> decorateArgs;
@@ -93,11 +91,10 @@ void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scen
 void launch(NodeGraph* graph);
 
 /**
- * @brief Opens the tab menu filtered by context over graph, which holds context.insertAfter. The
- * action chosen is triggered as one undo step, with insertAfter alone selected in graph so that
- * the node it creates is inserted after it; context.created is then called with that node. The
- * selection ends as after any tab menu choice, with the node created selected; the selection the
- * user had before is not restored.
+ * @brief Opens the tab menu filtered by context over graph. The action chosen is triggered as one
+ * undo step, with nothing selected in graph so that the node it creates connects to nothing by
+ * itself; context.created is then called with that node. The selection ends as after any tab menu
+ * choice, with the node created selected; the selection the user had before is not restored.
  **/
 void launch(NodeGraph* graph, const LaunchContext& context);
 

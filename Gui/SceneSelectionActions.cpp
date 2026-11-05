@@ -28,6 +28,8 @@
 #include <list>
 #include <string>
 
+#include <QPointF>
+#include <QRectF>
 #include <QSet>
 #include <QStatusBar>
 #include <QUndoCommand>
@@ -45,6 +47,7 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabMenuBridge.h"
@@ -97,8 +100,9 @@ private:
     std::string _newValue;
 };
 
-// Gives the prim knob of the node args create paths as its initial value; a USDXformPrim wraps
-// the prim rather than defining one there.
+// Gives the prim knob of the node args create paths as its initial value, which no paths leave
+// empty so the knob never evaluates with its normal default. A USDXformPrim wraps a selected prim
+// rather than defining one there.
 void
 addInitialPrims(CreateNodeArgs& args,
                 const QStringList& paths)
@@ -106,11 +110,11 @@ addInitialPrims(CreateNodeArgs& args,
     const QString pluginID = QString::fromStdString(args.getProperty<std::string>(kCreateNodeArgsPropPluginID));
     const Plugin* plugin = appPTR->getPluginBinary(pluginID, args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 0), args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 1), false);
 
-    if (!plugin || plugin->getPrimPathKnob().empty() || paths.isEmpty()) {
+    if (!plugin || plugin->getPrimPathKnob().empty()) {
         return;
     }
     args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), SceneSelectionActions::primPathsText(plugin->getPrimPathKnobTakesPattern() ? KnobString::ePrimPathHintPattern : KnobString::ePrimPathHintPath, paths));
-    if (pluginID == QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM)) {
+    if (!paths.isEmpty() && (pluginID == QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM))) {
         args.addParamDefaultValue<int>(kSceneReparentParamMode, (int)eSceneReparentModeWrap);
     }
 }
@@ -132,6 +136,120 @@ pushSet(Gui* gui,
     history->push(new SetPrimKnobCommand(knob, text, label), UndoScope(UndoScope::holderForNode(node)));
 
     return true;
+}
+
+// The first input of node that isn't a mask and can take a scene; -1 when it has none.
+int
+sceneInput(const NodePtr& node)
+{
+    const EffectInstancePtr effect = node->getEffectInstance();
+    const int inputs = node->getNInputs();
+
+    for (int i = 0; i < inputs; ++i) {
+        const DataKindEnum kind = effect->getInputDataKind(i);
+        if (!effect->isInputMask(i) && ((kind == eDataKindScene) || (kind == eDataKindPolymorphic))) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+// Finds the first output of viewed that can read created in place of viewed, and which of its
+// inputs reads viewed. A viewer declares image inputs and takes a scene through an adapter, so
+// the input's declared kind can't decide this.
+bool
+firstSceneOutput(const NodePtr& viewed,
+                 const NodePtr& created,
+                 NodePtr* output,
+                 int* outputInput)
+{
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr candidate = outputW.lock();
+        if (!candidate || (candidate == created) || !candidate->getParentMultiInstanceName().empty()) {
+            continue;
+        }
+        const EffectInstancePtr effect = candidate->getEffectInstance();
+        const int inputs = candidate->getNInputs();
+        for (int i = 0; i < inputs; ++i) {
+            if ((candidate->getInput(i) == viewed) && !effect->isInputMask(i) && !candidate->isInputDataKindUnacceptable(created, i)) {
+                *output = candidate;
+                *outputInput = i;
+
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Puts created below viewed, moving output down when it is in the way.
+void
+placeBelow(const NodePtr& viewed,
+           const NodePtr& created,
+           const NodePtr& output)
+{
+    NodeGuiPtr viewedGui = std::dynamic_pointer_cast<NodeGui>(viewed->getNodeGui());
+    NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
+
+    if (!viewedGui || !createdGui) {
+        return;
+    }
+    const QSize viewedSize = viewedGui->getSize();
+    const QSize createdSize = createdGui->getSize();
+    const QPointF viewedPos = viewedGui->scenePos();
+    const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
+                           viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
+    if (NodeGuiPtr outputGui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr()) {
+        outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
+    }
+    const QPointF inParent = createdGui->mapToParent(createdGui->mapFromScene(position));
+    createdGui->setPosition(inParent.x(), inParent.y());
+}
+
+// Connects created after viewed and gives it viewed's first scene output only, as an undoable edit.
+// The input is connected first so the output is never left without a scene, and so that a
+// pass-through created resolves to a scene before the output is judged against it.
+void
+insertAfterViewed(const NodePtr& viewed,
+                  const NodePtr& created)
+{
+    const int input = sceneInput(created);
+
+    if (input == -1) {
+        return;
+    }
+    const NodePtr previousInput = created->getInput(input);
+    if (!created->replaceInput(viewed, input)) {
+        return;
+    }
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { created, input, previousInput, viewed });
+
+    NodePtr output;
+    int outputInput = -1;
+    if (!created->isOutputNode() && firstSceneOutput(viewed, created, &output, &outputInput)) {
+        if (output->replaceInput(created, outputInput)) {
+            changes.push_back(ReconnectInputsCommand::InputChange { output, outputInput, viewed, created });
+        } else {
+            output.reset();
+        }
+    }
+    placeBelow(viewed, created, output);
+
+    NodeCollectionPtr group = viewed->getGroup();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+    if (graph) {
+        UndoScope scope;
+        scope.touchNode(created);
+        scope.touchNode(viewed);
+        if (output) {
+            scope.touchNode(output);
+        }
+        // The connections are made, so the command's first redo does nothing.
+        graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+    }
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -306,12 +424,17 @@ createFromSelection(Gui* gui,
     TabMenuBridge::LaunchContext context;
     context.inputKind = eDataKindScene;
     context.needsPrimPathKnob = true;
-    context.insertAfter = viewed;
     context.decorateArgs = [paths](CreateNodeArgs& args) {
+        // The graph's auto-connect would give the new node every output of the viewed node.
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
         addInitialPrims(args, paths);
     };
     // A node type the decorator could not reach, such as a PyPlug's, still gets the prims.
-    context.created = [gui, paths](const NodePtr& created) {
+    context.created = [gui, paths, viewedWeak = NodeWPtr(viewed)](const NodePtr& created) {
+        NodePtr viewedNode = viewedWeak.lock();
+        if (viewedNode && viewedNode->isActivated()) {
+            insertAfterViewed(viewedNode, created);
+        }
         if (KnobStringPtr knob = primKnob(created)) {
             pushSet(gui, created, knob, paths);
         }

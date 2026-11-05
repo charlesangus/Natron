@@ -216,12 +216,7 @@ triggerInContext(QAction* action,
     text.remove(QLatin1Char('&'));
     UndoStepScope step(gui->getUndoHistory(), QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
 
-    NodePtr insertAfter = context.insertAfter.lock();
-    NodeGuiPtr afterGui = insertAfter ? std::dynamic_pointer_cast<NodeGui>(insertAfter->getNodeGui()) : NodeGuiPtr();
     graph->clearSelection();
-    if (afterGui) {
-        graph->selectNode(afterGui, false);
-    }
     const NodesList before = collection->getNodes();
     {
         NodeCreationContextScope scope(app, collection, scenePos);

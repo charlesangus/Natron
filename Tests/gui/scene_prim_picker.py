@@ -12,7 +12,9 @@ Checks:
   - picking Cam, Box and Ball, against tree order, sets the pattern in that order;
   - Cancel changes nothing;
   - with Cam selected in the 3D view (through the Scene Graph panel), "Use Viewer Selection"
-    sets the pattern to "/World/Cam".
+    sets the pattern to "/World/Cam";
+  - with Box then Ball selected in the 3D view, "Use Viewer Selection" on a USDXformPrim's Prim Path
+    writes the first prim, "/World/Box".
 
 Shots: scene-prim-picker-popup.png (the popup with Box and Ball picked) and
 scene-prim-picker-viewer.png (after Use Viewer Selection).
@@ -41,8 +43,8 @@ try:
     from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QLabel, QMainWindow,
                                    QPushButton, QTreeView)
 
-    from guitest import (FIXTURES, check, class_name, finish, menu_of, plugin_problem, require, run, shot,
-                         viewer_up, widgets_of)
+    from guitest import (FIXTURES, any_panel_open, check, class_name, close_all_panels, finish, menu_of,
+                         plugin_problem, require, run, shot, viewer_up, widgets_of)
 
     PATH_ROLE = Qt.UserRole + 1
 
@@ -279,6 +281,29 @@ try:
               % (pattern.getValue(),))
         yield ("sleep", SETTLE_MS)
         shot("scene-prim-picker-viewer.png")
+
+        # A path knob holds one prim.
+        close_all_panels()
+        ok = yield ("until", lambda: not any_panel_open(), POLL_TIMEOUT_S)
+        require(ok, "the USDEditTransform's panel closes")
+        xform = app.createNode("USDXformPrim", -1, None, props)
+        require(xform is not None, "create USDXformPrim", plugin_problem("USDXformPrim"))
+        xform.setPosition(150, 100)
+        require(xform.connectInput(0, edit), "connect the USDXformPrim to the USDEditTransform")
+        prim_path = xform.getParam("primPath")
+        require(prim_path is not None, "USDXformPrim has a primPath parameter")
+        ok = yield ("until", lambda: picker_button() is not None, POLL_TIMEOUT_S)
+        require(ok, "the USDXformPrim's panel shows a picker button")
+        select(panel_tree(), [BOX, BALL])
+        ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
+        require(ok, "Box and Ball are selected in the 3D view (got %r)" % (viewer_selection(),))
+        yield from open_popup()
+        require(use_viewer_button() is not None, "the path knob's picker has a Use Viewer Selection button")
+        use_viewer_button().click()
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
+        check(ok, "Use Viewer Selection closes the path knob's picker")
+        check(str(prim_path.getValue()) == BOX,
+              "Use Viewer Selection writes the first prim to a path knob (got %r)" % (prim_path.getValue(),))
 
     run(steps())
 except Exception:

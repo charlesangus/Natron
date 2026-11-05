@@ -11,11 +11,20 @@ Checks:
   - one Undo removes the USDPrune, reconnects the Viewer to the USDRead and brings the prims back;
   - Tab on the Scene Graph panel's tree opens the same filtered menu, and once it is closed with
     no choice, a later tab menu trigger runs without its context;
+  - with the USDRead feeding the Viewer and then a USDEditTransform, a new USDPrune goes before the
+    Viewer only, the USDEditTransform stays on the USDRead, and one Undo restores both;
+  - with nothing selected, the panel's context menu action is enabled and Tab on its tree opens the
+    filtered menu; a USDPrune gets an empty pattern and a USDXformPrim an empty Prim Path and stays
+    in Graft mode;
+  - with the USDEditTransform as the USDRead's first output and the panel pinned to it, a USDXformPrim
+    created from Box wraps it there; the real Undo and Redo each restore the hierarchy, the moved
+    prim's path, the scene the USDEditTransform outputs, and the connections;
   - Tab on the node graph with the USDRead selected leaves out Blur but still lists the
     Preferences menu command, and choosing it opens the Preferences panel.
 
-Shots: scene-create-from-selection-menu.png (the filtered menu) and
-scene-create-from-selection-pruned.png (after creating the USDPrune).
+Shots: scene-create-from-selection-menu.png (the filtered menu),
+scene-create-from-selection-pruned.png (after creating the USDPrune) and
+scene-create-from-selection-wrap.png (after creating the wrapping USDXformPrim).
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -34,12 +43,15 @@ BOX = "/World/Box"
 BALL = "/World/Ball"
 CAM = "/World/Cam"
 PRUNE_ID = "USDPrune"
+XFORM_ID = "USDXformPrim"
+MODE_GRAFT = 0
+MODE_WRAP = 1
 
 try:
-    from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPointF, Qt
+    from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, QPointF, Qt, QTimer
     from PySide6.QtTest import QTest
     from PySide6.QtGui import QAction, QEnterEvent
-    from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QMainWindow, QTreeView
+    from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QListView, QMainWindow, QToolButton, QTreeView
 
     from guitest import (FIXTURES, check, class_name, finish, menu_of, plugin_problem, report, require, run, shot,
                          viewer_up, widgets_of)
@@ -203,6 +215,86 @@ try:
         viewer.disconnectInput(0)
         return viewer.connectInput(0, node)
 
+    def script_names():
+        return set(n.getScriptName() for n in app.getChildren())
+
+    def create_from_menu(widget, plugin_id, filtered_where=None):
+        """Presses Tab on widget and chooses plugin_id; the node created, or None."""
+        names = script_names()
+        popup, line_edit, list_view = yield from open_menu(widget)
+        if popup is None:
+            return None
+        if filtered_where:
+            check_filtered(line_edit, list_view, filtered_where)
+        entries = listed(line_edit, list_view, plugin_id)
+        row = next((r for r, e in enumerate(entries) if row_name(e) == plugin_id), -1)
+        if not check(row >= 0, "the menu offers %s (got %r)" % (plugin_id, entries)):
+            close_menu(popup)
+            return None
+        list_view.setCurrentIndex(list_view.model().index(row, 0))
+        QTest.keyClick(line_edit, Qt.Key_Return)
+        ok = yield ("until", lambda: len(script_names() - names) > 0, POLL_TIMEOUT_S)
+        if not ok:
+            return None
+        return next(n for n in app.getChildren() if n.getScriptName() not in names)
+
+    def trigger_edit_action(prefix):
+        action = edit_menu_action(prefix)
+        require(action is not None and action.isEnabled(), "an enabled %s action is in the Edit menu" % (prefix,))
+        action.trigger()
+        QApplication.processEvents()
+
+    def undo_creation(name):
+        trigger_edit_action("undo")
+        ok = yield ("until", lambda: name not in script_names(), POLL_TIMEOUT_S)
+        check(ok, "one Undo removes %s" % (name,))
+
+    def make_branch_first_output(branch):
+        """Reconnects the Viewer so the USDRead's outputs are the branch, then the Viewer."""
+        require(connect_viewer(usd), "reconnect the Viewer to the USDRead")
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: scene_drawn() and world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
+        require(ok, "the panel shows the USDRead's scene again (got %r)" % (world_children(),))
+        check(input_name(branch) == usd.getScriptName(), "the branch still reads the USDRead")
+
+    def pin_panel_to(node):
+        """Pins the panel through its node chooser, whose list is refreshed when it opens."""
+        chooser = child(QComboBox, "sceneGraphNode")
+        require(chooser is not None, "the panel has a node chooser")
+        chooser.showPopup()
+        chooser.hidePopup()
+        index = chooser.findData(node.getScriptName())
+        require(index >= 0, "the node chooser lists " + node.getScriptName())
+        chooser.setCurrentIndex(index)
+        chooser.activated.emit(index)
+        p = panel()
+        ok = yield ("until", lambda: bool(p.property("natronSceneGraphPinned"))
+                    and str(p.property("natronSceneGraphNode")) == node.getScriptName(), POLL_TIMEOUT_S)
+        require(ok, "the panel is pinned to " + node.getScriptName())
+
+    def children_of(path):
+        world = row_of(WORLD)
+        index = row_of(path, world) if world.isValid() else QModelIndex()
+        return sorted(path_of(i) for i in rows(index)) if index.isValid() else []
+
+    def check_context_menu_create_enabled():
+        menu = {}
+
+        def open_context_menu():
+            tree().customContextMenuRequested.emit(QPoint(1, 1))
+            menu["closed"] = True
+
+        QTimer.singleShot(0, open_context_menu)
+        ok = yield ("until", lambda: QApplication.activePopupWidget() is not None, POLL_TIMEOUT_S)
+        if check(ok, "the panel's context menu opens with nothing selected"):
+            popup = hold(QApplication.activePopupWidget())
+            create = [a for a in popup.actions() if a.objectName() == "sceneCreateFromSelection"]
+            check(len(create) == 1 and create[0].isEnabled(),
+                  "the panel's Create from Selection action is enabled with nothing selected")
+            QTest.keyClick(popup, Qt.Key_Escape)
+        ok = yield ("until", lambda: menu.get("closed", False), POLL_TIMEOUT_S)
+        check(ok, "Esc closes the panel's context menu")
+
     def steps():
         require(connect_viewer(usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -282,6 +374,111 @@ try:
             check(got != BOX, "a trigger after the closed menu does not fill the selection in (got %r)" % (got,))
             check(input_name(viewer) == usd.getScriptName(),
                   "a trigger after the closed menu inserts nothing before the Viewer (got %r)" % (input_name(viewer),))
+
+        # A branched viewed node: only its first output goes through the new node.
+        branch = app.createNode("USDEditTransform")
+        require(branch is not None, "create USDEditTransform", plugin_problem("USDEditTransform"))
+        branch.setPosition(300, 200)
+        require(branch.connectInput(0, usd), "connect the USDEditTransform to the USDRead")
+        select([BOX])
+        ok = yield ("until", lambda: viewer_selection() == [BOX], POLL_TIMEOUT_S)
+        require(ok, "Box is selected in the 3D view (got %r)" % (viewer_selection(),))
+        spliced = yield from create_from_menu(view(), PRUNE_ID)
+        require(spliced is not None, "the branched node's menu creates a USDPrune")
+        spliced_name = spliced.getScriptName()
+        check(input_name(spliced) == usd.getScriptName(), "the new node reads the viewed node (got %r)"
+              % (input_name(spliced),))
+        check(input_name(viewer) == spliced_name, "the first output goes through the new node (got %r)"
+              % (input_name(viewer),))
+        check(input_name(branch) == usd.getScriptName(), "the second output stays on the viewed node (got %r)"
+              % (input_name(branch),))
+        yield from undo_creation(spliced_name)
+        check(input_name(viewer) == usd.getScriptName(), "after Undo the first output reads the viewed node (got %r)"
+              % (input_name(viewer),))
+        check(input_name(branch) == usd.getScriptName(), "after Undo the second output reads the viewed node (got %r)"
+              % (input_name(branch),))
+
+        # An empty selection from the panel: the filtered menu, an empty pattern, no wrap.
+        yield from make_branch_first_output(branch)
+        select([])
+        ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
+        require(ok, "nothing is selected in the 3D view (got %r)" % (viewer_selection(),))
+        yield from check_context_menu_create_enabled()
+        empty_prune = yield from create_from_menu(tree(), PRUNE_ID, "Scene Graph panel with nothing selected")
+        if check(empty_prune is not None, "Tab on the panel's tree with nothing selected creates a USDPrune"):
+            got = str(empty_prune.getParam("primPattern").getValue())
+            check(got == "", "with nothing selected the USDPrune's pattern is empty (got %r)" % (got,))
+            yield from undo_creation(empty_prune.getScriptName())
+        empty_xform = yield from create_from_menu(tree(), XFORM_ID)
+        if check(empty_xform is not None, "Tab on the panel's tree with nothing selected creates a USDXformPrim"):
+            got = str(empty_xform.getParam("primPath").getValue())
+            check(got == "", "with nothing selected the USDXformPrim's Prim Path is empty (got %r)" % (got,))
+            mode = empty_xform.getParam("mode").getValue()
+            check(mode == MODE_GRAFT, "with nothing selected the USDXformPrim stays in Graft mode (got %r)" % (mode,))
+            yield from undo_creation(empty_xform.getScriptName())
+
+        # A Wrap node from a selection, through the real Undo and Redo; the pinned panel shows what
+        # the node after the wrap outputs, while the Viewer stays on the viewed USDRead.
+        yield from make_branch_first_output(branch)
+        select([BOX])
+        ok = yield ("until", lambda: viewer_selection() == [BOX], POLL_TIMEOUT_S)
+        require(ok, "Box is selected in the 3D view (got %r)" % (viewer_selection(),))
+        yield from pin_panel_to(branch)
+        check(viewer_selection() == [BOX], "pinning keeps the 3D view's selection (got %r)" % (viewer_selection(),))
+        wrap = yield from create_from_menu(view(), XFORM_ID)
+        require(wrap is not None, "the 3D view's menu creates a USDXformPrim")
+        wrap_name = wrap.getScriptName()
+        wrap_prim = WORLD + "/" + str(wrap.getParam("wrapName").getValue())
+        wrapped_box = wrap_prim + "/Box"
+
+        def check_wrapped(when):
+            node = app.getNode(wrap_name)
+            if not check(node is not None, when + ": the USDXformPrim exists"):
+                return
+            check(input_name(node) == usd.getScriptName(), when + ": the USDXformPrim reads the USDRead (got %r)"
+                  % (input_name(node),))
+            check(input_name(branch) == wrap_name, when + ": the first output reads the USDXformPrim (got %r)"
+                  % (input_name(branch),))
+            check(input_name(viewer) == usd.getScriptName(), when + ": the Viewer stays on the USDRead (got %r)"
+                  % (input_name(viewer),))
+            got = str(node.getParam("primPath").getValue())
+            check(got == BOX, when + ": the USDXformPrim's Prim Path is Box (got %r)" % (got,))
+            mode = node.getParam("mode").getValue()
+            check(mode == MODE_WRAP, when + ": the USDXformPrim is in Wrap mode (got %r)" % (mode,))
+            ok = yield ("until", lambda: world_children() == sorted([BALL, CAM, wrap_prim]), POLL_TIMEOUT_S)
+            check(ok, when + ": downstream, the Xform replaces Box under /World (got %r)" % (world_children(),))
+            ok = yield ("until", lambda: children_of(wrap_prim) == [wrapped_box], POLL_TIMEOUT_S)
+            check(ok, when + ": downstream, Box moved under the Xform (got %r)" % (children_of(wrap_prim),))
+
+        def check_unwrapped(when):
+            check(wrap_name not in script_names(), when + ": the USDXformPrim is gone")
+            check(input_name(branch) == usd.getScriptName(), when + ": the first output reads the USDRead (got %r)"
+                  % (input_name(branch),))
+            check(input_name(viewer) == usd.getScriptName(), when + ": the Viewer reads the USDRead (got %r)"
+                  % (input_name(viewer),))
+            ok = yield ("until", lambda: world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
+            check(ok, when + ": downstream, Box is back under /World (got %r)" % (world_children(),))
+
+        yield from check_wrapped("after creating")
+        yield ("sleep", SETTLE_MS)
+        shot("scene-create-from-selection-wrap.png")
+        trigger_edit_action("undo")
+        ok = yield ("until", lambda: wrap_name not in script_names(), POLL_TIMEOUT_S)
+        check(ok, "one Undo removes the USDXformPrim")
+        yield from check_unwrapped("after Undo")
+        trigger_edit_action("redo")
+        ok = yield ("until", lambda: wrap_name in script_names(), POLL_TIMEOUT_S)
+        check(ok, "one Redo brings the USDXformPrim back")
+        yield from check_wrapped("after Redo")
+        trigger_edit_action("undo")
+        ok = yield ("until", lambda: wrap_name not in script_names(), POLL_TIMEOUT_S)
+        check(ok, "a second Undo removes the USDXformPrim")
+        yield from check_unwrapped("after the second Undo")
+        pin = child(QToolButton, "sceneGraphPin")
+        require(pin is not None, "the panel has a pin button")
+        pin.click()
+        ok = yield ("until", lambda: not panel().property("natronSceneGraphPinned"), POLL_TIMEOUT_S)
+        check(ok, "the pin button unpins the panel")
 
         # A node-graph launch with a scene node selected filters node types but keeps menu commands.
         graph = node_graph()

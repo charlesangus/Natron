@@ -93,9 +93,11 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
 
 /**
  * @brief Opens the tab menu listing the node types that take a scene and prims. The node chosen
- * is inserted after viewed, taking its outputs, with its prim knob set to paths, as one undo step.
- * The knob holds paths before the node first evaluates, as setOnCurrentNode() writes them. A
- * USDXformPrim is created in wrap mode, wrapping the first path.
+ * reads viewed through its scene input and takes the place of viewed in viewed's first scene
+ * output only, the other outputs staying on viewed, with its prim knob set to paths, as one undo
+ * step. The knob holds paths before the node first evaluates, as setOnCurrentNode() writes them,
+ * and is empty when paths is. A USDXformPrim is created in wrap mode, wrapping the first path,
+ * unless paths is empty.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
 

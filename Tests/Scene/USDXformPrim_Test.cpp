@@ -526,9 +526,9 @@ TEST_F(USDXformPrimWrapTest, WrapMovesThePrimAndItsDescendantsUnderTheXform)
     EXPECT_EQ(std::string(), reparent->mapToInputPath("/World/Box/Geo"));
 }
 
-// Downstream nodes see the wrapped hierarchy, and switching the mode away and back, as an undo and
-// a redo of the wrap do, gives the same scene again.
-TEST_F(USDXformPrimWrapTest, DownstreamSeesTheWrapAcrossModeChanges)
+// Downstream nodes see the wrapped hierarchy, and writing the Mode knob to Graft and back to Wrap
+// gives the same scene again.
+TEST_F(USDXformPrimWrapTest, ModeKnobGraftAndBackRecomposesTheDownstreamWrap)
 {
     NodePtr xform = node(PLUGINID_NATRON_USDXFORMPRIM, "Wrap1", { _reader });
     ASSERT_TRUE(bool(xform));

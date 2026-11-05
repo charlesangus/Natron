@@ -235,14 +235,10 @@ ScenePrimPickerPopup::onAccepted()
 void
 ScenePrimPickerPopup::onUseViewerSelection()
 {
-    QStringList paths = _imp->viewport ? _imp->viewport->getSelection() : QStringList();
+    const QStringList paths = _imp->viewport ? _imp->viewport->getSelection() : QStringList();
 
     if (paths.isEmpty()) {
         return;
-    }
-    if (!_imp->multiple) {
-        // A path knob takes the current prim, as the selection actions write it.
-        paths = QStringList() << paths.back();
     }
     Q_EMIT primsPicked(paths);
     accept();

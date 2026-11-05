@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <climits>
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,7 @@
 
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/UsdIncludes.h"
 
 NATRON_NAMESPACE_USING
 
@@ -168,6 +170,68 @@ childNamed(const SceneGraphModel& model,
     }
 
     return QModelIndex();
+}
+
+// Children of every kind the walk tells apart; listed gets the paths it should list, in order.
+PXR_NS::SdfLayerRefPtr
+walkFixtureLayer(QStringList* listed)
+{
+    using namespace PXR_NS;
+
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneGraphPrimWalkTest");
+    SdfPrimSpecHandle root = SdfPrimSpec::New(layer->GetPseudoRoot(), "Root", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle a = SdfPrimSpec::New(root, "A", SdfSpecifierDef, "Xform");
+    SdfPrimSpec::New(a, "Inner", SdfSpecifierDef, "Xform");
+    SdfPrimSpec::New(root, "B", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle gone = SdfPrimSpec::New(root, "Gone", SdfSpecifierDef, "Xform");
+    gone->SetActive(false);
+    SdfPrimSpec::New(gone, "UnderGone", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle undefined = SdfPrimSpec::New(root, "Undefined", SdfSpecifierOver, "");
+    SdfPrimSpec::New(undefined, "UnderUndefined", SdfSpecifierDef, "Xform");
+    SdfPrimSpec::New(root, "Abstract", SdfSpecifierClass, "");
+    SdfPrimSpecHandle instance = SdfPrimSpec::New(root, "Inst", SdfSpecifierDef, "Xform");
+    instance->SetInstanceable(true);
+    instance->GetReferenceList().Prepend(SdfReference(std::string(), SdfPath("/Proto")));
+    SdfPrimSpec::New(root, "Last", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle proto = SdfPrimSpec::New(layer->GetPseudoRoot(), "Proto", SdfSpecifierDef, "Xform");
+    SdfPrimSpec::New(proto, "Kid", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle trailing = SdfPrimSpec::New(layer->GetPseudoRoot(), "Trailing", SdfSpecifierDef, "Xform");
+    trailing->SetActive(false);
+
+    *listed = QStringList { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/A"), QString::fromUtf8("/Root/A/Inner"),
+                            QString::fromUtf8("/Root/B"), QString::fromUtf8("/Root/Inst"), QString::fromUtf8("/Root/Inst/Kid"),
+                            QString::fromUtf8("/Root/Last"), QString::fromUtf8("/Proto"), QString::fromUtf8("/Proto/Kid") };
+
+    return layer;
+}
+
+void
+stepWalk(const TestStageSource& source,
+         SceneGraphPrimWalk* walk,
+         int budgetMs,
+         int cap,
+         QStringList* found)
+{
+    source.readStage([&](const SceneStage* stage) {
+        walk->step(stage, budgetMs, cap, [](const QString&) { return true; }, found);
+    });
+}
+
+// Steps to the end; returns how many slices it took.
+int
+finishWalk(const TestStageSource& source,
+           SceneGraphPrimWalk* walk,
+           int budgetMs,
+           QStringList* found)
+{
+    int slices = 0;
+
+    while (!walk->isOver()) {
+        stepWalk(source, walk, budgetMs, INT_MAX, found);
+        ++slices;
+    }
+
+    return slices;
 }
 
 } // anon namespace
@@ -365,4 +429,142 @@ TEST(SceneGraphModel, ALargeRootPopulatesQuickly)
     const QModelIndex last = model.indexOfPath(QString::fromUtf8("/P099999"), true);
     ASSERT_TRUE(last.isValid());
     EXPECT_EQ(kPrims - 1, last.row());
+}
+
+TEST(SceneGraphPrimWalk, ASliceEndsInsideALongChildList)
+{
+    const int kChildren = 100000;
+    std::vector<std::string> names;
+    char name[32];
+    for (int i = 0; i < kChildren; ++i) {
+        std::snprintf(name, sizeof(name), "P%06d", i);
+        names.push_back(name);
+    }
+    PXR_NS::SdfLayerRefPtr layer;
+    {
+        PXR_NS::SdfChangeBlock block;
+        layer = groupLayer("Group", names);
+    }
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), layer, 7));
+
+    // A spent budget stops the slice at the first read of the clock, whatever the machine's speed.
+    // The pseudo-root counts as a prim looked at but is never listed.
+    SceneGraphPrimWalk walk;
+    QStringList found;
+    walk.start();
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    EXPECT_FALSE(walk.isOver());
+    EXPECT_EQ(SceneGraphPrimWalk::kPrimsPerClockRead - 1, found.size());
+
+    QElapsedTimer timer;
+    timer.start();
+    stepWalk(*source, &walk, 8, INT_MAX, &found);
+    const qint64 elapsed = timer.elapsed();
+    EXPECT_LT(elapsed, 50) << "one slice over " << kChildren << " children took " << elapsed << " ms";
+
+    const int slices = finishWalk(*source, &walk, 0, &found);
+    EXPECT_GT(slices, 1);
+    ASSERT_EQ(kChildren + 1, found.size());
+    EXPECT_EQ(QString::fromUtf8("/Group"), found.front());
+    for (int i = 0; i < kChildren; i += 9973) {
+        std::snprintf(name, sizeof(name), "/Group/P%06d", i);
+        EXPECT_EQ(QString::fromUtf8(name), found[i + 1]);
+    }
+    EXPECT_EQ(QString::fromUtf8("/Group/P099999"), found.back());
+}
+
+TEST(SceneGraphPrimWalk, ResumingAtEveryPrimKeepsTheOrder)
+{
+    QStringList listed;
+    PXR_NS::SdfLayerRefPtr layer = walkFixtureLayer(&listed);
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), layer, 8));
+
+    SceneGraphPrimWalk whole;
+    QStringList found;
+    whole.start();
+    EXPECT_EQ(1, finishWalk(*source, &whole, 1000, &found));
+    EXPECT_EQ(listed, found);
+
+    // One prim a slice: the lock could go between any two prims, instance proxies among them.
+    SceneGraphPrimWalk sliced(1);
+    found.clear();
+    sliced.start();
+    EXPECT_GE(finishWalk(*source, &sliced, 0, &found), listed.size());
+    EXPECT_EQ(listed, found);
+}
+
+TEST(SceneGraphPrimWalk, TheCapLeavesTheWalkResumable)
+{
+    QStringList listed;
+    PXR_NS::SdfLayerRefPtr layer = walkFixtureLayer(&listed);
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), layer, 9));
+
+    SceneGraphPrimWalk walk;
+    QStringList found;
+    walk.start();
+    stepWalk(*source, &walk, 1000, 2, &found);
+    EXPECT_EQ(listed.mid(0, 2), found);
+    EXPECT_FALSE(walk.isOver());
+
+    stepWalk(*source, &walk, 1000, 2, &found);
+    EXPECT_EQ(2, found.size()) << "still at the cap";
+
+    // Reaching the cap on the last listed prim leaves no more, past the inactive prim after it.
+    stepWalk(*source, &walk, 1000, listed.size(), &found);
+    EXPECT_EQ(listed, found);
+    EXPECT_TRUE(walk.isOver());
+}
+
+TEST(SceneGraphPrimWalk, AnEditBetweenSlicesStartsOver)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Root", { "A", "B", "C" }), 10));
+
+    SceneGraphPrimWalk walk(1);
+    QStringList found;
+    walk.start();
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/A") }), found);
+
+    source->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Other", { "X" }), 11));
+    finishWalk(*source, &walk, 0, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/Other"), QString::fromUtf8("/Other/X") }), found);
+}
+
+TEST(SceneGraphPrimWalk, ARecompositionTheEditCountMissesIsSurvived)
+{
+    PXR_NS::SdfLayerRefPtr layer = groupLayer("Root", { "A", "B", "C" });
+    PXR_NS::SdfPrimSpec::New(layer->GetPseudoRoot(), "Other", PXR_NS::SdfSpecifierDef, "Xform");
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), layer, 12));
+    const auto setActive = [&](const char* path, bool active) {
+        source->readStage([&](const SceneStage* stage) {
+            stage->getStage()->GetPrimAtPath(PXR_NS::SdfPath(path)).SetActive(active);
+        });
+    };
+
+    SceneGraphPrimWalk walk(1);
+    QStringList found;
+    walk.start();
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    const U64 editCount = source->getEditCount();
+
+    // Recomposes a prim the walk has passed: it goes on from where it was.
+    setActive("/Root/A", false);
+    EXPECT_EQ(editCount, source->getEditCount());
+    stepWalk(*source, &walk, 0, INT_MAX, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/A"), QString::fromUtf8("/Root/B") }), found);
+
+    // Takes the next prim away: there is no position to go back to.
+    setActive("/Root", false);
+    EXPECT_EQ(editCount, source->getEditCount());
+    finishWalk(*source, &walk, 0, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/Other") }), found);
 }

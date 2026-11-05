@@ -35,7 +35,6 @@
 
 #include <QAction>
 #include <QComboBox>
-#include <QElapsedTimer>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -315,7 +314,7 @@ struct SceneGraphPanel::Implementation {
     QString filterPattern;
     QRegularExpression filterExpression;
     bool filterWildcard = false;
-    std::vector<SdfPath> filterStack;
+    SceneGraphPrimWalk filterWalk;
     QStringList filterMatches;
     int filterCap = kFilterCap;
     bool filterCapped = false;
@@ -634,7 +633,7 @@ struct SceneGraphPanel::Implementation {
     {
         filterStep.stop();
         filterMatches.clear();
-        filterStack.clear();
+        filterWalk.stop();
         filterCapped = false;
         if (filterPattern.isEmpty()) {
             resultsModel->hasMoreRow = false;
@@ -648,7 +647,7 @@ struct SceneGraphPanel::Implementation {
             filterExpression = QRegularExpression(QRegularExpression::wildcardToRegularExpression(filterPattern, QRegularExpression::UnanchoredWildcardConversion),
                                                   QRegularExpression::CaseInsensitiveOption);
         }
-        filterStack.push_back(SdfPath::AbsoluteRootPath());
+        filterWalk.start();
         filterStep.start();
         updateStatus();
     }
@@ -662,47 +661,18 @@ struct SceneGraphPanel::Implementation {
     bool stepFilter()
     {
         SceneGraphStageSourcePtr source = model->getSource();
-        bool over = true;
 
         if (!source) {
-            filterStack.clear();
+            filterWalk.stop();
 
             return true;
         }
-        const Usd_PrimFlagsPredicate predicate = UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
         source->readStage([&](const SceneStage* sceneStage) {
-            if (!sceneStage) {
-                filterStack.clear();
-
-                return;
-            }
-            const UsdStageRefPtr& stage = sceneStage->getStage();
-            QElapsedTimer timer;
-            timer.start();
-            int visited = 0;
-            while (!filterStack.empty() && (filterMatches.size() < filterCap)) {
-                if (((++visited % 256) == 0) && (timer.elapsed() >= kFilterStepMs)) {
-                    break;
-                }
-                const SdfPath path = filterStack.back();
-                filterStack.pop_back();
-                const UsdPrim prim = stage->GetPrimAtPath(path);
-                if (!prim) {
-                    continue;
-                }
-                if (!prim.IsPseudoRoot() && filterMatchesName(QString::fromStdString(prim.GetName().GetString()))) {
-                    filterMatches << QString::fromStdString(path.GetString());
-                }
-                const TfTokenVector names = prim.GetFilteredChildrenNames(predicate);
-                for (TfTokenVector::const_reverse_iterator it = names.rbegin(); it != names.rend(); ++it) {
-                    filterStack.push_back(path.AppendChild(*it));
-                }
-            }
-            over = filterStack.empty() || (filterMatches.size() >= filterCap);
+            filterWalk.step(sceneStage, kFilterStepMs, filterCap, [this](const QString& name) { return filterMatchesName(name); }, &filterMatches);
         });
-        filterCapped = !filterStack.empty() && (filterMatches.size() >= filterCap);
+        filterCapped = !filterWalk.isOver() && (filterMatches.size() >= filterCap);
 
-        return over;
+        return filterWalk.isOver() || filterCapped;
     }
 
     void showFilterResults()

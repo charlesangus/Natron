@@ -248,6 +248,16 @@ set(NatronEngine_WB_PRESETS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Raw/data/wb_p
 configure_file(${NatronEngine_WB_PRESETS_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/wb_presets.json COPYONLY)
 install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
 
+# The plugInfo.json declaring the natron:// live-texture resolver and image reader to OpenUSD,
+# registered at startup from <bin>/../Resources/usd/natronLiveTexture (SceneCaches::registerLiveTextures).
+set(NatronEngine_LIVE_TEXTURE_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/plugInfo.json)
+configure_file(${NatronEngine_LIVE_TEXTURE_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/natronLiveTexture)
+# USDProject3D's Storm surface, found through that plug-in's resources (USDProject3D::getShaderPath).
+set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
+configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
+install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)
 configure_file(${NatronEngine_NOISE_PROFILES_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/noiseprofiles.json COPYONLY)

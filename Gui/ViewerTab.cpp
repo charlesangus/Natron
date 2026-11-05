@@ -1416,6 +1416,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });
+        refreshSceneDisplayTransform();
         {
             SceneViewport::SelectionActions actions;
             actions.setOnNodeBlocker = [this](const QStringList& paths) -> QString {
@@ -1479,6 +1480,29 @@ ViewerTab::getSceneViewedNode() const
     EffectInstancePtr input = (a >= 0) ? _imp->viewerNode->getInput(a) : EffectInstancePtr();
 
     return input ? input->getNode() : NodePtr();
+}
+
+void
+ViewerTab::refreshSceneDisplayTransform()
+{
+    if (!_imp->sceneViewport) {
+        return;
+    }
+    SceneViewportRenderer::DisplayTransform transform;
+    ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (colorManagement) {
+        // The look is left out: Hydra's OpenColorIO 2 path sets the look name as the display
+        // (v26.08 hdx/colorCorrectionTask.cpp), which would break the whole transform.
+        getDisplayTransform(&transform.display, &transform.view, nullptr);
+        transform.config = colorManagement->getConfig();
+        transform.colorSpace = project->getWorkingColorSpace();
+    }
+    if (_imp->viewerNode) {
+        transform.gain = _imp->viewerNode->getGain();
+        transform.gamma = _imp->viewerNode->getGamma();
+    }
+    _imp->sceneViewport->setDisplayTransform(transform);
 }
 
 void
@@ -1651,6 +1675,7 @@ ViewerTab::refreshColorControlsFromKnobs()
 
     _imp->viewer->setGain(_imp->viewerNode->getGain());
     _imp->viewer->setGamma(_imp->viewerNode->getGamma());
+    refreshSceneDisplayTransform();
     _imp->viewer->redraw();
 }
 

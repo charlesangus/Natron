@@ -5,8 +5,9 @@ beside it) merged with a red USDLight rect light in front of the box, into Viewe
 (Ctrl+Shift+G) and the grid (Ctrl+G, whose red and blue axis lines would count as tinted pixels)
 are hidden so that only the lit geometry counts; the grid comes back for the draw-mode checks.
 The script checks:
-  - Auto lighting uses the stage's lights when it has any: natronSceneSceneLit is true and the
-    box renders reddish;
+  - lighting starts at Scene Lights, the Viewer 3D Lighting preference's default (no headlight);
+    Display > Lighting > Auto uses the stage's lights when it has any: natronSceneSceneLit is true
+    and the box renders reddish;
   - Display > Lighting > Headlight lights with the headlight instead: SceneLit false, no reddish
     pixels; Display > Lighting > Scene Lights brings the red light back;
   - natronScenePurposes starts at [proxy, render, guide] = [on, off, off] and the render-purpose
@@ -14,7 +15,7 @@ The script checks:
   - Ctrl+4, Ctrl+5 and Ctrl+6 select the wireframe, shaded and unshaded draw modes, and Ctrl+G
     toggles the grid (natronSceneDrawMode, natronSceneShowGrid).
 
-Screenshots for sign-off: scene-display-auto, scene-display-lighting-menu, scene-display-headlight,
+Screenshots for sign-off: scene-display-lighting-menu-auto, scene-display-auto, scene-display-lighting-menu, scene-display-headlight,
 scene-display-purposes-menu, scene-display-render-purpose, scene-display-scene-lights,
 scene-display-wireframe, scene-display-shaded, scene-display-unshaded, scene-display-no-grid.
 
@@ -251,7 +252,9 @@ try:
         yield settle()
 
         section("lighting")
-        check(v.property("natronSceneLighting") == "auto", "lighting starts at auto (%r)" % v.property("natronSceneLighting"))
+        check(v.property("natronSceneLighting") == "scene", "lighting starts at scene lights (%r)" % v.property("natronSceneLighting"))
+        yield from with_menu(v, "Lighting", "auto", "scene-display-lighting-menu-auto")
+        check(v.property("natronSceneLighting") == "auto", "Display > Lighting > Auto selects auto")
         ok = yield ("until", lambda: v.property("natronSceneSceneLit") is True, POLL_TIMEOUT_S)
         check(ok, "auto lighting uses the stage's lights when it has one")
         image = save_view("scene-display-auto")

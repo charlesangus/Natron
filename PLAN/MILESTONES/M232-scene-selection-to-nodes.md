@@ -95,16 +95,18 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 
 ## Phase 232.5: On the plain panel
 
-- [ ] M232.P5.T1 — Rebase onto the stripped panel
+- [x] M232.P5.T1 — Rebase onto the stripped panel
   - files: `Gui/SceneGraphPanel.cpp`, `Gui/ScenePrimPickerPopup.cpp`, `Gui/SceneNodeStageSource.cpp`, `Gui/SceneViewport.cpp`
   - approach: bring in the stripped M231 - Scene Graph Panel branch and current main, and remove any remaining fold calls and references to `USDExpandHierarchy`. The picker's fully loaded stage stays for now; M334 - Knob Prim Tools changes it.
   - verify: `scene_prim_picker.py`, `scene_set_on_node.py` and `scene_create_from_selection.py` pass; grep finds no fold API use.
   - size: M
 
-- [ ] M232.P5.T2 — One consistent prim for path knobs, and flag USDAssignMaterial
+- [x] M232.P5.T2 — One consistent prim for path knobs, and flag USDAssignMaterial
   - files: `Gui/SceneSelectionActions.cpp`, `Gui/KnobGuiString.cpp`, `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Tests/gui/scene_set_on_node.py`, `Tests/gui/scene_graph_drag.py`
   - approach: a path knob takes the first prim of a multi-selection in every route (today drag takes the first and Set Selection takes the last, `SceneSelectionActions.cpp:203-243`), by sharing one write helper. Give USDAssignMaterial's Prim Pattern knob the prim-pattern hint.
   - verify: GUI scripts — drag and Set Selection write the same prim to a path knob; dragging onto USDAssignMaterial's pattern sets it and Undo restores it.
   - size: M
+
+- 2026-11-04 — P5.T2: `SceneSelectionActions::primPathsText` is the one path-knob text helper, so USDXformPrim's Wrap now wraps the first prim of a multi-selection, where it used to wrap the last (PM).
 
 **Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in a replacement AppImage built on the plain panel (this milestone has never been UAT-tested).

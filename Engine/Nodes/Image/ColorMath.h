@@ -119,8 +119,27 @@ luminance(LuminanceMathEnum math,
 }
 
 /**
- * @brief Declares the luminanceMath choice with the OpenFX option IDs, labels and hints,
- * defaulting to Rec. 709, and adds it to page.
+ * @brief The luminanceMath options, one per LuminanceMathEnum value in order, with the OpenFX
+ * option IDs, labels and hints.
+ **/
+inline std::vector<ChoiceOption>
+luminanceMathOptions()
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("rec709", "Rec. 709", "Use Rec. 709 (0.2126r + 0.7152g + 0.0722b)."));
+    options.push_back(ChoiceOption("rec2020", "Rec. 2020", "Use Rec. 2020 (0.2627r + 0.6780g + 0.0593b)."));
+    options.push_back(ChoiceOption("acesap0", "ACES AP0", "Use ACES AP0 (0.3439664498r + 0.7281660966g + -0.0721325464b)."));
+    options.push_back(ChoiceOption("acesap1", "ACES AP1", "Use ACES AP1 (0.2722287168r +  0.6740817658g +  0.0536895174b)."));
+    options.push_back(ChoiceOption("ccir601", "CCIR 601", "Use CCIR 601 (0.2989r + 0.5866g + 0.1145b)."));
+    options.push_back(ChoiceOption("average", "Average", "Use average of r, g, b."));
+    options.push_back(ChoiceOption("max", "Max", "Use max or r, g, b."));
+
+    return options;
+}
+
+/**
+ * @brief Declares the luminanceMath choice with luminanceMathOptions(), defaulting to Rec. 709,
+ * and adds it to page.
  **/
 inline KnobChoicePtr
 addLuminanceMathKnob(KnobHolder* holder,
@@ -130,15 +149,7 @@ addLuminanceMathKnob(KnobHolder* holder,
 
     knob->setName(kColorMathParamLuminanceMath);
     knob->setHintToolTip(std::string(kColorMathParamLuminanceMathHint));
-    std::vector<ChoiceOption> options;
-    options.push_back(ChoiceOption("rec709", "Rec. 709", "Use Rec. 709 (0.2126r + 0.7152g + 0.0722b)."));
-    options.push_back(ChoiceOption("rec2020", "Rec. 2020", "Use Rec. 2020 (0.2627r + 0.6780g + 0.0593b)."));
-    options.push_back(ChoiceOption("acesap0", "ACES AP0", "Use ACES AP0 (0.3439664498r + 0.7281660966g + -0.0721325464b)."));
-    options.push_back(ChoiceOption("acesap1", "ACES AP1", "Use ACES AP1 (0.2722287168r +  0.6740817658g +  0.0536895174b)."));
-    options.push_back(ChoiceOption("ccir601", "CCIR 601", "Use CCIR 601 (0.2989r + 0.5866g + 0.1145b)."));
-    options.push_back(ChoiceOption("average", "Average", "Use average of r, g, b."));
-    options.push_back(ChoiceOption("max", "Max", "Use max or r, g, b."));
-    knob->populateChoices(options);
+    knob->populateChoices(luminanceMathOptions());
     knob->setDefaultValue((int)eLuminanceMathRec709);
     if (page) {
         page->addKnob(knob);

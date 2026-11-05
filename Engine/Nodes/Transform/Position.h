@@ -37,7 +37,6 @@
 #define PLUGIN_MAJOR_NATRON_POSITION 2
 
 #define kPositionParamTranslate "translate"
-#define kPositionParamInteractive "interactive"
 
 NATRON_NAMESPACE_ENTER
 

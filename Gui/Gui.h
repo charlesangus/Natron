@@ -638,6 +638,10 @@ public Q_SLOTS:
 
     void onEnableRenderStatsActionTriggered();
 
+    void onToggleInteractiveActionTriggered();
+
+    void syncInteractiveActionWithSettings();
+
     void onMaxVisibleDockablePanelChanged(int maxPanels);
 
     void clearAllVisiblePanels();

@@ -36,11 +36,9 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_CHROMAKEYER "net.sf.openfx.ChromaKeyerPlugin"
-#define PLUGIN_MAJOR_NATRON_CHROMAKEYER 2
+#define PLUGIN_MAJOR_NATRON_CHROMAKEYER 3
 
 #define kChromaKeyerParamKeyColor "keyColor"
-#define kChromaKeyerParamColorspace "colorspace"
-#define kChromaKeyerParamLinear "linearProcessing"
 #define kChromaKeyerParamAcceptanceAngle "acceptanceAngle"
 #define kChromaKeyerParamSuppressionAngle "suppressionAngle"
 #define kChromaKeyerParamKeyLift "keyLift"
@@ -48,32 +46,30 @@
 #define kChromaKeyerParamShow "show"
 #define kChromaKeyerParamSourceAlpha "sourceAlphaHandling"
 
-// Input indices, in the OpenFX clip order that scripts connect by.
 #define kChromaKeyerInputSource 0
-#define kChromaKeyerInputInsideMask 1
-#define kChromaKeyerInputOutsideMask 2
-#define kChromaKeyerInputBg 3
+#define kChromaKeyerInputBg 1
+#define kChromaKeyerInputMask 2
 
 NATRON_NAMESPACE_ENTER
 
 struct ChromaKeyerSettings;
 
 /**
- * @brief Chroma keyer after Keith Jack's "Video Demystified": the key colour and the foreground
- * are taken to Y'PbPr, the chrominance is rotated so the key colour lies on one axis, and the
- * distance along that axis inside the acceptance angle gives the background key. The inside and
- * outside masks, the key lift and gain, and the foreground suppression (within the suppression
- * angle) follow before the result is output as the source, the premultiplied or unpremultiplied
- * foreground, or the composite over Bg. The output is always RGBA, with the foreground key as
- * alpha. Knob names, defaults, maths and region of definition are the openfx-misc
- * ChromaKeyerPlugin's; it registers under that plug-in's ID one major above.
+ * @brief Chroma keyer after Keith Jack's "Video Demystified", in the scene-linear working space:
+ * the key colour and the foreground are taken to Y'PbPr with the working space's luma weights,
+ * the chrominance is rotated so the key colour lies on one axis, and the distance along that
+ * axis inside the acceptance angle gives the background key. The key lift and gain, and the
+ * foreground suppression (within the suppression angle) follow before the result is output as
+ * the source, the premultiplied or unpremultiplied foreground, or the composite over Bg. The
+ * output is always RGBA, with the foreground key as alpha. Nothing is clamped, so foreground
+ * values above 1 or below 0 come through, and so can a key outside [0, 1].
  *
- * Divergence: an RGB source has no alpha, which the OpenFX plug-in reads out of bounds. Here
- * "Normal" source alpha composites with an alpha of one there, and "Add to Inside Mask" adds
- * nothing.
+ * The host's mask and mix stage limits the result; with "Inside Mask" source alpha, the Source's
+ * own alpha marks areas that are definitely foreground. An RGB source has no alpha: "Normal"
+ * composites with an alpha of one there, and "Inside Mask" marks nothing.
  *
- * It is a Custom op with no mask or mix stage: the inside and outside masks feed the key itself,
- * and its render writes the channels it does not process from the Source.
+ * It is a Custom op: its CPU render runs through the stages with its own row, which also reads
+ * Bg, and its GPU render is one pixelwrap entry reading Bg after its parameter block.
  **/
 class ChromaKeyer
     : public StagedImageEffect {
@@ -102,7 +98,7 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    // Never an identity: the output is always RGBA with the key as alpha.
+    // Never an identity: the output is always RGBA with the key as alpha. Mix 0 is the stages'.
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -111,10 +107,7 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief Accepts the RGBA plane in float whatever the settings, with or without Bg and the
-     * masks; the Source and Bg are read in the layer renderOp() fetches them in.
-     **/
+    // Accepts an RGBA plane in float whose stages the GPU runs, with or without Bg.
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool getOpGpuInputLayer(int inputNb,
@@ -131,23 +124,16 @@ private:
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Whether renderOp() reads input inputNb as a mask: it is connected and its selector is on.
-    bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;
-
-    // The knob values renderOp() and renderOpGpu() key with at time and view.
+    // The knob values and working-space weights renderOp() and renderOpGpu() key with.
     void readSettings(double time, ViewIdx view, ChromaKeyerSettings* settings) const;
 
     // The layer renderOp() fetches the Source or Bg in, false when it fetches nothing.
     bool resolveColorInputLayer(int inputNb, double time, ViewIdx view, ImageLayerDesc* layer) const WARN_UNUSED_RETURN;
 
-    // The part of input inputNb's view that renderOp() would read pixels from: the view within the
-    // input's region of definition, without a buffer when renderOp() reads none. False when the
-    // region of definition cannot be computed.
-    bool getGpuReadableInput(const GpuRenderArgs& args, int inputNb, GpuImageView* view) WARN_UNUSED_RETURN;
+    // Whether the Source's layer has an alpha of its own.
+    bool sourceHasAlpha(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobColorWPtr _keyColor;
-    KnobChoiceWPtr _colorspace;
-    KnobBoolWPtr _linear;
     KnobDoubleWPtr _acceptanceAngle;
     KnobDoubleWPtr _suppressionAngle;
     KnobDoubleWPtr _keyLift;

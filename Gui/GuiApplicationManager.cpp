@@ -1942,6 +1942,12 @@ GuiApplicationManager::getLogicalDPIYRATIO() const
     return _imp->dpiY / NATRON_PIXELS_FOR_DPI_DEFAULT;
 }
 
+double
+GuiApplicationManager::getScreenDevicePixelRatio() const
+{
+    return qApp ? qApp->devicePixelRatio() : 1.;
+}
+
 void
 GuiApplicationManager::setCurrentLogicalDPI(double dpiX,
                                             double dpiY)

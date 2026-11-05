@@ -229,8 +229,7 @@ def keying_grade():
     plate = merge("plate", "over", hair, merge("plate_sub", "over", subject, bg_ramp))
 
     key = single("net.sf.openfx.KeyerPlugin", "keyer", plate)
-    p(key, "keyColor").set(0.07, 0.65, 0.16, 1.0)
-    choice(key, "mode", "screen")
+    choice(key, "keySource", "green")
     chroma = single("net.sf.openfx.ChromaKeyerPlugin", "chromakey", plate)
     p(chroma, "keyColor").set(0.07, 0.65, 0.16, 1.0)
     core = merge("matte_max", "max", chroma, key)

@@ -40,6 +40,7 @@
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Merge/KeyMix.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 #include "Engine/Plugin.h"
@@ -190,6 +191,15 @@ TEST(NodeCategoryHeuristic, KeywordMustMatchAWholeWord)
 TEST(NodeCategoryHeuristic, KeyMixIsMerge)
 {
     EXPECT_EQ(eNodeCategoryMerge, Node::categoryFromGroupingAndLabel("Foo", "KeyMix"));
+}
+
+// The native KeyMix is filed under Merge, which its grouping alone decides.
+TEST_F(BaseTest, NativeKeyMixIsMergeCategory)
+{
+    NodePtr keyMix = createNode(QString::fromUtf8(PLUGINID_NATRON_KEYMIX), PLUGIN_MAJOR_NATRON_KEYMIX);
+
+    ASSERT_TRUE(bool(keyMix));
+    EXPECT_EQ(eNodeCategoryMerge, keyMix->getNodeCategory());
 }
 
 // With no PLUGIN_GROUP_* table match and no keyword match, the heuristic falls back to Other.

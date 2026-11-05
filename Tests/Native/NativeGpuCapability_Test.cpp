@@ -76,11 +76,13 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Despill.h"
+#include "Engine/Nodes/Keyer/Difference.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/KeyMix.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
@@ -92,6 +94,7 @@
 #include "Engine/Nodes/Time/SlitScan.h"
 #include "Engine/Nodes/Time/TimeBlur.h"
 #include "Engine/Nodes/Time/TimeWarp.h"
+#include "Engine/Nodes/Transform/AdjustBBox.h"
 #include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -181,6 +184,9 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_KEYMIX,
+        PLUGINID_NATRON_DIFFERENCE,
+        PLUGINID_NATRON_ADJUSTBBOX,
         PLUGINID_NATRON_SPLINEWARP,
         PLUGINID_NATRON_LOOPBEGIN,
         PLUGINID_NATRON_LOOPEND,

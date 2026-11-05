@@ -59,6 +59,7 @@
 
 #include "BaseTest.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
@@ -973,12 +974,8 @@ protected:
     {
         std::vector<RenderedPlane> planes;
         std::string error;
-        bool rendered = false;
+        const bool rendered = renderOffMainThread(render, frame, &planes, &error);
 
-        std::thread worker([&]() {
-            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
-        });
-        worker.join();
         EXPECT_TRUE(rendered) << error;
         if (planes.size() != 3u) {
             ADD_FAILURE() << "frame " << frame << " rendered " << planes.size() << " planes";
@@ -1007,6 +1004,8 @@ protected:
     }
 
     // Every plane of render at frame, rendered off the main thread as renderCard does.
+    // clearAllCaches() belongs to the main thread, and the harness's cache-bypassing render would
+    // run it on the worker. Emptying the caches here on both sides starts the render just as cold.
     static bool renderOffMainThread(const NodePtr& render,
                                     double frame,
                                     std::vector<RenderedPlane>* planes,
@@ -1014,10 +1013,12 @@ protected:
     {
         bool rendered = false;
 
+        appPTR->clearAllCaches();
         std::thread worker([&]() {
-            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), planes, error);
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), planes, error, false /*byPassCache*/);
         });
         worker.join();
+        appPTR->clearAllCaches();
 
         return rendered;
     }
@@ -2129,12 +2130,7 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
 
     std::vector<RenderedPlane> planes;
     std::string error;
-    bool rendered = false;
-    std::thread worker([&]() {
-        rendered = renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
-    });
-    worker.join();
-    ASSERT_TRUE(rendered) << error;
+    ASSERT_TRUE(renderOffMainThread(render, 1., &planes, &error)) << error;
     ASSERT_EQ(3u, planes.size());
     const std::vector<float>& rgba = planes[0].pixels;
     const std::vector<float>& primId = planes[2].pixels;

@@ -315,8 +315,7 @@ TEST_F(LightWrapRenderTest, EveryInnerNodeOnTheWrapPathCarriesSignal)
 }
 
 // Shufflecopy1 takes RGB from Constant1 (white) and alpha from BGBlur, so that Premult2 is the
-// constant highlight scaled by the background key. With its inputs swapped it took RGB from BGBlur
-// and alpha from Constant1's zero alpha, and Premult2 was black.
+// constant highlight scaled by the background key.
 TEST_F(LightWrapRenderTest, ConstantHighlightTakesColourFromTheConstantAndAlphaFromTheKey)
 {
     if (!build()) {

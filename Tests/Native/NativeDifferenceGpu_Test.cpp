@@ -49,6 +49,8 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Keyer/Difference.h"
@@ -181,18 +183,28 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         bool allChannels;
         bool masked;
         double mix;
+        // B a constant of alpha bAlpha, which may be out of range, in place of the parity source.
+        bool constantB;
+        double bAlpha;
+        // Only colour processed: alpha is B's.
+        bool rgbOnly;
     };
     const Case cases[] = {
-        { "defaults", true, 0., 1., 1., false, false, 1. },
-        { "black, white and gain", true, 0.02, 0.4, 7.5, false, false, 1. },
-        { "negative black point", true, -0.1, 0.9, 1., false, false, 1. },
-        { "hard threshold", true, 0.1, 0.1, 2., false, false, 1. },
-        { "white below black", true, 0.1, 0.03, 1.5, false, false, 1. },
-        { "large gain clamps to one", true, 0., 0.1, 1000., false, false, 1. },
-        { "negative gain gives zero", true, 0., 1., -4., false, false, 1. },
-        { "no clean plate", false, 0., 1., 3., false, false, 1. },
-        { "every channel", true, 0., 1., 1., true, false, 1. },
-        { "mask and mix", true, 0.01, 0.5, 2., false, true, 0.6 },
+        { "defaults", true, 0., 1., 1., false, false, 1., false, 0., false },
+        { "black, white and gain", true, 0.02, 0.4, 7.5, false, false, 1., false, 0., false },
+        { "negative black point", true, -0.1, 0.9, 1., false, false, 1., false, 0., false },
+        { "hard threshold", true, 0.1, 0.1, 2., false, false, 1., false, 0., false },
+        { "white below black", true, 0.1, 0.03, 1.5, false, false, 1., false, 0., false },
+        { "large gain clamps to one", true, 0., 0.1, 1000., false, false, 1., false, 0., false },
+        { "negative gain gives zero", true, 0., 1., -4., false, false, 1., false, 0., false },
+        { "no clean plate", false, 0., 1., 3., false, false, 1., false, 0., false },
+        { "every channel", true, 0., 1., 1., true, false, 1., false, 0., false },
+        { "mask and mix", true, 0.01, 0.5, 2., false, true, 0.6, false, 0., false },
+        { "B alpha 2 at partial mix", true, 0., 1., 1., false, false, 0.5, true, 2., false },
+        { "B alpha -1 at partial mix", true, 0., 1., 1., false, false, 0.5, true, -1., false },
+        { "B alpha 2 under a mask and mix", true, 0.01, 0.5, 2., false, true, 0.6, true, 2., false },
+        { "B alpha -1 under a mask and mix", true, 0.01, 0.5, 2., false, true, 0.6, true, -1., false },
+        { "B alpha 2 with alpha unselected", true, 0., 1., 1., false, true, 0.6, true, 2., true },
     };
     int nCase = 0;
 
@@ -200,7 +212,15 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_DIFFERENCE), PLUGIN_MAJOR_NATRON_DIFFERENCE);
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL) << c.name;
-        NodePtr b = makeSource(0, 0);
+        NodePtr b;
+        if (c.constantB) {
+            b = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+            ASSERT_TRUE(bool(b)) << c.name;
+            ASSERT_TRUE(setKnobValue(b, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject))) << c.name;
+            ASSERT_TRUE(setKnobValues(b, kConstantParamColor, { 0.5, 0.25, 0.75, c.bAlpha })) << c.name;
+        } else {
+            b = makeSource(0, 0);
+        }
         ASSERT_TRUE(bool(b)) << c.name;
         connectNodes(b, node, kDifferenceInputB, true);
         NodePtr a;
@@ -223,6 +243,11 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, std::vector<double>(1, c.gain))) << c.name;
         ASSERT_TRUE(setKnobValues(node, kDifferenceParamBlackPoint, std::vector<double>(1, c.blackPoint))) << c.name;
         ASSERT_TRUE(setKnobValues(node, kDifferenceParamWhitePoint, std::vector<double>(1, c.whitePoint))) << c.name;
+        if (c.rgbOnly) {
+            KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channels)) << c.name;
+            channels->setChannels(0, { "R", "G", "B" });
+        }
         if (c.allChannels) {
             KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
             ASSERT_TRUE(bool(channels)) << c.name;
@@ -240,6 +265,11 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         }
         RenderedPlane cpu;
         ASSERT_TRUE(renderRgba(node, window, &cpu)) << c.name;
+        if (c.constantB && !c.rgbOnly && !c.masked) {
+            for (std::size_t i = 3; i < cpu.pixels.size(); i += 4) {
+                ASSERT_TRUE((cpu.pixels[i] >= 0.f) && (cpu.pixels[i] <= 1.f)) << c.name << ": alpha " << cpu.pixels[i] << " at float " << i;
+            }
+        }
 
         std::vector<GpuParityImage> inputs(c.withA ? 2 : 1);
         const NodePtr sources[2] = { b, a };

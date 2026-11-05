@@ -1,29 +1,7 @@
-"""The native KeyMix, Difference and AdjustBBox work in the app, and the LightWrap PyPlug's Switch toggles.
+"""GUI check of the native KeyMix, Difference and AdjustBBox nodes and the LightWrap PyPlug's Switch-driven
+knobs: each is built from Constants, and the viewer image is read back after every change.
 
-Sections (each node is created from its plugin ID; sources are Constants; the Viewer is set to the
-Un-tone-mapped view so screen colours follow the image):
-  - keymix: B blue, A red. No Mask passes B through (blue); a white Mask Constant shows A (red),
-    a black one (alpha 0, as the mask reads rgba.A) shows B (blue), and unticking the mask's
-    enable passes B through again (blue);
-  - difference: B bright grey, A dark grey, then Premult so the alpha shows as brightness. Different
-    inputs give a bright viewer, a Black Point above their difference a black one, and equal inputs
-    a black one (alpha 0);
-  - adjustbbox: a Constant cropped to a small square in the bottom-left corner of the format does
-    not reach the viewer centre; AdjustBBox with Nearest boundary and a large Num Pixels grows the
-    region so the centre shows the Constant's colour. The Python API has no region-of-definition
-    getter, so the viewer centre is the probe;
-  - lightwrap: the LightWrap PyPlug (its inner Switches follow Use Constant Highlight and Disable
-    luminance-Based Wrap) is fed a cropped foreground box and a background, with Intensity 1 and
-    Generate Wrap Only on. Turning Use Constant Highlight on
-    with a blue constant, and turning Disable luminance-Based Wrap on, each change the viewer image.
-Screenshots: m121-keymix-panel.png, m121-difference-panel.png, m121-adjustbbox-panel.png,
-m121-keymix.png, m121-difference.png, m121-adjustbbox.png, m121-lightwrap-before.png and
-m121-lightwrap-constant.png.
-
-Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup; the harness must
-run Xvfb at 1920x1080):
-    docker exec -e NATRON_GUI_TEST_OUT=build/m121-routing-mix/out -w /home/bosley/git/Natron natron-dev \\
-        Tests/gui/run-gui-test.sh Tests/gui/m121_routing_mix.py build/release/App/Natron
+Run through Tests/gui/run-gui-test.sh under Xvfb at 1920x1080.
 """
 import os
 import sys

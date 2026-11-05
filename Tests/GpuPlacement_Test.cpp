@@ -373,8 +373,8 @@ TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
     EXPECT_EQ(graph.regions[0].workingSetBytes, kBytes * (1 + 3 + 4));
 }
 
-// root 0 (CPU) <- 1 (GPU) <- identity 2 <- identity 3 <- 4 (GPU) <- reader 5 (CPU): a routing node followed by a node at
-// an identity setting, between two GPU tasks.
+// root 0 (CPU) <- 1 (GPU) <- identity 2 <- identity 3 <- 4 (GPU) <- reader 5 (CPU): a chain of two identity tasks
+// between two GPU tasks.
 TEST(GpuPlacement, IdentityChainBetweenGpuTasksStaysInOneRegion)
 {
     FrameGraph graph = makeGraph(6, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 5 } });

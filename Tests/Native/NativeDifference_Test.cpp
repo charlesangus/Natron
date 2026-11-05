@@ -44,8 +44,12 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Keyer/Difference.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
@@ -276,6 +280,67 @@ protected:
             *maxAlpha = largest;
         }
     }
+
+    // B is a constant over the project's format whose alpha is bAlpha, A the parity source shifted
+    // by (kAOriginX, kAOriginY). Expects B's colour everywhere, and an alpha that is the matte
+    // blended with B's by mask x mix and limited to 0 to 1, or B's own alpha where nothing is
+    // blended or where the node does not write it (alphaSelected false).
+    void expectBlendedAlpha(float bAlpha,
+                            double mix,
+                            bool masked,
+                            bool alphaSelected)
+    {
+        resetProject();
+        NodePtr b = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        ASSERT_TRUE(bool(b));
+        ASSERT_TRUE(setKnobValue(b, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+        ASSERT_TRUE(setKnobValues(b, kConstantParamColor, { 0.5, 0.25, 0.75, (double)bAlpha }));
+        NodePtr node = makeDifference(b, makeSource(kAOriginX, kAOriginY));
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { mix }));
+        if (masked) {
+            connectNodes(makeSource(5, 3), node, kDifferenceInputMask, true);
+            KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("maskChannel_Mask").get());
+            ASSERT_TRUE(maskChannel != NULL);
+            maskChannel->set("rgba.A");
+            ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+        }
+        if (!alphaSelected) {
+            KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channels));
+            channels->setChannels(0, { "R", "G", "B" });
+        }
+
+        const RectI window = caseWindow();
+        RenderedPlane plane;
+        ASSERT_TRUE(renderRGBA(node, window, &plane));
+        const int x2 = std::max(kParitySourceWidth, kAOriginX + kParitySourceWidth);
+        const int y2 = std::max(kParitySourceHeight, kAOriginY + kParitySourceHeight);
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                const bool inB = (x >= 0) && (y >= 0) && (x < kParitySourceWidth) && (y < kParitySourceHeight);
+                const float bPix[4] = { inB ? 0.5f : 0.f, inB ? 0.25f : 0.f, inB ? 0.75f : 0.f, inB ? bAlpha : 0.f };
+                float aPix[4];
+                for (int c = 0; c < 4; ++c) {
+                    aPix[c] = sourceValue(c, kAOriginX, kAOriginY, x, y);
+                }
+                const float* got = pixelAt(plane, x, y);
+                if ((x < 0) || (y < 0) || (x >= x2) || (y >= y2)) {
+                    EXPECT_EQ(0.f, got[3]) << "outside at (" << x << ", " << y << ")";
+                    continue;
+                }
+                float want = bPix[3];
+                if (alphaSelected) {
+                    const float blend = (float)(mix * (masked ? sourceValue(3, 5, 3, x, y) : 1.f));
+                    if (blend != 0.f) {
+                        const float blended = (blend == 1.f) ? matte(bPix, aPix, kDefaultRemap) : matte(bPix, aPix, kDefaultRemap) * blend + (1.f - blend) * bPix[3];
+                        want = std::clamp(blended, 0.f, 1.f);
+                    }
+                }
+                ASSERT_NEAR(want, got[3], 1e-5f) << "alpha at (" << x << ", " << y << ")";
+            }
+        }
+    }
 };
 
 TEST_F(NativeDifferenceTest, Identity)
@@ -288,8 +353,7 @@ TEST_F(NativeDifferenceTest, AlphaIsTheSquaredColourDistance)
     resetProject();
     NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
     ASSERT_TRUE(bool(node));
-    // The defaults give exactly the squared distance, as the node did before Black Point and White
-    // Point replaced Offset.
+    // The defaults give exactly the squared distance.
     EXPECT_EQ(0., getKnobDouble(node, kDifferenceParamBlackPoint));
     EXPECT_EQ(1., getKnobDouble(node, kDifferenceParamWhitePoint));
     EXPECT_EQ(1., getKnobDouble(node, kDifferenceParamGain));
@@ -391,4 +455,27 @@ TEST_F(NativeDifferenceTest, WithoutBItIsBlack)
     EXPECT_FALSE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, RectI(0, 0, 16, 16), layers, &planes, &error));
     EXPECT_EQ(std::string(kRenderProducedNoPlane), error);
     EXPECT_TRUE(planes.empty());
+}
+
+TEST_F(NativeDifferenceTest, APartialMixKeepsAnOutOfRangeAlphaOfBInRange)
+{
+    expectBlendedAlpha(2.f, 0.5, false, true);
+    expectBlendedAlpha(-1.f, 0.5, false, true);
+}
+
+TEST_F(NativeDifferenceTest, AMaskKeepsAnOutOfRangeAlphaOfBInRange)
+{
+    expectBlendedAlpha(2.f, 0.8, true, true);
+    expectBlendedAlpha(-1.f, 0.8, true, true);
+}
+
+TEST_F(NativeDifferenceTest, AnUnselectedAlphaPassesBsOutOfRangeAlphaThrough)
+{
+    expectBlendedAlpha(2.f, 0.5, true, false);
+    expectBlendedAlpha(-1.f, 1., false, false);
+}
+
+TEST_F(NativeDifferenceTest, AMixOfZeroPassesBsOutOfRangeAlphaThrough)
+{
+    expectBlendedAlpha(2.f, 0., false, true);
 }

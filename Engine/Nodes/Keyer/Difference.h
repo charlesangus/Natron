@@ -53,7 +53,8 @@ inline constexpr InputSpec kDifferenceInputs[] = {
 /**
  * @brief Difference: a rough matte from a subject (B) and its clean plate (A). Colour is B's. With
  * d the sum over R, G, B of (B - A)^2, alpha is gain x max(0, (d - blackPoint) / (whitePoint -
- * blackPoint)), unclamped above so that scene-linear differences above 1 stay meaningful; when
+ * blackPoint)), limited to 0 to 1 (a NaN giving 0), and after the mask and mix as well, so that a blend
+ * with an alpha of B outside 0 to 1 stays within it; when
  * whitePoint <= blackPoint it is a hard threshold, gain where d > blackPoint and 0 elsewhere. With A
  * unconnected the plate is B itself, a zero difference; with B unconnected the output is
  * transparent black.
@@ -82,7 +83,7 @@ struct DifferenceOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::ClampAlpha },
         .layers = LayerPolicy::color(false, false, false, true),
         .op = OpKind::Composite,
     };

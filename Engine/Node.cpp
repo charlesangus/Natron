@@ -2878,27 +2878,59 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     assert(_imp->knobsInitialized);
 
     Q_UNUSED(updateKnobGui);
-    const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
+    const bool wasRestoringKnobs = _imp->restoringKnobs;
+    _imp->restoringKnobs = true;
 
     // Looked up by name, as a node can have thousands of knobs (an RFVSwitch with 1024 rows).
     std::unordered_map<std::string, std::vector<const Serialization::KnobSerialization*>> savedByName;
     for (const Serialization::KnobSerialization& saved : serialization.knobs) {
         savedByName[NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name)].push_back(&saved);
     }
-    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        const KnobIPtr& knob = nodeKnobs[j];
-        const auto found = savedByName.find(knob->getName());
-        if (found == savedByName.end()) {
-            continue;
-        }
-        for (const Serialization::KnobSerialization* saved : found->second) {
-            // A knob might change its type between versions: fromSerialization() then loads nothing.
-            if (!knob->fromSerialization(*saved)) {
+    // Loading a knob may add or delete knobs (a node whose knobs follow a choice), so this walks
+    // copies of the list, skips knobs deleted meanwhile, and goes again over the knobs added.
+    std::set<KnobIPtr> loaded;
+    // Addresses of the knobs in the list as of liveGeneration; only compared, never dereferenced.
+    std::unordered_set<const KnobI*> live;
+    bool liveValid = false;
+    U64 liveGeneration = 0;
+    for (;;) {
+        const std::vector<KnobIPtr> nodeKnobs = getKnobs();
+        bool loadedAny = false;
+        for (const KnobIPtr& knob : nodeKnobs) {
+            if (loaded.count(knob)) {
                 continue;
             }
-            if (knob->getName() == kOfxImageEffectFileParamName) {
-                computeFrameRangeForReader(knob.get());
+            // The value-change generation would move on every knob loaded and force a rebuild each time.
+            const U64 generation = _imp->effect->getKnobListGeneration();
+            if (!liveValid || generation != liveGeneration) {
+                live.clear();
+                for (const KnobIPtr& k : getKnobs()) {
+                    live.insert(k.get());
+                }
+                liveGeneration = generation;
+                liveValid = true;
             }
+            if (!live.count(knob.get())) {
+                continue;
+            }
+            loaded.insert(knob);
+            loadedAny = true;
+            const auto found = savedByName.find(knob->getName());
+            if (found == savedByName.end()) {
+                continue;
+            }
+            for (const Serialization::KnobSerialization* saved : found->second) {
+                // A knob might change its type between versions: fromSerialization() then loads nothing.
+                if (!knob->fromSerialization(*saved)) {
+                    continue;
+                }
+                if (knob->getName() == kOfxImageEffectFileParamName) {
+                    computeFrameRangeForReader(knob.get());
+                }
+                break;
+            }
+        }
+        if (!loadedAny) {
             break;
         }
     }
@@ -2922,7 +2954,14 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     // no information and the hash must be recomputed from the freshly restored knobs and inputs.
     computeHash();
 
+    _imp->restoringKnobs = wasRestoringKnobs;
     _imp->effect->onKnobsLoaded();
+}
+
+bool
+Node::isRestoringKnobs() const
+{
+    return _imp->restoringKnobs;
 }
 
 void

@@ -77,3 +77,4 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
 - 2026-11-02 — main merged in; GPU test's Setup struct renamed (gtest's Setup trap); gate re-running (PM).
 - 2026-11-02 — Whole-Source request accepted for now; a bounded RoI from sampling the distortion map is M318 - LensCorrect Bounded Input Region. No exiv2: older bodies that store the lens only in makernotes use the manual lens field (user).
 - 2026-11-03 — Gate green (run 41580988734 from a2b8f3bf8). UAT: build/appimages/Natron-m160-lensfun-lens-correction.AppImage + .md.
+- 2026-11-05 — UAT approved (user).

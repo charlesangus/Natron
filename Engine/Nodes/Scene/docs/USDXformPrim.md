@@ -25,6 +25,17 @@ rather than copied under each transform. Links into the scope, such as a
 material binding, keep pointing at it. A scope root that holds geometry still
 stays put, with a node warning.
 
+Mode chooses between that (Graft, the default) and Wrap. Wrap reads only input 0
+and treats Prim Path as an existing prim P there: it defines an `Xform` named
+Wrap Name (default the node's name, following renames until edited) beside P and
+moves P, with everything beneath it, under the Xform, so `/World/Box` wrapped by
+"Wrap1" becomes `/World/Wrap1/Box`. Nothing is left at the old path and nothing
+is duplicated. Relationship targets and attribute connections into the moved
+prims, from inside or outside them, follow the move. A Prim Path with no defined
+prim in input 0, a Wrap Name that is not a valid prim name or equals P's name,
+and a Wrap Name already taken beside P are node errors. Creating the node from a
+scene selection sets Wrap.
+
 Kind sets the prim's model kind (group, assembly, component or subcomponent);
 None authors no kind.
 

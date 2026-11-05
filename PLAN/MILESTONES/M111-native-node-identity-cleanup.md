@@ -200,3 +200,4 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 - 2026-11-02 — P5.T1 at dee877d5d (Read/Write renames as approved; Project default resolves live via file rules → file tag → project default). Follow-ups (user): the 'Project default' entry shows what it resolved to; the OCIO nodes get the same treatment (ocioContext/contextKeyN, single colourspace choice menus) — OCIOColorSpace keeps two menus, input and output space.
 - 2026-11-02 — 4104b5a6e: Project default shows its resolution; OCIO nodes converted (OCIOColorSpace input/output menus). Also (user): snake_case knobs renamed to camelCase; OCIOFileTransform gets an OCIO context group.
 - 2026-11-05 — UAT approved (user). P5.T1 landed at dee877d5d and 4104b5a6e; its box was stale (PM).
+- 2026-11-05 — Review round closed at e8ade3dba (Claude reviewer) (PM).

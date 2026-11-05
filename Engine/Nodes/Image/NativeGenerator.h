@@ -89,11 +89,12 @@ class NativeGenerator {
 public:
     typedef ExtentKnobs::ExtentEnum ExtentEnum;
 
-    explicit NativeGenerator(EffectInstance* effect);
+    explicit NativeGenerator(EffectInstance* effect,
+                             ExtentEnum defaultExtent = ExtentKnobs::eExtentDefault);
 
     /**
-     * @brief Declares the generator knobs on page, in the openfx-misc order, with Default the
-     * initial extent. The generator knobs come before the op's.
+     * @brief Declares the generator knobs on page, in the openfx-misc order, with the
+     * constructor's default extent the initial one. The generator knobs come before the op's.
      **/
     void createKnobs(const KnobPagePtr& page);
 
@@ -151,6 +152,21 @@ private:
 };
 
 /**
+ * @brief The extent a generator over OP starts with: OP::kDefaultExtent when it declares one,
+ * else Default.
+ **/
+template <typename OP>
+constexpr ExtentKnobs::ExtentEnum
+generatorDefaultExtent()
+{
+    if constexpr (requires { OP::kDefaultExtent; }) {
+        return OP::kDefaultExtent;
+    } else {
+        return ExtentKnobs::eExtentDefault;
+    }
+}
+
+/**
  * @brief An image generator made of an Op with no input: an ImageNode over OP and SPEC that
  * holds a NativeGenerator and answers from it the region of definition, preferred metadata,
  * output metadata and frame range. Its knobs are the generator's, then the op's, on one
@@ -173,7 +189,7 @@ public:
 
     explicit GeneratorNode(NodePtr node)
         : Base(node)
-        , _generator(this)
+        , _generator(this, generatorDefaultExtent<OP>())
     {
         if constexpr (requires(OP& o, const NativeGenerator* g) { o.generator = g; }) {
             this->op().generator = &_generator;

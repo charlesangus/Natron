@@ -149,8 +149,8 @@ try:
         gt.section("setup")
         viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
         require(viewer is not None, "a Viewer node exists")
-        rect = app.createNode("net.sf.openfx.Rectangle")
-        require(rect is not None, "create a Rectangle", gt.plugin_problem("net.sf.openfx.Rectangle"))
+        rect = app.createNode("Rectangle")
+        require(rect is not None, "create a Rectangle", gt.plugin_problem("Rectangle"))
         gt.close_all_panels()
         # The halves are found on screen, so the format need not be exactly this.
         width = 1920.0

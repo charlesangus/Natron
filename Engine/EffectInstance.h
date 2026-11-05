@@ -53,8 +53,7 @@
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
-#define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
-#define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"
+#define PLUGINID_OFX_DOTEXAMPLE "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_SENOISE      "net.sf.openfx.SeNoise"
 #define PLUGINID_OFX_READOIIO     "fr.inria.openfx.ReadOIIO"
 #define PLUGINID_OFX_WRITEOIIO    "fr.inria.openfx.WriteOIIO"

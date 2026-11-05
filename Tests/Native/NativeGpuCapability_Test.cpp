@@ -71,8 +71,12 @@
 #include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/ColorWheel.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
+#include "Engine/Nodes/Generator/Radial.h"
+#include "Engine/Nodes/Generator/Ramp.h"
+#include "Engine/Nodes/Generator/Rectangle.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Despill.h"
@@ -131,6 +135,10 @@ gpuCapableIds()
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
         PLUGINID_NATRON_NOISE,
+        PLUGINID_NATRON_RAMP,
+        PLUGINID_NATRON_RADIAL,
+        PLUGINID_NATRON_RECTANGLE,
+        PLUGINID_NATRON_COLORWHEEL,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,

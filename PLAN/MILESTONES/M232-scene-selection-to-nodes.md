@@ -111,4 +111,12 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 
 - 2026-11-05 — Review round at 401ee1d67: create-from-selection now wires its own connections, replacing only the first eligible output; an empty selection opens the menu from the panel too and keeps USDXformPrim in Graft (PM).
 
+- [ ] M232.P5.T3 — USDAssignMaterial's Material Path takes prim drops and the picker
+  - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Tests/gui/scene_graph_drag.py`, `Tests/gui/scene_prim_picker.py`
+  - approach: give Material Path the prim-path hint.
+  - verify: GUI scripts: a drop sets it, Undo restores it, two dropped paths write the first, the knob has a picker button.
+  - size: M
+
+- 2026-11-05 — UAT: fix Material Path, then merge with no second UAT (user).
+
 **Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in a replacement AppImage built on the plain panel (this milestone has never been UAT-tested).

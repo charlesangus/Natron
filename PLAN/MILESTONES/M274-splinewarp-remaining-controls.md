@@ -217,7 +217,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - Default per Q2.
   - verify: the M148 draft test is parameterised by this knob.
   - size: M
-- [ ] M274.P5.T2 — Lanczos/Sinc filters through M270 (waits on M270)
+- [x] ~~M274.P5.T2 — Lanczos/Sinc filters through M270~~ (moved to M270 - Lanczos Sinc Resampling Filters)
   - files: `Tests/Native/NativeSplineWarpGpu_Test.cpp` (`EachFilterMatchesTheCpu` covers every `filterOptions()` entry)
   - approach:
     - No SplineWarp code change: the filter menu and kernel are shared.
@@ -323,3 +323,4 @@ Fixes land on the integration branch `uat/splinewarp`; the stack (M147–M152, M
 - 2026-11-03 — UAT is one integration build, branch uat/splinewarp (M274 + M151 + M152, c8e0975bb; conflicts resolved to M274's single Boundary role; copy/paste also carries cookie cutters, layer amounts and transforms). Each milestone still merges from its own branch; the copy extension must be carried back to M152 before it merges.
 - 2026-11-04 — Knob pages: Warp (Amount, Invert, Layer Amount, Link Amount, Boundary BBox, Crop To Format, Output Mask, mask/mix), Transform (only the transform knobs, name kept for Nuke users), Render (user). Warp actions also in the control-point right-click menu (user).
 - 2026-11-04 — Round 2 gate green on 9884c803c (main merged in, run 41856039611). Repeat right-clicks: KnobChoice::populateChoices' M167 early return swallowed the menu signal (also on main); populateChoices(entries, notifyIfUnchanged) fixes it. UAT round 3: build/appimages/Natron-splinewarp-stack.AppImage.
+- 2026-11-05 — Stack UAT approved (user); the stack merges as one integration PR from uat/splinewarp. P5.T2 moves to M270 - Lanczos Sinc Resampling Filters, which carries that check when it lands, and M274 - SplineWarp Remaining Controls does not wait for it (PM).

@@ -104,4 +104,12 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
   - verify: `SceneGraphModel` gtests and `scene_graph_panel.py`, `scene_graph_follow.py`, `scene_graph_drag.py` pass; a GUI check that twirling a row produces no stage notice.
   - size: L
 
+- [x] M231.P5.T3 — Copy a row's prim path
+  - files: `Gui/SceneGraphPanel.{h,cpp}`, `Tests/gui/scene_graph_panel.py`
+  - approach: Ctrl+C on the tree or filter results, or right-click Copy Path, puts the selected paths on the clipboard in click order, joined by a space.
+  - verify: `scene_graph_panel.py` reads the clipboard back for one row, two rows, no selection and the menu action.
+  - size: M
+
+- 2026-11-05 — UAT approved with one change, row copy, no second UAT (user).
+
 **Verification gate:** release gate green; panel GUI scripts pass under Xvfb; the plain panel (tree, filter, selection sync, attribute view, drag, follow and pin) is accepted from the replacement AppImage.

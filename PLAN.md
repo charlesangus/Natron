@@ -166,8 +166,8 @@ future core work has solid ground to build on.
 | M228 | 3D Viewer Navigation | done | M19, M20, M226 | bosley-native-nodes | E9 | | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
 | M229 | 3D Viewer Guides And Display | done | M228 | bosley-native-nodes | E9 | | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | done | M226, M229 | bosley-native-nodes | E9 | | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
-| M231 | Scene Graph Panel | doing | M229 | bosley-native-nodes | E9 | uat | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
-| M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | uat | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
+| M231 | Scene Graph Panel | doing | M229 | bosley-native-nodes | E9 | | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
+| M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
 | M327 | Heavy Scene Spike | todo | M231, M232 |  | E9 | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
 | M328 | Deferred Viewer Stage | todo | M327 |  | E9 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
 | M329 | Viewer Draw States | todo | M327, M328 |  | E9 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
@@ -180,7 +180,7 @@ future core work has solid ground to build on.
 | M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M337 | Geometry Spreadsheet | todo | M54, M333 |  | E9 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
 | M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | uat | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
-| M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | uat | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
+| M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
@@ -206,7 +206,7 @@ future core work has solid ground to build on.
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
 | M259 | GPU Placement Under Render Contexts | done | M180, M181, M182 | bosley-native-nodes | E15 | | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
-| M52 | USD Layer-Stack Completion | doing | M226 | bosley-native-nodes | E9 | uat | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
+| M52 | USD Layer-Stack Completion | doing | M226 | bosley-native-nodes | E9 | | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M227 |  | E9 | | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
@@ -261,12 +261,12 @@ future core work has solid ground to build on.
 | M144 | ~~Render-Thread Metadata Refresh~~ | cancelled | M100 |  | E14 | | [M144-render-thread-metadata-refresh.md](PLAN/MILESTONES/M144-render-thread-metadata-refresh.md) |
 | M145 | OFX Fork Plugin Purge | todo | M113, M121, M122, M123, M124, M125, M127, M128, M129, M130, M132, M140, M143 |  | E3 | | [M145-ofx-fork-plugin-purge.md](PLAN/MILESTONES/M145-ofx-fork-plugin-purge.md) |
 | M146 | Roto Hosting For Any Node | done | M137 | bosley-native-nodes | E14 | | [M146-roto-hosting-for-any-node.md](PLAN/MILESTONES/M146-roto-hosting-for-any-node.md) |
-| M147 | SplineWarp Node Core | doing | M146, M113, M120, M137 | bosley-native-nodes | E3 | uat | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
-| M148 | SplineWarp Viewer Tools | doing | M147 | bosley-native-nodes | E3 | uat | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
-| M149 | SplineWarp Mesh Solver | doing | M147 | bosley-native-nodes | E3 | uat | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
-| M150 | SplineWarp GPU Kernel | doing | M147 | bosley-native-nodes | E3 | uat | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
-| M151 | SplineWarp Motion Blur | doing | M147, M150 | bosley-native-nodes | E3 | uat | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
-| M152 | Curve Track Links And Roto Copy | doing | M148 | bosley-native-nodes | E3 | uat | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
+| M147 | SplineWarp Node Core | doing | M146, M113, M120, M137 | bosley-native-nodes | E3 | | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
+| M148 | SplineWarp Viewer Tools | doing | M147 | bosley-native-nodes | E3 | | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
+| M149 | SplineWarp Mesh Solver | doing | M147 | bosley-native-nodes | E3 | | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
+| M150 | SplineWarp GPU Kernel | doing | M147 | bosley-native-nodes | E3 | | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
+| M151 | SplineWarp Motion Blur | doing | M147, M150 | bosley-native-nodes | E3 | | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
+| M152 | Curve Track Links And Roto Copy | doing | M148 | bosley-native-nodes | E3 | | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
 | M153 | Distortion Concatenation | todo | M147, M113 |  | E14 | | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
 | M154 | Fresh Buffer Page Zeroing | done | M109 | gpu | E5 | | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
@@ -352,7 +352,7 @@ future core work has solid ground to build on.
 | M271 | Persistent Message Test Failures | done | - | bosley-native-nodes | E14 | | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
-| M274 | SplineWarp Remaining Controls | doing | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | uat | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
+| M274 | SplineWarp Remaining Controls | doing | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Upstream Reuse On Edits | todo | M260 |  | E6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M300 | Unified Tiered Cache | todo | M276 |  | E6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |

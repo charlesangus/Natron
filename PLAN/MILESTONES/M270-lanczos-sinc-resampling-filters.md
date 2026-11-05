@@ -106,5 +106,11 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: the docs build step in CI (or `grep -c Lanczos` on the page) shows the new entries.
   - size: M
 
+- [ ] M270.P9.T1 — SplineWarp offers the new filters
+  - files: `Tests/Native/NativeSplineWarpGpu_Test.cpp` (`EachFilterMatchesTheCpu` covers every `filterOptions()` entry)
+  - approach: moved from M274 - SplineWarp Remaining Controls. No SplineWarp code change: the filter menu and kernel are shared. Confirm the new entries appear in the menu and pass.
+  - verify: `EachFilterMatchesTheCpu` passes with the new entries; a GUI check lists them on SplineWarp.
+  - size: M
+
 **Verification gate:** `tools/ci/remote/build.sh release --tests` passes in full, including `ctest -R "Resampler|StagedResample|NativeTransform|NativeReformat|NativeGolden|NativeTransformGpu"` on lavapipe; the GUI bench is not required (no NodeGraph diff); the Xvfb screenshot of Transform's filter panel was shared and approved.
 - 2026-11-02 — Takes over M274.P5.T2: SplineWarp gets the new Lanczos/Sinc filters too (user). Add it when re-elaborating.

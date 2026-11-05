@@ -81,6 +81,14 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - verify: test green in `build-and-test`.
   - size: M
 
+- [ ] M52.P9.T1 — USDReference shows one Reload
+  - files: `Engine/Nodes/Scene/USDReference.{h,cpp}`, its docs and tests
+  - approach: remove the duplicate of the file knob's own reload; reload keeps rereading every sublayer.
+  - verify: a test proves reload rereads a changed file through the surviving control.
+  - size: M
+
+- 2026-11-05 — UAT: USDReference has two reload buttons; fix, then merge with no second UAT. USDVariant changing nothing in the viewer is not a node bug: the test file has no colour settings (user).
+
 **Verification gate:** CI green including M52.P3.T4; `USDEditPrim` over a camera prim exports exactly the touched attributes and nothing else; `USDVariant` switches a variant visible in the Viewer's 3D view on real hardware; every scene pattern knob is a `PrimSelector`; `USDEditPrim` Define mode creates a typed prim; pre-existing ctest suite green.
 
 ## Decisions

@@ -1821,6 +1821,8 @@ IErodeDilate::fullMapRange() const
 
 RectI
 IErodeDilate::opPassesInputRoI(int inputNb,
+                               double time,
+                               ViewIdx view,
                                const RectI& outputRect,
                                const RenderScale& scale) const
 {
@@ -1828,7 +1830,7 @@ IErodeDilate::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return mapWindow(getParams(getCurrentTime(), getCurrentView()), scale, fullMapRange(), outputRect);
+    return mapWindow(getParams(time, view), scale, fullMapRange(), outputRect);
 }
 
 void

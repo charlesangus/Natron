@@ -34,12 +34,12 @@ CHANGED_PIXELS_MIN = 100
 # The drag overlay (handle and crosshair) repaints over the held image; a re-render changes over 14000 sampled pixels.
 HELD_PIXELS_MAX = 2000
 
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_VIEWER = "Viewer"
 PLUGIN_CHECKER = "CheckerBoard"
 PLUGIN_CONSTANT = "Constant"
 PLUGIN_TRANSFORM = "Transform"
 PLUGIN_CORNERPIN = "CornerPin"
-PLUGIN_ROTOPAINT = "fr.inria.built-in.RotoPaint"
+PLUGIN_ROTOPAINT = "RotoPaint"
 PLUGIN_RAMP = "Ramp"
 PLUGIN_DIRBLUR = "net.sf.openfx.DirBlur"
 PLUGIN_GRADE = "Grade"

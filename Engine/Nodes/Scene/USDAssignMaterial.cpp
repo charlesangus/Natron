@@ -121,6 +121,7 @@ USDAssignMaterial::initializeKnobs()
     materialPath->setHintToolTip(tr("The material already in the scene to bind, such as /materials/Metal. Unused while the "
                                     "Material input is connected: its first material is bound instead."));
     materialPath->setAnimationEnabled(false);
+    materialPath->setPrimPathHint(KnobString::ePrimPathHintPath);
     page->addKnob(materialPath);
     _materialPath = materialPath;
 

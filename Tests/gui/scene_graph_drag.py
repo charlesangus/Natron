@@ -14,7 +14,8 @@ Checks:
   - the same two rows dropped on a USDScopePrim's Prim Path field set it to the first row's path,
     /World/Box, and one Undo restores it;
   - the same drop on a USDAssignMaterial's Prim Pattern field sets both paths, and one Undo
-    restores it.
+    restores it;
+  - the same drop on its Material Path field sets the first row's path only, and one Undo restores it.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -36,6 +37,7 @@ CAM = "/World/Cam"
 MARKER = "/NatronDropTarget"
 MARKER_PATH = "/NatronDropPathTarget"
 MARKER_ASSIGN = "/NatronDropAssignTarget"
+MARKER_MATERIAL = "/NatronDropMaterialTarget"
 
 try:
     import NatronEngine
@@ -241,6 +243,9 @@ try:
         assign_pattern = assign.getParam("primPattern")
         require(assign_pattern is not None, "USDAssignMaterial has a primPattern parameter")
         assign_pattern.setValue(MARKER_ASSIGN)
+        assign_material = assign.getParam("materialPath")
+        require(assign_material is not None, "USDAssignMaterial has a materialPath parameter")
+        assign_material.setValue(MARKER_MATERIAL)
         ok = yield ("until", lambda: field_showing(MARKER_ASSIGN) is not None, POLL_TIMEOUT_S)
         require(ok, "the USDAssignMaterial's Prim Pattern field is shown")
         check(send_drag(field_showing(MARKER_ASSIGN), mime, True), "USDAssignMaterial's Prim Pattern field accepts the drag")
@@ -250,6 +255,18 @@ try:
         undo_once()
         check(str(assign_pattern.getValue()) == MARKER_ASSIGN,
               "one Undo restores USDAssignMaterial's pattern (got %r)" % (assign_pattern.getValue(),))
+
+        ok = yield ("until", lambda: field_showing(MARKER_MATERIAL) is not None, POLL_TIMEOUT_S)
+        require(ok, "the USDAssignMaterial's Material Path field is shown")
+        check(send_drag(field_showing(MARKER_MATERIAL), mime, True), "USDAssignMaterial's Material Path field accepts the drag")
+        got = str(assign_material.getValue())
+        check(got == BOX,
+              "the drop sets the Material Path to the first of two paths only (got %r)" % (got,))
+        check(str(assign_pattern.getValue()) == MARKER_ASSIGN,
+              "the Material Path drop leaves the Prim Pattern alone (got %r)" % (assign_pattern.getValue(),))
+        undo_once()
+        check(str(assign_material.getValue()) == MARKER_MATERIAL,
+              "one Undo restores the Material Path (got %r)" % (assign_material.getValue(),))
 
     run(steps())
 except Exception:

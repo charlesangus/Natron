@@ -14,7 +14,8 @@ Checks:
   - with Cam selected in the 3D view (through the Scene Graph panel), "Use Viewer Selection"
     sets the pattern to "/World/Cam";
   - with Box then Ball selected in the 3D view, "Use Viewer Selection" on a USDXformPrim's Prim Path
-    writes the first prim, "/World/Box".
+    writes the first prim, "/World/Box";
+  - a USDAssignMaterial's panel has a picker button on both its Prim Pattern and Material Path fields.
 
 Shots: scene-prim-picker-popup.png (the popup with Box and Ball picked) and
 scene-prim-picker-viewer.png (after Use Viewer Selection).
@@ -171,6 +172,16 @@ try:
                 continue
         return None
 
+    def picker_buttons():
+        found = []
+        for w in QApplication.allWidgets():
+            try:
+                if isinstance(w, QPushButton) and w.objectName() == "knobPrimPicker" and w.isVisible():
+                    found.append(w)
+            except RuntimeError:
+                continue
+        return found
+
     def popup_button(which):
         box = hold(popup().findChild(QDialogButtonBox, "scenePrimPickerButtons"))
         return hold(box.button(which)) if box is not None else None
@@ -304,6 +315,19 @@ try:
         check(ok, "Use Viewer Selection closes the path knob's picker")
         check(str(prim_path.getValue()) == BOX,
               "Use Viewer Selection writes the first prim to a path knob (got %r)" % (prim_path.getValue(),))
+
+        # A material path knob takes the picker too.
+        close_all_panels()
+        ok = yield ("until", lambda: not any_panel_open(), POLL_TIMEOUT_S)
+        require(ok, "the USDXformPrim's panel closes")
+        assign = app.createNode("USDAssignMaterial", -1, None, props)
+        require(assign is not None, "create USDAssignMaterial", plugin_problem("USDAssignMaterial"))
+        assign.setPosition(300, 100)
+        require(assign.connectInput(0, edit), "connect the USDAssignMaterial to the USDEditTransform")
+        ok = yield ("until", lambda: len(picker_buttons()) >= 2, POLL_TIMEOUT_S)
+        check(ok, "the USDAssignMaterial's panel shows a picker button on both prim fields (got %d)" % (len(picker_buttons()),))
+        check(len(picker_buttons()) == 2,
+              "exactly Prim Pattern and Material Path have a picker button (got %d)" % (len(picker_buttons()),))
 
     run(steps())
 except Exception:

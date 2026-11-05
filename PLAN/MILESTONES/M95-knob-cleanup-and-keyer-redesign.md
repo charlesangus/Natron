@@ -109,7 +109,7 @@ Scouting (2026-10-11, `10e0accd5`):
 
 ## Phase 95.5: Evidence and UAT
 
-- [ ] M95.P5.T1 — GUI script, shots and AppImage checkpoint
+- [x] M95.P5.T1 — GUI script, shots and AppImage checkpoint
   - files: `Tests/gui/m95_knobs_keyer.py` (new), `build/appimages/M95-<sha>.AppImage`, `build/appimages/M95-uat.md`
   - approach: one section per verify above (toggle sync, Transform drag on and off, panels without the knobs, footer order shots for Grade/Saturation/ColorLookup and an OFX node, Keyer matte on a ramp and on a greenscreen still). Then `tools/ci/local/package.sh fast`. The UAT also loads `tools/bench/comps/cg_multipass.ntp` and an old project with a Keyer, to see the clean-break behaviour.
   - verify: the script reports 0 failures, and the user approves the shots and signs off on the AppImage.
@@ -128,12 +128,12 @@ Acceptance sketch:
 
 ## Phase 95.6: UAT round 1 fixes (user, 2026-11-02)
 
-- [ ] M95.P6.T1 — Keyer uses HSVKeyer's luma range widget
+- [x] M95.P6.T1 — Keyer uses HSVKeyer's luma range widget
   - files: Engine/Nodes/Keyer/Keyer.*, the widget HSVKeyer uses for its four-point luma/range control (Engine/Nodes/Keyer/HSVKeyer.cpp and the Gui widget it registers), Keyer tests and GUI script
   - approach: replace Keyer's four separate A/B/C/D knobs' presentation with the same interactive trapezoid widget HSVKeyer uses for its luma range, sharing the code (move it to a common place if it is HSVKeyer-local). Keep the A ≤ B ≤ C ≤ D behaviour and the trapezoidMatte maths.
   - verify: Keyer tests pass; the GUI check drags the widget's points and reads the knobs and the matte change.
   - size: M
-- [ ] M95.P6.T2 — Key source: Luminance, Red, Green, Blue
+- [x] M95.P6.T2 — Key source: Luminance, Red, Green, Blue
   - files: Engine/Nodes/Keyer/Keyer.*, NativeKeyer tests, docs
   - approach: replace the Luminance/Colour key source with Luminance, Red, Green, Blue (single-channel key values); drop the key-colour knob and the colour dot-product mode.
   - verify: NativeKeyer analytic tests cover each source; the panel shows the four options.
@@ -157,3 +157,4 @@ ChromaKeyer: works poorly but stays as is for M95 (user, 2026-11-02); a proper t
   - **Footer order (user, from mockups at claude.ai artifact `WTqyJm8s3WDyUBadL1h8MK`):** below the separator: Clamp black and Clamp white **side by side on one row**, then (Un)premult by, then mask channel + Invert mask, then Mix. This overrides the order in P3.T1's approach (clamp black needs no new line so clamp white joins its row); the `KnobFooterOrder` test checks this order.
 - 2026-10-12 — **ChromaKeyer added back (user), as a scene-linear fix rather than the alpha-only redesign:** P4.T5 removes the Rec.709 encoding and the HDR clamps and moves it to the host mask/mix (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`). The Keyer's "same plugin ID, major 3" answer is superseded by the plain-ID rule: M107 - Native Node Identity Cleanup renames it to `Keyer` at major 1.
 - 2026-11-02 — Release gate green at 23a2bb83a (main merged in, run 41555644848); AppImage + steps at build/appimages/Natron-m95-knob-cleanup-and-keyer.{AppImage,md}; awaiting user UAT (PM).
+- 2026-11-05 — UAT approved (user). P5.T1, P6.T1 and P6.T2 are in the accepted build; their boxes were stale (PM).

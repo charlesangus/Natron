@@ -697,6 +697,8 @@ EdgeBlur::readsGpuInput(int inputNb,
 
 RectI
 EdgeBlur::opPassesInputRoI(int inputNb,
+                           double time,
+                           ViewIdx view,
                            const RectI& outputRect,
                            const RenderScale& scale) const
 {
@@ -704,7 +706,7 @@ EdgeBlur::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return matteRoIOf(getParams(getCurrentTime(), getCurrentView()), getPassContext(getCurrentTime(), getCurrentView(), scale), outputRect);
+    return matteRoIOf(getParams(time, view), getPassContext(time, view, scale), outputRect);
 }
 
 bool

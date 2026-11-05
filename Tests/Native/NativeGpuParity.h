@@ -204,13 +204,14 @@ typedef std::function<void()> GpuFrameDone;
 // Renders `root` over `window` at `time` twice. First as a frame of the render scheduler with a
 // forced GPU context, with every node of `graph` whose effect accepts the task on the GPU, as
 // regions, a run of raw-reading tasks all or nothing as a render places it. Then on the CPU under
-// a GpuPlacementOffGuard.
+// a GpuPlacementOffGuard. `window` is in the pixels of mipmapLevel.
 EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const NodePtr& root,
                               const RectI& window,
                               double time = 1.,
                               const GpuContextReady& onGpuContext = GpuContextReady(),
-                              const GpuFrameDone& onGpuFrame = GpuFrameDone());
+                              const GpuFrameDone& onGpuFrame = GpuFrameDone(),
+                              unsigned mipmapLevel = 0);
 
 NATRON_NAMESPACE_EXIT
 

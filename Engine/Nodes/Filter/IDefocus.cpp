@@ -101,11 +101,16 @@ const double kMaxSize = 500.;
 const int kKernelTypeDisc = 0;
 const int kKernelTypeBlades = 1;
 const int kKernelTypeImage = 2;
-// A Kernel image larger than this many pixels is read over its image only.
-const std::size_t kMaxKernelImagePixels = (std::size_t)1 << 24;
 // Levels per pixel of radius between the Size At Black and the Size, and their most.
 const double kLevelsPerPixel = 4.;
 const int kMaxLevels = 1024;
+// Kernels sum to 1, so this is relative to a whole kernel's reach. Fixed rather than relative to the
+// row's largest weight, which depends on where the render window starts. Every analytic kernel
+// reaches its own centre above this, so the GPU, which has only those, never needs it.
+const double kMinGatherWeight = 1e-8;
+// Adding such a value to the row's difference sums and taking it out again leaves more than a
+// float's rounding in them for the rest of the row, so these sources are summed per pixel instead.
+const float kDirectSumValue = 1048576.f;
 
 BokehShape
 shapeOf(int kernelType)
@@ -127,7 +132,6 @@ struct KernelImage {
     int height = 0;
 };
 
-/// The bokeh of params at context's scale; an Image kernel without values is the single tap.
 BokehKernel
 buildBokeh(const DefocusParams& params,
            const PassContext& context,
@@ -147,13 +151,11 @@ buildBokeh(const DefocusParams& params,
     return BokehKernel::shaped(params.shape, rx, ry);
 }
 
-/// The halo of the kernel of params at context's scale, 0 for the single tap.
 void
 haloOf(const DefocusParams& params,
        const PassContext& context,
        int* haloX,
-       int* haloY,
-       double* radius)
+       int* haloY)
 {
     double rx = 0.;
     double ry = 0.;
@@ -161,13 +163,11 @@ haloOf(const DefocusParams& params,
     if (BokehKernel::isIdentityRadius(rx, ry)) {
         *haloX = 0;
         *haloY = 0;
-        *radius = 0.;
 
         return;
     }
     *haloX = BokehKernel::extent(rx);
     *haloY = BokehKernel::extent(ry);
-    *radius = std::max(rx, ry);
 }
 
 /// The largest halo over levels lo .. hi: the size is linear in the level, so it is at one end.
@@ -178,19 +178,15 @@ levelRangeHalo(const IDefocusParams& params,
                int hi,
                int count,
                int* haloX,
-               int* haloY,
-               double* radius)
+               int* haloY)
 {
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    double r0 = 0., r1 = 0.;
-    haloOf(IDefocus::levelParams(params, lo, count), context, &x0, &y0, &r0);
-    haloOf(IDefocus::levelParams(params, hi, count), context, &x1, &y1, &r1);
+    haloOf(IDefocus::levelParams(params, lo, count), context, &x0, &y0);
+    haloOf(IDefocus::levelParams(params, hi, count), context, &x1, &y1);
     *haloX = std::max(x0, x1);
     *haloY = std::max(y0, y1);
-    *radius = std::max(r0, r1);
 }
 
-/// One level's kernel as the CPU gathers it: its runs, row dy's from rowStart[dy + haloY].
 struct LevelKernel {
     int haloX = 0;
     int haloY = 0;
@@ -221,7 +217,6 @@ makeLevelKernel(const BokehKernel& kernel)
     return out;
 }
 
-/// What makes the levels: the knobs that shape them, the scale and the Image kernel's values.
 struct LevelKey {
     BokehShapeParams shape;
     double aspectRatio = 1.;
@@ -268,10 +263,7 @@ makeLevelKey(const IDefocusParams& params,
     return key;
 }
 
-/**
- * @brief The levels built so far for one key, each on first use, and the GPU's table of every
- * level. A new key drops them; renders already holding levels keep theirs.
- **/
+// A new key drops the levels; renders already holding them keep theirs through the shared_ptrs.
 struct LevelStore {
     std::mutex mutex;
     bool valid = false;
@@ -292,10 +284,6 @@ struct LevelStore {
     }
 };
 
-/**
- * @brief What the passes of one render share: each level's kernel, the level of every pixel over
- * gridRect, the render window grown by the halo, and each grid row's largest vertical halo.
- **/
 struct IDefocusState {
     std::vector<std::shared_ptr<const LevelKernel>> kernels;
     std::vector<uint16_t> grid;
@@ -317,7 +305,6 @@ struct IDefocusState {
 using IDefocusStatePtr = std::shared_ptr<IDefocusState>;
 using Worker = std::function<PassRowFn(const PassScratch&)>;
 
-/// Slot 1, every pixel of every plane: slot 0 with its highlights boosted.
 Worker
 boostWorker(const IDefocusStatePtr& state)
 {
@@ -339,11 +326,11 @@ boostWorker(const IDefocusStatePtr& state)
     };
 }
 
-/// One thread's sums along an output row: weights, contributions and values, as differences.
 struct GatherRow {
     std::vector<double> weights;
     std::vector<int> counts;
     std::vector<double> sums;
+    std::vector<double> direct;
     std::vector<double> acc;
     std::vector<float> values;
 };
@@ -353,7 +340,8 @@ struct GatherRow {
  * slot `from` within the halo adds its kernel's row at the line's offset, weighted, to the row's
  * sums, which are then divided by the weights. A source outside the scratch rect is black but
  * still adds its weight, as Defocus's fixed weights count the black outside the image. A pixel
- * nothing reaches, or only itself with the single tap, keeps slot 0's value.
+ * nothing reaches, only a kernel's faint tails reach, or only itself with the single tap reaches,
+ * keeps slot 0's value.
  **/
 Worker
 gatherWorker(const IDefocusStatePtr& state,
@@ -371,6 +359,7 @@ gatherWorker(const IDefocusStatePtr& state,
         row->weights.resize((std::size_t)length + 1);
         row->counts.resize((std::size_t)length + 1);
         row->sums.resize(((std::size_t)length + 1) * (std::size_t)nPlanes);
+        row->direct.resize((std::size_t)length * (std::size_t)nPlanes);
         row->acc.resize((std::size_t)nPlanes);
         row->values.resize((std::size_t)nPlanes);
         const PassScratch* buffers = &scratch;
@@ -389,10 +378,12 @@ gatherWorker(const IDefocusStatePtr& state,
             double* const weights = row->weights.data();
             int* const counts = row->counts.data();
             double* const sums = row->sums.data();
+            double* const direct = row->direct.data();
             float* const values = row->values.data();
             std::fill(row->weights.begin(), row->weights.end(), 0.);
             std::fill(row->counts.begin(), row->counts.end(), 0);
             std::fill(row->sums.begin(), row->sums.end(), 0.);
+            std::fill(row->direct.begin(), row->direct.end(), 0.);
 
             const RectI& g = s->gridRect;
             const int gridWidth = g.width();
@@ -414,11 +405,13 @@ gatherWorker(const IDefocusStatePtr& state,
                         continue;
                     }
                     const bool inside = rowInside && (sx >= rect.x1) && (sx < rect.x2);
+                    bool bright = false;
                     if (inside) {
                         const std::size_t at = (std::size_t)(sy - rect.y1) * width + (std::size_t)(sx - rect.x1);
                         for (int p = 0; p < nPlanes; ++p) {
                             const float v = buffers->plane(from, p)[at];
                             values[p] = std::isfinite(v) ? v : 0.f;
+                            bright = bright || (std::fabs(values[p]) >= kDirectSumValue);
                         }
                     }
                     const BokehRun* r = k.runs.data() + k.rowStart[(std::size_t)(dy + k.haloY)];
@@ -434,7 +427,14 @@ gatherWorker(const IDefocusStatePtr& state,
                         weights[b] -= w;
                         ++counts[a];
                         --counts[b];
-                        if (inside) {
+                        if (bright) {
+                            for (int i = a; i < b; ++i) {
+                                double* const di = direct + (std::size_t)i * nPlanes;
+                                for (int p = 0; p < nPlanes; ++p) {
+                                    di[p] += w * values[p];
+                                }
+                            }
+                        } else if (inside) {
                             double* const sa = sums + (std::size_t)a * nPlanes;
                             double* const sb = sums + (std::size_t)b * nPlanes;
                             for (int p = 0; p < nPlanes; ++p) {
@@ -460,15 +460,22 @@ gatherWorker(const IDefocusStatePtr& state,
                 for (int p = 0; p < nPlanes; ++p) {
                     acc[p] += si[p];
                 }
+                // The true sums are 0 here, and what the additions left in these would otherwise
+                // carry on to the rest of the row.
+                if (count == 0) {
+                    weight = 0.;
+                    std::fill(row->acc.begin(), row->acc.end(), 0.);
+                }
+                const double* const di = direct + (std::size_t)i * nPlanes;
                 const int x = wx1 + i;
                 const std::size_t at = rowAt + (std::size_t)(x - rect.x1);
-                const bool keep = (count <= 0) || !(weight > 0.) || ((count == 1) && s->levelAt(x, y).identity);
+                const bool keep = (count <= 0) || !(weight >= kMinGatherWeight) || ((count == 1) && s->levelAt(x, y).identity);
                 for (int p = 0; p < nPlanes; ++p) {
                     float out;
                     if (keep) {
                         out = buffers->plane(0, p)[at];
                     } else {
-                        out = (float)(acc[p] / weight);
+                        out = (float)((acc[p] + di[p]) / weight);
                         if (unboost) {
                             out = s->highlight.unboost(out);
                         }
@@ -480,11 +487,7 @@ gatherWorker(const IDefocusStatePtr& state,
     };
 } // gatherWorker
 
-/**
- * @brief The passes gathering with a halo of haloX x haloY: the highlight boost into slot 1 when
- * it is on, then the gather into the result slot. With no state, the passes have no work and only
- * carry the halo and growth. No pass at all for a zero halo.
- **/
+// With no state, the passes have no work and only carry the halo and growth.
 PassList
 makePasses(const BokehHighlight& highlight,
            int haloX,
@@ -575,10 +578,6 @@ struct IDefocusGpuHeader {
 };
 static_assert(sizeof(IDefocusGpuHeader) == kGpuHeader * sizeof(uint32_t));
 
-/**
- * @brief The table after the header: levels 0 .. count, three uints each (the index of its
- * weights in the whole table, its haloX and haloY), then each level's weights row by row.
- **/
 std::vector<uint32_t>
 buildGpuLevels(const IDefocusParams& params,
                const PassContext& context,
@@ -603,8 +602,6 @@ buildGpuLevels(const IDefocusParams& params,
     return info;
 }
 
-// The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
-// indices.
 bool
 gpuFloatIndex(const gpu::GpuBlurImage& image,
               int x,
@@ -638,12 +635,6 @@ uploadWords(gpu::GpuRecordContext& ctx,
     return true;
 }
 
-/**
- * @brief The gather as the GPU records it: the level and the boosted source of every pixel of the
- * output grown by the halo into the work buffer, then every output pixel's gather over its apron
- * into io.filtered. The Map's channel is mapChannel of io.inputs[Map], or none when that is
- * negative. Fails, so that the CPU renders, when a buffer exceeds the kernels' 32-bit indices.
- **/
 StatusEnum
 recordIDefocusGpu(const PassGpuIO& io,
                   const IDefocusParams& params,
@@ -1052,8 +1043,7 @@ IDefocus::opPasses(double time,
     // A disconnected Map reads 1 everywhere; a connected one may take any level.
     const int lo = getInput(kIDefocusInputMap) ? 0 : count;
     int haloX = 0, haloY = 0;
-    double radius = 0.;
-    levelRangeHalo(params, context, lo, count, count, &haloX, &haloY, &radius);
+    levelRangeHalo(params, context, lo, count, count, &haloX, &haloY);
     PassList list = makePasses(params.defocus.highlight, haloX, haloY, IDefocusStatePtr());
 
 #ifdef NATRON_HAVE_GPU
@@ -1087,8 +1077,7 @@ IDefocus::recordGpu(const PassGpuIO& io,
     }
     const int count = levelCount(params, context);
     int haloX = 0, haloY = 0;
-    double radius = 0.;
-    levelRangeHalo(params, context, connected ? 0 : count, count, count, &haloX, &haloY, &radius);
+    levelRangeHalo(params, context, connected ? 0 : count, count, count, &haloX, &haloY);
     if ((haloX > kGpuMaxHalo) || (haloY > kGpuMaxHalo)) {
         return eStatusFailed;
     }
@@ -1153,6 +1142,8 @@ IDefocus::opPassesInputLayer(int inputNb,
 
 RectI
 IDefocus::opPassesInputRoI(int inputNb,
+                           double time,
+                           ViewIdx view,
                            const RectI& outputRect,
                            const RenderScale& scale) const
 {
@@ -1160,7 +1151,7 @@ IDefocus::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+    return passListSourceRoI(outputRect, opPasses(time, view, scale));
 }
 
 GpuWeight
@@ -1174,7 +1165,7 @@ IDefocus::gpuWeight(double time,
         return GpuWeight::filter();
     }
 
-    // Every output pixel visits its whole apron, so the cost follows the largest kernel's diameter.
+    // Follows Defocus's weight.
     return gpuSizeScaledWeight(2. * halo);
 }
 
@@ -1248,11 +1239,11 @@ IDefocus::readKernelImage(double time,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &rodD, &isProjectFormat) == eStatusOK) {
         const double par = getRenderMetadata(time, view)->getPixelAspectRatio(kIDefocusInputKernel);
         const RectI rodPixel = PassExec::toPixelEnclosing(rodD, scale, par);
-        if (!PassExec::isEmptyRect(rodPixel) && ((std::size_t)rodPixel.width() * (std::size_t)rodPixel.height() <= kMaxKernelImagePixels)) {
+        if (!rodD.isInfinite() && !PassExec::isEmptyRect(rodPixel)) {
             frame = rodPixel;
         }
     }
-    if (PassExec::isEmptyRect(frame) || ((std::size_t)frame.width() * (std::size_t)frame.height() > kMaxKernelImagePixels)) {
+    if (PassExec::isEmptyRect(frame)) {
         *empty = true;
 
         return eStatusOK;
@@ -1266,11 +1257,13 @@ IDefocus::readKernelImage(double time,
         PassExec::readChannelRow(image.get(), &access, bounds, nComps, channel, frame.x1, frame.y1 + y, w, 0.f, &(*values)[(std::size_t)y * w]);
     }
     // The same test fromImage() makes: an image with nothing positive gives the single tap.
+    // LevelStore compares these values, and a NaN never equals itself, so it would rebuild every tile.
     bool any = false;
-    for (float v : *values) {
-        if (std::isfinite(v) && (v > 0.f)) {
+    for (float& v : *values) {
+        if (!std::isfinite(v)) {
+            v = 0.f;
+        } else if (v > 0.f) {
             any = true;
-            break;
         }
     }
     if (!any) {
@@ -1322,8 +1315,7 @@ IDefocus::renderOp(const RenderActionArgs& args,
     const MapRange range = map->tileRange(window);
     const int count = levelCount(params, context);
     int haloX = 0, haloY = 0;
-    double radius = 0.;
-    levelRangeHalo(params, context, levelOf(range.min, count), levelOf(range.max, count), count, &haloX, &haloY, &radius);
+    levelRangeHalo(params, context, levelOf(range.min, count), levelOf(range.max, count), count, &haloX, &haloY);
     if ((haloX <= 0) && (haloY <= 0)) {
         // Every source within reach has the single tap.
         return runPassesCpu(*this, plan, args, PassList());
@@ -1401,7 +1393,6 @@ IDefocus::getRegionsOfInterest(double time,
 
     EffectInstancePtr kernel = getInput(kIDefocusInputKernel);
     if (kernel && isImageKernel(time, view)) {
-        // The whole Kernel image, whatever the window.
         RectD rod;
         bool isProjectFormat = false;
         if (kernel->getRegionOfDefinition_public(kernel->getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusOK) {
@@ -1411,7 +1402,6 @@ IDefocus::getRegionsOfInterest(double time,
 
     EffectInstancePtr map = getInput(kIDefocusInputMap);
     if (map) {
-        // The Map is read over the render window grown by the full halo, in the source's pixels.
         const double par = getRenderMetadata(time, view)->getPixelAspectRatio(kIDefocusInputSource);
         const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
         add(map, PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par));

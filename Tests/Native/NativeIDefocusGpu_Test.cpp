@@ -40,6 +40,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -51,6 +52,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -151,9 +153,13 @@ protected:
     // Renders idefocus on the GPU and on the CPU over the window and expects the two within the
     // tolerance with IDefocus run on the device.
     void expectParity(const NodePtr& idefocus,
-                      const std::string& name)
+                      const std::string& name,
+                      const RectI& window = kWindow,
+                      double time = kTime,
+                      unsigned mipmapLevel = 0,
+                      const ParityTolerance& tolerance = kIDefocusTolerance)
     {
-        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ idefocus }), idefocus, kWindow, kTime);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ idefocus }), idefocus, window, time, GpuContextReady(), GpuFrameDone(), mipmapLevel);
         if (result.skipped) {
             return;
         }
@@ -162,7 +168,7 @@ protected:
         EXPECT_EQ(1u, result.gpuTasksPerNode.count(idefocus->getScriptName_mt_safe())) << name << ": the region fell back to the CPU";
 
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << name;
-        const ImageDiff diff = compareImages(result.cpu, result.gpu, kIDefocusTolerance);
+        const ImageDiff diff = compareImages(result.cpu, result.gpu, tolerance);
         EXPECT_GT(diff.compared, 0u) << name;
         EXPECT_EQ(0u, diff.mismatches) << name << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
     }
@@ -319,4 +325,60 @@ TEST_F(NativeIDefocusGpuTest, NonFiniteSourceMatchesTheCpu)
     NodePtr idefocus = makeIDefocus(source, NodePtr(), 7.);
     ASSERT_TRUE(bool(idefocus));
     expectParity(idefocus, "non-finite");
+}
+
+TEST_F(NativeIDefocusGpuTest, MipmapLevelsMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr idefocus = makeIDefocus(source, map, 22.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(idefocus));
+    ASSERT_TRUE(setKnobValues(idefocus, kMapInputParamSizeAtBlack, { 4. }));
+    for (unsigned mipmapLevel : { 1u, 2u }) {
+        const RectI window(0, 0, kParitySourceWidth >> mipmapLevel, kParitySourceHeight >> mipmapLevel);
+        expectParity(idefocus, "mipmap " + std::to_string(mipmapLevel), window, kTime, mipmapLevel);
+    }
+}
+
+// Size 126 has a halo of 63, just within the GPU's cap.
+TEST_F(NativeIDefocusGpuTest, HaloNearTheCapMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr idefocus = makeIDefocus(source, map, 126.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(idefocus));
+    // The GPU's float sums round over some 12000 taps here rather than a few hundred.
+    expectParity(idefocus, "halo 63", kWindow, kTime, 0, ParityTolerance::make(5e-4, 5e-4));
+}
+
+// The Map's GPU region of interest follows the time asked about, not the timeline's. Strips are
+// what make a Map read over too small a region show: its rows beyond it would be black.
+TEST_F(NativeIDefocusGpuTest, AnimatedSizeAtAnotherTimeThanTheTimeline)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr idefocus = makeIDefocus(source, map, 2.);
+    IDefocus* effect = effectOf(idefocus);
+    ASSERT_TRUE(bool(source) && bool(map) && (effect != NULL));
+
+    const double timeline = getApp()->getTimeLine()->currentFrame();
+    const double other = timeline + 9.;
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(idefocus->getKnobByName(kDefocusParamSize));
+    ASSERT_TRUE(bool(size));
+    size->removeAnimation(ViewSpec::all(), 0);
+    size->setValueAtTime(timeline, 2., ViewSpec::all(), 0);
+    size->setValueAtTime(other, 30., ViewSpec::all(), 0);
+
+    const RectI rect(20, 12, 44, 36);
+    const RenderScale& scale = RenderScale::identity;
+    const RectI atTimeline = effect->getGpuInputRoI(kIDefocusInputSource, timeline, ViewIdx(0), rect, scale);
+    const RectI atOther = effect->getGpuInputRoI(kIDefocusInputSource, other, ViewIdx(0), rect, scale);
+    EXPECT_NE(atTimeline, atOther);
+    EXPECT_EQ(atTimeline, effect->getGpuInputRoI(kIDefocusInputMap, timeline, ViewIdx(0), rect, scale));
+    EXPECT_EQ(atOther, effect->getGpuInputRoI(kIDefocusInputMap, other, ViewIdx(0), rect, scale));
+
+    expectParity(idefocus, "whole", kWindow, other);
+    setGpuStripOverridesForTests(0, 8);
+    expectParity(idefocus, "strips", kWindow, other);
+    setGpuStripOverridesForTests(0, 0);
 }

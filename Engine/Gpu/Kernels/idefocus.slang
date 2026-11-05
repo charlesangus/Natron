@@ -58,7 +58,6 @@ static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
 
-// Header words.
 static const uint kMapFlags = 0;
 static const uint kMapChannel = 1;
 static const uint kMapChannels = 2;
@@ -76,7 +75,6 @@ bool isFiniteValue(float v)
     return !isnan(v) && !isinf(v);
 }
 
-// IDefocus::levelOf().
 uint levelOf(float m, uint count)
 {
     precise float scaled = m * float(count);
@@ -86,7 +84,6 @@ uint levelOf(float m, uint count)
     return min(count, uint(rounded));
 }
 
-// The level of pixel (x, y): the remapped Map, black outside it, or the Size with no Map.
 uint mapLevel(int x, int y)
 {
     const uint flags = tableBuf[kMapFlags];
@@ -114,8 +111,6 @@ uint sourceIndex(int x, int y)
     return params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
 }
 
-// Each pixel of the output grown by the halo: its level, and boostWorker()'s source, 0 where it
-// is not finite or outside the source.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void idefocus_load(uint3 tid : SV_DispatchThreadID)
@@ -141,8 +136,6 @@ void idefocus_load(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// gatherWorker(): every output pixel, the weighted sum of what reaches it over the weights, or
-// the source where nothing does or only the pixel itself with the single tap.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void idefocus_gather(uint3 tid : SV_DispatchThreadID)
@@ -152,7 +145,6 @@ void idefocus_gather(uint3 tid : SV_DispatchThreadID)
     const uint n = params.channels;
     const uint stride = n + 1;
     const uint dst = params.dstOffset + tid.y * params.dstStride + tid.x * n;
-    // The output pixel in the work buffer's coordinates.
     const int px = int(tid.x) + params.haloX;
     const int py = int(tid.y) + params.haloY;
     float acc[4] = { 0.0, 0.0, 0.0, 0.0 };

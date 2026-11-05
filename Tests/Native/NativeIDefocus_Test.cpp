@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
 #include <list>
 #include <string>
@@ -74,14 +75,15 @@ const RectI kWide(-64, -64, 128, 112);
 bool
 renderRGBA(const NodePtr& node,
            const RectI& window,
-           RenderedPlane* plane)
+           RenderedPlane* plane,
+           unsigned mipmapLevel = 0)
 {
     std::list<ImageLayerDesc> layers;
     std::vector<RenderedPlane> planes;
     std::string error;
 
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, layers, &planes, &error);
     EXPECT_TRUE(ok) << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
         return false;
@@ -204,7 +206,16 @@ protected:
     NodePtr makeBoxOverBlack(const RectI& box,
                              const std::vector<double>& color)
     {
-        NodePtr black = makeConstant(kWindow, { 0., 0., 0., 0. });
+        return makeBoxOver(kWindow, { 0., 0., 0., 0. }, box, color);
+    }
+
+    // `box` of `color` over a Constant of `baseColor` over `base`.
+    NodePtr makeBoxOver(const RectI& base,
+                        const std::vector<double>& baseColor,
+                        const RectI& box,
+                        const std::vector<double>& color)
+    {
+        NodePtr black = makeConstant(base, baseColor);
         NodePtr inside = makeConstant(box, color);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
@@ -256,6 +267,37 @@ protected:
         EXPECT_TRUE(setKnobValues(idefocus, kDefocusParamSize, { size }));
 
         return idefocus;
+    }
+
+    // Sets the Image kernel type and connects kernel to node's input.
+    void useImageKernel(const NodePtr& node,
+                        const NodePtr& kernel,
+                        int input)
+    {
+        EXPECT_TRUE(setKnobValue(node, kDefocusParamKernelType, std::string(kDefocusParamKernelTypeImage)));
+        connectNodes(kernel, node, input, true);
+    }
+
+    void expectRegionIndependent(const NodePtr& idefocus)
+    {
+        RenderedPlane full;
+        ASSERT_TRUE(renderRGBA(idefocus, kWindow, &full));
+        const RectI windows[] = { RectI(10, 7, 37, 29), RectI(0, 0, 9, 48), RectI(50, 40, 64, 48), RectI(31, 23, 32, 24) };
+        for (const RectI& window : windows) {
+            RenderedPlane part;
+            ASSERT_TRUE(renderRGBA(idefocus, window, &part));
+            std::size_t differing = 0;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        if (pixelAt(part, x, y, c) != pixelAt(full, x, y, c)) {
+                            ++differing;
+                        }
+                    }
+                }
+            }
+            EXPECT_EQ(0u, differing) << window.x1 << "," << window.y1 << " " << window.x2 << "," << window.y2;
+        }
     }
 };
 
@@ -415,24 +457,170 @@ TEST_F(NativeIDefocusTest, RegionIndependence)
     ASSERT_TRUE(setKnobValue(idefocus, kDefocusParamKernelType, std::string(kDefocusParamKernelTypeBlades)));
     ASSERT_TRUE(setKnobValues(idefocus, kDefocusParamHighlightGain, { 3. }));
     ASSERT_TRUE(setKnobValues(idefocus, kDefocusParamHighlightThreshold, { 0.4 }));
+    expectRegionIndependent(idefocus);
+}
 
-    RenderedPlane full;
-    ASSERT_TRUE(renderRGBA(idefocus, kWindow, &full));
-    const RectI windows[] = { RectI(10, 7, 37, 29), RectI(0, 0, 9, 48), RectI(50, 40, 64, 48), RectI(31, 23, 32, 24) };
-    for (const RectI& window : windows) {
-        RenderedPlane part;
-        ASSERT_TRUE(renderRGBA(idefocus, window, &part));
-        std::size_t differing = 0;
-        for (int y = window.y1; y < window.y2; ++y) {
-            for (int x = window.x1; x < window.x2; ++x) {
-                for (int c = 0; c < 4; ++c) {
-                    if (pixelAt(part, x, y, c) != pixelAt(full, x, y, c)) {
-                        ++differing;
+TEST_F(NativeIDefocusTest, RegionIndependenceWithImageKernel)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr kernel = makeParitySource();
+    NodePtr idefocus = makeIDefocus(source, map, 13.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(kernel) && bool(idefocus));
+    ASSERT_TRUE(setKnobValues(idefocus, kMapInputParamSizeAtBlack, { 3. }));
+    useImageKernel(idefocus, kernel, kIDefocusInputKernel);
+    expectRegionIndependent(idefocus);
+}
+
+TEST_F(NativeIDefocusTest, ImageKernelAtConstantMapMatchesDefocus)
+{
+    NodePtr source = makeParitySource();
+    NodePtr kernel = makeParitySource();
+    NodePtr white = makeConstant(kWide, { 1., 1., 1., 1. });
+    NodePtr grey = makeConstant(kWide, { 0.5, 0.5, 0.5, 0.5 });
+    ASSERT_TRUE(bool(source) && bool(kernel) && bool(white) && bool(grey));
+
+    struct Case {
+        NodePtr map;
+        double sizeAtBlack;
+        double expectedSize;
+    };
+    const Case cases[] = {
+        { white, 0., 20. },
+        { grey, 4., 12. },
+    };
+    for (const Case& k : cases) {
+        NodePtr idefocus = makeIDefocus(source, k.map, 20.);
+        NodePtr defocus = makeDefocus(source, k.expectedSize);
+        ASSERT_TRUE(bool(idefocus) && bool(defocus));
+        ASSERT_TRUE(setKnobValues(idefocus, kMapInputParamSizeAtBlack, { k.sizeAtBlack }));
+        useImageKernel(idefocus, kernel, kIDefocusInputKernel);
+        useImageKernel(defocus, kernel, kDefocusInputKernel);
+
+        RenderedPlane expected, actual;
+        ASSERT_TRUE(renderRGBA(defocus, kWindow, &expected));
+        ASSERT_TRUE(renderRGBA(idefocus, kWindow, &actual));
+        EXPECT_LE(worstDifference(expected.pixels, actual.pixels), 1e-5) << "size " << k.expectedSize;
+    }
+}
+
+// A second render on the same node after a change equals a new node's first render, so no level
+// outlives the Size or the Kernel image it was built for.
+TEST_F(NativeIDefocusTest, LevelsFollowTheSizeAndTheKernelImage)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    ASSERT_TRUE(bool(source) && bool(map));
+
+    const auto expectLikeNew = [&](const NodePtr& changed, const RenderedPlane& before, const NodePtr& fresh, const char* what) {
+        RenderedPlane after, expected;
+        ASSERT_TRUE(renderRGBA(changed, kWindow, &after)) << what;
+        ASSERT_TRUE(renderRGBA(fresh, kWindow, &expected)) << what;
+        EXPECT_EQ(0u, countDiffering(expected.pixels, after.pixels)) << what;
+        EXPECT_GT(worstDifference(before.pixels, after.pixels), 1e-3) << what;
+    };
+
+    {
+        NodePtr disc = makeIDefocus(source, map, 12.);
+        ASSERT_TRUE(bool(disc));
+        RenderedPlane before;
+        ASSERT_TRUE(renderRGBA(disc, kWindow, &before));
+        ASSERT_TRUE(setKnobValues(disc, kDefocusParamSize, { 24. }));
+        expectLikeNew(disc, before, makeIDefocus(source, map, 24.), "disc, Size");
+    }
+
+    // Same frame, other values: the slit is a different kernel, the frame's size is not.
+    NodePtr square = makeBoxOverBlack(RectI(28, 20, 36, 28), { 1., 1., 1., 1. });
+    NodePtr slit = makeBoxOverBlack(RectI(8, 23, 56, 25), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(square) && bool(slit));
+    {
+        NodePtr image = makeIDefocus(source, map, 12.);
+        ASSERT_TRUE(bool(image));
+        useImageKernel(image, square, kIDefocusInputKernel);
+        RenderedPlane before;
+        ASSERT_TRUE(renderRGBA(image, kWindow, &before));
+        ASSERT_TRUE(setKnobValues(image, kDefocusParamSize, { 24. }));
+        NodePtr fresh = makeIDefocus(source, map, 24.);
+        ASSERT_TRUE(bool(fresh));
+        useImageKernel(fresh, square, kIDefocusInputKernel);
+        expectLikeNew(image, before, fresh, "image, Size");
+    }
+    {
+        NodePtr image = makeIDefocus(source, map, 24.);
+        ASSERT_TRUE(bool(image));
+        useImageKernel(image, square, kIDefocusInputKernel);
+        RenderedPlane before;
+        ASSERT_TRUE(renderRGBA(image, kWindow, &before));
+        disconnectNodes(square, image, true);
+        connectNodes(slit, image, kIDefocusInputKernel, true);
+        NodePtr fresh = makeIDefocus(source, map, 24.);
+        ASSERT_TRUE(bool(fresh));
+        useImageKernel(fresh, slit, kIDefocusInputKernel);
+        expectLikeNew(image, before, fresh, "image, Kernel");
+    }
+}
+
+// A kernel of a bright core and tails 1e-12 of it, the core off centre so that some pixels get only
+// tails, and one source pixel of 1e30 among 0.5. Every output stays within the source's range, no
+// bright pixel shows beyond the kernel's reach, along its rows included, and a pixel with only
+// tails keeps the source rather than dividing by their weight.
+TEST_F(NativeIDefocusTest, FaintTailedKernelStaysWithinTheSource)
+{
+    const RectI brightBox(36, 24, 37, 25);
+    const float bright = 1e30f;
+    const double size = 17.;
+    NodePtr source = makeBoxOver(kWindow, { 0.5, 0.5, 0.5, 1. }, brightBox, { (double)bright, (double)bright, (double)bright, 1. });
+    NodePtr kernel = makeBoxOver(RectI(0, 0, 17, 17), { 1e-12, 1e-12, 1e-12, 1e-12 }, RectI(11, 8, 12, 9), { 1., 1., 1., 1. });
+    NodePtr island = makeConstant(RectI(30, 0, 50, kParitySourceHeight), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(source) && bool(kernel) && bool(island));
+
+    {
+        RenderedPlane input;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &input));
+        ASSERT_EQ(bright, pixelAt(input, brightBox.x1, brightBox.y1, 0));
+        ASSERT_EQ(0.5f, pixelAt(input, 0, 0, 0));
+    }
+
+    const float eps = 1e-5f;
+    for (const NodePtr& map : { NodePtr(), island }) {
+        NodePtr idefocus = makeIDefocus(source, map, size);
+        ASSERT_TRUE(bool(idefocus));
+        useImageKernel(idefocus, kernel, kIDefocusInputKernel);
+        for (unsigned mipmapLevel : { 0u, 2u }) {
+            const RectI window(0, 0, kParitySourceWidth >> mipmapLevel, kParitySourceHeight >> mipmapLevel);
+            RenderedPlane out;
+            ASSERT_TRUE(renderRGBA(idefocus, window, &out, mipmapLevel));
+
+            const int brightX = brightBox.x1 >> mipmapLevel;
+            const int brightY = brightBox.y1 >> mipmapLevel;
+            const int reach = BokehKernel::extent(size / 2. / (1 << mipmapLevel)) + 1;
+            std::size_t outOfRange = 0;
+            std::size_t farTooBright = 0;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x) {
+                    const bool far = (std::abs(x - brightX) > reach) || (std::abs(y - brightY) > reach);
+                    for (int c = 0; c < 4; ++c) {
+                        const float v = pixelAt(out, x, y, c);
+                        if (!std::isfinite(v) || (v < -eps) || (v > bright * 1.000001f) || ((c == 3) && (v > 1.f + eps))) {
+                            ++outOfRange;
+                        }
+                        if (far && (c < 3) && (v > 0.5f + eps)) {
+                            ++farTooBright;
+                        }
+                    }
+                }
+            }
+            EXPECT_EQ(0u, outOfRange) << "mipmap " << mipmapLevel << (map ? " island" : " no map");
+            EXPECT_EQ(0u, farTooBright) << "mipmap " << mipmapLevel << (map ? " island" : " no map");
+
+            if (map && (mipmapLevel == 0)) {
+                for (int y = window.y1; y < window.y2; ++y) {
+                    for (int x = 30; x < 33; ++x) {
+                        EXPECT_EQ(0.5f, pixelAt(out, x, y, 0)) << x << "," << y;
                     }
                 }
             }
         }
-        EXPECT_EQ(0u, differing) << window.x1 << "," << window.y1 << " " << window.x2 << "," << window.y2;
     }
 }
 

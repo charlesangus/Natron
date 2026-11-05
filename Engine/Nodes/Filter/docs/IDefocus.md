@@ -19,9 +19,10 @@ I-variant registry (`IDefocus.reg.inc`); every knob they share has the same name
   of what reaches it over the sum of those weights. A sharp pixel beside an out-of-focus highlight receives the
   highlight's bloom, up to the highlight's radius and no further; IBlur gathers over the output pixel's own size
   instead, so its sharp pixels stay sharp next to any blur. Pixels that nothing but themselves reaches with the
-  single tap keep the source bit for bit, so a black Map with Size At Black 0 is the identity.
+  single tap keep the source bit for bit, so a black Map with Size At Black 0 is the identity. So do pixels that only
+  the faintest tails of an Image kernel reach, whose weights are too small to divide by.
 - **Levels.** The Map value is rounded to one of N + 1 levels, N being four per pixel of radius between Size At Black
-  and Size (at most 1024), so the radius steps by at most a quarter pixel. Level 0 has exactly Size At Black and
+  and Size, at most 1024. Level 0 has exactly Size At Black and
   level N exactly Size, so a constant white Map matches Defocus at Size. Each level's kernel is built once, on first
   use, and kept until a knob, the scale or the Kernel image changes.
 - **Algorithm.** For each output row, every source pixel within the largest halo that the Map reaches in the tile

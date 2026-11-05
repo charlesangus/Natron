@@ -46,7 +46,6 @@
 
 // The knobs Defocus has keep its names (kDefocusParam*); the Map's are MapInput's (kMapInputParam*).
 
-// Input indices.
 #define kIDefocusInputSource 0
 #define kIDefocusInputMask 1
 #define kIDefocusInputKernel 2
@@ -69,8 +68,8 @@ struct IDefocusParams {
  * of the weights that do (scatter as gather).
  *
  * The Map value is quantised to levels 0 .. levelCount(): level l has the size at Map l / count,
- * so the top level has exactly the Size and level 0 exactly the Size At Black. The count gives
- * steps of at most a quarter of a pixel in either radius.
+ * so the top level has exactly the Size and level 0 exactly the Size At Black. The count is four
+ * levels per pixel of radius, at most 1024.
  **/
 class IDefocus
     : public StagedImageEffect {
@@ -91,16 +90,12 @@ public:
 
     IDefocusParams getParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
-    /// The highest level of params at context's scale, at least 1 and at most 1024.
     static int levelCount(const IDefocusParams& params, const PassContext& context) WARN_UNUSED_RETURN;
 
-    /// The level of m, a remapped Map value in [0, 1], out of count levels.
     static int levelOf(float m, int count) WARN_UNUSED_RETURN;
 
-    /// The Defocus parameters of level out of count: the size at Map level / count.
     static DefocusParams levelParams(const IDefocusParams& params, int level, int count) WARN_UNUSED_RETURN;
 
-    /// The warning posted while the Map is disconnected.
     static std::string mapNotConnectedMessage() WARN_UNUSED_RETURN;
 
     virtual bool readsGpuInput(int inputNb,
@@ -136,7 +131,6 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
-    // An identity when every level the Map may take gives the single tap.
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -144,21 +138,19 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The passes over the full range of the Map, without CPU work; with a GPU recorder for an
-    // analytic kernel whose halo is within the GPU's cap.
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The Map in the layer its channel resolves in.
     virtual bool opPassesInputLayer(int inputNb,
                                     const ImageLayerDesc& plane,
                                     double time,
                                     ViewIdx view,
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The Map over the source's region of interest, as getRegionsOfInterest() asks for it.
     virtual RectI opPassesInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -175,11 +167,6 @@ private:
                               ImageLayerDesc* layer,
                               int* channel) const WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The Image kernel's values, width x height from the bottom row, read from the Kernel
-     * input's channel over its region of definition; none, with *empty set while the input is
-     * connected, when there is nothing to read.
-     **/
     StatusEnum readKernelImage(double time,
                                ViewIdx view,
                                const RenderScale& scale,
@@ -188,9 +175,7 @@ private:
                                int* height,
                                bool* empty);
 
-    // Posts message, or with an empty one takes back this node's own warnings.
     void setWarning(const std::string& message);
-    // The warning the inputs and the kernel type call for.
     std::string idleWarning() const WARN_UNUSED_RETURN;
     void refreshWarning();
 

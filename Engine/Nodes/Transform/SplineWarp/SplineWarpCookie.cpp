@@ -50,7 +50,8 @@ SplineWarpCookieMask::at(int x,
 
 std::list<BezierPtr>
 getSplineWarpCookieCurves(const SplineWarpContext& context,
-                          double time)
+                          double time,
+                          bool invert)
 {
     std::list<BezierPtr> curves;
     const std::list<BezierPtr> cutters = context.getCookieCutters();
@@ -61,8 +62,11 @@ getSplineWarpCookieCurves(const SplineWarpContext& context,
         }
         BezierPtr curve = *it;
         SplineWarpLinkPtr link = context.getLink(curve);
-        if (link && link->getSource()) {
-            curve = link->getSource();
+        if (link) {
+            BezierPtr origin = invert ? link->getDestination() : link->getSource();
+            if (origin) {
+                curve = origin;
+            }
         }
         if (std::find(curves.begin(), curves.end(), curve) == curves.end()) {
             curves.push_back(curve);

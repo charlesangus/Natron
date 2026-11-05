@@ -44,88 +44,6 @@ const double kBoxPadding = 0.25;
 // Grid points this close to a triangle, in grid steps, are rasterized with it.
 const double kCoverEpsilon = 1e-9;
 
-Point
-makePoint(double x,
-          double y)
-{
-    Point p;
-
-    p.x = x;
-    p.y = y;
-
-    return p;
-}
-
-// Merges pairs whose destinations are within kSplineWarpMergeDistance, averaging their sources;
-// remap receives each pair's merged index, -1 for a pair with a non-finite coordinate.
-std::vector<SplineWarpSamplePair>
-mergeCoincident(const std::vector<SplineWarpSamplePair>& pairs,
-                std::vector<int>* remap)
-{
-    struct Cell {
-        std::int64_t x, y;
-        bool operator==(const Cell& o) const
-        {
-            return x == o.x && y == o.y;
-        }
-    };
-    struct CellHash {
-        std::size_t operator()(const Cell& c) const
-        {
-            return std::hash<std::int64_t>()(c.x * 73856093LL ^ c.y * 19349663LL);
-        }
-    };
-
-    const double cellSize = kSplineWarpMergeDistance;
-    const double maxCoord = 1e12;
-    std::unordered_map<Cell, std::vector<int>, CellHash> grid;
-    std::vector<SplineWarpSamplePair> merged;
-    std::vector<int> counts;
-
-    remap->assign(pairs.size(), -1);
-    for (std::size_t i = 0; i < pairs.size(); ++i) {
-        const SplineWarpSamplePair& p = pairs[i];
-        if (!std::isfinite(p.destination.x) || !std::isfinite(p.destination.y) || !std::isfinite(p.source.x) || !std::isfinite(p.source.y) || (std::fabs(p.destination.x) > maxCoord) || (std::fabs(p.destination.y) > maxCoord)) {
-            continue;
-        }
-        const Cell c = { (std::int64_t)std::floor(p.destination.x / cellSize), (std::int64_t)std::floor(p.destination.y / cellSize) };
-        int found = -1;
-        for (int dy = -1; dy <= 1 && found < 0; ++dy) {
-            for (int dx = -1; dx <= 1 && found < 0; ++dx) {
-                const Cell n = { c.x + dx, c.y + dy };
-                std::unordered_map<Cell, std::vector<int>, CellHash>::const_iterator it = grid.find(n);
-                if (it == grid.end()) {
-                    continue;
-                }
-                for (std::size_t k = 0; k < it->second.size(); ++k) {
-                    const SplineWarpSamplePair& q = merged[it->second[k]];
-                    if (std::hypot(q.destination.x - p.destination.x, q.destination.y - p.destination.y) < kSplineWarpMergeDistance) {
-                        found = it->second[k];
-                        break;
-                    }
-                }
-            }
-        }
-        if (found >= 0) {
-            merged[found].source.x += p.source.x;
-            merged[found].source.y += p.source.y;
-            ++counts[found];
-            (*remap)[i] = found;
-        } else {
-            (*remap)[i] = (int)merged.size();
-            grid[c].push_back((int)merged.size());
-            merged.push_back(p);
-            counts.push_back(1);
-        }
-    }
-    for (std::size_t i = 0; i < merged.size(); ++i) {
-        merged[i].source.x /= counts[i];
-        merged[i].source.y /= counts[i];
-    }
-
-    return merged;
-} // mergeCoincident
-
 // Whether the destinations span a plane, as the thin-plate solver requires.
 bool
 spansPlane(const std::vector<SplineWarpSamplePair>& pairs)
@@ -224,7 +142,7 @@ SplineWarpMesh::build(const std::vector<SplineWarpSamplePair>& pairs,
 {
     SplineWarpMesh mesh;
     std::vector<int> remap;
-    const std::vector<SplineWarpSamplePair> merged = mergeCoincident(pairs, &remap);
+    const std::vector<SplineWarpSamplePair> merged = splineWarpMergeCoincidentPairs(pairs, &remap);
 
     if (merged.empty()) {
         return mesh;
@@ -333,7 +251,7 @@ SplineWarpMesh::build(const std::vector<SplineWarpSamplePair>& pairs,
     mesh._destinations.resize(count);
     mesh._sources.resize(count);
     for (int i = 0; i < count; ++i) {
-        mesh._destinations[i] = makePoint(cdt.vertices[i].x, cdt.vertices[i].y);
+        mesh._destinations[i] = splineWarpPoint(cdt.vertices[i].x, cdt.vertices[i].y);
     }
     for (int i = 0; i < n; ++i) {
         mesh._sources[i] = merged[i].source;
@@ -386,8 +304,8 @@ SplineWarpMesh::build(const std::vector<SplineWarpSamplePair>& pairs,
         const double len2 = ex * ex + ey * ey;
         double t = (len2 > 0.) ? ((mesh._destinations[v].x - pa.x) * ex + (mesh._destinations[v].y - pa.y) * ey) / len2 : 0.;
         t = std::max(0., std::min(1., t));
-        mesh._sources[v] = makePoint(mesh._sources[a].x + t * (mesh._sources[b].x - mesh._sources[a].x),
-                                     mesh._sources[a].y + t * (mesh._sources[b].y - mesh._sources[a].y));
+        mesh._sources[v] = splineWarpPoint(mesh._sources[a].x + t * (mesh._sources[b].x - mesh._sources[a].x),
+                                           mesh._sources[a].y + t * (mesh._sources[b].y - mesh._sources[a].y));
     }
 
     mesh._triangles.reserve(cdt.triangles.size());
@@ -410,7 +328,7 @@ SplineWarpMesh::evaluate(double x,
         return _fallback.evaluate(x, y);
     }
     if (_triangles.empty() || (x < _box.x1) || (x > _box.x2) || (y < _box.y1) || (y > _box.y2)) {
-        return makePoint(x, y);
+        return splineWarpPoint(x, y);
     }
     for (std::size_t t = 0; t < _triangles.size(); ++t) {
         const Point& a = _destinations[_triangles[t].v[0]];
@@ -430,10 +348,10 @@ SplineWarpMesh::evaluate(double x,
         const Point& sb = _sources[_triangles[t].v[1]];
         const Point& sc = _sources[_triangles[t].v[2]];
 
-        return makePoint(la * sa.x + lb * sb.x + lc * sc.x, la * sa.y + lb * sb.y + lc * sc.y);
+        return splineWarpPoint(la * sa.x + lb * sb.x + lc * sc.x, la * sa.y + lb * sb.y + lc * sc.y);
     }
 
-    return makePoint(x, y);
+    return splineWarpPoint(x, y);
 }
 
 void
@@ -451,7 +369,7 @@ SplineWarpMesh::rasterize(int i0,
     for (int j = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i) {
             const std::size_t idx = (std::size_t)j * nx + i;
-            const Point s = _useFallback ? _fallback.evaluate((i0 + i) * step, (j0 + j) * step) : makePoint((i0 + i) * step, (j0 + j) * step);
+            const Point s = _useFallback ? _fallback.evaluate((i0 + i) * step, (j0 + j) * step) : splineWarpPoint((i0 + i) * step, (j0 + j) * step);
             sourceX[idx] = s.x;
             sourceY[idx] = s.y;
         }

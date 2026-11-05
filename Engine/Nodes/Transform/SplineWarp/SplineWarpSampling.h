@@ -60,6 +60,25 @@ struct SplineWarpSamplePair {
     Point source;
 };
 
+inline Point
+splineWarpPoint(double x,
+                double y)
+{
+    Point p;
+
+    p.x = x;
+    p.y = y;
+
+    return p;
+}
+
+/**
+ * @brief Merges pairs whose destinations are within kSplineWarpMergeDistance, averaging their
+ * sources. Merged pairs keep the order of their first pair. remap receives each pair's merged
+ * index, -1 for a pair with a non-finite or out of range coordinate.
+ **/
+std::vector<SplineWarpSamplePair> splineWarpMergeCoincidentPairs(const std::vector<SplineWarpSamplePair>& pairs, std::vector<int>* remap);
+
 /**
  * @brief The pairs sampled along one curve, in order along it: indices into a sample set's pairs.
  * A curve sampled to a single pair has one index.

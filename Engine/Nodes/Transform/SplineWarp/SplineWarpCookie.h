@@ -58,10 +58,11 @@ struct SplineWarpCookieMask {
 typedef std::shared_ptr<const SplineWarpCookieMask> SplineWarpCookieMaskConstPtr;
 
 /**
- * @brief The curves the cookie mask is made of at time: every active cookie cutter at its source
- * position, which for a linked curve is the source curve of its link. Each curve once.
+ * @brief The curves the cookie mask is made of at time: every active cookie cutter at the position
+ * the warp pulls away from, which for a linked curve is the source curve of its link, or its
+ * destination curve when invert swaps the two. Each curve once.
  **/
-std::list<BezierPtr> getSplineWarpCookieCurves(const SplineWarpContext& context, double time);
+std::list<BezierPtr> getSplineWarpCookieCurves(const SplineWarpContext& context, double time, bool invert);
 
 /**
  * @brief The pixels the curves cover at time, feathers included, scaleX and scaleY pixels per

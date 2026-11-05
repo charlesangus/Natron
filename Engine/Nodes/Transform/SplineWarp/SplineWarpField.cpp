@@ -36,18 +36,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-Point
-makePoint(double x,
-          double y)
-{
-    Point p;
-
-    p.x = x;
-    p.y = y;
-
-    return p;
-}
-
 struct Bounds {
     double x1, y1, x2, y2;
 
@@ -257,7 +245,7 @@ SplineWarpField::build(const SplineWarpTps* map,
                 _weight[idx] = w;
             }
             if (w > 0.) {
-                const Point s = map ? map->evaluate(x, y) : makePoint(_sourceX[idx], _sourceY[idx]);
+                const Point s = map ? map->evaluate(x, y) : splineWarpPoint(_sourceX[idx], _sourceY[idx]);
                 _sourceX[idx] = x + w * (s.x - x);
                 _sourceY[idx] = y + w * (s.y - y);
                 moved = moved || (_sourceX[idx] != x) || (_sourceY[idx] != y);
@@ -345,7 +333,7 @@ SplineWarpField::getSource(double x,
                            double y) const
 {
     if (_identity || (!_boundaries.empty() && !insideAnyFeather(x, y))) {
-        return makePoint(x, y);
+        return splineWarpPoint(x, y);
     }
     int i, j;
     double fx, fy;
@@ -355,8 +343,8 @@ SplineWarpField::getSource(double x,
     const std::size_t c = a + _nx;
     const std::size_t d = c + 1;
 
-    return makePoint((1. - fy) * ((1. - fx) * _sourceX[a] + fx * _sourceX[b]) + fy * ((1. - fx) * _sourceX[c] + fx * _sourceX[d]),
-                     (1. - fy) * ((1. - fx) * _sourceY[a] + fx * _sourceY[b]) + fy * ((1. - fx) * _sourceY[c] + fx * _sourceY[d]));
+    return splineWarpPoint((1. - fy) * ((1. - fx) * _sourceX[a] + fx * _sourceX[b]) + fy * ((1. - fx) * _sourceX[c] + fx * _sourceX[d]),
+                           (1. - fy) * ((1. - fx) * _sourceY[a] + fx * _sourceY[b]) + fy * ((1. - fx) * _sourceY[c] + fx * _sourceY[d]));
 }
 
 void

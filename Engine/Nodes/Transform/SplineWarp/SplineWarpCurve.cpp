@@ -32,6 +32,7 @@
 
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
@@ -39,18 +40,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kSubdivisions = 32;
-
-Point
-makePoint(double x,
-          double y)
-{
-    Point p;
-
-    p.x = x;
-    p.y = y;
-
-    return p;
-}
 
 Point
 applyMatrix(const Transform::Matrix3x3& m,
@@ -64,13 +53,13 @@ applyMatrix(const Transform::Matrix3x3& m,
         y /= z;
     }
 
-    return makePoint(x, y);
+    return splineWarpPoint(x, y);
 }
 } // anonymous namespace
 
 SplineWarpCurveShape::SplineWarpCurveShape()
     : _segments()
-    , _first(makePoint(0., 0.))
+    , _first(splineWarpPoint(0., 0.))
     , _pointCount(0)
     , _closed(false)
     , _cumulative(1, 0.)

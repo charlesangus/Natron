@@ -720,6 +720,39 @@ producesLayer(const NodePtr& node,
 
 } // namespace
 
+// The mask follows the warp, so a mask of the linked pair lands on the curve the warp pulls to:
+// the destination, and with Invert the source. Rendering both on one node also proves the cached
+// mask does not survive the switch.
+TEST_F(NativeSplineWarpTest, LinkedCookieCutterMaskLandsOnTheCurvePulledTo)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    SplineWarpContextPtr ctx = contextOf(warp);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr from = makeRectangle(ctx, 8., 12., 24., 28.);
+    BezierPtr to = makeRectangle(ctx, 36., 12., 52., 28.);
+    ASSERT_TRUE(from && to);
+    ASSERT_TRUE(bool(ctx->linkWithAlignment(from, to, 0., false)));
+    ctx->setCookieCutter(from, true);
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const auto maskAt = [&window](const RenderedPlane& mask, int x, int y) {
+        return mask.pixels[(std::size_t)(y - window.y1) * window.width() + (x - window.x1)];
+    };
+    RenderedPlane straight, inverted;
+    ASSERT_TRUE(renderLayer(warp, window, outputMaskLayer(), &straight));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamInvert, { 1. }));
+    ASSERT_TRUE(renderLayer(warp, window, outputMaskLayer(), &inverted));
+
+    const double tolerance = 0.05;
+    EXPECT_NEAR(1., maskAt(straight, 44, 20), tolerance);
+    EXPECT_NEAR(0., maskAt(straight, 16, 20), tolerance);
+    EXPECT_NEAR(1., maskAt(inverted, 16, 20), tolerance);
+    EXPECT_NEAR(0., maskAt(inverted, 44, 20), tolerance);
+}
+
 // Output Mask writes the cutter's mask and the cutter never cuts the Source: with no link the warp
 // moves nothing, so both are exact.
 TEST_F(NativeSplineWarpTest, CookieCutterWritesTheMaskAndLeavesTheSource)

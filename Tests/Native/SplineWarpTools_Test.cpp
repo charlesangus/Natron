@@ -778,6 +778,102 @@ TEST_F(SplineWarpToolsTest, ToggleBoundaryAndUndo)
     EXPECT_FALSE(ctx->isBoundary(b));
 }
 
+TEST_F(SplineWarpToolsTest, OpeningACurveIsUndoneWithItsWarpState)
+{
+    NodePtr node = makeSplineWarp(makeSource());
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = contextOf(node);
+    SplineWarpInteractPtr ui = interactOf(node);
+    ASSERT_TRUE(ctx && ui);
+    BezierPtr from, to;
+    SplineWarpLinkPtr link = makeBentLink(ctx, &from, &to);
+    ASSERT_TRUE(bool(link));
+    // On the closing segment, which opening removes.
+    ctx->addCorrespondence(link, 3.5, 3.5);
+    ctx->setCookieCutter(from, true);
+    BezierPtr boundary = makeQuad(ctx, 4., 4., 6.);
+    ASSERT_TRUE(bool(boundary));
+    ctx->setBoundary(boundary, true);
+    const U64 hashBefore = ctx->getContentHash();
+    double s, d;
+
+    OpenCloseUndoCommand openLinked(ui, from);
+    openLinked.redo();
+    EXPECT_FALSE(ctx->isCookieCutter(from));
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(3., s);
+    openLinked.undo();
+    EXPECT_TRUE(ctx->isCookieCutter(from));
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(3.5, s);
+    EXPECT_DOUBLE_EQ(3.5, d);
+    EXPECT_EQ(hashBefore, ctx->getContentHash());
+    openLinked.redo();
+    EXPECT_FALSE(ctx->isCookieCutter(from));
+    openLinked.undo();
+    EXPECT_TRUE(ctx->isCookieCutter(from));
+
+    OpenCloseUndoCommand openBoundary(ui, boundary);
+    openBoundary.redo();
+    EXPECT_FALSE(ctx->isBoundary(boundary));
+    openBoundary.undo();
+    EXPECT_TRUE(ctx->isBoundary(boundary));
+    EXPECT_EQ(hashBefore, ctx->getContentHash());
+}
+
+// Parameters only: the insertion also rewrites the neighbouring tangents, and removing the point
+// leaves them rewritten, so the curve's hash does not come back.
+TEST_F(SplineWarpToolsTest, AddPointUndoRestoresTheLinkParameters)
+{
+    NodePtr node = makeSplineWarp(makeSource());
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = contextOf(node);
+    SplineWarpInteractPtr ui = interactOf(node);
+    ASSERT_TRUE(ctx && ui);
+    BezierPtr from = makeQuad(ctx, 20., 15., 16.);
+    BezierPtr to = makeQuad(ctx, 20., 15., 16., 3., 2.);
+    ASSERT_TRUE(from && to);
+    SplineWarpLinkPtr link = ctx->linkWithAlignment(from, to, 0.5, false);
+    ASSERT_TRUE(bool(link));
+    ctx->addCorrespondence(link, 0.5, 0.5);
+    double s, d;
+
+    // A split well off the middle of its segment: removal merges the segments by arc length, which
+    // does not invert the insertion's split by t.
+    AddPointUndoCommand onSource(ui, from, 0, 0.2);
+    onSource.redo();
+    ASSERT_EQ(5, from->getControlPointsCount());
+    double insertedS;
+    correspondenceAt(link, 0, kTime, &insertedS, &d);
+    EXPECT_NE(0.5, insertedS);
+    onSource.undo();
+    ASSERT_EQ(4, from->getControlPointsCount());
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(0.5, s);
+    onSource.redo();
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(insertedS, s);
+    onSource.undo();
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(0.5, s);
+
+    AddPointUndoCommand onDestination(ui, to, 0, 0.2);
+    onDestination.redo();
+    const double insertedOffset = link->getStartOffset();
+    double insertedD;
+    correspondenceAt(link, 0, kTime, &s, &insertedD);
+    EXPECT_NE(0.5, insertedOffset);
+    EXPECT_NE(0.5, insertedD);
+    onDestination.undo();
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(0.5, link->getStartOffset());
+    EXPECT_DOUBLE_EQ(0.5, d);
+    onDestination.redo();
+    correspondenceAt(link, 0, kTime, &s, &d);
+    EXPECT_DOUBLE_EQ(insertedOffset, link->getStartOffset());
+    EXPECT_DOUBLE_EQ(insertedD, d);
+}
+
 TEST_F(SplineWarpToolsTest, CorrespondencesAreMadeMovedAndDeleted)
 {
     NodePtr node = makeSplineWarp(NodePtr());

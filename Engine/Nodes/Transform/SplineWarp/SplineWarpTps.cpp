@@ -44,22 +44,11 @@ kernel(double r2)
     return (r2 > 0.) ? 0.5 * r2 * std::log(r2) : 0.;
 }
 
-Point
-makePoint(double x,
-          double y)
-{
-    Point p;
-
-    p.x = x;
-    p.y = y;
-
-    return p;
-}
 } // anonymous namespace
 
 SplineWarpTps::SplineWarpTps()
     : _model(eModelIdentity)
-    , _center(makePoint(0., 0.))
+    , _center(splineWarpPoint(0., 0.))
     , _invScale(1.)
     , _bendingEnergy(0.)
 {
@@ -228,7 +217,7 @@ SplineWarpTps::solve(const std::vector<SplineWarpSamplePair>& pairs,
     }
 
     tps._model = eModelThinPlate;
-    tps._center = makePoint(cx, cy);
+    tps._center = splineWarpPoint(cx, cy);
     tps._invScale = invScale;
     tps._centersX.assign(px.data(), px.data() + n);
     tps._centersY.assign(py.data(), py.data() + n);
@@ -255,11 +244,11 @@ SplineWarpTps::evaluate(double x,
                         double y) const
 {
     if (_model == eModelIdentity) {
-        return makePoint(x, y);
+        return splineWarpPoint(x, y);
     }
     if (_model != eModelThinPlate) {
-        return makePoint(_matrix[0][0] * x + _matrix[0][1] * y + _offset[0],
-                         _matrix[1][0] * x + _matrix[1][1] * y + _offset[1]);
+        return splineWarpPoint(_matrix[0][0] * x + _matrix[0][1] * y + _offset[0],
+                               _matrix[1][0] * x + _matrix[1][1] * y + _offset[1]);
     }
     const double nx = (x - _center.x) * _invScale;
     const double ny = (y - _center.y) * _invScale;
@@ -274,7 +263,7 @@ SplineWarpTps::evaluate(double x,
         sy += _weightsY[i] * k;
     }
 
-    return makePoint(sx, sy);
+    return splineWarpPoint(sx, sy);
 }
 
 SplineWarpTpsConstPtr

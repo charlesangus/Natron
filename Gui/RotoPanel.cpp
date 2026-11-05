@@ -138,6 +138,7 @@ private:
 
     RotoPanel* _roto;
     std::list<RemovedItem> _items;
+    RotoCurveContextHostStatePtr _hostState;
 };
 
 class AddLayerUndoCommand
@@ -2714,6 +2715,9 @@ RemoveItemsUndoCommand::undo()
 
         it->treeItem->setHidden(false);
     }
+    if (_hostState) {
+        _roto->getContext()->restoreHostState(_hostState);
+    }
     _roto->getContext()->evaluateChange();
     setText( tr("Remove items of %2").arg( QString::fromUtf8( _roto->getNodeName().c_str() ) ) );
 }
@@ -2724,6 +2728,7 @@ RemoveItemsUndoCommand::redo()
     if ( _items.empty() ) {
         return;
     }
+    _hostState = _roto->getContext()->saveHostState();
     _roto->clearAndSelectPreviousItem(_items.back().item);
     for (std::list<RemovedItem>::iterator it = _items.begin(); it != _items.end(); ++it) {
         _roto->getContext()->removeItem(it->item, RotoItem::eSelectionReasonSettingsPanel);

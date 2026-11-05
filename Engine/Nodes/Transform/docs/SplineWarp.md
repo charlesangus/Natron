@@ -66,7 +66,7 @@ auto-keying on, adding or moving a correspondence sets a key at the current fram
 
 **Boundaries and feather:** with at least one boundary, nothing outside every boundary's feather
 moves. Inside a boundary's curve the warp is whole; between the curve and its feather points it
-eases to nothing along the curve's Feather Fall-off, so a feathered boundary is a soft boundary.
+eases to nothing along the curve's Feather Fall-off.
 A boundary with no feather cuts the warp off at the curve. Boundary BBox (on by default) holds the
 Source format's edges still without masking anything, so the warp fades toward them but the image
 edges stay put. Boundary Curve Resolution is the distance, in full-resolution pixels, between
@@ -107,7 +107,7 @@ At the default the field is four times as coarse and the curves are sampled half
 cookie cutter curves is written to, warped as the Source is; it can be None or a channel of a layer other than the colour layer.
 The layer is added to the output, and to the project's layers, whether or not the Source has
 it; the menu lists the project's layers. It is disabled while no curve is a cookie cutter. A linked cookie cutter uses its source
-curve's shape.
+curve's shape, or its destination curve's with Invert on.
 
 **Crop To Format:** `cropToFormat` (on by default) samples the Source only inside its format,
 counting what is outside as black, and keeps the output inside the format. Off, the warp can pull
@@ -123,17 +123,12 @@ it, is selected with a select tool, the viewer shows the transform handle; dragg
 item's transform, setting keys when auto-keying is on. Editing the curve's points wins over the
 handle where they overlap.
 
-## Differences from Nuke
+## Notes
 
-- `amount`, `layerAmount` and `linkAmount` are Nuke's root warp, layer warp and pair warp.
 - `curveResolution` and `boundaryCurveResolution` are distances in pixels between samples (default
-  4), not Nuke's detail levels.
-- `solver` defaults to Thin Plate Spline, close to Nuke's classic warping; Mesh, the triangle mesh
-  solver, is closer to Nuke's default local function.
-- `previewResolution` defaults to 25 rather than Nuke's 100, so a drag stays interactive.
-- The filter menu has no Lanczos6 entry.
-- There is no morphing: no second input, no output modes beyond the Source warped or not, no morph
-  mix, no A/B curve types and no Duplicate in B.
+  4).
+- `solver` defaults to Thin Plate Spline; Mesh is the triangle mesh solver.
+- `previewResolution` defaults to 25, so a drag stays interactive.
 
 ## Python
 

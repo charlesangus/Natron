@@ -43,18 +43,6 @@ namespace {
 // Polyline points per Bezier segment for boundary outlines.
 const int kBoundaryPointsPerSegment = 16;
 
-Point
-makePoint(double x,
-          double y)
-{
-    Point p;
-
-    p.x = x;
-    p.y = y;
-
-    return p;
-}
-
 // A walk along a curve by arc length: from startArc, forward or backward, wrapping around a
 // closed curve and clamped to an open one.
 struct Walk {
@@ -242,7 +230,7 @@ pointAtClosedArc(const std::vector<Point>& polygon,
     const Point& p = polygon[lo];
     const Point& q = polygon[hi % n];
 
-    return makePoint(p.x + f * (q.x - p.x), p.y + f * (q.y - p.y));
+    return splineWarpPoint(p.x + f * (q.x - p.x), p.y + f * (q.y - p.y));
 }
 
 // Pairs each interior control point k of the source with the destination's control point the
@@ -415,18 +403,38 @@ emitLinkPairs(const LinkPlan& plan,
         }
         SplineWarpSamplePair pair;
         pair.source = s;
-        pair.destination = makePoint(s.x + amount * (d.x - s.x), s.y + amount * (d.y - s.y));
+        pair.destination = splineWarpPoint(s.x + amount * (d.x - s.x), s.y + amount * (d.y - s.y));
         pairs->push_back(pair);
     }
 }
 
-// Merges pairs whose destinations are within kSplineWarpMergeDistance, averaging their sources.
-// Returns the number of merged pairs taken from the first firstCount; remap receives each pair's
-// merged index, -1 for a dropped pair.
-int
-mergePairs(std::vector<SplineWarpSamplePair>* pairs,
-           int firstCount,
-           std::vector<int>* remap)
+// The merged indices of the raw pairs first to last - 1, without repeats between neighbours.
+SplineWarpSamplePolyline
+mergedPolyline(const std::vector<int>& remap,
+               std::size_t first,
+               std::size_t last,
+               bool closed)
+{
+    SplineWarpSamplePolyline polyline;
+
+    for (std::size_t i = first; i < last; ++i) {
+        const int index = remap[i];
+        if ((index >= 0) && (polyline.pairs.empty() || (polyline.pairs.back() != index))) {
+            polyline.pairs.push_back(index);
+        }
+    }
+    if (closed && (polyline.pairs.size() > 1) && (polyline.pairs.back() == polyline.pairs.front())) {
+        polyline.pairs.pop_back();
+    }
+    polyline.closed = closed && (polyline.pairs.size() > 2);
+
+    return polyline;
+}
+} // anonymous namespace
+
+std::vector<SplineWarpSamplePair>
+splineWarpMergeCoincidentPairs(const std::vector<SplineWarpSamplePair>& pairs,
+                               std::vector<int>* remap)
 {
     struct Cell {
         std::int64_t x, y;
@@ -447,13 +455,12 @@ mergePairs(std::vector<SplineWarpSamplePair>* pairs,
     std::unordered_map<Cell, std::vector<int>, CellHash> grid;
     std::vector<SplineWarpSamplePair> merged;
     std::vector<int> counts;
-    merged.reserve(pairs->size());
-    counts.reserve(pairs->size());
-    int mergedFirst = 0;
-    remap->assign(pairs->size(), -1);
+    merged.reserve(pairs.size());
+    counts.reserve(pairs.size());
+    remap->assign(pairs.size(), -1);
 
-    for (std::size_t i = 0; i < pairs->size(); ++i) {
-        const SplineWarpSamplePair& p = (*pairs)[i];
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        const SplineWarpSamplePair& p = pairs[i];
         if (!std::isfinite(p.destination.x) || !std::isfinite(p.destination.y) || !std::isfinite(p.source.x) || !std::isfinite(p.source.y) || (std::fabs(p.destination.x) > maxCoord) || (std::fabs(p.destination.y) > maxCoord)) {
             continue;
         }
@@ -486,43 +493,15 @@ mergePairs(std::vector<SplineWarpSamplePair>* pairs,
             grid[c].push_back((int)merged.size());
             merged.push_back(p);
             counts.push_back(1);
-            if ((int)i < firstCount) {
-                ++mergedFirst;
-            }
         }
     }
     for (std::size_t i = 0; i < merged.size(); ++i) {
         merged[i].source.x /= counts[i];
         merged[i].source.y /= counts[i];
     }
-    pairs->swap(merged);
 
-    return mergedFirst;
-} // mergePairs
-
-// The merged indices of the raw pairs first to last - 1, without repeats between neighbours.
-SplineWarpSamplePolyline
-mergedPolyline(const std::vector<int>& remap,
-               std::size_t first,
-               std::size_t last,
-               bool closed)
-{
-    SplineWarpSamplePolyline polyline;
-
-    for (std::size_t i = first; i < last; ++i) {
-        const int index = remap[i];
-        if ((index >= 0) && (polyline.pairs.empty() || (polyline.pairs.back() != index))) {
-            polyline.pairs.push_back(index);
-        }
-    }
-    if (closed && (polyline.pairs.size() > 1) && (polyline.pairs.back() == polyline.pairs.front())) {
-        polyline.pairs.pop_back();
-    }
-    polyline.closed = closed && (polyline.pairs.size() > 2);
-
-    return polyline;
-}
-} // anonymous namespace
+    return merged;
+} // splineWarpMergeCoincidentPairs
 
 bool
 splineWarpPointInPolygon(const std::vector<Point>& polygon,
@@ -628,10 +607,10 @@ splineWarpRectangleOutline(double x1,
 {
     SplineWarpPinnedOutline outline;
 
-    outline.polygon.push_back(makePoint(x1, y1));
-    outline.polygon.push_back(makePoint(x2, y1));
-    outline.polygon.push_back(makePoint(x2, y2));
-    outline.polygon.push_back(makePoint(x1, y2));
+    outline.polygon.push_back(splineWarpPoint(x1, y1));
+    outline.polygon.push_back(splineWarpPoint(x2, y1));
+    outline.polygon.push_back(splineWarpPoint(x2, y2));
+    outline.polygon.push_back(splineWarpPoint(x1, y2));
 
     return outline;
 }
@@ -760,7 +739,11 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
     }
 
     std::vector<int> remap;
-    result.linkPairCount = mergePairs(&result.pairs, linkPairs, &remap);
+    result.pairs = splineWarpMergeCoincidentPairs(result.pairs, &remap);
+    result.linkPairCount = 0;
+    for (int i = 0; i < linkPairs; ++i) {
+        result.linkPairCount = std::max(result.linkPairCount, remap[i] + 1);
+    }
     std::size_t rangeStart = 0;
     for (std::size_t i = 0; i < rangeEnds.size(); ++i) {
         result.polylines.push_back(mergedPolyline(remap, rangeStart, rangeEnds[i].first, rangeEnds[i].second));

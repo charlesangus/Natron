@@ -1309,7 +1309,7 @@ SplineWarp::computeCookieMask(double time,
     if (!context) {
         return SplineWarpCookieMaskConstPtr();
     }
-    const std::list<BezierPtr> curves = getSplineWarpCookieCurves(*context, time);
+    const std::list<BezierPtr> curves = getSplineWarpCookieCurves(*context, time, settings.invert);
     if (curves.empty()) {
         return SplineWarpCookieMaskConstPtr();
     }
@@ -1326,6 +1326,7 @@ SplineWarp::computeCookieMask(double time,
     key.window = window;
     key.scaleX = scaleX;
     key.scaleY = scaleY;
+    key.invert = settings.invert;
 
     return _cookieMasks.get(key, [&]() {
         return renderSplineWarpCookieMask(curves, time, window, scaleX, scaleY);

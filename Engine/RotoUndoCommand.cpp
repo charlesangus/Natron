@@ -394,6 +394,9 @@ AddPointUndoCommand::undo()
         return;
     }
     _curve->removeControlPointByIndex(_index + 1);
+    if (_hostBefore) {
+        roto->getCurveContext()->restoreHostState(_hostBefore);
+    }
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
     roto->evaluate(true);
 }
@@ -401,12 +404,22 @@ AddPointUndoCommand::undo()
 void
 AddPointUndoCommand::redo()
 {
-    BezierCPPtr cp = _curve->addControlPointAfterIndex(_index, _t);
-    BezierCPPtr newFp = _curve->getFeatherPointAtIndex(_index + 1);
     RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
+    }
+    if (!_firstRedoCalled) {
+        _hostBefore = roto->getCurveContext()->saveHostState();
+    }
+    BezierCPPtr cp = _curve->addControlPointAfterIndex(_index, _t);
+    BezierCPPtr newFp = _curve->getFeatherPointAtIndex(_index + 1);
+    if (!_firstRedoCalled) {
+        _hostAfter = roto->getCurveContext()->saveHostState();
+    } else if (_hostAfter) {
+        // The insertion hook remaps by the curve's current shape, which the undo's removal left
+        // different, so it would not land on the parameters of the first insertion.
+        roto->getCurveContext()->restoreHostState(_hostAfter);
     }
     roto->setSelection( _curve, std::make_pair(cp, newFp) );
     if (_firstRedoCalled) {
@@ -1325,6 +1338,9 @@ OpenCloseUndoCommand::undo()
         }
     }
     _curve->setCurveFinished( !_curve->isCurveFinished() );
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
     roto->evaluate(true);
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
 }
@@ -1340,6 +1356,7 @@ OpenCloseUndoCommand::redo()
     if (_firstRedoCalled) {
         roto->setCurrentTool( _selectedTool.lock() );
     }
+    _hostState = roto->getCurveContext()->saveHostState();
     _curve->setCurveFinished( !_curve->isCurveFinished() );
     roto->evaluate(_firstRedoCalled);
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );

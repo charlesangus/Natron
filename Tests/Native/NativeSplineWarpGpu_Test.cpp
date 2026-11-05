@@ -25,7 +25,6 @@
 
 #include "Global/Macros.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -192,9 +191,6 @@ struct KernelCase {
     Resampler::FilterEnum filter = Resampler::eFilterCubic;
     bool clamp = false;
     bool blackOutside = true;
-    // The inverse of a concatenated upstream matrix, row-major, when set.
-    bool hasMatrix = false;
-    double matrix[9] = { 1., 0., 0., 0., 1., 0., 0., 0., 1. };
     // With motion blur, the fields averaged in place of `field`, null for one that moves nothing.
     std::vector<std::shared_ptr<const SplineWarpField>> subFrames;
 };
@@ -203,7 +199,7 @@ std::string
 describe(const KernelCase& c)
 {
     std::ostringstream s;
-    s << c.name << " filter " << (int)c.filter << " clamp " << c.clamp << " blackOutside " << c.blackOutside << " matrix " << c.hasMatrix
+    s << c.name << " filter " << (int)c.filter << " clamp " << c.clamp << " blackOutside " << c.blackOutside
       << " nComps " << c.nComps << " sub-frames " << c.subFrames.size();
 
     return s.str();
@@ -244,43 +240,6 @@ makeCase(const std::string& name,
     return c;
 }
 
-// As SplineWarp's mapRowThrough.
-void
-mapRowThrough(const double m[9],
-              int n,
-              float* sx,
-              float* sy,
-              float* jacobian)
-{
-    for (int i = 0; i < n; ++i) {
-        const double x = sx[i];
-        const double y = sy[i];
-        const double w = m[6] * x + m[7] * y + m[8];
-        if (!(w > 0.)) {
-            sx[i] = -1e9f;
-            sy[i] = -1e9f;
-            continue;
-        }
-        const double qx = (m[0] * x + m[1] * y + m[2]) / w;
-        const double qy = (m[3] * x + m[4] * y + m[5]) / w;
-        sx[i] = (float)qx;
-        sy[i] = (float)qy;
-        if (!jacobian) {
-            continue;
-        }
-        const double d00 = (m[0] - qx * m[6]) / w;
-        const double d01 = (m[1] - qx * m[7]) / w;
-        const double d10 = (m[3] - qy * m[6]) / w;
-        const double d11 = (m[4] - qy * m[7]) / w;
-        float* J = &jacobian[(std::size_t)i * 4];
-        const double j0 = J[0], j1 = J[1], j2 = J[2], j3 = J[3];
-        J[0] = (float)(d00 * j0 + d01 * j2);
-        J[1] = (float)(d00 * j1 + d01 * j3);
-        J[2] = (float)(d10 * j0 + d11 * j2);
-        J[3] = (float)(d10 * j1 + d11 * j3);
-    }
-}
-
 // SplineWarp::renderOp's sampling of one plane over the field's window.
 std::vector<float>
 renderCpu(const KernelCase& c)
@@ -296,14 +255,8 @@ renderCpu(const KernelCase& c)
     const SplineWarpField identity;
     const auto sampleRow = [&](const SplineWarpField& field, int y, float* row) {
         field.getRow(y, c.window.x1, c.window.x2, sx.data(), sy.data(), jac);
-        if (c.hasMatrix) {
-            mapRowThrough(c.matrix, width, sx.data(), sy.data(), jac);
-        }
         Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac, width, c.filter, c.clamp, c.blackOutside, Resampler::eWrapNone,
                                          Resampler::eWrapNone, row, c.nComps);
-        if (c.hasMatrix) {
-            return;
-        }
         const float cy = (float)(y + 0.5);
         for (int i = 0; i < width; ++i) {
             if ((sx[i] != (float)(c.window.x1 + i + 0.5)) || (sy[i] != cy)) {
@@ -400,9 +353,6 @@ renderGpu(GpuParityRuntime& runtime,
             words.insert(words.end(), tables.begin(), tables.end());
         }
         params.subFrames = (uint32_t)c.subFrames.size();
-    }
-    if (c.hasMatrix) {
-        setSplineWarpGpuMatrix(c.matrix, &params);
     }
     // The Source is also the image sampled.
     setSplineWarpGpuSample(0, c.srcBounds.width() * c.nComps, c.srcBounds, c.nComps, &params);
@@ -608,29 +558,6 @@ TEST(SplineWarpGpuKernel, IdentityFieldCopiesTheSource)
     KernelCase c = makeCase("identity", field);
     c.filter = Resampler::eFilterCubic;
     expectParity(*runtime, c);
-#endif
-}
-
-// The warp's sources through the inverse of a projective upstream matrix, the Jacobian chained.
-TEST(SplineWarpGpuKernel, ConcatenatedMatrixMatchesTheCpu)
-{
-#ifndef NATRON_HAVE_GPU
-    reportNoGpu("built without the GPU backend");
-#else
-    std::unique_ptr<GpuParityRuntime> runtime;
-    if (!createRuntime(runtime)) {
-        return;
-    }
-    const std::vector<SplineWarpBoundaryShape> none;
-    const SplineWarpField field(bendMap(), none, kWindow, 1., 1., 2.);
-    const double inverse[9] = { 0.9, 0.1, 2.25, -0.05, 1.1, -1.5, 0.0015, -0.001, 1. };
-    for (Resampler::FilterEnum filter : { Resampler::eFilterImpulse, Resampler::eFilterBilinear, Resampler::eFilterCubic, Resampler::eFilterParzen }) {
-        KernelCase c = makeCase("matrix", field);
-        c.filter = filter;
-        c.hasMatrix = true;
-        std::copy(inverse, inverse + 9, c.matrix);
-        expectParity(*runtime, c);
-    }
 #endif
 }
 

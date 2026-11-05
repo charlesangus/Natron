@@ -37,9 +37,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The parameter block of splinewarp.slang, word for word: the sampling settings, the
- * field's window and the layout of its tables (SplineWarpField::getGpuTables()), the inverse
- * of a concatenated upstream matrix that the field's coordinates go through, and where the image
- * sampled lies in its buffer.
+ * field's window and the layout of its tables (SplineWarpField::getGpuTables()), and where the
+ * image sampled lies in its buffer.
  **/
 struct SplineWarpGpuParams {
     uint32_t filter = 0;
@@ -54,8 +53,6 @@ struct SplineWarpGpuParams {
     uint32_t rows = 0;
     uint32_t feathers = 0;
     uint32_t featherStride = 0;
-    // Row-major, each entry a two-float pair (hi, lo).
-    float matrix[18] = {};
     // With motion blur, the number of fields averaged. The bound buffer then starts with one
     // kSplineWarpGpuSubFrameWords entry per field (setSplineWarpGpuSubFrame()), which replaces the
     // field words above, and the field flags, for that field.
@@ -71,7 +68,7 @@ struct SplineWarpGpuParams {
     uint32_t sampleNComps = 0;
 };
 
-static_assert(sizeof(SplineWarpGpuParams) == 38 * 4, "splinewarp.slang reads 38 words");
+static_assert(sizeof(SplineWarpGpuParams) == 20 * 4, "splinewarp.slang reads 20 words");
 
 inline constexpr uint32_t kSplineWarpGpuSubFrameWords = 11;
 
@@ -84,7 +81,6 @@ inline constexpr uint32_t kSplineWarpGpuSample = 8;
 // The field's tables are bound; without them every pixel is its own source.
 inline constexpr uint32_t kSplineWarpGpuField = 16;
 inline constexpr uint32_t kSplineWarpGpuFeathers = 32;
-inline constexpr uint32_t kSplineWarpGpuMatrix = 64;
 
 // The image sampled: offset and stride in floats, bounds in pixels.
 inline void
@@ -146,18 +142,6 @@ setSplineWarpGpuSubFrame(const SplineWarpFieldGpuLayout* layout,
     entry[8] = base + layout->rows;
     entry[9] = (layout->featherStride > 0) ? base + layout->feathers : 0u;
     entry[10] = layout->featherStride;
-}
-
-// inverse is row-major, mapping this node's input pixels to the upstream image's.
-inline void
-setSplineWarpGpuMatrix(const double inverse[9],
-                       SplineWarpGpuParams* params)
-{
-    params->flags |= kSplineWarpGpuMatrix;
-    for (int k = 0; k < 9; ++k) {
-        params->matrix[2 * k] = (float)inverse[k];
-        params->matrix[2 * k + 1] = (float)(inverse[k] - (double)params->matrix[2 * k]);
-    }
 }
 
 NATRON_NAMESPACE_EXIT

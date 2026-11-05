@@ -158,6 +158,8 @@ private:
     BezierPtr _curve;
     int _index;
     double _t;
+    std::shared_ptr<RotoCurveContextHostState> _hostBefore;
+    std::shared_ptr<RotoCurveContextHostState> _hostAfter;
 };
 
 
@@ -408,6 +410,7 @@ private:
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 class SmoothCuspUndoCommand

@@ -259,10 +259,11 @@ private:
         RectI window;
         double scaleX;
         double scaleY;
+        bool invert;
 
         bool operator==(const CookieKey& o) const
         {
-            return contextHash == o.contextHash && time == o.time && window == o.window && scaleX == o.scaleX && scaleY == o.scaleY;
+            return contextHash == o.contextHash && time == o.time && window == o.window && scaleX == o.scaleX && scaleY == o.scaleY && invert == o.invert;
         }
     };
 

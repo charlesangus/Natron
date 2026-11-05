@@ -1100,7 +1100,6 @@ sideOf(const SplineWarpContext& context,
     return (link->getSource() == curve) ? eCurveSideSource : eCurveSideDestination;
 }
 
-// Nuke's convention: the source side red, the destination blue.
 const double kSourceColor[4] = { 1., 0.35, 0.35, 1. };
 const double kDestinationColor[4] = { 0.35, 0.6, 1., 1. };
 const double kBoundaryColor[4] = { 1., 0.85, 0.25, 1. };

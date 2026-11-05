@@ -4,8 +4,8 @@ import resamplecore;
 
 // SplineWarp::renderOp per pixel, SplineWarpField::getRow() included. The wrap's push block
 // carries the Source, the image blended under the mask and mix, the destination and the mask;
-// the parameter block in wrapAux carries the settings, the field's window and table layout, the
-// inverse of a concatenated upstream matrix and the geometry of sampleBuf; fieldBuf holds the
+// the parameter block in wrapAux carries the settings, the field's window and table layout and
+// the geometry of sampleBuf; fieldBuf holds the
 // tables SplineWarpField::getGpuTables() builds, after a table of the fields to average with
 // motion blur; sampleBuf holds the image sampled: the Source cropped to its format, or the
 // cookie mask itself. SplineWarpGpuParams in
@@ -20,10 +20,6 @@ static const uint kSplineWarpJacobian = 4;
 static const uint kSplineWarpSample = 8;
 static const uint kSplineWarpField = 16;
 static const uint kSplineWarpFeathers = 32;
-static const uint kSplineWarpMatrix = 64;
-
-// Where SplineWarp's mapRowThrough sends a coordinate the matrix maps behind the camera.
-static const float kOutsideCoord = -1e9;
 
 // Words per grid point and per window column or row in fieldBuf.
 static const uint kNodeWords = 8;
@@ -43,7 +39,6 @@ struct SplineWarpParams
     uint rows;
     uint feathers;
     uint featherStride;
-    FF m[9];
     uint subFrames;
     uint sampleOffset;
     uint sampleStride;
@@ -69,16 +64,14 @@ SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
     s.rows = params[9];
     s.feathers = params[10];
     s.featherStride = params[11];
-    for (uint k = 0; k < 9; ++k)
-        s.m[k] = ffMake(asfloat(params[12 + 2 * k]), asfloat(params[13 + 2 * k]));
-    s.subFrames = params[30];
-    s.sampleOffset = params[31];
-    s.sampleStride = params[32];
-    s.sampleX1 = int(params[33]);
-    s.sampleY1 = int(params[34]);
-    s.sampleX2 = int(params[35]);
-    s.sampleY2 = int(params[36]);
-    s.sampleNComps = params[37];
+    s.subFrames = params[12];
+    s.sampleOffset = params[13];
+    s.sampleStride = params[14];
+    s.sampleX1 = int(params[15]);
+    s.sampleY1 = int(params[16]);
+    s.sampleX2 = int(params[17]);
+    s.sampleY2 = int(params[18]);
+    s.sampleNComps = params[19];
     return s;
 }
 
@@ -164,41 +157,6 @@ void fieldAt(SplineWarpParams s, int2 p, out float2 coord, out float4 J)
     }
 }
 
-// m[r] x + m[r + 1] y + m[r + 2].
-FF matrixRow(SplineWarpParams s, uint r, float x, float y)
-{
-    return ffAdd(ffAdd(ffMulF(s.m[r], x), ffMulF(s.m[r + 1], y)), s.m[r + 2]);
-}
-
-// SplineWarp's mapRowThrough: the coordinate through the inverse of the concatenated upstream
-// matrix into the upstream image's pixels, the Jacobian chained with the map's derivative.
-void mapThrough(SplineWarpParams s, inout float2 coord, inout float4 J)
-{
-    const float x = coord.x;
-    const float y = coord.y;
-    const FF w = matrixRow(s, 6, x, y);
-    if (!(w.hi > 0.0))
-    {
-        coord = float2(kOutsideCoord, kOutsideCoord);
-        return;
-    }
-    const FF qx = ffDiv(matrixRow(s, 0, x, y), w);
-    const FF qy = ffDiv(matrixRow(s, 3, x, y), w);
-    // The two-float error terms of an overflowing quotient are NaN where the CPU's double gives an
-    // infinity; plain float arithmetic keeps it.
-    const float wf = w.hi;
-    const float px = isFiniteF(qx.hi) ? qx.hi : (s.m[0].hi * x + s.m[1].hi * y + s.m[2].hi) / wf;
-    const float py = isFiniteF(qy.hi) ? qy.hi : (s.m[3].hi * x + s.m[4].hi * y + s.m[5].hi) / wf;
-    coord = float2(px, py);
-    if ((s.flags & kSplineWarpJacobian) == 0)
-        return;
-    const float d00 = (s.m[0].hi - px * s.m[6].hi) / wf;
-    const float d01 = (s.m[1].hi - px * s.m[7].hi) / wf;
-    const float d10 = (s.m[3].hi - py * s.m[6].hi) / wf;
-    const float d11 = (s.m[4].hi - py * s.m[7].hi) / wf;
-    J = float4(d00 * J.x + d01 * J.z, d00 * J.y + d01 * J.w, d10 * J.x + d11 * J.z, d10 * J.y + d11 * J.w);
-}
-
 ResampleSource splineWarpSource(SplineWarpParams s)
 {
     ResampleSource src;
@@ -237,11 +195,7 @@ float4 splineWarpSample(SplineWarpParams s, int2 p)
     float2 coord;
     float4 J;
     fieldAt(s, p, coord, J);
-    if ((s.flags & kSplineWarpMatrix) != 0)
-    {
-        mapThrough(s, coord, J);
-    }
-    else if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
+    if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
     {
         // A pixel the warp leaves in place is the Source pixel itself, which a filter would soften
         // with its neighbours.

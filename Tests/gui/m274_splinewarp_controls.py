@@ -54,7 +54,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, QRect, Qt, Q_ARG
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QScrollArea, QTabWidget, QTreeWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QScrollArea, QTabWidget, QTreeWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -516,6 +516,49 @@ try:
         report("NOTE inside the crop destination: level on %.1f, off %.1f, difference %.2f" % (level_on, level_off, d))
         check(d > 5.0, "Crop To Format off pulls in the Source outside the format")
         check(level_off > level_on, "Crop To Format on pulls in black from outside the format")
+
+        gt.section("panel-remove-undo")
+        removed_source = make_rect(roto, (40, 40, 140, 140))
+        removed_dest = make_rect(roto, (60, 50, 160, 150))
+        removed_boundary = make_rect(roto, (300, 40, 400, 140))
+        require(removed_source is not None and removed_dest is not None and removed_boundary is not None,
+                "made the curves the panel removes")
+        removed_link = hold(sw.link(removed_source, removed_dest))
+        require(removed_link is not None, "linked the curves the panel removes")
+        removed_link.addCorrespondence(0.5, 0.5)
+        sw.setCookieCutter(removed_source, True)
+        sw.setBoundary(removed_boundary, True)
+        before = removed_link.getCorrespondences(1.0)
+        report("NOTE correspondences before the removal: %r" % (before,))
+        ok = yield ("until", lambda: tree_item(tree, removed_source) is not None
+                    and tree_item(tree, removed_boundary) is not None, POLL_TIMEOUT_S)
+        require(ok, "the curve list shows the curves the panel removes")
+        select_in_tree(tree, [removed_source, removed_boundary])
+        roto_panel = tree.parentWidget()
+        while roto_panel is not None and gt.class_name(roto_panel) != "RotoPanel":
+            roto_panel = roto_panel.parentWidget()
+        require(roto_panel is not None, "found the RotoPanel holding the curve list")
+        hold(roto_panel)
+        require(QMetaObject.invokeMethod(roto_panel, "onRemoveItemButtonClicked"), "pressed the panel's remove")
+        yield ("sleep", SETTLE_MS)
+        check(sw.getLink(removed_source) is None, "removing a linked curve drops its link")
+        check(not sw.isCookieCutter(removed_source), "removing a cookie cutter drops the role")
+        check(not sw.isBoundary(removed_boundary), "removing a boundary drops the role")
+
+        undo_button = None
+        for button in panel.findChildren(QAbstractButton):
+            if "Undo the last change" in button.toolTip():
+                undo_button = hold(button)
+        require(undo_button is not None and undo_button.isEnabled(), "the panel's undo button is enabled")
+        undo_button.click()
+        yield ("sleep", SETTLE_MS)
+        restored = hold(sw.getLink(removed_source))
+        check(restored is not None, "undo brings the link back")
+        check(restored is not None and restored.getCorrespondences(1.0) == before,
+              "undo brings the link's correspondences back")
+        check(sw.isCookieCutter(removed_source), "undo brings the cookie cutter role back")
+        check(sw.isBoundary(removed_boundary), "undo brings the boundary role back")
+        check(cell(tree, removed_boundary, "Role") == "Boundary", "the curve list shows the restored boundary")
 
         faulthandler.cancel_dump_traceback_later()
 

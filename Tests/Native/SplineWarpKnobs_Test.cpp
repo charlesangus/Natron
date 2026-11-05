@@ -56,8 +56,8 @@ const char* const kWarp = "Warp";
 const char* const kTransform = "Transform";
 const char* const kRender = "Render";
 
-// The audit table of the Nuke port, then the Natron extras it keeps. The mask and Resampler
-// knobs are shared with every native node, so their labels are the shared ones.
+// The mask and Resampler knobs are shared with every native node, so their labels are the
+// shared ones.
 const std::vector<KnobRow>&
 auditRows()
 {

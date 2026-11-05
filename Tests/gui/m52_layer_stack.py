@@ -428,10 +428,12 @@ try:
         shot("m52_reference_panel.png")
 
         # The file knob's own reload icon is hidden so the panel's one reload control is the Reload button.
-        buttons = panel_of(reference).findChildren(QAbstractButton)
-        icons = [b for b in buttons if b.toolTip().startswith("Reload the file")]
+        reference_panel = panel_of(reference)
+        require(reference_panel is not None, "USDReference's settings panel is open")
+        button_info = [(b.toolTip(), b.text().strip()) for b in reference_panel.findChildren(QAbstractButton)]
+        icons = [tip for tip, _ in button_info if tip.startswith("Reload the file")]
         check(len(icons) == 0, "the file knob shows no reload icon (%d)" % len(icons))
-        reloads = [b for b in buttons if b.text().strip() == "Reload"]
+        reloads = [text for _, text in button_info if text == "Reload"]
         check(len(reloads) == 1, "the panel has exactly one Reload button (%d)" % len(reloads))
 
         # Reload rereads a file rewritten on disk. A temp copy is rewritten, never the fixture.

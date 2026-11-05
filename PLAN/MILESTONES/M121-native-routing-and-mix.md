@@ -187,3 +187,15 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - The four retired OFX IDs no longer load.
 - 2026-11-02 — main merged in; LightWrap ShuffleCopy input swap committed (77072f0a0, correct: native ShuffleCopy's in2 is input 0) with its render test, fixed to set KnobColor through KnobDoubleBase; gate re-running (PM).
 - 2026-11-02 — LightWrap render test reads the group through a Dot: rendering a NodeGroup directly returns unwritten memory (M319 - Group Node Direct Render). The product graph checked out (PM).
+
+## Phase 121.9: UAT final
+
+- [ ] M121.P9.T1 — Difference's alpha stays within 0 and 1
+  - files: `Engine/Nodes/Keyer/Difference.cpp`, its GPU kernel, `Engine/Nodes/Keyer/docs/Difference.md`, `Tests/Native/NativeDifference_Test.cpp`, `Tests/Native/NativeDifferenceGpu_Test.cpp`
+  - approach: clamp the output alpha to 0-1 on every path, CPU and GPU.
+  - verify: tests: a large difference with Gain above 1 gives exactly 1, negative Gain gives 0, CPU and GPU agree.
+  - size: M
+
+- 2026-11-05 — UAT: clamp Difference's alpha, then merge with no further UAT (user).
+
+**Verification gate:** release gate green with the Difference tests; `Tests/gui/m121_routing_mix.py` passes under Xvfb; review round closed.

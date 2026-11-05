@@ -407,6 +407,9 @@ future core work has solid ground to build on.
 | M326 | Legible Viewer Warning Banner | todo | - |  | E10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
 | M338 | Viewer Input Keys And Locks | todo | - |  | E10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
 | M339 | File Knob Reload Button Cleanup | todo | M52 |  | E10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
+| M340 | Viewer Gain Gamma On Rendered Pixels | todo | M234 |  | E9 | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
+| M341 | Per-Placement Geometry Projection | todo | M234 |  | E9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
+| M342 | Sticky Projections On Deforming Geometry | todo | M234 |  | E9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 
 # Epics
 

@@ -132,7 +132,7 @@ their images through M233 - Live Node Textures. Survey:
   - verify: A test sets gain and gamma on the viewer and checks the 3D card's pixel matches the 2D viewer's maths for the same input; toggling them off restores the plain transform.
   - size: M
 
-- [x] ~~M234.P6.T2 — Gain and gamma on rendered pixels only, if cheap~~ (dropped: the user called it not a huge deal and accepted the build without it)
+- [x] ~~M234.P6.T2 — Gain and gamma on rendered pixels only, if cheap~~ (moved to M340 - Viewer Gain Gamma On Rendered Pixels)
   - files: `Gui/SceneViewport.*`
   - approach: User, 2026-11-02: applying gain and gamma to the 3D viewport's background "is not ideal, if it can be applied only to rendered items that would be preferred but it's not a huge deal". If Hydra's colour correction can be limited to rendered pixels (for example by keeping the background out of the corrected AOV and compositing it after, or by drawing the background after the colour-correction task) without a second full-screen pass that slows the viewport, do it; otherwise leave it and record why.
   - verify: With gain 2 the background pixel is unchanged and the card is doubled; viewport frame time is unchanged.

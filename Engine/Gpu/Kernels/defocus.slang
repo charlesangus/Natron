@@ -14,7 +14,11 @@
 
 // load: the source image.
 StructuredBuffer<uint> srcBuf;
-// The kernel's runs, four uints each: dy, dx0, length and the weight's bits.
+// The kernel's runs, four uints each: dy, dx0, length and the weight's bits. With kLens, the
+// runs of every channel group's kernel in every cell of the output, the cell table from
+// cellTable, two uints per kernel, by group, cell row and cell column: the index of its first run's
+// first uint and its run count; and from columnMap and rowMap, the cell column of each output
+// column and the cell row of each output row, when there are more than one.
 StructuredBuffer<uint> runBuf;
 RWStructuredBuffer<float> workBuf;
 // gather: outWidth x outHeight pixels at (outX1, outY1), the first at dstOffset.
@@ -48,12 +52,20 @@ struct DefocusParams
     uint outHeight;
     uint dstOffset;
     uint dstStride;
+    uint cellTable;
+    uint columnMap;
+    uint rowMap;
+    uint cellColumns;
+    uint cellRows;
+    // With kLens, two bits per channel, its group; from bit 8, the number of groups.
+    uint channelGroups;
 };
 [[vk::push_constant]] ConstantBuffer<DefocusParams> params;
 
 // Mirrored in Engine/Nodes/Filter/Defocus.cpp.
 static const uint kBlock = 256;
 static const uint kBoost = 1;
+static const uint kLens = 2;
 
 bool isFiniteValue(float v)
 {
@@ -134,7 +146,36 @@ float rangeSum(uint c, uint y, uint a, uint b)
     return sum + workBuf[localIndex(c, y, b)];
 }
 
-// gatherWorker() and unboostWorker(): every output pixel, 0 outside the domain.
+// Adds to acc, for the channels of mask, the runs of count from runBuf[first] gathered at domain
+// pixel (x, y).
+void gatherRuns(uint first, uint count, uint mask, int x, int y, inout float acc[4])
+{
+    const uint n = params.channels;
+    const int w = int(params.domWidth);
+    const int h = int(params.domHeight);
+    for (uint r = 0; r < count; ++r) {
+        const uint run = first + 4 * r;
+        const int dy = int(runBuf[run]);
+        const int dx0 = int(runBuf[run + 1]);
+        const int length = int(runBuf[run + 2]);
+        const float weight = asfloat(runBuf[run + 3]);
+        const int sy = y - dy;
+        if (sy < 0 || sy >= h)
+            continue;
+        // Pixel x sums the source over [x - dx0 - length + 1, x - dx0 + 1).
+        const int a = clamp(x - dx0 - length + 1, 0, w);
+        const int b = clamp(x - dx0 + 1, 0, w);
+        if (a >= b)
+            continue;
+        for (uint c = 0; c < n && c < 4; ++c) {
+            if ((mask & (1u << c)) != 0u)
+                acc[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+        }
+    }
+}
+
+// gatherWorker() and lensGatherWorker(), and unboostWorker(): every output pixel, 0 outside the
+// domain; with kLens each channel gathers with its group's kernel in the output pixel's cell.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void defocus_gather(uint3 tid : SV_DispatchThreadID)
@@ -153,21 +194,23 @@ void defocus_gather(uint3 tid : SV_DispatchThreadID)
         return;
     }
     float acc[4] = { 0.0, 0.0, 0.0, 0.0 };
-    for (uint r = 0; r < params.runCount; ++r) {
-        const int dy = int(runBuf[4 * r]);
-        const int dx0 = int(runBuf[4 * r + 1]);
-        const int length = int(runBuf[4 * r + 2]);
-        const float weight = asfloat(runBuf[4 * r + 3]);
-        const int sy = y - dy;
-        if (sy < 0 || sy >= h)
-            continue;
-        // Pixel x sums the source over [x - dx0 - length + 1, x - dx0 + 1).
-        const int a = clamp(x - dx0 - length + 1, 0, w);
-        const int b = clamp(x - dx0 + 1, 0, w);
-        if (a >= b)
-            continue;
-        for (uint c = 0; c < n && c < 4; ++c)
-            acc[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+    if ((params.flags & kLens) != 0u) {
+        const uint col = (params.cellColumns > 1u) ? runBuf[params.columnMap + tid.x] : 0u;
+        const uint row = (params.cellRows > 1u) ? runBuf[params.rowMap + tid.y] : 0u;
+        const uint groups = params.channelGroups >> 8;
+        for (uint g = 0; g < groups; ++g) {
+            uint mask = 0u;
+            for (uint c = 0; c < n && c < 4; ++c) {
+                if (((params.channelGroups >> (2 * c)) & 3u) == g)
+                    mask |= 1u << c;
+            }
+            if (mask == 0u)
+                continue;
+            const uint entry = params.cellTable + 2 * ((g * params.cellRows + row) * params.cellColumns + col);
+            gatherRuns(runBuf[entry], runBuf[entry + 1], mask, x, y, acc);
+        }
+    } else {
+        gatherRuns(0, params.runCount, 15u, x, y, acc);
     }
     const bool boost = (params.flags & kBoost) != 0u;
     for (uint c = 0; c < n && c < 4; ++c) {

@@ -454,6 +454,7 @@ Project::loadProject(const QString & path,
         return false;
     }
 
+    Q_EMIT loaded();
     refreshViewersAndPreviews();
 
     return true;
@@ -1855,6 +1856,16 @@ Project::initializeKnobs()
     _imp->metersPerUnit->setDisplayMaximum(1.);
     page->addKnob(_imp->metersPerUnit);
 
+    _imp->materialsScope = AppManager::createKnob<KnobString>(this, tr("Materials Scope"));
+    _imp->materialsScope->setName("materialsScope");
+    _imp->materialsScope->setHintToolTip(tr("The root prim the project's 3D scenes share materials under, such as /materials. "
+                                            "Re-parenting nodes leave it at the top of the scene instead of grafting it, and "
+                                            "re-point bindings into it. Empty, or anything but a single absolute prim name, "
+                                            "turns shared materials off."));
+    _imp->materialsScope->setAnimationEnabled(false);
+    _imp->materialsScope->setDefaultValue("/materials");
+    page->addKnob(_imp->materialsScope);
+
     _imp->gpuSupport = AppManager::createKnob<KnobChoice>( this, tr("GPU Rendering") );
     _imp->gpuSupport->setName("gpuRendering");
     {
@@ -2923,8 +2934,8 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
-    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get())) {
-        // Both are in the project digest and every scene layer key, so each scene node re-authors
+    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get()) || (knob == _imp->materialsScope.get())) {
+        // All are in the project digest and every scene layer key, so each scene node re-authors
         // its layer when next evaluated.
         forceComputeInputDependentDataOnAllTrees();
         getApp()->renderAllViewers(true);
@@ -3576,6 +3587,7 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
     h.appendDouble(getProjectFrameRate());
     h.appendBool(isProjectUpAxisZ());
     h.appendDouble(getProjectMetersPerUnit());
+    h.appendString(getProjectMaterialsScope());
 
     const std::vector<std::string>& views = getProjectViewNames();
     h.appendU64(views.size());
@@ -4479,6 +4491,30 @@ double
 Project::getProjectMetersPerUnit() const
 {
     return _imp->metersPerUnit->getValue();
+}
+
+std::string
+Project::validateMaterialsScope(const std::string& path)
+{
+    if ((path.size() < 2) || (path[0] != '/')) {
+        return std::string();
+    }
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const char c = path[i];
+        const bool letter = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '_');
+        const bool digit = (c >= '0') && (c <= '9');
+        if (!letter && !(digit && (i > 1))) {
+            return std::string();
+        }
+    }
+
+    return path.substr(1);
+}
+
+std::string
+Project::getProjectMaterialsScope() const
+{
+    return validateMaterialsScope(_imp->materialsScope->getValue());
 }
 
 KnobPathPtr

@@ -430,6 +430,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(deactivated(bool)), this, SLOT(deactivate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
+    QObject::connect(internalNode.get(), SIGNAL(connectionsCommitted()), this, SLOT(onConnectionsCommitted()));
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
@@ -1301,6 +1302,9 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);
@@ -1369,6 +1373,7 @@ NodeGui::refreshPositionEnd(double x,
 {
     setPos(x, y);
     if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
         QRectF bbox = mapRectToScene( boundingRect() );
         const NodesGuiList & allNodes = _graph->getAllActiveNodes();
 
@@ -2278,6 +2283,9 @@ NodeGui::setUserSelected(bool b)
         QMutexLocker l(&_selectedMutex);
         _selected = b;
     }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2313,12 +2321,23 @@ NodeGui::findConnectedEdge(NodeGui* parent)
     return NULL;
 }
 
+void
+NodeGui::onConnectionsCommitted()
+{
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
+    }
+}
+
 bool
 NodeGui::connectEdge(int edgeNumber)
 {
     NodePtr node = getNode();
     if (!node) {
         return false;
+    }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
     }
     const std::vector<NodeWPtr> & inputs = node->getGuiInputs();
 
@@ -2425,13 +2444,13 @@ NodeGui::showGui()
             output->doRefreshEdgesGUI();
         }
     }
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(true);
+    }
     ViewerInstance* viewer = node->isEffectViewer();
     if (viewer) {
         _graph->getGui()->activateViewerTab(viewer);
     } else {
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(true);
-        }
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->setNodeViewerInterface(thisShared);
 
@@ -2502,6 +2521,10 @@ NodeGui::hideGui()
         it->arrow->hide();
     }
     NodePtr node = getNode();
+    _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(false);
+    }
     ViewerInstance* isViewer = node ? node->isEffectViewer() : NULL;
     if (isViewer) {
         ViewerGL* viewerGui = dynamic_cast<ViewerGL*>( isViewer->getUiContext() );
@@ -2510,11 +2533,6 @@ NodeGui::hideGui()
             _graph->getGui()->deactivateViewerTab(isViewer);
         }
     } else {
-        _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(false);
-        }
-
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->removeNodeViewerInterface(thisShared, false);
 
@@ -5008,6 +5026,8 @@ NodeGui::onRightClickMenuKnobPopulated()
             action->setCheckable(true);
             action->setChecked( button->getValue() );
         }
+        // A plug-in greys out an entry that would refuse the current selection.
+        action->setEnabled(button->isEnabled(0));
         QObject::connect( action, SIGNAL(triggered()), this, SLOT(onRightClickActionTriggered()) );
         m.addAction(action);
     }

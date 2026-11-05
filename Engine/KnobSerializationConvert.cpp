@@ -52,6 +52,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobLinkGroup.h"
@@ -387,7 +388,7 @@ canSaveOneDimensionForAll(const KnobI* knob,
         return false;
     }
     const Serialization::KnobDimensionSerialization& first = serialization.dimensions.front();
-    if (first.master || first.linkGroup || !first.expression.empty()) {
+    if (first.master || first.linkGroup || !first.expression.empty() || first.driver) {
         return false;
     }
     for (std::size_t i = 1; i < serialization.dimensions.size(); ++i) {
@@ -551,6 +552,13 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
         if (!dimensionData.expression.empty() || (writesMaster && master.second)) {
             hasExpressionOrLink = true;
         }
+
+        const KnobDriverPtr driver = getDriver(i);
+        if (driver) {
+            dimensionData.driver.emplace();
+            driver->toSerialization(&(*dimensionData.driver));
+            hasExpressionOrLink = true;
+        }
     }
 
     const bool savesOneDimensionForAll = canSaveOneDimensionForAll(this, *serialization, areDimensionsFolded(this));
@@ -666,6 +674,31 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
     return hasExpressionOrLink || (getIsPersistent() && (foldStateDiffersFromDefault || hasModificationsForSerialization()));
 } // KnobHelper::toSerialization
 
+namespace {
+
+// As with the values, one saved dimension stands for all of them, and a saved knob with fewer
+// dimensions has its last one replicated.
+void
+restoreDrivers(KnobHelper* knob,
+               const Serialization::KnobSerialization& serialization)
+{
+    const int savedCount = (int)serialization.dimensions.size();
+
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        KnobDriverPtr driver;
+        if (savedCount > 0) {
+            const std::optional<Serialization::KnobDriverSerialization>& saved = serialization.dimensions[std::min(i, savedCount - 1)].driver;
+            if (saved) {
+                driver = KnobDriver::fromSerialization(*saved);
+            }
+        }
+        if (driver || knob->getDriver(i)) {
+            knob->setDriver(i, driver);
+        }
+    }
+}
+} // anonymous namespace
+
 bool
 KnobHelper::fromSerialization(const Serialization::KnobSerialization& savedSerialization)
 {
@@ -721,6 +754,7 @@ KnobHelper::fromSerialization(const Serialization::KnobSerialization& savedSeria
         }
     }
     restoreDimensionsFoldState(this, serialization);
+    restoreDrivers(this, serialization);
 
     return true;
 } // KnobHelper::fromSerialization
@@ -788,6 +822,11 @@ KnobI::restoreExpressionsFromSerialization(const Serialization::KnobSerializatio
     } catch (const std::exception& e) {
         QString error = QString::fromUtf8("Failed to restore expression: %1").arg(QString::fromUtf8(e.what()));
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getName().c_str()), QDateTime::currentDateTime(), error);
+    }
+    // Every node a read dependency source may read exists by now, as for expressions.
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(this);
+    if (helper) {
+        helper->refreshReadDependencies();
     }
 }
 

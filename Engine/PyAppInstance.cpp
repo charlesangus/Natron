@@ -361,6 +361,11 @@ App::renderInternal(bool forceBlocking,
 
         return;
     }
+    if (appPTR->isBackground() && node->isEffectViewer()) {
+        std::cerr << tr("%1 is a Viewer, which cannot render without the GUI.").arg(QString::fromUtf8(node->getFullyQualifiedName().c_str())).toStdString() << std::endl;
+
+        return;
+    }
 
     w.firstFrame = firstFrame;
     w.lastFrame = lastFrame;
@@ -409,6 +414,11 @@ App::renderInternal(bool forceBlocking,
         w.writer = dynamic_cast<OutputEffectInstance*>( node->getEffectInstance().get() );
         if ( !w.writer || !w.writer->isOutput() ) {
             std::cerr << tr("Invalid write node").toStdString() << std::endl;
+
+            return;
+        }
+        if (appPTR->isBackground() && node->isEffectViewer()) {
+            std::cerr << tr("%1 is a Viewer, which cannot render without the GUI.").arg(QString::fromUtf8(node->getFullyQualifiedName().c_str())).toStdString() << std::endl;
 
             return;
         }

@@ -228,7 +228,7 @@ ParityPair makeParityPair(const AppInstancePtr& app,
  **/
 NodePtr connectParityInput(ParityPair& pair, const std::string& inputLabel);
 
-NodePtr createNodeAtMajor(const AppInstancePtr& app, const std::string& id, int major);
+NodePtr createNodeAtMajor(const AppInstancePtr& app, const std::string& id, int major, bool allowNonUserCreatable = false);
 
 /**
  * @brief Sets knob `name` on the node under test. For a double/colour, int or bool knob, a single value is applied to every dimension, otherwise one

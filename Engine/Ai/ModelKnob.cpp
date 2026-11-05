@@ -25,6 +25,8 @@
 
 #include "ModelKnob.h"
 
+#include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 #include <QObject>
@@ -61,12 +63,17 @@ researchOnlyTrainingData(const AiModelEntry& entry)
 } // namespace
 
 ModelKnob::ModelKnob(EffectInstance* effect,
-                     AiModelTask task,
+                     const std::vector<AiModelTask>& tasks,
                      ModelDownloader* downloader)
     : _effect(effect)
-    , _task(task)
+    , _tasks(tasks)
     , _downloader(downloader)
     , _context(new QObject)
+{
+}
+
+void
+ModelKnob::connectDownloader()
 {
     // Lambdas on a context object the helper owns keep this class free of moc, and disconnect
     // themselves when the helper goes.
@@ -98,10 +105,40 @@ ModelKnob::create(EffectInstance* effect,
                   AiModelTask task,
                   ModelDownloader* downloader)
 {
+    return create(effect, page, std::vector<AiModelTask> { task }, downloader);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::create(EffectInstance* effect,
+                  const KnobPagePtr& page,
+                  const std::vector<AiModelTask>& tasks,
+                  ModelDownloader* downloader)
+{
+    return make(effect, page, tasks, downloader, false);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::createDeferred(EffectInstance* effect,
+                          const KnobPagePtr& page,
+                          AiModelTask task)
+{
+    return make(effect, page, std::vector<AiModelTask> { task }, nullptr, true);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::make(EffectInstance* effect,
+                const KnobPagePtr& page,
+                const std::vector<AiModelTask>& tasks,
+                ModelDownloader* downloader,
+                bool deferred)
+{
+    if (tasks.empty()) {
+        throw std::invalid_argument("ModelKnob::create: no task");
+    }
     if (!downloader) {
         downloader = ModelDownloader::process();
     }
-    std::unique_ptr<ModelKnob> helper(new ModelKnob(effect, task, downloader));
+    std::unique_ptr<ModelKnob> helper(new ModelKnob(effect, tasks, downloader));
 
     KnobChoicePtr model = AppManager::createKnob<KnobChoice>(effect, std::string("Model"));
     model->setName("model");
@@ -110,9 +147,13 @@ ModelKnob::create(EffectInstance* effect,
                                       "with Download Model, or in Preferences > AI Models."));
     page->addKnob(model);
     helper->_model = model;
-    helper->refreshEntries();
-    if (const AiModelEntry* registryDefault = downloader->registry()->defaultFor(task)) {
-        model->setDefaultValueFromID(registryDefault->id);
+    if (deferred) {
+        helper->listEntriesByName();
+    } else {
+        helper->activate();
+    }
+    if (const AiModelEntry* knobDefault = registryDefault(*downloader->registry(), tasks)) {
+        model->setDefaultValueFromID(knobDefault->id);
     }
 
     KnobButtonPtr download = AppManager::createKnob<KnobButton>(effect, std::string("Download Model"));
@@ -129,16 +170,38 @@ const AiModelEntry*
 ModelKnob::defaultModel(const ModelRegistry& registry,
                         AiModelTask task)
 {
-    const SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+    return defaultModel(registry, std::vector<AiModelTask> { task });
+}
 
-    if (settings) {
-        const AiModelEntry* picked = registry.find(settings->getAiDefaultModel(task));
-        if (picked && (picked->task == task)) {
-            return picked;
+const AiModelEntry*
+ModelKnob::registryDefault(const ModelRegistry& registry,
+                           const std::vector<AiModelTask>& tasks)
+{
+    for (AiModelTask task : tasks) {
+        if (const AiModelEntry* entry = registry.defaultFor(task)) {
+            return entry;
         }
     }
 
-    return registry.defaultFor(task);
+    return nullptr;
+}
+
+const AiModelEntry*
+ModelKnob::defaultModel(const ModelRegistry& registry,
+                        const std::vector<AiModelTask>& tasks)
+{
+    const SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (settings) {
+        for (AiModelTask task : tasks) {
+            const AiModelEntry* picked = registry.find(settings->getAiDefaultModel(task));
+            if (picked && (picked->task == task)) {
+                return picked;
+            }
+        }
+    }
+
+    return registryDefault(registry, tasks);
 }
 
 std::string
@@ -192,7 +255,7 @@ ModelKnob::onEffectCreated(const CreateNodeArgs& args)
         return;
     }
     KnobChoicePtr model = _model.lock();
-    const AiModelEntry* picked = defaultModel(*_downloader->registry(), _task);
+    const AiModelEntry* picked = defaultModel(*_downloader->registry(), _tasks);
     if (model && picked && (picked->id != modelId())) {
         model->setValueFromID(picked->id, 0);
     }
@@ -201,73 +264,83 @@ ModelKnob::onEffectCreated(const CreateNodeArgs& args)
 std::optional<ModelKnob::Resolved>
 ModelKnob::resolve()
 {
+    std::string error;
+    std::optional<Resolved> resolved = resolve(&error);
+
+    if (resolved) {
+        clearOwnError();
+    } else {
+        postError(error);
+    }
+
+    return resolved;
+}
+
+std::optional<ModelKnob::Resolved>
+ModelKnob::resolve(std::string* error)
+{
     const SettingsPtr settings = appPTR->getCurrentSettings();
 
     if (!settings || !settings->isAiEnabled()) {
-        postError("AI is disabled. Enable it in Preferences > AI.");
+        *error = "AI is disabled. Enable it in Preferences > AI.";
 
         return std::nullopt;
     }
 
     const std::string id = modelId();
-    std::optional<Resolved> resolved;
     {
         QMutexLocker locker(&_mutex);
         if (_resolved && (_resolved->entry->id == id)) {
-            resolved = _resolved;
+            return _resolved;
         }
     }
-    if (!resolved) {
-        if (id.empty()) {
-            postError("No model is selected.");
+    if (id.empty()) {
+        *error = "No model is selected.";
 
-            return std::nullopt;
-        }
-        const AiModelResolution resolution = _downloader->registry()->resolve(id);
-        switch (resolution.status) {
-        case AiModelStatus::eUnknown:
-            postError("unknown model `" + id + "`: this version of Natron does not list it.");
-
-            return std::nullopt;
-        case AiModelStatus::eMissing: {
-            std::string failure;
-            {
-                QMutexLocker locker(&_mutex);
-                if (_failedModelId == id) {
-                    failure = _downloadFailure;
-                }
-            }
-            if (!failure.empty()) {
-                postError(failure);
-
-                return std::nullopt;
-            }
-            postError("The model " + resolution.entry->name + " (" + id + ") is not installed. Press Download Model, "
-                                                                          "or download it in Preferences > AI Models.");
-
-            return std::nullopt;
-        }
-        case AiModelStatus::eInstalled:
-            break;
-        }
-        Resolved fresh;
-        fresh.entry = resolution.entry;
-        fresh.directory = resolution.directory;
-        fresh.files = resolution.files;
-        try {
-            fresh.config = readModelConfig(resolution.directory, resolution.entry->files.empty() ? std::string() : resolution.entry->files.front());
-        } catch (const std::exception& e) {
-            postError("The model " + id + " is installed but its config.json cannot be read: " + e.what());
-
-            return std::nullopt;
-        }
-        QMutexLocker locker(&_mutex);
-        _resolved = fresh;
-        resolved = std::move(fresh);
+        return std::nullopt;
     }
-    clearOwnError();
+    const AiModelResolution resolution = _downloader->registry()->resolve(id);
+    switch (resolution.status) {
+    case AiModelStatus::eUnknown:
+        *error = "unknown model `" + id + "`: this version of Natron does not list it.";
 
-    return resolved;
+        return std::nullopt;
+    case AiModelStatus::eMissing: {
+        std::string failure;
+        {
+            QMutexLocker locker(&_mutex);
+            if (_failedModelId == id) {
+                failure = _downloadFailure;
+            }
+        }
+        if (!failure.empty()) {
+            *error = failure;
+
+            return std::nullopt;
+        }
+        *error = "The model " + resolution.entry->name + " (" + id + ") is not installed. Press Download Model, "
+                                                                     "or download it in Preferences > AI Models.";
+
+        return std::nullopt;
+    }
+    case AiModelStatus::eInstalled:
+        break;
+    }
+    Resolved fresh;
+    fresh.entry = resolution.entry;
+    fresh.directory = resolution.directory;
+    fresh.files = resolution.files;
+    try {
+        fresh.config = readModelConfig(resolution.directory, resolution.entry->files.empty() ? std::string() : resolution.entry->files.front());
+    } catch (const std::exception& e) {
+        *error = "The model " + id + " is installed but its config.json cannot be read: " + e.what();
+
+        return std::nullopt;
+    }
+    QMutexLocker locker(&_mutex);
+    _resolved = fresh;
+
+    return fresh;
 }
 
 bool
@@ -311,6 +384,37 @@ ModelKnob::knobChanged(KnobI* k)
 }
 
 void
+ModelKnob::activate()
+{
+    if (_activated) {
+        return;
+    }
+    _activated = true;
+    connectDownloader();
+    refreshEntries();
+}
+
+void
+ModelKnob::listEntriesByName()
+{
+    KnobChoicePtr model = _model.lock();
+
+    if (!model) {
+        return;
+    }
+    const ModelRegistry& registry = *_downloader->registry();
+    std::vector<ChoiceOption> options;
+    for (AiModelTask task : _tasks) {
+        for (const std::string& id : registry.byTask(task)) {
+            if (const AiModelEntry* entry = registry.find(id)) {
+                options.emplace_back(id, entry->name, entry->id);
+            }
+        }
+    }
+    model->populateChoices(options);
+}
+
+void
 ModelKnob::refreshEntries()
 {
     KnobChoicePtr model = _model.lock();
@@ -320,12 +424,14 @@ ModelKnob::refreshEntries()
     }
     const ModelRegistry& registry = *_downloader->registry();
     std::vector<ChoiceOption> options;
-    for (const std::string& id : registry.byTask(_task)) {
-        const AiModelResolution resolution = registry.resolve(id);
-        const bool installed = (resolution.status == AiModelStatus::eInstalled);
-        options.emplace_back(id,
-                             resolution.entry->name + (installed ? std::string() : std::string(" (not installed)")),
-                             resolution.entry->id);
+    for (AiModelTask task : _tasks) {
+        for (const std::string& id : registry.byTask(task)) {
+            const AiModelResolution resolution = registry.resolve(id);
+            const bool installed = (resolution.status == AiModelStatus::eInstalled);
+            options.emplace_back(id,
+                                 resolution.entry->name + (installed ? std::string() : std::string(" (not installed)")),
+                                 resolution.entry->id);
+        }
     }
     model->populateChoices(options);
 }
@@ -335,7 +441,7 @@ ModelKnob::onModelsChanged(const std::string& id)
 {
     const AiModelEntry* entry = _downloader->registry()->find(id);
 
-    if (!entry || (entry->task != _task)) {
+    if (!entry || !listsTask(entry->task)) {
         return;
     }
     {
@@ -343,7 +449,28 @@ ModelKnob::onModelsChanged(const std::string& id)
         _resolved.reset();
     }
     refreshEntries();
-    _effect->incrHashAndEvaluate(true, false);
+    if (_feedsRender) {
+        _effect->incrHashAndEvaluate(true, false);
+    }
+}
+
+void
+ModelKnob::setFeedsRender(bool feeds)
+{
+    _feedsRender = feeds;
+    if (KnobChoicePtr model = _model.lock()) {
+        model->setEvaluateOnChange(feeds);
+        model->setHashExempt(!feeds);
+    }
+    if (KnobButtonPtr download = _download.lock()) {
+        download->setHashExempt(!feeds);
+    }
+}
+
+bool
+ModelKnob::listsTask(AiModelTask task) const
+{
+    return std::find(_tasks.begin(), _tasks.end(), task) != _tasks.end();
 }
 
 void

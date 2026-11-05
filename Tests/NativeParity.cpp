@@ -604,7 +604,8 @@ isPluginMajorRegistered(const std::string& id,
 NodePtr
 createNodeAtMajor(const AppInstancePtr& app,
                   const std::string& id,
-                  int major)
+                  int major,
+                  bool allowNonUserCreatable)
 {
     if (!app) {
         ADD_FAILURE() << "no app to create " << id << " in";
@@ -619,6 +620,9 @@ createNodeAtMajor(const AppInstancePtr& app,
     CreateNodeArgs args(id, app->getProject());
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+    if (allowNonUserCreatable) {
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    }
     NodePtr node = app->createNode(args);
     if (!node) {
         ADD_FAILURE() << "cannot create " << id << " at major " << major;

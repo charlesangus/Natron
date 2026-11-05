@@ -83,6 +83,7 @@ public:
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDLight.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
+        .primPathKnob = kSceneParamPrimPath,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

@@ -186,6 +186,12 @@ public:
     void fromSerialization(const Serialization::NodeSerialization& serialization,
                            bool updateKnobGui = false);
 
+    /**
+     * @brief Whether fromSerialization() is restoring the knobs, so a value change comes from the
+     * saved state rather than an edit. Main thread only.
+     **/
+    bool isRestoringKnobs() const;
+
     enum PresetApplyModeEnum {
         // A preset file. Knobs it leaves out are reset. The label, the sublabel, the disable
         // switch, a reader's or writer's file paths, the roto shapes and tracks and the node's
@@ -356,8 +362,8 @@ public:
      * knobs' read sources and getExtraContextReads() name, and the same for every node it
      * reads, through inputs and through expressions and links, less, for an input, the variables
      * the effect sets on it under every context (see
-     * EffectInstance::getOverriddenContextVariables(); not subtracted when the input reads this
-     * node back through an expression, the two then sharing one read-set). Memoized until the next
+     * EffectInstance::getOverriddenContextVariables()). Nodes reading each other in a cycle get the
+     * least sets satisfying this for each of them. Memoized until the next
      * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
      **/
     RenderContextReadSetConstPtr getUpstreamContextReadSet() const;
@@ -831,6 +837,21 @@ public:
      * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
      **/
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
+     * inputs of tail reach going up that the outputs of any of begins reach going down without
+     * passing end. With digest, sets it to tail's hash with each of begins standing for one fixed
+     * tag and each body node hashed in the same way from its inputs, so that it covers the body
+     * without folding in a hash that folds one of begins' own. Nested in such a walk, the
+     * enclosing walk's nodes are hashed the same way. With outsideSources, appends the nodes
+     * outside the body feeding it.
+     **/
+    static void walkLoopBody(const std::vector<NodePtr>& begins,
+                             const NodePtr& tail,
+                             const NodePtr& end,
+                             U64* digest,
+                             std::vector<NodePtr>* outsideSources);
 
     /**
      * @brief Each input name is appended to the vector, in the same order
@@ -1858,7 +1879,8 @@ public:
      * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
      * the draft flag, which is settled here for every node reached. The nodes whose settings panel
      * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown. Main thread only.
+     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
+     * only.
      **/
     void refreshShownDownstreamInputRelatedData();
 
@@ -2108,6 +2130,9 @@ private:
         // Other nodes whose hashes the knobs' content hashes fold: those whose metadata the
         // knobs' expressions read, directly or through the knobs they read.
         std::vector<NodePtr> metadataSources;
+        // Other nodes whose stored hashes the effect folds in (see
+        // EffectInstance::appendExtraHashSources()).
+        std::vector<NodePtr> extraSources;
     };
 
     /**
@@ -2187,7 +2212,13 @@ private:
      **/
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
+    /**
+     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored one
+     * when it is null.
+     **/
+    U64 computeContentHash(U64 projectDigest,
+                           const HashInputs& inputs,
+                           const std::function<U64(const Node&)>* inputHash = 0) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -2297,6 +2328,12 @@ Q_SIGNALS:
      * getInput() is not necessarily the same as the value returned by getGuiInput() since the node might still be rendering.
      */
     void inputChanged(int);
+
+    /**
+     * @brief Emitted once inputs or outputs changed during a render take effect, so getInput()
+     * and getOutputs_mt_safe() now match what inputChanged announced.
+     **/
+    void connectionsCommitted();
 
     void outputsChanged();
 

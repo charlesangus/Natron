@@ -161,6 +161,13 @@ NodeGraph::focusOutEvent(QFocusEvent* e)
         _imp->setNodesBendPointsVisible(false);
     }
     cancelSplice();
+    _imp->_kissAiming = false;
+    clearKissPreview();
+    if (_imp->_evtState == eEventStateCutting) {
+        clearCutLine();
+        _imp->_evtState = eEventStateNone;
+        update();
+    }
     dropPickedUpArrow();
     QGraphicsView::focusOutEvent(e);
 }

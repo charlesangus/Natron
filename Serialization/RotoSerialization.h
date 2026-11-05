@@ -28,6 +28,7 @@
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/SerializationFwd.h"
+#include "Serialization/SplineWarpSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -55,6 +56,17 @@ struct BezierCPSerialization {
     // Whether the two tangents move independently.
     bool broken;
 
+    // A track the point follows: the tracker node's fully qualified name and the track's script
+    // name, the offsets of the point and its tangents from the track's centre, and the centre
+    // used while the track cannot be resolved.
+    bool hasTrackLink;
+    std::string trackLinkTracker;
+    std::string trackLinkTrack;
+    double trackOffsetX, trackOffsetY;
+    double trackOffsetLeftX, trackOffsetLeftY;
+    double trackOffsetRightX, trackOffsetRightY;
+    double trackFrozenX, trackFrozenY;
+
     BezierCPSerialization()
         : x(0.)
         , y(0.)
@@ -69,6 +81,17 @@ struct BezierCPSerialization {
         , rightXCurve()
         , rightYCurve()
         , broken(false)
+        , hasTrackLink(false)
+        , trackLinkTracker()
+        , trackLinkTrack()
+        , trackOffsetX(0.)
+        , trackOffsetY(0.)
+        , trackOffsetLeftX(0.)
+        , trackOffsetLeftY(0.)
+        , trackOffsetRightX(0.)
+        , trackOffsetRightY(0.)
+        , trackFrozenX(0.)
+        , trackFrozenY(0.)
     {
     }
 };
@@ -218,12 +241,18 @@ struct RotoContextSerialization {
     bool rippleEdit;
     bool featherLink;
 
+    // Set by a SplineWarp host's context only.
+    bool hasSplineWarp;
+    SplineWarpSerialization splineWarp;
+
     RotoContextSerialization()
         : baseLayer()
         , selectedItems()
         , autoKeying(false)
         , rippleEdit(false)
         , featherLink(false)
+        , hasSplineWarp(false)
+        , splineWarp()
     {
     }
 };

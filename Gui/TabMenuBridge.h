@@ -86,7 +86,8 @@ void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scen
 /**
  * @brief Records the graph and the cursor's scene position, then opens the tab menu. When every
  * node selected in graph outputs the same kind of data, the menu lists only node types with an
- * input other than a mask that takes that kind.
+ * input other than a mask that takes that kind. Menu commands stay listed, as does any action in
+ * the nodes menu with no plug-in behind it.
  * A Python failure is reported in the Script Editor and on stderr.
  **/
 void launch(NodeGraph* graph);

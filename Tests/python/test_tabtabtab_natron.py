@@ -905,6 +905,48 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertEqual(app.triggered[0], prefs[0]["menuobj"])
         self.assertEqual(prefs[0]["menuobj"].trigger_calls, 1)
 
+    def _menu_with_script_action(self, h):
+        self._selected_kind_menu(h)
+        blur = _plugin_action("Blur", "Blur")
+        blur._properties["natronInputKinds"] = "image"
+        constant = _plugin_action("Constant", "Constant")
+        constant._properties["natronInputKinds"] = ""
+        merge = _plugin_action("DeepMerge", "DeepMerge")
+        merge._properties["natronInputKinds"] = "deep"
+        self._set_nodes_menu(h, [
+            _submenu("Merge", [merge, _FakeAction(text="Script Action")]),
+            _submenu("Filter", [blur]),
+            _submenu("Image", [constant]),
+        ])
+
+    def test_selected_node_keeps_actions_scripts_added_to_the_nodes_menu(self):
+        h = self._load_adapter()
+        self._menu_with_script_action(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"selectedKind": "image"})
+        items = h.module._plugin.get_items()
+
+        # Constant has a plug-in and no inputs, so it stays out: only the action
+        # without a plug-in escapes the filter.
+        self.assertEqual(self._labels(items), ["Blur", "Preferences", "Script Action"])
+        action = [i for i in items if i["menupath"] == "Merge/Script Action"][0]
+        h.module._plugin.invoke(action)
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [action["menuobj"]])
+        self.assertEqual(action["menuobj"].trigger_calls, 1)
+
+    def test_input_kind_context_drops_actions_scripts_added_to_the_nodes_menu(self):
+        h = self._load_adapter()
+        self._menu_with_script_action(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "image", "needsPrimPathKnob": False})
+        items = h.module._plugin.get_items()
+
+        self.assertNotIn("Script Action", self._labels(items))
+
     def test_scene_context_lists_no_menu_commands(self):
         h = self._load_adapter()
         self._kind_menu(h)

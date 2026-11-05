@@ -93,6 +93,7 @@ def _path_element(text):
 
 _COLOR_PROPERTY = "natronCategoryColor"
 _SHORTCUT_PROPERTY = "natronShortcut"
+_PLUGIN_ID_PROPERTY = "natronPluginID"
 _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
 _INPUT_KINDS_PROPERTY = "natronInputKinds"
@@ -154,14 +155,17 @@ def _accepts(action, context):
     """Whether the node type of `action` fits a launch `context`: its first
     input takes context['inputKind'], one of its inputs other than masks
     takes context['selectedKind'], and it declares a prim path knob when
-    context['needsPrimPathKnob'] says so."""
+    context['needsPrimPathKnob'] says so. An action with no plug-in behind
+    it passes context['selectedKind'] as a menu command does."""
     kind = context.get('inputKind')
     if kind:
         accepted = _string_property(action, _INPUT_KIND_PROPERTY)
         if accepted not in (kind, _ANY_KIND):
             return False
     selected = context.get('selectedKind')
-    if selected:
+    # A script's action declares no inputs, which must not read as a source
+    # node's empty list: nothing says it cannot use the selection.
+    if selected and _string_property(action, _PLUGIN_ID_PROPERTY):
         kinds = [k for k in _string_property(action, _INPUT_KINDS_PROPERTY).split(",") if k]
         if selected not in kinds and _ANY_KIND not in kinds:
             return False
@@ -357,8 +361,8 @@ def launch(app, context=None):
     `context`, when given, lists only the node types that fit it, see
     _accepts(): a dict with any of 'inputKind' (a kind name such as
     "scene"), 'selectedKind' (the kind the selected nodes output) and
-    'needsPrimPathKnob'. Menu commands stay listed unless 'inputKind' is
-    set.
+    'needsPrimPathKnob'. Menu commands, and actions scripts added to the
+    nodes menu, stay listed unless 'inputKind' is set.
     """
     window = _find_natron_main_window()
     _plugin.set_app(app)

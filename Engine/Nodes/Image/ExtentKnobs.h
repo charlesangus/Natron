@@ -39,8 +39,6 @@
 #define kNativeGeneratorParamReformat "reformat"
 #define kNativeGeneratorParamBottomLeft "bottomLeft"
 #define kNativeGeneratorParamSize "size"
-#define kNativeGeneratorParamInteractive "interactive"
-#define kNativeGeneratorParamHiDPI "hidpi"
 #define kNativeGeneratorParamFrameRange "frameRange"
 #define kNativeGeneratorParamRectangleEnable "rectangleInteractEnable"
 
@@ -74,7 +72,7 @@ struct ExtentPolicy {
 /**
  * @brief The extent knobs shared by the generators and Crop, in the openfx-misc order: extent,
  * Center, the host-managed format choice with its secret size and pixel aspect ratio, bottomLeft
- * and size with normalised defaults, interactive, hidpi and frameRange, plus the knob that drives
+ * and size with normalised defaults and frameRange, plus the knob that drives
  * the rectangle overlay in Size extent.
  *
  * An owning effect creates the knobs from initializeKnobs(), forwards knobChanged() and
@@ -179,8 +177,6 @@ private:
     KnobDoubleWPtr _formatPar;
     KnobDoubleWPtr _bottomLeft;
     KnobDoubleWPtr _size;
-    KnobBoolWPtr _interactive;
-    KnobBoolWPtr _hiDPI;
     KnobIntWPtr _frameRange;
     KnobBoolWPtr _rectangleEnable;
 };

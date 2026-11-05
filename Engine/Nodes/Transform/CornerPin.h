@@ -165,7 +165,6 @@ struct CornerPinOp {
     KnobDoubleWPtr amount;
     KnobDoubleWPtr extraMatrix;
     KnobChoiceWPtr overlayPoints;
-    KnobBoolWPtr interactive;
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;

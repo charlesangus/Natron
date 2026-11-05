@@ -406,7 +406,6 @@ public:
 private:
     KnobDoubleWPtr _btmLeft;
     KnobDoubleWPtr _size;
-    KnobBoolWPtr _interactive;
     KnobBoolWPtr _enable;
     OfxPointD _lastMousePos;
     MouseStateEnum _mouseState;
@@ -423,7 +422,6 @@ public:
         : DefaultInteractI(overlay)
         , _btmLeft()
         , _size()
-        , _interactive()
         , _enable()
         , _lastMousePos()
         , _mouseState(eMouseStateIdle)
@@ -436,7 +434,6 @@ public:
     {
         _btmLeft = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
         _size = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationSize);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
         _enable = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
         _lastMousePos.x = _lastMousePos.y = 0.;
         _btmLeftDragPos.x = _btmLeftDragPos.y = 0.;
@@ -580,7 +577,6 @@ class TransformInteract
     KnobDoubleWPtr _skewY;
     KnobChoiceWPtr _skewOrder;
     KnobBoolWPtr _invert;
-    KnobBoolWPtr _interactive;
     DrawStateEnum _drawState;
     MouseStateEnum _mouseState;
     int _modifierStateCtrl;
@@ -598,7 +594,6 @@ class TransformInteract
     bool _interactiveDrag;
 
 public:
-
     TransformInteract(const HostOverlayKnobsTransform* knobs,
                       HostOverlay* overlay)
         : DefaultInteractI(overlay)
@@ -611,7 +606,6 @@ public:
         , _skewY()
         , _skewOrder()
         , _invert()
-        , _interactive()
         , _drawState(eInActive)
         , _mouseState(eReleased)
         , _modifierStateCtrl(0)
@@ -637,7 +631,6 @@ public:
         _skewY = knobs->getKnob<KnobDouble>(HostOverlayKnobsTransform::eKnobsEnumerationSkewy);
         _skewOrder = knobs->getKnob<KnobChoice>(HostOverlayKnobsTransform::eKnobsEnumerationSkewOrder);
         _invert = knobs->getKnob<KnobBool>(HostOverlayKnobsTransform::eKnobsEnumerationInvert);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsTransform::eKnobsEnumerationInteractive);
     }
 
     virtual ~TransformInteract()
@@ -646,16 +639,7 @@ public:
 
     virtual bool isInteractForKnob(const KnobI* knob) const OVERRIDE FINAL
     {
-        return knob == _translate.lock().get() ||
-               knob == _scale.lock().get() ||
-               knob == _scaleUniform.lock().get() ||
-               knob == _rotate.lock().get() ||
-               knob == _center.lock().get() ||
-               knob == _skewX.lock().get() ||
-               knob == _skewY.lock().get() ||
-               knob == _skewOrder.lock().get() ||
-               knob == _invert.lock().get() ||
-               knob == _interactive.lock().get();
+        return knob == _translate.lock().get() || knob == _scale.lock().get() || knob == _scaleUniform.lock().get() || knob == _rotate.lock().get() || knob == _center.lock().get() || knob == _skewX.lock().get() || knob == _skewY.lock().get() || knob == _skewOrder.lock().get() || knob == _invert.lock().get();
     }
 
     static double circleRadiusBase() { return 30.; }
@@ -758,13 +742,9 @@ public:
         }
     }
 
-    bool getInteractive(double time) const
+    bool getInteractive() const
     {
-        if ( _interactive.lock() ) {
-            return _interactive.lock()->getValueAtTime(time);
-        } else {
-            return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
 
     virtual void draw(double time,
@@ -824,7 +804,6 @@ class CornerPinInteract
     std::vector<KnobBoolWPtr> _enable;
     KnobBoolWPtr _invert;
     KnobChoiceWPtr _overlayPoints;
-    KnobBoolWPtr _interactive;
     int _dragging; // -1: idle, else dragging point number
     int _hovering; // -1: idle, else hovering point number
     Point _toDrag[4];
@@ -834,12 +813,10 @@ class CornerPinInteract
     bool _interactiveDrag;
 
 public:
-
     CornerPinInteract(const HostOverlayKnobsCornerPin* knobs,
                       HostOverlay* overlay)
         : DefaultInteractI(overlay)
         , _invert()
-        , _interactive()
         , _dragging(-1)
         , _hovering(-1)
         , _useFromDrag(false)
@@ -867,7 +844,6 @@ public:
 
         _overlayPoints = knobs->getKnob<KnobChoice>(HostOverlayKnobsCornerPin::eKnobsEnumerationOverlayPoints);
         _invert = knobs->getKnob<KnobBool>(HostOverlayKnobsCornerPin::eKnobsEnumerationInvert);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsCornerPin::eKnobsEnumerationInteractive);
         for (unsigned i = 0; i < 4; ++i) {
             _toDrag[i].x = _toDrag[i].y = _fromDrag[i].x = _fromDrag[i].y = 0.;
         }
@@ -892,9 +868,6 @@ public:
             return true;
         }
         if (_overlayPoints.lock().get() == knob) {
-            return true;
-        }
-        if (_interactive.lock().get() == knob) {
             return true;
         }
 
@@ -966,13 +939,9 @@ public:
         return knob->getValueAtTime(time) == 1;
     }
 
-    bool getInteractive(double time) const
+    bool getInteractive() const
     {
-        if ( _interactive.lock() ) {
-            return _interactive.lock()->getValueAtTime(time);
-        } else {
-            return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
 
     virtual void draw(double time,
@@ -1610,12 +1579,7 @@ RectangleInteract::penDown(double time,
     }
 
     if (_mouseState == eMouseStateIdle) {
-        KnobBoolPtr interactive = _interactive.lock();
-        if (interactive) {
-            _interactiveDrag = interactive->isEnabled(0) && interactive->getValueAtTime(time);
-        } else {
-            _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
     OfxPointD pen;
     pen.x = penPos.x();
@@ -3354,7 +3318,7 @@ TransformInteract::penDown(double time,
         getSkewY(time, &skewY);
         getSkewOrder(time, &skewOrder);
         inverted = getInvert(time);
-        _interactiveDrag = getInteractive(time);
+        _interactiveDrag = getInteractive();
     } else {
         center = _centerDrag;
         translate = _translateDrag;
@@ -3500,7 +3464,7 @@ CornerPinInteract::penDown(double time,
             from[i] = _fromDrag[i];
             enable[i] = _enableDrag[i];
         }
-        _interactiveDrag = getInteractive(time);
+        _interactiveDrag = getInteractive();
         useFrom = _useFromDrag;
     }
 

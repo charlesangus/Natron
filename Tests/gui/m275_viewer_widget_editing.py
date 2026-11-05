@@ -553,7 +553,9 @@ try:
         yield from overlay_shot(transform, frame, "m275-transform-scale", True)
 
         frame = 40
-        transform.getParam("interactive").setValue(False)
+        render_on_release = NatronEngine.natron.getSettings().getParam("renderOnEditingFinished")
+        saved_render_on_release = render_on_release.get()
+        render_on_release.set(True)
         viewer.seek(frame)
         yield ("sleep", RENDER_MS)
         m = calibrate(viewer_gl())
@@ -564,7 +566,7 @@ try:
             transform, TRANSFORM_KEYS, "transform rotate f%d" % frame, frame,
             offset(centre, rot, grab), offset(centre, rot + math.radians(30.0), grab), False,
             {"rotate": ((0, r0 + 30.0, 2.0),)})
-        transform.getParam("interactive").setValue(True)
+        render_on_release.set(saved_render_on_release)
         yield from overlay_shot(transform, frame, "m275-transform-rotate", True)
 
         gt.section("transform reference")

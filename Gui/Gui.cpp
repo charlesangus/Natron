@@ -593,6 +593,12 @@ Gui::createMenuActions()
     _imp->enableRenderStats->setChecked(false);
     QObject::connect( _imp->enableRenderStats, SIGNAL(triggered()), this, SLOT(onEnableRenderStatsActionTriggered()) );
 
+    _imp->actionToggleInteractive = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionToggleInteractive, kShortcutDescActionToggleInteractive, this);
+    _imp->actionToggleInteractive->setCheckable(true);
+    _imp->actionToggleInteractive->setChecked(!appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly());
+    QObject::connect(_imp->actionToggleInteractive, SIGNAL(triggered()), this, SLOT(onToggleInteractiveActionTriggered()));
+    QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingChanged(KnobI*)), this, SLOT(syncInteractiveActionWithSettings()));
+
     for (int c = 0; c < NATRON_MAX_RECENT_FILES; ++c) {
         _imp->actionsOpenRecentFile[c] = new QAction(this);
         _imp->actionsOpenRecentFile[c]->setVisible(false);
@@ -773,6 +779,7 @@ Gui::createMenuActions()
     _imp->menuRender->addAction(_imp->renderAllWriters);
     _imp->menuRender->addAction(_imp->renderSelectedNode);
     _imp->menuRender->addAction(_imp->enableRenderStats);
+    _imp->menuRender->addAction(_imp->actionToggleInteractive);
 
     _imp->cacheMenu->addAction(_imp->actionClearDiskCache);
     _imp->cacheMenu->addAction(_imp->actionClearPlayBackCache);

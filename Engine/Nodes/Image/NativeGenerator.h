@@ -78,9 +78,9 @@ struct GeneratorRowChannels {
  * @brief What native image generators share, reproducing the openfx-misc Generator helper
  * (SupportExt/ofxsGenerator) knob for knob: the extent choice (Format, Size, Project, Default),
  * recenter, reformat, the host-managed format choice with its secret size and pixel aspect ratio,
- * bottomLeft/size with normalised defaults (the project extent), interactive, hidpi and
- * frameRange; the region of definition, output pixel aspect ratio, output format and time domain
- * they imply; and the rectangle overlay in Size extent.
+ * bottomLeft/size with normalised defaults (the project extent) and frameRange; the region of
+ * definition, output pixel aspect ratio, output format and time domain they imply; and the
+ * rectangle overlay in Size extent.
  *
  * A generator has no input: Default extent is the project's, and the channels of the target
  * layer its op does not write are zero.

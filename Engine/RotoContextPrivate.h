@@ -331,10 +331,6 @@ enum RotoPaintItemLifeTimeTypeEnum
 #define kRotoResetCenterParamLabel "Reset Center"
 #define kRotoResetCenterParamHint "Reset the transform center"
 
-#define kRotoTransformInteractive "RotoTransformInteractive"
-#define kRotoTransformInteractiveLabel "Interactive"
-#define kRotoTransformInteractiveHint "When check, modifying the transform will directly render the shape in the viewer. When unchecked, modifications are applied when releasing the mouse button."
-
 #define kRotoMotionBlurModeParam "motionBlurMode"
 #define kRotoMotionBlurModeParamLabel "Mode"
 #define kRotoMotionBlurModeParamHint "Per-shape motion blurs applies motion blur independently to each shape and then blends them together." \
@@ -1471,7 +1467,6 @@ public:
     KnobDoubleWPtr rotateKnob;
     KnobDoubleWPtr scaleKnob;
     KnobBoolWPtr scaleUniformKnob;
-    KnobBoolWPtr transformInteractiveKnob;
     KnobDoubleWPtr skewXKnob;
     KnobDoubleWPtr skewYKnob;
     KnobChoiceWPtr skewOrderKnob;
@@ -1816,8 +1811,7 @@ public:
             resetCloneTransformKnob = resetCloneTransform;
 
             node.lock()->addTransformInteract(translate, scale, scaleUniform, rotate, skewX, skewY, skewOrder, center,
-                                              KnobBoolPtr() /*invert*/,
-                                              KnobBoolPtr() /*interactive*/);
+                                              KnobBoolPtr() /*invert*/);
 
             KnobChoicePtr filter = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoBrushFilterParamLabel), 1, true);
             filter->setName(kRotoBrushFilterParam);
@@ -2019,8 +2013,7 @@ public:
 
         node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
                                           skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
-                                          KnobBoolPtr() /*invert*/,
-                                          transformInteractiveKnob.lock() /*interactive*/);
+                                          KnobBoolPtr() /*invert*/);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);
@@ -2173,12 +2166,10 @@ public:
 
     /**
      * @brief Creates the translate, rotate, scale, skew, center and extra matrix knobs on page, tied
-     * to the selected items like the other context knobs, and their two reset buttons. Without
-     * withInteractive there is no Interactive knob, and the transform handle follows the
-     * "Refresh viewer only when editing is finished" preference.
+     * to the selected items like the other context knobs, and their two reset buttons. The
+     * transform handle follows the "Refresh viewer only when editing is finished" preference.
      **/
-    void createTransformKnobs(const KnobPagePtr& transformPage,
-                              bool withInteractive = true)
+    void createTransformKnobs(const KnobPagePtr& transformPage)
     {
         EffectInstancePtr effect = node.lock()->getEffectInstance();
 
@@ -2282,18 +2273,6 @@ public:
         knobs.push_back(resetCenter);
         resetCenterKnob = resetCenter;
 
-        KnobBoolPtr transformInteractive;
-        if (withInteractive) {
-            transformInteractive = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoTransformInteractiveLabel), 1, true);
-            transformInteractive->setName(kRotoTransformInteractive);
-            transformInteractive->setHintToolTip(tr(kRotoTransformInteractiveHint));
-            transformInteractive->setDefaultValue(true);
-            transformInteractive->setAllDimensionsEnabled(false);
-            transformPage->addKnob(transformInteractive);
-            knobs.push_back(transformInteractive);
-            transformInteractiveKnob = transformInteractive;
-        }
-
         KnobDoublePtr extraMatrix = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
         extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
         extraMatrix->setHintToolTip(tr(kRotoDrawableItemExtraMatrixParamHint));
@@ -2316,12 +2295,9 @@ public:
 
         // Off until a selection turns them on, as createPaintKnobs() makes every context knob.
         const KnobIPtr created[] = {
-            translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, transformInteractive, extraMatrix, resetTransform
+            translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, extraMatrix, resetTransform
         };
         for (const KnobIPtr& k : created) {
-            if (!k) {
-                continue;
-            }
             transformKnobs.push_back(k);
             k->setDefaultAllDimensionsEnabled(false);
         }

@@ -54,8 +54,6 @@
 #define kTransformNodeParamResetCenter "resetCenter"
 #define kTransformNodeParamCenterChanged "transformCenterChanged"
 #define kTransformNodeParamInteractOpen "transformInteractOpen"
-#define kTransformNodeParamInteractive "interactive"
-#define kTransformNodeParamHiDPI "hidpi"
 #define kTransformNodeParamInvert "invert"
 #define kTransformNodeParamMotionBlur "motionBlur"
 #define kTransformNodeParamDirectionalBlur "directionalBlur"
@@ -184,8 +182,6 @@ struct TransformOp {
     KnobButtonWPtr resetCenter;
     KnobBoolWPtr centerChanged;
     KnobBoolWPtr interactOpen;
-    KnobBoolWPtr interactive;
-    KnobBoolWPtr hiDPI;
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;

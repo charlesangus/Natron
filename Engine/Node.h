@@ -84,8 +84,7 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMixParamName "mix"
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"
-#define kWriteOIIOParamViewsSelector "viewsSelector"
-
+#define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
 
@@ -1469,7 +1468,20 @@ public:
      **/
     void replaceCustomDataInlabel(const QString & data);
 
+    /**
+     * @brief Shows the effect's getSublabel() in the node's label, on the main thread.
+     **/
+    void refreshSublabel();
+
+    /**
+     * @brief The text shown in parentheses after the node's name: the
+     * kNatronOfxParamStringSublabelName knob's value if the node has one, otherwise the
+     * effect's getSublabel().
+     **/
+    std::string getSublabel() const;
+
 private:
+    void showSublabel(const QString& sublabel);
 
     void restoreSublabel();
 

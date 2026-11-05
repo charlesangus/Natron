@@ -361,7 +361,6 @@ const char* const kTransformLinks[] = {
     "translate",
     "rotate",
     "scale",
-    "uniform",
     "skewX",
     "skewY",
     "skewOrder",

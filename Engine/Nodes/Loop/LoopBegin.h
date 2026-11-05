@@ -37,7 +37,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_LOOPBEGIN "fr.natron.LoopBegin"
+#define PLUGINID_NATRON_LOOPBEGIN "LoopBegin"
 #define PLUGIN_MAJOR_NATRON_LOOPBEGIN 1
 
 NATRON_NAMESPACE_ENTER

@@ -188,12 +188,12 @@ try:
 
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 700)
-        checker = app.createNode("net.sf.openfx.CheckerBoardPlugin")
+        checker = app.createNode("CheckerBoard")
         require(checker is not None, "created a CheckerBoard",
-                gt.plugin_problem("net.sf.openfx.CheckerBoardPlugin"))
+                gt.plugin_problem("CheckerBoard"))
         checker.setPosition(0, 0)
 
         def new_warp(x):
@@ -204,12 +204,12 @@ try:
             return node
 
         warp = new_warp(0)
-        roto_node = app.createNode("fr.inria.built-in.Roto")
-        require(roto_node is not None, "created a Roto", gt.plugin_problem("fr.inria.built-in.Roto"))
+        roto_node = app.createNode("Roto")
+        require(roto_node is not None, "created a Roto", gt.plugin_problem("Roto"))
         roto_node.setPosition(200, 300)
         require(roto_node.connectInput(0, checker), "connected the CheckerBoard to the Roto")
-        tracker_node = app.createNode("fr.inria.built-in.Tracker")
-        require(tracker_node is not None, "created a Tracker", gt.plugin_problem("fr.inria.built-in.Tracker"))
+        tracker_node = app.createNode("Tracker")
+        require(tracker_node is not None, "created a Tracker", gt.plugin_problem("Tracker"))
         tracker_node.setPosition(400, 0)
 
         roto = hold(warp.getRotoContext())

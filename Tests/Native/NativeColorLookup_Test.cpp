@@ -61,7 +61,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kColorLookupID = PLUGINID_NATRON_COLORLOOKUP;
-const int kOfxColorLookupMajor = 1;
 const int kNativeColorLookupMajor = PLUGIN_MAJOR_NATRON_COLORLOOKUP;
 const double kTime = 1.;
 
@@ -97,28 +96,22 @@ tableOf(const NodePtr& node)
     return node ? dynamic_cast<KnobParametric*>(node->getKnobByName(kColorLookupParamLookupTable).get()) : NULL;
 }
 
-// The same bends on every curve of whichever nodes exist: a lift in the master, different
-// shapes in red, green, blue and alpha, and a master point above 1.
+// The same bends on every curve: a lift in the master, different shapes in red, green, blue and
+// alpha, and a master point above 1.
 bool
 editCurves(const ParityPair& pair)
 {
     const double points[ColorLookup::eCurveCount][2] = { { 0.4, 0.62 }, { 0.5, 0.3 }, { 0.25, 0.45 }, { 0.6, 0.85 }, { 0.5, 0.65 } };
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
+    KnobParametric* table = tableOf(pair.native);
 
-    for (int n = 0; n < 2; ++n) {
-        if (!nodes[n]) {
-            continue;
-        }
-        KnobParametric* table = tableOf(nodes[n]);
-        EXPECT_TRUE(table != NULL);
-        if (!table) {
-            return false;
-        }
-        for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
-            EXPECT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonUserEdited, curve, points[curve][0], points[curve][1], eKeyframeTypeCubic));
-        }
-        EXPECT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonUserEdited, ColorLookup::eCurveMaster, 0.9, 1.3, eKeyframeTypeCubic));
+    EXPECT_TRUE(table != NULL);
+    if (!table) {
+        return false;
     }
+    for (int curve = 0; curve < ColorLookup::eCurveCount; ++curve) {
+        EXPECT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonUserEdited, curve, points[curve][0], points[curve][1], eKeyframeTypeCubic));
+    }
+    EXPECT_EQ(eStatusOK, table->addControlPoint(eValueChangedReasonUserEdited, ColorLookup::eCurveMaster, 0.9, 1.3, eKeyframeTypeCubic));
 
     return true;
 }
@@ -174,10 +167,9 @@ class NativeColorLookupTest
 protected:
     ParityPair makePair(bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kColorLookupID, kOfxColorLookupMajor, kNativeColorLookupMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kColorLookupID, kNativeColorLookupMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX ColorLookup is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -192,7 +184,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kColorLookupTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] ColorLookup " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -402,10 +393,8 @@ TEST_F(NativeColorLookupTest, NonPersistentColoursAndBackgroundControls)
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(knob->getIsPersistent()) << name;
     }
-    for (const char* name : { kColorLookupParamHasBackgroundInteract, kColorLookupParamShowRamp }) {
-        KnobIPtr knob = node->getKnobByName(name);
-        ASSERT_TRUE(bool(knob)) << name;
-        EXPECT_TRUE(knob->getIsSecret()) << name;
+    for (const char* name : { "hasBackgroundInteract", "showRamp" }) {
+        EXPECT_FALSE(bool(node->getKnobByName(name))) << name;
     }
     // The painter is installed with the knobs, so the display controls are shown; the histogram
     // button only works while the histogram is displayed.
@@ -452,7 +441,6 @@ TEST_F(NativeColorLookupTest, UnversionedRequestsGetTheNativeColorLookup)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeColorLookupMajor, unversioned->getMajorVersion());
-    EXPECT_FALSE(isPluginMajorRegistered(kColorLookupID, kOfxColorLookupMajor));
 }
 
 TEST_F(NativeColorLookupTest, RegisteredIdentity)

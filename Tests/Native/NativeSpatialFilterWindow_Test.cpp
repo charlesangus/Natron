@@ -292,8 +292,8 @@ TEST_F(NativeSpatialFilterWindowTest, ErodeDilateIsWindowAndMaskInvariant)
 {
     FilterCase c;
     c.name = "erode 6x-3";
-    c.pluginID = PLUGINID_NATRON_ERODE;
-    c.major = PLUGIN_MAJOR_NATRON_ERODE;
+    c.pluginID = PLUGINID_NATRON_ERODEDILATE;
+    c.major = PLUGIN_MAJOR_NATRON_ERODEDILATE;
     c.configure = [](const NodePtr& node) {
         return setKnobValues(node, kErodeDilateParamSize, { 6., -3. });
     };

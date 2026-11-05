@@ -64,7 +64,7 @@ try:
     pattern.setValue(MARKER)
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     usd.setPosition(0, 0)
     prune.setPosition(0, 100)

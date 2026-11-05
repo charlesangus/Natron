@@ -30,8 +30,6 @@
 #include <string>
 #include <vector>
 
-#include <ofxNatron.h>
-
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -95,19 +93,6 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
 {
     holder = knobHolder;
 
-    // Node.cpp shows this knob's value in parentheses next to the node's label.
-    {
-        KnobStringPtr knob = AppManager::createKnob<KnobString>(knobHolder, std::string(kNatronOfxParamStringSublabelName));
-        knob->setName(kNatronOfxParamStringSublabelName);
-        knob->setSecretByDefault(true);
-        knob->setDefaultAllDimensionsEnabled(false);
-        knob->setIsPersistent(false);
-        knob->setEvaluateOnChange(false);
-        knob->setAnimationEnabled(false);
-        knob->setDefaultValue(std::string("Luminance"));
-        page->addKnob(knob);
-        subLabel = knob;
-    }
     {
         KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(knobHolder, EffectInstance::tr("Key Source").toStdString());
         knob->setName(kKeyerParamKeySource);
@@ -288,6 +273,13 @@ Keyer::keyerRow(const KeyerOp::Params& params,
 }
 
 void
+Keyer::initializeKnobs()
+{
+    ImageNode<KeyerOp>::initializeKnobs();
+    refreshKeySourceDependents();
+}
+
+void
 Keyer::refreshKeySourceDependents()
 {
     const KeyerOp& o = op();
@@ -301,10 +293,7 @@ Keyer::refreshKeySourceDependents()
     if (math) {
         math->setSecret(index != (int)KeyerOp::eKeySourceLuminance);
     }
-    KnobStringPtr label = o.subLabel.lock();
-    if (label) {
-        label->setValue(source->getEntry(index).label);
-    }
+    setSublabel(source->getEntry(index).label);
 }
 
 bool

@@ -213,12 +213,12 @@ protected:
     }
 };
 
-// --- Grade (net.sf.openfx.GradePlugin) ---------------------------------------------------
+// --- Grade (Grade) ---------------------------------------------------
 
 TEST_F(ChannelSetRenderTest, GradeDefaultRowMatchesPluginMathAndMasksAlpha)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
 
     KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
@@ -239,7 +239,7 @@ TEST_F(ChannelSetRenderTest, GradeDefaultRowMatchesPluginMathAndMasksAlpha)
 TEST_F(ChannelSetRenderTest, GradeSetAllProcessesEveryPlane)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -262,7 +262,7 @@ TEST_F(ChannelSetRenderTest, GradeSetAllProcessesEveryPlane)
 TEST_F(ChannelSetRenderTest, GradeColorRSingleChannelTouchesOnlyR)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -287,7 +287,7 @@ TEST_F(ChannelSetRenderTest, GradeColorRSingleChannelTouchesOnlyR)
 TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -310,7 +310,7 @@ TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
 TEST_F(ChannelSetRenderTest, GradeDefaultRowNamesTheRgbaView)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -330,7 +330,7 @@ TEST_F(ChannelSetRenderTest, GradeDefaultRowNamesTheRgbaView)
 TEST_F(ChannelSetRenderTest, GradeOnRgbViewLeavesAlphaUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -353,7 +353,7 @@ TEST_F(ChannelSetRenderTest, GradeOnRgbViewLeavesAlphaUntouched)
 TEST_F(ChannelSetRenderTest, GradeOnAlphaViewGradesOnlyAlpha)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -379,7 +379,7 @@ TEST_F(ChannelSetRenderTest, GradeOnAlphaViewGradesOnlyAlpha)
 TEST_F(ChannelSetRenderTest, GradeOnRgbaOverAnRGBInputOutputsRGBA)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels, "flat-rgb-only.exr");
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels, "flat-rgb-only.exr");
     ASSERT_TRUE(bool(grade));
     ASSERT_TRUE(bool(channels));
 
@@ -407,13 +407,13 @@ TEST_F(ChannelSetRenderTest, GradeOnRgbaOverAnRGBInputOutputsRGBA)
 // the wrong one.
 TEST_F(ChannelSetRenderTest, GradeDisableKeyedPerFrameIsHonouredAtTheRenderedFrame)
 {
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr constant = createNode(QString::fromUtf8("Constant"));
     ASSERT_TRUE(bool(constant));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
     ASSERT_TRUE(color != NULL);
     color->setValues(0.25, 0.25, 0.25, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
     ASSERT_TRUE(bool(grade));
     connectNodes(constant, grade, 0, true);
     KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
@@ -474,7 +474,7 @@ class ChannelSetRenderUnPremultByTest
 protected:
     NodePtr createConstantIntoGrade(KnobChannelSelectPtr* unPremultBy)
     {
-        NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+        NodePtr constant = createNode(QString::fromUtf8("Constant"));
         if (!constant) {
             return NodePtr();
         }
@@ -484,7 +484,7 @@ protected:
         }
         color->setValues(1., 1., 1., 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-        NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+        NodePtr grade = createNode(QString::fromUtf8("Grade"));
         if (!grade) {
             return NodePtr();
         }
@@ -558,7 +558,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, GainIsUnPremultipliedByTheSelectedChanne
 TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
 {
     KnobChannelSetPtr specularChannels;
-    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &specularChannels);
+    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("Grade"), &specularChannels);
     ASSERT_TRUE(bool(halveSpecular));
     ASSERT_TRUE(bool(specularChannels));
     specularChannels->setLayer(0, "specular", NULL);
@@ -566,7 +566,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
     ASSERT_TRUE(halveMultiply != NULL);
     halveMultiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
     ASSERT_TRUE(bool(grade));
     connectNodes(halveSpecular, grade, 0, true);
 
@@ -600,7 +600,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
 TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnotherLayersChannel)
 {
     KnobChannelSetPtr specularChannels;
-    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &specularChannels);
+    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("Grade"), &specularChannels);
     ASSERT_TRUE(bool(halveSpecular));
     ASSERT_TRUE(bool(specularChannels));
     specularChannels->setLayer(0, "specular", NULL);
@@ -618,7 +618,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnother
     ASSERT_TRUE(bool(generatorLayer));
     generatorLayer->setLayer("depth");
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
     ASSERT_TRUE(bool(grade));
     connectNodes(generator, grade, 0, true);
     KnobChannelSetPtr gradeChannels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
@@ -653,7 +653,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnother
 TEST_F(ChannelSetRenderUnPremultByTest, SelectorListsEveryLayerOfTheSource)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
 
     KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
@@ -683,7 +683,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, SelectorListsEveryLayerOfTheSource)
 TEST_F(ChannelSetRenderUnPremultByTest, AMissingDivisorChannelFailsTheRender)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("Grade"), &channels);
     ASSERT_TRUE(bool(grade));
 
     KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
@@ -739,14 +739,14 @@ TEST_F(ChannelSetRenderTest, LastingOfxPluginHasNoPremultChanged)
     EXPECT_TRUE(denoise->getKnobByName("premultChanged").get() == NULL);
 }
 
-// --- Invert (net.sf.openfx.Invert) -------------------------------------------------------
+// --- Invert (Invert) -------------------------------------------------------
 
 // Unlike Grade/ColorCorrect/Multiply/Saturation, Invert's own quad defaults processA to true,
 // so its default row inverts alpha too instead of masking it.
 TEST_F(ChannelSetRenderTest, InvertDefaultRowMatchesPluginMath)
 {
     KnobChannelSetPtr channels;
-    NodePtr invert = createEffectOnReader(QString::fromUtf8("net.sf.openfx.Invert"), &channels);
+    NodePtr invert = createEffectOnReader(QString::fromUtf8("Invert"), &channels);
     ASSERT_TRUE(bool(invert));
 
     QTemporaryDir tmp;
@@ -763,7 +763,7 @@ TEST_F(ChannelSetRenderTest, InvertDefaultRowMatchesPluginMath)
 TEST_F(ChannelSetRenderTest, InvertSetAllProcessesEveryPlane)
 {
     KnobChannelSetPtr channels;
-    NodePtr invert = createEffectOnReader(QString::fromUtf8("net.sf.openfx.Invert"), &channels);
+    NodePtr invert = createEffectOnReader(QString::fromUtf8("Invert"), &channels);
     ASSERT_TRUE(bool(invert));
     ASSERT_TRUE(bool(channels));
 
@@ -783,7 +783,7 @@ TEST_F(ChannelSetRenderTest, InvertSetAllProcessesEveryPlane)
 TEST_F(ChannelSetRenderTest, InvertColorRSingleChannelTouchesOnlyR)
 {
     KnobChannelSetPtr channels;
-    NodePtr invert = createEffectOnReader(QString::fromUtf8("net.sf.openfx.Invert"), &channels);
+    NodePtr invert = createEffectOnReader(QString::fromUtf8("Invert"), &channels);
     ASSERT_TRUE(bool(invert));
     ASSERT_TRUE(bool(channels));
 
@@ -805,7 +805,7 @@ TEST_F(ChannelSetRenderTest, InvertColorRSingleChannelTouchesOnlyR)
 TEST_F(ChannelSetRenderTest, InvertSpecularRowLeavesColorAndDiffuseUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr invert = createEffectOnReader(QString::fromUtf8("net.sf.openfx.Invert"), &channels);
+    NodePtr invert = createEffectOnReader(QString::fromUtf8("Invert"), &channels);
     ASSERT_TRUE(bool(invert));
     ASSERT_TRUE(bool(channels));
 
@@ -822,12 +822,12 @@ TEST_F(ChannelSetRenderTest, InvertSpecularRowLeavesColorAndDiffuseUntouched)
     expectPlane(image, "specular.", 1.f, 1.f, 0.f);
 }
 
-// --- ColorCorrect (net.sf.openfx.ColorCorrectPlugin) -------------------------------------
+// --- ColorCorrect (ColorCorrect) -------------------------------------
 
 TEST_F(ChannelSetRenderTest, ColorCorrectDefaultRowMatchesPluginMathAndMasksAlpha)
 {
     KnobChannelSetPtr channels;
-    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("net.sf.openfx.ColorCorrectPlugin"), &channels);
+    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("ColorCorrect"), &channels);
     ASSERT_TRUE(bool(colorCorrect));
 
     KnobColor* masterGain = dynamic_cast<KnobColor*>(colorCorrect->getKnobByName("MasterGain").get());
@@ -848,7 +848,7 @@ TEST_F(ChannelSetRenderTest, ColorCorrectDefaultRowMatchesPluginMathAndMasksAlph
 TEST_F(ChannelSetRenderTest, ColorCorrectSetAllProcessesEveryPlane)
 {
     KnobChannelSetPtr channels;
-    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("net.sf.openfx.ColorCorrectPlugin"), &channels);
+    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("ColorCorrect"), &channels);
     ASSERT_TRUE(bool(colorCorrect));
     ASSERT_TRUE(bool(channels));
 
@@ -871,7 +871,7 @@ TEST_F(ChannelSetRenderTest, ColorCorrectSetAllProcessesEveryPlane)
 TEST_F(ChannelSetRenderTest, ColorCorrectColorRSingleChannelTouchesOnlyR)
 {
     KnobChannelSetPtr channels;
-    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("net.sf.openfx.ColorCorrectPlugin"), &channels);
+    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("ColorCorrect"), &channels);
     ASSERT_TRUE(bool(colorCorrect));
     ASSERT_TRUE(bool(channels));
 
@@ -896,7 +896,7 @@ TEST_F(ChannelSetRenderTest, ColorCorrectColorRSingleChannelTouchesOnlyR)
 TEST_F(ChannelSetRenderTest, ColorCorrectSpecularRowLeavesColorAndDiffuseUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("net.sf.openfx.ColorCorrectPlugin"), &channels);
+    NodePtr colorCorrect = createEffectOnReader(QString::fromUtf8("ColorCorrect"), &channels);
     ASSERT_TRUE(bool(colorCorrect));
     ASSERT_TRUE(bool(channels));
 
@@ -916,12 +916,12 @@ TEST_F(ChannelSetRenderTest, ColorCorrectSpecularRowLeavesColorAndDiffuseUntouch
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
 }
 
-// --- Multiply (net.sf.openfx.MultiplyPlugin) ---------------------------------------------
+// --- Multiply (Multiply) ---------------------------------------------
 
 TEST_F(ChannelSetRenderTest, MultiplyDefaultRowMatchesPluginMathAndMasksAlpha)
 {
     KnobChannelSetPtr channels;
-    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"), &channels);
+    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("Multiply"), &channels);
     ASSERT_TRUE(bool(multiplyNode));
 
     KnobColor* value = dynamic_cast<KnobColor*>(multiplyNode->getKnobByName("value").get());
@@ -942,7 +942,7 @@ TEST_F(ChannelSetRenderTest, MultiplyDefaultRowMatchesPluginMathAndMasksAlpha)
 TEST_F(ChannelSetRenderTest, MultiplySetAllProcessesEveryPlane)
 {
     KnobChannelSetPtr channels;
-    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"), &channels);
+    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("Multiply"), &channels);
     ASSERT_TRUE(bool(multiplyNode));
     ASSERT_TRUE(bool(channels));
 
@@ -965,7 +965,7 @@ TEST_F(ChannelSetRenderTest, MultiplySetAllProcessesEveryPlane)
 TEST_F(ChannelSetRenderTest, MultiplyColorRSingleChannelTouchesOnlyR)
 {
     KnobChannelSetPtr channels;
-    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"), &channels);
+    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("Multiply"), &channels);
     ASSERT_TRUE(bool(multiplyNode));
     ASSERT_TRUE(bool(channels));
 
@@ -990,7 +990,7 @@ TEST_F(ChannelSetRenderTest, MultiplyColorRSingleChannelTouchesOnlyR)
 TEST_F(ChannelSetRenderTest, MultiplySpecularRowLeavesColorAndDiffuseUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"), &channels);
+    NodePtr multiplyNode = createEffectOnReader(QString::fromUtf8("Multiply"), &channels);
     ASSERT_TRUE(bool(multiplyNode));
     ASSERT_TRUE(bool(channels));
 
@@ -1010,12 +1010,12 @@ TEST_F(ChannelSetRenderTest, MultiplySpecularRowLeavesColorAndDiffuseUntouched)
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
 }
 
-// --- Saturation (net.sf.openfx.SaturationPlugin) -----------------------------------------
+// --- Saturation (Saturation) -----------------------------------------
 
 TEST_F(ChannelSetRenderTest, SaturationDefaultRowMatchesPluginMathAndMasksAlpha)
 {
     KnobChannelSetPtr channels;
-    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.SaturationPlugin"), &channels);
+    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("Saturation"), &channels);
     ASSERT_TRUE(bool(saturationNode));
 
     KnobDouble* saturation = dynamic_cast<KnobDouble*>(saturationNode->getKnobByName("saturation").get());
@@ -1037,7 +1037,7 @@ TEST_F(ChannelSetRenderTest, SaturationDefaultRowMatchesPluginMathAndMasksAlpha)
 TEST_F(ChannelSetRenderTest, SaturationSetAllProcessesEveryPlane)
 {
     KnobChannelSetPtr channels;
-    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.SaturationPlugin"), &channels);
+    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("Saturation"), &channels);
     ASSERT_TRUE(bool(saturationNode));
     ASSERT_TRUE(bool(channels));
 
@@ -1063,7 +1063,7 @@ TEST_F(ChannelSetRenderTest, SaturationSetAllProcessesEveryPlane)
 TEST_F(ChannelSetRenderTest, SaturationColorRSingleChannelTouchesOnlyR)
 {
     KnobChannelSetPtr channels;
-    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.SaturationPlugin"), &channels);
+    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("Saturation"), &channels);
     ASSERT_TRUE(bool(saturationNode));
     ASSERT_TRUE(bool(channels));
 
@@ -1089,7 +1089,7 @@ TEST_F(ChannelSetRenderTest, SaturationColorRSingleChannelTouchesOnlyR)
 TEST_F(ChannelSetRenderTest, SaturationSpecularRowLeavesColorAndDiffuseUntouched)
 {
     KnobChannelSetPtr channels;
-    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("net.sf.openfx.SaturationPlugin"), &channels);
+    NodePtr saturationNode = createEffectOnReader(QString::fromUtf8("Saturation"), &channels);
     ASSERT_TRUE(bool(saturationNode));
     ASSERT_TRUE(bool(channels));
 
@@ -1110,7 +1110,7 @@ TEST_F(ChannelSetRenderTest, SaturationSpecularRowLeavesColorAndDiffuseUntouched
     expectPlane(image, "specular.", lumaBlue, lumaBlue, lumaBlue);
 }
 
-// --- CImgBlur (net.sf.cimg.CImgBlur) ------------------------------------------------------
+// --- CImgBlur (Blur) ------------------------------------------------------
 
 class ChannelSetRenderBlurTest
     : public ChannelSetRenderTest {
@@ -1120,7 +1120,7 @@ protected:
     // pixel, one in from the border, keeps its value while the Blur really renders.
     NodePtr createBlurOnReader(KnobChannelSetPtr* channels)
     {
-        NodePtr blur = createEffectOnReader(QString::fromUtf8("net.sf.cimg.CImgBlur"), channels);
+        NodePtr blur = createEffectOnReader(QString::fromUtf8("Blur"), channels);
         if (!blur) {
             return NodePtr();
         }
@@ -1228,7 +1228,7 @@ TEST_F(ChannelSetRenderBlurTest, MaskChannelAbsentFromConnectedMaskFailsThenClea
     ASSERT_EQ(std::string("Mask"), blur->getInputLabel(1));
 
     // The mask carries only Color, so diffuse.R cannot resolve against it.
-    NodePtr maskConstant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr maskConstant = createNode(QString::fromUtf8("Constant"));
     ASSERT_TRUE(bool(maskConstant));
     connectNodes(maskConstant, blur, 1, true);
 
@@ -1340,7 +1340,7 @@ TEST_F(ChannelSetRenderTest, KeyMixRChannelFromAAndGBAlphaFromBThroughTheLayerKn
     // flat-rgba-only.exr's Color (1,0,0,1) is identical to flat-three-layers.exr's, so scale it
     // down first: with A and B carrying the same values, a channel reading the wrong source
     // would go unnoticed.
-    NodePtr multiplyB = createNode(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"));
+    NodePtr multiplyB = createNode(QString::fromUtf8("Multiply"));
     ASSERT_TRUE(bool(multiplyB));
     KnobColor* multiplyValue = dynamic_cast<KnobColor*>(multiplyB->getKnobByName("value").get());
     ASSERT_TRUE(multiplyValue != NULL);
@@ -1354,7 +1354,7 @@ TEST_F(ChannelSetRenderTest, KeyMixRChannelFromAAndGBAlphaFromBThroughTheLayerKn
     connectNodes(readerB, multiplyB, 0, true);
     // B after the multiply: (0.5, 0, 0, 0.5).
 
-    NodePtr maskConstant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr maskConstant = createNode(QString::fromUtf8("Constant"));
     ASSERT_TRUE(bool(maskConstant));
     KnobColor* maskColor = dynamic_cast<KnobColor*>(maskConstant->getKnobByName("color").get());
     ASSERT_TRUE(maskColor != NULL);

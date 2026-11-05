@@ -8,7 +8,7 @@ layers:
 timeline: {current: 1}
 nodes:
   RotoPaint1:
-    plugin: "fr.inria.built-in.RotoPaint"
+    plugin: "RotoPaint"
     version: [1, 0]
     pos: [120, -80]
     knobs:

@@ -306,7 +306,7 @@ try:
         ai_enabled.setValue(True)
         require(ai_enabled.getValue(), "AI is enabled in Preferences")
         app = NatronEngine.natron.getActiveInstance()
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", lambda: gt.viewer_up(), STARTUP_TIMEOUT_S)
         require(ok, "the main window and viewer are on screen")
@@ -322,8 +322,8 @@ try:
         gt.close_all_panels()
 
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
-        roto = app.createNode("fr.inria.built-in.RotoPaint", -1, None, props)
-        require(roto is not None, "created a RotoPaint node", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
+        roto = app.createNode("RotoPaint", -1, None, props)
+        require(roto is not None, "created a RotoPaint node", gt.plugin_problem("RotoPaint"))
         roto.setPosition(0, 200)
         require(roto.getParam("model") is not None, "the Roto node has a model parameter")
         for name in ("objectThreshold", "objectDensity", "objectMinArea", "objectHoles", "objectSmooth",

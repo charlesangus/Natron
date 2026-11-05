@@ -259,8 +259,8 @@ if not plugin_ids:
     fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
 
 expected_plugins = {
-    "reader": "fr.inria.built-in.Read",
-    "writer": "fr.inria.built-in.Write",
+    "reader": "Read",
+    "writer": "Write",
     "Merge": "Merge",
     "USDRead": "USDRead",
 }

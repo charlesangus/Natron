@@ -42,7 +42,7 @@ class _FakeQKeySequence(object):
     NativeText = "NativeText"
 
 
-_GRADE_RESOURCE_ICON = ":/Resources/Images/NativeNodes/net.sf.openfx.GradePlugin.png"
+_GRADE_RESOURCE_ICON = ":/Resources/Images/NativeNodes/Grade.png"
 _FAKE_QT_RESOURCES = {_GRADE_RESOURCE_ICON}
 
 

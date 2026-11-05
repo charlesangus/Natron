@@ -147,7 +147,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("setup")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         rect = app.createNode("Rectangle")
         require(rect is not None, "create a Rectangle", gt.plugin_problem("Rectangle"))

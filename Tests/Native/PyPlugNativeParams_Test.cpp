@@ -78,11 +78,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Every ID a native node has taken over from an OpenFX plug-in. NativePluginList_Test owns the
-// authoritative list of what resolves to a native version; this one only decides which
-// createNode() blocks of a PyPlug are audited.
+// The native nodes whose createNode() blocks in a PyPlug are audited.
 const std::set<std::string>&
-retiredIds()
+auditedIds()
 {
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
@@ -96,18 +94,15 @@ retiredIds()
         PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_CONSTANT,
-        PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
         PLUGINID_NATRON_TRANSFORM,
-        PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_CROP,
         PLUGINID_NATRON_POSITION,
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_BLUR,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
-        PLUGINID_NATRON_ERODE,
-        PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_ERODEDILATE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_COLORLOOKUP,
     };
@@ -238,7 +233,7 @@ isPluginLoaded(const char* pluginID)
 }
 
 // fr.inria.SplitAndJoin is left out for the reason PyPlugInstantiate_Test gives; it creates no
-// retired node anyway.
+// audited node anyway.
 const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
@@ -299,7 +294,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         for (const auto& entry : audit.idOfNode) {
             const std::string& scriptName = entry.first;
             const std::string& expectedId = entry.second;
-            if (retiredIds().find(expectedId) == retiredIds().end()) {
+            if (auditedIds().find(expectedId) == auditedIds().end()) {
                 continue;
             }
             const std::map<std::string, NodePtr>::const_iterator nodeIt = innerByName.find(scriptName);
@@ -325,7 +320,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         }
     }
 
-    EXPECT_GT(nChecked, 0) << "no parameter of a retired node was audited";
+    EXPECT_GT(nChecked, 0) << "no parameter of a native node was audited";
     EXPECT_EQ(0, nMissing) << "Params the bundled PyPlugs set on a native node that the node lacks:\n"
                            << findings.str();
 }
@@ -449,7 +444,7 @@ TEST_F(PyPlugNativeParamsTest, FilterInnerNodesSavedUnPremultipliedFilterAsStore
             }
         }
         ASSERT_TRUE(bool(inner)) << pyPlug << "/" << scriptName;
-        EXPECT_EQ(std::string(PLUGINID_NATRON_DILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
+        EXPECT_EQ(std::string(PLUGINID_NATRON_ERODEDILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getUnPremultBySelector())) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getKnobByName(kUnPremultByKnobName))) << pyPlug << "/" << scriptName;
     }

@@ -37,15 +37,12 @@
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
 
-#define PLUGINID_NATRON_TRANSFORM "net.sf.openfx.TransformPlugin"
-#define PLUGIN_MAJOR_NATRON_TRANSFORM 2
-#define PLUGINID_NATRON_TRANSFORMMASKED "net.sf.openfx.TransformMaskedPlugin"
-#define PLUGIN_MAJOR_NATRON_TRANSFORMMASKED 2
+#define PLUGINID_NATRON_TRANSFORM "Transform"
+#define PLUGIN_MAJOR_NATRON_TRANSFORM 1
 
 #define kTransformNodeParamTranslate "translate"
 #define kTransformNodeParamRotate "rotate"
 #define kTransformNodeParamScale "scale"
-#define kTransformNodeParamUniform "uniform"
 #define kTransformNodeParamSkewX "skewX"
 #define kTransformNodeParamSkewY "skewY"
 #define kTransformNodeParamSkewOrder "skewOrder"
@@ -53,12 +50,10 @@
 #define kTransformNodeParamCenter "center"
 #define kTransformNodeParamResetCenter "resetCenter"
 #define kTransformNodeParamCenterChanged "transformCenterChanged"
-#define kTransformNodeParamInteractOpen "transformInteractOpen"
 #define kTransformNodeParamInvert "invert"
 #define kTransformNodeParamMotionBlur "motionBlur"
 #define kTransformNodeParamDirectionalBlur "directionalBlur"
 #define kTransformNodeParamShutter "shutter"
-#define kTransformNodeParamSrcClipChanged "srcClipChanged"
 
 NATRON_NAMESPACE_ENTER
 
@@ -76,44 +71,23 @@ struct TransformNodeParams {
 
 inline constexpr InputSpec kTransformInputs[] = {
     InputSpec { .label = "Source" },
-};
-
-inline constexpr InputSpec kTransformMaskedInputs[] = {
-    InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
 };
 
 inline constexpr NodeSpec kTransformNodeSpec = {
     .id = PLUGINID_NATRON_TRANSFORM,
     .label = "Transform",
-    .description = "Translate / Rotate / Scale a 2D image.\n"
-                   "This plugin concatenates transforms.\n"
+    .description = "Translate / Rotate / Scale a 2D image, with an optional mask.\n"
+                   "Without a mask and at a mix of 1, it concatenates with the transforms around it.\n"
                    "See also https://web.archive.org/web/20220627030948/http://www.opticalenquiry.com/nuke/index.php?title=Transform",
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM,
     .minorVersion = 0,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Transform.png",
     .inputs = kTransformInputs,
 };
 
-inline constexpr NodeSpec kTransformMaskedNodeSpec = {
-    .id = PLUGINID_NATRON_TRANSFORMMASKED,
-    .label = "TransformMasked",
-    .description = "Translate / Rotate / Scale a 2D image, with optional masking.\n"
-                   "This plugin concatenates transforms upstream.",
-    .grouping = PLUGIN_GROUP_TRANSFORM,
-    .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED,
-    .minorVersion = 0,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png",
-    .inputs = kTransformMaskedInputs,
-};
-
 inline constexpr ImagePipelineSpec kTransformPipeline = {
-    .layers = LayerPolicy::all(),
-    .op = OpKind::Resample,
-};
-
-inline constexpr ImagePipelineSpec kTransformMaskedPipeline = {
     .stages = { Stage::MaskMix },
     .layers = LayerPolicy::all(),
     .op = OpKind::Resample,
@@ -173,7 +147,6 @@ struct TransformOp {
     KnobDoubleWPtr translate;
     KnobDoubleWPtr rotate;
     KnobDoubleWPtr scale;
-    KnobBoolWPtr uniform;
     KnobDoubleWPtr skewX;
     KnobDoubleWPtr skewY;
     KnobChoiceWPtr skewOrder;
@@ -181,7 +154,6 @@ struct TransformOp {
     KnobDoubleWPtr center;
     KnobButtonWPtr resetCenter;
     KnobBoolWPtr centerChanged;
-    KnobBoolWPtr interactOpen;
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
@@ -203,34 +175,47 @@ static_assert(GpuResampleOp<TransformOp>);
 void resetTransformCenter(KnobHolder* holder, const TransformOp& op, const RectD& sourceRoD, double time);
 
 /**
- * @brief Transform: translates, rotates, scales and skews the image about a centre. It registers
- * under the openfx-misc TransformPlugin's ID one major above.
+ * @brief Transform: translates, rotates, scales and skews the image about a centre, with an
+ * optional Mask input and the maskInvert and mix knobs.
  *
- * It concatenates: the host is handed its pixel matrix so a chain of transforms is resampled
- * once, and it folds in the transform the host hands back with a concatenated source image.
- * TransformMasked (MASKED) is the same node with a Mask input and the maskInvert and mix knobs,
- * under the openfx-misc TransformMaskedPlugin's ID one major above; it applies concatenated
- * upstream transforms but does not offer its own. Where mask x mix is below 1 it shows its
- * immediate input, which under concatenation it resamples through the upstream transforms alone.
+ * It always applies the transforms the host concatenates into its source. It offers its own
+ * matrix, so a chain of transforms is resampled once, only while no mask is applied and mix is 1:
+ * where mask x mix is below 1 it shows its immediate input, which under concatenation it
+ * resamples through the upstream transforms alone.
  *
  * The class is not called Transform because that name is the engine's matrix namespace.
  **/
-template <bool MASKED>
-class TransformImageNode
-    : public ImageNode<TransformOp, MASKED ? kTransformMaskedNodeSpec : kTransformNodeSpec, MASKED ? kTransformMaskedPipeline : kTransformPipeline> {
-    using Base = ImageNode<TransformOp, MASKED ? kTransformMaskedNodeSpec : kTransformNodeSpec, MASKED ? kTransformMaskedPipeline : kTransformPipeline>;
+class TransformNode
+    : public ImageNode<TransformOp, kTransformNodeSpec, kTransformPipeline> {
+    using Base = ImageNode<TransformOp, kTransformNodeSpec, kTransformPipeline>;
 
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new TransformImageNode(node);
+        return new TransformNode(node);
     }
 
-    explicit TransformImageNode(NodePtr node);
+    explicit TransformNode(NodePtr node);
 
-    virtual ~TransformImageNode();
+    virtual ~TransformNode();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
+
+    /**
+     * @brief Whether the node offers its matrix: not while a mask is applied. Mix is decided per
+     * time, in getTransform().
+     **/
+    virtual bool getCanTransform() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The base's matrix, or the default reply while a mask is applied or mix is not 1.
+     **/
+    virtual StatusEnum getTransform(double time,
+                                    const RenderScale& renderScale,
+                                    bool draftRender,
+                                    ViewIdx view,
+                                    EffectInstancePtr* inputToTransform,
+                                    Transform::Matrix3x3* transform) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The transform knob values at (time, view).
@@ -273,21 +258,7 @@ private:
     void updateShutterEnabled();
 
     void updateClampEnabled(double time, ViewSpec view);
-
-    /**
-     * @brief Shows the uniform knob once it is checked or animated; with allowHiding, hides it
-     * otherwise, as the OpenFX plug-in does when an instance is created.
-     **/
-    void updateUniformVisibility(bool allowHiding);
-
-    KnobBoolWPtr _srcClipChanged;
 };
-
-extern template class TransformImageNode<false>;
-extern template class TransformImageNode<true>;
-
-using TransformNode = TransformImageNode<false>;
-using TransformMasked = TransformImageNode<true>;
 
 NATRON_NAMESPACE_EXIT
 

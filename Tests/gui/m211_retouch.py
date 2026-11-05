@@ -42,8 +42,8 @@ POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 420
 SETTLE_MS = 500
 PLUGIN_ID = "Retouch"
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-CHECKER_ID = "net.sf.openfx.CheckerBoardPlugin"
+CONSTANT_ID = "Constant"
+CHECKER_ID = "CheckerBoard"
 MAX_WIDTH = 1920
 MAX_HEIGHT = 1080
 COLUMN_HEADER = "Scale / Algorithm"
@@ -329,7 +329,7 @@ try:
         require(node.connectInput(0, constant), "Retouch reads the Constant")
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 400)
         require(viewer.connectInput(0, node), "the viewer shows Retouch")

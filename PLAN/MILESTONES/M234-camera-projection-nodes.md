@@ -113,7 +113,7 @@ their images through M233 - Live Node Textures. Survey:
   - verify: A future camera path round-trips without an immediate hard error and resolves when that camera appears; the dropdown remains available.
   - size: M
 
-- [ ] M234.P3.T3 — Support projected materials through material assignment
+- [x] M234.P3.T3 — Support projected materials through material assignment
   - files: USDProject3D output contract, Assign Material node compatibility, scene/material tests
   - approach: Make the projection output a normal assignable material that can be connected through the material-assignment workflow as well as directly to a geometry node.
   - verify: One projected material is assigned to selected prims through Assign Material and renders identically to the direct connection.
@@ -144,3 +144,4 @@ their images through M233 - Live Node Textures. Survey:
 - 2026-11-02 — Confirmed: no Use Alpha toggle on projections; an image smaller than its format gives a format-sized texture, transparent outside the image (user).
 - 2026-11-03 — M233 (502a5043e) merged in; Storm projection references re-recorded (c3bd90585; outside the projected frame is now transparent). Gate green. Round 3 UAT AppImage + steps built.
 - 2026-11-05 — UAT approved together with M233 - Live Node Textures; they merge as one PR (user).
+- 2026-11-05 — P3.T3 at 557363d09: USDAssignMaterial authors Geometry-space placement from the matched gprims, USDWrite bakes all three binding purposes. One geometry frame per material: prims apart follow the first and warn (PM; flagged to the user).

@@ -51,8 +51,6 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
   - verify: passes in CI debug and release.
   - size: M
 
-**Verification gate:** CI green; the image and the AppImage contain a Cycles delegate that the registry lists and instantiates; no duplicate library versions are loaded; image-size and build-time deltas are reported to the user.
-
 ## Phase 249.2: Deep-capable Cycles source (user, 2026-11-03)
 
 - [x] M249.P2.T1 — Build Cycles from Niik-l/cycles feature/cycles-deep
@@ -86,6 +84,8 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
   - approach: With `isBeach` and `isDunesB` deactivated there is no crash, but under llvmpipe RSS plateaus at 41 GB and nothing drew in over 10 minutes with the GUI blocked. Software GL exaggerates this. Real-GPU behaviour is untested. The scene has 13,313 Catmull-Clark meshes, 2.9 M PointInstancer instances and 26,659 Ptex references. Heaviness itself belongs with M327 - Heavy Scene Spike and M336 - Heavy Scene Acceptance.
   - verify: the island is run on RADV after M249.P4.T1 and T2, and the outcome is recorded; a crash reopens the fix.
   - size: M
+
+**Verification gate:** CI green; the image and the AppImage contain a Cycles delegate that the registry lists and instantiates; no duplicate library versions are loaded; image-size and build-time deltas are reported to the user.
 
 ## Decisions
 

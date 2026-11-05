@@ -55,8 +55,6 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
   - verify: passes in CI release; identical on rerun on the same host.
   - size: M
 
-**Verification gate:** CI green including the MoonRay test; a MoonRay USDRender comp renders headless with `NatronRenderer -w`; a rendered frame with its `depth.Z`, `normal` and `primId.id` views is shared with the user; Storm and Cycles references unchanged.
-
 ## Phase 252.2: MoonRay textures and Coding Errors (Lobby UAT, 2026-11-05)
 
 - [ ] M252.P2.T1 — Read plain jpg and png textures
@@ -79,6 +77,8 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
   - approach: Two `Attempted to get value of type 'TfToken' from empty VtValue` and one `MarkAllRprimsDirty ... requires emulation` per textured material, also on a one-material scene. Not traced. If the dirty call does nothing without emulation, material edits may not re-sync geometry, so check that as well.
   - verify: a one-material scene logs no Coding Error; a material edit visibly reaches the next MoonRay render.
   - size: M
+
+**Verification gate:** CI green including the MoonRay test; a MoonRay USDRender comp renders headless with `NatronRenderer -w`; a rendered frame with its `depth.Z`, `normal` and `primId.id` views is shared with the user; Storm and Cycles references unchanged.
 
 ## Decisions
 

@@ -59,8 +59,6 @@ M253 - Delegate Render Settings.
   - verify: passes on the strict runner and in CI release; rerun produces identical output on the same host.
   - size: M
 
-**Verification gate:** CI green including the Cycles test; a Cycles USDRender comp renders headless with `NatronRenderer -w`; a rendered frame and its `depth.Z`, `normal` and `primId.id` views are shared with the user; Storm references unchanged.
-
 ## Phase 251.2: UsdPreviewSurface translation (Lobby UAT, 2026-11-05)
 
 - [ ] M251.P2.T1 — Apply UsdUVTexture scale and bias, and route normals through a normal-map node
@@ -83,6 +81,8 @@ M253 - Delegate Render Settings.
   - approach: After M249.P3.T1 a material with no usable network falls back. Raise a node warning naming the material, as MoonRay's prim warning does.
   - verify: rendering the M249.P3.T1 fixture shows a warning on the node naming the material.
   - size: M
+
+**Verification gate:** CI green including the Cycles test; a Cycles USDRender comp renders headless with `NatronRenderer -w`; a rendered frame and its `depth.Z`, `normal` and `primId.id` views are shared with the user; Storm references unchanged.
 
 ## Decisions
 

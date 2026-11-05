@@ -38,17 +38,20 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/NativeBlurRange.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/GodRays.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -87,14 +90,27 @@ pixelRoD(const NodePtr& node)
     return rod.toPixelEnclosing(0, 1.);
 }
 
+RectI
+pixelRoDAt(const NodePtr& node,
+           unsigned int mipmapLevel)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    const StatusEnum stat = effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod);
+    EXPECT_NE(eStatusFailed, stat);
+
+    return rod.toPixelEnclosing(mipmapLevel, 1.);
+}
+
 bool
 renderRGBA(const NodePtr& node,
            const RectI& window,
-           RenderedPlane* plane)
+           RenderedPlane* plane,
+           unsigned int mipmapLevel = 0)
 {
     std::vector<RenderedPlane> planes;
     std::string error;
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error);
     EXPECT_TRUE(ok) << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
         return false;
@@ -187,6 +203,44 @@ protected:
         }
 
         return source;
+    }
+
+    // The parity source, offset so that its edges fall inside pixels below full scale, with noise
+    // for isolated extremes, far above display range.
+    NodePtr makeBrightSource()
+    {
+        NodePtr source = makeParitySource(3, 5);
+        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+        EXPECT_TRUE(bool(source) && bool(grade));
+        if (!source || !grade) {
+            return NodePtr();
+        }
+        setParitySourceNoise(source, true);
+        connectNodes(source, grade, 0, true);
+        EXPECT_TRUE(setKnobValues(grade, "multiply", std::vector<double>(4, kBlurRangeBrightMultiply)));
+
+        return grade;
+    }
+
+    NodePtr makeBrightRays(const NodePtr& source,
+                           const char* filter,
+                           bool blackOutside,
+                           bool takeMax)
+    {
+        NodePtr node = makeGodRays(source);
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
+        EXPECT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        EXPECT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1.3, 1.3 }));
+        EXPECT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 12. }));
+        EXPECT_TRUE(setKnobValues(node, kGodRaysParamTranslate, { 4.5, -3.25 }));
+        EXPECT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 9. }));
+        EXPECT_TRUE(setKnobValues(node, kGodRaysParamMax, { takeMax ? 1. : 0. }));
+
+        return node;
     }
 
     // A GodRays of source centred on the format's centre, with the bilinear filter, which copies
@@ -565,6 +619,101 @@ TEST_F(NativeGodRaysTest, SameBothWays)
     ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectSame("mask-mix");
+}
+
+// At render scales 0.5, 0.25 and 0.125 every pixel of the averaged copies of a bright source is
+// finite and within the source's range at that scale and zero, past it only by the filter's lobes.
+TEST_F(NativeGodRaysTest, RenderScalesKeepTheSourceRange)
+{
+    resetProject();
+    NodePtr source = makeBrightSource();
+    ASSERT_TRUE(bool(source));
+    for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
+        std::vector<float> input;
+        std::string error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        BlurRange range;
+        range.include(input);
+        ASSERT_GT(range.high, 100.f);
+        bool blackOutside = true;
+        for (const BlurRangeFilter& filter : kBlurRangeFilters) {
+            blackOutside = !blackOutside;
+            for (const bool takeMax : { false, true }) {
+                NodePtr node = makeBrightRays(source, filter.id, blackOutside, takeMax);
+                ASSERT_TRUE(bool(node));
+                std::vector<float> output;
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), eRenderSchedulerModeLegacy, true, &output, &error)) << error;
+                EXPECT_EQ(std::string(), blurRangeViolation(output, range, filter.lobes)) << filter.id << (takeMax ? " max" : "") << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel;
+            }
+        }
+    }
+}
+
+// Below full scale too a pixel does not depend on the window it is rendered in, so no read lands
+// outside what the node asked its input for.
+TEST_F(NativeGodRaysTest, TileMatchesFullFrameAtRenderScales)
+{
+    resetProject();
+    NodePtr source = makeBrightSource();
+    ASSERT_TRUE(bool(source));
+    for (const char* filter : { "cubic", "keys" }) {
+        for (const bool blackOutside : { true, false }) {
+            NodePtr node = makeBrightRays(source, filter, blackOutside, false);
+            ASSERT_TRUE(bool(node));
+            for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
+                const RectI rod = pixelRoDAt(node, mipmapLevel);
+                RenderedPlane whole;
+                ASSERT_TRUE(renderRGBA(node, rod, &whole, mipmapLevel));
+                const int w = std::max(1, rod.width() / 3);
+                const int h = std::max(1, rod.height() / 3);
+                const RectI tiles[] = { RectI(rod.x1 + w, rod.y1 + h, rod.x1 + 2 * w, rod.y1 + 2 * h), RectI(rod.x1, rod.y1, rod.x1 + w, rod.y1 + h), RectI(rod.x2 - w, rod.y2 - h, rod.x2, rod.y2) };
+                for (const RectI& tile : tiles) {
+                    RenderedPlane part;
+                    ASSERT_TRUE(renderRGBA(node, tile, &part, mipmapLevel));
+                    for (int y = tile.y1; y < tile.y2; ++y) {
+                        for (int x = tile.x1; x < tile.x2; ++x) {
+                            for (int c = 0; c < 4; ++c) {
+                                ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << filter << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel << " at (" << x << "," << y << ") channel " << c;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Zooming out over what was rendered at 100%: the input's cache then holds a full-scale image, only
+// partly rendered, from which the lower scale is downscaled.
+TEST_F(NativeGodRaysTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRange)
+{
+    resetProject();
+    NodePtr source = makeBrightSource();
+    ASSERT_TRUE(bool(source));
+    for (const RenderSchedulerModeEnum schedulerMode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        NodePtr node = makeBrightRays(source, "cubic", true, false);
+        ASSERT_TRUE(bool(node));
+        const RectI fullRoD = pixelRoDAt(node, 0);
+        const RectI quarter(fullRoD.x1 + fullRoD.width() / 4, fullRoD.y1 + fullRoD.height() / 4, fullRoD.x1 + fullRoD.width() / 2, fullRoD.y1 + fullRoD.height() / 2);
+        std::string error;
+        std::vector<float> input;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        BlurRange range;
+        range.include(input);
+        for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
+            ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+            range.include(input);
+        }
+        for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
+            appPTR->clearAllCaches();
+            std::vector<float> atFullScale;
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, schedulerMode, false, &atFullScale, &error)) << error;
+            std::vector<float> zoomedOut;
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), schedulerMode, false, &zoomedOut, &error)) << error;
+            EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << "mipmap " << mipmapLevel << ((schedulerMode == eRenderSchedulerModeLegacy) ? ", legacy" : ", task graph");
+        }
+        appPTR->clearAllCaches();
+    }
 }
 
 // Regression fixtures: rays from a scale and a rotation, tinted, with Gamma and Max, and through a

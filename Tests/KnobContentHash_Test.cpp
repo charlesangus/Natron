@@ -128,6 +128,22 @@ TEST_F(BaseTest, KnobContentHashFollowsKeyframes)
     EXPECT_EQ(noKeys, knob->getContentHash());
 }
 
+TEST_F(BaseTest, AnimatedKnobHashIgnoresStaticValue)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr a = makeDoubleKnob(node, "hashAnimatedA");
+    KnobDoublePtr b = makeDoubleKnob(node, "hashAnimatedB");
+    ASSERT_TRUE(bool(a) && bool(b));
+
+    b->setValue(7.);
+    EXPECT_NE(a->getContentHash(), b->getContentHash());
+
+    a->setValueAtTime(10, 3., ViewSpec::all(), 0);
+    b->setValueAtTime(10, 3., ViewSpec::all(), 0);
+    EXPECT_EQ(a->getContentHash(), b->getContentHash());
+}
+
 TEST_F(BaseTest, KnobContentHashFollowsExpression)
 {
     NodePtr node = createNode(_generatorPluginID);

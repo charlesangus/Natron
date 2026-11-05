@@ -110,27 +110,11 @@ public:
 
     void clearViewersLastRenderedStrokes();
 
-    void resetTransformCenter();
-
     void resetCloneTransformCenter();
 
     void resetTransformsCenter(bool doClone, bool doTransform);
 
-    void resetTransform();
-
     void resetCloneTransform();
-
-private:
-
-    void resetTransformInternal(const KnobDoublePtr& translate,
-                                const KnobDoublePtr& scale,
-                                const KnobDoublePtr& center,
-                                const KnobDoublePtr& rotate,
-                                const KnobDoublePtr& skewX,
-                                const KnobDoublePtr& skewY,
-                                const KnobBoolPtr& scaleUniform,
-                                const KnobChoicePtr& skewOrder,
-                                const KnobDoublePtr& extraMatrix);
 
 public:
     /**

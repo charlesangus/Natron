@@ -52,6 +52,7 @@ public:
     struct MenuAction {
         std::string id;
         std::string label;
+        bool enabled = true;
     };
 
     virtual ~RotoCurvePanelHook()

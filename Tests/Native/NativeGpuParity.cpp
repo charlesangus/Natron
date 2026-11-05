@@ -401,6 +401,7 @@ bool
 prepareFrame(const NodePtr& root,
              double time,
              const RectI& window,
+             unsigned int mipmapLevel,
              FrameRun* run,
              std::string* error)
 {
@@ -423,8 +424,9 @@ prepareFrame(const NodePtr& root,
                                        false /*draftMode*/,
                                        run->stats);
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-    const RectD rod(window.x1, window.y1, window.x2, window.y2);
-    if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, rod, root, *request) == eStatusFailed) {
+    const double toCanonical = 1 << mipmapLevel;
+    const RectD rod(window.x1 * toCanonical, window.y1 * toCanonical, window.x2 * toCanonical, window.y2 * toCanonical);
+    if (EffectInstance::computeRequestPass(time, ViewIdx(0), mipmapLevel, rod, root, *request) == eStatusFailed) {
         *error = "request pass failed";
 
         return false;
@@ -444,7 +446,7 @@ prepareFrame(const NodePtr& root,
                                               false /*draftMode*/,
                                               run->stats);
     run->context->setRequest(request);
-    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), mipmapLevel);
     if (run->graph.tasks.empty()) {
         *error = "empty graph";
 
@@ -590,7 +592,8 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                const RectI& window,
                double time,
                const GpuContextReady& onGpuContext,
-               const GpuFrameDone& onGpuFrame)
+               const GpuFrameDone& onGpuFrame,
+               unsigned int mipmapLevel)
 {
     EndToEndResult result;
     result.window = window;
@@ -612,7 +615,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         RegionBodyScope body(scheduler);
         appPTR->clearAllCaches();
         FrameRun run;
-        if (!prepareFrame(root, time, window, &run, &result.error)) {
+        if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
         placeOnGpu(&run, graph);
@@ -661,6 +664,10 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
+        result.cpuFallbackReasons = run.stats->getCpuFallbackReasons();
+#ifdef NATRON_HAVE_GPU
+        result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
+#endif
     }
     if (onGpuFrame) {
         onGpuFrame();
@@ -670,7 +677,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;
-        if (!renderNodePlanesDirect(root, time, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
+        if (!renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
             return result;
         }
         if (planes.size() != 1) {

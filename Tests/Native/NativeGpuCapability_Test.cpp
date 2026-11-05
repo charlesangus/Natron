@@ -82,6 +82,8 @@
 #include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -105,6 +107,7 @@
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -184,6 +187,9 @@ gpuCapableIds()
         PLUGINID_NATRON_BILATERAL,
         PLUGINID_NATRON_DIRBLUR,
         PLUGINID_NATRON_GODRAYS,
+        PLUGINID_NATRON_SPLINEWARP,
+        PLUGINID_NATRON_LOOPBEGIN,
+        PLUGINID_NATRON_LOOPEND,
         PLUGINID_NATRON_TIMEWARP,
         PLUGINID_NATRON_RETIME,
         PLUGINID_NATRON_CONTRASTTEXTURE,

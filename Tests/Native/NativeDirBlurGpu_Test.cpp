@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/NativeBlurRange.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 
@@ -434,4 +436,72 @@ TEST_F(NativeDirBlurGpuTest, GradeDirBlurGradeChainRunsAsOneRegion)
     ASSERT_EQ(result.cpu.size(), result.gpu.size());
     const ImageDiff diff = compareImages(result.cpu, result.gpu, kDirBlurTolerance);
     EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex;
+}
+
+// Below full scale, over the whole output and over a tile of it, the GPU matches the CPU on a
+// source far above display range, and every pixel of both is finite and within the source's range
+// at that scale and zero, past it only by the filter's lobes.
+TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderAtRenderScalesOverABrightSource)
+{
+    NodePtr source = makeParitySource(3, 5);
+    NodePtr bright = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(source) && bool(bright));
+    setParitySourceNoise(source, true);
+    connectNodes(source, bright, 0, true);
+    ASSERT_TRUE(setKnobValues(bright, "multiply", std::vector<double>(4, kBlurRangeBrightMultiply)));
+    // The same relative bound as the other cases; the absolute part is the position's rounding
+    // over the bright source's steepest step, where a sum can also cancel to near zero.
+    const ParityTolerance tolerance = ParityTolerance::make(1e-5 * kBlurRangeBrightMultiply, 1e-4);
+
+    const struct {
+        const char* id;
+        double lobes;
+    } filters[] = { { "cubic", kBlurRangeNoLobes }, { "keys", kBlurRangeLobes }, { "mitchell", kBlurRangeLobes } };
+    for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
+        for (const auto& filter : filters) {
+            for (const bool blackOutside : { true, false }) {
+                NodePtr node = makeDirBlur(bright, mode);
+                ASSERT_TRUE(bool(node));
+                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter.id)));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
+                EffectInstancePtr effect = node->getEffectInstance();
+                for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
+                    RectD rod;
+                    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod));
+                    const RectI whole = rod.toPixelEnclosing(mipmapLevel, 1.);
+                    const int w = std::max(1, whole.width() / 3);
+                    const int h = std::max(1, whole.height() / 3);
+                    const RectI windows[] = { whole, RectI(whole.x1 + w, whole.y1 + h, whole.x1 + 2 * w, whole.y1 + 2 * h) };
+
+                    std::vector<RenderedPlane> input;
+                    std::string error;
+                    ASSERT_TRUE(renderNodePlanesDirect(bright, kTime, ViewIdx(0), mipmapLevel, whole, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &input, &error)) << error;
+                    ASSERT_EQ(1u, input.size());
+                    BlurRange range;
+                    range.include(input.front().pixels);
+
+                    for (const RectI& window : windows) {
+                        const std::string name = std::string(mode) + std::string(", ") + filter.id + (blackOutside ? "" : " edge repeat") + ", mipmap " + std::to_string(mipmapLevel) + ((window == whole) ? "" : ", tile");
+                        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ bright, node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
+                        if (result.skipped) {
+                            return;
+                        }
+                        ASSERT_TRUE(result.ok) << name << ": " << result.error;
+                        EXPECT_TRUE(result.ranInRegion(node)) << name;
+                        EXPECT_EQ(1u, result.gpuTasksPerNode.count(node->getScriptName_mt_safe())) << name << ": the region fell back to the CPU";
+                        ASSERT_EQ(result.cpu.size(), result.gpu.size()) << name;
+                        const ImageDiff diff = compareImages(result.cpu, result.gpu, tolerance);
+                        EXPECT_GT(diff.compared, 0u) << name;
+                        EXPECT_EQ(0u, diff.mismatches) << name << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+                        EXPECT_EQ(std::string(), blurRangeViolation(result.cpu, range, filter.lobes)) << name << ", CPU";
+                        EXPECT_EQ(std::string(), blurRangeViolation(result.gpu, range, filter.lobes)) << name << ", GPU";
+                    }
+                }
+            }
+        }
+    }
 }

@@ -29,9 +29,11 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -60,6 +62,9 @@ struct SceneLayerEdit {
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;
+    // What layer composes from outside the stack, such as the stack layer of another input it
+    // references (createStackLayer()): the author sets it, and the layer's entry holds it.
+    std::shared_ptr<const SceneLayerDependencies>* dependencies = nullptr;
 };
 
 /**
@@ -229,6 +234,17 @@ bool reparentRoots(const SceneReparentArgs& args,
                    std::string* errorMessage);
 
 /**
+ * @brief An anonymous, read-only layer sublayering input's stack, strongest first, and carrying
+ * the stage metadata its layers author: a layer of one node's stack can reference or load as a
+ * payload a prim of another input's composed scene through it, every layer of that input
+ * included. Whatever holds a layer referencing it must hold it and input too
+ * (SceneLayerEdit::dependencies), as nothing else keeps an anonymous layer alive. Null when input
+ * is empty or the layer cannot be created.
+ **/
+PXR_NS::SdfLayerRefPtr createStackLayer(const ScenePayload& input,
+                                        const std::string& tag);
+
+/**
  * @brief The payload's layers, weakest first.
  **/
 std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
@@ -313,6 +329,30 @@ double frameToTimeCode(const ScenePayload& payload,
                        double framesPerSecond);
 
 /**
+ * @brief Parses text as the USD path expression a prim selector holds (SdfPathExpression): paths
+ * whose names may hold glob wildcards (/World/*, /World/B?x), // for any depth (/World//*,
+ * //*Light*), predicates in braces ({isa:Mesh}), and the set operators: whitespace or + for union,
+ * & for intersection, - for difference, ~ for complement, with parentheses. Blank text is the empty
+ * expression, which selects nothing. Returns false with *errorMessage naming the failure when
+ * text does not parse, holds a relative path, or references a collection (%name), which a node's
+ * selector has nothing to resolve against.
+ **/
+bool parsePrimExpression(const std::string& text,
+                         PXR_NS::SdfPathExpression* expression,
+                         std::string* errorMessage);
+
+/**
+ * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
+ * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
+ * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
+ * parse; blank text selects nothing.
+ **/
+bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& expression,
+                 std::vector<PXR_NS::SdfPath>* paths,
+                 std::string* errorMessage);
+
+/**
  * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up
  * axis: +90 for Y to Z, -90 for Z to Y, 0 when the axes match or correctUpAxis is off.
  **/
@@ -340,6 +380,28 @@ double getMetricsCorrectionScale(const SceneMetricsCorrection& correction);
 std::size_t authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
                                     const PXR_NS::UsdStageRefPtr& source,
                                     const SceneMetricsCorrection& correction);
+
+/**
+ * @brief Records the node that authored the layers of payload, its top layer alone when topOnly,
+ * for authoringNodeOf(). Holds neither the layers nor the node; a layer re-recorded keeps its
+ * latest owner. MT-safe.
+ **/
+void setLayerOwner(const ScenePayload& payload,
+                   const NodePtr& owner,
+                   bool topOnly);
+
+// The node recorded as layer's author, or null.
+NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
+
+/**
+ * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
+ * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
+ * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty
+ * for a fallback.
+ **/
+NodePtr authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                        PXR_NS::UsdTimeCode time,
+                        std::string* layerIdentifier);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

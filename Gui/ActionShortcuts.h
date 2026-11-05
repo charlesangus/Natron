@@ -440,6 +440,12 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DTogglePivot "toggleTransformPivot"
 #define kShortcutDescActionViewer3DTogglePivot "Toggle Selection Centre/Current Prim Pivot"
 
+#define kShortcutIDActionViewer3DSetSelectionOnNode "setSelectionOnCurrentNode"
+#define kShortcutDescActionViewer3DSetSelectionOnNode "Set Selection on Current Node"
+
+#define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
+#define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

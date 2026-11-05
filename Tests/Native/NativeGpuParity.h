@@ -184,6 +184,11 @@ struct EndToEndResult {
     int uploads = 0;
     int downloads = 0;
 
+    // The forced context's pool peak (live plus pooled bytes) over this frame, the pool being new to it.
+    unsigned long long poolPeakBytes = 0;
+    // Why tasks of the GPU frame were moved back to the CPU, with how many.
+    std::map<std::string, int> cpuFallbackReasons;
+
     bool ranInRegion(const NodePtr& node) const;
 };
 
@@ -199,13 +204,14 @@ typedef std::function<void()> GpuFrameDone;
 // Renders `root` over `window` at `time` twice. First as a frame of the render scheduler with a
 // forced GPU context, with every node of `graph` whose effect accepts the task on the GPU, as
 // regions, a run of raw-reading tasks all or nothing as a render places it. Then on the CPU under
-// a GpuPlacementOffGuard.
+// a GpuPlacementOffGuard. `window` is in pixels at `mipmapLevel`.
 EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const NodePtr& root,
                               const RectI& window,
                               double time = 1.,
                               const GpuContextReady& onGpuContext = GpuContextReady(),
-                              const GpuFrameDone& onGpuFrame = GpuFrameDone());
+                              const GpuFrameDone& onGpuFrame = GpuFrameDone(),
+                              unsigned int mipmapLevel = 0);
 
 NATRON_NAMESPACE_EXIT
 

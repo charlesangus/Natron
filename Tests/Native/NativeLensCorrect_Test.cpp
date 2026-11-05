@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -70,7 +71,6 @@ const double kTime = 1.;
 const char* const kCanon5D3 = "Canon EOS 5D Mark III";
 const char* const kCanon70200 = "Canon EF 70-200mm f/2.8L IS II USM";
 
-// A copy of the database's lens, and the camera's crop factor.
 std::shared_ptr<lfLens>
 findLens(const char* maker,
          const char* model,
@@ -148,8 +148,28 @@ request(float focal,
     return r;
 }
 
-// The lfModifier darktable's enables give, scaled by the profile's own scale (darktable's autoscale
-// runs with every requested correction, where EnableScaling(0) would see only those before it).
+// lfModifier's auto scale with every requested correction enabled, as darktable asks for it, where
+// EnableScaling(0) would see only those enabled before it.
+float
+lensfunAutoScale(const lfLens& lens,
+                 const LensCorrectProfile::Request& r)
+{
+    lfModifier modifier(&lens, r.focal, r.crop, r.width, r.height, LF_PF_F32, r.reverse);
+
+    if (r.distortion) {
+        modifier.EnableDistortionCorrection();
+    }
+    modifier.EnableProjectionTransform((lfLensType)r.targetGeometry);
+    if (r.tca) {
+        modifier.EnableTCACorrection();
+    }
+    if (r.vignetting) {
+        modifier.EnableVignettingCorrection(r.aperture, r.distance);
+    }
+
+    return modifier.GetAutoScale(r.reverse);
+}
+
 std::unique_ptr<lfModifier>
 oracle(const lfLens& lens,
        const LensCorrectProfile::Request& r)
@@ -160,7 +180,7 @@ oracle(const lfLens& lens,
         modifier->EnableDistortionCorrection();
     }
     modifier->EnableProjectionTransform((lfLensType)r.targetGeometry);
-    modifier->EnableScaling((r.scale == 0.f) ? LensCorrectProfile::autoScale(lens, r) : r.scale);
+    modifier->EnableScaling((r.scale == 0.f) ? lensfunAutoScale(lens, r) : r.scale);
     if (r.tca) {
         modifier->EnableTCACorrection();
     }
@@ -183,8 +203,6 @@ nearlyEqual(float expected,
     return std::fabs(expected - actual) <= tolerance * std::max(1.f, std::fabs(expected));
 }
 
-// The profile maps a 13 x 9 grid over the image, edges included, as lfModifier does, and gives
-// the same vignetting gain.
 void
 expectProfileMatches(const lfLens& lens,
                      const LensCorrectProfile::Request& r,
@@ -224,13 +242,14 @@ expectProfileMatches(const lfLens& lens,
 bool
 renderRGBA(const NodePtr& node,
            const RectI& window,
-           RenderedPlane* plane)
+           RenderedPlane* plane,
+           unsigned mipmapLevel = 0)
 {
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, layers, &planes, &error);
     EXPECT_TRUE(ok) << node->getScriptName() << ": " << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
         return false;
@@ -246,6 +265,43 @@ pixelAt(const RenderedPlane& plane,
         int y)
 {
     return &plane.pixels[((std::size_t)(y - plane.window.y1) * plane.window.width() + (x - plane.window.x1)) * 4];
+}
+
+std::size_t
+nonFinitePixels(const RenderedPlane& plane)
+{
+    return (std::size_t)std::count_if(plane.pixels.begin(), plane.pixels.end(), [](float v) {
+        return !std::isfinite(v);
+    });
+}
+
+RectD
+regionOf(const NodePtr& node,
+         unsigned mipmapLevel = 0)
+{
+    const EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+
+    EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod, &isProjectFormat));
+
+    return rod;
+}
+
+bool
+hasColourIn(const RenderedPlane& plane,
+            const RectI& area)
+{
+    for (int y = std::max(area.y1, plane.window.y1); y < std::min(area.y2, plane.window.y2); ++y) {
+        for (int x = std::max(area.x1, plane.window.x1); x < std::min(area.x2, plane.window.x2); ++x) {
+            const float* p = pixelAt(plane, x, y);
+            if ((p[0] != 0.f) || (p[1] != 0.f) || (p[2] != 0.f)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 std::string
@@ -343,7 +399,6 @@ protected:
         return node;
     }
 
-    // A LensCorrect with the 70-200 at 100 mm, f/2.8, typed in.
     NodePtr makeCanon(const NodePtr& input)
     {
         NodePtr node = makeLensCorrect(input);
@@ -356,6 +411,27 @@ protected:
 
         return node;
     }
+
+    // A Source reaching 16 pixels past a 32 x 24 format on the left and right, 12 below and above.
+    NodePtr makeOverscanSource()
+    {
+        getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2, "nativeLensCorrect32x24", 1.));
+        NodePtr source = makeSource();
+        if (source) {
+            setParitySourceOrigin(source, -kParitySourceWidth / 4, -kParitySourceHeight / 4);
+        }
+
+        return source;
+    }
+
+    void setManualScale(const NodePtr& node,
+                        const char* mode,
+                        double scale)
+    {
+        EXPECT_TRUE(setKnobValue(node, kLensCorrectParamMode, std::string(mode)));
+        EXPECT_TRUE(setKnobValues(node, kLensCorrectParamAutoScale, { 0. }));
+        EXPECT_TRUE(setKnobValues(node, kLensCorrectParamScale, { scale }));
+    }
 };
 
 TEST_F(NativeLensCorrectTest, RegisteredIdentity)
@@ -363,7 +439,6 @@ TEST_F(NativeLensCorrectTest, RegisteredIdentity)
     expectNativeIdentity(PLUGINID_NATRON_LENSCORRECT, PLUGIN_MAJOR_NATRON_LENSCORRECT, "LensCorrect");
 }
 
-// darktable's lens correction controls, each with a knob.
 TEST_F(NativeLensCorrectTest, EveryControlHasAKnob)
 {
     resetProject();
@@ -481,10 +556,15 @@ TEST_F(NativeLensCorrectTest, AutoScaleKeepsTheEdgesInside)
     ASSERT_TRUE(bool(lens));
     LensCorrectProfile::Request r = request(70.f, crop, false);
     r.scale = 0.f;
+    // Lensfun keeps a margin of 0.2% of the radius, which is under a pixel at this size.
+    r.width = 600;
+    r.height = 400;
+    EXPECT_FLOAT_EQ(lensfunAutoScale(*lens, r), LensCorrectProfile::autoScale(*lens, r));
     expectProfileMatches(*lens, r, "70-200 auto scale");
     const LensCorrectProfile::Profile profile = LensCorrectProfile::build(*lens, r);
     const float slack = 1.f;
-    for (int i = 0; i < 2 * (r.width + r.height); i += 7) {
+    float closest = std::numeric_limits<float>::infinity();
+    for (int i = 0; i < 2 * (r.width + r.height); ++i) {
         float x, y;
         if (i < r.width) {
             x = (float)i;
@@ -507,7 +587,383 @@ TEST_F(NativeLensCorrectTest, AutoScaleKeepsTheEdgesInside)
             EXPECT_GE(out[2 * c + 1], -slack) << x << ", " << y;
             EXPECT_LE(out[2 * c + 1], r.height - 1 + slack) << x << ", " << y;
         }
+        closest = std::min({ closest, out[2], r.width - 1 - out[2], out[3], r.height - 1 - out[3] });
     }
+    // Not scaled further than it takes: an edge still reaches the boundary.
+    EXPECT_LE(closest, 1.5f);
+}
+
+TEST_F(NativeLensCorrectTest, VignettingGainSurvivesLeavingTheCalibration)
+{
+    LensCorrectProfile::Profile profile;
+    const float huge = 1.6e16f;
+
+    profile.vignetting = LensCorrectProfile::VignettingOp::Devignette;
+    profile.vignettingTerms[0] = -1.f;
+    EXPECT_FLOAT_EQ(1.f / 0.75f, profile.vignettingGain(0.5f, 0.f));
+    // The falloff at zero, then negative.
+    EXPECT_FLOAT_EQ(1.f, profile.vignettingGain(1.f, 0.f));
+    EXPECT_FLOAT_EQ(1.f, profile.vignettingGain(2.f, 0.f));
+    profile.vignetting = LensCorrectProfile::VignettingOp::Vignette;
+    EXPECT_FLOAT_EQ(0.75f, profile.vignettingGain(0.5f, 0.f));
+    EXPECT_FLOAT_EQ(0.f, profile.vignettingGain(2.f, 0.f));
+
+    // r^4 and r^6 overflow with opposite signs.
+    profile.vignettingTerms[0] = 1.f;
+    profile.vignettingTerms[1] = -1.f;
+    profile.vignettingTerms[2] = 1.f;
+    for (LensCorrectProfile::VignettingOp op : { LensCorrectProfile::VignettingOp::Devignette, LensCorrectProfile::VignettingOp::Vignette }) {
+        profile.vignetting = op;
+        EXPECT_FLOAT_EQ(1.f, profile.vignettingGain(huge, huge));
+        EXPECT_FLOAT_EQ(1.f, profile.vignettingGain(std::numeric_limits<float>::quiet_NaN(), 0.f));
+    }
+}
+
+// Scaled far down, the corners of a fisheye target lie past 90 degrees, where lensfun answers kHuge.
+TEST_F(NativeLensCorrectTest, HugePositionsRenderFinite)
+{
+    float crop = 0.f;
+    std::shared_ptr<lfLens> lens = findLens("Canon", kCanon5D3, kCanon70200, &crop);
+    ASSERT_TRUE(bool(lens));
+    LensCorrectProfile::Request r = request(100.f, crop, false);
+    r.width = kParitySourceWidth;
+    r.height = kParitySourceHeight;
+    r.targetGeometry = LF_FISHEYE;
+    r.scale = 0.1f;
+    const LensCorrectProfile::Profile profile = LensCorrectProfile::build(*lens, r);
+    float corner[6];
+    profile.map(0.f, 0.f, corner);
+    // kHuge, or past float's range once it has been through the distortion polynomial.
+    ASSERT_FALSE(std::isnan(corner[2]));
+    ASSERT_GE(std::fabs(corner[2]), 1e15f);
+    EXPECT_TRUE(std::isfinite(profile.vignettingGain(corner[2], corner[3])));
+
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryFisheye)));
+    setManualScale(node, kLensCorrectModeCorrect, 0.1);
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    for (double blackOutside : { 1., 0. }) {
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside }));
+        RenderedPlane out;
+        ASSERT_TRUE(renderRGBA(node, window, &out));
+        EXPECT_EQ(0u, nonFinitePixels(out)) << "black outside " << blackOutside;
+        const RectD rod = regionOf(node);
+        EXPECT_FALSE(rod.isNull());
+        for (double edge : { rod.x1, rod.y1, rod.x2, rod.y2 }) {
+            EXPECT_LT(std::fabs(edge), 1e10) << "black outside " << blackOutside;
+        }
+    }
+}
+
+// Vignetting is evaluated at Source positions well past the frame's corner.
+TEST_F(NativeLensCorrectTest, OverscanSourceRendersFinite)
+{
+    resetProject();
+    NodePtr source = makeOverscanSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+
+    const RectD sourceRoD = regionOf(source);
+    const RectD rod = regionOf(node);
+    EXPECT_LE(rod.x1, sourceRoD.x1);
+    EXPECT_LE(rod.y1, sourceRoD.y1);
+    EXPECT_GE(rod.x2, sourceRoD.x2);
+    EXPECT_GE(rod.y2, sourceRoD.y2);
+
+    const RectI window = rod.toPixelEnclosing(0u, 1.);
+    RenderedPlane out;
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    EXPECT_EQ(0u, nonFinitePixels(out));
+    EXPECT_TRUE(hasColourIn(out, RectI(window.x1, window.y1, 0, window.y2)));
+}
+
+// Output pixels of a mipmap level average the scale 1 pixels they cover, a half pixel of error at the
+// level being several times the tolerance on the Source's ramps. The Source's own level is taken out:
+// it evaluates each level's pixel off its centre.
+TEST_F(NativeLensCorrectTest, ScaledRendersMatchScaleOne)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceNoise(source, false);
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+    const RectI fullWindow = paritySourceWindow(source, kTime, 0);
+    RenderedPlane sourceFull;
+    ASSERT_TRUE(renderRGBA(source, fullWindow, &sourceFull));
+
+    const auto boxAverage = [](const RenderedPlane& plane, const RectI& box, int channel) {
+        float sum = 0.f;
+        for (int y = box.y1; y < box.y2; ++y) {
+            for (int x = box.x1; x < box.x2; ++x) {
+                sum += pixelAt(plane, x, y)[channel];
+            }
+        }
+
+        return sum / (float)box.area();
+    };
+    for (const char* mode : { kLensCorrectModeCorrect, kLensCorrectModeDistort }) {
+        ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMode, std::string(mode)));
+        RenderedPlane full;
+        ASSERT_TRUE(renderRGBA(node, fullWindow, &full));
+        EXPECT_EQ(0u, nonFinitePixels(full)) << mode;
+        for (unsigned mip : { 1u, 2u }) {
+            const int step = 1 << mip;
+            const float tolerance = 0.01f * step / 2;
+            const int border = 4 * step;
+            const RectI window = paritySourceWindow(source, kTime, mip);
+            RenderedPlane scaled, sourceScaled;
+            ASSERT_TRUE(renderRGBA(node, window, &scaled, mip));
+            ASSERT_TRUE(renderRGBA(source, window, &sourceScaled, mip));
+            EXPECT_EQ(0u, nonFinitePixels(scaled)) << mode << " mip " << mip;
+            int compared = 0;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x) {
+                    const RectI covered(x * step, y * step, (x + 1) * step, (y + 1) * step);
+                    if ((covered.x1 < fullWindow.x1 + border) || (covered.y1 < fullWindow.y1 + border) || (covered.x2 > fullWindow.x2 - border) || (covered.y2 > fullWindow.y2 - border)) {
+                        continue;
+                    }
+                    ++compared;
+                    for (int c = 0; c < 3; ++c) {
+                        const float sourceOffset = pixelAt(sourceScaled, x, y)[c] - boxAverage(sourceFull, covered, c);
+                        ASSERT_NEAR(boxAverage(full, covered, c) + sourceOffset, pixelAt(scaled, x, y)[c], tolerance) << mode << " mip " << mip << " at " << x << ", " << y << " channel " << c;
+                    }
+                }
+            }
+            EXPECT_GT(compared, 0) << mode << " mip " << mip;
+        }
+    }
+}
+
+// Outside the box the map lands outside the Source, so nothing the model can show is cut off.
+TEST_F(NativeLensCorrectTest, OutputBoxBoundsTheImageOfTheSource)
+{
+    struct Case {
+        const char* what;
+        const char* maker;
+        const char* camera;
+        const char* lens;
+        float focal;
+        int geometry;
+    };
+    const Case cases[] = {
+        { "ptlens", "Canon", kCanon5D3, kCanon70200, 100.f, LF_UNKNOWN },
+        { "poly3", "Fujifilm", "X-Pro2", "XF50mmF2 R WR", 50.f, LF_UNKNOWN },
+        { "fisheye to rectilinear", "Canon", "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16.f, LF_RECTILINEAR },
+        { "fisheye to equisolid", "Canon", "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16.f, LF_FISHEYE_EQUISOLID },
+    };
+    const auto check = [](const lfLens& lens, const LensCorrectProfile::Request& r, const std::string& what) {
+        const float w = (float)r.width;
+        const float h = (float)r.height;
+        const LensCorrectProfile::MappedBox box = LensCorrectProfile::outputBox(lens, r, -0.5, -0.5, w - 0.5, h - 0.5);
+        ASSERT_TRUE(box.any) << what;
+        if (!box.complete) {
+            return;
+        }
+        const LensCorrectProfile::Profile profile = LensCorrectProfile::build(lens, r);
+        const float margin = 2.f;
+        const int steps = 64;
+        for (int i = 0; i <= steps; ++i) {
+            const float across = (float)box.x1 - margin + (float)(box.x2 - box.x1 + 2 * margin) * i / steps;
+            const float down = (float)box.y1 - margin + (float)(box.y2 - box.y1 + 2 * margin) * i / steps;
+            const float points[4][2] = {
+                { across, (float)box.y1 - margin },
+                { across, (float)box.y2 + margin },
+                { (float)box.x1 - margin, down },
+                { (float)box.x2 + margin, down },
+            };
+            for (const auto& point : points) {
+                float out[6];
+                profile.map(point[0], point[1], out);
+                const bool outside = !std::isfinite(out[2]) || !std::isfinite(out[3]) || (out[2] < -0.5f) || (out[2] > w - 0.5f) || (out[3] < -0.5f) || (out[3] > h - 0.5f);
+                EXPECT_TRUE(outside) << what << " at " << point[0] << ", " << point[1] << " maps to " << out[2] << ", " << out[3];
+            }
+        }
+    };
+    for (const Case& c : cases) {
+        float crop = 0.f;
+        std::shared_ptr<lfLens> lens = findLens(c.maker, c.camera, c.lens, &crop);
+        ASSERT_TRUE(bool(lens)) << c.what;
+        for (bool reverse : { false, true }) {
+            for (float scale : { 0.f, 0.7f, 1.f, 1.5f }) {
+                LensCorrectProfile::Request r = request(c.focal, crop, reverse);
+                r.targetGeometry = c.geometry;
+                r.scale = scale;
+                check(*lens, r, std::string(c.what) + (reverse ? " distort" : " correct") + " scale " + std::to_string(scale));
+            }
+        }
+    }
+
+    // Correcting through ACM has no opposite step, distorting no ACM step at all.
+    std::shared_ptr<lfLens> acm = acmLens();
+    LensCorrectProfile::Request r = request(50.f, 1.f, false);
+    r.scale = 1.f;
+    check(*acm, r, "ACM correct");
+    const LensCorrectProfile::MappedBox corrected = LensCorrectProfile::outputBox(*acm, r, -0.5, -0.5, r.width - 0.5, r.height - 0.5);
+    EXPECT_GT(std::fabs(corrected.x1 + 0.5), 1.);
+    r.reverse = true;
+    const LensCorrectProfile::MappedBox distorted = LensCorrectProfile::outputBox(*acm, r, -0.5, -0.5, r.width - 0.5, r.height - 0.5);
+    EXPECT_NEAR(-0.5, distorted.x1, 1e-2);
+    EXPECT_NEAR(r.width - 0.5, distorted.x2, 1e-2);
+}
+
+// Scale 1.5 correcting and 0.7 distorting both push pixels out, past a Source the size of the format.
+TEST_F(NativeLensCorrectTest, RegionOfDefinitionFollowsThePixels)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+    const RectD sourceRoD = regionOf(source);
+
+    struct Case {
+        const char* mode;
+        double scale;
+        double pastLeft;
+    };
+    const Case cases[] = { { kLensCorrectModeCorrect, 1.5, 16. }, { kLensCorrectModeDistort, 0.7, 13.7 } };
+    for (const Case& c : cases) {
+        setManualScale(node, c.mode, c.scale);
+        const RectD rod = regionOf(node);
+        const double pastTop = c.pastLeft * kParitySourceHeight / kParitySourceWidth;
+        const double tolerance = 6.;
+        EXPECT_NEAR(sourceRoD.x1 - c.pastLeft, rod.x1, tolerance) << c.mode;
+        EXPECT_NEAR(sourceRoD.x2 + c.pastLeft, rod.x2, tolerance) << c.mode;
+        EXPECT_NEAR(sourceRoD.y1 - pastTop, rod.y1, tolerance) << c.mode;
+        EXPECT_NEAR(sourceRoD.y2 + pastTop, rod.y2, tolerance) << c.mode;
+
+        for (unsigned mip : { 0u, 1u, 2u }) {
+            const RectD scaledRoD = regionOf(node, mip);
+            EXPECT_DOUBLE_EQ(rod.x1, scaledRoD.x1) << c.mode << " mip " << mip;
+            EXPECT_DOUBLE_EQ(rod.y1, scaledRoD.y1) << c.mode << " mip " << mip;
+            EXPECT_DOUBLE_EQ(rod.x2, scaledRoD.x2) << c.mode << " mip " << mip;
+            EXPECT_DOUBLE_EQ(rod.y2, scaledRoD.y2) << c.mode << " mip " << mip;
+
+            const RectI window = scaledRoD.toPixelEnclosing(mip, 1.);
+            RenderedPlane out;
+            ASSERT_TRUE(renderRGBA(node, window, &out, mip)) << c.mode << " mip " << mip;
+            EXPECT_EQ(0u, nonFinitePixels(out)) << c.mode << " mip " << mip;
+            EXPECT_TRUE(hasColourIn(out, RectI(window.x1, window.y1, 0, window.y2))) << c.mode << " mip " << mip;
+            EXPECT_TRUE(hasColourIn(out, RectI((kParitySourceWidth >> mip), window.y1, window.x2, window.y2))) << c.mode << " mip " << mip;
+            if (mip == 0) {
+                // The region holds all of it: its margin leaves the outermost row past the Source's fade.
+                EXPECT_FALSE(hasColourIn(out, RectI(window.x1, window.y1, window.x2, window.y1 + 1))) << c.mode;
+            }
+        }
+    }
+
+    // Scaled in, the image and its region shrink; clamped edges or a partial mix keep the Source's.
+    setManualScale(node, kLensCorrectModeCorrect, 0.5);
+    const RectD inside = regionOf(node);
+    EXPECT_GT(inside.x1, sourceRoD.x1 + 8.);
+    EXPECT_LT(inside.x2, sourceRoD.x2 - 8.);
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    EXPECT_DOUBLE_EQ(sourceRoD.x1, regionOf(node).x1);
+    EXPECT_DOUBLE_EQ(sourceRoD.x2, regionOf(node).x2);
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
+    EXPECT_DOUBLE_EQ(sourceRoD.x1, regionOf(node).x1);
+    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 1. }));
+
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMethod, std::string(kLensCorrectMethodVignette)));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
+    EXPECT_DOUBLE_EQ(sourceRoD.x1, regionOf(node).x1);
+    EXPECT_DOUBLE_EQ(sourceRoD.x2, regionOf(node).x2);
+}
+
+TEST_F(NativeLensCorrectTest, ClearedWarningReturnsOnTheNextRender)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeLensCorrect(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamCamera, std::string(kCanon5D3)));
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamLens, std::string("No Such Lens 13mm f/9")));
+    // The manual vignette keeps the node rendering: a pass-through can be answered from the action caches.
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane out;
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    const std::string warning = persistentMessage(node);
+    EXPECT_NE(std::string::npos, warning.find("not in the lensfun database")) << warning;
+
+    node->clearPersistentMessage(false);
+    EXPECT_EQ(std::string(), persistentMessage(node));
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    EXPECT_EQ(warning, persistentMessage(node));
+
+    // Another message that replaced the warning stays.
+    node->setPersistentMessage(eMessageTypeWarning, "another message");
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    EXPECT_EQ(std::string("another message"), persistentMessage(node));
+
+    node->clearPersistentMessage(false);
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    EXPECT_EQ(warning, persistentMessage(node));
+    node->disconnectInput(kLensCorrectInputSource);
+    EXPECT_EQ(std::string(), persistentMessage(node));
+}
+
+// The crop factor takes every calibration of the lens out of reach.
+TEST_F(NativeLensCorrectTest, NoApplicableCalibrationWarnsAndPassesThrough)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane before, after;
+    ASSERT_TRUE(renderRGBA(source, window, &before));
+
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamCropFactor, { 0.5 }));
+    ASSERT_TRUE(renderRGBA(node, window, &after));
+    ASSERT_EQ(before.pixels.size(), after.pixels.size());
+    for (std::size_t i = 0; i < before.pixels.size(); ++i) {
+        ASSERT_EQ(before.pixels[i], after.pixels[i]) << "float " << i;
+    }
+    std::string warning = persistentMessage(node);
+    EXPECT_NE(std::string::npos, warning.find("no distortion, TCA, vignetting calibration")) << warning;
+
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamCorrectTCA, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamCorrectVignetting, { 0. }));
+    ASSERT_TRUE(renderRGBA(node, window, &after));
+    warning = persistentMessage(node);
+    EXPECT_NE(std::string::npos, warning.find("no distortion calibration")) << warning;
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamCorrectDistortion, { 0. }));
+    ASSERT_TRUE(renderRGBA(node, window, &after));
+    EXPECT_EQ(std::string(), persistentMessage(node));
+}
+
+// A custom TCA needs no calibration, so distortion and vignetting are the only ones missing.
+TEST_F(NativeLensCorrectTest, PartlyCalibratedLensNamesTheSkippedInInfo)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane out;
+
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamTCAOverride, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamTCARed, { 1.001 }));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamCropFactor, { 0.5 }));
+    ASSERT_TRUE(renderRGBA(node, window, &out));
+    EXPECT_EQ(std::string(), persistentMessage(node));
+    KnobString* info = knobOf<KnobString>(node, kLensCorrectParamInfo);
+    ASSERT_TRUE(info != nullptr);
+    const std::string text = info->getValue();
+    EXPECT_NE(std::string::npos, text.find("not corrected: distortion, vignetting")) << text;
+    EXPECT_EQ(std::string::npos, text.find("TCA,")) << text;
 }
 
 TEST_F(NativeLensCorrectTest, UnknownLensPassesThroughWithAMessage)
@@ -569,7 +1025,6 @@ TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
     }
 }
 
-// The camera, lens and shooting settings come from the Source's metadata when the knobs are empty.
 TEST_F(NativeLensCorrectTest, MetadataFillsTheLookup)
 {
     resetProject();
@@ -609,7 +1064,6 @@ TEST_F(NativeLensCorrectTest, MetadataFillsTheLookup)
     EXPECT_EQ(std::string("knob"), typed.focalFrom);
 }
 
-// A fixed-lens camera finds its lens without a lens name.
 TEST_F(NativeLensCorrectTest, FixedLensCameraNeedsNoLensName)
 {
     resetProject();
@@ -627,6 +1081,35 @@ TEST_F(NativeLensCorrectTest, FixedLensCameraNeedsNoLensName)
     EXPECT_NE(std::string::npos, std::string(found.lens->Model).find("G12")) << found.lensFound;
     EXPECT_EQ(std::string("lens"), found.focalFrom);
     EXPECT_TRUE(found.warning.empty()) << found.warning;
+}
+
+// Only a metadata lens name falls back to the fixed-lens camera's lens; a typed one is not replaced.
+TEST_F(NativeLensCorrectTest, FixedLensFallbackIsForMetadataNames)
+{
+    const std::string unknown = "No Such Lens 13mm f/9";
+
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    ASSERT_TRUE(bool(modify));
+    connectNodes(source, modify, 0, true);
+    ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataLensModel, unknown));
+    NodePtr node = makeLensCorrect(modify);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamCamera, std::string("Canon PowerShot G12")));
+    LensCorrect* effect = lensCorrectOf(node);
+    ASSERT_TRUE(effect != nullptr);
+
+    const LensCorrect::Lookup fromMetadata = effect->lookup(kTime, ViewIdx(0));
+    ASSERT_TRUE(bool(fromMetadata.lens)) << fromMetadata.warning;
+    EXPECT_NE(std::string::npos, std::string(fromMetadata.lens->Model).find("G12")) << fromMetadata.lensFound;
+    EXPECT_TRUE(fromMetadata.warning.empty()) << fromMetadata.warning;
+
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamLens, unknown));
+    const LensCorrect::Lookup typed = effect->lookup(kTime, ViewIdx(0));
+    EXPECT_FALSE(bool(typed.lens)) << typed.lensFound;
+    EXPECT_NE(std::string::npos, typed.warning.find("not in the lensfun database")) << typed.warning;
 }
 
 // A flat field takes lensfun's vignetting gain at each pixel: brighter corners when correcting,

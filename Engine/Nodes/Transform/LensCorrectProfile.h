@@ -115,6 +115,8 @@ struct Profile {
 
     bool hasVignetting() const { return vignetting != VignettingOp::None; }
 
+    bool hasDistortion() const;
+
     /**
      * @brief lfModifier::ApplySubpixelGeometryDistortion for the single pixel (xu, yu): out holds
      * the red, green and blue source positions as x, y pairs, in lensfun's pixel coordinates (pixel
@@ -123,7 +125,10 @@ struct Profile {
     void map(float xu, float yu, float out[6]) const;
 
     /**
-     * @brief The factor lfModifier::ApplyColorModification multiplies a pixel at (x, y) by.
+     * @brief The factor lfModifier::ApplyColorModification multiplies a pixel at (x, y) by, where
+     * lensfun's polynomial is usable. The polynomial only describes the lens inside its calibrated
+     * circle: past it the falloff can cross zero or overflow, and the gain becomes 1 (or 0 for a
+     * negative falloff when vignetting).
      **/
     float vignettingGain(float x, float y) const;
 };
@@ -161,6 +166,23 @@ Profile build(const lfLens& lens, const Request& request);
  * @brief The scale build() applies when request.scale is 0.
  **/
 float autoScale(const lfLens& lens, const Request& request);
+
+// A box in lensfun's pixel coordinates, and whether every point asked about had an answer.
+struct MappedBox {
+    double x1 = 0.;
+    double y1 = 0.;
+    double x2 = 0.;
+    double y2 = 0.;
+    bool any = false;
+    bool complete = true;
+};
+
+/**
+ * @brief Where the edges of the Source rectangle (x1, y1) - (x2, y2), in lensfun's pixel
+ * coordinates, land in the output of request's model: the box over the three channels of what the
+ * model of the opposite direction makes of them.
+ **/
+MappedBox outputBox(const lfLens& lens, const Request& request, double x1, double y1, double x2, double y2);
 } // namespace LensCorrectProfile
 
 NATRON_NAMESPACE_EXIT

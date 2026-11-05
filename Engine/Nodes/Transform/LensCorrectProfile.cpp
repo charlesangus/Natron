@@ -46,6 +46,14 @@ namespace {
     constexpr float kThobyK1 = 1.47F;
     constexpr float kThobyK2 = 0.713F;
     constexpr float kHuge = 1.6e16F;
+    // 1/100 is over six stops of falloff; a smaller value is the polynomial leaving the lens's
+    // calibrated circle, not vignetting. lenscorrect.slang holds the same value.
+    constexpr float kDevignetteFloor = 0.01F;
+    // kHuge and what normUnScale makes of it, far past anything a RectI could hold. A real position
+    // this far out is out of reach of the render anyway.
+    constexpr float kNoAnswer = 1e9F;
+    constexpr int kOutputBoxSteps = 16;
+    constexpr int kAcmInverseIterations = 8;
 
     void
     erectWrap(float& x, double& theta)
@@ -650,6 +658,8 @@ namespace {
             }
         } // projection
 
+        bool autoScaleAdded = false;
+
         void scaling(float scale)
         {
             if (scale == 1.0) {
@@ -660,6 +670,7 @@ namespace {
                 if (scale == 0.0) {
                     return;
                 }
+                autoScaleAdded = true;
             }
             const float factor = request.reverse ? scale : 1.0 / scale;
             add(CoordOp::Scale, request.reverse ? 900 : 100, &factor);
@@ -728,6 +739,11 @@ namespace {
 
         void finish()
         {
+            // Without another coordinate step the automatic scale has nothing to compensate, and
+            // keeping it would resample an image that should pass through.
+            if (autoScaleAdded && (coord.size() == 1)) {
+                coord.clear();
+            }
             std::stable_sort(coord.begin(), coord.end(), [](const PendingStep& a, const PendingStep& b) {
                 return a.priority < b.priority;
             });
@@ -829,7 +845,26 @@ Profile::vignettingGain(float x,
     const float r6 = r4 * r2;
     const float c = 1.0 + vignettingTerms[0] * r2 + vignettingTerms[1] * r4 + vignettingTerms[2] * r6;
 
-    return vignetting == VignettingOp::Devignette ? 1.0f / c : c;
+    if (!std::isfinite(c)) {
+        return 1.f;
+    }
+    if (vignetting == VignettingOp::Devignette) {
+        return c >= kDevignetteFloor ? 1.0f / c : 1.f;
+    }
+
+    return std::max(c, 0.f);
+}
+
+bool
+Profile::hasDistortion() const
+{
+    for (int i = 0; i < nCoordSteps; ++i) {
+        if ((coord[i].op != CoordOp::Scale) && (coord[i].op <= CoordOp::DistACM)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 Profile
@@ -891,6 +926,128 @@ autoScale(const lfLens& lens,
 
     return modifier.GetAutoScale(request.reverse);
 }
+
+namespace {
+    bool
+    answered(float x,
+             float y)
+    {
+        return std::isfinite(x) && std::isfinite(y) && (std::abs(x) < kNoAnswer) && (std::abs(y) < kNoAnswer);
+    }
+
+    // Solves forward(u) = target for one channel by fixed-point iteration, from guess. Good enough
+    // for a bounding box because a lens map stays close to the identity.
+    void
+    invertChannel(const Profile& forward,
+                  int channel,
+                  float targetX,
+                  float targetY,
+                  float* x,
+                  float* y)
+    {
+        const auto error = [&](float ux,
+                               float uy,
+                               float* dx,
+                               float* dy) {
+            float out[6];
+            forward.map(ux, uy, out);
+            if (!answered(out[2 * channel], out[2 * channel + 1])) {
+                return std::numeric_limits<float>::infinity();
+            }
+            *dx = targetX - out[2 * channel];
+            *dy = targetY - out[2 * channel + 1];
+
+            return *dx * *dx + *dy * *dy;
+        };
+        float dx = 0.f, dy = 0.f;
+        float best = error(*x, *y, &dx, &dy);
+        for (int i = 0; (i < kAcmInverseIterations) && std::isfinite(best); ++i) {
+            const float nextX = *x + dx;
+            const float nextY = *y + dy;
+            float nextDx = 0.f, nextDy = 0.f;
+            const float next = error(nextX, nextY, &nextDx, &nextDy);
+            if (!(next < best)) {
+                return;
+            }
+            *x = nextX;
+            *y = nextY;
+            dx = nextDx;
+            dy = nextDy;
+            best = next;
+        }
+    }
+} // anon namespace
+
+MappedBox
+outputBox(const lfLens& lens,
+          const Request& request,
+          double x1,
+          double y1,
+          double x2,
+          double y2)
+{
+    const Profile forward = build(lens, request);
+    Request oppositeRequest = request;
+
+    oppositeRequest.reverse = !request.reverse;
+    // autoScale() answers for the direction it is asked about, so the forward direction's scale is
+    // handed over as a number. 0 from autoScale() means lensfun scales nothing.
+    const float forwardScale = (request.scale == 0.f) ? autoScale(lens, request) : request.scale;
+    oppositeRequest.scale = (forwardScale == 0.f) ? 1.f : forwardScale;
+    // Lensfun has no inverse of the ACM models, so a direction can lack a step the other has; the
+    // opposite must not undo a step that never ran.
+    oppositeRequest.distortion = request.distortion && forward.hasDistortion();
+    oppositeRequest.tca = request.tca && (forward.tca != TcaOp::None);
+    oppositeRequest.vignetting = false;
+    const Profile opposite = build(lens, oppositeRequest);
+
+    // Correcting through an ACM model leaves the opposite without that step, so the forward map is
+    // inverted numerically from what the opposite gives.
+    bool noInverse = (forward.tca == TcaOp::ACM);
+    for (int i = 0; i < forward.nCoordSteps; ++i) {
+        noInverse = noInverse || (forward.coord[i].op == CoordOp::DistACM);
+    }
+
+    MappedBox box;
+    const auto add = [&](double sx,
+                         double sy) {
+        float out[6];
+        opposite.map((float)sx, (float)sy, out);
+        for (int c = 0; c < 3; ++c) {
+            float ux = out[2 * c];
+            float uy = out[2 * c + 1];
+            if (noInverse) {
+                invertChannel(forward, c, (float)sx, (float)sy, &ux, &uy);
+            }
+            if (!answered(ux, uy)) {
+                box.complete = false;
+                continue;
+            }
+            if (!box.any) {
+                box.x1 = box.x2 = ux;
+                box.y1 = box.y2 = uy;
+                box.any = true;
+            } else {
+                box.x1 = std::min(box.x1, (double)ux);
+                box.y1 = std::min(box.y1, (double)uy);
+                box.x2 = std::max(box.x2, (double)ux);
+                box.y2 = std::max(box.y2, (double)uy);
+            }
+        }
+    };
+    for (int i = 0; i <= kOutputBoxSteps; ++i) {
+        const double x = x1 + (x2 - x1) * i / kOutputBoxSteps;
+        add(x, y1);
+        add(x, y2);
+    }
+    for (int i = 1; i < kOutputBoxSteps; ++i) {
+        const double y = y1 + (y2 - y1) * i / kOutputBoxSteps;
+        add(x1, y);
+        add(x2, y);
+    }
+
+    return box;
+} // outputBox
 } // namespace LensCorrectProfile
 
 NATRON_NAMESPACE_EXIT

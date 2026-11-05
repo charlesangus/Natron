@@ -38,7 +38,7 @@ NATRON_NAMESPACE_USING
 
 TEST(LensfunLink, VersionNamesThePinnedCommit)
 {
-    EXPECT_EQ(40u, LensfunRuntime::version().size()) << LensfunRuntime::version();
+    EXPECT_EQ(std::string(NATRON_TESTS_LENSFUN_PIN), LensfunRuntime::version());
 }
 
 // The build tree puts the database where the bundle does, beside the executables.

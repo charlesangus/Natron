@@ -10,7 +10,6 @@ import resamplecore;
 static const uint kLensCorrectClamp = 1;
 static const uint kLensCorrectBlackOutside = 2;
 static const uint kLensCorrectJacobian = 4;
-// A Source to sample and a Source format.
 static const uint kLensCorrectSample = 8;
 static const uint kLensCorrectReverse = 16;
 static const uint kLensCorrectManualVignette = 32;
@@ -21,7 +20,6 @@ static const uint kVignettingTermsBase = 32;
 static const uint kCoordBase = 36;
 static const uint kMaxCoordSteps = 4;
 
-// LensCorrectProfile::CoordOp.
 static const uint kScale = 0;
 static const uint kDistPoly3 = 1;
 static const uint kUnDistPoly3 = 2;
@@ -51,13 +49,14 @@ static const uint kGeomERectEquisolid = 25;
 static const uint kGeomThobyERect = 26;
 static const uint kGeomERectThoby = 27;
 
-// LensCorrectProfile::TcaOp and VignettingOp.
 static const uint kTcaNone = 0;
 static const uint kTcaLinear = 1;
 static const uint kTcaPoly3 = 2;
 static const uint kTcaUnPoly3 = 3;
 static const uint kTcaACM = 4;
 static const uint kDevignette = 1;
+// Below this the falloff polynomial has left the lens's calibrated circle; see LensCorrectProfile.cpp.
+static const float kDevignetteFloor = 0.01;
 
 static const float kPi = 3.14159265358979323846;
 static const float kNewtonEps = 0.00001;
@@ -145,8 +144,6 @@ void erectWrap(inout float x, inout float theta)
     }
 }
 
-// Newton's method on a radius, as lensfun's undistortion callbacks: the scale ru / rd, 1 when it
-// does not converge (the point is left alone) and NaN for poly3's failure.
 float2 applyCoord(uint op, uint base, float2 p)
 {
     const float t0 = term(base);
@@ -420,7 +417,6 @@ struct Mapped
     float2 b;
 }
 
-// Profile::map: lensfun pixel coordinates of the output to those of the Source, per channel.
 Mapped lensCorrectMap(LensCorrect d, float2 u)
 {
     Mapped m;
@@ -478,10 +474,13 @@ float vignettingGain(LensCorrect d, float2 p)
     const float r4 = r2 * r2;
     const float c = 1.0 + term(kVignettingTermsBase) * r2 + term(kVignettingTermsBase + 1) * r4 +
                     term(kVignettingTermsBase + 2) * r4 * r2;
-    return (d.vignetting == kDevignette) ? 1.0 / c : c;
+    if (isnan(c) || isinf(c))
+        return 1.0;
+    if (d.vignetting == kDevignette)
+        return c >= kDevignetteFloor ? 1.0 / c : 1.0;
+    return max(c, 0.0);
 }
 
-// darktable's manual vignette at lensfun position p.
 float manualVignette(LensCorrect d, float2 p)
 {
     const float r = min(1.0, length(p - float2(d.w2, d.h2)) * d.invMaxR);
@@ -491,13 +490,11 @@ float manualVignette(LensCorrect d, float2 p)
     return max(0.0, 2.0 * d.vignetteStrength * (v + mul * tanh(b * (1.0 - r))));
 }
 
-// The output pixel (px, py)'s centre in lensfun pixel coordinates.
 float2 lensfunAt(LensCorrect d, float2 pixel)
 {
     return float2((pixel.x + 0.5) / d.scaleX - d.formatX1 - 0.5, d.formatY2 - 0.5 - (pixel.y + 0.5) / d.scaleY);
 }
 
-// Lensfun pixel coordinates to Source pixel coordinates at the render scale.
 float2 toSource(LensCorrect d, float2 lf)
 {
     return float2((lf.x + d.formatX1 + 0.5) * d.scaleX, (d.formatY2 - 0.5 - lf.y) * d.scaleY);
@@ -560,7 +557,11 @@ float4 lensCorrectPixel(LensCorrect d, int2 p)
     const bool clampFilter = (d.flags & kLensCorrectClamp) != 0;
     float4 v = sampleAt(src, sg.x, sg.y, J, jacobian, d.filter, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
+    {
+        if ((d.flags & kLensCorrectVignetteMask) != 0)
+            v.x = finite2(m.g) ? manualVignette(d, m.g) : 0.0;
         return float4(0.0, 0.0, 0.0, v.x);
+    }
     if (wrap.nComps < 3)
         return v;
     if (d.tca != kTcaNone)

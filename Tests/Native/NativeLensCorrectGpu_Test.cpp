@@ -24,6 +24,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <bitset>
+#include <cmath>
+#include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,10 +39,13 @@
 #include "BaseTest.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
+#include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -45,6 +53,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -132,10 +141,29 @@ protected:
 
     void expectParity(const NodePtr& source,
                       const NodePtr& node,
-                      const std::string& what)
+                      const std::string& what,
+                      unsigned mipmapLevel = 0)
     {
-        const RectI window = paritySourceWindow(source, kTime, 0);
-        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime);
+        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel);
+    }
+
+    void expectParityOverRegion(const NodePtr& node,
+                                const std::string& what,
+                                unsigned mipmapLevel = 0)
+    {
+        const EffectInstancePtr effect = node->getEffectInstance();
+        RectD rod;
+        bool isProjectFormat = false;
+        ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod, &isProjectFormat)) << what;
+        expectParityOver(node, rod.toPixelEnclosing(mipmapLevel, 1.), what, mipmapLevel);
+    }
+
+    void expectParityOver(const NodePtr& node,
+                          const RectI& window,
+                          const std::string& what,
+                          unsigned mipmapLevel)
+    {
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
 
         if (result.skipped) {
             return;
@@ -145,6 +173,11 @@ protected:
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
         const ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
         EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+        const auto notFinite = [](float v) {
+            return !std::isfinite(v);
+        };
+        EXPECT_EQ(0, std::count_if(result.gpu.begin(), result.gpu.end(), notFinite)) << what;
+        EXPECT_EQ(0, std::count_if(result.cpu.begin(), result.cpu.end(), notFinite)) << what;
     }
 };
 
@@ -214,4 +247,133 @@ TEST_F(NativeLensCorrectGpuTest, SettingsMatchTheCpu)
     }
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMethod, std::string(kLensCorrectMethodVignette)));
     expectParity(source, node, "manual vignette only");
+}
+
+TEST_F(NativeLensCorrectGpuTest, ScaledRendersMatchTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    for (const LensSetup& setup : kSetups) {
+        NodePtr node = makeLensCorrect(source, setup);
+        ASSERT_TRUE(bool(node)) << setup.what;
+        for (unsigned mip : { 1u, 2u }) {
+            expectParity(source, node, std::string(setup.what) + " mip " + std::to_string(mip), mip);
+        }
+    }
+}
+
+// Both push pixels out, past a Source the size of the format.
+TEST_F(NativeLensCorrectGpuTest, GrownRegionMatchesTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeLensCorrect(source, kSetups[0]);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamAutoScale, { 0. }));
+    for (const std::pair<const char*, double>& c : { std::make_pair(kLensCorrectModeCorrect, 1.5), std::make_pair(kLensCorrectModeDistort, 0.7) }) {
+        ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMode, std::string(c.first)));
+        ASSERT_TRUE(setKnobValues(node, kLensCorrectParamScale, { c.second }));
+        for (unsigned mip : { 0u, 1u, 2u }) {
+            expectParityOverRegion(node, std::string(c.first) + " mip " + std::to_string(mip), mip);
+        }
+    }
+}
+
+TEST_F(NativeLensCorrectGpuTest, OverscanSourceMatchesTheCpu)
+{
+    resetProject();
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2, "nativeLensCorrectGpu32x24", 1.));
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, -kParitySourceWidth / 4, -kParitySourceHeight / 4);
+    NodePtr node = makeLensCorrect(source, kSetups[0]);
+    ASSERT_TRUE(bool(node));
+    for (unsigned mip : { 0u, 1u, 2u }) {
+        expectParityOverRegion(node, "overscan mip " + std::to_string(mip), mip);
+    }
+}
+
+// Scaled far down, the corners of a fisheye target lie past 90 degrees, where lensfun answers kHuge.
+TEST_F(NativeLensCorrectGpuTest, HugePositionsMatchTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeLensCorrect(source, kSetups[0]);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryFisheye)));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamAutoScale, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamScale, { 0.1 }));
+    expectParity(source, node, "scale 0.1 to fisheye");
+    // The image is small, so the render stops at its region; a partial mix takes it out to the corners.
+    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
+    expectParity(source, node, "scale 0.1 to fisheye, mix");
+}
+
+// An alpha Source stays one channel under "All": renderEndToEnd() compares RGBA, so the kernel runs
+// directly.
+TEST_F(NativeLensCorrectGpuTest, OneChannelVignetteMaskMatchesTheCpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceComponents(source, "alpha");
+    NodePtr node = makeLensCorrect(source, kSetups[0]);
+    ASSERT_TRUE(bool(node));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->setAll();
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.6 }));
+    ASSERT_TRUE(setKnobValues(node, kLensCorrectParamShowVignetteMask, { 1. }));
+
+    StagedImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    std::list<ImageLayerDesc> present;
+    effect->getPresentLayers(kTime, ViewIdx(0), -1, &present);
+    const auto colour = std::find_if(present.begin(), present.end(), [](const ImageLayerDesc& layer) {
+        return layer.isColorLayer();
+    });
+    ASSERT_TRUE(colour != present.end());
+    ASSERT_EQ(1, colour->getNumComponents());
+    const std::list<ImageLayerDesc> layers(1, *colour);
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    std::vector<RenderedPlane> sourcePlanes, cpuPlanes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(source, kTime, ViewIdx(0), 0, window, layers, &sourcePlanes, &error)) << error;
+    ASSERT_EQ(1u, sourcePlanes.size());
+    {
+        GpuPlacementOffGuard off;
+        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &cpuPlanes, &error)) << error;
+    }
+    ASSERT_EQ(1u, cpuPlanes.size());
+
+    GpuQuery query;
+    query.time = kTime;
+    query.view = ViewIdx(0);
+    query.plane = *colour;
+    query.nComps = 1;
+    query.bitDepth = eImageBitDepthFloat;
+    const std::bitset<4> process = effect->getProcessChannelsForPlane(effect->getRenderHash(), kTime, ViewIdx(0), *colour);
+    for (int i = 0; i < 4; ++i) {
+        query.processChannels[i] = process[i];
+    }
+    ASSERT_TRUE(effect->canRenderOnGpu(query));
+
+    GpuParityImage image;
+    image.bounds = sourcePlanes[0].window;
+    image.nComps = 1;
+    image.pixels = sourcePlanes[0].pixels;
+    const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, window);
+    ASSERT_TRUE(run.ok);
+    ASSERT_EQ(cpuPlanes[0].pixels.size(), run.pixels.size());
+    const ImageDiff diff = compareImages(cpuPlanes[0].pixels, run.pixels, lensCorrectTolerance());
+    EXPECT_EQ(0u, diff.mismatches) << "worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+    EXPECT_FALSE(cpuPlanes[0].pixels == image.pixels);
 }

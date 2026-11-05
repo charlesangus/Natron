@@ -42,6 +42,7 @@
 #include <lensfun.h>
 
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -628,7 +629,8 @@ LensCorrect::lookup(double time,
 
     Found found;
     {
-        const std::string key = maker + '\n' + model + '\n' + lensName;
+        // The same name may be typed or metadata's, and only metadata's falls back below.
+        const std::string key = maker + '\n' + model + '\n' + lensName + '\n' + (lensTyped.empty() ? '0' : '1');
         std::lock_guard<std::mutex> lock(_foundMutex);
         if (_hasFound && (_foundKey == key)) {
             found = _found;
@@ -654,10 +656,11 @@ LensCorrect::lookup(double time,
                 if (!searched.empty() || camera) {
                     lenses = db->FindLenses(camera, nullptr, searched.c_str(), 0);
                 }
-                // A fixed-lens camera (lower-case mount): the lens name may be absent or not the
-                // database's, so search the camera's lenses instead.
+                // A fixed-lens camera (lower-case mount): a metadata lens name may be absent or
+                // not the database's, so search the camera's lenses instead. A typed name is what
+                // the user asked for and is never replaced by another lens.
                 const bool fixedLens = camera && camera->Mount && std::islower((unsigned char)camera->Mount[0]);
-                if (!lenses && fixedLens) {
+                if (!lenses && fixedLens && lensTyped.empty()) {
                     searched.clear();
                     lenses = db->FindLenses(camera, nullptr, "", 0);
                 }
@@ -774,7 +777,8 @@ LensCorrect::lookup(double time,
 } // LensCorrect::lookup
 
 std::string
-LensCorrect::infoText(const Lookup& lookup)
+LensCorrect::infoText(const Lookup& lookup,
+                      const std::string& skipped)
 {
     std::ostringstream ss;
 
@@ -801,6 +805,9 @@ LensCorrect::infoText(const Lookup& lookup)
     if (lookup.monochrome) {
         ss << "\nMonochrome: TCA is not corrected.";
     }
+    if (!skipped.empty()) {
+        ss << "\nNo calibration for this crop factor and focal length, so not corrected: " << skipped;
+    }
 
     return ss.str();
 }
@@ -821,12 +828,15 @@ LensCorrect::refreshInfo()
     }
     if (!getInput(kLensCorrectInputSource)) {
         info->setValue(std::string());
+        postWarning(std::string());
 
         return;
     }
-    const Lookup found = lookup(getCurrentTime(), ViewIdx(0));
-    info->setValue(infoText(found));
-    postWarning(found.warning);
+    const double time = getCurrentTime();
+    Settings settings;
+    readSettings(time, ViewIdx(0), &settings);
+    const Model model = buildModel(time, ViewIdx(0), settings);
+    info->setValue(infoText(lookup(time, ViewIdx(0)), model.skipped));
 }
 
 void
@@ -840,24 +850,26 @@ LensCorrect::postWarning(const std::string& warning)
     std::string previous;
     {
         std::lock_guard<std::mutex> lock(_warningMutex);
-        if (_postedWarning == warning) {
-            return;
-        }
         previous = _postedWarning;
         _postedWarning = warning;
     }
-    if (!warning.empty()) {
-        setPersistentMessage(eMessageTypeWarning, warning);
-
-        return;
-    }
-    // Only our own warning is taken back: anything posted since has replaced it.
     QString current;
     int type = 0;
     node->getPersistentMessage(&current, &type, false);
-    if (current == QString::fromUtf8(previous.c_str())) {
-        node->clearPersistentMessage(false);
+    if (warning.empty()) {
+        // Only our own warning is taken back: anything posted since has replaced it.
+        if (!previous.empty() && (current == QString::fromUtf8(previous.c_str()))) {
+            node->clearPersistentMessage(false);
+        }
+
+        return;
     }
+    // A message that replaced this same warning is left up; an absent one was cleared by someone
+    // who does not know the condition still holds.
+    if ((current == QString::fromUtf8(warning.c_str())) || ((warning == previous) && !current.isEmpty())) {
+        return;
+    }
+    setPersistentMessage(eMessageTypeWarning, warning);
 }
 
 void
@@ -947,8 +959,9 @@ LensCorrect::buildModel(double time,
         return model;
     }
     const Lookup found = lookup(time, view);
-    postWarning(found.warning);
     if (!found.warning.empty() || !found.lens) {
+        postWarning(found.warning);
+
         return model;
     }
     LensCorrectProfile::Request request;
@@ -969,6 +982,40 @@ LensCorrect::buildModel(double time,
     request.tcaRed = (float)settings.tcaRed;
     request.tcaBlue = (float)settings.tcaBlue;
     model.profile = LensCorrectProfile::build(*found.lens, request);
+    model.lens = found.lens;
+    model.request = request;
+
+    QStringList enabled, skipped;
+    if (request.distortion) {
+        enabled << tr("distortion");
+        if (!model.profile.hasDistortion()) {
+            skipped << tr("distortion");
+        }
+    }
+    if (request.tca) {
+        enabled << tr("TCA");
+        if (model.profile.tca == LensCorrectProfile::TcaOp::None) {
+            skipped << tr("TCA");
+        }
+    }
+    if (request.vignetting) {
+        enabled << tr("vignetting");
+        if (!model.profile.hasVignetting()) {
+            skipped << tr("vignetting");
+        }
+    }
+    model.skipped = skipped.join(QString::fromUtf8(", ")).toStdString();
+    const bool anyEnabled = request.distortion || request.tca || request.vignetting;
+    if (anyEnabled && (skipped.size() == enabled.size()) && !model.profile.movesPixels() && !model.profile.hasVignetting()) {
+        postWarning(tr("Lens \"%1\" has no %2 calibration usable at crop factor %3 and focal length %4 mm; the image passes through unchanged.")
+                        .arg(QString::fromUtf8(found.lensFound.c_str()))
+                        .arg(enabled.join(QString::fromUtf8(", ")))
+                        .arg(QString::fromUtf8(formatNumber(found.crop).c_str()))
+                        .arg(QString::fromUtf8(formatNumber(found.focal).c_str()))
+                        .toStdString());
+    } else {
+        postWarning(std::string());
+    }
 
     return model;
 } // LensCorrect::buildModel
@@ -988,6 +1035,56 @@ LensCorrect::route(double time,
 
     return Route::none();
 }
+
+StatusEnum
+LensCorrect::getRegionOfDefinition(U64 hash,
+                                   double time,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   RectD* rod)
+{
+    const StatusEnum status = StagedImageEffect::getRegionOfDefinition(hash, time, scale, view, rod);
+    if ((status != eStatusOK) || rod->isNull() || !getInput(kLensCorrectInputSource)) {
+        return status;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    const Model model = buildModel(time, view, settings);
+    if (!model.profile.movesPixels() || !model.lens || model.format.isNull()) {
+        return status;
+    }
+    const RectD sourceRoD = *rod;
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(kLensCorrectInputSource) : 1.;
+
+    // Everything below is in full-resolution pixels, whatever the render scale: the model covers the
+    // format at scale 1, and a region of definition is canonical. See PixelMapper for the lensfun
+    // coordinates. A filter fades black in over one more Source pixel past the edge.
+    const double fade = settings.blackOutside ? 1. : 0.;
+    const double originX = model.format.x1 + 0.5;
+    const double originY = model.format.y2 - 0.5;
+    const LensCorrectProfile::MappedBox lensfunBox = LensCorrectProfile::outputBox(*model.lens, model.request,
+                                                                                   sourceRoD.x1 / par - fade - originX, originY - sourceRoD.y2 - fade,
+                                                                                   sourceRoD.x2 / par + fade - originX, originY - sourceRoD.y1 + fade);
+    if (!lensfunBox.any) {
+        return status;
+    }
+    const double margin = 2.;
+    RectD box((lensfunBox.x1 + originX - margin) * par, originY - lensfunBox.y2 - margin,
+              (lensfunBox.x2 + originX + margin) * par, originY - lensfunBox.y1 + margin);
+    if (!lensfunBox.complete) {
+        // Part of the Source edge has no image, so the Source reaches past the output format.
+        box.merge(RectD(model.format.x1 * par, model.format.y1, model.format.x2 * par, model.format.y2));
+    }
+    // Clamped edge pixels fill the Source's own area however far inside it the image lands, and a
+    // mask or a partial mix shows the Source itself.
+    if (!settings.blackOutside || isMaskApplied() || (getMixValue(time, view) != 1.)) {
+        box.merge(sourceRoD);
+    }
+    *rod = box;
+
+    return status;
+} // LensCorrect::getRegionOfDefinition
 
 void
 LensCorrect::getRegionsOfInterest(double time,
@@ -1033,7 +1130,6 @@ struct PixelMapper {
     double x1;
     double y2;
 
-    // Lensfun coordinates of output pixel (px, py)'s centre.
     void lensfunAt(int px,
                    int py,
                    float* xu,
@@ -1071,7 +1167,6 @@ LensCorrect::renderOp(const RenderActionArgs& args,
         settings.filter = Resampler::eFilterImpulse;
     }
     const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
-    // Built here, on the calling thread; the band threads only read it.
     const Model model = buildModel(args.time, args.view, settings);
     const LensCorrectProfile::Profile& profile = model.profile;
     const bool moves = profile.movesPixels();
@@ -1112,11 +1207,9 @@ LensCorrect::renderOp(const RenderActionArgs& args,
             srcBounds = src->getBounds();
             const int srcNComps = (int)src->getComponentsCount();
             srcAccess = std::make_shared<Image::ReadAccess>(src.get());
-            if (srcBounds.isNull()) {
-                src.reset();
-            } else if (srcNComps == nComps) {
+            if (!srcBounds.isNull() && (srcNComps == nComps)) {
                 source = Resampler::SourceImage((const float*)srcAccess->pixelAt(srcBounds.x1, srcBounds.y1), srcBounds, nComps);
-            } else {
+            } else if (!srcBounds.isNull()) {
                 const int width = srcBounds.width();
                 converted.resize((std::size_t)width * srcBounds.height() * nComps);
                 for (int y = srcBounds.y1; y < srcBounds.y2; ++y) {
@@ -1125,7 +1218,7 @@ LensCorrect::renderOp(const RenderActionArgs& args,
                 source = Resampler::SourceImage(&converted[0], srcBounds, nComps);
             }
         }
-        const bool sampled = (bool)src;
+        const bool sampled = src && !srcBounds.isNull();
         // Lensfun leaves alpha alone, and a one- or two-channel image has no colour to scale.
         const int colourChannels = (nComps >= 3) ? 3 : 0;
         const int alphaChannel = (nComps == 4) ? 3 : ((nComps == 1) ? 0 : -1);

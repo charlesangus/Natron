@@ -163,8 +163,8 @@ public:
 
     Lookup lookup(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
-    // The Info knob's text for a lookup.
-    static std::string infoText(const Lookup& lookup) WARN_UNUSED_RETURN;
+    static std::string infoText(const Lookup& lookup,
+                                const std::string& skipped = std::string()) WARN_UNUSED_RETURN;
 
 private:
     // The knob values a render reads, at one time and view.
@@ -193,6 +193,9 @@ private:
     struct Model {
         // The lensfun correction, empty when there is none.
         LensCorrectProfile::Profile profile;
+        // What profile was built from, when it was.
+        std::shared_ptr<const lfLens> lens;
+        LensCorrectProfile::Request request;
         // The Source format in full-resolution pixels: the image lensfun's model covers.
         RectI format;
         // darktable's manual vignette, applied to the Source before the lensfun correction.
@@ -200,6 +203,8 @@ private:
         float vignetteRadius = 0.5f;
         float vignetteSteepness = 0.5f;
         bool showVignetteMask = false;
+        // The enabled corrections the lens has no usable calibration for, comma separated.
+        std::string skipped;
 
         bool manualVignette() const { return (vignetteStrength > 0.f) || showVignetteMask; }
 
@@ -220,9 +225,14 @@ private:
 
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
-    // Black while Source is disconnected, the Source where nothing applies.
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -239,7 +249,6 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Accepts what the stages accept in float.
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -258,11 +267,11 @@ private:
 
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
-    // The model at (time, view); the lookup's warning is posted, or taken back, on the way.
+    // The model at (time, view); the warning about it is posted, or taken back, on the way.
     Model buildModel(double time, ViewIdx view, const Settings& settings) WARN_UNUSED_RETURN;
 
-    // Posts warning as the node's persistent message, or, when it is empty, takes back the one
-    // this node posted last. Any thread.
+    // Keeps warning up as the node's persistent message, posting it again if it was cleared, or,
+    // when it is empty, takes back the one this node posted last. Any thread.
     void postWarning(const std::string& warning);
 
     // Refreshes the Info knob and the warning at the current frame. Main thread.

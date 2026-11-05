@@ -164,8 +164,8 @@ struct Remap {
 
 const Remap kDefaultRemap = { 0.f, 1.f, 1.f };
 
-// The matte as specified: gain x max(0, (d - black) / (white - black)), or a hard threshold at
-// the black point when white <= black.
+// The matte as specified: clamp(gain x max(0, (d - black) / (white - black)), 0, 1), or a hard
+// threshold at the black point when white <= black.
 float
 matte(const float b[4],
       const float a[4],
@@ -174,10 +174,12 @@ matte(const float b[4],
     const float sum = squaredDistance(b, a);
 
     if (remap.whitePoint <= remap.blackPoint) {
-        return (sum > remap.blackPoint) ? remap.gain : 0.f;
+        return std::clamp(remap.gain * (sum > remap.blackPoint ? 1.f : 0.f), 0.f, 1.f);
     }
 
-    return remap.gain * (float)std::max(0., ((double)sum - remap.blackPoint) / ((double)remap.whitePoint - remap.blackPoint));
+    const float unclamped = remap.gain * (float)std::max(0., ((double)sum - remap.blackPoint) / ((double)remap.whitePoint - remap.blackPoint));
+
+    return std::clamp(unclamped, 0.f, 1.f);
 }
 
 } // namespace
@@ -323,7 +325,7 @@ TEST_F(NativeDifferenceTest, AWhitePointAtOrBelowTheBlackPointIsAHardThreshold)
     }
 }
 
-TEST_F(NativeDifferenceTest, MattesAboveOneAreNotClamped)
+TEST_F(NativeDifferenceTest, MattesAreClampedToZeroToOne)
 {
     resetProject();
     NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
@@ -331,7 +333,18 @@ TEST_F(NativeDifferenceTest, MattesAboveOneAreNotClamped)
     ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { 1000. }));
     float largest = 0.f;
     expectDifference(node, true, kAOriginX, kAOriginY, Remap { 0.f, 1.f, 1000.f }, &largest);
-    EXPECT_GT(largest, 1.f);
+    EXPECT_EQ(1.f, largest);
+}
+
+TEST_F(NativeDifferenceTest, ANegativeGainGivesAlphaZero)
+{
+    resetProject();
+    NodePtr node = makeDifference(makeSource(0, 0), makeSource(kAOriginX, kAOriginY));
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kDifferenceParamGain, { -3. }));
+    float largest = 1.f;
+    expectDifference(node, true, kAOriginX, kAOriginY, Remap { 0.f, 1.f, -3.f }, &largest);
+    EXPECT_EQ(0.f, largest);
 }
 
 TEST_F(NativeDifferenceTest, AZeroDifferenceGivesAlphaZero)

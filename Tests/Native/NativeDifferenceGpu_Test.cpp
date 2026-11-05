@@ -188,6 +188,8 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         { "negative black point", true, -0.1, 0.9, 1., false, false, 1. },
         { "hard threshold", true, 0.1, 0.1, 2., false, false, 1. },
         { "white below black", true, 0.1, 0.03, 1.5, false, false, 1. },
+        { "large gain clamps to one", true, 0., 0.1, 1000., false, false, 1. },
+        { "negative gain gives zero", true, 0., 1., -4., false, false, 1. },
         { "no clean plate", false, 0., 1., 3., false, false, 1. },
         { "every channel", true, 0., 1., 1., true, false, 1. },
         { "mask and mix", true, 0.01, 0.5, 2., false, true, 0.6 },

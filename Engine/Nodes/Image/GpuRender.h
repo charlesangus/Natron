@@ -269,6 +269,22 @@ struct GpuLayerInput {
     }
 };
 
+/**
+ * @brief An output the node requests under a context (EffectInstance::getContextNodeRequests()) rather than reads as an
+ * input, in the layer getGpuInputLayer() names for FrameViewRequest::TaskEdge::kContextRequestInputNb. The view's
+ * buffer is null when readsGpuInput() says the node does not read it.
+ **/
+struct GpuContextInput {
+    ImageLayerDesc layer;
+    GpuImageView view;
+
+    GpuContextInput()
+        : layer()
+        , view()
+    {
+    }
+};
+
 // An input read at another time than the rendered one.
 struct GpuTimedInput {
     int inputNb;
@@ -294,6 +310,9 @@ struct GpuRenderArgs {
     // The layers of getGpuExtraInputLayers(), one entry per input and layer, at query.time.
     std::vector<GpuLayerInput> layerInputs;
 
+    // One per output the task requests under a context, in the order of the request's dependencies.
+    std::vector<GpuContextInput> contextInputs;
+
     // The inputs at the other times query.inputTimes lists, one entry per input and time, in the
     // layer getGpuInputLayer() names.
     std::vector<GpuTimedInput> timedInputs;
@@ -305,6 +324,7 @@ struct GpuRenderArgs {
         , outputRect()
         , inputs()
         , layerInputs()
+        , contextInputs()
         , timedInputs()
         , output()
         , context(ctx)

@@ -434,6 +434,11 @@ public:
      **/
     Tracker* getTrackerContext() const;
 
+    /**
+     * @brief Get the links and boundaries of a SplineWarp node's curves, or None for any other node.
+     **/
+    SplineWarpCurves* getSplineWarp() const;
+
     RectD getRegionOfDefinition(double time, int /* Python API: do not use ViewIdx */ view) const;
 
     static Param* createParamWrapperForKnob(const KnobIPtr& knob);

@@ -1695,7 +1695,7 @@ AppManager::onAllPluginsLoaded()
     }
 } // AppManager::onAllPluginsLoaded
 
-void
+Plugin*
 AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
                                   void (*buildEffect)(),
                                   const QString& iconPath,
@@ -1730,6 +1730,22 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
     if (internalUseOnly) {
         p->setForInternalUseOnly(true);
     }
+    if (dynamic_cast<const NodeGroup*>(node.get())) {
+        // A group's inputs are its Input nodes, and it has none until it is created.
+        p->setFirstInputDataKind(true, eDataKindPolymorphic);
+        p->setInputDataKinds({ eDataKindPolymorphic });
+    } else {
+        p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
+        std::vector<DataKindEnum> kinds;
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            if (!node->isInputMask(i)) {
+                kinds.push_back(node->getInputDataKind(i));
+            }
+        }
+        p->setInputDataKinds(kinds);
+    }
+
+    return p;
 }
 
 template <typename PLUGIN>
@@ -1756,7 +1772,10 @@ AppManager::registerNativePlugin()
     }
     const NodeSpec* spec = native->nodeSpec();
 
-    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    Plugin* plugin = registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    if (plugin) {
+        plugin->setPrimPathKnob(std::string(spec->primPathKnob), spec->primPathKnobTakesPattern);
+    }
 }
 
 void
@@ -2241,6 +2260,9 @@ AppManager::loadPythonGroups()
 
             p->setPythonModule(modulePath + moduleName);
             p->setToolsetScript(isToolset);
+            // Its inputs are only known once its script has built it.
+            p->setFirstInputDataKind(true, eDataKindPolymorphic);
+            p->setInputDataKinds({ eDataKindPolymorphic });
         }
     }
 } // AppManager::loadPythonGroups

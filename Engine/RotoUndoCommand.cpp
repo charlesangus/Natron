@@ -26,6 +26,7 @@
 #include "RotoUndoCommand.h"
 
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -44,6 +45,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoFeatherDrag.h"
 #include "Engine/RotoLayer.h"
@@ -392,6 +394,9 @@ AddPointUndoCommand::undo()
         return;
     }
     _curve->removeControlPointByIndex(_index + 1);
+    if (_hostBefore) {
+        roto->getCurveContext()->restoreHostState(_hostBefore);
+    }
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
     roto->evaluate(true);
 }
@@ -399,12 +404,22 @@ AddPointUndoCommand::undo()
 void
 AddPointUndoCommand::redo()
 {
-    BezierCPPtr cp = _curve->addControlPointAfterIndex(_index, _t);
-    BezierCPPtr newFp = _curve->getFeatherPointAtIndex(_index + 1);
     RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
+    }
+    if (!_firstRedoCalled) {
+        _hostBefore = roto->getCurveContext()->saveHostState();
+    }
+    BezierCPPtr cp = _curve->addControlPointAfterIndex(_index, _t);
+    BezierCPPtr newFp = _curve->getFeatherPointAtIndex(_index + 1);
+    if (!_firstRedoCalled) {
+        _hostAfter = roto->getCurveContext()->saveHostState();
+    } else if (_hostAfter) {
+        // The insertion hook remaps by the curve's current shape, which the undo's removal left
+        // different, so it would not land on the parameters of the first insertion.
+        roto->getCurveContext()->restoreHostState(_hostAfter);
     }
     roto->setSelection( _curve, std::make_pair(cp, newFp) );
     if (_firstRedoCalled) {
@@ -518,6 +533,9 @@ RemovePointUndoCommand::undo()
         }
         selection.push_back(it->curve);
     }
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
 
     roto->setSelection(selection, cpSelection);
     roto->evaluate(true);
@@ -532,6 +550,7 @@ RemovePointUndoCommand::redo()
         return;
     }
 
+    _hostState = roto->getCurveContext()->saveHostState();
     ///clone the curve
     for (std::list<CurveDesc >::iterator it = _curves.begin(); it != _curves.end(); ++it) {
         it->oldCurve->clone( it->curve.get() );
@@ -552,6 +571,7 @@ RemovePointUndoCommand::redo()
                 isBezier->setCurveFinished(false);
             } else if (cpCount == 0) {
                 it->curveRemoved = true;
+                it->indexInLayer = std::max(0, it->parentLayer->getChildIndex(it->curve));
                 std::list<BezierPtr>::iterator found = std::find( toRemove.begin(), toRemove.end(), it->curve );
                 if ( found == toRemove.end() ) {
                     toRemove.push_back(isBezier);
@@ -614,6 +634,9 @@ RemoveCurveUndoCommand::undo()
             selection.push_back(isBezier);
         }
     }
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
 
     SelectedCpList cpList;
     if ( !selection.empty() ) {
@@ -631,6 +654,7 @@ RemoveCurveUndoCommand::redo()
         return;
     }
 
+    _hostState = roto->getCurveContext()->saveHostState();
     for (std::list<RemovedCurve>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
         roto->removeCurve(it->curve);
     }
@@ -1314,6 +1338,9 @@ OpenCloseUndoCommand::undo()
         }
     }
     _curve->setCurveFinished( !_curve->isCurveFinished() );
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
     roto->evaluate(true);
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
 }
@@ -1329,6 +1356,7 @@ OpenCloseUndoCommand::redo()
     if (_firstRedoCalled) {
         roto->setCurrentTool( _selectedTool.lock() );
     }
+    _hostState = roto->getCurveContext()->saveHostState();
     _curve->setCurveFinished( !_curve->isCurveFinished() );
     roto->evaluate(_firstRedoCalled);
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
@@ -1921,6 +1949,178 @@ MakeRectangleUndoCommand::mergeWith(const UndoCommandPtr &other)
 }
 
 ////////////////////////////////////
+
+MakePointCurveUndoCommand::MakePointCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                                                     double x,
+                                                     double y,
+                                                     double time)
+    : UndoCommand()
+    , _firstRedoCalled(false)
+    , _roto(roto)
+    , _parentLayer()
+    , _indexInLayer(-1)
+    , _curve()
+    , _x(x)
+    , _y(y)
+    , _time(time)
+{
+    setText(tr("Draw Point").toStdString());
+}
+
+MakePointCurveUndoCommand::~MakePointCurveUndoCommand()
+{
+}
+
+void
+MakePointCurveUndoCommand::undo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto || !_curve) {
+        return;
+    }
+    roto->removeCurve(_curve);
+    roto->evaluate(true);
+    roto->setSelection(BezierPtr(), std::make_pair(CpPtr(), CpPtr()));
+}
+
+void
+MakePointCurveUndoCommand::redo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto) {
+        return;
+    }
+    if (_firstRedoCalled) {
+        roto->getCurveContext()->addItem(_parentLayer, _indexInLayer, _curve, RotoItem::eSelectionReasonOverlayInteract);
+    } else {
+        _curve = roto->getCurveContext()->makeBezier(_x, _y, kRotoPointBaseName, _time, true);
+        if (!_curve) {
+            return;
+        }
+        _curve->setCurveFinished(true);
+        _parentLayer = _curve->getParentLayer();
+        if (_parentLayer) {
+            _indexInLayer = _parentLayer->getChildIndex(_curve);
+        }
+    }
+    _firstRedoCalled = true;
+    roto->evaluate(true);
+    roto->setSelection(_curve, std::make_pair(CpPtr(), CpPtr()));
+}
+
+////////////////////////////
+
+TrackLinkUndoCommand::TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
+                                           const std::list<PointRef>& points,
+                                           ActionEnum action,
+                                           const TrackMarkerPtr& marker,
+                                           double time)
+    : UndoCommand()
+    , _roto(roto)
+    , _points(points)
+    , _action(action)
+    , _marker(marker)
+    , _time(time)
+    , _done(false)
+    , _curves()
+{
+    std::set<Bezier*> seen;
+    for (std::list<PointRef>::const_iterator it = _points.begin(); it != _points.end(); ++it) {
+        if (!it->first || !seen.insert(it->first.get()).second) {
+            continue;
+        }
+        CurveState state;
+        state.curve = it->first;
+        state.points = it->first->getControlPoints();
+        const BezierCPs& feathers = it->first->getFeatherPoints();
+        state.points.insert(state.points.end(), feathers.begin(), feathers.end());
+        for (std::list<BezierCPPtr>::const_iterator itP = state.points.begin(); itP != state.points.end(); ++itP) {
+            state.before.push_back(std::make_shared<BezierCP>(**itP));
+        }
+        _curves.push_back(state);
+    }
+    switch (action) {
+    case eActionLink:
+        setText(tr("Link to Track").toStdString());
+        break;
+    case eActionUnlink:
+        setText(tr("Unlink from Track").toStdString());
+        break;
+    case eActionUnlinkAndBake:
+        setText(tr("Unlink from Track and Bake").toStdString());
+        break;
+    }
+}
+
+TrackLinkUndoCommand::~TrackLinkUndoCommand()
+{
+}
+
+void
+TrackLinkUndoCommand::restore(bool after)
+{
+    std::set<RotoCurveContext*> contexts;
+    for (std::list<CurveState>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
+        const std::list<BezierCPPtr>& saved = after ? it->after : it->before;
+        std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();
+        for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end() && itSaved != saved.end(); ++itP, ++itSaved) {
+            (*itP)->clone(**itSaved);
+        }
+        it->curve->invalidateContentHash();
+        it->curve->invalidatePolygonOrientation();
+        RotoCurveContextPtr context = it->curve->getContext();
+        if (context && contexts.insert(context.get()).second) {
+            context->refreshTrackLinkListeners();
+        }
+    }
+}
+
+void
+TrackLinkUndoCommand::undo()
+{
+    restore(false);
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
+}
+
+void
+TrackLinkUndoCommand::redo()
+{
+    if (_done) {
+        restore(true);
+    } else {
+        for (std::list<PointRef>::const_iterator it = _points.begin(); it != _points.end(); ++it) {
+            if (!it->first) {
+                continue;
+            }
+            try {
+                if (_action == eActionLink) {
+                    it->first->linkPointToTrack(it->second, _marker, _time);
+                } else {
+                    it->first->unlinkPoint(it->second, _action == eActionUnlinkAndBake);
+                }
+            } catch (const std::invalid_argument& e) {
+                qDebug() << e.what();
+            }
+        }
+        for (std::list<CurveState>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
+            for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end(); ++itP) {
+                it->after.push_back(std::make_shared<BezierCP>(**itP));
+            }
+        }
+        _done = true;
+    }
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
+}
+
+////////////////////////////
 
 CommitObjectMaskUndoCommand::CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
                                                          const std::vector<MaskTrace::Contour>& contours,

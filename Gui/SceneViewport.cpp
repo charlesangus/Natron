@@ -267,6 +267,7 @@ struct SceneViewportRenderer::Implementation {
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
+    std::atomic<U64> stageEditCount { 0 };
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -1198,6 +1199,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     _imp->metersPerUnit = metadata.metersPerUnit;
     _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
     _imp->shown = !payload.isEmpty();
+    _imp->stageEditCount = _imp->sceneStage->getEditCount();
 
     return true;
 }
@@ -1238,6 +1240,21 @@ bool
 SceneViewportRenderer::hasScene() const
 {
     return _imp->shown;
+}
+
+void
+SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
+    read(shown ? _imp->sceneStage.get() : nullptr);
+}
+
+U64
+SceneViewportRenderer::getStageEditCount() const
+{
+    return _imp->stageEditCount;
 }
 
 double
@@ -2727,6 +2744,7 @@ struct SceneViewport::Implementation {
     U64 previewSerial = 0;
 
     std::function<NodePtr()> viewedNodeProvider;
+    SceneViewport::SelectionActions selectionActions;
     std::function<NodePtr(const std::string&)> cameraNodeProvider;
     QPointer<UndoHistory> undoHistory;
 
@@ -2952,6 +2970,7 @@ SceneViewport::onSynced(U64 serial,
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
     publishState();
     update();
+    Q_EMIT sceneSynced();
 }
 
 bool
@@ -3318,6 +3337,12 @@ void
 SceneViewport::setViewedNodeProvider(const std::function<NodePtr()>& provider)
 {
     _imp->viewedNodeProvider = provider;
+}
+
+void
+SceneViewport::setSelectionActions(const SelectionActions& actions)
+{
+    _imp->selectionActions = actions;
 }
 
 void
@@ -4252,8 +4277,19 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DLockView, k->modifiers(), k->key()) || (viewModeForKey(k->modifiers(), k->key()) >= 0)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
+
+            return true;
+        }
+    }
+    // QWidget::event() spends Tab on moving the focus before keyPressEvent() sees it.
+    if (e->type() == QEvent::KeyPress) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if (matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())) {
+            keyPressEvent(k);
 
             return true;
         }
@@ -4289,6 +4325,22 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DCycleTool, e->modifiers(), e->key())) {
         cycleTransformTool();
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, e->modifiers(), e->key())) {
+        if (_imp->selectionActions.setOnNode) {
+            _imp->selectionActions.setOnNode(getSelection());
+        }
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, e->modifiers(), e->key())) {
+        if (_imp->selectionActions.createFromSelection) {
+            _imp->selectionActions.createFromSelection(getSelection());
+        }
         e->accept();
 
         return;
@@ -4496,6 +4548,32 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QObject::connect(createCamera, &QAction::triggered, this, [this]() {
         createCameraFromView();
     });
+
+    menu.addSeparator();
+    {
+        const QStringList selection = getSelection();
+        QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
+        setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
+        setOnNode->setShortcut(keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
+        const QString blocker = _imp->selectionActions.setOnNodeBlocker ? _imp->selectionActions.setOnNodeBlocker(selection) : QString();
+        setOnNode->setEnabled(bool(_imp->selectionActions.setOnNode) && blocker.isEmpty());
+        setOnNode->setToolTip(blocker);
+        setOnNode->setStatusTip(blocker);
+        QObject::connect(setOnNode, &QAction::triggered, this, [this, selection]() {
+            if (_imp->selectionActions.setOnNode) {
+                _imp->selectionActions.setOnNode(selection);
+            }
+        });
+        QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
+        create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
+        create->setShortcut(keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
+        create->setEnabled(bool(_imp->selectionActions.createFromSelection) && _imp->renderer.hasScene());
+        QObject::connect(create, &QAction::triggered, this, [this, selection]() {
+            if (_imp->selectionActions.createFromSelection) {
+                _imp->selectionActions.createFromSelection(selection);
+            }
+        });
+    }
 
     // The free camera's clip planes: typing a distance makes them absolute.
     QMenu* clipping = menu.addMenu(tr("Clipping"));

@@ -24,7 +24,7 @@ void keymix(uint3 tid : SV_DispatchThreadID)
 
 // Difference: the result is B and the step's input A. Colour is B's. Alpha remaps the sum of the
 // squared colour differences so that the black point gives 0 and the white point 1 (scale is
-// 1 / (white - black)), clamped below at 0 and times the gain; a hard threshold gives the gain
+// 1 / (white - black)), clamped below at 0 and times the gain; the alpha is then limited to 0 to 1; a hard threshold gives the gain
 // above the black point and 0 elsewhere. Absent channels read 0 in both, so they add nothing.
 // `precise` keeps the arithmetic unfused, in the CPU step's order.
 struct StepDifference : ICompositeStep
@@ -57,6 +57,8 @@ struct StepDifference : ICompositeStep
             precise float remapped = (sum - blackPoint) * scale;
             matte = gain * max(0.0, remapped);
         }
+        // A comparison rather than clamp(), so that a NaN gives 0 as on the CPU.
+        matte = (matte > 0.0) ? min(matte, 1.0) : 0.0;
         return float4(result.rgb, matte);
     }
 }

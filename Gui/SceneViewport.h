@@ -54,6 +54,7 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class SceneStage;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -173,6 +174,15 @@ public:
     void clearScene();
 
     bool hasScene() const;
+
+    /**
+     * @brief Calls read under the lock that keeps syncs and paints out of the stage, with the
+     * stage shown, or null when no scene is. read must not call back into the renderer.
+     **/
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    // The shown stage's edit count, without the lock: 0 before the first sync.
+    U64 getStageEditCount() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -587,6 +597,18 @@ public:
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
 
+    /**
+     * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
+     * paths now, or nothing when it can.
+     **/
+    struct SelectionActions {
+        std::function<QString(const QStringList& paths)> setOnNodeBlocker;
+        std::function<void(const QStringList& paths)> setOnNode;
+        std::function<void(const QStringList& paths)> createFromSelection;
+    };
+
+    void setSelectionActions(const SelectionActions& actions);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 
@@ -629,6 +651,9 @@ public:
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
+
+    // The renderer's stage holds the latest requested scene, or none (main thread).
+    void sceneSynced();
 
 protected:
     void initializeGL() override;

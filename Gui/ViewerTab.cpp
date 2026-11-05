@@ -26,6 +26,7 @@
 #include "ViewerTab.h"
 #include "ViewerTabPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <set>
 #include <stdexcept>
@@ -69,6 +70,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
@@ -327,8 +329,8 @@ primPathOf(const NodePtr& node)
 
 /**
  * @brief The USDCamera node upstream of node whose prim ends up at primPath in node's scene. A
- * reparenting node grafts its inputs' root prims under its own Prim Path, so the path is looked
- * for in its inputs without that prefix. Grafts renamed by Auto Rename are not followed.
+ * reparenting node moves its inputs' prims, so the path is looked for in its inputs where it
+ * came from (SceneReparentNode::mapToInputPath()).
  **/
 NodePtr
 findCameraNode(const NodePtr& node,
@@ -340,19 +342,21 @@ findCameraNode(const NodePtr& node,
     }
     const bool disabled = node->isNodeDisabled();
     std::string inputPath = primPath;
+    int inputs = node->getNInputs();
     if (!disabled) {
         if (node->getPluginID() == PLUGINID_NATRON_USDCAMERA) {
             return (primPathOf(node) == primPath) ? node : NodePtr();
         }
-        if (dynamic_cast<SceneReparentNode*>(node->getEffectInstance().get())) {
-            const std::string parent = primPathOf(node);
-            if (parent.empty() || (primPath.size() <= parent.size() + 1) || (primPath.compare(0, parent.size(), parent) != 0) || (primPath[parent.size()] != '/')) {
+        if (const SceneReparentNode* reparent = dynamic_cast<const SceneReparentNode*>(node->getEffectInstance().get())) {
+            inputPath = reparent->mapToInputPath(primPath);
+            if (inputPath.empty()) {
                 return NodePtr();
             }
-            inputPath = primPath.substr(parent.size());
+            if (reparent->isWrapping()) {
+                inputs = std::min(inputs, 1);
+            }
         }
     }
-    const int inputs = node->getNInputs();
     for (int i = 0; i < inputs; ++i) {
         NodePtr found = findCameraNode(node->getInput(i), inputPath, visited);
         if (found) {
@@ -1413,6 +1417,19 @@ ViewerTab::onActiveInputDataKindChanged()
             return getSceneViewedNode();
         });
         {
+            SceneViewport::SelectionActions actions;
+            actions.setOnNodeBlocker = [this](const QStringList& paths) -> QString {
+                return SceneSelectionActions::setOnNodeBlocker(getGui(), paths);
+            };
+            actions.setOnNode = [this](const QStringList& paths) {
+                SceneSelectionActions::setOnCurrentNode(getGui(), paths);
+            };
+            actions.createFromSelection = [this](const QStringList& paths) {
+                SceneSelectionActions::createFromSelection(getGui(), getSceneViewedNode(), paths);
+            };
+            _imp->sceneViewport->setSelectionActions(actions);
+        }
+        {
             SceneTransformPolicyTarget::Context context;
             context.viewedNode = [this]() -> NodePtr {
                 return getSceneViewedNode();
@@ -1447,6 +1464,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->clearScene();
         _imp->viewer->show();
     }
+    Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
 NodePtr

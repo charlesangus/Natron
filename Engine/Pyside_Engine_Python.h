@@ -46,17 +46,18 @@
 #include <GlobalDefines.h>
 #include <Enums.h>
 
-//Engine
-#include "PyExprUtils.h"
+// Engine
 #include "MergingEnum.h"
-#include "PyGlobalFunctions.h"
-#include "PyNodeGroup.h"
 #include "PyAppInstance.h"
-#include "PyRoto.h"
-#include "PyTracker.h"
+#include "PyExprUtils.h"
+#include "PyGlobalFunctions.h"
 #include "PyNode.h"
+#include "PyNodeGroup.h"
 #include "PyParameter.h"
-#include "RectI.h"
+#include "PyRoto.h"
+#include "PySplineWarp.h"
+#include "PyTracker.h"
 #include "RectD.h"
+#include "RectI.h"
 
 #endif // PYSIDE_ENGINE_PYTHON_H

@@ -73,8 +73,7 @@ DifferenceOp::createKnobs(KnobHolder* holder,
     {
         KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("White Point").toStdString());
         knob->setName(kDifferenceParamWhitePoint);
-        knob->setHintToolTip(EffectInstance::tr("The squared difference that gives alpha 1, before Gain; larger "
-                                                "differences go above 1. At or below Black Point the matte is a "
+        knob->setHintToolTip(EffectInstance::tr("The squared difference that gives alpha 1, before Gain. At or below Black Point the matte is a "
                                                 "hard threshold at Black Point.")
                                  .toStdString());
         knob->setDefaultValue(1.);
@@ -89,7 +88,7 @@ DifferenceOp::createKnobs(KnobHolder* holder,
     {
         KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Gain").toStdString());
         knob->setName(kDifferenceParamGain);
-        knob->setHintToolTip(EffectInstance::tr("Multiplies the remapped difference.").toStdString());
+        knob->setHintToolTip(EffectInstance::tr("Multiplies the remapped difference; the alpha is then limited to 0 to 1.").toStdString());
         knob->setDefaultValue(1.);
         knob->setMinimum(-DBL_MAX);
         knob->setMaximum(DBL_MAX);
@@ -170,6 +169,8 @@ DifferenceOp::step(const Params& params,
         } else {
             matte = params.gain * std::max(0.f, (sum - params.blackPoint) * params.scale);
         }
+        // Written as a comparison so that a NaN (infinite Gain times a zero remap) gives 0.
+        matte = (matte > 0.f) ? std::min(matte, 1.f) : 0.f;
         for (int c = 0; (c < nComps) && (c < 4); ++c) {
             if (processed[c]) {
                 dst[c] = isColor[c] ? b[c] : matte;

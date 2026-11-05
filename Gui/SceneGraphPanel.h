@@ -122,12 +122,12 @@ private Q_SLOTS:
     void refreshAttributes();
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* e) override;
     void enterEvent(QEnterEvent* e) override;
     void leaveEvent(QEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
-    bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
     void copySelectedPaths();

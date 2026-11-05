@@ -216,6 +216,9 @@ public Q_SLOTS:
 
     void colorFontButtonClicked();
 
+    // Opens the prim picker over the node's input scene.
+    void onPickPrimsClicked();
+
     void updateFontColorIcon(const QColor & color);
 
     ///this is a big hack: the html parser builtin QGraphicsTextItem should do this for us...but it doesn't seem to take care
@@ -268,6 +271,7 @@ private:
 
 private:
     KnobLineEdit *_lineEdit; //< if single line
+    Button* _pickPrimsButton; //< if single line with a prim path hint
     Label* _label; // if label and the actual label is an icon
     QWidget* _container; //< only used when multiline is on
     QVBoxLayout* _mainLayout; //< only used when multiline is on

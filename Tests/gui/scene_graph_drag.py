@@ -10,7 +10,12 @@ Checks:
   - the tree's mime data carries both paths under application/x-natron-prim-paths;
   - the Prim Pattern field accepts the drag, and the drop sets "/World/Box /World/Ball";
   - the tree then lists only /World/Cam under /World: both prims are pruned;
-  - one Undo restores the field's previous value and the prims come back.
+  - one Undo restores the field's previous value and the prims come back;
+  - the same two rows dropped on a USDScopePrim's Prim Path field set it to the first row's path,
+    /World/Box, and one Undo restores it;
+  - the same drop on a USDAssignMaterial's Prim Pattern field sets both paths, and one Undo
+    restores it;
+  - the same drop on its Material Path field sets the first row's path only, and one Undo restores it.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -30,6 +35,9 @@ BOX = "/World/Box"
 BALL = "/World/Ball"
 CAM = "/World/Cam"
 MARKER = "/NatronDropTarget"
+MARKER_PATH = "/NatronDropPathTarget"
+MARKER_ASSIGN = "/NatronDropAssignTarget"
+MARKER_MATERIAL = "/NatronDropMaterialTarget"
 
 try:
     import NatronEngine
@@ -207,6 +215,58 @@ try:
         check(ok, "after Undo the prims come back (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-drop-undone.png")
+
+        def undo_once():
+            action = edit_menu_action("undo")
+            require(action is not None and action.isEnabled(), "an enabled Undo action is in the Edit menu")
+            action.trigger()
+            QApplication.processEvents()
+
+        scope = app.createNode("USDScopePrim", -1, None, props)
+        require(scope is not None, "create USDScopePrim", plugin_problem("USDScopePrim"))
+        scope.setPosition(200, 100)
+        scope_path = scope.getParam("primPath")
+        require(scope_path is not None, "USDScopePrim has a primPath parameter")
+        scope_path.setValue(MARKER_PATH)
+        ok = yield ("until", lambda: field_showing(MARKER_PATH) is not None, POLL_TIMEOUT_S)
+        require(ok, "the USDScopePrim's Prim Path field is shown")
+        check(send_drag(field_showing(MARKER_PATH), mime, True), "the Prim Path field accepts the drag")
+        check(str(scope_path.getValue()) == BOX,
+              "the drop sets a path knob to the first row's path (got %r)" % (scope_path.getValue(),))
+        undo_once()
+        check(str(scope_path.getValue()) == MARKER_PATH,
+              "one Undo restores the path knob (got %r)" % (scope_path.getValue(),))
+
+        assign = app.createNode("USDAssignMaterial", -1, None, props)
+        require(assign is not None, "create USDAssignMaterial", plugin_problem("USDAssignMaterial"))
+        assign.setPosition(400, 100)
+        assign_pattern = assign.getParam("primPattern")
+        require(assign_pattern is not None, "USDAssignMaterial has a primPattern parameter")
+        assign_pattern.setValue(MARKER_ASSIGN)
+        assign_material = assign.getParam("materialPath")
+        require(assign_material is not None, "USDAssignMaterial has a materialPath parameter")
+        assign_material.setValue(MARKER_MATERIAL)
+        ok = yield ("until", lambda: field_showing(MARKER_ASSIGN) is not None, POLL_TIMEOUT_S)
+        require(ok, "the USDAssignMaterial's Prim Pattern field is shown")
+        check(send_drag(field_showing(MARKER_ASSIGN), mime, True), "USDAssignMaterial's Prim Pattern field accepts the drag")
+        got = str(assign_pattern.getValue())
+        check(got.split(" ") == [BOX, BALL],
+              "the drop sets USDAssignMaterial's pattern to both paths in order (got %r)" % (got,))
+        undo_once()
+        check(str(assign_pattern.getValue()) == MARKER_ASSIGN,
+              "one Undo restores USDAssignMaterial's pattern (got %r)" % (assign_pattern.getValue(),))
+
+        ok = yield ("until", lambda: field_showing(MARKER_MATERIAL) is not None, POLL_TIMEOUT_S)
+        require(ok, "the USDAssignMaterial's Material Path field is shown")
+        check(send_drag(field_showing(MARKER_MATERIAL), mime, True), "USDAssignMaterial's Material Path field accepts the drag")
+        got = str(assign_material.getValue())
+        check(got == BOX,
+              "the drop sets the Material Path to the first of two paths only (got %r)" % (got,))
+        check(str(assign_pattern.getValue()) == MARKER_ASSIGN,
+              "the Material Path drop leaves the Prim Pattern alone (got %r)" % (assign_pattern.getValue(),))
+        undo_once()
+        check(str(assign_material.getValue()) == MARKER_MATERIAL,
+              "one Undo restores the Material Path (got %r)" % (assign_material.getValue(),))
 
     run(steps())
 except Exception:

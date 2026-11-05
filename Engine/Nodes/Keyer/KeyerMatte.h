@@ -25,51 +25,10 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The four breakpoints of a trapezoid matte: the matte rises from 0 at a to 1 at b, stays
- * at 1 up to c and falls back to 0 at d. trapezoidMatte() assumes a <= b <= c <= d.
- **/
-struct KeyerTrapezoid {
-    double a;
-    double b;
-    double c;
-    double d;
-};
-
-/**
- * @brief The trapezoid matte of the key value k: 0 for k <= a or k >= d, 1 for b <= k <= c, and
- * linear between. An edge whose two breakpoints are equal is a hard step, and the plateau wins
- * when it touches an edge, so an all-equal trapezoid is 1 at that value and 0 everywhere else.
- **/
-inline float
-trapezoidMatte(double k,
-               double a,
-               double b,
-               double c,
-               double d)
-{
-    if ((k >= b) && (k <= c)) {
-        return 1.f;
-    }
-    if ((k <= a) || (k >= d)) {
-        return 0.f;
-    }
-    if (k < b) {
-        return (float)((k - a) / (b - a));
-    }
-
-    return (float)((d - k) / (d - c));
-}
-
-inline float
-trapezoidMatte(double k,
-               const KeyerTrapezoid& t)
-{
-    return trapezoidMatte(k, t.a, t.b, t.c, t.d);
-}
-
-/**
- * @brief trapezoidMatte() in float, with one rounding per operation, as the GPU kernel
- * computes it; range holds a, b, c and d.
+ * @brief The trapezoid matte of the key value k, range holding the breakpoints a <= b <= c <= d: 0
+ * for k <= a or k >= d, 1 for b <= k <= c, and linear between. An edge whose two breakpoints are
+ * equal is a hard step, and the plateau wins when it touches an edge, so an all-equal trapezoid is
+ * 1 at that value and 0 everywhere else. It rounds once per operation, as the GPU kernel computes it.
  **/
 inline float
 trapezoidMatteFloat(float k,

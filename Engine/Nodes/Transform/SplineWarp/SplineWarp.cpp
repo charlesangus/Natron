@@ -387,7 +387,7 @@ SplineWarp::initializeKnobs()
         context->createTransformKnobs(transformPage);
         const RotoCurveContext::TransformKnobs knobs = context->getTransformKnobs();
         getNode()->addTransformInteract(knobs.translate, knobs.scale, knobs.scaleUniform, knobs.rotate, knobs.skewX, knobs.skewY,
-                                        knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/, KnobBoolPtr() /*interactive*/);
+                                        knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/);
     }
 
     const KnobPagePtr renderPage = createKnob<KnobPage>(tr("Render"));

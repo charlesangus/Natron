@@ -487,7 +487,7 @@ TransformImageNode<MASKED>::initializeKnobs()
     NodePtr node = this->getNode();
     if (node) {
         const TransformOp& op = this->op();
-        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), KnobBoolPtr());
+        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock());
     }
 } // TransformImageNode::initializeKnobs
 

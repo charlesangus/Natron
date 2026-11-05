@@ -1761,7 +1761,6 @@ public:
 
     void addRectangleInteract(const KnobDoublePtr& bottomLeft,
                               const KnobDoublePtr& size,
-                              const KnobBoolPtr& interactive,
                               const KnobBoolPtr& enable);
 
     /**
@@ -1778,8 +1777,7 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,
@@ -1794,8 +1792,7 @@ public:
                               const KnobBoolPtr& enable3,
                               const KnobBoolPtr& enable4,
                               const KnobChoicePtr& overlayPoints,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void removePositionHostOverlay(KnobI* knob);
 

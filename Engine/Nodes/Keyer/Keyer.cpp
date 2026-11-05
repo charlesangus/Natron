@@ -95,8 +95,7 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
 {
     holder = knobHolder;
 
-    // Node.cpp shows this knob's value in parentheses next to the node's label. It moves to a
-    // native sublabel hook once the node graph has one.
+    // Node.cpp shows this knob's value in parentheses next to the node's label.
     {
         KnobStringPtr knob = AppManager::createKnob<KnobString>(knobHolder, std::string(kNatronOfxParamStringSublabelName));
         knob->setName(kNatronOfxParamStringSublabelName);
@@ -120,6 +119,7 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
         options.push_back(ChoiceOption("blue", "Blue", EffectInstance::tr("The blue channel.").toStdString()));
         knob->populateChoices(options);
         knob->setDefaultValue((int)eKeySourceLuminance);
+        knob->setAnimationEnabled(false);
         page->addKnob(knob);
         keySource = knob;
     }

@@ -4358,8 +4358,6 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
-    // Native and OpenFX nodes share one footer below the line: Clamp Black and Clamp White on
-    // one row, (Un)premult by, the mask rows with Invert Mask, then Mix.
     std::vector<KnobIPtr> footerKnobs = moveClampKnobsToFooter(mainPage);
     createUnPremultSelector(mainPage);
     footerKnobs.push_back(_imp->unPremultBySelector.lock());

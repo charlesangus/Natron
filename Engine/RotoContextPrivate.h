@@ -1811,8 +1811,7 @@ public:
             resetCloneTransformKnob = resetCloneTransform;
 
             node.lock()->addTransformInteract(translate, scale, scaleUniform, rotate, skewX, skewY, skewOrder, center,
-                                              KnobBoolPtr() /*invert*/,
-                                              KnobBoolPtr() /*interactive*/);
+                                              KnobBoolPtr() /*invert*/);
 
             KnobChoicePtr filter = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoBrushFilterParamLabel), 1, true);
             filter->setName(kRotoBrushFilterParam);
@@ -2014,8 +2013,7 @@ public:
 
         node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
                                           skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
-                                          KnobBoolPtr() /*invert*/,
-                                          KnobBoolPtr() /*interactive*/);
+                                          KnobBoolPtr() /*invert*/);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);
@@ -2300,9 +2298,6 @@ public:
             translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, extraMatrix, resetTransform
         };
         for (const KnobIPtr& k : created) {
-            if (!k) {
-                continue;
-            }
             transformKnobs.push_back(k);
             k->setDefaultAllDimensionsEnabled(false);
         }

@@ -138,16 +138,21 @@ footerTail(const NodePtr& node,
 }
 
 void
+expectFooterTail(const NodePtr& node,
+                 const std::vector<std::string>& expected)
+{
+    bool doubledSeparator = true;
+
+    EXPECT_EQ(expected, footerTail(node, &doubledSeparator));
+    EXPECT_FALSE(doubledSeparator);
+}
+
+void
 expectFooter(const NodePtr& node)
 {
     ASSERT_TRUE(node.get() != nullptr);
 
-    bool doubledSeparator = true;
-    const std::vector<std::string> expected = {
-        "separator", "clampBlack", "clampWhite", kUnPremultByKnobName, "maskEnable", "maskChannel", "maskInvert", "mix"
-    };
-    EXPECT_EQ(expected, footerTail(node, &doubledSeparator));
-    EXPECT_FALSE(doubledSeparator);
+    expectFooterTail(node, { "separator", "clampBlack", "clampWhite", kUnPremultByKnobName, "maskEnable", "maskChannel", "maskInvert", "mix" });
 
     KnobIPtr clampBlack = node->getKnobByName("clampBlack");
     KnobIPtr clampWhite = node->getKnobByName("clampWhite");
@@ -192,4 +197,78 @@ TEST_F(KnobFooterOrderTest, ColorLookup)
 TEST_F(KnobFooterOrderTest, OfxColourPluginWithAPremultPair)
 {
     expectFooter(createNode(QString::fromUtf8(kNatronTestPointMatrixPluginID), kNatronTestPointMatrixMajor));
+}
+
+TEST_F(KnobFooterOrderTest, ClampBlackAloneEndsItsRow)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterClampBlackOnlyPluginID), kNatronTestFooterProbeMajor);
+    ASSERT_TRUE(bool(node));
+
+    expectFooterTail(node, { "separator", "clampBlack", kUnPremultByKnobName, "maskEnable", "maskChannel", "maskInvert", "mix" });
+    KnobIPtr clampBlack = node->getKnobByName("clampBlack");
+    ASSERT_TRUE(bool(clampBlack));
+    EXPECT_TRUE(clampBlack->isNewLineActivated());
+}
+
+TEST_F(KnobFooterOrderTest, ClampWhiteAloneEndsItsRow)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterClampWhiteOnlyPluginID), kNatronTestFooterProbeMajor);
+    ASSERT_TRUE(bool(node));
+
+    expectFooterTail(node, { "separator", "clampWhite", kUnPremultByKnobName, "maskEnable", "maskChannel", "maskInvert", "mix" });
+    KnobIPtr clampWhite = node->getKnobByName("clampWhite");
+    ASSERT_TRUE(bool(clampWhite));
+    EXPECT_TRUE(clampWhite->isNewLineActivated());
+}
+
+TEST_F(KnobFooterOrderTest, ClampsInAGroupStayInTheGroup)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterClampsInGroupPluginID), kNatronTestFooterProbeMajor);
+    ASSERT_TRUE(bool(node));
+
+    expectFooterTail(node, { "separator", kUnPremultByKnobName, "maskEnable", "maskChannel", "maskInvert", "mix" });
+    KnobIPtr group = node->getKnobByName(kNatronTestFooterProbeParamClampGroup);
+    KnobIPtr clampBlack = node->getKnobByName("clampBlack");
+    KnobIPtr clampWhite = node->getKnobByName("clampWhite");
+    ASSERT_TRUE(group && clampBlack && clampWhite);
+    EXPECT_EQ(group, clampBlack->getParentKnob());
+    EXPECT_EQ(group, clampWhite->getParentKnob());
+}
+
+TEST_F(KnobFooterOrderTest, SecretKnobAfterAVisibleOneStillGetsTheSeparator)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterSecretAfterVisiblePluginID), kNatronTestFooterProbeMajor);
+
+    expectFooter(node);
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(bool(node->getKnobByName("advancedSep")));
+}
+
+// The plug-in's own divider opens the footer; the secret knob between them must not hide it.
+TEST_F(KnobFooterOrderTest, SecretKnobAfterADividerAddsNoSecondSeparator)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterSecretAfterDividerPluginID), kNatronTestFooterProbeMajor);
+
+    expectFooter(node);
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(bool(node->getKnobByName(std::string(kNatronTestFooterProbeParamAmount) + "_separator")));
+    EXPECT_FALSE(bool(node->getKnobByName("advancedSep")));
+}
+
+// The channel choice is declared below the clamps, yet its twin stays above the footer: the clamps
+// have moved to the end of the page by the time it is inserted at the choice's position.
+TEST_F(KnobFooterOrderTest, MultiPlanarChannelTwinStaysAboveTheFooter)
+{
+    NodePtr node = createNode(QString::fromUtf8(kNatronTestFooterMultiPlanarPluginID), kNatronTestFooterProbeMajor);
+
+    expectFooter(node);
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(node->getEffectInstance()->isMultiPlanar());
+
+    KnobIPtr choice = node->getKnobByName(kNatronTestFooterProbeParamKeyChannel);
+    KnobIPtr twin = node->getKnobByName("hostKeyChannel");
+    ASSERT_TRUE(choice && twin);
+    EXPECT_TRUE(choice->getIsSecret());
+    EXPECT_FALSE(twin->getIsSecret());
+    EXPECT_EQ(mainPageOf(node), twin->getParentKnob());
 }

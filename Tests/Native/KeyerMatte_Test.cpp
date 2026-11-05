@@ -23,46 +23,66 @@
 
 #include "Engine/Nodes/Keyer/KeyerMatte.h"
 
+#include "KeyerMatteReference.h"
+
 NATRON_NAMESPACE_USING
+
+namespace {
+
+void
+expectMatte(float expected,
+            double k,
+            double a,
+            double b,
+            double c,
+            double d)
+{
+    const float range[4] = { (float)a, (float)b, (float)c, (float)d };
+
+    EXPECT_FLOAT_EQ(expected, trapezoidMatte(k, a, b, c, d)) << "reference at key " << k;
+    EXPECT_FLOAT_EQ(expected, trapezoidMatteFloat((float)k, range)) << "render at key " << k;
+}
+
+} // namespace
 
 TEST(KeyerMatte, RampsAndPlateau)
 {
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(-1., 0., 0.2, 0.6, 1.));
-    EXPECT_FLOAT_EQ(0.5f, trapezoidMatte(0.1, 0., 0.2, 0.6, 1.));
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.4, 0., 0.2, 0.6, 1.));
-    EXPECT_FLOAT_EQ(0.5f, trapezoidMatte(0.8, 0., 0.2, 0.6, 1.));
-    EXPECT_FLOAT_EQ(0.25f, trapezoidMatte(0.9, 0., 0.2, 0.6, 1.));
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(2., 0., 0.2, 0.6, 1.));
+    expectMatte(0.f, -1., 0., 0.2, 0.6, 1.);
+    expectMatte(0.5f, 0.1, 0., 0.2, 0.6, 1.);
+    expectMatte(1.f, 0.4, 0., 0.2, 0.6, 1.);
+    expectMatte(0.5f, 0.8, 0., 0.2, 0.6, 1.);
+    expectMatte(0.25f, 0.9, 0., 0.2, 0.6, 1.);
+    expectMatte(0.f, 2., 0., 0.2, 0.6, 1.);
 }
 
 TEST(KeyerMatte, EachBreakpoint)
 {
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(0., 0., 0.1, 0.9, 1.));
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.1, 0., 0.1, 0.9, 1.));
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.9, 0., 0.1, 0.9, 1.));
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(1., 0., 0.1, 0.9, 1.));
+    expectMatte(0.f, 0., 0., 0.1, 0.9, 1.);
+    expectMatte(1.f, 0.1, 0., 0.1, 0.9, 1.);
+    expectMatte(1.f, 0.9, 0., 0.1, 0.9, 1.);
+    expectMatte(0.f, 1., 0., 0.1, 0.9, 1.);
 }
 
 TEST(KeyerMatte, HardEdges)
 {
     // a == b: a step up at a; c == d: a step down at d.
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(0.2999, 0.3, 0.3, 0.7, 0.7));
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.3, 0.3, 0.3, 0.7, 0.7));
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.7, 0.3, 0.3, 0.7, 0.7));
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(0.7001, 0.3, 0.3, 0.7, 0.7));
+    expectMatte(0.f, 0.2999, 0.3, 0.3, 0.7, 0.7);
+    expectMatte(1.f, 0.3, 0.3, 0.3, 0.7, 0.7);
+    expectMatte(1.f, 0.7, 0.3, 0.3, 0.7, 0.7);
+    expectMatte(0.f, 0.7001, 0.3, 0.3, 0.7, 0.7);
 }
 
 TEST(KeyerMatte, OneSidedRampsOutsideTheUnitRange)
 {
     // Scene-linear keys: no clamp to [0, 1] on either the key or the breakpoints.
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(5., 0., 1., 10., 20.));
-    EXPECT_FLOAT_EQ(0.5f, trapezoidMatte(15., 0., 1., 10., 20.));
-    EXPECT_FLOAT_EQ(0.5f, trapezoidMatte(-1.5, -2., -1., 0., 0.));
+    expectMatte(1.f, 5., 0., 1., 10., 20.);
+    expectMatte(0.5f, 15., 0., 1., 10., 20.);
+    expectMatte(0.5f, -1.5, -2., -1., 0., 0.);
 }
 
 TEST(KeyerMatte, AllEqualTrapezoid)
 {
-    EXPECT_FLOAT_EQ(1.f, trapezoidMatte(0.5, 0.5, 0.5, 0.5, 0.5));
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(0.4999, 0.5, 0.5, 0.5, 0.5));
-    EXPECT_FLOAT_EQ(0.f, trapezoidMatte(0.5001, 0.5, 0.5, 0.5, 0.5));
+    expectMatte(1.f, 0.5, 0.5, 0.5, 0.5, 0.5);
+    expectMatte(0.f, 0.4999, 0.5, 0.5, 0.5, 0.5);
+    expectMatte(0.f, 0.5001, 0.5, 0.5, 0.5, 0.5);
 }

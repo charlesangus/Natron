@@ -89,6 +89,13 @@ const TestPluginVersion kTestPlugins[] = {
     { kNatronTestMatrixWarpPluginID, kNatronTestMatrixWarpMajor },
     { kNatronTestFrameWindowPluginID, kNatronTestFrameWindowMajor },
     { kNatronTestOCIOConfigPluginID, kNatronTestOCIOConfigMajor },
+    { kNatronTestFooterClampBlackOnlyPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterClampWhiteOnlyPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterClampsInGroupPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterSecretAfterDividerPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterSecretAfterVisiblePluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterMultiPlanarPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestOverlayParamsPluginID, kNatronTestOverlayParamsMajor },
 };
 
 const int kWindowSize = 4;

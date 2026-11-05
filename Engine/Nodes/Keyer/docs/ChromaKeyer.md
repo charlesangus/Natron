@@ -19,13 +19,16 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| ChromaKeyer | transcendental | `kChromaKeyerTolerance`, `kChromaKeyerUnpremultipliedTolerance` | the unpremultiplied output uses 1e-3 relative on the GPU |
+| ChromaKeyer | transcendental | `ParityTolerance::transcendental()`, `kUnpremultipliedTolerance` | the unpremultiplied output uses 1e-2 relative on the GPU |
 
 The GPU holds the CPU's class, transcendental, in the intermediate,
 premultiplied and composite modes, for every source alpha option, with or
 without Bg and the host mask, and for an RGB source. The host derives the
 per-frame constants as the CPU does, and the device keys in float.
 
-The unpremultiplied mode holds 1e-3 relative. It divides by the key alpha, so a
+The unpremultiplied mode holds 1e-2 relative. It divides by the key alpha, so a
 one-ulp difference in the float key, which the CPU rounds from double, grows by
-the reciprocal of that alpha (`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).
+the reciprocal of that alpha. The alpha can be near zero, because the background
+key is not clamped to 1 and alpha passes through zero: the green setting divides
+by an alpha near 1e-4, a 1.2e-3 relative difference on llvmpipe
+(`Tests/Native/NativeChromaKeyerGpu_Test.cpp`).

@@ -114,7 +114,7 @@ ITransform::initializeKnobs()
 
     NodePtr node = getNode();
     if (node) {
-        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), _op.uniform.lock(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock(), KnobBoolPtr());
+        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), _op.uniform.lock(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock());
     }
     declareMapLayerKnob();
 } // ITransform::initializeKnobs

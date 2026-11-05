@@ -919,6 +919,252 @@ PremultProbePluginFactory::createInstance(OfxImageEffectHandle handle,
     return new PremultProbePlugin(handle);
 }
 
+// --- Footer and overlay probes -----------------------------------------------------------------
+
+class PassThroughProbePlugin
+    : public ImageEffect {
+public:
+    explicit PassThroughProbePlugin(OfxImageEffectHandle handle)
+        : ImageEffect(handle)
+        , _dstClip(fetchClip(kOfxImageEffectOutputClipName))
+        , _srcClip(fetchClip(kOfxImageEffectSimpleSourceClipName))
+    {
+    }
+
+private:
+    // Reached only with no Source: every frame is an identity of a connected one.
+    virtual void render(const RenderArguments& args) override
+    {
+        auto_ptr<Image> dst(fetchDstImage(_dstClip, args.time));
+        const float rgba[4] = { 0.f, 0.f, 0.f, 0.f };
+        for (int y = args.renderWindow.y1; y < args.renderWindow.y2; ++y) {
+            for (int x = args.renderWindow.x1; x < args.renderWindow.x2; ++x) {
+                writeRGBA(dst.get(), x, y, rgba);
+            }
+        }
+    }
+
+    virtual bool isIdentity(const IsIdentityArguments& /*args*/,
+                            Clip*& identityClip,
+                            double& /*identityTime*/,
+                            int& /*view*/,
+                            std::string& /*plane*/) override
+    {
+        if (!_srcClip->isConnected()) {
+            return false;
+        }
+        identityClip = _srcClip;
+
+        return true;
+    }
+
+    Clip* _dstClip;
+    Clip* _srcClip;
+};
+
+void
+definePassThroughClips(ImageEffectDescriptor& desc)
+{
+    ClipDescriptor* src = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    addColorComponents(src);
+    src->setTemporalClipAccess(false);
+    src->setIsMask(false);
+    addColorComponents(desc.defineClip(kOfxImageEffectOutputClipName));
+}
+
+void
+defineProbeClamp(ImageEffectDescriptor& desc,
+                 PageParamDescriptor* page,
+                 const GroupParamDescriptor* group,
+                 const char* name,
+                 const char* label)
+{
+    BooleanParamDescriptor* param = desc.defineBooleanParam(name);
+    param->setLabel(label);
+    param->setHint("Stored only: the probe passes its Source through.");
+    param->setDefault(false);
+    if (group) {
+        param->setParent(*group);
+    }
+    page->addChild(*param);
+}
+
+enum FooterProbeLayout {
+    eFooterProbeClampBlackOnly,
+    eFooterProbeClampWhiteOnly,
+    eFooterProbeClampsInGroup,
+    eFooterProbeSecretAfterDivider,
+    eFooterProbeSecretAfterVisible,
+    eFooterProbeMultiPlanar
+};
+
+template <FooterProbeLayout layout>
+class FooterProbePluginFactory
+    : public PluginFactoryHelper<FooterProbePluginFactory<layout>> {
+public:
+    explicit FooterProbePluginFactory(const std::string& id)
+        : PluginFactoryHelper<FooterProbePluginFactory<layout>>(id, kNatronTestFooterProbeMajor, 0)
+    {
+    }
+
+    virtual void load() override { }
+
+    virtual void unload() override { }
+
+    virtual void describe(ImageEffectDescriptor& desc) override;
+    virtual void describeInContext(ImageEffectDescriptor& desc, ContextEnum context) override;
+    virtual ImageEffect* createInstance(OfxImageEffectHandle handle, ContextEnum context) override;
+};
+
+template <FooterProbeLayout layout>
+void
+FooterProbePluginFactory<layout>::describe(ImageEffectDescriptor& desc)
+{
+    describePointMatrix(desc, "FooterProbe", "Test fixture: passes the Source through, laying out the params the host's footer collects.");
+    if (layout == eFooterProbeMultiPlanar) {
+        desc.setIsMultiPlanar(true);
+        desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelPassThroughNonRenderedPlanes);
+    }
+}
+
+template <FooterProbeLayout layout>
+void
+FooterProbePluginFactory<layout>::describeInContext(ImageEffectDescriptor& desc,
+                                                    ContextEnum /*context*/)
+{
+    definePassThroughClips(desc);
+    ClipDescriptor* mask = desc.defineClip(kNatronTestPointMatrixClipMask);
+    mask->addSupportedComponent(ePixelComponentAlpha);
+    mask->setTemporalClipAccess(false);
+    mask->setOptional(true);
+    mask->setSupportsTiles(true);
+    mask->setIsMask(true);
+
+    PageParamDescriptor* page = desc.definePageParam("Controls");
+    {
+        DoubleParamDescriptor* param = desc.defineDoubleParam(kNatronTestFooterProbeParamAmount);
+        param->setLabel("Amount");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(1.);
+        if (layout == eFooterProbeSecretAfterDivider) {
+            param->setLayoutHint(eLayoutHintDivider);
+        }
+        page->addChild(*param);
+    }
+    if ((layout == eFooterProbeSecretAfterDivider) || (layout == eFooterProbeSecretAfterVisible)) {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kNatronTestFooterProbeParamHiddenOption);
+        param->setLabel("Hidden Option");
+        param->setDefault(false);
+        param->setIsSecretAndDisabled(true);
+        page->addChild(*param);
+    }
+    GroupParamDescriptor* group = 0;
+    if (layout == eFooterProbeClampsInGroup) {
+        group = desc.defineGroupParam(kNatronTestFooterProbeParamClampGroup);
+        group->setLabel("Clamp Group");
+        page->addChild(*group);
+    }
+    if (layout != eFooterProbeClampWhiteOnly) {
+        defineProbeClamp(desc, page, group, kParamClampBlack, "Clamp Black");
+    }
+    if (layout != eFooterProbeClampBlackOnly) {
+        defineProbeClamp(desc, page, group, kParamClampWhite, "Clamp White");
+    }
+    if (layout == eFooterProbeMultiPlanar) {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kNatronTestFooterProbeParamKeyChannel);
+        param->setLabel("Key Channel");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->appendOption("Color.R", "R channel from input " kOfxImageEffectSimpleSourceClipName, kFnOfxImagePlaneColour ".R");
+        param->appendOption("Color.G", "G channel from input " kOfxImageEffectSimpleSourceClipName, kFnOfxImagePlaneColour ".G");
+        param->appendOption("Color.B", "B channel from input " kOfxImageEffectSimpleSourceClipName, kFnOfxImagePlaneColour ".B");
+        param->appendOption("Color.A", "A channel from input " kOfxImageEffectSimpleSourceClipName, kFnOfxImagePlaneColour ".A");
+        param->appendOption("0", "0 constant channel", "0");
+        param->appendOption("1", "1 constant channel", "1");
+        param->setDefault(3);
+        page->addChild(*param);
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamUnPremultBy);
+        param->setLabel("(Un)premult by");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(false);
+        param->setLayoutHint(eLayoutHintNoNewLine, 1);
+        page->addChild(*param);
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamUnPremultByChannel);
+        param->setLabel("");
+        param->appendOption("R", "R channel from input", "r");
+        param->appendOption("G", "G channel from input", "g");
+        param->appendOption("B", "B channel from input", "b");
+        param->appendOption("A", "A channel from input", "a");
+        param->setDefault(3);
+        page->addChild(*param);
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kNatronTestPointMatrixParamMaskInvert);
+        param->setLabel("Invert Mask");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(false);
+        page->addChild(*param);
+    }
+    {
+        DoubleParamDescriptor* param = desc.defineDoubleParam(kNatronTestPointMatrixParamMix);
+        param->setLabel("Mix");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(1.);
+        param->setRange(0., 1.);
+        param->setDisplayRange(0., 1.);
+        page->addChild(*param);
+    }
+}
+
+template <FooterProbeLayout layout>
+ImageEffect*
+FooterProbePluginFactory<layout>::createInstance(OfxImageEffectHandle handle,
+                                                 ContextEnum /*context*/)
+{
+    return new PassThroughProbePlugin(handle);
+}
+
+mDeclarePluginFactory(OverlayParamsPluginFactory, {}, {});
+
+void
+OverlayParamsPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    describePointMatrix(desc, "OverlayParams", "Test fixture: passes the Source through, declaring the overlay toggles the host hides and drives.");
+}
+
+void
+OverlayParamsPluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                              ContextEnum /*context*/)
+{
+    definePassThroughClips(desc);
+
+    PageParamDescriptor* page = desc.definePageParam("Controls");
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kNatronTestOverlayParamsInteractive);
+        param->setLabel("Interactive");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(false);
+        page->addChild(*param);
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kNatronTestOverlayParamsHidpi);
+        param->setLabel("Hidpi");
+        param->setHint("Stored only: the probe passes its Source through.");
+        param->setDefault(true);
+        page->addChild(*param);
+    }
+}
+
+ImageEffect*
+OverlayParamsPluginFactory::createInstance(OfxImageEffectHandle handle,
+                                           ContextEnum /*context*/)
+{
+    return new PassThroughProbePlugin(handle);
+}
+
 } // anonymous namespace
 
 namespace NatronTestOfx {
@@ -932,6 +1178,13 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     static RGBGeneratorPluginFactory rgbGenerator(kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor, 0);
     static RGBPointPluginFactory rgbPoint(kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor, 0);
     static PremultProbePluginFactory premultProbe(kNatronTestPremultProbePluginID, kNatronTestPremultProbeMajor, 0);
+    static FooterProbePluginFactory<eFooterProbeClampBlackOnly> footerClampBlackOnly(kNatronTestFooterClampBlackOnlyPluginID);
+    static FooterProbePluginFactory<eFooterProbeClampWhiteOnly> footerClampWhiteOnly(kNatronTestFooterClampWhiteOnlyPluginID);
+    static FooterProbePluginFactory<eFooterProbeClampsInGroup> footerClampsInGroup(kNatronTestFooterClampsInGroupPluginID);
+    static FooterProbePluginFactory<eFooterProbeSecretAfterDivider> footerSecretAfterDivider(kNatronTestFooterSecretAfterDividerPluginID);
+    static FooterProbePluginFactory<eFooterProbeSecretAfterVisible> footerSecretAfterVisible(kNatronTestFooterSecretAfterVisiblePluginID);
+    static FooterProbePluginFactory<eFooterProbeMultiPlanar> footerMultiPlanar(kNatronTestFooterMultiPlanarPluginID);
+    static OverlayParamsPluginFactory overlayParams(kNatronTestOverlayParamsPluginID, kNatronTestOverlayParamsMajor, 0);
 
     ids.push_back(&twoInputCopy);
     ids.push_back(&generator);
@@ -940,5 +1193,12 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     ids.push_back(&rgbGenerator);
     ids.push_back(&rgbPoint);
     ids.push_back(&premultProbe);
+    ids.push_back(&footerClampBlackOnly);
+    ids.push_back(&footerClampWhiteOnly);
+    ids.push_back(&footerClampsInGroup);
+    ids.push_back(&footerSecretAfterDivider);
+    ids.push_back(&footerSecretAfterVisible);
+    ids.push_back(&footerMultiPlanar);
+    ids.push_back(&overlayParams);
 }
 } // namespace NatronTestOfx

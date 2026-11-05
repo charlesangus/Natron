@@ -38,6 +38,7 @@
 #include <ofxNatron.h>
 
 #include "BaseTest.h"
+#include "KeyerMatteReference.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
 
@@ -50,7 +51,6 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
-#include "Engine/Nodes/Keyer/KeyerMatte.h"
 #include "Engine/Nodes/Keyer/KeyerRange.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"

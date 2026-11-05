@@ -8,6 +8,12 @@ static const uint kKeyerLumaMax = 1u;
 static const uint kKeyerChannelShift = 1u;
 static const uint kKeyerChannelMask = 3u;
 
+// std::max, whose NaN handling GLSL max leaves undefined.
+float keyerMax(float a, float b)
+{
+    return (a < b) ? b : a;
+}
+
 struct KeyerOp : IPixelOp
 {
     uint flags;
@@ -31,7 +37,7 @@ struct KeyerOp : IPixelOp
         if (channel == 3u)
             return rgb.b;
         if ((flags & kKeyerLumaMax) != 0u)
-            return max(max(rgb.r, rgb.g), rgb.b);
+            return keyerMax(keyerMax(rgb.r, rgb.g), rgb.b);
         precise float s = weights.x * rgb.r;
         precise float g = weights.y * rgb.g;
         s = s + g;

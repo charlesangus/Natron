@@ -27,7 +27,9 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <string>
@@ -308,6 +310,74 @@ TEST_F(NativeKeyerGpuTest, KernelMatchesTheCpu)
                                            << run.pixels[diff.firstMismatchIndex] << " cpu " << want[diff.firstMismatchIndex];
         }
     }
+}
+
+// std::max keeps its first argument when either is NaN, so the channel order decides the key: a
+// NaN in R propagates, and a NaN in G or B is passed over by the channels before it.
+TEST_F(NativeKeyerGpuTest, MaxLuminanceMatchesTheCpuOnNaN)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_KEYER), PLUGIN_MAJOR_NATRON_KEYER);
+    ASSERT_TRUE(bool(node));
+    Keyer* effect = dynamic_cast<Keyer*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+
+    const KeyerCase c = { "luminance", "max", { 0.1, 0.3, 0.7, 0.9 } };
+    ASSERT_TRUE(applyCase(node, c));
+    const KeyerOp::Params params = effect->bakeKeyer(kTime, ViewIdx(0));
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<float> src = {
+        nan,
+        0.5f,
+        0.2f,
+        1.f,
+        0.5f,
+        nan,
+        0.2f,
+        1.f,
+        0.2f,
+        0.15f,
+        nan,
+        1.f,
+        nan,
+        nan,
+        0.5f,
+        1.f,
+        nan,
+        0.5f,
+        nan,
+        1.f,
+        0.5f,
+        nan,
+        nan,
+        1.f,
+        nan,
+        nan,
+        nan,
+        1.f,
+    };
+    const int width = 7;
+    const int height = 1;
+    const std::vector<float> want = cpuRows(src, width, height, 4, 0xFu, [effect, &params](const RowIO& io) { effect->keyerRow(params, io); });
+    EXPECT_TRUE(std::isnan(want[3]));
+    EXPECT_EQ(1.f, want[7]);
+    EXPECT_NEAR(0.5f, want[11], 1e-5f);
+
+    const GpuQuery query = plainQuery(4, 0xFu);
+    ASSERT_TRUE(effect->canRenderOnGpu(query));
+    GpuParityImage image;
+    image.bounds = RectI(0, 0, width, height);
+    image.nComps = 4;
+    image.pixels = src;
+    const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, image.bounds);
+    ASSERT_TRUE(run.ok);
+    ASSERT_EQ(want.size(), run.pixels.size());
+    const ImageDiff diff = compareImages(want, run.pixels, keyerTolerance());
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << " gpu " << run.pixels[diff.firstMismatchIndex] << " cpu " << want[diff.firstMismatchIndex];
 }
 
 // The wrapped render against the node's own render: plain, masked, inverted mask and mix 0.5.

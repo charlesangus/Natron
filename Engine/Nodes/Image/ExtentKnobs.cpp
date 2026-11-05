@@ -254,7 +254,7 @@ ExtentKnobs::finishKnobs()
     KnobDoublePtr size = _size.lock();
     KnobBoolPtr rectangleEnable = _rectangleEnable.lock();
     if (node && bottomLeft && size && rectangleEnable) {
-        node->addRectangleInteract(bottomLeft, size, KnobBoolPtr(), rectangleEnable);
+        node->addRectangleInteract(bottomLeft, size, rectangleEnable);
     }
 }
 

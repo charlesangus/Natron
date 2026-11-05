@@ -649,11 +649,11 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
         customShutterOffsetKnob->setSecret(true);
         customShutterOffset = customShutterOffsetKnob;
 
-        node->addTransformInteract(translate.lock(), scale.lock(), scaleUniform.lock(), rotate.lock(), skewX.lock(), skewY.lock(), skewOrder.lock(), center.lock(), invertTransform.lock(), KnobBoolPtr() /*interactive*/);
+        node->addTransformInteract(translate.lock(), scale.lock(), scaleUniform.lock(), rotate.lock(), skewX.lock(), skewY.lock(), skewOrder.lock(), center.lock(), invertTransform.lock());
 
         node->addCornerPinInteract(fromPoints[0].lock(), fromPoints[1].lock(), fromPoints[2].lock(), fromPoints[3].lock(),
                                    toPoints[0].lock(), toPoints[1].lock(), toPoints[2].lock(), toPoints[3].lock(),
-                                   enableToPoint[0].lock(), enableToPoint[1].lock(), enableToPoint[2].lock(), enableToPoint[3].lock(), cornerPinOverlayPoints.lock(), invertTransform.lock(), KnobBoolPtr() /*interactive*/);
+                                   enableToPoint[0].lock(), enableToPoint[1].lock(), enableToPoint[2].lock(), enableToPoint[3].lock(), cornerPinOverlayPoints.lock(), invertTransform.lock());
     }
 
     KnobSeparatorPtr exportDataSepKnob = AppManager::createKnob<KnobSeparator>(effect.get(), tr(kTrackerParamExportDataSeparatorLabel), 1, false);

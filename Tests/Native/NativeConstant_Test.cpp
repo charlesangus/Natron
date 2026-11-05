@@ -368,7 +368,6 @@ TEST_F(NativeConstantTest, RectangleOverlayIsEnabledInSizeExtentOnly)
     EXPECT_TRUE(overlay->checkHostOverlayValid());
     EXPECT_EQ(node->getKnobByName(kNativeGeneratorParamBottomLeft), overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft));
     EXPECT_EQ(node->getKnobByName(kNativeGeneratorParamSize), overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationSize));
-    EXPECT_FALSE(bool(overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive)));
     EXPECT_FALSE(bool(node->getKnobByName("interactive")));
     EXPECT_FALSE(bool(node->getKnobByName("hidpi")));
 

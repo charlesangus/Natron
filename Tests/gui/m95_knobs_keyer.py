@@ -7,8 +7,9 @@ Sections:
     with interactive updates on, and only on release with them off.
   - no-overlay-knobs: Transform, RotoPaint, CornerPin and Ramp have no visible interactive or hidpi
     knob (a native node has none at all; an OFX plug-in's are hidden and host-driven).
-  - footer-order: panel shots of Grade, Saturation, ColorLookup and an OFX colour node, with Clamp
-    Black and Clamp White side by side above Mix.
+  - footer-order: panel shots of Grade, Saturation and ColorLookup, with Clamp Black and Clamp White
+    side by side above Mix. KnobFooterOrder_Test covers the OFX footer, as no bundled OFX colour
+    plug-in has clamps.
   - keyer-widget: the Keyer's key sources are Luminance, Red, Green and Blue with no key colour,
     and its Range is HSVKeyer's trapezoid strip (no Recentre or Smooth button); dragging the
     plateau and then the outer low handle moves the range knob's centre and offset, and the matte
@@ -43,8 +44,6 @@ PLUGIN_RAMP = "net.sf.openfx.Ramp"
 PLUGIN_GRADE = "net.sf.openfx.GradePlugin"
 PLUGIN_SATURATION = "net.sf.openfx.SaturationPlugin"
 PLUGIN_COLORLOOKUP = "net.sf.openfx.ColorLookupPlugin"
-# OFX colour plug-ins with clamp, premult, mask and mix; the first one registered is used.
-OFX_FOOTER_CANDIDATES = ()
 PLUGIN_KEYER = "net.sf.openfx.KeyerPlugin"
 KEYER_SOURCES = ["luminance", "red", "green", "blue"]
 STRIP_PREFIX = "TrapezoidStrip_"
@@ -376,12 +375,16 @@ try:
                 check(False, "%s is registered" % plugin_id)
                 continue
             node = create(plugin_id, 400, 0)
+            adopted = 0
             for name in OVERLAY_KNOBS:
                 p = node.getParam(name)
                 if native:
                     check(p is None, "%s has no %s knob" % (plugin_id, name))
                 elif p is not None:
+                    adopted += 1
                     check(not p.getIsVisible() and not p.getIsPersistent(), "%s's %s is hidden and not saved" % (plugin_id, name))
+            if not native:
+                check(adopted > 0, "%s has an overlay param for the host to adopt" % plugin_id)
             open_panel(node)
             ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)
             check(ok, "%s's panel opens" % plugin_id)
@@ -396,10 +399,7 @@ try:
 
     def section_footer_order():
         gt.section("footer-order")
-        ofx = [p for p in OFX_FOOTER_CANDIDATES if p in gt._plugin_ids]
-        if not ofx:
-            gt.report("NOTE no bundled OFX colour plug-in has a clamp footer; the OFX footer order is covered by KnobFooterOrder_Test")
-        for plugin_id in (PLUGIN_GRADE, PLUGIN_SATURATION, PLUGIN_COLORLOOKUP) + tuple(ofx[:1]):
+        for plugin_id in (PLUGIN_GRADE, PLUGIN_SATURATION, PLUGIN_COLORLOOKUP):
             node = create(plugin_id, 600, 0)
             open_panel(node)
             ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)

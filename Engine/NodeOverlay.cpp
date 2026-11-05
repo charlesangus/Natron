@@ -368,7 +368,6 @@ Node::addPositionInteract(const KnobDoublePtr& position,
 void
 Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
                            const KnobDoublePtr& size,
-                           const KnobBoolPtr& interactive,
                            const KnobBoolPtr& enable)
 {
     assert(QThread::currentThread() == qApp->thread());
@@ -376,9 +375,6 @@ Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
     HostOverlayKnobsRectanglePtr knobs = std::make_shared<HostOverlayKnobsRectangle>();
     knobs->addKnob(bottomLeft, HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
     knobs->addKnob(size, HostOverlayKnobsRectangle::eKnobsEnumerationSize);
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
-    }
     if (enable) {
         knobs->addKnob(enable, HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
     }
@@ -407,8 +403,7 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
                            const KnobDoublePtr& skewY,
                            const KnobChoicePtr& skewOrder,
                            const KnobDoublePtr& center,
-                           const KnobBoolPtr& invert,
-                           const KnobBoolPtr& interactive)
+                           const KnobBoolPtr& invert)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( appPTR->isBackground() ) {
@@ -427,9 +422,6 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     if (invert) {
         knobs->addKnob(invert, HostOverlayKnobsTransform::eKnobsEnumerationInvert);
     }
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsTransform::eKnobsEnumerationInteractive);
-    }
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {
         _imp->nativeOverlays.push_back(knobs);
@@ -437,7 +429,6 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
         nodeGui->addDefaultInteract(knobs);
     }
 }
-
 
 void
 Node::addCornerPinInteract(const KnobDoublePtr& from1,
@@ -453,8 +444,7 @@ Node::addCornerPinInteract(const KnobDoublePtr& from1,
                            const KnobBoolPtr& enable3,
                            const KnobBoolPtr& enable4,
                            const KnobChoicePtr& overlayPoints,
-                           const KnobBoolPtr& invert,
-                           const KnobBoolPtr& interactive)
+                           const KnobBoolPtr& invert)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( appPTR->isBackground() ) {
@@ -480,9 +470,6 @@ Node::addCornerPinInteract(const KnobDoublePtr& from1,
 
     if (invert) {
         knobs->addKnob(invert, HostOverlayKnobsCornerPin::eKnobsEnumerationInvert);
-    }
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsCornerPin::eKnobsEnumerationInteractive);
     }
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {

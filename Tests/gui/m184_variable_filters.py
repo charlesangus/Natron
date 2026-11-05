@@ -217,13 +217,13 @@ try:
 
         # ---- (b) key --------------------------------------------------------------------
         gt.section("erode-dilate")
-        disc = create("net.sf.openfx.Radial", 0, 500)
+        disc = create("Radial", 0, 500)
         setp(disc, "softness", 0.0)
         small = create("net.sf.openfx.TransformPlugin", 150, 600)
         setp(small, "center", 960.0, 540.0)
         setp(small, "scale", 0.5, 0.5)
         connect(small, 0, disc)
-        ramp = create("net.sf.openfx.Ramp", 400, 500)
+        ramp = create("Ramp", 400, 500)
         setp(ramp, "point0", 0.0, 0.0)
         setp(ramp, "point1", 1920.0, 0.0)
         setp(ramp, "color0", 0.0, 0.0, 0.0, 0.0)

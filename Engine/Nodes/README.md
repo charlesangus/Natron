@@ -1268,9 +1268,10 @@ differ by design:
   which changes only the rounding.
 - `recordQuantize` at a sampling other than 0 or 1 may put a sample within a few ulps of a step on
   the other side.
-- `recordPoissonHeal` relaxes the whole image red/black and records all `maxIter` iterations;
-  the ones after convergence return at once. On a device without push descriptors it refuses more
-  than `kPoissonHealGpuMaxIterationsWithoutPushDescriptors`.
+- `recordPoissonHeal` is `poissonHealMultigrid`: the hierarchy is built on the host from the
+  mask, sweeps touch the masked cells only, and levels of at most 4096 cells run their part of a
+  cycle in one dispatch. It records at most `kPoissonHealGpuMaxCycles` cycles; those after
+  convergence return at once. Its sums run in float, in another order.
 
 ### AI nodes
 
@@ -1304,6 +1305,25 @@ the result back to scene-linear, and it is called only once every tile has
 succeeded. `Engine/Ai` never interprets pixel values; the conversion lives in
 the node, beside the model it serves. Remember that tensor row 0 is the top of
 the image, `y2 - 1`.
+
+A node whose model wants a colour space other than the working space can let
+the user pick it with `ModelColourspaceKnobs` (`Engine/Nodes/OCIO/ModelColourspace.h`).
+It adds the `modelColourspace` menu of the project config's spaces, built on the
+OCIO nodes' `OcioNodeKnobs`. Until the user picks a space, it follows the
+model's colour space (`ModelConfig::colourSpace`, or whatever the node maps it to), through
+the config's name for it. `conversion()` returns the processors to and from the
+chosen space, and `apply()` runs one on interleaved RGB. Use it in `pack` and
+`unpack`, and post its `error` when the config lacks the space. It converts and
+nothing more: range handling, if any, belongs to the user. NeuralDenoise is the
+example.
+
+A model that changes the image size (`AiTileSpec::scale` above 1) makes the
+node own its geometry. It scales the format in `getPreferredMetadataAt()` and
+the region of definition in `getRegionOfDefinition()`. It maps
+`getRegionsOfInterest()` back through the factor plus the tile overlap. It also
+clears `filterPassThroughLayers()`, because other layers would keep the input's
+size, and writes every channel of the output itself. NeuralUpscale is the
+example.
 
 ### The GPU side of an op
 

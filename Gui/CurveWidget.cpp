@@ -106,6 +106,8 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
             if (KnobCurveGui* knobCurve = dynamic_cast<KnobCurveGui*>(it->get())) {
                 scope.touchKnob(knobCurve->getInternalKnob());
+            } else if (DriverCurveGui* driverCurve = dynamic_cast<DriverCurveGui*>(it->get())) {
+                scope.touchKnob(driverCurve->getInternalKnob());
             } else if (BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>(it->get())) {
                 RotoCurveContextPtr roto = bezierCurve->getRotoContext();
                 if (roto) {
@@ -124,6 +126,12 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         }
         if (!foldedCurves.empty()) {
             cmd = new FoldedCurveEditCommand(editor, cmd, foldedCurves);
+        }
+    }
+    if (curveCmd) {
+        const std::list<KnobIPtr> driverKnobs = DriverCurveEditCommand::driverKnobsOf(editedCurves);
+        if (!driverKnobs.empty()) {
+            cmd = new DriverCurveEditCommand(cmd, driverKnobs);
         }
     }
 

@@ -39,8 +39,6 @@
 #include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QThreadPool>
-#include <QUndoCommand>
-#include <QUndoStack>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -51,14 +49,15 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiContainerI.h"
-#include "Gui/KnobGuiValue.h"
+#include "Gui/SceneTransformTarget.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_USING
 
@@ -382,38 +381,6 @@ TEST(SceneGizmo, EachRingTurnsThePrimAboutItselfThroughItsOwnAngle)
 // ---------------------------------------------------------------------------
 
 namespace {
-// A settings panel's undo stack without the panel, as a knob's GUI pushes to it.
-class UndoStackContainer
-    : public KnobGuiContainerI {
-public:
-    virtual Gui* getGui() const OVERRIDE FINAL
-    {
-        return 0;
-    }
-
-    virtual const QUndoCommand* getLastUndoCommand() const OVERRIDE FINAL
-    {
-        return undoStack.index() > 0 ? undoStack.command(undoStack.index() - 1) : 0;
-    }
-
-    virtual void pushUndoCommand(QUndoCommand* cmd) OVERRIDE FINAL
-    {
-        undoStack.push(cmd);
-    }
-
-    virtual KnobGuiPtr getKnobGui(const KnobIPtr& /*knob*/) const OVERRIDE FINAL
-    {
-        return KnobGuiPtr();
-    }
-
-    virtual int getItemsSpacingOnSameLine() const OVERRIDE FINAL
-    {
-        return 0;
-    }
-
-    mutable QUndoStack undoStack;
-};
-
 void
 sendMouse(QWidget* widget,
           QEvent::Type type,
@@ -450,12 +417,9 @@ protected:
         ASSERT_TRUE(_effect != NULL);
         _translate = _effect->getTransformKnobs().translate.lock();
         ASSERT_TRUE(bool(_translate));
-        // The knob's GUI, so that edits from the viewer go through the undo stack.
-        _knobGui = std::make_shared<KnobGuiDouble>(_translate, &_container);
-        _knobGui->initialize();
-
         _viewport.reset(new SceneViewport);
         _viewport->resize(kSize, kSize);
+        _viewport->setUndoHistory(&_history);
         NodePtr transform = _transform;
         _viewport->setTransformNodeProvider([transform]() {
             return transform;
@@ -471,10 +435,7 @@ protected:
     void TearDown() override
     {
         _viewport.reset();
-        if (_translate) {
-            _translate->setKnobGuiPointer(KnobGuiPtr());
-        }
-        _knobGui.reset();
+        _history.clear();
         _translate.reset();
         SceneQueryPool::instance().releaseIdle();
         if (_app) {
@@ -524,8 +485,7 @@ protected:
     NodePtr _prim, _transform;
     USDEditTransform* _effect = NULL;
     KnobDoublePtr _translate;
-    UndoStackContainer _container;
-    KnobGuiPtr _knobGui;
+    UndoHistory _history;
     std::unique_ptr<SceneViewport> _viewport;
 };
 
@@ -549,7 +509,7 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
     EXPECT_DOUBLE_EQ(0., _translate->getValue(1));
     EXPECT_DOUBLE_EQ(0., _translate->getValue(2));
     // Both moves are one edit.
-    ASSERT_EQ(1, _container.undoStack.count());
+    ASSERT_EQ(1, _history.count());
 
     // The drag reaches the scene: the prim moves by the dragged amount.
     ScenePayload payload;
@@ -565,20 +525,21 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
         EXPECT_NEAR(_translate->getValue(0), world.ExtractTranslation()[0], 1e-9);
     }
 
-    _container.undoStack.undo();
+    _history.undo();
     EXPECT_DOUBLE_EQ(0., _translate->getValue(0));
-    _container.undoStack.redo();
+    _history.redo();
     EXPECT_NEAR(moved, _translate->getValue(0), 0.05 * moved);
 
     // A second drag is a second edit.
+    showScene();
     _viewport->refreshTransformHandles();
     const QPointF again = handlePixel(makeHandle(eHandleKindTranslate, 0));
     sendMouse(_viewport.get(), QEvent::MouseButtonPress, again, Qt::LeftButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseMove, again + QPointF(-10., 0.), Qt::NoButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseButtonRelease, again + QPointF(-10., 0.), Qt::LeftButton, Qt::NoButton);
-    EXPECT_EQ(2, _container.undoStack.count());
+    EXPECT_EQ(2, _history.count());
     EXPECT_NEAR(10. * kPixel, _translate->getValue(0), 0.1 * moved);
-    _container.undoStack.undo();
+    _history.undo();
     EXPECT_NEAR(moved, _translate->getValue(0), 0.05 * moved);
 }
 
@@ -587,7 +548,7 @@ TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)
     // A click away from the handles does not edit.
     sendMouse(_viewport.get(), QEvent::MouseButtonPress, QPointF(5., 5.), Qt::LeftButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseButtonRelease, QPointF(5., 5.), Qt::LeftButton, Qt::NoButton);
-    EXPECT_EQ(0, _container.undoStack.count());
+    EXPECT_EQ(0, _history.count());
 
     // A pattern that matches nothing names no target.
     KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
@@ -604,4 +565,85 @@ TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)
     });
     _viewport->refreshTransformHandles();
     EXPECT_FALSE(_viewport->getRenderer().hasTransformHandles());
+}
+
+// Which node the viewer's transform handles edit for a prim of a cube read through a USDEditTransform.
+class SceneTransformOwnerTest
+    : public ::testing::Test {
+protected:
+    void SetUp() override
+    {
+        _app = appPTR->getTopLevelInstance();
+        ASSERT_TRUE(bool(_app));
+        _app->getProject()->reset(false, true);
+        CreateNodeArgs cubeArgs(PLUGINID_NATRON_USDCUBE, _app->getProject());
+        _cube = _app->createNode(cubeArgs);
+        CreateNodeArgs transformArgs(PLUGINID_NATRON_USDEDITTRANSFORM, _app->getProject());
+        _transform = _app->createNode(transformArgs);
+        ASSERT_TRUE(_cube && _transform);
+        KnobString* primPath = dynamic_cast<KnobString*>(_cube->getKnobByName(kSceneParamPrimPath).get());
+        ASSERT_TRUE(primPath != NULL);
+        primPath->setValue(std::string("/Box"));
+        ASSERT_TRUE(_transform->connectInput(_cube, 0));
+    }
+
+    void TearDown() override
+    {
+        SceneQueryPool::instance().releaseIdle();
+        if (_app) {
+            _app->getProject()->reset(false, true);
+        }
+        QThreadPool::globalInstance()->waitForDone();
+    }
+
+    void setPattern(const std::string& pattern)
+    {
+        KnobString* knob = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(pattern);
+    }
+
+    void setMode(const char* id)
+    {
+        KnobChoice* mode = dynamic_cast<KnobChoice*>(_transform->getKnobByName(kUSDEditTransformParamMode).get());
+
+        ASSERT_TRUE(mode != NULL);
+        mode->setValueFromID(id, 0);
+    }
+
+    void evaluate()
+    {
+        ScenePayload payload;
+        std::string error;
+
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  _transform->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+            << error;
+    }
+
+    AppInstancePtr _app;
+    NodePtr _cube, _transform;
+};
+
+TEST_F(SceneTransformOwnerTest, AReplaceTransformOwnsThePrimsItsTypePredicateSelects)
+{
+    setMode("replace");
+    setPattern("//{isa:Mesh}");
+    evaluate();
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+
+    // A predicate the mesh fails leaves the cube's own transform as the owner.
+    setPattern("//{isa:Camera}");
+    evaluate();
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
+
+    // A pattern edited since the last evaluation is judged on the scene that evaluation read.
+    setPattern("/Box{isa:Mesh}");
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+
+    // An Append-mode transform composes over the cube's, which stays the owner.
+    setMode("append");
+    evaluate();
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
 }

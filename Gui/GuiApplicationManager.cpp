@@ -74,6 +74,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/ThemedIcon.h"
 
 //All fixed sizes were calculated for a 96 dpi screen
@@ -1222,6 +1223,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_3D,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
+    PLUGIN_GROUP_LOOP,
     PLUGIN_GROUP_RFV,
     PLUGIN_GROUP_MULTIVIEW,
     PLUGIN_GROUP_TOOLSETS,
@@ -1646,6 +1648,15 @@ GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
     }
 }
 
+GuiApplicationManager::NodesMenuArgsDecorator
+GuiApplicationManager::swapNodesMenuArgsDecorator(const NodesMenuArgsDecorator& decorator)
+{
+    NodesMenuArgsDecorator previous = _imp->nodesMenuArgsDecorator;
+    _imp->nodesMenuArgsDecorator = decorator;
+
+    return previous;
+}
+
 void
 GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
                                                       int major,
@@ -1685,6 +1696,9 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+    if (nodesMenuArgsDecorator) {
+        nodesMenuArgsDecorator(args);
+    }
     app->createNode(args);
 }
 
@@ -1739,6 +1753,21 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
     action->setProperty(kNodesMenuPropPluginOwned, true);
     action->setProperty(kNodesMenuPropPluginID, leaf.getID());
     action->setProperty(kNodesMenuPropPluginMajor, leaf.getMajorVersion());
+    {
+        DataKindEnum kind = eDataKindImage;
+        const bool hasInput = plugin ? plugin->getFirstInputDataKind(&kind) : true;
+        action->setProperty(kNodesMenuPropInputKind, hasInput ? TabMenuBridge::dataKindKey(kind) : QString());
+        action->setProperty(kNodesMenuPropPrimPathKnob, plugin ? QString::fromStdString(plugin->getPrimPathKnob()) : QString());
+        QStringList inputKinds;
+        if (plugin) {
+            for (DataKindEnum inputKind : plugin->getInputDataKinds()) {
+                inputKinds.push_back(TabMenuBridge::dataKindKey(inputKind));
+            }
+        } else {
+            inputKinds.push_back(TabMenuBridge::dataKindKey(eDataKindImage));
+        }
+        action->setProperty(kNodesMenuPropInputKinds, inputKinds.join(QLatin1Char(',')));
+    }
     refreshPluginActionProperties(action, plugin);
 
     const QString pluginID = leaf.getID();

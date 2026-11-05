@@ -25,13 +25,20 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <thread>
+
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QString>
+#include <QThread>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "NativeParity.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
@@ -51,6 +58,9 @@ namespace {
 
 const double kTime = 1.;
 const int kSize = 64;
+// Far longer than the abort may take, so that only an abort ends the render in time.
+const qint64 kSlowRenderMs = 20000;
+const qint64 kPromptAbortMs = 2000;
 
 } // namespace
 
@@ -168,4 +178,46 @@ TEST_F(NodeColorSamplerTest, DisconnectedNodeReturnsFalse)
     for (int c = 0; c < 4; ++c) {
         EXPECT_EQ(-1.f, rgba[c]) << "channel " << c;
     }
+}
+
+// The Object Select tool renders its Source this way on a thread of its own, and aborts it when the
+// project closes or the node goes: the call must return soon after, not when the render is done.
+TEST_F(NodeColorSamplerTest, AnAbortedRenderReturnsPromptly)
+{
+    CountingTestRegistry::reset();
+    NodePtr slow = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(slow));
+
+    std::atomic<bool> rendering(false);
+    CountingTestRegistry::setRenderHook([&rendering](const Node* node) {
+        rendering = true;
+        QElapsedTimer timer;
+        timer.start();
+        while (!node->aborted() && (timer.elapsed() < kSlowRenderMs)) {
+            QThread::msleep(5);
+        }
+    });
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    ImagePtr image;
+    std::thread worker([&slow, &abortInfo, &image]() {
+        image = renderNodeImage(slow, kTime, ViewIdx(0), 0, RectI(0, 0, kCountingTestSize, kCountingTestSize),
+                                ImageLayerDesc::getRGBAComponents(), NULL, abortInfo);
+    });
+
+    QElapsedTimer started;
+    started.start();
+    while (!rendering && (started.elapsed() < kSlowRenderMs)) {
+        QThread::msleep(5);
+    }
+    EXPECT_TRUE(rendering.load()) << "the render never started";
+
+    QElapsedTimer aborting;
+    aborting.start();
+    abortInfo->setAborted();
+    worker.join();
+    EXPECT_LT(aborting.elapsed(), kPromptAbortMs);
+    EXPECT_FALSE(bool(image)) << "an aborted render hands back no image";
+
+    CountingTestRegistry::reset();
 }

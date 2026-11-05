@@ -188,6 +188,12 @@ class Plugin
 
     Natron::PluginOpenGLRenderSupport _openglRenderSupport;
 
+    // -1 for a plug-in without inputs.
+    int _firstInputDataKind = (int)Natron::eDataKindImage;
+    std::vector<Natron::DataKindEnum> _inputDataKinds { Natron::eDataKindImage };
+    std::string _primPathKnob;
+    bool _primPathKnobTakesPattern = false;
+
     mutable std::atomic<U64> _binaryContentStamp { 0 };
 
 public:
@@ -384,6 +390,25 @@ public:
 
     void setOpenGLRenderSupport(Natron::PluginOpenGLRenderSupport support);
     Natron::PluginOpenGLRenderSupport getPluginOpenGLRenderSupport() const;
+
+    // What the first input takes; false for a plug-in without inputs. Image unless set.
+    void setFirstInputDataKind(bool hasInput, Natron::DataKindEnum kind);
+    bool getFirstInputDataKind(Natron::DataKindEnum* kind) const;
+
+    // What the plug-in's inputs other than masks take, each kind once; empty without such inputs.
+    // Image unless set.
+    void setInputDataKinds(const std::vector<Natron::DataKindEnum>& kinds);
+    const std::vector<Natron::DataKindEnum>& getInputDataKinds() const { return _inputDataKinds; }
+
+    // The script name of the prim path or pattern knob the node declares, empty for none, and
+    // whether it takes a pattern.
+    void setPrimPathKnob(const std::string& name, bool takesPattern)
+    {
+        _primPathKnob = name;
+        _primPathKnobTakesPattern = takesPattern;
+    }
+    const std::string& getPrimPathKnob() const { return _primPathKnob; }
+    bool getPrimPathKnobTakesPattern() const { return _primPathKnobTakesPattern; }
 };
 
 struct Plugin_compare_version

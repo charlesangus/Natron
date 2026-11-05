@@ -1082,6 +1082,19 @@ OfxHost::loadOFXPlugins()
         natronPlugin->setOpenGLRenderSupport(glSupport);
 
         natronPlugin->setOfxPlugin(p);
+        {
+            // Every context but these two mandates an input clip. Reading the clip descriptors
+            // instead would load each plug-in's binary at startup.
+            bool hasSource = false;
+            for (const std::string& context : contexts) {
+                if ((context != kOfxImageEffectContextGenerator) && (context != kOfxImageEffectContextReader)) {
+                    hasSource = true;
+                    break;
+                }
+            }
+            natronPlugin->setFirstInputDataKind(hasSource, eDataKindImage);
+            natronPlugin->setInputDataKinds(hasSource ? std::vector<DataKindEnum> { eDataKindImage } : std::vector<DataKindEnum>());
+        }
 
         std::list<PluginActionShortcut> shortcuts;
         getPluginShortcuts(p->getDescriptor(), &shortcuts);

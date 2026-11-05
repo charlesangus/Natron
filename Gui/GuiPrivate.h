@@ -174,6 +174,7 @@ public:
     ///The curve editor.
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
+    SceneGraphPanel* _sceneGraphPanel;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;
@@ -287,6 +288,8 @@ public:
     void createScriptEditorGui();
 
     void createProgressPanelGui();
+
+    void createSceneGraphPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

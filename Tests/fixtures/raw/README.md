@@ -94,6 +94,7 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
 | `toneequal-source.tif` | Synthetic 128x96 linear Rec. 709 RGB half float source of the toneequal jobs, written by `make-reference.py` (`toneequal_scene()`): -10 EV to +1 EV left to right with ripples, hard-edged patches and texture, three tints by row band | (source) |
 | `toneequal-{bands,details-*,estimator-*,compensations-*,smoothing-diffusion,quantization}.tif` | toneequal on the source, whole frame, RGB half float (~50 KB); colorin (input and working profile linear Rec. 709) and colorout (linear Rec. 709) are identities around it. Every job sets the bands to 1.2, 0.9, 0.6, 0.3, 0, -0.2, -0.5, -0.8, -1 EV; `bands` is darktable's defaults otherwise (EIGF, euclidean norm, smoothing diameter 5 %, curve smoothing sqrt 2); `details-*` each preserve details mode, `estimator-*` each luminance estimator; `compensations-guided` guided filter with mask exposure 1.5 EV and contrast 0.8 EV, `compensations-eigf` -0.5 EV and 0.6 EV; `smoothing-diffusion` curve smoothing 2^0.75, 3 iterations, feathering 20, diameter 10 %; `quantization` mask quantization 0.5 | ToneEqualizer |
+| `retouch-{clone,heal,blur,fill}-{circle,ellipse,path}.tif`, `retouch-heal-circle-image.tif`, `retouch-blur-bilateral-circle.tif`, `retouch-fill-color-ellipse.tif`, `retouch-mixed-merge.tif` | darktable's retouch on a 64x48 plate, the tests' ParitySource with its noise at time 1 (written to the scratch directory, not kept), with XMP-authored circle, ellipse and path forms on two detail scales and the residual, with feather and opacity; `NativeRetouch_Test` builds the same shapes. Whole image, RGB half float, zip, ~15 KB each, not LFS | `Engine/Nodes/Filter/docs/Retouch.md` |
 
 ### Color balance rgb
 
@@ -120,6 +121,32 @@ the test counts each sample's error beyond the half float rounding:
 
 Render them alone with `tools/raw/make-reference.sh --only colorbalancergb`; the other
 references do not change.
+
+### Color equalizer
+
+`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.sh --only colorequal`, 20 jobs) are the
+same develop as color balance rgb's with color equalizer on (params version 4, every field not
+listed at its default), RGB half float 192x192 crops. `Tests/Native/NativeColorEqualizer_Test.cpp`
+feeds colour balance rgb's `-base.tif` to ColorEqualizer in a Linear Rec.2020 project. darktable
+runs the guided filters over the whole developed image, so the test compares only the crop's
+interior, the node's halo in from each edge. Busy is hue 20, -15, 10, 35, -25, 12, -8, 30;
+saturation 1.3, 0.7, 1.1, 0.6, 1.4, 0.9, 1.2, 0.8; brightness 1.2, 0.85, 1.1, 0.75, 1.15, 0.9,
+1.05, 0.8 (red to magenta):
+
+| File | color equalizer |
+| --- | --- |
+| `-defaults.tif` | Defaults |
+| `-node-{red,orange,yellow,green,cyan,blue,lavender,magenta}.tif` | One node each: hue +30 (red, yellow, cyan, lavender) or -30, saturation 1.4, brightness 1.25 |
+| `-busy.tif` | Busy |
+| `-filter-off.tif` | Busy, use filter off |
+| `-node-placement.tif` | Busy, node placement 15 |
+| `-hue-smoothing.tif` | Busy, hue curve smoothing 0.3 |
+| `-threshold-contrast.tif` | Busy, saturation threshold 0.2, contrast 0.5 |
+| `-white-level.tif` | Busy, white level 4 EV |
+| `-sizes.tif` | Busy, chroma size 6, param size 12 |
+| `-preset-{bleach-bypass,kodachrome-64-like,kodak-portra-400-like,teal-and-orange}.tif` | darktable's four presets |
+
+Render them alone with `tools/raw/make-reference.sh --only colorequal`.
 
 ### darktable settings
 

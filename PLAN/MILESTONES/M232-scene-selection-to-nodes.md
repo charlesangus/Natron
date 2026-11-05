@@ -109,4 +109,6 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 
 - 2026-11-04 — P5.T2: `SceneSelectionActions::primPathsText` is the one path-knob text helper, so USDXformPrim's Wrap now wraps the first prim of a multi-selection, where it used to wrap the last (PM).
 
+- 2026-11-05 — Review round at 401ee1d67: create-from-selection now wires its own connections, replacing only the first eligible output; an empty selection opens the menu from the panel too and keeps USDXformPrim in Graft (PM).
+
 **Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in a replacement AppImage built on the plain panel (this milestone has never been UAT-tested).

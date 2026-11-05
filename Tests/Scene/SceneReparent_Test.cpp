@@ -636,3 +636,133 @@ TEST(SceneReparentTest, EditingOneInputWithRepairedLinksResyncsOnlyItsRoots)
     }
     EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/N"), boundMaterial(stage.getStage(), "/T1/geo"));
 }
+
+namespace {
+// /Asset bound to the shared material /materials/M, and the /materials scope holding it.
+const char* const kAssetBoundToSharedMaterial = "def Xform \"Asset\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                                                "    rel material:binding = </materials/M>\n"
+                                                "    def Mesh \"geo\"\n    {\n    }\n}\n"
+                                                "def Scope \"materials\"\n{\n    def Material \"M\"\n    {\n    }\n}\n";
+
+SceneReparentArgs
+graftUnderT1KeepingMaterials(const std::vector<ScenePayload>& inputs,
+                             bool autoRename = false)
+{
+    SceneReparentArgs args = graftUnderT1(inputs, autoRename);
+
+    args.passThroughRoot = "materials";
+
+    return args;
+}
+} // anonymous namespace
+
+TEST(SceneReparentTest, PassedThroughRootStaysAtItsPathAndBindingsFollowIt)
+{
+    const ScenePayload input = stack({ makeLayer(kAssetBoundToSharedMaterial) });
+    SceneGraftMemo memo;
+    std::vector<SceneRootGraft> grafts;
+    std::vector<SceneUnmappedLink> unmapped;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1KeepingMaterials({ input }), &memo, &grafts, &unmapped));
+
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_TRUE(unmapped.empty());
+    std::vector<std::string> roots = rootPrimNames(stage);
+    std::sort(roots.begin(), roots.end());
+    EXPECT_EQ(std::vector<std::string>({ "T1", "materials" }), roots);
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Asset/geo")).IsValid());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/M")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/materials")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Asset")).IsValid());
+    EXPECT_EQ(PXR_NS::SdfPath("/materials/M"), boundMaterial(stage, "/T1/Asset"));
+    EXPECT_EQ(PXR_NS::SdfPath("/materials/M"), boundMaterial(stage, "/T1/Asset/geo"));
+
+    ASSERT_EQ(2u, grafts.size());
+    for (const SceneRootGraft& graft : grafts) {
+        const bool isScope = (graft.sourcePath == "/materials");
+        EXPECT_EQ(isScope, graft.passedThrough) << graft.sourcePath;
+        EXPECT_EQ(isScope ? "/materials" : "/T1/Asset", graft.graftedPath);
+        EXPECT_FALSE(graft.holdsGprim);
+    }
+}
+
+TEST(SceneReparentTest, PassedThroughRootsOfTwoInputsComposeAndAreNeverRenamed)
+{
+    const ScenePayload weak = stack({ makeLayer("def Scope \"materials\"\n{\n"
+                                                "    def Material \"M\"\n    {\n        custom int who = 1\n        custom int onlyWeak = 1\n    }\n}\n") });
+    const ScenePayload strong = stack({ makeLayer("def Scope \"materials\"\n{\n"
+                                                  "    def Material \"M\"\n    {\n        custom int who = 2\n    }\n"
+                                                  "    def Material \"N\"\n    {\n    }\n}\n") });
+    SceneGraftMemo memo;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1KeepingMaterials({ weak, strong }, true), &memo));
+
+    ASSERT_TRUE(static_cast<bool>(stage));
+    const PXR_NS::UsdPrim material = stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/M"));
+    ASSERT_TRUE(material.IsValid());
+    int who = 0;
+    int onlyWeak = 0;
+    EXPECT_TRUE(material.GetAttribute(PXR_NS::TfToken("who")).Get(&who));
+    EXPECT_TRUE(material.GetAttribute(PXR_NS::TfToken("onlyWeak")).Get(&onlyWeak));
+    EXPECT_EQ(2, who);
+    EXPECT_EQ(1, onlyWeak);
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/N")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials_1")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/materials")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/materials_1")).IsValid());
+}
+
+TEST(SceneReparentTest, WithoutAPassThroughRootEveryRootIsGrafted)
+{
+    const ScenePayload input = stack({ makeLayer(kAssetBoundToSharedMaterial) });
+    SceneGraftMemo memo;
+
+    // Kept at the top first, then grafted once the pass-through is withdrawn on the same memo.
+    reparent(graftUnderT1KeepingMaterials({ input }), &memo);
+    std::vector<SceneRootGraft> grafts;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ input }), &memo, &grafts));
+
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_EQ(std::vector<std::string>({ "T1" }), rootPrimNames(stage));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/materials/M")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials")).IsValid());
+    EXPECT_EQ(PXR_NS::SdfPath("/T1/materials/M"), boundMaterial(stage, "/T1/Asset/geo"));
+    for (const SceneRootGraft& graft : grafts) {
+        EXPECT_FALSE(graft.passedThrough) << graft.sourcePath;
+    }
+}
+
+TEST(SceneReparentTest, PassedThroughRootHoldingGeometryIsReported)
+{
+    const ScenePayload input = stack({ makeLayer("def Scope \"materials\"\n{\n    def Xform \"props\"\n    {\n        def Mesh \"Box\"\n        {\n        }\n    }\n}\n") });
+    SceneGraftMemo memo;
+    std::vector<SceneRootGraft> grafts;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1KeepingMaterials({ input }), &memo, &grafts));
+
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/props/Box")).IsValid());
+    ASSERT_EQ(1u, grafts.size());
+    EXPECT_TRUE(grafts[0].passedThrough);
+    EXPECT_TRUE(grafts[0].holdsGprim);
+
+    // A memoized input reports it again.
+    reparent(graftUnderT1KeepingMaterials({ input }), &memo, &grafts);
+    ASSERT_EQ(1u, grafts.size());
+    EXPECT_TRUE(grafts[0].holdsGprim);
+}
+
+TEST(SceneReparentTest, PassedThroughRootMayBeTheDestination)
+{
+    const ScenePayload input = stack({ makeLayer("def Scope \"materials\"\n{\n    def Material \"M\"\n    {\n    }\n}\n"
+                                                 "def Material \"Other\"\n{\n}\n") });
+    SceneReparentArgs args = graftUnderT1KeepingMaterials({ input });
+    args.destinationPath = "/materials";
+    args.destinationType = "Scope";
+    args.ancestorType = "Scope";
+    SceneGraftMemo memo;
+    const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(args, &memo));
+
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_EQ(std::vector<std::string>({ "materials" }), rootPrimNames(stage));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/M")).IsValid());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/Other")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/materials")).IsValid());
+}

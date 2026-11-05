@@ -173,6 +173,9 @@ private:
     GpuStatus createPipeline(VkPipelineCache pipelineCache);
     GpuStatus bindAndDispatch(VkCommandBuffer cmd, std::span<VkWriteDescriptorSet> writes,
                               std::span<const std::byte> push, std::array<uint32_t, 3> groups);
+    // Called with poolMutex_ held.
+    GpuStatus addDescriptorPool();
+    GpuStatus allocateDescriptorSet(VkDescriptorSet& out);
 
     GpuDevice& device_;
     GpuKernelDesc desc_;
@@ -184,7 +187,11 @@ private:
     std::array<uint32_t, 3> maxGroups_ {};
 
     std::mutex poolMutex_;
-    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorPoolSize> poolSizes_;
+    // Sets are allocated from pools_[activePool_]; a pool that runs out is followed by the next, created on
+    // first use, so one recording may hold any number of sets until releaseDescriptors() resets them all.
+    std::vector<VkDescriptorPool> pools_;
+    size_t activePool_ = 0;
 };
 
 // Two timestamps bracketing recorded work. supported() is false when the

@@ -765,8 +765,9 @@ void
 KnobChoice::appendExtraContentHash(ContentHasher& h,
                                    int dimension) const
 {
-    // The plug-in reads the index, so the entry it lands on is what counts; _currentEntry only
-    // stands in when the index is outside the menu, as after loading an option that no longer exists.
+    // A plug-in reading the index renders the entry the index lands on, and one reading the active
+    // entry renders _currentEntry, which can name an option the menu no longer has while the saved
+    // index stays. Both have to reach the hash.
     CurvePtr curve = getCurve(ViewIdx(0), dimension, true);
     KeyFrameSet keys;
     if (curve) {
@@ -776,9 +777,11 @@ KnobChoice::appendExtraContentHash(ContentHasher& h,
 
     QMutexLocker k(&_entriesMutex);
     const int nEntries = (int)_entries.size();
-    if ((index >= 0) && (index < nEntries)) {
+    const bool indexInMenu = (index >= 0) && (index < nEntries);
+    if (indexInMenu) {
         h.appendString(_entries[index].id);
-    } else {
+    }
+    if (!indexInMenu || (!_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0))) {
         h.appendString(_currentEntry.id);
     }
     for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {

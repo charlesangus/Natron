@@ -94,7 +94,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The native image writer, registered under PLUGINID_NATRON_WRITE at major 2.
+ * @brief The native image writer, registered under PLUGINID_NATRON_WRITE.
  *
  * Tests, tools and host code look its knobs up by name: filename, overwrite, clipToRoD,
  * frameRange, firstFrame, lastFrame, frameIncrement, colorspace, the ocioContext group

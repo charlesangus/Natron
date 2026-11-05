@@ -2958,6 +2958,7 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get()) {
         if (!_imp->suppressColorManagementRefresh) {
             Q_EMIT fileColorSpacesChanged();
+            getApp()->renderAllViewers(true);
         }
         shouldAutoSave = true;
     } else if (knob == _imp->viewerDisplay.get()) {

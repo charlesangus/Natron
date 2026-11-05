@@ -1,5 +1,6 @@
 """The Read and Write panels after the knob cleanup: the Read shows one reload, its Reload button,
-which picks up a file rewritten on disk, and no reload icon beside File or Proxy File; the Write has
+which picks up a file rewritten on disk, and no reload icon beside File or Proxy File; changing the
+project's default for 8-bit files re-renders a Read on Project default in the viewer; the Write has
 no Format Type or format widgets, since it always writes its input's format, and no rewrite icon
 beside its File; the OCIOFileTransform and OCIOCDLTransform panels have their Reload button on the
 same row as the File field, with no reload icon of the file knob.
@@ -182,6 +183,20 @@ try:
         check(ok, "Reload displays the rewritten file, blue (%r)" % (gt.viewer_centre_colour(),))
         check(not (read.getPersistentMessage() or ""), "the Read reports no error (%r)" % read.getPersistentMessage())
         gt.close_all_panels()
+
+        file_default = app.getProjectParam("colorSpace8Bit")
+        require(file_default is not None, "the project has an 8-bit file default")
+        original = file_default.get()
+        options = [str(file_default.getOption(i)) for i in range(file_default.getNumOptions())]
+        linear = [i for i, name in enumerate(options) if name.startswith("Linear Rec.709")]
+        require(bool(linear) and linear[0] != original, "the 8-bit file default can move to a linear space (%r)" % (options,))
+        shown = gt.viewer_centre_colour()
+        file_default.set(linear[0])
+        ok = yield ("until", lambda: gt.viewer_centre_colour() != shown, POLL_TIMEOUT_S)
+        check(ok, "a new 8-bit file default re-renders the Read (%r, was %r)" % (gt.viewer_centre_colour(), shown))
+        file_default.set(original)
+        ok = yield ("until", lambda: gt.viewer_centre_colour() == shown, POLL_TIMEOUT_S)
+        check(ok, "restoring the 8-bit file default restores the image (%r, was %r)" % (gt.viewer_centre_colour(), shown))
 
     def write_section():
         gt.section("Write panel")

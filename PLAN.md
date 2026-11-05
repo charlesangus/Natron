@@ -436,6 +436,7 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- **M251 - Cycles Rendering, camera exposure (inbox, 2026-11-05):** Lobby cameras author `exposure = -10`, no renderer path in Natron reads it, and the Cycles frame averages about 8,000, so it reads as blown out. Should USDRender and the viewer apply it? Raise at UAT.
 - **M130 - Native Edge-Preserving And Directional Filters:** does the DirBlur and GodRays hot-pixel artifact happen with Preferences > GPU compute set to Off, or only on Auto? Tests at low mips pass on CPU and software GPU, so the cause isn't reproduced (PM, 2026-11-05).
 - **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03). The scene graph redesign is also exempt (user, 2026-11-04): M327 - Heavy Scene Spike through M336 - Heavy Scene Acceptance may start once M231 - Scene Graph Panel and M232 - Scene Selection To Nodes are merged.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).

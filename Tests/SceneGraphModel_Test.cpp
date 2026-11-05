@@ -292,6 +292,30 @@ TEST(SceneGraphModel, AnEditResyncsOnlyItsSubtree)
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }
 
+TEST(SceneGraphModel, OnlyAnEditOfTheStageSendsNotices)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    ScenePayload base = SceneOps::appendLayer(ScenePayload(), groupLayer("Group", { "A", "B" }), 1);
+    source->sync(base);
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    const U64 notices = model.getStageNoticeCount();
+
+    const QModelIndex group = model.indexOfPath(QString::fromUtf8("/Group/B"), true).parent();
+    ASSERT_TRUE(group.isValid());
+    EXPECT_EQ(2, model.rowCount(group));
+    model.refresh();
+    EXPECT_EQ(notices, model.getStageNoticeCount());
+
+    source->sync(SceneOps::appendLayer(base, groupLayer("Other", { "C" }), 2));
+    EXPECT_GT(model.getStageNoticeCount(), notices);
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
 TEST(SceneGraphModel, NoSceneEmptiesTheModel)
 {
     std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();

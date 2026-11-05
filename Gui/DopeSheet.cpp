@@ -44,6 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/AppendClip.h"
 #include "Engine/Nodes/Time/FrameRange.h"
 #include "Engine/Nodes/Time/Retime.h"
 #include "Engine/Nodes/Time/TimeOffset.h"
@@ -53,6 +54,8 @@
 #include "Engine/ViewIdx.h"
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/CurveEditorUndoRedo.h"
+#include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/DopeSheetEditorUndoRedo.h"
@@ -85,6 +88,10 @@ nodeHasAnimation(const NodeGuiPtr &nodeGui)
         KnobIPtr knob = *it;
 
         if ( knob->hasAnimation() ) {
+            return true;
+        }
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && helper->hasAnimatedDriver()) {
             return true;
         }
     }
@@ -215,6 +222,58 @@ touchKey(UndoScope* scope,
     }
 }
 
+void
+addDriverKnob(std::list<KnobIPtr>* knobs,
+              const DopeSheetKey& key)
+{
+    DSKnobPtr context = key.getContext();
+    KnobIPtr knob = context && context->getDriverCurve() ? context->getInternalKnob() : KnobIPtr();
+
+    if (knob && (std::find(knobs->begin(), knobs->end(), knob) == knobs->end())) {
+        knobs->push_back(knob);
+    }
+}
+
+// Edits of driver keys swap in new drivers; the wrapper restores them on undo.
+QUndoCommand*
+wrapDriverEdits(QUndoCommand* cmd,
+                const DopeSheetKeyPtrList& keys)
+{
+    std::list<KnobIPtr> knobs;
+
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        addDriverKnob(&knobs, **it);
+    }
+
+    return knobs.empty() ? cmd : new DriverCurveEditCommand(cmd, knobs);
+}
+
+QUndoCommand*
+wrapDriverEdits(QUndoCommand* cmd,
+                const std::vector<DopeSheetKey>& keys)
+{
+    std::list<KnobIPtr> knobs;
+
+    for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        addDriverKnob(&knobs, *it);
+    }
+
+    return knobs.empty() ? cmd : new DriverCurveEditCommand(cmd, knobs);
+}
+
+// Keys are pasted into knob curves only.
+void
+removeDriverRows(std::list<DSKnobPtr>* knobs)
+{
+    for (std::list<DSKnobPtr>::iterator it = knobs->begin(); it != knobs->end();) {
+        if ((*it)->getDriverCurve()) {
+            it = knobs->erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 UndoScope
 scopeForKeys(const DopeSheetKeyPtrList& keys)
 {
@@ -269,7 +328,8 @@ DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
 
         if ((pluginID == PLUGINID_NATRON_RETIME)
             || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
-            || (pluginID == PLUGINID_NATRON_FRAMERANGE)) {
+            || (pluginID == PLUGINID_NATRON_FRAMERANGE)
+            || (pluginID == PLUGINID_NATRON_APPENDCLIP)) {
             return output.get();
         } else {
             Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
@@ -383,6 +443,8 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
         nodeType = eDopeSheetItemTypeTimeOffset;
     } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
         nodeType = eDopeSheetItemTypeFrameRange;
+    } else if (pluginID == PLUGINID_NATRON_APPENDCLIP) {
+        nodeType = eDopeSheetItemTypeAppendClip;
     }
 
     // Discard specific nodes
@@ -531,7 +593,7 @@ DSKnobPtr DopeSheet::findDSKnob(const KnobGui* knobGui) const
         for (DSTreeItemKnobMap::const_iterator knobIt = knobRows.begin(); knobIt != knobRows.end(); ++knobIt) {
             DSKnobPtr dsKnob = (*knobIt).second;
 
-            if (dsKnob->getKnobGui().get() == knobGui) {
+            if ((dsKnob->getKnobGui().get() == knobGui) && !dsKnob->getDriverCurve()) {
                 return dsKnob;
             }
         }
@@ -669,7 +731,7 @@ DopeSheet::deleteSelectedKeyframes()
 
     _imp->selectionModel->clearKeyframeSelection();
 
-    _imp->pushUndoCommand(new DSRemoveKeysCommand(toRemove, _imp->editor), scopeForKeys(toRemove));
+    _imp->pushUndoCommand(wrapDriverEdits(new DSRemoveKeysCommand(toRemove, _imp->editor), toRemove), scopeForKeys(toRemove));
 }
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
@@ -791,7 +853,7 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
     scope.ownByOnlyTouched();
     DSMoveKeysAndNodesCommand* cmd = new DSMoveKeysAndNodesCommand(selectedKeyframes, selectedNodes, dt, _imp->editor);
     cmd->setGestureKey(_imp->editGesture.key());
-    _imp->pushUndoCommand(cmd, scope);
+    _imp->pushUndoCommand(wrapDriverEdits(cmd, selectedKeyframes), scope);
 } // DopeSheet::moveSelectedKeysAndNodes
 
 void
@@ -1030,6 +1092,7 @@ DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
             dstKnobs.push_back(*it);
         }
     }
+    removeDriverRows(&dstKnobs);
     if (dstKnobs.empty()) {
         Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
         return;
@@ -1071,7 +1134,7 @@ DopeSheet::setSelectedKeysInterpolation(KeyframeTypeEnum keyType)
         changes.push_back(change);
     }
 
-    _imp->pushUndoCommand(new DSSetSelectedKeysInterpolationCommand(changes, _imp->editor), scopeForKeys(selectedKeyframes));
+    _imp->pushUndoCommand(wrapDriverEdits(new DSSetSelectedKeysInterpolationCommand(changes, _imp->editor), selectedKeyframes), scopeForKeys(selectedKeyframes));
 }
 
 void
@@ -1159,6 +1222,30 @@ DopeSheet::onKeyframeSetOrRemoved()
 }
 
 void
+DopeSheet::onDriverChanged()
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+    KnobIPtr knob = handler ? handler->getKnob() : KnobIPtr();
+
+    if (!knob) {
+        return;
+    }
+    DSNodePtr dsNode = findDSNode(knob);
+    if (dsNode) {
+        const DSTreeItemKnobMap& knobRows = dsNode->getItemKnobMap();
+        for (DSTreeItemKnobMap::const_iterator it = knobRows.begin(); it != knobRows.end(); ++it) {
+            const DSKnobPtr& dsKnob = it->second;
+            if ((dsKnob->getInternalKnob() == knob) && !dsKnob->getDriverRows().empty()) {
+                Q_EMIT keyframeSetOrRemoved(dsKnob.get());
+                break;
+            }
+        }
+    }
+
+    Q_EMIT modelChanged();
+}
+
+void
 DopeSheet::onCurveContextItemsChanged()
 {
     RotoCurveContext* context = qobject_cast<RotoCurveContext*>(sender());
@@ -1222,6 +1309,8 @@ public:
     QTreeWidgetItem *nameItem;
     KnobGuiWPtr knobGui;
     KnobIWPtr knob;
+    DriverCurveGuiPtr driverCurve;
+    std::list<DSKnob*> driverRows;
     RotoDrawableItemWPtr item;
     BezierWPtr bezier;
 };
@@ -1231,6 +1320,8 @@ DSKnobPrivate::DSKnobPrivate()
     , nameItem(0)
     , knobGui()
     , knob()
+    , driverCurve()
+    , driverRows()
     , item()
     , bezier()
 {}
@@ -1272,6 +1363,20 @@ DSKnob::DSKnob(int dimension,
     _imp->knob = knobGui->getKnob();
 }
 
+DSKnob::DSKnob(QTreeWidgetItem* nameItem,
+               const KnobGuiPtr& knobGui,
+               const DriverCurveGuiPtr& driverCurve)
+    : _imp(new DSKnobPrivate)
+{
+    assert(knobGui && driverCurve);
+
+    _imp->dimension = 0;
+    _imp->nameItem = nameItem;
+    _imp->knobGui = knobGui;
+    _imp->knob = knobGui->getKnob();
+    _imp->driverCurve = driverCurve;
+}
+
 DSKnob::DSKnob(int dimension,
                QTreeWidgetItem* nameItem,
                const KnobIPtr& knob,
@@ -1300,6 +1405,30 @@ DSKnob::DSKnob(QTreeWidgetItem* nameItem,
 
 DSKnob::~DSKnob()
 {}
+
+DriverCurveGuiPtr
+DSKnob::getDriverCurve() const
+{
+    return _imp->driverCurve;
+}
+
+bool
+DSKnob::isHiddenDriverRow() const
+{
+    return _imp->driverCurve && !_imp->driverCurve->isShown();
+}
+
+void
+DSKnob::addDriverRow(DSKnob* row)
+{
+    _imp->driverRows.push_back(row);
+}
+
+const std::list<DSKnob*>&
+DSKnob::getDriverRows() const
+{
+    return _imp->driverRows;
+}
 
 QTreeWidgetItem *
 DSKnob::getTreeItem() const
@@ -1372,6 +1501,9 @@ DSKnob::isShape() const
 CurvePtr
 DSKnob::getCurve(int dimension) const
 {
+    if (_imp->driverCurve) {
+        return _imp->driverCurve->getInternalCurve();
+    }
     if (dimension < 0) {
         return CurvePtr();
     }
@@ -1491,6 +1623,9 @@ DopeSheetSelectionModel::makeDopeSheetKeyframesForKnob(const DSKnobPtr &dsKnob,
                                                        std::vector<DopeSheetKey> *result)
 {
     assert(dsKnob);
+    if (dsKnob->isHiddenDriverRow()) {
+        return;
+    }
 
     int dim = dsKnob->getDimension();
     int startDim = 0;
@@ -1773,8 +1908,8 @@ DSNodePrivate::DSNodePrivate()
 
 namespace {
 // One row for a single-dimension knob, else a root row with one row per dimension.
-// A KnobGui-backed row when knobGui is set, else an item knob row.
-void
+// A KnobGui-backed row when knobGui is set, else an item knob row. Returns the knob's top row.
+DSKnob*
 addKnobRows(DSTreeItemKnobMap* map,
             QTreeWidgetItem* parent,
             const KnobIPtr& knob,
@@ -1788,7 +1923,7 @@ addKnobRows(DSTreeItemKnobMap* map,
         DSKnobPtr dsKnob = knobGui ? std::make_shared<DSKnob>(0, nameItem, knobGui) : std::make_shared<DSKnob>(0, nameItem, knob, item);
         map->insert(std::make_pair(nameItem, dsKnob));
 
-        return;
+        return dsKnob.get();
     }
     QTreeWidgetItem* multiDimRootItem = createKnobNameItem(label, eDopeSheetItemTypeKnobRoot, -1, parent);
     DSKnobPtr rootDSKnob = knobGui ? std::make_shared<DSKnob>(-1, multiDimRootItem, knobGui) : std::make_shared<DSKnob>(-1, multiDimRootItem, knob, item);
@@ -1802,6 +1937,8 @@ addKnobRows(DSTreeItemKnobMap* map,
         DSKnobPtr dimDSKnob = knobGui ? std::make_shared<DSKnob>(i, dimItem, knobGui) : std::make_shared<DSKnob>(i, dimItem, knob, item);
         map->insert(std::make_pair(dimItem, dimDSKnob));
     }
+
+    return rootDSKnob.get();
 }
 
 bool
@@ -1878,7 +2015,32 @@ DSNode::DSNode(DopeSheet *model,
             continue;
         }
 
-        addKnobRows(&_imp->itemKnobMap, _imp->nameItem, knob, knobGui, RotoDrawableItemPtr());
+        DSKnob* knobRow = addKnobRows(&_imp->itemKnobMap, _imp->nameItem, knob, knobGui, RotoDrawableItemPtr());
+
+        // The start and end of the knob's loop drivers, laid out as in the curve editor.
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && helper->canHaveDriver()) {
+            const QString knobLabel = QString::fromUtf8(knob->getLabel().c_str());
+            const int nDims = knob->getDimension();
+            for (int end = 0; end < 2; ++end) {
+                const QString rowLabel = end ? DopeSheet::tr("Driver End") : DopeSheet::tr("Driver Start");
+                for (int d = -1; d < ((nDims > 1) ? nDims : 0); ++d) {
+                    const QString label = (d < 0) ? rowLabel : rowLabel + QLatin1Char('.') + QString::fromUtf8(knob->getDimensionName(d).c_str());
+                    // Not a dimension row: findDimTreeItem() must never return it.
+                    QTreeWidgetItem* driverItem = createKnobNameItem(label, eDopeSheetItemTypeKnobDim, -2, knobRow->getTreeItem());
+                    DriverCurveGuiPtr driverCurve = std::make_shared<DriverCurveGui>((CurveWidget*)0, knob, d, (bool)end,
+                                                                                     knobLabel + QLatin1Char(' ') + label, QColor(255, 255, 255), 1);
+                    DSKnobPtr driverRow = std::make_shared<DSKnob>(driverItem, knobGui, driverCurve);
+                    _imp->itemKnobMap.insert(std::make_pair(driverItem, driverRow));
+                    knobRow->addDriverRow(driverRow.get());
+                }
+            }
+            KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+            if (handler) {
+                QObject::connect(handler.get(), SIGNAL(driverChanged(int)),
+                                 _imp->dopeSheetModel, SLOT(onDriverChanged()), Qt::QueuedConnection);
+            }
+        }
 
         QObject::connect( knobGui.get(), SIGNAL(keyFrameSet()),
                           _imp->dopeSheetModel, SLOT(onKeyframeSetOrRemoved()) );

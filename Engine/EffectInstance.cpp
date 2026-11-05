@@ -68,6 +68,7 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -536,6 +537,14 @@ EffectInstance::getParallelRenderArgsTLS() const
 }
 
 bool
+EffectInstance::isRenderingTLS() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && !args->isInstanceChangedAction;
+}
+
+bool
 EffectInstance::isRenderingOwnSequence() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
@@ -637,10 +646,12 @@ EffectInstance::getInputActionContext(int inputNb,
         return false;
     }
     std::vector<RenderContextPtr> inputContexts;
-    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || (inputContexts.size() != 1)) {
+    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || inputContexts.empty()) {
         return false;
     }
-    *context = inputContexts.front();
+    // Of several, the last pulled: the input is read under variables it renders under, as it is
+    // where a scheduler splitting the pulls into steps asks the last step's.
+    *context = inputContexts.back();
 
     return true;
 }
@@ -2002,10 +2013,17 @@ EffectInstance::getFrameRange(double *first,
     // default is infinite if there are no non optional input clips
     *first = std::numeric_limits<int>::min();
     *last = std::numeric_limits<int>::max();
+    const double time = getCurrentTime();
+    const ViewIdx view = getCurrentView();
     for (int i = 0; i < getNInputs(); ++i) {
         EffectInstancePtr input = getInput(i);
         if (input) {
             double inpFirst, inpLast;
+            // Under the context this effect requests the input under, as its metadata is; the
+            // input's render hash then carries that context's key, so its cached range does too.
+            RenderContextPtr inputContext;
+            const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+            ActionContextScope acting(overlaid, inputContext);
             // Through the cached action: a graph whose inputs fan out and rejoin would otherwise be walked once per path.
             input->getFrameRange_public(input->getRenderHash(), &inpFirst, &inpLast);
             if (i == 0) {
@@ -6105,6 +6123,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                                                                 RenderStatsPtr(),
                                                                 false); // setUpstreamArgs
 #endif
+            const std::map<NodePtr, ParallelRenderArgsPtr>& installed = setter->getInstalledArgs();
+            const std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator own = installed.find(node);
+            if ((own != installed.end()) && own->second) {
+                own->second->isInstanceChangedAction = true;
+            }
         }
         {
             RECURSIVE_ACTION();
@@ -6140,6 +6163,12 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     }
 
     ret |= node->onEffectKnobValueChanged(k, reason);
+
+    // What RFVRead nodes list follows the variables, and the time a parameter of a time node on
+    // their path moves them to.
+    if (k && (reason != eValueChangedReasonTimeChanged) && (QThread::currentThread() == qApp->thread()) && (k->getEvaluateOnChange() || (RFV::findDeclaredVariable(this, k->getName()).get() == k))) {
+        RFV::scheduleReaderRefresh(getApp());
+    }
 
     //Don't call the python callback if the reason is time changed
     if (reason == eValueChangedReasonTimeChanged) {

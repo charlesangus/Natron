@@ -53,7 +53,6 @@
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStringListModel>
-#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -65,7 +64,6 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Project.h"
-#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/ActionShortcuts.h"
@@ -98,9 +96,6 @@ const int kShownSelectionCap = 2000;
 const int kPinnedPollMs = 250;
 
 const int kSelectionPollMs = 250;
-
-// How many rows the tree opens to match the viewer's folds; rows past it stay closed though drawn.
-const int kMirrorRowCap = 5000;
 
 const int kMaxValueLength = 200;
 
@@ -260,56 +255,7 @@ valueString(const VtValue& value)
     return QString::fromStdString(text);
 }
 
-// The folded prim at or above path, or path when none is.
-QString
-foldedAncestorOf(const QSet<QString>& folded,
-                 const QString& path)
-{
-    if (folded.isEmpty()) {
-        return path;
-    }
-    QString found = path;
-    for (QString prefix = path; prefix.size() > 1; prefix.truncate(prefix.lastIndexOf(QLatin1Char('/')))) {
-        if (folded.contains(prefix)) {
-            found = prefix;
-        }
-    }
-
-    return found;
-}
-
 } // anon namespace
-
-// Shows the rows of folded prims in italics, marked in the name column.
-class FoldedRowDelegate
-    : public QStyledItemDelegate {
-public:
-    FoldedRowDelegate(SceneGraphModel* model,
-                      QObject* parent)
-        : QStyledItemDelegate(parent)
-        , model(model)
-    {
-    }
-
-    QSet<QString> folded;
-
-protected:
-    void initStyleOption(QStyleOptionViewItem* option,
-                         const QModelIndex& index) const override
-    {
-        QStyledItemDelegate::initStyleOption(option, index);
-        if (folded.isEmpty() || !folded.contains(model->pathOf(index))) {
-            return;
-        }
-        option->font.setItalic(true);
-        if (index.column() == SceneGraphModel::eColumnName) {
-            option->text = SceneGraphPanel::tr("%1 (folded)").arg(option->text);
-        }
-    }
-
-private:
-    SceneGraphModel* model;
-};
 
 struct SceneGraphPanel::Implementation {
     SceneGraphPanel* panel;
@@ -317,9 +263,6 @@ struct SceneGraphPanel::Implementation {
 
     QToolButton* pinButton = nullptr;
     QComboBox* followChooser = nullptr;
-    QToolButton* foldButton = nullptr;
-    QToolButton* unfoldButton = nullptr;
-    FoldedRowDelegate* foldDelegate = nullptr;
     SceneNodeChooser* nodeChooser = nullptr;
     QLabel* status = nullptr;
     QLineEdit* filter = nullptr;
@@ -361,15 +304,10 @@ struct SceneGraphPanel::Implementation {
     // selection; see SceneSelectionActions::keepSelectionOrder().
     QStringList selectionOrder;
 
-    // The rows the user expanded, kept across resets, while the rows do not follow the viewer's
-    // folds.
+    // The rows the user expanded, kept across resets.
     QSet<QString> expanded;
     // Set while the panel, not the user, opens or closes rows.
     bool restoringExpansion = false;
-    // What the rows last matched, so a sync that changes neither costs nothing.
-    QStringList mirroredFolds;
-    int mirroredItemCount = -1;
-    int mirroredResetCount = -1;
 
     // The filter's walk over the stage, a step at a time on the main thread.
     QTimer filterDebounce;
@@ -491,64 +429,10 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphNode", node ? QString::fromStdString(node->getFullyQualifiedName()) : QString());
         panel->setProperty("natronSceneGraphHasScene", hasScene());
         panel->setProperty("natronSceneGraphFilterBusy", filterStep.isActive() || filterDebounce.isActive());
-    }
-
-    // Folds live on the viewer's stage: they apply to the rows only when the viewer draws them.
-    SceneViewport* foldViewport() const
-    {
-        return sharesViewerSelection() ? viewport.data() : nullptr;
-    }
-
-    // Opens the rows down to the viewer's folds and closes the folded ones, as far as
-    // kMirrorRowCap rows, so a closed row is a prim drawn as its bounds.
-    void mirrorFolds(bool force)
-    {
-        SceneViewport* target = foldViewport();
-        if (!target || !hasScene()) {
-            mirroredFolds.clear();
-            mirroredItemCount = -1;
-
-            return;
-        }
-        const QStringList folded = target->getFoldedPrims();
-        if (!force && (folded == mirroredFolds) && (model->getItemCount() == mirroredItemCount) && (model->getResetCount() == mirroredResetCount)) {
-            return;
-        }
-        const QSet<QString> foldSet(folded.begin(), folded.end());
-        const bool wasRestoring = restoringExpansion;
-        restoringExpansion = true;
-        int budget = kMirrorRowCap;
-        for (const QString& path : folded) {
-            const QModelIndex index = model->indexOfPath(path, true);
-            if (!index.isValid()) {
-                continue;
-            }
-            tree->collapse(index);
-            for (QModelIndex parent = index.parent(); parent.isValid(); parent = parent.parent()) {
-                tree->expand(parent);
-            }
-        }
-        std::vector<QModelIndex> queue(1, QModelIndex());
-        for (std::size_t next = 0; (next < queue.size()) && (budget > 0); ++next) {
-            const QModelIndex parent = queue[next];
-            while (model->canFetchMore(parent) && (model->rowCount(parent) < budget)) {
-                model->fetchMore(parent);
-            }
-            const int rows = model->rowCount(parent);
-            for (int row = 0; (row < rows) && (budget > 0); ++row, --budget) {
-                const QModelIndex index = model->index(row, 0, parent);
-                if (foldSet.contains(model->pathOf(index))) {
-                    tree->collapse(index);
-                } else if (model->hasChildren(index)) {
-                    tree->expand(index);
-                    queue.push_back(index);
-                }
-            }
-        }
-        restoringExpansion = wasRestoring;
-        mirroredFolds = folded;
-        mirroredItemCount = model->getItemCount();
-        mirroredResetCount = model->getResetCount();
+        const SceneGraphStageSourcePtr& source = model->getSource();
+        panel->setProperty("natronSceneGraphStageEditCount", QVariant::fromValue<qulonglong>(source ? source->getEditCount() : 0));
+        // Twirling a row must not add to it: the rows' open state never reaches the stage.
+        panel->setProperty("natronSceneGraphStageNotices", QVariant::fromValue<qulonglong>(model->getStageNoticeCount()));
     }
 
     // The scene node last selected in the node graph, or null when none is selected.
@@ -571,30 +455,6 @@ struct SceneGraphPanel::Implementation {
         }
 
         return NodePtr();
-    }
-
-    void updateFolds()
-    {
-        if (!foldDelegate) {
-            return;
-        }
-        SceneViewport* target = foldViewport();
-        const QStringList folded = target ? target->getFoldedPrims() : QStringList();
-        foldDelegate->folded = QSet<QString>(folded.begin(), folded.end());
-        tree->viewport()->update();
-        const bool canFold = target && hasScene();
-        foldButton->setEnabled(canFold);
-        unfoldButton->setEnabled(canFold);
-        panel->setProperty("natronSceneGraphFolded", folded);
-    }
-
-    void foldSelection(bool folded)
-    {
-        SceneViewport* target = foldViewport();
-        const QStringList paths = panel->getSelection();
-        if (target && !paths.isEmpty()) {
-            target->setFolded(paths, folded);
-        }
     }
 
     void updateStatus()
@@ -622,8 +482,6 @@ struct SceneGraphPanel::Implementation {
             text = SceneGraphPanel::tr("No viewer");
         }
         status->setText(text);
-        updateFolds();
-        mirrorFolds(false);
         if (!filterPattern.isEmpty()) {
             stack->setCurrentWidget(results);
         } else if (hasScene()) {
@@ -699,10 +557,6 @@ struct SceneGraphPanel::Implementation {
         if (viewport) {
             QObject::connect(viewport, &SceneViewport::sceneSynced, panel, &SceneGraphPanel::onSceneSynced);
             QObject::connect(viewport, &SceneViewport::selectionChanged, panel, &SceneGraphPanel::onViewportSelectionChanged);
-            QObject::connect(viewport, &SceneViewport::foldsChanged, panel, [this]() {
-                updateFolds();
-                mirrorFolds(false);
-            });
         }
         viewerSource = viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr();
         applySource();
@@ -763,11 +617,6 @@ struct SceneGraphPanel::Implementation {
 
     void restoreExpansion()
     {
-        if (foldViewport()) {
-            mirrorFolds(true);
-
-            return;
-        }
         QStringList paths = expanded.values();
 
         std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) { return a.size() < b.size(); });
@@ -935,19 +784,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
                                        "Node Selection: the scene of the node last selected in the node graph that puts out "
                                        "one; selecting other nodes keeps it."));
     headerLayout->addWidget(_imp->followChooser);
-    _imp->foldButton = new QToolButton(header);
-    _imp->foldButton->setObjectName(QString::fromUtf8("sceneGraphFold"));
-    _imp->foldButton->setText(tr("Fold"));
-    _imp->foldButton->setToolTip(tr("Draws the selected prims in the viewer as their bounding boxes and unloads the payloads below them, "
-                                    "as closing their rows does, until the viewer shows another node. USDExpandHierarchy folds "
-                                    "prims for good."));
-    headerLayout->addWidget(_imp->foldButton);
-    _imp->unfoldButton = new QToolButton(header);
-    _imp->unfoldButton->setObjectName(QString::fromUtf8("sceneGraphUnfold"));
-    _imp->unfoldButton->setText(tr("Unfold"));
-    _imp->unfoldButton->setToolTip(tr("Draws the selected folded prims in full again, their payloads loaded, as opening their rows "
-                                      "does, until the viewer shows another node."));
-    headerLayout->addWidget(_imp->unfoldButton);
     _imp->nodeChooser = new SceneNodeChooser(gui, header);
     _imp->nodeChooser->setObjectName(QString::fromUtf8("sceneGraphNode"));
     _imp->nodeChooser->setToolTip(tr("The node whose scene is shown: the one followed, or a node pinned by name."));
@@ -982,8 +818,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setUniformRowHeights(true);
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
-    _imp->foldDelegate = new FoldedRowDelegate(_imp->model, _imp->tree);
-    _imp->tree->setItemDelegate(_imp->foldDelegate);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
     _imp->tree->header()->setStretchLastSection(false);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
@@ -1034,18 +868,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->selectionPoll.setInterval(kSelectionPollMs);
 
     QObject::connect(_imp->pinButton, &QToolButton::toggled, this, &SceneGraphPanel::onPinToggled);
-    QObject::connect(_imp->foldButton, &QToolButton::clicked, this, [this]() { _imp->foldSelection(true); });
-    QObject::connect(_imp->unfoldButton, &QToolButton::clicked, this, [this]() { _imp->foldSelection(false); });
     QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         const QStringList selection = getSelection();
         QMenu menu(_imp->tree);
-        QAction* fold = nullptr;
-        QAction* unfold = nullptr;
-        if (_imp->foldViewport() && !selection.isEmpty()) {
-            fold = menu.addAction(tr("Fold"));
-            unfold = menu.addAction(tr("Unfold"));
-            menu.addSeparator();
-        }
         QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
         setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
         setOnNode->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
@@ -1061,9 +886,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         if (!chosen) {
             return;
         }
-        if ((chosen == fold) || (chosen == unfold)) {
-            _imp->foldSelection(chosen == fold);
-        } else if (chosen == setOnNode) {
+        if (chosen == setOnNode) {
             _imp->runSelectionAction(1, selection);
         } else if (chosen == create) {
             _imp->runSelectionAction(2, selection);
@@ -1157,11 +980,10 @@ SceneGraphPanel::showNodeScene(const NodePtr& node)
     _imp->pinnedPoll.stop();
     if (node) {
         QPointer<SceneGraphPanel> self(this);
-        SettingsPtr settings = appPTR->getCurrentSettings();
         _imp->pinned = std::make_shared<SceneNodeStageSource>(node, this, [self](bool ok, const QString& error) {
             if (self) {
                 self->onPinnedSynced(ok, error);
-            } }, true, settings ? settings->getViewer3DPrimBudget() : 0);
+            } });
         _imp->pinnedPoll.start();
     }
     _imp->applySource();
@@ -1224,19 +1046,12 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     const bool wasRestoring = _imp->restoringExpansion;
     _imp->syncingSelection = true;
     _imp->restoringExpansion = true;
-    // A prim inside a folded branch shows as the folded row: opening the row to it would load
-    // what the fold keeps unloaded.
-    QSet<QString> folded;
-    if (SceneViewport* target = _imp->foldViewport()) {
-        const QStringList folds = target->getFoldedPrims();
-        folded = QSet<QString>(folds.begin(), folds.end());
-    }
-    // In the rows' terms; a path shown twice keeps its last place, so the current prim stays last.
+    // A path shown twice keeps its last place, so the current prim stays last.
     _imp->selectionOrder.clear();
     {
         QSet<QString> ordered;
         for (int i = (int)paths.size() - 1; i >= 0; --i) {
-            const QString path = foldedAncestorOf(folded, paths[i]);
+            const QString& path = paths[i];
             if (!ordered.contains(path)) {
                 ordered.insert(path);
                 _imp->selectionOrder.prepend(path);
@@ -1248,7 +1063,7 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     QModelIndex current;
     // The current prim is last; the cap keeps it.
     for (int i = std::max(0, (int)paths.size() - kShownSelectionCap); i < paths.size(); ++i) {
-        const QString path = foldedAncestorOf(folded, paths[i]);
+        const QString& path = paths[i];
         const QModelIndex index = _imp->model->indexOfPath(path, true);
         if (!index.isValid()) {
             continue;
@@ -1475,12 +1290,8 @@ SceneGraphPanel::onExpanded(const QModelIndex& index)
     if (_imp->restoringExpansion) {
         return;
     }
-    if (SceneViewport* target = _imp->foldViewport()) {
-        target->setFolded(QStringList(_imp->model->pathOf(index)), false);
-
-        return;
-    }
     _imp->expanded.insert(_imp->model->pathOf(index));
+    _imp->publishState();
 }
 
 void
@@ -1489,12 +1300,8 @@ SceneGraphPanel::onCollapsed(const QModelIndex& index)
     if (_imp->restoringExpansion) {
         return;
     }
-    if (SceneViewport* target = _imp->foldViewport()) {
-        target->setFolded(QStringList(_imp->model->pathOf(index)), true);
-
-        return;
-    }
     _imp->expanded.remove(_imp->model->pathOf(index));
+    _imp->publishState();
 }
 
 void

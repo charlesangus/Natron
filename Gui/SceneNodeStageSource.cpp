@@ -25,9 +25,6 @@
 
 #include "SceneNodeStageSource.h"
 
-#include <cstddef>
-#include <map>
-#include <set>
 #include <string>
 
 #include "Engine/AppManager.h"
@@ -38,26 +35,14 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
 
-PXR_NAMESPACE_USING_DIRECTIVE
-
 NATRON_NAMESPACE_ENTER
-
-struct SceneNodeStageSource::BudgetFolds {
-    std::set<SdfPath> folds;
-    bool checked = false;
-};
 
 SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
                                            QObject* context,
-                                           const SyncedFunc& synced,
-                                           bool followFolds,
-                                           int primBudget)
+                                           const SyncedFunc& synced)
     : _node(node)
     , _context(context)
     , _synced(synced)
-    , _followFolds(followFolds)
-    , _primBudget(primBudget)
-    , _budget(new BudgetFolds)
 {
     _worker = std::thread([this]() { run(); });
 }
@@ -161,17 +146,10 @@ SceneNodeStageSource::run()
             SceneWriteBarrier::ReadScope readScope;
             std::lock_guard<std::mutex> lock(_stageMutex);
             if (!_stage) {
-                _stage.reset(new SceneStage(_followFolds));
-                if (_followFolds) {
-                    // Nothing loads before the scene's folds are known.
-                    _stage->loadNothing();
-                }
+                _stage.reset(new SceneStage);
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();
-            if (_followFolds) {
-                applyFoldsLocked();
-            }
             _editCount = _stage->getEditCount();
         }
         std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
@@ -181,37 +159,6 @@ SceneNodeStageSource::run()
             if (source && !source->_stopRequested && source->_synced) {
                 source->_synced(ok, qerror);
             } }, Qt::QueuedConnection);
-    }
-}
-
-void
-SceneNodeStageSource::applyFoldsLocked()
-{
-    const std::map<SdfPath, bool> noOverrides;
-    bool authored = false;
-    _stage->applyViewerFolds(noOverrides, _budget->folds, &authored);
-    if (!_budget->checked && _shown) {
-        _budget->checked = true;
-        if (authored || (_primBudget <= 0)) {
-            return;
-        }
-        std::size_t count = 0;
-        for (const UsdPrim& prim : _stage->getStage()->Traverse()) {
-            (void)prim;
-            if (++count > (std::size_t)_primBudget) {
-                break;
-            }
-        }
-        if (count > (std::size_t)_primBudget) {
-            for (const UsdPrim& prim : _stage->getStage()->GetPseudoRoot().GetChildren()) {
-                _budget->folds.insert(prim.GetPath());
-            }
-            _stage->applyViewerFolds(noOverrides, _budget->folds);
-        }
-    } else if (authored && !_budget->folds.empty()) {
-        // The scene folds itself now: the budget only stands in for a scene that folds nothing.
-        _budget->folds.clear();
-        _stage->applyViewerFolds(noOverrides, _budget->folds);
     }
 }
 

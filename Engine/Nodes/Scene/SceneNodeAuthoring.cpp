@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -38,7 +39,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 
+#include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/tokens.h>
 
 #include <QDir>
 #include <QString>
@@ -405,10 +408,11 @@ namespace {
     collectMatches(const PXR_NS::UsdPrim& parent,
                    const std::vector<std::string>& names,
                    std::size_t depth,
-                   std::vector<PXR_NS::SdfPath>* paths)
+                   std::vector<PXR_NS::SdfPath>* paths,
+                   std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash>* seen)
     {
         if (depth == names.size()) {
-            if (isMatchablePrim(parent) && (std::find(paths->begin(), paths->end(), parent.GetPath()) == paths->end())) {
+            if (isMatchablePrim(parent) && seen->insert(parent.GetPath()).second) {
                 paths->push_back(parent.GetPath());
             }
 
@@ -418,14 +422,14 @@ namespace {
         if (name.find_first_of("*?") == std::string::npos) {
             const PXR_NS::UsdPrim child = parent.GetChild(PXR_NS::TfToken(name));
             if (isMatchablePrim(child)) {
-                collectMatches(child, names, depth + 1, paths);
+                collectMatches(child, names, depth + 1, paths, seen);
             }
 
             return;
         }
         for (const PXR_NS::UsdPrim& child : parent.GetChildren()) {
             if (isMatchablePrim(child) && matchesGlob(child.GetName().GetString(), name)) {
-                collectMatches(child, names, depth + 1, paths);
+                collectMatches(child, names, depth + 1, paths, seen);
             }
         }
     }
@@ -476,12 +480,60 @@ matchPrims(const PXR_NS::UsdStageRefPtr& stage,
     if (!stage) {
         return true;
     }
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> seen;
     for (const std::vector<std::string>& names : entries) {
-        collectMatches(stage->GetPseudoRoot(), names, 0, paths);
+        collectMatches(stage->GetPseudoRoot(), names, 0, paths, &seen);
     }
 
     return true;
 } // matchPrims
+
+namespace {
+    bool
+    graftMaterial(const ScenePayload& material,
+                  const SceneReparentArgs& args,
+                  SceneGraftMemo* memo,
+                  SceneMaterialGraft* graft,
+                  std::string* errorMessage)
+    {
+        *graft = SceneMaterialGraft();
+        if (!material.isEmpty()) {
+            std::vector<SceneRootGraft> grafts;
+            if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
+                return false;
+            }
+
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+            const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            if (!stage) {
+                if (errorMessage->empty()) {
+                    *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
+                }
+
+                return false;
+            }
+            for (const SceneRootGraft& root : grafts) {
+                const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
+                for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
+                    if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                        graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
+                        break;
+                    }
+                }
+                if (!graft->materialPath.empty()) {
+                    break;
+                }
+            }
+        }
+
+        ContentHasher facts;
+        appendUpstreamMetadata(graft->payload, &facts);
+        facts.appendString(graft->materialPath);
+        graft->factsDigest = facts.finalize();
+
+        return true;
+    }
+} // anonymous namespace
 
 bool
 graftMaterialInput(const ScenePayload& material,
@@ -491,47 +543,104 @@ graftMaterialInput(const ScenePayload& material,
                    SceneMaterialGraft* graft,
                    std::string* errorMessage)
 {
-    *graft = SceneMaterialGraft();
-    if (!material.isEmpty()) {
-        SceneReparentArgs args;
-        args.inputs.push_back(material);
-        args.destinationPath = primPath;
-        args.layerTag = layerTag;
-        std::vector<SceneRootGraft> grafts;
-        if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
-            return false;
-        }
+    SceneReparentArgs args;
 
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
-            }
+    args.inputs.push_back(material);
+    args.destinationPath = primPath;
+    args.layerTag = layerTag;
 
-            return false;
-        }
-        for (const SceneRootGraft& root : grafts) {
-            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
-            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
-                if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
-                    graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
-                    break;
-                }
-            }
-            if (!graft->materialPath.empty()) {
-                break;
-            }
+    return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+bool
+graftSharedMaterial(const ScenePayload& material,
+                    const std::string& scope,
+                    const std::string& layerTag,
+                    SceneGraftMemo* memo,
+                    SceneMaterialGraft* graft,
+                    std::string* errorMessage)
+{
+    if (scope.empty()) {
+        *graft = SceneMaterialGraft();
+        *errorMessage = EffectInstance::tr("The project's Materials Scope is off, so there is no scope to place the material in.").toStdString();
+
+        return false;
+    }
+    SceneReparentArgs args;
+    args.inputs.push_back(material);
+    args.destinationPath = "/" + scope;
+    args.destinationType = "Scope";
+    args.ancestorType = "Scope";
+    args.passThroughRoot = scope;
+    args.layerTag = layerTag;
+
+    return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+std::vector<PXR_NS::TfToken>
+getCollectionBindingNames(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<PXR_NS::TfToken> names;
+
+    if (!prim) {
+        return names;
+    }
+    for (const PXR_NS::UsdProperty& property : prim.GetAuthoredPropertiesInNamespace(PXR_NS::UsdShadeTokens->materialBindingCollection.GetString())) {
+        if (property.Is<PXR_NS::UsdRelationship>()) {
+            names.push_back(property.GetName());
         }
     }
 
-    ContentHasher facts;
-    appendUpstreamMetadata(graft->payload, &facts);
-    facts.appendString(graft->materialPath);
-    graft->factsDigest = facts.finalize();
+    return names;
+}
+
+bool
+authorCollectionBinding(const PXR_NS::UsdPrim& root,
+                        const SceneCollectionBinding& binding,
+                        std::string* errorMessage)
+{
+    const QString rootPath = QString::fromStdString(root ? root.GetPath().GetString() : std::string());
+
+    if (!PXR_NS::SdfPath::IsValidIdentifier(binding.bindingName)) {
+        *errorMessage = EffectInstance::tr("\"%1\" is not a valid binding name.").arg(QString::fromStdString(binding.bindingName)).toStdString();
+
+        return false;
+    }
+    if (!root || !PXR_NS::SdfPath::IsValidPathString(binding.materialPath) || !PXR_NS::SdfPath(binding.materialPath).IsAbsolutePath()) {
+        *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at \"%2\".").arg(rootPath).arg(QString::fromStdString(binding.materialPath)).toStdString();
+
+        return false;
+    }
+    const PXR_NS::TfToken name(binding.bindingName);
+    const PXR_NS::UsdCollectionAPI collection = PXR_NS::UsdCollectionAPI::Apply(root, name);
+    const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
+    bool authored = collection && bindingAPI
+        && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
+        && collection.CreateIncludesRel().SetTargets(binding.includes);
+    PXR_NS::TfToken relName;
+    if (authored) {
+        relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();
+        const PXR_NS::UsdRelationship rel = root.CreateRelationship(relName, false);
+        authored = rel && rel.SetTargets({ collection.GetCollectionPath(), PXR_NS::SdfPath(binding.materialPath) })
+            && PXR_NS::UsdShadeMaterialBindingAPI::SetMaterialBindingStrength(rel, binding.strength);
+    }
+    if (authored) {
+        PXR_NS::TfTokenVector order(1, relName);
+        for (const PXR_NS::TfToken& existing : binding.existingBindings) {
+            if (existing != relName) {
+                order.push_back(existing);
+            }
+        }
+        root.SetPropertyOrder(order);
+    }
+    if (!authored) {
+        *errorMessage = EffectInstance::tr("USD could not author the material binding %1 on %2.").arg(QString::fromStdString(binding.bindingName)).arg(rootPath).toStdString();
+
+        return false;
+    }
 
     return true;
-} // graftMaterialInput
+} // authorCollectionBinding
 
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,

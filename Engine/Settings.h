@@ -364,8 +364,6 @@ public:
     bool isViewer3DNavigationKnob(const KnobI* knob) const;
 
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
-    // The prim count over which a viewer folds a newly shown scene's top-level prims; 0 never folds.
-    int getViewer3DPrimBudget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
     ///////////////////////////////////////////////////////
@@ -681,7 +679,6 @@ private:
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
-    KnobIntPtr _viewer3DPrimBudget;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

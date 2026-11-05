@@ -41,6 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
@@ -133,6 +134,84 @@ TEST(RFVExpression, ScanFindsTheVariablesAnExpressionReads)
         }
         const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(scan.expression);
         EXPECT_TRUE(reads == expected) << scan.expression << ": got " << describe(reads) << ", expected " << describe(expected);
+    }
+}
+
+namespace {
+
+std::string
+describeQualified(const RenderContextReadSet& reads)
+{
+    if (reads.readsAll()) {
+        return "<all>";
+    }
+    std::string text = "{";
+    for (const RenderContextName& name : reads.names()) {
+        text += " '" + (name.ns.empty() ? name.name : name.ns + "." + name.name) + "'";
+    }
+
+    return text + " }";
+}
+
+RenderContextReadSet
+loopReads(const std::string& loopName,
+          const std::vector<std::string>& variables)
+{
+    RenderContextReadSet reads;
+    for (const std::string& variable : variables) {
+        reads.add(loopName.empty() ? RenderContextName::loop(variable) : RenderContextName::loops(loopName, variable));
+    }
+
+    return reads;
+}
+
+RenderContextReadSet
+united(RenderContextReadSet a,
+       const RenderContextReadSet& b)
+{
+    a.merge(b);
+
+    return a;
+}
+
+} // namespace
+
+// loop.<var> and loops.<name>.<var> read one loop variable; the bare objects read all four of
+// their loop, and any other use of loops may read any loop's.
+TEST(RFVExpression, ScanFindsTheLoopVariablesAnExpressionReads)
+{
+    const std::vector<std::string> all = { "iteration", "count", "t", "frame" };
+    struct LoopCase {
+        const char* expression;
+        bool readsAll;
+        RenderContextReadSet reads;
+    };
+    const LoopCase cases[] = {
+        { "loop.t * 10", false, loopReads("", { "t" }) },
+        { "loop . iteration", false, loopReads("", { "iteration" }) },
+        { "loops.outer.t + loop.iteration", false, united(loopReads("outer", { "t" }), loopReads("", { "iteration" })) },
+        { "loops.outer", false, loopReads("outer", all) },
+        { "f(loops.outer)", false, loopReads("outer", all) },
+        { "loop", false, loopReads("", all) },
+        { "getattr(loop, 'x')", false, loopReads("", all) },
+        { "rfv.a + loop.t", false, united(readsOf({ "a" }), loopReads("", { "t" })) },
+        // Not the loop objects.
+        { "myloop.t + loops2.x + loop_t", false, RenderContextReadSet() },
+        { "thisNode.loop.t + thisNode.loops.a.t", false, RenderContextReadSet() },
+        { "'loop.t' # loops.a.t", false, RenderContextReadSet() },
+        // Any other use of loops may read any loop.
+        { "loops", true, RenderContextReadSet() },
+        { "f(loops)", true, RenderContextReadSet() },
+        { "getattr(loops, 'outer')", true, RenderContextReadSet() },
+    };
+
+    for (const LoopCase& scan : cases) {
+        RenderContextReadSet expected = scan.reads;
+        if (scan.readsAll) {
+            expected.setReadsAll();
+        }
+        const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(scan.expression);
+        EXPECT_TRUE(reads == expected) << scan.expression << ": got " << describeQualified(reads) << ", expected " << describeQualified(expected);
     }
 }
 
@@ -263,6 +342,71 @@ TEST_F(RFVPythonObject, FollowsAnEditOfTheProjectValue)
 
     a->setValue(5.);
     EXPECT_EQ(10., doubled->getValue(0));
+}
+
+// An edit of a project variable refreshes the reading parameter's display and moves the reading
+// node's hash, so its cached renders are not reused, without a restart.
+TEST_F(RFVPythonObject, ProjectVariableEditRefreshesTheReaderAndItsNodeHash)
+{
+    KnobDoublePtr a = addProjectDouble("a", 3.);
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr doubled = node->getEffectInstance()->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_NO_THROW(doubled->setExpression(0, "rfv.a * 2", false, true));
+    EXPECT_EQ(6., doubled->getValue(0));
+    const U64 before = node->getHashValue();
+    // A node that does not read the variable keeps its hash.
+    NodePtr bystander = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(bystander));
+    const U64 bystanderBefore = bystander->getHashValue();
+
+    int refreshes = 0;
+    ASSERT_TRUE(bool(doubled->getSignalSlotHandler()));
+    QMetaObject::Connection counter = QObject::connect(doubled->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged,
+                                                       [&refreshes](ViewSpec, int, int) {
+                                                           ++refreshes;
+                                                       });
+    a->setValue(5.);
+    QObject::disconnect(counter);
+
+    EXPECT_GE(refreshes, 1);
+    EXPECT_EQ(10., doubled->getValue(0));
+    const U64 after = node->getHashValue();
+    EXPECT_NE(before, after);
+    EXPECT_EQ(bystanderBefore, bystander->getHashValue());
+
+    a->setValue(3.);
+    EXPECT_EQ(6., doubled->getValue(0));
+    EXPECT_EQ(before, node->getHashValue());
+}
+
+// A variable a Set node declares is not a dependency of an expression reading it: the value read
+// depends on the path a render takes, so an edit of the Set's variable leaves the reader alone.
+TEST_F(RFVPythonObject, SetNodeVariableIsNotADependencyOfItsReader)
+{
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
+    ASSERT_TRUE(bool(set));
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
+    ASSERT_TRUE(bool(variables));
+    KnobDoublePtr s = set->getEffectInstance()->createDoubleKnob("s", "s", 1);
+    ASSERT_TRUE(variables->addKnob(s));
+    set->getEffectInstance()->recreateUserKnobs(false);
+    s->setValue(3.);
+
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr read = node->getEffectInstance()->createDoubleKnob("rfvRead", "Read", 1);
+    ASSERT_NO_THROW(read->setExpression(0, "rfv.s if rfv.s is not None else -1", false, true));
+    EXPECT_EQ(-1., read->getValue(0));
+    const U64 before = node->getHashValue();
+
+    KnobI::ListenerDimsMap listeners;
+    s->getListeners(listeners);
+    EXPECT_TRUE(listeners.find(read) == listeners.end());
+
+    s->setValue(5.);
+    EXPECT_EQ(-1., read->getValue(0));
+    EXPECT_EQ(before, node->getHashValue());
 }
 
 // Outside a render, an animated project variable is read at the timeline's frame.

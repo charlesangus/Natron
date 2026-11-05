@@ -46,10 +46,7 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief A node's scene, evaluated on a worker into a stage of its own. A stage leased from the
  * query pool would be bound to the thread that leased it, and a view may hold this one for as
- * long as it shows the node. With followFolds, the stage keeps unloaded the payloads the scene's
- * customData folds (USDRead's Open Mode, USDExpandHierarchy), and, when it folds nothing and has
- * more prims than primBudget, those below its root prims, as a viewer would; without it, the
- * stage loads everything.
+ * long as it shows the node.
  **/
 class SceneNodeStageSource
     : public SceneGraphStageSource,
@@ -60,9 +57,7 @@ public:
 
     SceneNodeStageSource(const NodePtr& node,
                          QObject* context,
-                         const SyncedFunc& synced,
-                         bool followFolds = false,
-                         int primBudget = 0);
+                         const SyncedFunc& synced);
 
     ~SceneNodeStageSource() override;
 
@@ -86,19 +81,11 @@ public:
 private:
     void run();
 
-    // Needs _stageMutex.
-    void applyFoldsLocked();
-
     NodeWPtr _node;
     QObject* _context;
     SyncedFunc _synced;
-    const bool _followFolds;
-    const int _primBudget;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
-    // The prims the prim budget folds, and whether the budget was checked; see applyFoldsLocked().
-    struct BudgetFolds;
-    std::unique_ptr<BudgetFolds> _budget;
     std::atomic<bool> _shown { false };
     std::atomic<U64> _editCount { 0 };
     std::atomic<bool> _stopRequested { false };

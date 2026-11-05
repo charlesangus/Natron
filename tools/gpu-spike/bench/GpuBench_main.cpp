@@ -6,13 +6,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <atomic>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -1074,8 +1074,7 @@ public:
         if (!makeStorage(dev, kBytes, a_, err) || !makeStorage(dev, kBytes, b_, err)) {
             return false;
         }
-        return init(dev.device(), dev.queueFamily(QueueKind::Compute), a_.buffer, b_.buffer,
-                    [&dev](const VkSubmitInfo2& si, VkFence f) { return bool(dev.submit(QueueKind::Compute, { &si, 1 }, f)); }, err);
+        return init(dev.device(), dev.queueFamily(QueueKind::Compute), a_.buffer, b_.buffer, [&dev](const VkSubmitInfo2& si, VkFence f) { return bool(dev.submit(QueueKind::Compute, { &si, 1 }, f)); }, err);
     }
 
     // For a load on a queue GpuDevice does not route to: the caller owns the two kBytes buffers and serializes the
@@ -1755,11 +1754,9 @@ runQueueModes(GpuDevice& dev, const Config& cfg)
     const uint32_t cf = rig.computeFamily(), tf = rig.transferFamily();
     std::vector<QueueConfig> configs;
     configs.push_back({ "shared-compute-q0", { cf, 0 }, { cf, 0 }, { cf, 0 }, "" });
-    configs.push_back({ "compute-q1", { cf, 1 }, { cf, 1 }, { cf, 0 },
-                        rig.queueCount(cf) >= 2 ? "" : "compute family has a single queue" });
+    configs.push_back({ "compute-q1", { cf, 1 }, { cf, 1 }, { cf, 0 }, rig.queueCount(cf) >= 2 ? "" : "compute family has a single queue" });
     const uint32_t tLast = tf == UINT32_MAX ? 0 : rig.queueCount(tf) - 1;
-    configs.push_back({ "transfer-family", { tf, 0 }, { tf, tLast }, { cf, 0 },
-                        tf == UINT32_MAX ? "no transfer-only queue family (RADV_PERFTEST=transfer_queue exposes one on RADV)" : "" });
+    configs.push_back({ "transfer-family", { tf, 0 }, { tf, tLast }, { cf, 0 }, tf == UINT32_MAX ? "no transfer-only queue family (RADV_PERFTEST=transfer_queue exposes one on RADV)" : "" });
 
     std::printf("queue modes: %zu MB host-import copies, %d reps (+2 warm-up), wall time submit to fence -> %s\n", bytes >> 20, reps,
                 cfg.queueCsv.c_str());
@@ -1784,7 +1781,8 @@ runQueueModes(GpuDevice& dev, const Config& cfg)
                 r.direction = up ? "up" : "down";
                 r.copyFamily = copyQ.first;
                 r.copyIndex = copyQ.second;
-                r.load = !loaded ? "none" : cs == ls ? "same-queue" : "other-queue";
+                r.load = !loaded ? "none" : cs == ls ? "same-queue"
+                                                     : "other-queue";
                 if (loaded) {
                     r.loadFamily = c.load.first;
                     r.loadIndex = c.load.second;
@@ -1794,8 +1792,7 @@ runQueueModes(GpuDevice& dev, const Config& cfg)
                 std::thread loadThread;
                 bool loadOk = true;
                 if (loaded) {
-                    const bool init = busy.init(rig.device(), ls->family, loadA.buffer, loadB.buffer,
-                                                [&](const VkSubmitInfo2& si, VkFence f) { return rig.submit(*ls, si, f); }, err);
+                    const bool init = busy.init(rig.device(), ls->family, loadA.buffer, loadB.buffer, [&](const VkSubmitInfo2& si, VkFence f) { return rig.submit(*ls, si, f); }, err);
                     if (!init) {
                         std::fprintf(stderr, "queue modes: busy load: %s\n", err.c_str());
                         return false;

@@ -540,26 +540,28 @@ findOwner(const NodePtr& node,
         return NodePtr();
     }
     std::string inputPath = primPath;
+    int inputs = node->getNInputs();
     if (!node->isNodeDisabled()) {
         if (replacesTransformOf(node, primPath)) {
             return node;
         }
         TransformKnobs knobs;
         const bool hasTransform = getTransformKnobs(node, &knobs) && !toEditTransform(node);
-        const std::string own = primPathOf(node);
+        const SceneReparentNode* reparent = dynamic_cast<const SceneReparentNode*>(node->getEffectInstance().get());
+        const std::string own = reparent ? reparent->getDefinedPrimPath() : primPathOf(node);
         if (hasTransform && (own == primPath)) {
             return node;
         }
-        if (dynamic_cast<SceneReparentNode*>(node->getEffectInstance().get())) {
-            // A reparenting node grafts its inputs' root prims under its own prim; grafts renamed
-            // by Auto Rename are not followed.
-            if (own.empty() || (primPath.size() <= own.size() + 1) || (primPath.compare(0, own.size(), own) != 0) || (primPath[own.size()] != '/')) {
+        if (reparent) {
+            inputPath = reparent->mapToInputPath(primPath);
+            if (inputPath.empty()) {
                 return NodePtr();
             }
-            inputPath = primPath.substr(own.size());
+            if (reparent->isWrapping()) {
+                inputs = std::min(inputs, 1);
+            }
         }
     }
-    const int inputs = node->getNInputs();
     for (int i = 0; i < inputs; ++i) {
         NodePtr found = findOwner(node->getInput(i), inputPath, visited);
         if (found) {

@@ -93,6 +93,13 @@ def _path_element(text):
 
 _COLOR_PROPERTY = "natronCategoryColor"
 _SHORTCUT_PROPERTY = "natronShortcut"
+_PLUGIN_ID_PROPERTY = "natronPluginID"
+_INPUT_KIND_PROPERTY = "natronInputKind"
+_PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
+_INPUT_KINDS_PROPERTY = "natronInputKinds"
+
+# An input of this kind takes any kind.
+_ANY_KIND = "polymorphic"
 
 _MNEMONIC = re.compile(r"&(&?)")
 
@@ -144,6 +151,29 @@ def _node_items():
     return _walk_menu(menu, [])
 
 
+def _accepts(action, context):
+    """Whether the node type of `action` fits a launch `context`: its first
+    input takes context['inputKind'], one of its inputs other than masks
+    takes context['selectedKind'], and it declares a prim path knob when
+    context['needsPrimPathKnob'] says so. An action with no plug-in behind
+    it passes context['selectedKind'] as a menu command does."""
+    kind = context.get('inputKind')
+    if kind:
+        accepted = _string_property(action, _INPUT_KIND_PROPERTY)
+        if accepted not in (kind, _ANY_KIND):
+            return False
+    selected = context.get('selectedKind')
+    # A script's action declares no inputs, which must not read as a source
+    # node's empty list: nothing says it cannot use the selection.
+    if selected and _string_property(action, _PLUGIN_ID_PROPERTY):
+        kinds = [k for k in _string_property(action, _INPUT_KINDS_PROPERTY).split(",") if k]
+        if selected not in kinds and _ANY_KIND not in kinds:
+            return False
+    if context.get('needsPrimPathKnob') and not _string_property(action, _PRIM_PATH_KNOB_PROPERTY):
+        return False
+    return True
+
+
 def _command_items(window):
     if window is None:
         return []
@@ -189,12 +219,18 @@ class NatronPlugin(TabTabTabPlugin):
         self._window = None
         self._storage_dir = None
         self._pending = []
+        self._context = None
+        self._chosen = False
 
     def set_app(self, app):
         self._app = app
+        self._chosen = False
 
     def set_window(self, window):
         self._window = window
+
+    def set_context(self, context):
+        self._context = context
 
     def main_window(self):
         # The popup itself becomes the active window once shown, so the
@@ -208,7 +244,14 @@ class NatronPlugin(TabTabTabPlugin):
         self._storage_dir = path
 
     def get_items(self):
-        return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
+        if not self._context:
+            return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
+        nodes = [item for item in _node_items() if _accepts(item['menuobj'], self._context)]
+        if self._context.get('inputKind'):
+            # This launch creates a node and fills it in once created, so a
+            # command has nothing to hand that node.
+            return _make_menupaths_unique(nodes)
+        return _make_menupaths_unique(nodes + _command_items(self.main_window()))
 
     def get_weights_file(self):
         if self._storage_dir is not None:
@@ -222,8 +265,20 @@ class NatronPlugin(TabTabTabPlugin):
         # The core calls invoke() before it closes the popup. Running the
         # choice now would open its windows (a Read's file dialog, the
         # Preferences) while the popup is still up.
+        self._chosen = True
         self._pending.append(lambda: _trigger_action(app, action))
         QtCore.QTimer.singleShot(0, self._run_pending)
+
+    def closed(self):
+        """The popup closed: a filtered launch closed with no choice tells
+        the app, which would otherwise hold its context for a later choice."""
+        if self._chosen or not self._context or self._app is None:
+            return
+        self._chosen = True
+        try:
+            self._app.triggerTabMenuAction(None)
+        except RuntimeError:
+            pass
 
     def _run_pending(self):
         while self._pending:
@@ -277,10 +332,41 @@ def _attach_popup_to(window):
         pass
 
 
-def launch(app):
-    """Open the tab menu for `app`, the GuiApp whose node graph has focus."""
+_close_watcher = None
+_watched_popup = None
+
+
+def _watch_popup_close(popup):
+    # The core hides its popup on every close path (a choice, Escape, a
+    # click outside), and calls invoke() before that on a choice only.
+    global _close_watcher, _watched_popup
+    if not _is_alive(popup) or popup is _watched_popup:
+        return
+    if _close_watcher is None:
+        class _CloseWatcher(QtCore.QObject):
+            def eventFilter(self, watched, event):
+                if event.type() == QtCore.QEvent.Hide:
+                    # After the choice's own deferred trigger, if any.
+                    QtCore.QTimer.singleShot(0, _plugin.closed)
+                return False
+
+        _close_watcher = _CloseWatcher()
+    popup.installEventFilter(_close_watcher)
+    _watched_popup = popup
+
+
+def launch(app, context=None):
+    """Open the tab menu for `app`, the GuiApp whose node graph has focus.
+
+    `context`, when given, lists only the node types that fit it, see
+    _accepts(): a dict with any of 'inputKind' (a kind name such as
+    "scene"), 'selectedKind' (the kind the selected nodes output) and
+    'needsPrimPathKnob'. Menu commands, and actions scripts added to the
+    nodes menu, stay listed unless 'inputKind' is set.
+    """
     window = _find_natron_main_window()
     _plugin.set_app(app)
+    _plugin.set_context(dict(context) if context else None)
     _plugin.set_window(window)
     _attach_popup_to(window)
     space_mode_order, scroll_enabled = _read_preferences()
@@ -289,3 +375,4 @@ def launch(app):
         space_mode_order=space_mode_order,
         scroll_enabled=scroll_enabled,
     )
+    _watch_popup_close(tabtabtab_nuke_core._tabtabtab_instance)

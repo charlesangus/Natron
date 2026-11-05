@@ -634,3 +634,32 @@ TEST_F(USDWriteTest, CorrectedReadsRoundTripInBothModes)
         }
     }
 }
+
+TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const QString dir = tmp.path() + QString::fromUtf8(mode == USDWrite::eExportModeLayered ? "/layered" : "/flattened");
+        const QString path = dir + QString::fromUtf8("/out.usda");
+        NodePtr writer = createWriter(merge, path, mode, 1, 1);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+        ASSERT_TRUE(QFile::exists(path));
+
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(stage));
+        for (const PXR_NS::UsdPrim& prim : stage->TraverseAll()) {
+            for (const std::pair<const std::string, PXR_NS::VtValue>& entry : prim.GetCustomData()) {
+                EXPECT_TRUE(entry.first.rfind("natron:", 0) != 0) << prim.GetPath().GetString() << " " << entry.first;
+            }
+        }
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
+        }
+    }
+}

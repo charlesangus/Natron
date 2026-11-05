@@ -49,6 +49,7 @@ PrimSelector::create(KnobHolder* holder,
                                               "predicates filter by prim; + or a space unites, & intersects, - subtracts and "
                                               "~ complements, with parentheses for grouping."));
     knob->setAnimationEnabled(false);
+    knob->setPrimPathHint(KnobString::ePrimPathHintPattern);
     page->addKnob(knob);
     _knob = knob;
 }

@@ -112,6 +112,7 @@ USDAssignMaterial::initializeKnobs()
                                    "/World//*Light*, where // spans any depth and spaces join several paths. "
                                    "Their descendants take the material too, unless their own binding is stronger."));
     primPattern->setAnimationEnabled(false);
+    primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
     page->addKnob(primPattern);
     _primPattern = primPattern;
 
@@ -120,6 +121,7 @@ USDAssignMaterial::initializeKnobs()
     materialPath->setHintToolTip(tr("The material already in the scene to bind, such as /materials/Metal. Unused while the "
                                     "Material input is connected: its first material is bound instead."));
     materialPath->setAnimationEnabled(false);
+    materialPath->setPrimPathHint(KnobString::ePrimPathHintPath);
     page->addKnob(materialPath);
     _materialPath = materialPath;
 

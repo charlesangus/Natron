@@ -856,7 +856,8 @@ sameChoiceOptions(const std::vector<ChoiceOption>& a,
 }
 
 bool
-KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
+KnobChoice::populateChoices(const std::vector<ChoiceOption>& entries,
+                            bool notifyIfUnchanged)
 {
     std::vector<ChoiceOption> newEntries(entries);
     for (std::size_t i = 0; i < newEntries.size(); ++i) {
@@ -883,6 +884,10 @@ KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
         }
     }
     if (!hasChanged) {
+        if (notifyIfUnchanged) {
+            Q_EMIT populated();
+        }
+
         return false;
     }
     invalidateContentHash();

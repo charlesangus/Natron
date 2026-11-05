@@ -3736,10 +3736,10 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 
     bool isMT = QThread::currentThread() == qApp->thread();
 
-    if ( isMT && ( !knob || knob->getEvaluateOnChange() ) ) {
+    // A non-persistent knob is not saved, so changing it leaves the project as it was.
+    if (isMT && (!knob || (knob->getEvaluateOnChange() && knob->getIsPersistent()))) {
         getApp()->triggerAutoSave();
     }
-
 
     if (isMT) {
         node->refreshIdentityState();
@@ -6688,6 +6688,12 @@ EffectInstance::getCurveContextKind() const
     }
 
     return eCurveContextKindNone;
+}
+
+RotoCurveContextPtr
+EffectInstance::createGeometryCurveContext(const NodePtr& node) const
+{
+    return RotoCurveContext::create(node);
 }
 
 namespace {

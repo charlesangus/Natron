@@ -1867,7 +1867,8 @@ public:
      * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
      * the draft flag, which is settled here for every node reached. The nodes whose settings panel
      * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown. Main thread only.
+     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
+     * only.
      **/
     void refreshShownDownstreamInputRelatedData();
 

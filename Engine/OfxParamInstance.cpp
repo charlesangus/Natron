@@ -1694,7 +1694,8 @@ OfxChoiceInstance::setOption(int num)
                 entries[i].tooltip = getProperties().getStringProperty(kOfxParamPropChoiceLabelOption, i);
             }
         }
-        knob->populateChoices(entries);
+        // A plug-in opens its right-click menu by setting the options, often to the ones it set last time.
+        knob->populateChoices(entries, knob->getName() == kNatronOfxParamRightClickMenu);
     }
 }
 

@@ -103,6 +103,7 @@
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -178,6 +179,7 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_SPLINEWARP,
         PLUGINID_NATRON_LOOPBEGIN,
         PLUGINID_NATRON_LOOPEND,
         PLUGINID_NATRON_TIMEWARP,

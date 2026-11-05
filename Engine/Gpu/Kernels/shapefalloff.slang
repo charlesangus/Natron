@@ -11,9 +11,10 @@ static const int kFalloffSmooth = 1;
 static const int kFalloffEaseIn = 2;
 static const int kFalloffEaseOut = 3;
 static const int kFalloffQuadratic = 4;
-static const int kFalloffCount = 5;
 
 static const float kFarOutside = -1e30f;
+
+static const float kMinBandFraction = 1e-3f;
 
 struct ShapeBox
 {
@@ -77,6 +78,13 @@ float rampT(float px, float py, float p0x, float p0y, float p1x, float p1y)
     return shapeClamp01(((px - p0x) * dx + (py - p0y) * dy) / len2);
 }
 
+float curvedEdgeDistance(float r, float g, float shorterRadius)
+{
+    const float d = (1.f - r) * r / g;
+
+    return d < shorterRadius ? d : shorterRadius;
+}
+
 ShapeEdge ellipseEdge(float px, float py, ShapeBox box)
 {
     ShapeEdge e;
@@ -90,6 +98,7 @@ ShapeEdge ellipseEdge(float px, float py, ShapeBox box)
 
         return e;
     }
+    const float shorterRadius = rx < ry ? rx : ry;
     const float qx = (px - (box.x1 + rx)) / rx;
     const float qy = (py - (box.y1 + ry)) / ry;
     const float gx = qx / rx;
@@ -97,14 +106,14 @@ ShapeEdge ellipseEdge(float px, float py, ShapeBox box)
     const float g = sqrt(gx * gx + gy * gy);
     if (!(g > 0.f))
     {
-        e.distance = rx < ry ? rx : ry;
+        e.distance = shorterRadius;
         e.nx = 1.f;
         e.ny = 0.f;
 
         return e;
     }
     const float r = sqrt(qx * qx + qy * qy);
-    e.distance = (1.f - r) * r / g;
+    e.distance = curvedEdgeDistance(r, g, shorterRadius);
     e.nx = gx / g;
     e.ny = gy / g;
 
@@ -145,7 +154,7 @@ ShapeEdge roundedBoxEdge(float px, float py, ShapeBox box, float cornerX, float 
         const float gy = qy / ry;
         const float g = sqrt(gx * gx + gy * gy);
         const float r = sqrt(qx * qx + qy * qy);
-        e.distance = (1.f - r) * r / g;
+        e.distance = curvedEdgeDistance(r, g, rx < ry ? rx : ry);
         e.nx = sx * gx / g;
         e.ny = sy * gy / g;
 
@@ -232,13 +241,13 @@ float coverageIntegral(float z, float a, float b)
 
 float bandCoverage(ShapeEdge e, float softness, float pixelW, float pixelH)
 {
-    if (!(softness > 0.f))
-    {
-        return pixelCoverage(e, pixelW, pixelH);
-    }
     const float2 ab = footprintExtents(e, pixelW, pixelH);
     const float a = ab.x;
     const float b = ab.y;
+    if (!(softness > kMinBandFraction * (a + b)))
+    {
+        return pixelCoverage(e, pixelW, pixelH);
+    }
     const float h = 0.5f * (a + b);
     if (e.distance <= -h)
     {
@@ -256,14 +265,4 @@ float bandCoverage(ShapeEdge e, float softness, float pixelW, float pixelH)
 float shapeWeight(ShapeEdge e, float softness, int falloff, float pixelW, float pixelH)
 {
     return shapeEase(bandCoverage(e, softness, pixelW, pixelH), falloff);
-}
-
-float ellipseT(float px, float py, ShapeBox box, float softness, float pixelW, float pixelH)
-{
-    return bandCoverage(ellipseEdge(px, py, box), softness, pixelW, pixelH);
-}
-
-float roundedBoxT(float px, float py, ShapeBox box, float cornerX, float cornerY, float softness, float pixelW, float pixelH)
-{
-    return bandCoverage(roundedBoxEdge(px, py, box, cornerX, cornerY), softness, pixelW, pixelH);
 }

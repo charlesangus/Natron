@@ -79,8 +79,7 @@ struct ExtentPolicy {
  * @brief The extent knobs shared by the generators and Crop, in the openfx-misc order: extent,
  * Center, the host-managed format choice with its secret size and pixel aspect ratio, bottomLeft
  * and size with normalised defaults, interactive and hidpi (unless the policy omits them) and
- * frameRange, plus the knob that drives
- * the rectangle overlay in Size extent.
+ * frameRange, plus the knob that drives the rectangle overlay in Size extent.
  *
  * An owning effect creates the knobs from initializeKnobs(), forwards knobChanged() and
  * onKnobsLoaded(), and keeps this object as a member for as long as it lives.

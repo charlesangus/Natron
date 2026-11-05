@@ -1,4 +1,4 @@
-"""The native shape generators work in the app (M128 - Native Shape Generators).
+"""The native shape generators work in the app.
 
 Sections (the Viewer is created first and set to the Un-tone-mapped view; every comparison is relative,
 between viewer pixels of the same run; the viewer frame is located by showing a white Constant first):
@@ -527,10 +527,8 @@ try:
         yield from panel_fit(wheel, "m128-colorwheel-panel.png")
         ok = yield from open_panel(wheel)
         check(ok, "the ColorWheel's panel opens")
-        yield from measure_frame()
         gt.close_all_panels()
         yield ("sleep", 300)
-        # Same viewer size as measured: the panel is closed again, so re-measure.
         yield from measure_frame()
         radius = 300.0
         cx, cy = centred_box(wheel, radius, radius)

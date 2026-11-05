@@ -1166,14 +1166,9 @@ public:
         glLineStipple(2, 0xAAAA);
         glPointSize(pointSize() * screenPixelRatio);
 
-        // Draw everything twice
-        // l = 0: shadow
-        // l = 1: drawing
         for (int l = 0; l < 2; ++l) {
-            // shadow (uses GL_PROJECTION)
             glMatrixMode(GL_PROJECTION);
             int direction = (l == 0) ? 1 : -1;
-            // translate (1,-1) pixels
             glTranslated(direction * shadow.x, -direction * shadow.y, 0);
             glMatrixMode(GL_MODELVIEW);
 

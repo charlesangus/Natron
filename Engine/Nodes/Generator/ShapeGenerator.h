@@ -43,6 +43,7 @@
 NATRON_NAMESPACE_ENTER
 
 class KnobReader;
+class NativeGenerator;
 
 // What Ramp, Radial, Rectangle and ColorWheel share: their knobs, and the mapping of a pixel at a
 // render scale to canonical coordinates. Every shape is evaluated in canonical space, so a proxy
@@ -55,6 +56,27 @@ constexpr double kMaxCoordinate = 1e6;
 constexpr double kMaxColor = 1e18;
 // A shape narrower than this is empty: its normalised coordinates would overflow.
 constexpr double kMinShapeSize = 1e-3;
+
+inline constexpr double kColor0Default[4] = { 0., 0., 0., 0. };
+inline constexpr double kColor1Default[4] = { 1., 1., 1., 1. };
+
+/**
+ * @brief The canonical box of a node's extent and its pixel aspect ratio.
+ **/
+struct ExtentBox {
+    double x1;
+    double y1;
+    double x2;
+    double y2;
+    double par;
+};
+
+/**
+ * @brief The extent box at the reader's time and view; an empty box at aspect ratio 1 without a
+ * generator.
+ **/
+ExtentBox readExtentBox(const NativeGenerator* generator,
+                        const KnobReader& reader);
 
 /**
  * @brief v as a float clamped to [-limit, limit], and fallback for NaN.
@@ -121,6 +143,20 @@ lerpColor(const float color0[4],
     }
 }
 
+/**
+ * @brief Copies a node's baked colour0 and colour1 into its pixel-params block.
+ **/
+template <typename PARAMS, typename PIXEL>
+inline void
+copyColors(const PARAMS& params,
+           PIXEL* pixel)
+{
+    for (int c = 0; c < 4; ++c) {
+        pixel->color0[c] = params.color0[c];
+        pixel->color1[c] = params.color1[c];
+    }
+}
+
 } // namespace ShapeGenerator
 
 /**
@@ -152,11 +188,7 @@ static_assert(sizeof(ShapeBoxPixelParams) == 80, "ShapeBoxPixelParams is a fixed
  * @brief The box params for a region in canonical coordinates. A box narrower or shorter than
  * ShapeGenerator::kMinShapeSize collapses to an empty one, which gives colour0 everywhere.
  **/
-ShapeBoxPixelParams shapeBoxPixelParams(double x1,
-                                        double y1,
-                                        double x2,
-                                        double y2,
-                                        double par,
+ShapeBoxPixelParams shapeBoxPixelParams(const ShapeGenerator::ExtentBox& extent,
                                         double renderScaleX,
                                         double renderScaleY);
 

@@ -32,6 +32,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
@@ -151,8 +152,26 @@ readSoftness(const KnobReader& reader,
 {
     const float v = boundedFloat(reader.valueOr(knob, 0.), kMaxCoordinate, 0.f);
 
-    // The band's coverage is divided by the softness, which overflows for a subnormal one.
-    return v >= 1e-6f ? v : 0.f;
+    return v > 0.f ? v : 0.f;
+}
+
+ExtentBox
+readExtentBox(const NativeGenerator* generator,
+              const KnobReader& reader)
+{
+    ExtentBox box = { 0., 0., 0., 0., 1. };
+
+    if (generator) {
+        const RectD rod = generator->getRegionOfDefinition(reader.time(), reader.view());
+
+        box.x1 = rod.x1;
+        box.y1 = rod.y1;
+        box.x2 = rod.x2;
+        box.y2 = rod.y2;
+        box.par = generator->getPixelAspectRatio(reader.time(), reader.view());
+    }
+
+    return box;
 }
 
 void
@@ -172,11 +191,7 @@ pixelSize(double par,
 } // namespace ShapeGenerator
 
 ShapeBoxPixelParams
-shapeBoxPixelParams(double x1,
-                    double y1,
-                    double x2,
-                    double y2,
-                    double par,
+shapeBoxPixelParams(const ShapeGenerator::ExtentBox& extent,
                     double renderScaleX,
                     double renderScaleY)
 {
@@ -184,15 +199,15 @@ shapeBoxPixelParams(double x1,
     using ShapeGenerator::kMaxCoordinate;
 
     ShapeBoxPixelParams p = {};
-    p.x1 = boundedFloat(x1, kMaxCoordinate, 0.f);
-    p.y1 = boundedFloat(y1, kMaxCoordinate, 0.f);
-    p.x2 = boundedFloat(x2, kMaxCoordinate, 0.f);
-    p.y2 = boundedFloat(y2, kMaxCoordinate, 0.f);
+    p.x1 = boundedFloat(extent.x1, kMaxCoordinate, 0.f);
+    p.y1 = boundedFloat(extent.y1, kMaxCoordinate, 0.f);
+    p.x2 = boundedFloat(extent.x2, kMaxCoordinate, 0.f);
+    p.y2 = boundedFloat(extent.y2, kMaxCoordinate, 0.f);
     if (!((double)p.x2 - p.x1 >= ShapeGenerator::kMinShapeSize) || !((double)p.y2 - p.y1 >= ShapeGenerator::kMinShapeSize)) {
         p.x2 = p.x1;
         p.y2 = p.y1;
     }
-    ShapeGenerator::pixelSize(par, renderScaleX, renderScaleY, &p.pixelW, &p.pixelH);
+    ShapeGenerator::pixelSize(extent.par, renderScaleX, renderScaleY, &p.pixelW, &p.pixelH);
     p.falloff = ShapeFalloff::kFalloffLinear;
 
     return p;

@@ -90,27 +90,47 @@ everywhere(int,
     return true;
 }
 
+// Whether pixel (x, y) at scale 1/8 is clear of the corners of the box from (83, 51) to (803, 611),
+// by more than its softness of 96 and a pixel.
+bool
+clearOfLargeBoxCorners(int x,
+                       int y)
+{
+    const int cx = 8 * x + 4;
+    const int cy = 8 * y + 4;
+    const bool nearSide = (std::abs(cx - 83) < 104) || (std::abs(cx - 803) < 104);
+    const bool nearTopOrBottom = (std::abs(cy - 51) < 104) || (std::abs(cy - 611) < 104);
+
+    return !(nearSide && nearTopOrBottom);
+}
+
 } // namespace
 
 class NativeShapesTest
     : public BaseTest {
 protected:
-    // A shape over the box from (x, y) of size (w, h), with a hard edge, linear falloff and the
-    // default colours, so every channel is its weight.
+    // A shape over the box from (x, y) of size (w, h), in a project of the given format, with a
+    // hard edge, the given falloff (null for the node's default) and the default colours, so every
+    // channel is its weight.
     NodePtr makeShape(const char* id,
                       double x,
                       double y,
                       double w,
-                      double h)
+                      double h,
+                      const char* falloff = "linear",
+                      int formatWidth = kWidth,
+                      int formatHeight = kHeight)
     {
-        resetProject(getApp(), kWidth, kHeight);
+        resetProject(getApp(), formatWidth, formatHeight);
         NodePtr node = createNode(QString::fromUtf8(id), 1);
 
         EXPECT_TRUE(isNative(node));
         if (node) {
             EXPECT_TRUE(setKnobValues(node, kNativeGeneratorParamBottomLeft, { x, y }));
             EXPECT_TRUE(setKnobValues(node, kNativeGeneratorParamSize, { w, h }));
-            EXPECT_TRUE(setKnobValue(node, kShapeParamFalloff, "linear"));
+            if (falloff) {
+                EXPECT_TRUE(setKnobValue(node, kShapeParamFalloff, falloff));
+            }
         }
 
         return node;
@@ -369,6 +389,63 @@ TEST_F(NativeShapesTest, RenderScaleSamplesTheSameCanonicalShape)
         ASSERT_TRUE(renderRgba(node, frame(), &full));
         EXPECT_LE(worstHalfScaleDifference(half, full, 3, k.include), k.tolerance) << k.id << " softness " << k.softness;
     }
+}
+
+// The same at mipmap 3 against 2, on a shape 16 times larger: the curvature per pixel is smaller
+// than at the full scales above, so the bound is much tighter.
+TEST_F(NativeShapesTest, LowMipmapSamplesTheSameCanonicalShape)
+{
+    struct Case {
+        const char* id;
+        double softness;
+        double box[4];
+        bool (*include)(int, int);
+        float tolerance;
+    };
+    const Case cases[] = {
+        { PLUGINID_NATRON_RECTANGLE, 0., { 83., 51., 720., 560. }, clearOfLargeBoxCorners, 1e-5f },
+        { PLUGINID_NATRON_RECTANGLE, 96., { 83., 51., 720., 560. }, clearOfLargeBoxCorners, 1e-5f },
+        { PLUGINID_NATRON_RADIAL, 0., { 85., 51., 800., 608. }, everywhere, 0.003f },
+        { PLUGINID_NATRON_RADIAL, 96., { 85., 51., 800., 608. }, everywhere, 0.001f },
+    };
+    for (const Case& k : cases) {
+        NodePtr node = makeShape(k.id, k.box[0], k.box[1], k.box[2], k.box[3], "linear", 1024, 768);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kShapeParamSoftness, { k.softness }));
+
+        RenderedPlane coarse;
+        ASSERT_TRUE(renderRgba(node, RectI(0, 0, 128, 96), &coarse, 3));
+        RenderedPlane fine;
+        ASSERT_TRUE(renderRgba(node, RectI(0, 0, 256, 192), &fine, 2));
+        EXPECT_LE(worstHalfScaleDifference(coarse, fine, 3, k.include), k.tolerance) << k.id << " softness " << k.softness;
+    }
+}
+
+// The default falloff eases the coverage, so a hard edge's antialiasing is the quadratic curve of
+// the pixel's coverage: 2 c^2 below 1/2, 1 - 2 (1 - c)^2 above.
+TEST_F(NativeShapesTest, DefaultFalloffEasesTheHardEdgeCoverage)
+{
+    NodePtr rectangle = makeShape(PLUGINID_NATRON_RECTANGLE, 8.25, 8., 40., 24., nullptr);
+    ASSERT_TRUE(bool(rectangle));
+    ASSERT_TRUE(setKnobValues(rectangle, kShapeParamSoftness, { 0. }));
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRgba(rectangle, frame(), &plane));
+    EXPECT_NEAR(0.875f, at(plane, 8, 16, 3), kTolerance);
+    EXPECT_NEAR(0.125f, at(plane, 48, 16, 3), kTolerance);
+    EXPECT_NEAR(1.f, at(plane, 28, 16, 3), kTolerance);
+
+    RenderedPlane coarse;
+    ASSERT_TRUE(renderRgba(rectangle, RectI(0, 0, kWidth / 8, kHeight / 8), &coarse, 3));
+    EXPECT_NEAR(0.998046875f, at(coarse, 1, 2, 3), kTolerance);
+    EXPECT_NEAR(0.001953125f, at(coarse, 6, 2, 3), kTolerance);
+
+    NodePtr radial = makeShape(PLUGINID_NATRON_RADIAL, 7.5, 7.5, 40., 24., nullptr);
+    ASSERT_TRUE(bool(radial));
+    ASSERT_TRUE(setKnobValues(radial, kShapeParamSoftness, { 0. }));
+    ASSERT_TRUE(renderRgba(radial, frame(), &plane));
+    EXPECT_NEAR(0.5f, at(plane, 47, 19, 3), kTolerance);
+    EXPECT_NEAR(1.f, at(plane, 27, 19, 3), kTolerance);
 }
 
 TEST_F(NativeShapesTest, TilesMatchTheWholeFrame)

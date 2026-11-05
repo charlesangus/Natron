@@ -38,11 +38,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-const double kColor0Default[4] = { 0., 0., 0., 0. };
-const double kColor1Default[4] = { 1., 1., 1., 1. };
-} // anonymous namespace
-
 void
 RectangleOp::createKnobs(KnobHolder* holder,
                          const KnobPagePtr& page)
@@ -64,32 +59,22 @@ RectangleOp::createKnobs(KnobHolder* holder,
     cornerRadius = corner;
     softness = ShapeGenerator::addSoftnessKnob(holder, page, "How far inside the edge, in canonical pixels, the rectangle fades from colour 1 to colour 0. At 0 the edge is hard but antialiased.");
     falloff = ShapeGenerator::addFalloffKnob(holder, page, "The curve the edge follows across its softness.", ShapeFalloff::kFalloffQuadratic);
-    color0 = ShapeGenerator::addColorKnob(holder, page, kRectangleParamColor0, "Color 0", "The colour outside the rectangle.", kColor0Default);
-    color1 = ShapeGenerator::addColorKnob(holder, page, kRectangleParamColor1, "Color 1", "The colour inside the rectangle.", kColor1Default);
+    color0 = ShapeGenerator::addColorKnob(holder, page, kRectangleParamColor0, "Color 0", "The colour outside the rectangle.", ShapeGenerator::kColor0Default);
+    color1 = ShapeGenerator::addColorKnob(holder, page, kRectangleParamColor1, "Color 1", "The colour inside the rectangle.", ShapeGenerator::kColor1Default);
 }
 
 RectangleOp::Params
 RectangleOp::bake(const KnobReader& reader) const
 {
     Params params;
-    RectD rod;
 
-    if (generator) {
-        rod = generator->getRegionOfDefinition(reader.time(), reader.view());
-        params.par = generator->getPixelAspectRatio(reader.time(), reader.view());
-    } else {
-        params.par = 1.;
-    }
-    params.x1 = rod.x1;
-    params.y1 = rod.y1;
-    params.x2 = rod.x2;
-    params.y2 = rod.y2;
+    params.extent = ShapeGenerator::readExtentBox(generator, reader);
     params.cornerX = reader.valueOr(cornerRadius, 0., 0);
     params.cornerY = reader.valueOr(cornerRadius, 0., 1);
     params.softness = ShapeGenerator::readSoftness(reader, softness);
     params.falloff = ShapeGenerator::readFalloff(reader, falloff, ShapeFalloff::kFalloffQuadratic);
-    ShapeGenerator::readColor(reader, color0, kColor0Default, params.color0);
-    ShapeGenerator::readColor(reader, color1, kColor1Default, params.color1);
+    ShapeGenerator::readColor(reader, color0, ShapeGenerator::kColor0Default, params.color0);
+    ShapeGenerator::readColor(reader, color1, ShapeGenerator::kColor1Default, params.color1);
 
     return params;
 }
@@ -99,16 +84,13 @@ RectangleOp::pixelParams(const Params& params,
                          double renderScaleX,
                          double renderScaleY)
 {
-    ShapeBoxPixelParams p = shapeBoxPixelParams(params.x1, params.y1, params.x2, params.y2, params.par, renderScaleX, renderScaleY);
+    ShapeBoxPixelParams p = shapeBoxPixelParams(params.extent, renderScaleX, renderScaleY);
 
     p.cornerX = ShapeGenerator::boundedFloat(params.cornerX, ShapeGenerator::kMaxCoordinate, 0.f);
     p.cornerY = ShapeGenerator::boundedFloat(params.cornerY, ShapeGenerator::kMaxCoordinate, 0.f);
     p.softness = params.softness;
     p.falloff = params.falloff;
-    for (int c = 0; c < 4; ++c) {
-        p.color0[c] = params.color0[c];
-        p.color1[c] = params.color1[c];
-    }
+    ShapeGenerator::copyColors(params, &p);
 
     return p;
 }

@@ -33,6 +33,7 @@
 #include <random>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -299,20 +300,106 @@ TEST(ShapeFalloff, BandCoverage)
     EXPECT_EQ(1.f, prev);
 }
 
-TEST(ShapeFalloff, ShapeTAndWeight)
+// With a softness above the shorter radius the band reaches the centre, so the measure must tend
+// to one value there from every direction.
+TEST(ShapeFalloff, EllipseDistanceIsContinuousAtTheCentre)
+{
+    const ShapeBox box = boxOf(0.f, 0.f, 200.f, 50.f);
+    const float centre = ellipseEdge(100.f, 25.f, box).distance;
+    EXPECT_EQ(25.f, centre);
+
+    const float softness = 60.f;
+    const float centreBand = bandCoverage(ellipseEdge(100.f, 25.f, box), softness, 1.f, 1.f);
+    for (int i = 0; i < 16; ++i) {
+        const float th = 6.2831853f * (float)i / 16.f;
+        const float px = 100.f + 0.01f * std::cos(th);
+        const float py = 25.f + 0.01f * std::sin(th);
+        const ShapeEdge e = ellipseEdge(px, py, box);
+        EXPECT_NEAR(centre, e.distance, 0.02f) << i;
+        EXPECT_NEAR(centreBand, bandCoverage(e, softness, 1.f, 1.f), 1e-3f) << i;
+    }
+}
+
+TEST(ShapeFalloff, EllipseDistanceIsFirstOrderExactAtTheEdge)
+{
+    const float rx = 100.f;
+    const float ry = 25.f;
+    const ShapeBox box = boxOf(0.f, 0.f, 2.f * rx, 2.f * ry);
+    const float inset = 0.05f;
+    for (int i = 0; i < 32; ++i) {
+        const float u = 6.2831853f * (float)i / 32.f;
+        const float ex = rx * std::cos(u);
+        const float ey = ry * std::sin(u);
+        const float nx = ry * std::cos(u);
+        const float ny = rx * std::sin(u);
+        const float len = std::sqrt(nx * nx + ny * ny);
+        const ShapeEdge e = ellipseEdge(rx + ex - inset * nx / len, ry + ey - inset * ny / len, box);
+        EXPECT_NEAR(inset, e.distance, 1e-3f) << i;
+    }
+    // Away from the edge the measure is its own first-order value until the cap.
+    EXPECT_NEAR(12.5f, ellipseEdge(rx, ry + 12.5f, box).distance, 1e-5f);
+    EXPECT_EQ(ry, ellipseEdge(rx + 50.f, ry, box).distance);
+}
+
+TEST(ShapeFalloff, RoundedBoxDistanceHasNoSeamAtTheCornerSquares)
+{
+    const ShapeBox box = boxOf(0.f, 0.f, 100.f, 50.f);
+    const float across = 1e-3f;
+    const float radii[2][2] = { { 20.f, 8.f }, { 8.f, 20.f } };
+    for (const auto& radius : radii) {
+        const float rx = radius[0];
+        const float ry = radius[1];
+        const float x0 = 100.f - rx;
+        const float y0 = 50.f - ry;
+        for (float f : { 0.05f, 0.3f, 0.6f, 0.95f }) {
+            const float inCornerX = roundedBoxEdge(x0 + f * rx, y0 + across, box, rx, ry).distance;
+            const float onSideX = roundedBoxEdge(x0 + f * rx, y0 - across, box, rx, ry).distance;
+            EXPECT_NEAR(inCornerX, onSideX, 4.f * across) << rx << " " << f;
+            const float inCornerY = roundedBoxEdge(x0 + across, y0 + f * ry, box, rx, ry).distance;
+            const float onSideY = roundedBoxEdge(x0 - across, y0 + f * ry, box, rx, ry).distance;
+            EXPECT_NEAR(inCornerY, onSideY, 4.f * across) << rx << " " << f;
+        }
+    }
+}
+
+// Far below the pixel footprint the band is the coverage. Around the threshold it stays near the
+// coverage, and the integrals' rounding it still shows is far below one 8-bit level.
+TEST(ShapeFalloff, BandCoverageOfATinySoftnessIsThePixelCoverage)
+{
+    const float pixel = 128.f;
+    for (int i = -100; i <= 100; ++i) {
+        const ShapeEdge e = edgeOf(i * 1.f, 0.6f, 0.8f);
+        EXPECT_EQ(pixelCoverage(e, pixel, pixel), bandCoverage(e, 1e-5f, pixel, pixel)) << i;
+    }
+
+    const float footprint = (0.6f + 0.8f) * pixel;
+    for (float fraction : { 0.5f, 1.01f, 1.5f, 3.f }) {
+        const float softness = fraction * kMinBandFraction * footprint;
+        float prev = 0.f;
+        for (int i = -4000; i <= 4000; ++i) {
+            const ShapeEdge e = edgeOf(i * 0.025f, 0.6f, 0.8f);
+            const float band = bandCoverage(e, softness, pixel, pixel);
+            EXPECT_NEAR(pixelCoverage(e, pixel, pixel), band, 4.f * kMinBandFraction) << fraction << " " << i;
+            EXPECT_GE(band, prev - 1e-4f) << fraction << " " << i;
+            prev = band;
+        }
+    }
+}
+
+TEST(ShapeFalloff, ShapeBandAndWeight)
 {
     const ShapeBox box = boxOf(0.f, 0.f, 20.f, 10.f);
-    EXPECT_EQ(1.f, ellipseT(10.f, 5.f, box, 4.f, 1.f, 1.f));
-    EXPECT_EQ(1.f, ellipseT(13.f, 5.f, box, 4.f, 1.f, 1.f));
-    EXPECT_FLOAT_EQ(0.5f, ellipseT(18.f, 5.f, box, 4.f, 1.f, 1.f));
-    EXPECT_FLOAT_EQ(0.5f, ellipseT(20.f, 5.f, box, 0.f, 1.f, 1.f));
-    EXPECT_EQ(0.f, ellipseT(25.f, 5.f, box, 0.f, 1.f, 1.f));
+    EXPECT_EQ(1.f, bandCoverage(ellipseEdge(10.f, 5.f, box), 4.f, 1.f, 1.f));
+    EXPECT_EQ(1.f, bandCoverage(ellipseEdge(13.f, 5.f, box), 4.f, 1.f, 1.f));
+    EXPECT_FLOAT_EQ(0.5f, bandCoverage(ellipseEdge(18.f, 5.f, box), 4.f, 1.f, 1.f));
+    EXPECT_FLOAT_EQ(0.5f, bandCoverage(ellipseEdge(20.f, 5.f, box), 0.f, 1.f, 1.f));
+    EXPECT_EQ(0.f, bandCoverage(ellipseEdge(25.f, 5.f, box), 0.f, 1.f, 1.f));
 
     const ShapeBox rect = boxOf(0.f, 0.f, 100.f, 50.f);
-    EXPECT_FLOAT_EQ(0.5f, roundedBoxT(4.f, 25.f, rect, 0.f, 0.f, 8.f, 1.f, 1.f));
-    EXPECT_FLOAT_EQ(0.5f, roundedBoxT(0.f, 25.f, rect, 10.f, 10.f, 0.f, 1.f, 1.f));
-    EXPECT_EQ(1.f, roundedBoxT(50.f, 25.f, rect, 10.f, 10.f, 8.f, 1.f, 1.f));
-    EXPECT_EQ(0.f, roundedBoxT(0.5f, 0.5f, rect, 10.f, 10.f, 0.f, 1.f, 1.f));
+    EXPECT_FLOAT_EQ(0.5f, bandCoverage(roundedBoxEdge(4.f, 25.f, rect, 0.f, 0.f), 8.f, 1.f, 1.f));
+    EXPECT_FLOAT_EQ(0.5f, bandCoverage(roundedBoxEdge(0.f, 25.f, rect, 10.f, 10.f), 0.f, 1.f, 1.f));
+    EXPECT_EQ(1.f, bandCoverage(roundedBoxEdge(50.f, 25.f, rect, 10.f, 10.f), 8.f, 1.f, 1.f));
+    EXPECT_EQ(0.f, bandCoverage(roundedBoxEdge(0.5f, 0.5f, rect, 10.f, 10.f), 0.f, 1.f, 1.f));
 
     const ShapeEdge e = edgeOf(1.5f, 0.f, 1.f);
     for (int f = 0; f < kFalloffCount; ++f) {
@@ -351,9 +438,7 @@ enum Mode : uint32_t {
     kModeRoundedBoxEdge = 3,
     kModePixelCoverage = 4,
     kModeBandCoverage = 5,
-    kModeEllipseT = 6,
-    kModeRoundedBoxT = 7,
-    kModeWeight = 8,
+    kModeWeight = 6,
 };
 
 bool
@@ -440,12 +525,6 @@ cpuRun(const ShapeFalloffTestParams& p,
     case kModeBandCoverage:
         out[0] = bandCoverage(e, p.softness, p.pixelW, p.pixelH);
         break;
-    case kModeEllipseT:
-        out[0] = ellipseT(in[0], in[1], p.box, p.softness, p.pixelW, p.pixelH);
-        break;
-    case kModeRoundedBoxT:
-        out[0] = roundedBoxT(in[0], in[1], p.box, p.cornerX, p.cornerY, p.softness, p.pixelW, p.pixelH);
-        break;
     default:
         out[0] = shapeWeight(e, p.softness, p.falloff, p.pixelW, p.pixelH);
         break;
@@ -498,6 +577,20 @@ TEST(ShapeFalloffGpu, MatchesCpu)
         edges[i * 4 + 2] = std::sin(th);
         ts[i * 4 + 0] = -0.2f + 1.4f * unit(rng);
     }
+    // The bands of what the two shapes' edge measures give for those points.
+    const ShapeFalloffTestParams shapeParams = baseParams(kModeBandCoverage);
+    std::vector<float> ellipseEdges(count * 4, 0.f);
+    std::vector<float> roundedBoxEdges(count * 4, 0.f);
+    for (std::size_t i = 0; i < count; ++i) {
+        const ShapeEdge ellipse = ellipseEdge(points[i * 4], points[i * 4 + 1], shapeParams.box);
+        const ShapeEdge rounded = roundedBoxEdge(points[i * 4], points[i * 4 + 1], shapeParams.box, shapeParams.cornerX, shapeParams.cornerY);
+        ellipseEdges[i * 4 + 0] = ellipse.distance;
+        ellipseEdges[i * 4 + 1] = ellipse.nx;
+        ellipseEdges[i * 4 + 2] = ellipse.ny;
+        roundedBoxEdges[i * 4 + 0] = rounded.distance;
+        roundedBoxEdges[i * 4 + 1] = rounded.nx;
+        roundedBoxEdges[i * 4 + 2] = rounded.ny;
+    }
 
     struct Case {
         std::string name;
@@ -530,14 +623,21 @@ TEST(ShapeFalloffGpu, MatchesCpu)
                 p.pixelH = 1.f / pw;
                 cases.push_back({ (mode == kModePixelCoverage ? "coverage" : "band") + suffix, p, &edges });
             }
-            for (uint32_t mode : { kModeEllipseT, kModeRoundedBoxT }) {
-                ShapeFalloffTestParams p = baseParams(mode);
+            for (const auto& shape : { std::make_pair("ellipse band", &ellipseEdges), std::make_pair("rounded box band", &roundedBoxEdges) }) {
+                ShapeFalloffTestParams p = baseParams(kModeBandCoverage);
                 p.softness = s;
                 p.pixelW = pw;
                 p.pixelH = pw;
-                cases.push_back({ (mode == kModeEllipseT ? "ellipseT" : "roundedBoxT") + suffix, p, &points });
+                cases.push_back({ shape.first + suffix, p, shape.second });
             }
         }
+    }
+    for (float s : { 1e-4f, 6.5f }) {
+        ShapeFalloffTestParams p = baseParams(kModeBandCoverage);
+        p.softness = s;
+        p.pixelW = 8.f;
+        p.pixelH = 8.f;
+        cases.push_back({ "band at mipmap 3, softness " + std::to_string(s), p, &edges });
     }
 
     for (const Case& c : cases) {

@@ -64,17 +64,18 @@ isNative(const NodePtr& node)
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
 }
 
-// A fresh project whose default format is width by height at pixel aspect ratio 1.
+// A fresh project whose default format is width by height at pixel aspect ratio par.
 inline void
 resetProject(const AppInstancePtr& app,
              int width,
-             int height)
+             int height,
+             double par = 1.)
 {
     ProjectPtr project = app->getProject();
 
     project->reset(false, true);
     project->setAutoSetProjectFormatEnabled(true);
-    project->setOrAddProjectFormat(Format(0, 0, width, height, "nativeShape", 1.));
+    project->setOrAddProjectFormat(Format(0, 0, width, height, par == 1. ? "nativeShape" : "nativeShapeAnamorphic", par));
 }
 
 // The RGBA plane of `node` over `window` at `mipmapLevel`.
@@ -164,14 +165,20 @@ worstHalfScaleDifference(const RenderedPlane& half,
 }
 
 inline int
-countNonFinite(const RenderedPlane& plane)
+countNonFinite(const std::vector<float>& pixels)
 {
     int n = 0;
-    for (float v : plane.pixels) {
+    for (float v : pixels) {
         n += std::isfinite(v) ? 0 : 1;
     }
 
     return n;
+}
+
+inline int
+countNonFinite(const RenderedPlane& plane)
+{
+    return countNonFinite(plane.pixels);
 }
 
 // Sets choice knob `name` to option optionID as a user would, so the node reacts to it.

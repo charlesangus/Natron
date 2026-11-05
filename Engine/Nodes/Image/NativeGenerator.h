@@ -169,7 +169,8 @@ generatorDefaultExtent()
 
 /**
  * @brief Whether a generator over OP declares the Interactive Update and HiDPI knobs: true unless
- * OP::kInteractiveKnobs says otherwise.
+ * OP::kInteractiveKnobs says otherwise. Without them the overlays follow the global interactive
+ * preference.
  **/
 template <typename OP>
 constexpr bool

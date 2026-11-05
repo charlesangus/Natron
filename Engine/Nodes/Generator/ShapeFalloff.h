@@ -48,6 +48,8 @@ constexpr int kFalloffCount = 5;
 // A distance standing in for "infinitely far outside" a degenerate shape.
 constexpr float kFarOutside = -1e30f;
 
+constexpr float kMinBandFraction = 1e-3f;
+
 // An axis-aligned box, x1 <= x2 and y1 <= y2.
 struct ShapeBox {
     float x1;
@@ -117,9 +119,22 @@ rampT(float px,
     return clamp01(((px - p0x) * dx + (py - p0y) * dy) / len2);
 }
 
-// The edge of the ellipse inscribed in the box, to first order: the normalised radius' distance
-// from 1 over its gradient's length. That is exact on the edge, where it drives antialiasing, and
-// a smooth inward measure for the softness band.
+// The distance inside an elliptical edge from the normalised radius r and the length g of (qx, qy)
+// over the radii, to first order: d(r)/dp = (gx, gy) / r, so (1 - r) / |d(r)/dp| = (1 - r) * r / g.
+// That is exact on the edge, where it drives antialiasing. Its limit at the centre depends on the
+// direction, each radius along its own axis, so it is capped at the shorter radius: the centre
+// then has one value, and a softness up to that radius reads the same band as without the cap.
+inline float
+curvedEdgeDistance(float r,
+                   float g,
+                   float shorterRadius)
+{
+    const float d = (1.f - r) * r / g;
+
+    return d < shorterRadius ? d : shorterRadius;
+}
+
+// The edge of the ellipse inscribed in the box, as curvedEdgeDistance measures it.
 inline ShapeEdge
 ellipseEdge(float px,
             float py,
@@ -135,21 +150,21 @@ ellipseEdge(float px,
 
         return e;
     }
+    const float shorterRadius = rx < ry ? rx : ry;
     const float qx = (px - (box.x1 + rx)) / rx;
     const float qy = (py - (box.y1 + ry)) / ry;
     const float gx = qx / rx;
     const float gy = qy / ry;
     const float g = std::sqrt(gx * gx + gy * gy);
     if (!(g > 0.f)) {
-        e.distance = rx < ry ? rx : ry;
+        e.distance = shorterRadius;
         e.nx = 1.f;
         e.ny = 0.f;
 
         return e;
     }
     const float r = std::sqrt(qx * qx + qy * qy);
-    // d(r)/dp = (gx, gy) / r, so (1 - r) / |d(r)/dp| = (1 - r) * r / g.
-    e.distance = (1.f - r) * r / g;
+    e.distance = curvedEdgeDistance(r, g, shorterRadius);
     e.nx = gx / g;
     e.ny = gy / g;
 
@@ -158,7 +173,9 @@ ellipseEdge(float px,
 
 // The edge of the box with elliptical corners of radii (cornerX, cornerY), each clamped to
 // [0, half the box's shorter side]. Inside the corner squares the corner ellipse's edge is
-// measured as ellipseEdge does; elsewhere the nearer straight side.
+// measured as ellipseEdge does; elsewhere the nearer straight side. The cap at the shorter corner
+// radius is also what makes the two agree on the corner squares' boundary: there the straight
+// sides are the corner's other radius away.
 inline ShapeEdge
 roundedBoxEdge(float px,
                float py,
@@ -196,7 +213,7 @@ roundedBoxEdge(float px,
         const float gy = qy / ry;
         const float g = std::sqrt(gx * gx + gy * gy);
         const float r = std::sqrt(qx * qx + qy * qy);
-        e.distance = (1.f - r) * r / g;
+        e.distance = curvedEdgeDistance(r, g, rx < ry ? rx : ry);
         e.nx = sx * gx / g;
         e.ny = sy * gy / g;
 
@@ -296,19 +313,22 @@ coverageIntegral(float z,
 
 // The softness band's t, distance / softness clamped to [0, 1], averaged over the pixel
 // footprint: the integral of the coverage across the band over its width. A softness of 0 gives
-// the coverage itself, a hard edge antialiased over one pixel.
+// the coverage itself, a hard edge antialiased over one pixel. So does one below
+// kMinBandFraction of the footprint: the two integrals are then nearly equal, and dividing their
+// difference by the softness would amplify their rounding into visible noise, more so the lower
+// the mipmap level, for a band that changes the result by no more than that fraction.
 inline float
 bandCoverage(const ShapeEdge& e,
              float softness,
              float pixelW,
              float pixelH)
 {
-    if (!(softness > 0.f)) {
-        return pixelCoverage(e, pixelW, pixelH);
-    }
     float a;
     float b;
     footprintExtents(e, pixelW, pixelH, &a, &b);
+    if (!(softness > kMinBandFraction * (a + b))) {
+        return pixelCoverage(e, pixelW, pixelH);
+    }
     const float h = 0.5f * (a + b);
     if (e.distance <= -h) {
         return 0.f;
@@ -330,30 +350,6 @@ shapeWeight(const ShapeEdge& e,
             float pixelH)
 {
     return ease(bandCoverage(e, softness, pixelW, pixelH), falloff);
-}
-
-inline float
-ellipseT(float px,
-         float py,
-         const ShapeBox& box,
-         float softness,
-         float pixelW,
-         float pixelH)
-{
-    return bandCoverage(ellipseEdge(px, py, box), softness, pixelW, pixelH);
-}
-
-inline float
-roundedBoxT(float px,
-            float py,
-            const ShapeBox& box,
-            float cornerX,
-            float cornerY,
-            float softness,
-            float pixelW,
-            float pixelH)
-{
-    return bandCoverage(roundedBoxEdge(px, py, box, cornerX, cornerY), softness, pixelW, pixelH);
 }
 
 } // namespace ShapeFalloff

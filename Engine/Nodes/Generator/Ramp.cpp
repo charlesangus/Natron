@@ -41,9 +41,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const double kColor0Default[4] = { 0., 0., 0., 0. };
-const double kColor1Default[4] = { 1., 1., 1., 1. };
-
 // Points closer than this are coincident: the direction between them is noise.
 const double kMinRampLength = 1e-6;
 
@@ -81,9 +78,9 @@ RampOp::createKnobs(KnobHolder* holder,
                     const KnobPagePtr& page)
 {
     point0 = addPointKnob(holder, page, kRampParamPoint0, "Point 0", "Where the ramp is colour 0, in canonical coordinates.", 100., 100.);
-    color0 = ShapeGenerator::addColorKnob(holder, page, kRampParamColor0, "Color 0", "The colour at point 0 and before it.", kColor0Default);
+    color0 = ShapeGenerator::addColorKnob(holder, page, kRampParamColor0, "Color 0", "The colour at point 0 and before it.", ShapeGenerator::kColor0Default);
     point1 = addPointKnob(holder, page, kRampParamPoint1, "Point 1", "Where the ramp is colour 1, in canonical coordinates.", 100., 200.);
-    color1 = ShapeGenerator::addColorKnob(holder, page, kRampParamColor1, "Color 1", "The colour at point 1 and beyond it.", kColor1Default);
+    color1 = ShapeGenerator::addColorKnob(holder, page, kRampParamColor1, "Color 1", "The colour at point 1 and beyond it.", ShapeGenerator::kColor1Default);
     falloff = ShapeGenerator::addFalloffKnob(holder, page, "The curve the ramp follows from colour 0 to colour 1.", ShapeFalloff::kFalloffLinear);
 }
 
@@ -98,8 +95,8 @@ RampOp::bake(const KnobReader& reader) const
     params.p1y = reader.valueOr(point1, 200., 1);
     params.par = generator ? generator->getPixelAspectRatio(reader.time(), reader.view()) : 1.;
     params.falloff = ShapeGenerator::readFalloff(reader, falloff, ShapeFalloff::kFalloffLinear);
-    ShapeGenerator::readColor(reader, color0, kColor0Default, params.color0);
-    ShapeGenerator::readColor(reader, color1, kColor1Default, params.color1);
+    ShapeGenerator::readColor(reader, color0, ShapeGenerator::kColor0Default, params.color0);
+    ShapeGenerator::readColor(reader, color1, ShapeGenerator::kColor1Default, params.color1);
 
     return params;
 }
@@ -125,10 +122,7 @@ RampOp::pixelParams(const Params& params,
     }
     ShapeGenerator::pixelSize(params.par, renderScaleX, renderScaleY, &p.pixelW, &p.pixelH);
     p.falloff = params.falloff;
-    for (int c = 0; c < 4; ++c) {
-        p.color0[c] = params.color0[c];
-        p.color1[c] = params.color1[c];
-    }
+    ShapeGenerator::copyColors(params, &p);
 
     return p;
 }

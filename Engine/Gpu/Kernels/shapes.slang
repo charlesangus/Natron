@@ -39,7 +39,6 @@ struct RampOp : IPixelOp
         pixelW = asfloat(params[4]);
         pixelH = asfloat(params[5]);
         falloff = int(params[6]);
-        // Word 7 is reserved.
         color0 = wrapParamFloat4(params, 8);
         color1 = wrapParamFloat4(params, 12);
     }
@@ -80,7 +79,6 @@ ShapeBoxPixel loadShapeBoxPixel(StructuredBuffer<uint> params)
     p.falloff = int(params[7]);
     p.pixelW = asfloat(params[8]);
     p.pixelH = asfloat(params[9]);
-    // Words 10 and 11 are reserved.
     p.color0 = wrapParamFloat4(params, 12);
     p.color1 = wrapParamFloat4(params, 16);
     return p;
@@ -183,7 +181,6 @@ struct ColorWheelOp : IPixelOp
         centerValue = asfloat(params[8]);
         edgeValue = asfloat(params[9]);
         rotateTurns = asfloat(params[10]);
-        // Word 11 is reserved.
     }
 
     float4 apply(float4 v, int2 xy)
@@ -210,8 +207,9 @@ struct ColorWheelOp : IPixelOp
         float hue = d > 0.f ? -atan2(dy, dx) * 0.15915494309189535f : 0.f;
         hue += rotateTurns;
         hue -= floor(hue);
-        const float saturation = centerSaturation + d * (edgeSaturation - centerSaturation);
-        const float value = centerValue + d * (edgeValue - centerValue);
+        const float blend = d < 1.f ? d : 1.f;
+        const float saturation = centerSaturation + blend * (edgeSaturation - centerSaturation);
+        const float value = centerValue + blend * (edgeValue - centerValue);
         const float3 rgb = colorWheelHsvToRgb(hue, saturation, value);
         return float4(rgb.x * alpha, rgb.y * alpha, rgb.z * alpha, alpha);
     }

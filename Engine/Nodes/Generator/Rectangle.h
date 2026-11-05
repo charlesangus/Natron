@@ -66,11 +66,7 @@ rectanglePixel(const ShapeBoxPixelParams& p,
  **/
 struct RectangleOp {
     struct Params {
-        double x1;
-        double y1;
-        double x2;
-        double y2;
-        double par;
+        ShapeGenerator::ExtentBox extent;
         double cornerX;
         double cornerY;
         float softness;
@@ -93,7 +89,6 @@ struct RectangleOp {
         .icon = NATRON_IMAGES_PATH "NativeNodes/Rectangle.png",
     };
 
-    // The overlays follow the global interactive preference, so the per-node toggles are not declared.
     static constexpr bool kInteractiveKnobs = false;
 
     static constexpr ImagePipelineSpec kPipeline = {

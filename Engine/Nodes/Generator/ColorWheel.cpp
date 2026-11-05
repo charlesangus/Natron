@@ -111,18 +111,8 @@ ColorWheelOp::Params
 ColorWheelOp::bake(const KnobReader& reader) const
 {
     Params params;
-    RectD rod;
 
-    if (generator) {
-        rod = generator->getRegionOfDefinition(reader.time(), reader.view());
-        params.par = generator->getPixelAspectRatio(reader.time(), reader.view());
-    } else {
-        params.par = 1.;
-    }
-    params.x1 = rod.x1;
-    params.y1 = rod.y1;
-    params.x2 = rod.x2;
-    params.y2 = rod.y2;
+    params.extent = ShapeGenerator::readExtentBox(generator, reader);
     params.rotate = reader.valueOr(rotate, 0.);
     params.softness = ShapeGenerator::readSoftness(reader, softness);
     params.centerSaturation = readUnit(reader, centerSaturation, 0.);
@@ -138,7 +128,7 @@ ColorWheelOp::pixelParams(const Params& params,
                           double renderScaleX,
                           double renderScaleY)
 {
-    const ShapeBoxPixelParams box = shapeBoxPixelParams(params.x1, params.y1, params.x2, params.y2, params.par, renderScaleX, renderScaleY);
+    const ShapeBoxPixelParams box = shapeBoxPixelParams(params.extent, renderScaleX, renderScaleY);
     ColorWheelPixelParams p = {};
 
     p.cx = 0.5f * (box.x1 + box.x2);

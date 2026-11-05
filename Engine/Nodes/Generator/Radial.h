@@ -64,11 +64,7 @@ radialPixel(const ShapeBoxPixelParams& p,
  **/
 struct RadialOp {
     struct Params {
-        double x1;
-        double y1;
-        double x2;
-        double y2;
-        double par;
+        ShapeGenerator::ExtentBox extent;
         float softness;
         int falloff;
         float color0[4];
@@ -89,7 +85,6 @@ struct RadialOp {
         .icon = NATRON_IMAGES_PATH "NativeNodes/Radial.png",
     };
 
-    // The overlays follow the global interactive preference, so the per-node toggles are not declared.
     static constexpr bool kInteractiveKnobs = false;
 
     static constexpr ImagePipelineSpec kPipeline = {

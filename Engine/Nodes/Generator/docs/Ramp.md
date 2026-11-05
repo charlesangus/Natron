@@ -12,4 +12,4 @@ A pure generator: it has no inputs, no mask and no mix. To ramp over an image, m
 
 The ramp runs along the line from Point 0 to Point 1 and is constant across it. Colours are scene-linear and pass through unclamped. Coincident points give Color 1 everywhere. The ramp lives in canonical space, so every render scale samples the same gradient.
 
-Its plugin ID is `Ramp`, major version 1; it does not share the ID of the OpenFX `net.sf.openfx.Ramp`.
+Its plugin ID is `Ramp`, major version 1.

@@ -72,6 +72,7 @@ struct Case {
     std::string name;
     const char* pluginID;
     Knobs knobs;
+    double par = 1.;
 };
 
 std::vector<Case>
@@ -134,6 +135,20 @@ cases()
                             { kColorWheelParamCenterValue, { 0.5 } },
                             { kColorWheelParamEdgeValue, { 2. } } } });
 
+    const double par = 2.;
+    out.push_back({ "ramp, non-square pixels", PLUGINID_NATRON_RAMP,
+                    Knobs { { kRampParamPoint0, { 5.5, 7.25 } },
+                            { kRampParamPoint1, { 98., 38.5 } } },
+                    par });
+    out.push_back({ "radial soft, non-square pixels", PLUGINID_NATRON_RADIAL,
+                    Knobs { { kRadialParamSoftness, { 9.5 } } }, par });
+    out.push_back({ "rectangle soft, non-square pixels", PLUGINID_NATRON_RECTANGLE,
+                    Knobs { { kRectangleParamSoftness, { 7.25 } },
+                            { kRectangleParamCornerRadius, { 12., 6. } } },
+                    par });
+    out.push_back({ "colorwheel soft, non-square pixels", PLUGINID_NATRON_COLORWHEEL,
+                    Knobs { { kColorWheelParamSoftness, { 6.5 } } }, par });
+
     return out;
 }
 
@@ -141,10 +156,17 @@ bool
 setCaseKnobs(const NodePtr& node,
              const Case& c)
 {
-    // An odd-sized extent off the origin, with odd edges at mipmap 0 and 1 (55x41 and 28x21 or so).
-    bool ok = setKnobValue(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize);
-    ok = ok && setKnobValues(node, kNativeGeneratorParamBottomLeft, { 3., 2. });
-    ok = ok && setKnobValues(node, kNativeGeneratorParamSize, { 55., 41. });
+    bool ok;
+
+    if (c.par == 1.) {
+        // An odd-sized extent off the origin, with odd edges at each mipmap (55x41, 28x21 and 7x6 or so).
+        ok = setKnobValue(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize);
+        ok = ok && setKnobValues(node, kNativeGeneratorParamBottomLeft, { 3., 2. });
+        ok = ok && setKnobValues(node, kNativeGeneratorParamSize, { 55., 41. });
+    } else {
+        // A Size extent reformats to square pixels: only the project's format keeps the aspect ratio.
+        ok = setKnobValue(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentProject);
+    }
     for (const auto& k : c.knobs) {
         ok = ok && setKnobValues(node, k.first, k.second);
     }
@@ -154,14 +176,15 @@ setCaseKnobs(const NodePtr& node,
 
 RectI
 extentOf(const NodePtr& node,
-         unsigned mipmapLevel)
+         unsigned mipmapLevel,
+         double par)
 {
     EffectInstancePtr effect = node->getEffectInstance();
     RectD rod;
 
     EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
 
-    return rod.toPixelEnclosing(mipmapLevel, 1.);
+    return rod.toPixelEnclosing(mipmapLevel, par);
 }
 
 GpuQuery
@@ -191,8 +214,8 @@ class NativeShapesGpuTest
     : public BaseTest {
 };
 
-// Each shape generator's GPU kernel against its CPU render at mipmap 0 and 1, within
-// kShapesGpuTolerance, into tight and padded output views.
+// Each shape generator's GPU kernel against its CPU render at mipmap 0, 1 and 3, within
+// kShapesGpuTolerance, into tight and padded output views, with both outputs finite.
 TEST_F(NativeShapesGpuTest, MatchesTheCpuRender)
 {
 #ifndef NATRON_HAVE_GPU
@@ -205,15 +228,15 @@ TEST_F(NativeShapesGpuTest, MatchesTheCpuRender)
 
     int nCase = 0;
     for (const Case& c : cases()) {
-        for (unsigned level = 0; level <= 1; ++level) {
-            resetProject(getApp(), 64, 48);
+        for (unsigned level : { 0u, 1u, 3u }) {
+            resetProject(getApp(), 64, 48, c.par);
             NodePtr node = createNode(QString::fromUtf8(c.pluginID), 1);
             ASSERT_TRUE(bool(node)) << c.name;
             StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
             ASSERT_TRUE(effect != NULL) << c.name;
             ASSERT_TRUE(setCaseKnobs(node, c)) << c.name;
 
-            const RectI window = extentOf(node, level);
+            const RectI window = extentOf(node, level, c.par);
             const GpuQuery query = queryFor(node, level);
             ASSERT_TRUE(effect->canRenderOnGpu(query)) << c.name;
 
@@ -234,6 +257,7 @@ TEST_F(NativeShapesGpuTest, MatchesTheCpuRender)
             EXPECT_EQ(0u, run.writtenOutside) << c.name;
             ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << c.name;
             EXPECT_EQ(0, countNonFinite(cpu)) << c.name << ", mipmap " << level;
+            EXPECT_EQ(0, countNonFinite(run.pixels)) << c.name << ", mipmap " << level;
 
             const ImageDiff diff = compareImages(cpu.pixels, run.pixels, kShapesGpuTolerance);
             EXPECT_EQ(0u, diff.mismatches) << c.name << ", mipmap " << level << ": first at float " << diff.firstMismatchIndex << " gpu "

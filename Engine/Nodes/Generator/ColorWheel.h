@@ -72,7 +72,7 @@ static_assert(std::is_trivially_copyable<ColorWheelPixelParams>::value, "ColorWh
 static_assert(sizeof(ColorWheelPixelParams) == 48, "ColorWheelPixelParams is a fixed GPU block");
 
 /**
- * @brief HSV to RGB with hue in turns, as the openfx-misc Color::hsv_to_rgb with a unit hue circle.
+ * @brief HSV to RGB with hue in turns.
  **/
 inline void
 colorWheelHsvToRgb(float h,
@@ -149,12 +149,14 @@ colorWheelPixel(const ColorWheelPixelParams& p,
     const float dx = (px - p.cx) / p.radius;
     const float dy = (py - p.cy) / p.radius;
     const float d = std::sqrt(dx * dx + dy * dy);
-    // Hue runs clockwise from red on +x, as the openfx-misc ColorWheel's does.
+    // Hue runs clockwise from red on +x.
     float hue = d > 0.f ? -std::atan2(dy, dx) * 0.15915494309189535f : 0.f;
     hue += p.rotateTurns;
     hue -= std::floor(hue);
-    const float saturation = p.centerSaturation + d * (p.edgeSaturation - p.centerSaturation);
-    const float value = p.centerValue + d * (p.edgeValue - p.centerValue);
+    // The antialiased rim has alpha past d = 1, where the blends would extrapolate to negative RGB.
+    const float blend = d < 1.f ? d : 1.f;
+    const float saturation = p.centerSaturation + blend * (p.edgeSaturation - p.centerSaturation);
+    const float value = p.centerValue + blend * (p.edgeValue - p.centerValue);
     float rgb[3];
     colorWheelHsvToRgb(hue, saturation, value, rgb);
     rgba[0] = rgb[0] * alpha;
@@ -171,11 +173,7 @@ colorWheelPixel(const ColorWheelPixelParams& p,
  **/
 struct ColorWheelOp {
     struct Params {
-        double x1;
-        double y1;
-        double x2;
-        double y2;
-        double par;
+        ShapeGenerator::ExtentBox extent;
         double rotate;
         float softness;
         float centerSaturation;
@@ -198,7 +196,6 @@ struct ColorWheelOp {
         .icon = NATRON_IMAGES_PATH "NativeNodes/ColorWheel.png",
     };
 
-    // The overlays follow the global interactive preference, so the per-node toggles are not declared.
     static constexpr bool kInteractiveKnobs = false;
 
     static constexpr ImagePipelineSpec kPipeline = {

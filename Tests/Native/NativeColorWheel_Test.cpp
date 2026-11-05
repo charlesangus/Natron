@@ -152,7 +152,6 @@ TEST_F(NativeColorWheelTest, CentreAndEdgeSaturationAndValue)
     EXPECT_GT(at(plane, kCx + 23, kCy, 0), 1.f) << "an edge value above 1 passes through";
 }
 
-// The openfx-misc wheel raised its RGB to 1 / gamma; this one outputs the HSV colour as is.
 TEST_F(NativeColorWheelTest, OutputIsLinearWithNoGamma)
 {
     NodePtr node = makeWheel();
@@ -278,4 +277,43 @@ TEST_F(NativeColorWheelTest, ExtremeKnobValuesGiveFiniteOutput)
     RenderedPlane plane;
     ASSERT_TRUE(renderRgba(node, frame(), &plane));
     EXPECT_EQ(0, countNonFinite(plane));
+}
+
+// The antialiased rim reaches past the disc, by half a pixel, which a low mipmap makes a sizeable
+// fraction of the radius.
+TEST_F(NativeColorWheelTest, RimIsNotNegativeAtLowMipmaps)
+{
+    const int mipmap = 3;
+    const int width = 256;
+    const int height = 192;
+    const float cx = 128.f;
+    const float cy = 96.f;
+    const float radius = 96.f;
+
+    for (double edgeValue : { 1., 0. }) {
+        resetProject(getApp(), width, height);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_COLORWHEEL), PLUGIN_MAJOR_NATRON_COLORWHEEL);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kColorWheelParamSoftness, { 0. }));
+        ASSERT_TRUE(setKnobValues(node, kColorWheelParamEdgeValue, { edgeValue }));
+
+        const RectI window(0, 0, width >> mipmap, height >> mipmap);
+        RenderedPlane plane;
+        ASSERT_TRUE(renderRgba(node, window, &plane, mipmap));
+
+        int rimPixels = 0;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    EXPECT_GE(at(plane, x, y, c), 0.f) << "pixel (" << x << ", " << y << ") channel " << c << ", edge value " << edgeValue;
+                }
+                const float dx = (float)(8 * x + 4) - cx;
+                const float dy = (float)(8 * y + 4) - cy;
+                if ((dx * dx + dy * dy > radius * radius) && (at(plane, x, y, 3) > 0.f)) {
+                    ++rimPixels;
+                }
+            }
+        }
+        EXPECT_GT(rimPixels, 0) << "edge value " << edgeValue;
+    }
 }

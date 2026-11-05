@@ -7,8 +7,7 @@ import shapefalloff;
 //   2 ellipseEdge(in.xy, box): distance, nx, ny
 //   3 roundedBoxEdge(in.xy, box, corner): distance, nx, ny
 //   4 pixelCoverage and 5 bandCoverage of the edge (in.x, in.y, in.z)
-//   6 ellipseT and 7 roundedBoxT at in.xy
-//   8 shapeWeight of the edge (in.x, in.y, in.z)
+//   6 shapeWeight of the edge (in.x, in.y, in.z)
 
 struct ShapeFalloffTestParams
 {
@@ -58,10 +57,6 @@ void shapefalloff_test_main(uint3 tid : SV_DispatchThreadID)
         r.x = pixelCoverage(e, tp.pixelW, tp.pixelH);
     } else if (tp.mode == 5u) {
         r.x = bandCoverage(e, tp.softness, tp.pixelW, tp.pixelH);
-    } else if (tp.mode == 6u) {
-        r.x = ellipseT(x, y, tp.box, tp.softness, tp.pixelW, tp.pixelH);
-    } else if (tp.mode == 7u) {
-        r.x = roundedBoxT(x, y, tp.box, tp.cornerX, tp.cornerY, tp.softness, tp.pixelW, tp.pixelH);
     } else {
         r.x = shapeWeight(e, tp.softness, tp.falloff, tp.pixelW, tp.pixelH);
     }

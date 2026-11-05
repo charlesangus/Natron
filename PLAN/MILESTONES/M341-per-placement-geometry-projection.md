@@ -7,11 +7,12 @@ A USDProject3D in Geometry space holds one `geometryFrame` per material. Assigne
 **In:**
 - One Geometry projection assigned to any number of prims, each projecting from its own placement, held or animated.
 - Several USDAssignMaterial nodes sharing one projection node, each keeping its own placement.
+- USDAssignMaterial's Material Path places a projection as its Material input does.
 - USDWrite's bake honours per-prim placement.
 
 **Out:**
-- Projections that follow deforming points — M342 - Sticky Projections On Deforming Geometry.
-- Binding by Material Path keeps taking the camera in the geometry's own coordinates.
+- Projections that follow deforming points, which carry their own placement in their reference points — M342 - Sticky Projections On Deforming Geometry.
+- Bindings authored outside USDAssignMaterial, such as in a file or by a script: no node places them, so they keep taking the camera in the geometry's own coordinates; none.
 
 **Edge cases:**
 - The warning for prims at different places goes away, and its tests change with it.
@@ -28,8 +29,8 @@ A USDProject3D in Geometry space holds one `geometryFrame` per material. Assigne
 
 - [ ] M341.P1.T2 — Author per-prim placement
   - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Engine/Nodes/Scene/shaders/natronProject3D.glslfx`, `Engine/Nodes/Scene/docs/USDProject3D.md`, `Tests/Scene/USDProject3D_Test.cpp`
-  - approach: USDAssignMaterial and the primitive nodes place each matched prim through the mechanism from M341.P1.T1, held or sampled when animated. Remove the warning and the one-placement text in the docs.
-  - verify: gtests: two prims apart, and two assigns sharing one projection, each match their direct-connection references in Storm (`Tests/Scene/USDRenderStorm_Test.cpp`).
+  - approach: USDAssignMaterial and the primitive nodes place each matched prim through the mechanism from M341.P1.T1, held or sampled when animated. With Material Path set, USDAssignMaterial reads the material from the input stage and places it the same way, sharing the shader check with M342 - Sticky Projections On Deforming Geometry (M342.P1.T5), or reusing it if that landed first. Remove the warning and the one-placement text in the docs.
+  - verify: gtests: two prims apart, and two assigns sharing one projection, and a projection bound by Material Path, each match their direct-connection references in Storm (`Tests/Scene/USDRenderStorm_Test.cpp`).
   - size: L
 
 - [ ] M341.P1.T3 — USDWrite bakes per placement
@@ -39,3 +40,7 @@ A USDProject3D in Geometry space holds one `geometryFrame` per material. Assigne
   - size: M
 
 **Verification gate:** release gate green; strict-GL projection tests and `Tests/gui/m234_projection.py` pass with a two-placement step added; a screenshot of two placed prims is shared with the user.
+
+## Decisions
+
+- 2026-11-05 — Material Path places a projection too (user, from M342 - Sticky Projections On Deforming Geometry's interview): the path route shouldn't behave differently from the Material input, so the limitation that was under Out is gone.

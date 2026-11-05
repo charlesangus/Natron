@@ -297,7 +297,7 @@ future core work has solid ground to build on.
 | M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | done | M113, M184 |  | E15 | | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
-| M186 | Exact IDefocus | doing | M131, M184 | bosley-native-nodes | E15 | uat | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
+| M186 | Exact IDefocus | doing | M131, M184 | bosley-native-nodes | E15 | | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
 | M187 | Variable Sharpen And Glow | blocked | M123, M184 |  | E15 | | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |

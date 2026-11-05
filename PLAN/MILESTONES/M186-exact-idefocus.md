@@ -53,3 +53,4 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 **Verification gate:** the full build and ctest pass, including both IDefocus suites (GPU on lavapipe and RADV). Under Xvfb IDefocus with disc, 6-blade and image kernels and a roto Map is rendered on a highlight-rich fixture; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
 - 2026-11-02 — main merged in; IDefocus gpuWeight follows main's Defocus (M239); gate fails only on unrecorded goldens — recording (PM).
 - 2026-11-03 — GUI check fixed (script: black reference, overlay samples, Fit zoom) in ccb70c814; GUI 75/75 (run 41595030509). UAT: build/appimages/Natron-m186-exact-idefocus.AppImage + .md; screenshots sent.
+- 2026-11-05 — UAT approved (user).

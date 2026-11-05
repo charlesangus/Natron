@@ -114,7 +114,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T6 — PoissonHeal parity on RADV
+- [x] M240.P3.T6 — PoissonHeal parity on RADV
   - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, `Engine/Gpu/Kernels/heal.slang`, `Engine/Gpu/Kernels/exactdivide.slang`, the matching CPU code
   - approach: On RADV at main 5fd4824e3, `EdgeAwareGpu.PoissonHeal` and `PoissonHealLongRunWithoutPushDescriptors` fail exact parity (64x48 random dest, 1 cycle: 6260 of 12288 floats differ, worst 0.23; 5 cycles: worst 3e-3). lavapipe passes. Find the GPU step that differs from the CPU and make them agree, or bound the comparison with a recorded reason if it is inherent.
   - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
@@ -167,3 +167,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-11-02 — **RADV gate on main at adb2df7d0 (gpu, debug, d6c6621b3+167a9c07a):** 619 of 620 pass. All of this milestone's parity suites pass, and so does every suite listed in the 2026-10-28 entry. The one failure, `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader`, comes from main's M260 - Cache Invalidation Follow-ups. Its +1 compile check at `CacheStressGpu_Test.cpp:800` assumes a per-device compile, but `compileGlsl` memoises failures process-wide, keyed by source. Only a host with two Vulkan devices reaches the check; PR CI skips it. The test, not production, is at fault, and this branch doesn't touch the path, so the gate doesn't count it. It is filed through the inbox.
 
 - 2026-11-02 — **Review round on PR #160 (Codex):** six findings, all fixed in ba22ea06c: an exact pow overflow boundary, scene/USDCamera knob products narrowed without trapping, RawPrepare's inf−inf giving NaN, the flushing tolerance touching only sub-FLT_MIN references, stale 2.5-ulp notes, and a duplicate comment. The fixer also made the helpers NaN-safe (`std::isless` and friends) and narrowed ChromaKeyer's key lift. EdgeDetect's size casts stay as decided on 2026-10-27. The full RADV debug ctest on ba22ea06c gives 619/620; the only failure is the inherited CacheStress test.
+
+- 2026-11-05 — **P3.T6 root cause and fix (gpu):** a real GPU bug, not rounding. `heal_tail` runs a whole V-cycle in one workgroup, so invocations read `b`, `e` and `t` values others wrote in the same dispatch, and those buffers lacked `Coherent`. GPU output changed from run to run on identical input while the CPU reference stayed fixed. `heal_tail` alone now compiles them `globallycoherent`. Exact parity is not reachable here: the fixed kernel differs by up to 6.4e-6 on RADV and 4.1e-6 on lavapipe, because it sums in float in a different order from the CPU's double sums. `kHealTolerance` stays at 1e-3, which let the 400-cycle cases pass even with this bug. `demosaic_amaze.slang` has device barriers on non-coherent buffers too, but its GPU suites passed 5 of 5 repeats on RADV, so no change was made and the shader's memory model was not audited.
+
+- 2026-11-05 — **RADV gate on main at 06f3aba93 (gpu, debug, 8cee06290):** 718 of 719 ctest entries pass. The one failure is `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader`, now M310 - Device-Switch Shader Test Fix, which this gate does not count (2026-11-02 entry).

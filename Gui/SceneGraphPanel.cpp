@@ -34,6 +34,8 @@
 #include <vector>
 
 #include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -893,32 +895,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->selectionPoll.setInterval(kSelectionPollMs);
 
     QObject::connect(_imp->pinButton, &QToolButton::toggled, this, &SceneGraphPanel::onPinToggled);
-    QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        const QStringList selection = getSelection();
-        QMenu menu(_imp->tree);
-        QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
-        setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
-        setOnNode->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
-        const QString blocker = SceneSelectionActions::setOnNodeBlocker(_imp->gui, selection);
-        setOnNode->setEnabled(blocker.isEmpty());
-        setOnNode->setToolTip(blocker);
-        setOnNode->setStatusTip(blocker);
-        QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
-        create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
-        create->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
-        create->setEnabled(_imp->canCreateFromSelection());
-        QAction* chosen = menu.exec(_imp->tree->viewport()->mapToGlobal(pos));
-        if (!chosen) {
-            return;
-        }
-        if (chosen == setOnNode) {
-            _imp->runSelectionAction(1, selection);
-        } else if (chosen == create) {
-            _imp->runSelectionAction(2, selection);
-        }
-    });
-    _imp->tree->installEventFilter(this);
-    _imp->results->installEventFilter(this);
     QObject::connect(_imp->nodeChooser, qOverload<int>(&QComboBox::activated), this, &SceneGraphPanel::onNodeChosen);
     QObject::connect(_imp->filter, &QLineEdit::textChanged, &_imp->filterDebounce, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
@@ -939,6 +915,12 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->results, &QListView::clicked, this, &SceneGraphPanel::onResultActivated);
     // Queued: the model fetches no rows while it is resetting, so nothing could be reopened then.
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
+    // Keys are claimed in the views' own event filter so a window-level shortcut cannot take them.
+    _imp->tree->installEventFilter(this);
+    _imp->results->installEventFilter(this);
+    _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
+    QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     if (gui) {
@@ -1081,6 +1063,45 @@ SceneGraphPanel::getSelection() const
     const QStringList selected = _imp->selectedPaths((_imp->stack->currentWidget() == _imp->results) ? (QAbstractItemView*)_imp->results : (QAbstractItemView*)_imp->tree);
 
     return SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, selected);
+}
+
+void
+SceneGraphPanel::copySelectedPaths()
+{
+    const QStringList paths = getSelection();
+
+    if (!paths.isEmpty()) {
+        QApplication::clipboard()->setText(paths.join(QLatin1Char(' ')));
+    }
+}
+
+void
+SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
+{
+    const QStringList selection = getSelection();
+    QMenu menu(view);
+    QAction* copyPath = menu.addAction(tr("Copy Path"));
+    copyPath->setObjectName(QString::fromUtf8("sceneGraphCopyPath"));
+    copyPath->setEnabled(view->indexAt(pos).isValid() && !selection.isEmpty());
+    QObject::connect(copyPath, &QAction::triggered, this, &SceneGraphPanel::copySelectedPaths);
+    menu.addSeparator();
+    QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
+    setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
+    setOnNode->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
+    const QString blocker = SceneSelectionActions::setOnNodeBlocker(_imp->gui, selection);
+    setOnNode->setEnabled(blocker.isEmpty());
+    setOnNode->setToolTip(blocker);
+    setOnNode->setStatusTip(blocker);
+    QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
+    create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
+    create->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
+    create->setEnabled(_imp->canCreateFromSelection());
+    QAction* chosen = menu.exec(view->viewport()->mapToGlobal(pos));
+    if (chosen == setOnNode) {
+        _imp->runSelectionAction(1, selection);
+    } else if (chosen == create) {
+        _imp->runSelectionAction(2, selection);
+    }
 }
 
 void
@@ -1389,10 +1410,18 @@ bool
 SceneGraphPanel::eventFilter(QObject* watched,
                              QEvent* e)
 {
-    // The 3D viewer's selection keys work on the panel's selection too. A key press is taken
+    // Copy and the 3D viewer's selection keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
     if (((watched == _imp->tree) || (watched == _imp->results)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if (k->matches(QKeySequence::Copy)) {
+            if (e->type() == QEvent::KeyPress) {
+                copySelectedPaths();
+            }
+            e->accept();
+
+            return true;
+        }
         const int action = Implementation::selectionActionForKey(k->modifiers(), k->key());
         const QStringList selection = (action != 0) ? getSelection() : QStringList();
         if ((action == 1) || ((action == 2) && _imp->canCreateFromSelection())) {

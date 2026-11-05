@@ -17,6 +17,8 @@ Checks:
   - the filter lists the prims whose names match, and clearing it brings the tree back;
   - the attribute list shows the current prim's attributes, with their types and the node that
     authored them, also for a prim a filter hides and once the filter is cleared;
+  - Ctrl+C on the tree copies the selected rows' paths, space-joined in click order, and leaves the
+    clipboard alone with nothing selected; the row menu's Copy Path does the same;
   - pinned to the USDRead, the tree stays on its scene when the viewer is switched to the
     camera; deleting the USDRead unpins the panel, which then shows the camera's scene.
 
@@ -42,8 +44,8 @@ OWN_ATTRIBUTE = {BOX: "size", BALL: "radius", CAM: "focalLength"}
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, QPointF, Qt
-    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtGui import QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QToolButton, QTreeView
 
     from guitest import FIXTURES, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
@@ -216,6 +218,32 @@ try:
             "natronSceneSyncedAtMs": v.property("natronSceneSyncedAtMs"),
         }
 
+    def clipboard_text():
+        return QApplication.clipboard().text()
+
+    def send_copy(widget):
+        for kind in (QEvent.ShortcutOverride, QEvent.KeyPress, QEvent.KeyRelease):
+            QApplication.sendEvent(widget, QKeyEvent(kind, Qt.Key_C, Qt.ControlModifier, "c"))
+        QApplication.processEvents()
+
+    def select_rows(paths):
+        """Selects paths one after the other, the last one current, as clicks would."""
+        t = tree()
+        t.selectionModel().clearSelection()
+        for n, path in enumerate(paths):
+            index = find(path)
+            flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+            t.selectionModel().select(index, flags)
+            t.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+
+    def pick_copy_path_from_menu():
+        menu = QApplication.activePopupWidget()
+        for action in (menu.actions() if menu is not None else []):
+            if action.objectName() == "sceneGraphCopyPath":
+                action.trigger()
+        if menu is not None:
+            menu.close()
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -346,6 +374,26 @@ try:
               "the box's size names the file or the USDRead as its author (got %r)" % (author,))
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-select-box.png")
+
+        # Copying paths.
+        QApplication.clipboard().setText("untouched")
+        tree().selectionModel().clearSelection()
+        tree().setFocus()
+        send_copy(tree())
+        check(clipboard_text() == "untouched", "Ctrl+C with nothing selected leaves the clipboard alone (got %r)" % (clipboard_text(),))
+        select_rows([BOX])
+        send_copy(tree())
+        check(clipboard_text() == BOX, "Ctrl+C copies the selected row's path (got %r)" % (clipboard_text(),))
+        select_rows([BALL, BOX])
+        send_copy(tree())
+        check(clipboard_text() == BALL + " " + BOX, "Ctrl+C copies two rows' paths in click order (got %r)" % (clipboard_text(),))
+        select_rows([BOX])
+        QApplication.clipboard().setText("untouched")
+        row_pos = tree().visualRect(find(BOX)).center()
+        QTimer.singleShot(200, pick_copy_path_from_menu)
+        tree().customContextMenuRequested.emit(row_pos)
+        QApplication.processEvents()
+        check(clipboard_text() == BOX, "the row menu's Copy Path copies the row's path (got %r)" % (clipboard_text(),))
 
         # Viewer to tree: click a grid until the ball is picked.
         picked = yield from pick_where(lambda selection: selection == [BALL])

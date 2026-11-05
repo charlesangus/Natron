@@ -145,3 +145,4 @@ their images through M233 - Live Node Textures. Survey:
 - 2026-11-03 — M233 (502a5043e) merged in; Storm projection references re-recorded (c3bd90585; outside the projected frame is now transparent). Gate green. Round 3 UAT AppImage + steps built.
 - 2026-11-05 — UAT approved together with M233 - Live Node Textures; they merge as one PR (user).
 - 2026-11-05 — P3.T3 at 557363d09: USDAssignMaterial authors Geometry-space placement from the matched gprims, USDWrite bakes all three binding purposes. One geometry frame per material: prims apart follow the first and warn (PM; flagged to the user).
+- 2026-11-05 — Review round on PR #191 closed at 700b60f2d (Claude reviewer). Live textures render view 0 only. Finding 1's Free GPU Memory path has no automated test (PM).

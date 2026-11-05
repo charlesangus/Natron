@@ -406,6 +406,7 @@ future core work has solid ground to build on.
 | M325 | MoonRay Fork | todo | M252 |  | E9 | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
 | M326 | Legible Viewer Warning Banner | todo | - |  | E10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
 | M338 | Viewer Input Keys And Locks | todo | - |  | E10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
+| M339 | File Knob Reload Button Cleanup | todo | M52 |  | E10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
 
 # Epics
 

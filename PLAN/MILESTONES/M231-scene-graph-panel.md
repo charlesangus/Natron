@@ -73,6 +73,7 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
 - 2026-11-01 — P4 at 44144bd8b: closed tree row = prim drawn as its bbox (computed from children before payloads unload); twirl state is transient per viewed node (drops the per-node fold memory in Scope, per the user's words); USDRead Open Mode (Fully / First Levels) + Open Levels; new USDExpandHierarchy node (pattern; Fold / Expand / Expand Levels); folds stored as prim custom data natron:viewerFold / natron:viewerOpenLevels; Follow chooser Viewer (default) / Node Selection. PM calls: twirl opens one level (Katana) and USDWrite strips the viewer fold custom data — follow-up dispatched.
 - 2026-11-02 — The prim filter stays an incremental main-thread walk (8 ms slices per timer tick, the viewer's stage lock released between ticks, result cap and More... row) instead of a worker thread: the viewer's stage is reachable only through the main-thread renderer, which the viewport owns by value (PM, from review).
 - 2026-11-04 — All folding is removed from this milestone: it loaded every payload first, edited the scene on each twirl and stored display state in USD layers. Replaced by the design in PLAN/DESIGN/2026-11-04-scene-graph-design.md (user). Earlier fold tasks stay checked as history; Phase 231.5 removes their code.
+- 2026-11-04 — P5.T2 runs before P5.T1: `SceneStage.h` holds the fold keys `computeViewerFolds` reads, so T1's grep verify can only pass once T2 has landed (PM).
 
 ## Phase 231.4: UAT folding model
 

@@ -148,7 +148,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 129.4: Retire the OFX versions
 
-- [ ] M130.P4.T1 — Retire the OFX and CImg versions and fix their references
+- [x] M130.P4.T1 — Retire the OFX and CImg versions and fix their references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/OfxEffectInstance.cpp`, `Engine/Settings.cpp`, `Tests/gui/m45_tab_menu.py`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of: CImg Median, Bilateral, BilateralGuided, Guided and RollingGuidance; `net.sf.openfx.DirBlur`; GodRays.
@@ -157,7 +157,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest` passes. The m45 tab-menu GUI script passes under Xvfb. Retired IDs load as missing-plugin nodes.
   - size: M
 
-- [ ] M130.P4.T2 — Document the nodes
+- [x] M130.P4.T2 — Document the nodes
   - files: `Engine/Nodes/Filter/docs/{Median,Bilateral,DirBlur}.md`
   - approach: one doc file per node (M120 - Native Node Port Kit's scheme): knobs, maths, GPU caps and tolerances.
   - verify: reviewed at the gate against the node code.
@@ -167,12 +167,12 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 Median and Bilateral approved (user).
 
-- [ ] M130.P5.T1 — Split the transform path out of DirBlur into a native GodRays node
+- [x] M130.P5.T1 — Split the transform path out of DirBlur into a native GodRays node
   - files: `Engine/Nodes/Filter/DirBlur.{h,cpp}`, new `Engine/Nodes/Filter/GodRays.{h,cpp,reg.inc}`, `Engine/Gpu/Kernels/dirblur.slang` (or a godrays kernel), docs, tests
   - approach: DirBlur keeps only Directional, Radial and Zoom. The transform-path accumulation (translate/rotate/scale/skew/center path with steps, the GodRays-style mode) becomes its own native GodRays node, as simple as possible while fully functional: centre and the transform path, start/end tint, gamma along the ray, samples, mask/mix. Not a port of openfx-misc GodRays; Nuke's GodRays is the template if one is needed (user, 2026-11-04). Docs never mention Nuke (user); the knob map goes in the PM report only. Retire `net.sf.openfx.GodRays` to the native node. CPU and GPU, parity test, mask/mix.
   - verify: GodRays and DirBlur tests pass; the docs describe the node on its own terms; GUI screenshots.
   - size: L
-- [ ] M130.P5.T2 — DirBlur shows only the knobs its mode uses
+- [x] M130.P5.T2 — DirBlur shows only the knobs its mode uses
   - approach: hide knobs per mode (e.g. Target does nothing in Zoom, so it isn't shown there); audit every knob against each mode.
   - verify: a test per mode checks which knobs are visible; GUI screenshots per mode.
   - size: M
@@ -187,3 +187,4 @@ Median and Bilateral approved (user).
 
 **Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Median, Bilateral (both modes) and DirBlur (all modes) are rendered with a mask and mix ≠ 1, and the DirBlur centre overlay is dragged. Screenshots are shared with the user before sign-off. The retired IDs load as missing-plugin nodes. An AppImage built with `package.sh` is handed over for UAT.
 - 2026-11-04 — DirBlur keeps its From/To tint ramp (and Max); DirBlur's holdout is removed and GodRays gets none (user). GodRays gamma: tint = From + (To−From)·a^(1/gamma), so Gamma > 1 reaches To sooner (user). Samples cap 512, old OFX icon kept (PM).
+- 2026-11-05 — UAT: good, except DirBlur and GodRays show hot pixels zoomed out, sometimes; fix and merge with no further UAT (user). New tests at mips 1-3 pass on CPU and lavapipe, including a partial render at 100% followed by a zoomed-out frame, so the cause isn't reproduced. Likely real-GPU only: uninitialised device memory or input staging, `Engine/GpuRegionTask.cpp:1119-1180`; this host has no GPU. Waiting on the user's GPU on or off check (PM).

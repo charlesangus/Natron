@@ -241,7 +241,7 @@ future core work has solid ground to build on.
 | M127 | Native OCIO Nodes | done | M120, M126, M107 |  | E3 | | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
 | M128 | Native Shape Generators | doing | M120 | bosley-native-nodes | E3 | | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
-| M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
+| M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | response | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
 | M131 | Native Defocus Family | done | M120 |  | E3 | | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
 | M133 | ZDefocus Lens Aberrations | done | M131 | bosley-native-nodes | E3 | | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
@@ -436,6 +436,7 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- **M130 - Native Edge-Preserving And Directional Filters:** does the DirBlur and GodRays hot-pixel artifact happen with Preferences > GPU compute set to Off, or only on Auto? Tests at low mips pass on CPU and software GPU, so the cause isn't reproduced (PM, 2026-11-05).
 - **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03). The scene graph redesign is also exempt (user, 2026-11-04): M327 - Heavy Scene Spike through M336 - Heavy Scene Acceptance may start once M231 - Scene Graph Panel and M232 - Scene Selection To Nodes are merged.
 - M136 - Edge Policy Investigation (bosley-native-nodes): approve the design note `Engine/Nodes/docs/edge-policy.md` (4db8e9062) and answer its Q1–Q4; nothing after P1.T1 starts until then (audit, 2026-11-02).
 - **NatronRenderer and [Project] (PM, 2026-11-02):** `NatronRenderer -w Write 3-3 defocus_retime.ntpz` fails with "Could not open [Project]/../…": the Write path's [Project] is not expanded when the renderer opens an .ntpz directly (seen on the M125 branch, before M245 - Write Path Variables). Re-check once M245 is on main; if it persists, file it.

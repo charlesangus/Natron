@@ -627,6 +627,17 @@ isGpuPlacementAvailable()
     return func && func();
 }
 
+ParallelRenderArgsPtr
+gpuTaskContextArgs(const FrameGraph::Task& task,
+                   const FrameRenderContext& context)
+{
+    if (!task.key.node || (task.key.contextKey == 0)) {
+        return ParallelRenderArgsPtr();
+    }
+
+    return context.getArgs(NodeCtxKey(task.key.node, task.key.contextKey));
+}
+
 bool
 makeGpuQueryForTask(const FrameGraph::Task& task,
                     const FrameRenderContext& context,
@@ -642,8 +653,7 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
                          GpuQuery* query)
 {
     const NodePtr& node = task.key.node;
-    // A task under a context renders on the CPU, where its frame args carry the context.
-    if (!node || !context.getRequest() || (task.key.contextKey != 0)) {
+    if (!node || !context.getRequest()) {
         return false;
     }
     EffectInstancePtr effect = node->getEffectInstance();
@@ -651,7 +661,13 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     if (!native || !native->opKind()) {
         return false;
     }
-    FrameRequestMap::const_iterator nodeRequest = context.getRequest()->find(node);
+    const NodeCtxKey nodeKey(node, task.key.contextKey);
+    const ParallelRenderArgsPtr contextArgs = gpuTaskContextArgs(task, context);
+    if ((task.key.contextKey != 0) && !contextArgs) {
+        return false;
+    }
+    const ContextFrameArgsScope contextScope(effect, contextArgs);
+    FrameRequestMap::const_iterator nodeRequest = context.getRequest()->find(nodeKey);
     if ((nodeRequest == context.getRequest()->end()) || !nodeRequest->second) {
         return false;
     }
@@ -685,7 +701,7 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
             query->hasConcatenatedInput = query->hasConcatenatedInput || bool(it->second.newInputEffect);
         }
     }
-    const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
+    const ParallelRenderArgsPtr frameArgs = context.getArgs(nodeKey);
     query->draftMode = frameArgs && frameArgs->draftMode;
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
@@ -694,6 +710,45 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
         query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(runtime->device().info().maxStorageBufferRange);
     }
 #endif
+
+    query->inputTimes.clear();
+    if (frameView) {
+        int nOtherViews = 0;
+        for (FramesNeededMap::const_iterator input = frameView->globalData.frameViewsNeeded.begin(); input != frameView->globalData.frameViewsNeeded.end(); ++input) {
+            const FrameRangesMap::const_iterator ranges = input->second.find(task.key.view);
+            if ((input->first < 0) || (ranges == input->second.end()) || !native->getInput(input->first)) {
+                continue;
+            }
+            GpuInputTimes entry;
+            entry.inputNb = input->first;
+            for (const RangeD& range : ranges->second) {
+                if ((range.min == task.key.time) && (range.max == task.key.time)) {
+                    entry.times.push_back(task.key.time);
+                    continue;
+                }
+                // Regions take whole-frame input times only. A range with fractional bounds is either read anywhere
+                // within it, with no edge planned, or a single fractional time, which is planned but renders on the CPU.
+                if ((range.min != (int)range.min) || (range.max != (int)range.max)) {
+                    return false;
+                }
+                for (double f = range.min; f <= range.max; f += 1.) {
+                    entry.times.push_back(f);
+                }
+            }
+            std::sort(entry.times.begin(), entry.times.end());
+            entry.times.erase(std::unique(entry.times.begin(), entry.times.end()), entry.times.end());
+            if (entry.times.empty() || ((entry.times.size() == 1) && (entry.times.front() == task.key.time))) {
+                continue;
+            }
+            for (double t : entry.times) {
+                nOtherViews += (t == task.key.time) ? 0 : 1;
+            }
+            query->inputTimes.push_back(entry);
+        }
+        if (nOtherViews > kGpuMaxInputTimes) {
+            return false;
+        }
+    }
 
     query->unPremultChannel = stages.divisorChannel;
     query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);
@@ -716,13 +771,14 @@ containsSameLayer(const std::list<ImageLayerDesc>& layers,
     return false;
 }
 
-// Whether the request asks the input of edge for layer and the input renders it or passes it through, so that its
-// task stores an image of that layer.
+// Whether the request asks the dependency of edge for layer and the dependency renders it or passes it through, so
+// that its task stores an image of that layer.
 bool
-inputCarriesLayer(const FrameRequestMap& request,
+inputCarriesLayer(const FrameRenderContext& context,
                   const FrameViewRequest::TaskEdge& edge,
                   const ImageLayerDesc& layer)
 {
+    const FrameRequestMap& request = *context.getRequest();
     const NodePtr input = edge.node.lock();
     const EffectInstancePtr effect = input ? input->getEffectInstance() : EffectInstancePtr();
     const NodeCtxKey inputKey(input, edge.contextKey);
@@ -731,6 +787,7 @@ inputCarriesLayer(const FrameRequestMap& request,
     if (!effect || (inputRequest == request.end()) || !inputRequest->second || !fvRequest || !containsSameLayer(fvRequest->componentsRequested, layer)) {
         return false;
     }
+    const ContextFrameArgsScope contextScope(effect, (edge.contextKey != 0) ? context.getArgs(inputKey) : ParallelRenderArgsPtr());
     EffectInstance::ComponentsNeededMap comps;
     std::list<ImageLayerDesc> passThroughLayers;
     double passThroughTime = 0.;
@@ -750,19 +807,38 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 bool
 makeGpuTaskPlanes(const FrameGraph::Task& task,
                   const FrameRenderContext& context,
-                  std::vector<GpuTaskPlane>* planes)
+                  std::vector<GpuTaskPlane>* planes,
+                  std::string* refusal)
 {
     planes->clear();
+    if (refusal) {
+        refusal->clear();
+    }
     const NodePtr& node = task.key.node;
     const std::shared_ptr<FrameRequestMap>& request = context.getRequest();
-    // A task under a context renders on the CPU, where its frame args carry the context.
-    if (!node || task.components.empty() || !request || (task.key.contextKey != 0)) {
+    if (!node || task.components.empty() || !request) {
         return false;
     }
-    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-    FrameRequestMap::const_iterator nodeRequest = request->find(node);
-    const FrameViewRequest* fvRequest = request->findFrameViewRequest(node, task.key.time, task.key.view);
+    const EffectInstancePtr effect = node->getEffectInstance();
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(effect.get());
+    const NodeCtxKey nodeKey(node, task.key.contextKey);
+    FrameRequestMap::const_iterator nodeRequest = request->find(nodeKey);
+    const FrameViewRequest* fvRequest = request->findFrameViewRequest(nodeKey, task.key.time, task.key.view);
     if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
+        return false;
+    }
+    const ParallelRenderArgsPtr contextArgs = gpuTaskContextArgs(task, context);
+    if ((task.key.contextKey != 0) && !contextArgs) {
+        return false;
+    }
+    const ContextFrameArgsScope contextScope(effect, contextArgs);
+
+    // renderRoI() fails such a task and posts the missing channel; the GPU would render it without a word.
+    if (!node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
+        if (refusal) {
+            *refusal = "a channel the node selects is missing from its input";
+        }
+
         return false;
     }
 
@@ -787,6 +863,18 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
             if (!makeGpuQueryForTaskPlane(task, plane, context, &entry.query) || !native->canRenderOnGpu(entry.query)) {
                 return false;
             }
+            // A time past the request pass's pre-fetch cap has no edge, so no task would put it on the device.
+            for (const GpuInputTimes& input : entry.query.inputTimes) {
+                for (double time : input.times) {
+                    bool planned = false;
+                    for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+                        planned = planned || ((edge.inputNb == input.inputNb) && (edge.time == time) && (edge.view == task.key.view) && edge.node.lock());
+                    }
+                    if (!planned) {
+                        return false;
+                    }
+                }
+            }
             for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
                 if (!edge.node.lock() || (edge.inputNb < 0) || (edge.inputNb >= nInputs)) {
                     continue;
@@ -796,9 +884,19 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
                     return false;
                 }
                 for (const ImageLayerDesc& layer : extraLayers) {
-                    if (!inputCarriesLayer(*request, edge, layer)) {
+                    if (!inputCarriesLayer(context, edge, layer)) {
                         return false;
                     }
+                }
+            }
+            // An output requested under a context, which renderGpu() reads from GpuRenderArgs::contextInputs.
+            for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+                if (!edge.node.lock() || (edge.inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb) || !native->readsGpuInput(edge.inputNb, plane, task.key.time, task.key.view)) {
+                    continue;
+                }
+                ImageLayerDesc layer;
+                if (!native->getGpuInputLayer(edge.inputNb, plane, task.key.time, task.key.view, &layer) || !inputCarriesLayer(context, edge, layer)) {
+                    return false;
                 }
             }
             planes->push_back(entry);

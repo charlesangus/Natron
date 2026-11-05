@@ -548,6 +548,9 @@ public:
 
     virtual void reloadStylesheets() {}
 
+    // A Settings::Viewer3DNavigationEnum preset was chosen.
+    virtual void onViewer3DNavigationChanged(int /*navigation*/) { }
+
 #ifdef USE_NATRON_GIL
     void takeNatronGIL();
 
@@ -750,7 +753,7 @@ protected:
     template <typename PLUGIN>
     void registerNativePlugin();
 
-    void registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
+    Plugin* registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
 
     virtual AppInstancePtr makeNewInstance(int appID) const;
     virtual void registerGuiMetaTypes() const

@@ -253,7 +253,9 @@ PlaneJob::lock()
         divisorNComps = (int)divisor->getComponentsCount();
         divisorAccess = std::make_shared<Image::ReadAccess>(divisor.get());
     }
-    dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    if (dst) {
+        dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
+    }
 }
 
 MaskInput::MaskInput()

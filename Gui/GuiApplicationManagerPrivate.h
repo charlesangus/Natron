@@ -71,6 +71,7 @@ struct GuiApplicationManagerPrivate
     QPointer<QMenu> nodesMenuPopup;
     bool nodesMenuPopupShown;
     quint64 nodesMenuTargetGeneration;
+    GuiApplicationManager::NodesMenuArgsDecorator nodesMenuArgsDecorator;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
     QCursor _colorPickerCursor, _linkToCursor, _linkMultCursor;
@@ -138,6 +139,10 @@ struct GuiApplicationManagerPrivate
     void addMouseShortcut(const std::string & grouping, const std::string & id,
                           const std::string & description,
                           const Qt::KeyboardModifiers & modifiers, Qt::MouseButton button);
+
+    // An editable mouse action of the 3D viewer, bound to the given preset's bindings.
+    void addViewer3DMouseShortcut(const std::string& id, const std::string& description,
+                                  MouseGestureEnum gesture, int preset);
 
     PluginGroupNodePtr  findPluginToolButtonInternal(const std::list<PluginGroupNodePtr>& children,
                                                                      const PluginGroupNodePtr& parent,

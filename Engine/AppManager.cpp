@@ -108,6 +108,8 @@
 #include "Global/PythonUtils.h"
 
 #include "Engine/AbortWatchdog.h"
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
@@ -739,6 +741,49 @@ AppManager::setApplicationLocale()
     QLocale::setDefault( QLocale(QLocale::English, QLocale::UnitedStates) );
 }
 
+// --list-models: one line per model, tab-separated so that scripts can cut it.
+static bool
+printModelList()
+{
+    try {
+        const std::shared_ptr<const ModelRegistry> registry = ModelRegistry::process();
+        std::cout << "id\ttask\tstatus\tsize\tweights licence\ttraining-data licence\tosaid" << std::endl;
+        for (const AiModelEntry& entry : registry->models()) {
+            const bool installed = registry->resolve(entry.id).status == AiModelStatus::eInstalled;
+            std::cout << entry.id << '\t' << aiModelTaskName(entry.task) << '\t' << (installed ? "Installed" : "Missing")
+                      << '\t' << entry.size << '\t' << entry.weightsLicence << '\t' << entry.trainingDataLicence
+                      << '\t' << entry.osaid << std::endl;
+        }
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
+static bool
+downloadModel(const std::string& id)
+{
+    try {
+        std::string error;
+        if (!ModelDownloader::process()->download(id, &error)) {
+            std::cerr << "Cannot download the AI model " << id << ": " << error << std::endl;
+
+            return false;
+        }
+        const AiModelResolution resolution = ModelDownloader::process()->registry()->resolve(id);
+        std::cout << "Installed the AI model " << id << " in " << resolution.directory << std::endl;
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
 bool
 AppManager::loadInternal(const CLArgs& cl)
 {
@@ -799,6 +844,19 @@ AppManager::loadInternal(const CLArgs& cl)
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
+
+    // Model commands need no project, plug-ins or GPU, so they run and exit here.
+    if (cl.isListModels() || !cl.getDownloadModelId().isEmpty()) {
+        bool ok = true;
+        if (!cl.getDownloadModelId().isEmpty()) {
+            ok = downloadModel(cl.getDownloadModelId().toStdString());
+        }
+        if (ok && cl.isListModels()) {
+            ok = printModelList();
+        }
+
+        return ok;
+    }
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
@@ -1637,7 +1695,7 @@ AppManager::onAllPluginsLoaded()
     }
 } // AppManager::onAllPluginsLoaded
 
-void
+Plugin*
 AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
                                   void (*buildEffect)(),
                                   const QString& iconPath,
@@ -1672,6 +1730,22 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
     if (internalUseOnly) {
         p->setForInternalUseOnly(true);
     }
+    if (dynamic_cast<const NodeGroup*>(node.get())) {
+        // A group's inputs are its Input nodes, and it has none until it is created.
+        p->setFirstInputDataKind(true, eDataKindPolymorphic);
+        p->setInputDataKinds({ eDataKindPolymorphic });
+    } else {
+        p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
+        std::vector<DataKindEnum> kinds;
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            if (!node->isInputMask(i)) {
+                kinds.push_back(node->getInputDataKind(i));
+            }
+        }
+        p->setInputDataKinds(kinds);
+    }
+
+    return p;
 }
 
 template <typename PLUGIN>
@@ -1698,7 +1772,10 @@ AppManager::registerNativePlugin()
     }
     const NodeSpec* spec = native->nodeSpec();
 
-    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    Plugin* plugin = registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    if (plugin) {
+        plugin->setPrimPathKnob(std::string(spec->primPathKnob), spec->primPathKnobTakesPattern);
+    }
 }
 
 void
@@ -1720,9 +1797,9 @@ AppManager::loadBuiltinNodePlugins()
 
 #include "NativeRegistryAll.inc"
 
-    if ( !isBackground() ) {
-        registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
-    }
+    // Registered in the background too, so that a script that loads and saves a project keeps its
+    // viewers. Without a viewer widget a viewer never renders.
+    registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
 }
 
 bool
@@ -2183,6 +2260,9 @@ AppManager::loadPythonGroups()
 
             p->setPythonModule(modulePath + moduleName);
             p->setToolsetScript(isToolset);
+            // Its inputs are only known once its script has built it.
+            p->setFirstInputDataKind(true, eDataKindPolymorphic);
+            p->setInputDataKinds({ eDataKindPolymorphic });
         }
     }
 } // AppManager::loadPythonGroups

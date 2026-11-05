@@ -27,9 +27,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -349,6 +351,57 @@ NativeEffectBase::isIdentity(double time,
     }
 
     return false;
+}
+
+bool
+NativeEffectBase::declaresInputTime(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    double needed)
+{
+    const FramesNeededMap frames = getFramesNeeded(time, view);
+    const FramesNeededMap::const_iterator input = frames.find(inputNb);
+
+    if (input == frames.end()) {
+        return false;
+    }
+    const FrameRangesMap::const_iterator ranges = input->second.find(view);
+    if (ranges == input->second.end()) {
+        return false;
+    }
+    // The scheduler plans a range frame by frame from its min, so only those frames are declared.
+    const double kEpsilon = 1e-6;
+    for (const RangeD& range : ranges->second) {
+        if ((needed < range.min - kEpsilon) || (needed > range.max + kEpsilon)) {
+            continue;
+        }
+        const double steps = needed - range.min;
+        if (std::fabs(steps - std::round(steps)) <= kEpsilon) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ImagePtr
+NativeEffectBase::fetchInputAt(int inputNb,
+                               double time,
+                               const RenderActionArgs& args,
+                               const ImageLayerDesc* layer,
+                               bool mapToClipPrefs,
+                               RectI* roiPixel)
+{
+    if (!declaresInputTime(inputNb, args.time, args.view, time)) {
+        std::ostringstream message;
+        message << "Input " << inputNb << " was read at frame " << time << ", which the node does not declare it needs at frame " << args.time << ".";
+        setPersistentMessage(eMessageTypeError, message.str());
+
+        return ImagePtr();
+    }
+    RectI roi;
+
+    return getImage(inputNb, time, args.mappedScale, args.view, NULL, layer, mapToClipPrefs, false /*dontUpscale*/, eStorageModeRAM, NULL, roiPixel ? roiPixel : &roi);
 }
 
 namespace {
@@ -937,6 +990,7 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     key->framesPerSecond = app->getProject()->getProjectFrameRate();
     key->upAxis = app->getProject()->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
     key->metersPerUnit = app->getProject()->getProjectMetersPerUnit();
+    key->materialsScope = app->getProject()->getProjectMaterialsScope();
     key->upstreamRead = reads.upstream;
     key->factsDigest = reads.factsDigest;
     key->readsFrameRange = reads.frameRange;
@@ -962,6 +1016,8 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
 
         return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
+
+    _sceneLayerMemo.setOwner(getNode());
 
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage, keyStillValid);
 }

@@ -43,8 +43,9 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief A variable name in a render context. Names in different namespaces never collide:
- * the loop namespace ("loop"), a named loop's ("loops.<name>") and plain variables (empty
- * namespace) keep `loop.t`, `loops.a.t` and `t` apart.
+ * the loop namespace ("loop"), a named loop's ("loops.<name>"), the option labels of a Choice
+ * variable ("choiceLabels", see RFV::overlayDeclaredVariables()) and plain variables (empty
+ * namespace) keep `loop.t`, `loops.a.t`, `choiceLabels.t` and `t` apart.
  **/
 struct RenderContextName {
     std::string ns;
@@ -62,6 +63,9 @@ struct RenderContextName {
     static RenderContextName loop(const std::string& name);
     static RenderContextName loops(const std::string& loopName,
                                    const std::string& name);
+    // Set by a loop's end on its own output, never seen by the loop body.
+    static RenderContextName loopFold(const std::string& name);
+    static RenderContextName choiceLabels(const std::string& name);
 
     bool operator<(const RenderContextName& other) const
     {
@@ -333,6 +337,12 @@ private:
  **/
 U64 mixRenderContextKey(U64 hash,
                         U64 contextKey);
+
+/**
+ * @brief Whether context sets a loop variable (loop.*, loops.<name>.* or a loop fold's): an output
+ * rendered under one is a single iteration or fold step, which the image cache would only fill.
+ **/
+bool renderContextHasLoopVariables(const RenderContextPtr& context);
 
 NATRON_NAMESPACE_EXIT
 

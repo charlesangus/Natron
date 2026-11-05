@@ -41,7 +41,9 @@
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
@@ -66,6 +68,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -75,6 +78,8 @@
 #include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -86,6 +91,12 @@
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Time/AppendClip.h"
+#include "Engine/Nodes/Time/FrameBlend.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/SlitScan.h"
+#include "Engine/Nodes/Time/TimeBlur.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
 #include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -97,6 +108,7 @@
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -115,6 +127,8 @@ gpuCapableIds()
         PLUGINID_NATRON_INVERT,
         PLUGINID_NATRON_COLORLOOKUP,
         PLUGINID_NATRON_COLORCORRECT,
+        PLUGINID_NATRON_COLORBALANCERGB,
+        PLUGINID_NATRON_COLOREQUALIZER,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
@@ -170,12 +184,22 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_SPLINEWARP,
+        PLUGINID_NATRON_LOOPBEGIN,
+        PLUGINID_NATRON_LOOPEND,
+        PLUGINID_NATRON_TIMEWARP,
+        PLUGINID_NATRON_RETIME,
         PLUGINID_NATRON_CONTRASTTEXTURE,
         PLUGINID_NATRON_OCIOCOLORSPACE,
         PLUGINID_NATRON_OCIODISPLAY,
         PLUGINID_NATRON_OCIOCDLTRANSFORM,
         PLUGINID_NATRON_OCIOFILETRANSFORM,
         PLUGINID_NATRON_OCIOLOOKTRANSFORM,
+        PLUGINID_NATRON_FRAMEBLEND,
+        PLUGINID_NATRON_TIMEBLUR,
+        PLUGINID_NATRON_APPENDCLIP,
+        PLUGINID_NATRON_SLITSCAN,
+        PLUGINID_NATRON_VECTORBLUR,
     };
 
     return ids;

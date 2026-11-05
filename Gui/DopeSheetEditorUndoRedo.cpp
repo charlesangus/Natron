@@ -25,22 +25,28 @@
 
 #include "DopeSheetEditorUndoRedo.h"
 
+#include <algorithm>
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <vector>
 
 #include <QDebug>
 
 #include "Engine/Bezier.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Global/GlobalDefines.h"
 
+#include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheet.h"
 #include "Gui/DopeSheetEditor.h"
@@ -58,6 +64,62 @@ typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
 
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+DriverCurveGuiPtr
+driverCurveOf(const DopeSheetKey& key)
+{
+    DSKnobPtr context = key.getContext();
+
+    return context ? context->getDriverCurve() : DriverCurveGuiPtr();
+}
+
+void
+addCurve(std::list<DriverCurveGuiPtr>* curves,
+         const DriverCurveGuiPtr& curve)
+{
+    if (std::find(curves->begin(), curves->end(), curve) == curves->end()) {
+        curves->push_back(curve);
+    }
+}
+
+void
+commitCurves(const std::list<DriverCurveGuiPtr>& curves)
+{
+    for (std::list<DriverCurveGuiPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        (*it)->commit();
+    }
+}
+
+// Moves driver keys in the order that keeps one from landing on another not yet moved.
+void
+moveDriverKeys(const DopeSheetKeyPtrList& keys,
+               double dt)
+{
+    std::vector<DopeSheetKeyPtr> driverKeys;
+
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (driverCurveOf(**it)) {
+            driverKeys.push_back(*it);
+        }
+    }
+    std::sort(driverKeys.begin(), driverKeys.end(), [dt](const DopeSheetKeyPtr& a, const DopeSheetKeyPtr& b) {
+        return dt > 0 ? a->key.getTime() > b->key.getTime() : a->key.getTime() < b->key.getTime();
+    });
+
+    std::list<DriverCurveGuiPtr> curves;
+    for (std::size_t i = 0; i < driverKeys.size(); ++i) {
+        DopeSheetKey& k = *driverKeys[i];
+        DriverCurveGuiPtr curve = driverCurveOf(k);
+        CurvePtr internalCurve = curve->getInternalCurve();
+        const int keyframeIndex = internalCurve->keyFrameIndex(k.key.getTime());
+        if (keyframeIndex == -1) {
+            continue;
+        }
+        k.key = internalCurve->setKeyFrameValueAndTime(k.key.getTime() + dt, k.key.getValue(), keyframeIndex);
+        addCurve(&curves, curve);
+    }
+    commitCurves(curves);
+}
 
 /**
  * @brief Returns the knob whose curve a key edit must change. A slaved knob shows and renders
@@ -96,29 +158,79 @@ moveReader(const NodePtr &reader,
     Q_UNUSED(s);
 }
 
+KnobDoublePtr
+getTimeOffsetKnob(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kTimeOffsetParamTimeOffset));
+}
+
+/**
+ * @brief Move a TimeOffset by dt: everything it shows comes dt later. An animated offset has its
+ * curve moved by dt in time and in value, and the selected keys on it follow their keyframes.
+ */
 void
 moveTimeOffset(const NodePtr& node,
-               double dt)
+               double dt,
+               const DopeSheetKeyPtrList& selectedKeys)
 {
-    KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>( node->getKnobByName(kTimeOffsetParamNameTimeOffset).get() );
+    KnobDoublePtr timeOffsetKnob = getTimeOffsetKnob(node);
     assert(timeOffsetKnob);
-    KnobHelper::ValueChangedReturnCodeEnum s = timeOffsetKnob->setValue(timeOffsetKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
-    Q_UNUSED(s);
+    if (!timeOffsetKnob) {
+        return;
+    }
+    if (!timeOffsetKnob->isAnimated(0, ViewIdx(0))) {
+        KnobHelper::ValueChangedReturnCodeEnum s = timeOffsetKnob->setValue(timeOffsetKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        Q_UNUSED(s);
+
+        return;
+    }
+
+    KeyFrameSet keyframes = timeOffsetKnob->getCurve(ViewIdx(0), 0)->getKeyFrames_mt_safe();
+    std::vector<KeyFrame> ordered(keyframes.begin(), keyframes.end());
+    // Move the keys in the direction of the move first, so that none lands on one not yet moved.
+    if (dt > 0) {
+        std::reverse(ordered.begin(), ordered.end());
+    }
+    for (std::vector<KeyFrame>::const_iterator it = ordered.begin(); it != ordered.end(); ++it) {
+        KeyFrame moved;
+        if (!timeOffsetKnob->moveValueAtTime(eCurveChangeReasonDopeSheet, it->getTime(), ViewSpec::all(), 0, dt, dt, &moved)) {
+            continue;
+        }
+        for (DopeSheetKeyPtrList::const_iterator keyIt = selectedKeys.begin(); keyIt != selectedKeys.end(); ++keyIt) {
+            if (((*keyIt)->knob.lock() == timeOffsetKnob) && ((*keyIt)->dimension == 0) && ((*keyIt)->key.getTime() == it->getTime())) {
+                (*keyIt)->key = moved;
+            }
+        }
+    }
 }
 
 void
 moveFrameRange(const NodePtr& node,
                double dt)
 {
-    KnobIntBase* frameRangeKnob = dynamic_cast<KnobIntBase*>( node->getKnobByName(kFrameRangeParamNameFrameRange).get() );
-    assert(frameRangeKnob);
-    frameRangeKnob->setValues(frameRangeKnob->getValue() + dt, frameRangeKnob->getValue(1)  + dt, ViewSpec::all(), eValueChangedReasonNatronGuiEdited);
+    KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamFirstFrame));
+    KnobIntPtr lastFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamLastFrame));
+    assert(firstFrameKnob && lastFrameKnob);
+    if (!firstFrameKnob || !lastFrameKnob) {
+        return;
+    }
+    const int first = firstFrameKnob->getValue();
+    const int last = lastFrameKnob->getValue();
+    // Move the end in the direction of the move first, so the range never turns inside out.
+    if (dt > 0) {
+        lastFrameKnob->setValue(static_cast<int>(last + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        firstFrameKnob->setValue(static_cast<int>(first + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+    } else {
+        firstFrameKnob->setValue(static_cast<int>(first + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        lastFrameKnob->setValue(static_cast<int>(last + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+    }
 }
 
 void
 moveGroupNode(DopeSheetEditor* model,
               const NodePtr& node,
-              double dt)
+              double dt,
+              const DopeSheetKeyPtrList& selectedKeys)
 {
     NodeGroup *group = node->isEffectGroup();
 
@@ -133,14 +245,16 @@ moveGroupNode(DopeSheetEditor* model,
         NodeGroup* isChildGroup = (*it)->isEffectGroup();
 
         // Move readers
+        KnobDoublePtr movedOffset;
         if (pluginID == PLUGINID_NATRON_READ) {
             moveReader(*it, dt);
-        } else if (pluginID == PLUGINID_OFX_TIMEOFFSET) {
-            moveTimeOffset(*it, dt);
-        } else if (pluginID == PLUGINID_OFX_FRAMERANGE) {
+        } else if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
+            moveTimeOffset(*it, dt, selectedKeys);
+            movedOffset = getTimeOffsetKnob(*it);
+        } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
             moveFrameRange(*it, dt);
         } else if (isChildGroup) {
-            moveGroupNode(model, *it, dt);
+            moveGroupNode(model, *it, dt, selectedKeys);
         }
 
         // Move keyframes
@@ -148,7 +262,7 @@ moveGroupNode(DopeSheetEditor* model,
 
         for (KnobsVec::const_iterator knobIt = knobs.begin(); knobIt != knobs.end(); ++knobIt) {
             const KnobIPtr& knob = *knobIt;
-            if ( !knob->hasAnimation() ) {
+            if (!knob->hasAnimation() || (movedOffset && (knob == movedOffset))) {
                 continue;
             }
 
@@ -521,11 +635,40 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
         node->getEffectInstance()->beginChanges();
     }
 
+    // Moving a TimeOffset moves the keys of its offset itself.
+    std::set<KnobIPtr> offsetsMovedWithNodes;
+    for (std::vector<MovedNode>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+        NodePtr node = it->node.lock();
+        if (!node) {
+            continue;
+        }
+        NodesList moved;
+        if (it->type == eDopeSheetItemTypeTimeOffset) {
+            moved.push_back(node);
+        } else if (NodeGroup* group = node->isEffectGroup()) {
+            group->getNodes_recursive(moved, true);
+        }
+        for (NodesList::const_iterator movedIt = moved.begin(); movedIt != moved.end(); ++movedIt) {
+            if ((*movedIt)->getPluginID() == PLUGINID_NATRON_TIMEOFFSET) {
+                KnobDoublePtr offset = getTimeOffsetKnob(*movedIt);
+                if (offset) {
+                    offsetsMovedWithNodes.insert(offset);
+                }
+            }
+        }
+    }
 
     //////////Handle selected keyframes
+    moveDriverKeys(_keys, dt);
     std::set<std::tuple<KnobI*, int, double>> movedKeys;
     for (DopeSheetKeyPtrList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKeyPtr& selectedKey = (*it);
+        if (driverCurveOf(*selectedKey)) {
+            continue;
+        }
+        if (offsetsMovedWithNodes.count(selectedKey->knob.lock())) {
+            continue;
+        }
         int dimension;
         KnobIPtr knob = editedKnob(selectedKey->knob.lock(), selectedKey->dimension, &dimension);
         if (!movedKeys.insert(std::make_tuple(knob.get(), dimension, selectedKey->key.getTime())).second) {
@@ -548,9 +691,9 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
         } else if (it->type == eDopeSheetItemTypeFrameRange) {
             moveFrameRange(node, dt);
         } else if (it->type == eDopeSheetItemTypeTimeOffset) {
-            moveTimeOffset(node, dt);
+            moveTimeOffset(node, dt, _keys);
         } else if (it->type == eDopeSheetItemTypeGroup) {
-            moveGroupNode(_model, node, dt);
+            moveGroupNode(_model, node, dt, _keys);
         }
     }
 
@@ -651,7 +794,8 @@ DSTransformKeysCommand::DSTransformKeysCommand(const DopeSheetKeyPtrList& keys,
             continue;
         }
         KnobIPtr knob = (*it)->knob.lock();
-        if (!knob) {
+        // Driver keys are moved and deleted here, not scaled.
+        if (!knob || driverCurveOf(**it)) {
             continue;
         }
 
@@ -871,6 +1015,73 @@ DSTransformKeysCommand::mergeWith(const QUndoCommand *other)
     // The merged command has already been applied, so this one's edited state is the current one.
     _shapeStates.recordAfter();
     recordShapeKeyTimesAfter(&_shapeKeyTimes);
+
+    return true;
+}
+
+////////////////////////// DSTrimFrameRangeCommand //////////////////////////
+
+DSTrimFrameRangeCommand::DSTrimFrameRangeCommand(const DSNodePtr& frameRange,
+                                                 bool lastEnd,
+                                                 int oldFrame,
+                                                 int newFrame,
+                                                 QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _frameRange(frameRange->getInternalNode())
+    , _lastEnd(lastEnd)
+    , _oldFrame(oldFrame)
+    , _newFrame(newFrame)
+{
+    setText(lastEnd ? tr("Set last frame") : tr("Set first frame"));
+}
+
+void
+DSTrimFrameRangeCommand::undo()
+{
+    setFrame(_oldFrame);
+}
+
+void
+DSTrimFrameRangeCommand::redo()
+{
+    setFrame(_newFrame);
+}
+
+void
+DSTrimFrameRangeCommand::setFrame(int frame)
+{
+    NodePtr node = _frameRange.lock();
+    if (!node) {
+        setObsolete(true);
+
+        return;
+    }
+    KnobIntPtr knob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(_lastEnd ? kFrameRangeParamLastFrame : kFrameRangeParamFirstFrame));
+    assert(knob);
+    if (!knob) {
+        return;
+    }
+    knob->setValue(frame, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+}
+
+int
+DSTrimFrameRangeCommand::id() const
+{
+    return kDopeSheetEditorTrimFrameRangeCommandCompressionID;
+}
+
+bool
+DSTrimFrameRangeCommand::mergeWith(const QUndoCommand* other)
+{
+    const DSTrimFrameRangeCommand* cmd = dynamic_cast<const DSTrimFrameRangeCommand*>(other);
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd) || (cmd->_lastEnd != _lastEnd)) {
+        return false;
+    }
+    NodePtr node = _frameRange.lock();
+    if (!node || (node != cmd->_frameRange.lock())) {
+        return false;
+    }
+    _newFrame = cmd->_newFrame;
 
     return true;
 }
@@ -1247,12 +1458,24 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
     }
 
     std::set<KnobIPtr> knobsSet;
+    std::list<DriverCurveGuiPtr> driverCurves;
     // Several selected items' knobs can be slaved to one proxy knob, whose key must be edited once.
     std::set<std::tuple<KnobI*, int, double>> editedKeys;
     for (std::vector<DopeSheetKey>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKey& selected = (*it);
         int dimension;
         KnobIPtr knob = editedKnob(selected.knob.lock(), selected.dimension, &dimension);
+
+        if (DriverCurveGuiPtr driverCurve = driverCurveOf(selected)) {
+            CurvePtr internalCurve = driverCurve->getInternalCurve();
+            if (add) {
+                internalCurve->addKeyFrame(selected.key);
+            } else if (internalCurve->keyFrameIndex(selected.key.getTime()) != -1) {
+                internalCurve->removeKeyFrameWithTime(selected.key.getTime());
+            }
+            addCurve(&driverCurves, driverCurve);
+            continue;
+        }
 
         if (!editedKeys.insert(std::make_tuple(knob.get(), dimension, selected.key.getTime())).second) {
             if (!add) {
@@ -1281,6 +1504,7 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
     for (std::set<KnobIPtr>::iterator it = knobsSet.begin(); it != knobsSet.end(); ++it) {
         (*it)->endChanges();
     }
+    commitCurves(driverCurves);
 
     _model->refreshSelectionBboxAndRedrawView();
 }
@@ -1363,10 +1587,22 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
         it->_key->key.setInterpolation(undo ? it->_oldInterpType : it->_newInterpType);
     }
 
+    std::list<DriverCurveGuiPtr> driverCurves;
     for (std::list<DSKeyInterpolationChange>::iterator it = _changes.begin(); it != _changes.end(); ++it) {
         KeyframeTypeEnum interp = undo ? it->_oldInterpType : it->_newInterpType;
         int dimension;
         KnobIPtr knob = editedKnob(it->_key->knob.lock(), it->_key->dimension, &dimension);
+
+        // Undo of a driver key's tangents comes from the drivers restored around this command.
+        if (DriverCurveGuiPtr driverCurve = driverCurveOf(*it->_key)) {
+            CurvePtr internalCurve = driverCurve->getInternalCurve();
+            const int keyframeIndex = internalCurve->keyFrameIndex(it->_key->key.getTime());
+            if (keyframeIndex != -1) {
+                it->_key->key = internalCurve->setKeyFrameInterpolation(interp, keyframeIndex);
+                addCurve(&driverCurves, driverCurve);
+            }
+            continue;
+        }
 
         knob->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
                                      ViewSpec::all(),
@@ -1384,6 +1620,7 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
                                     &it->_key->key);
         }
     }
+    commitCurves(driverCurves);
 
     _model->refreshSelectionBboxAndRedrawView();
 }

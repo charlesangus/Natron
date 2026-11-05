@@ -55,6 +55,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGuiI.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
@@ -869,46 +870,6 @@ NodeCollection::fixRelativeFilePaths(const std::string& projectPathName,
     }
 }
 
-void
-NodeCollection::fixPathName(const std::string& oldName,
-                            const std::string& newName)
-{
-    NodesList nodes = getNodes();
-    AppInstancePtr appInst = getApplication();
-    if (!appInst) {
-        return;
-    }
-    ProjectPtr project = appInst->getProject();
-
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isActivated() ) {
-            const KnobsVec& knobs = (*it)->getKnobs();
-            for (U32 j = 0; j < knobs.size(); ++j) {
-                KnobStringBase* isString = dynamic_cast< KnobStringBase* >( knobs[j].get() );
-                KnobString* isStringKnob = dynamic_cast<KnobString*>(isString);
-                if ( !isString || isStringKnob || ( knobs[j] == project->getEnvVarKnob() ) ) {
-                    continue;
-                }
-
-                std::string filepath = isString->getValue();
-
-                if ( ( filepath.size() >= (oldName.size() + 2) ) &&
-                     ( filepath[0] == '[') &&
-                     ( filepath[oldName.size() + 1] == ']') &&
-                     ( filepath.substr( 1, oldName.size() ) == oldName) ) {
-                    filepath.replace(1, oldName.size(), newName);
-                    isString->setValue(filepath);
-                }
-            }
-
-            NodeGroup* isGrp = (*it)->isEffectGroup();
-            if (isGrp) {
-                isGrp->fixPathName(oldName, newName);
-            }
-        }
-    }
-}
-
 bool
 NodeCollection::checkIfNodeLabelExists(const std::string & n,
                                        const Node* caller) const
@@ -1309,6 +1270,7 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
         _imp->guiInputs = _imp->inputs;
         _imp->guiOutputs = _imp->outputs;
     }
+    LoopEnd::onGraphChanged();
 
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
@@ -1346,6 +1308,7 @@ NodeGroup::notifyNodeActivated(const NodePtr& node)
             _imp->guiOutputs.push_back(node);
         }
     }
+    LoopEnd::onGraphChanged();
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
@@ -1384,10 +1347,13 @@ NodeGroup::notifyNodeNameChanged(const NodePtr& node)
 void
 NodeGroup::dequeueConnexions()
 {
-    QMutexLocker k(&_imp->nodesLock);
+    {
+        QMutexLocker k(&_imp->nodesLock);
 
-    _imp->inputs = _imp->guiInputs;
-    _imp->outputs = _imp->guiOutputs;
+        _imp->inputs = _imp->guiInputs;
+        _imp->outputs = _imp->guiOutputs;
+    }
+    LoopEnd::onGraphChanged();
 }
 
 NodePtr

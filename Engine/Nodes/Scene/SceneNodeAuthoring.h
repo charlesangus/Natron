@@ -175,6 +175,56 @@ bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                            std::string* errorMessage);
 
 /**
+ * @brief For a node assigning one shared material: grafts every root prim of material under the
+ * scope root /<scope> (typed Scope) through SceneOps::reparentRoots, memoized in memo, a root named
+ * like the scope passed through rather than nested. graft->materialPath is the grafted path of
+ * material's first UsdShadeMaterial, depth first. Returns false with *errorMessage set when scope
+ * is empty or authoring fails.
+ **/
+bool graftSharedMaterial(const ScenePayload& material,
+                         const std::string& scope,
+                         const std::string& layerTag,
+                         SceneGraftMemo* memo,
+                         SceneMaterialGraft* graft,
+                         std::string* errorMessage);
+
+/**
+ * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.
+ **/
+struct SceneCollectionBinding {
+    // The prims the collection includes, its expansion rule expandPrims taking their descendants.
+    std::vector<PXR_NS::SdfPath> includes;
+    std::string materialPath;
+    // Names both the collection (collection:<name>) and the binding; a single identifier.
+    std::string bindingName;
+    // UsdShadeTokens->allPurpose, full or preview.
+    PXR_NS::TfToken purpose;
+    // UsdShadeTokens->strongerThanDescendants or weakerThanDescendants.
+    PXR_NS::TfToken strength;
+    // The root's collection-binding properties already composed, strongest first: see
+    // getCollectionBindingNames().
+    std::vector<PXR_NS::TfToken> existingBindings;
+};
+
+/**
+ * @brief The collection-based material binding properties of prim, in native property order,
+ * which is their binding strength, strongest first, across every purpose.
+ **/
+std::vector<PXR_NS::TfToken> getCollectionBindingNames(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief Binds binding.materialPath to the prims binding.includes names, on root: applies
+ * UsdCollectionAPI collection:<name> including them (expandPrims) and UsdShadeMaterialBindingAPI,
+ * authors material:binding:collection[:<purpose>]:<name> = [collection, material] with
+ * bindMaterialAs = binding.strength, and writes root's propertyOrder with that binding first, then
+ * binding.existingBindings, so it is the strongest collection binding on root. Returns false with
+ * *errorMessage set when the binding name is not an identifier or authoring fails.
+ **/
+bool authorCollectionBinding(const PXR_NS::UsdPrim& root,
+                             const SceneCollectionBinding& binding,
+                             std::string* errorMessage);
+
+/**
  * @brief Authors knobs as xformable's op stack: xformOp:translate, xformOp:rotate<order> and
  * xformOp:scale, as the prim's whole op order.
  **/
@@ -182,24 +232,6 @@ bool authorTransform(const SceneTransformKnobs& knobs,
                      const PXR_NS::UsdGeomXformable& xformable,
                      const SceneLayerEdit& edit,
                      std::string* errorMessage);
-/**
- * @brief Whether name matches glob, in which * stands for any run of characters (none included)
- * and ? for any one character.
- **/
-bool matchesGlob(const std::string& name,
-                 const std::string& glob);
-
-/**
- * @brief The prims of stage a prim pattern names. The pattern is a whitespace-separated list of
- * absolute prim paths whose names may hold the wildcards of matchesGlob(), so a last name of *
- * names every child of the prim before it. Only active, defined, non-abstract prims match. *paths holds them
- * in the order the pattern names them, each once. Returns false with *errorMessage set when an
- * entry is not an absolute path; an empty pattern names no prim.
- **/
-bool matchPrims(const PXR_NS::UsdStageRefPtr& stage,
-                const std::string& pattern,
-                std::vector<PXR_NS::SdfPath>* paths,
-                std::string* errorMessage);
 
 /**
  * @brief The transform that scales by scale, turns by rotate (degrees, in the rotate order) and
@@ -231,6 +263,15 @@ int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);
 // The rotation part of composeTransformMatrix(), as a Gf (row-vector) matrix.
 PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
                                          SceneRotateOrderEnum rotateOrder);
+
+/**
+ * @brief The rotate values (degrees, indexed by axis) that composeRotationMatrix() turns into
+ * rotation in rotateOrder. rotation's upper 3x3 must be a rotation. Of the equivalent values,
+ * the ones closest to hint are returned, so that a value edited a little at a time does not jump.
+ **/
+PXR_NS::GfVec3d decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                                        SceneRotateOrderEnum rotateOrder,
+                                        const PXR_NS::GfVec3d& hint);
 
 } // namespace SceneNodeAuthoring
 

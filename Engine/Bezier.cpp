@@ -48,17 +48,18 @@
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/RenderStats.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/TrackMarker.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
 #define kBlurCImgParamSize "size"
-#define kTimeOffsetParamOffset "timeOffset"
-#define kFrameHoldParamFirstFrame "firstFrame"
 
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
@@ -1539,6 +1540,11 @@ Bezier::addControlPointAfterIndex(int index,
 
     invalidateContentHash();
 
+    RotoCurveContextPtr context = getContext();
+    if (context) {
+        context->onControlPointInserted(this_shared, index, t);
+    }
+
     return p;
 } // addControlPointAfterIndex
 
@@ -1642,8 +1648,10 @@ Bezier::setCurveFinished(bool finished)
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    bool changed = false;
     if (!_imp->isOpenBezier) {
         QMutexLocker l(&itemMutex);
+        changed = (_imp->finished != finished);
         _imp->finished = finished;
     }
 
@@ -1651,6 +1659,11 @@ Bezier::setCurveFinished(bool finished)
 
     invalidateContentHash();
     invalidatePolygonOrientation();
+
+    RotoCurveContextPtr context = getContext();
+    if (changed && context) {
+        context->onCurveFinishedChanged(std::dynamic_pointer_cast<Bezier>(shared_from_this()));
+    }
 }
 
 bool
@@ -1667,6 +1680,10 @@ Bezier::removeControlPointByIndex(int index)
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    RotoCurveContextPtr context = getContext();
+    if (context) {
+        context->onControlPointAboutToBeRemoved(std::dynamic_pointer_cast<Bezier>(shared_from_this()), index);
+    }
 
     {
         QMutexLocker l(&itemMutex);
@@ -1808,7 +1825,8 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                 if (*it2 == time) {
                     continue;
                 }
-                if (!onlyFeather) {
+                // A linked point's offsets already hold at every time.
+                if (!onlyFeather && !cp->isLinkedToTrack()) {
                     assert(cp);
                     cp->getPositionAtTime(useGuiCurve, *it2, ViewIdx(0), &p.x, &p.y);
                     cp->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &left.x, &left.y);
@@ -1834,7 +1852,7 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                     cp->setLeftBezierPointAtTime(useGuiCurve, *it2, left.x, left.y);
                     cp->setRightBezierPointAtTime(useGuiCurve, *it2, right.x, right.y);
                 }
-                if (moveFeather && useFeather) {
+                if (moveFeather && useFeather && !fp->isLinkedToTrack()) {
                     assert(fp);
                     fp->getPositionAtTime(useGuiCurve, *it2, ViewIdx(0), &pF.x, &pF.y);
                     fp->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &leftF.x, &leftF.y);
@@ -2127,7 +2145,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                 }
 
                 if (isLeft || moveBoth) {
-                    if (moveControlPoint) {
+                    if (moveControlPoint && !cp->isLinkedToTrack()) {
                         (cp)->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &left.x, &left.y);
                         left = Transform::matApply(trans, left);
                         left.x += lx; left.y += ly;
@@ -2135,7 +2153,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                         (cp)->setLeftBezierPointAtTime(useGuiCurve, *it2, left.x, left.y);
                         (cp)->setBroken(breakTangents);
                     }
-                    if ( moveFeather && useFeatherPoints() ) {
+                    if (moveFeather && useFeatherPoints() && !fp->isLinkedToTrack()) {
                         (fp)->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &leftF.x, &leftF.y);
                         leftF = Transform::matApply(trans, leftF);
                         leftF.x += flx; leftF.y += fly;
@@ -2144,7 +2162,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                         (fp)->setBroken(breakTangents);
                     }
                 } else {
-                    if (moveControlPoint) {
+                    if (moveControlPoint && !cp->isLinkedToTrack()) {
                         (cp)->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &right.x, &right.y);
                         right = Transform::matApply(trans, right);
                         right.x += rx; right.y += ry;
@@ -2152,7 +2170,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                         (cp)->setRightBezierPointAtTime(useGuiCurve, *it2, right.x, right.y);
                         (cp)->setBroken(breakTangents);
                     }
-                    if ( moveFeather && useFeatherPoints() ) {
+                    if (moveFeather && useFeatherPoints() && !fp->isLinkedToTrack()) {
                         (fp)->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &rightF.x, &rightF.y);
                         rightF = Transform::matApply(trans, rightF);
                         rightF.x += frx; rightF.y += fry;
@@ -2284,22 +2302,31 @@ Bezier::setPointAtIndexInternal(bool setLeft,
         if (rippleEdit) {
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
+            // A linked point's offsets already hold at every time.
+            const bool fpLinked = (*fp)->isLinkedToTrack();
+            const bool cpLinked = featherAndCp && (*cp)->isLinkedToTrack();
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
                 if (setPoint) {
-                    (*fp)->setPositionAtTime(useGuiCurve, *it2, x, y);
-                    if (featherAndCp) {
+                    if (!fpLinked) {
+                        (*fp)->setPositionAtTime(useGuiCurve, *it2, x, y);
+                    }
+                    if (featherAndCp && !cpLinked) {
                         (*cp)->setPositionAtTime(useGuiCurve, *it2, x, y);
                     }
                 }
                 if (setLeft) {
-                    (*fp)->setLeftBezierPointAtTime(useGuiCurve, *it2, lx, ly);
-                    if (featherAndCp) {
+                    if (!fpLinked) {
+                        (*fp)->setLeftBezierPointAtTime(useGuiCurve, *it2, lx, ly);
+                    }
+                    if (featherAndCp && !cpLinked) {
                         (*cp)->setLeftBezierPointAtTime(useGuiCurve, *it2, lx, ly);
                     }
                 }
                 if (setRight) {
-                    (*fp)->setRightBezierPointAtTime(useGuiCurve, *it2, rx, ry);
-                    if (featherAndCp) {
+                    if (!fpLinked) {
+                        (*fp)->setRightBezierPointAtTime(useGuiCurve, *it2, rx, ry);
+                    }
+                    if (featherAndCp && !cpLinked) {
                         (*cp)->setRightBezierPointAtTime(useGuiCurve, *it2, rx, ry);
                     }
                 }
@@ -2554,22 +2581,28 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
             fp = _imp->featherPoints.begin();
             std::advance(fp, index);
         }
-        assert( cp != _imp->points.end() && fp != _imp->featherPoints.end() );
-        if (isSmooth) {
-            keySet = (*cp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            if (useFeather) {
-                (*fp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            }
-        } else {
-            keySet = (*cp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            if (useFeather) {
-                (*fp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-            }
-        }
+        assert(cp != _imp->points.end() && fp != _imp->featherPoints.end());
         editedCp = *cp;
         if (useFeather) {
             editedFp = *fp;
         }
+    }
+
+    // Outside itemMutex: smoothPoint() reads the curve transform, and a context's
+    // composeItemTransform may lock this item's itemMutex, which is not recursive.
+    if (isSmooth) {
+        keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        if (editedFp) {
+            editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        }
+    } else {
+        keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        if (editedFp) {
+            editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        }
+    }
+    {
+        QMutexLocker l(&itemMutex);
         keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
@@ -2973,8 +3006,11 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
 {
     assert((points && !pointsSingleList) || (!points && pointsSingleList));
     assert( useFeatherPoints() );
-    QMutexLocker l(&itemMutex);
+    // A context's composeItemTransform may lock this item's itemMutex, which is not recursive.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
 
+    QMutexLocker l(&itemMutex);
 
     if ( _imp->points.empty() ) {
         return;
@@ -2988,9 +3024,6 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
     if ( nextCp != _imp->points.end() ) {
         ++nextCp;
     }
-
-    Transform::Matrix3x3 transform;
-    getTransformAtTime(time, &transform);
 
     for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end();
          ++it) {
@@ -3349,6 +3382,195 @@ Bezier::getFeatherPointAtIndex(int index) const
     std::advance(it, index);
 
     return *it;
+}
+
+void
+Bezier::linkPointToTrack(int index,
+                         const TrackMarkerPtr& marker,
+                         double time)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!marker) {
+        throw std::invalid_argument("Bezier::linkPointToTrack: no track given.");
+    }
+    BezierCPPtr cp = getControlPointAtIndex(index);
+    if (!cp) {
+        throw std::invalid_argument("Bezier::linkPointToTrack: index out of range.");
+    }
+    BezierCPPtr fp = getFeatherPointAtIndex(index);
+    {
+        QMutexLocker l(&itemMutex);
+        cp->linkToTrack(marker, time);
+        if (fp && (fp != cp)) {
+            fp->linkToTrack(marker, time);
+        }
+        copyInternalPointToGui(cp.get(), fp.get());
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation();
+    getContext()->refreshTrackLinkListeners();
+    getContext()->evaluateChange();
+}
+
+void
+Bezier::unlinkPoint(int index,
+                    bool bake)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    BezierCPPtr cp = getControlPointAtIndex(index);
+    if (!cp) {
+        throw std::invalid_argument("Bezier::unlinkPoint: index out of range.");
+    }
+    BezierCPPtr fp = getFeatherPointAtIndex(index);
+    if (fp == cp) {
+        fp.reset();
+    }
+    if (!cp->isLinkedToTrack() && (!fp || !fp->isLinkedToTrack())) {
+        return;
+    }
+
+    std::set<double> frames;
+    if (bake) {
+        TrackMarkerPtr marker = cp->getResolvedTrack();
+        if (!marker && fp) {
+            marker = fp->getResolvedTrack();
+        }
+        if (marker) {
+            std::set<double> keys;
+            marker->getCenterKeyframes(&keys);
+            if (!keys.empty()) {
+                for (double f = std::ceil(*keys.begin()); f <= std::floor(*keys.rbegin()); f += 1.) {
+                    frames.insert(f);
+                }
+            }
+        }
+        {
+            QMutexLocker l(&itemMutex);
+            _imp->getKeyframeTimes(false, &frames);
+        }
+        if (frames.empty()) {
+            frames.insert(getContext()->getTimelineCurrentTime());
+        }
+        // Key the whole curve, so every point keeps the same keyframes.
+        for (std::set<double>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+            setKeyframeInternal(*it, false);
+        }
+    }
+
+    struct BakedValue {
+        double x, y, lx, ly, rx, ry;
+    };
+    std::vector<BakedValue> cpValues, fpValues;
+    for (int pass = 0; pass < 2; ++pass) {
+        const BezierCPPtr& p = (pass == 0) ? cp : fp;
+        std::vector<BakedValue>& values = (pass == 0) ? cpValues : fpValues;
+        if (!p || !p->isLinkedToTrack()) {
+            continue;
+        }
+        for (std::set<double>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+            BakedValue v;
+            p->getPositionAtTime(false, *it, ViewIdx(0), &v.x, &v.y);
+            p->getLeftBezierPointAtTime(false, *it, ViewIdx(0), &v.lx, &v.ly, false);
+            p->getRightBezierPointAtTime(false, *it, ViewIdx(0), &v.rx, &v.ry, false);
+            values.push_back(v);
+        }
+    }
+
+    {
+        QMutexLocker l(&itemMutex);
+        for (int pass = 0; pass < 2; ++pass) {
+            const BezierCPPtr& p = (pass == 0) ? cp : fp;
+            const std::vector<BakedValue>& values = (pass == 0) ? cpValues : fpValues;
+            if (!p || !p->isLinkedToTrack()) {
+                continue;
+            }
+            p->unlinkFromTrack();
+            std::size_t i = 0;
+            for (std::set<double>::const_iterator it = frames.begin(); it != frames.end() && i < values.size(); ++it, ++i) {
+                p->setPositionAtTime(false, *it, values[i].x, values[i].y);
+                p->setLeftBezierPointAtTime(false, *it, values[i].lx, values[i].ly);
+                p->setRightBezierPointAtTime(false, *it, values[i].rx, values[i].ry);
+            }
+        }
+        copyInternalPointsToGuiPoints();
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation();
+    getContext()->refreshTrackLinkListeners();
+    getContext()->evaluateChange();
+}
+
+bool
+Bezier::hasTrackLinks() const
+{
+    QMutexLocker l(&itemMutex);
+
+    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        if ((*it)->isLinkedToTrack()) {
+            return true;
+        }
+    }
+    for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+        if ((*it)->isLinkedToTrack()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+Bezier::refreshTrackLinks(double time,
+                          std::list<std::string>* missing)
+{
+    BezierCPs points;
+    {
+        QMutexLocker l(&itemMutex);
+        points = _imp->points;
+        points.insert(points.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
+    }
+    bool changed = false;
+    for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
+        if (!(*it)->isLinkedToTrack()) {
+            continue;
+        }
+        changed |= (*it)->updateTrackLinkState(time);
+        if (missing && !(*it)->getResolvedTrack()) {
+            const std::string name = (*it)->getTrackLinkTrackerName() + " / " + (*it)->getTrackLinkTrackName();
+            if (std::find(missing->begin(), missing->end(), name) == missing->end()) {
+                missing->push_back(name);
+            }
+        }
+    }
+    if (changed) {
+        invalidateContentHash();
+    }
+
+    return changed;
+}
+
+void
+Bezier::appendLiveContentHash(ContentHasher& h) const
+{
+    RotoDrawableItem::appendLiveContentHash(h);
+
+    BezierCPs points;
+    {
+        QMutexLocker l(&itemMutex);
+        points = _imp->points;
+        points.insert(points.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
+    }
+    for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
+        if (!(*it)->isLinkedToTrack()) {
+            continue;
+        }
+        TrackMarkerPtr marker = (*it)->getResolvedTrack();
+        KnobDoublePtr centre = marker ? marker->getCenterKnob() : KnobDoublePtr();
+        h.appendBool(bool(centre));
+        if (centre) {
+            h.appendU64(centre->getContentHash());
+        }
+    }
 }
 
 std::list<std::pair<BezierCPPtr, BezierCPPtr> >

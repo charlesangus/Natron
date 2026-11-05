@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -61,6 +62,8 @@ CLANG_DIAG_ON(uninitialized)
 #define kProjectParamRFVVariablesLabel "Variables"
 #define kProjectParamRFVEdit "editVariables"
 #define kProjectParamRFVEditLabel "Edit variables..."
+#define kProjectParamAddPathVariable "addPathVariable"
+#define kProjectParamAddPathVariableLabel "Add Path Variable..."
 
 NATRON_NAMESPACE_ENTER
 
@@ -420,9 +423,117 @@ public:
     virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
     /**
-     * @brief Returns the user environment variables for the project
+     * @brief The project paths by name, with their values as typed: every string variable of the
+     * project (see RFV::getDeclarationSnapshot()) and the built-in [Project] and [OCIO] paths, which
+     * take precedence. MT-safe.
      **/
     void getEnvironmentVariables(std::map<std::string, std::string>& env) const;
+
+    /**
+     * @brief Whether name is a built-in project path, Project or OCIO, which no variable can take.
+     **/
+    static bool isBuiltinPathVariableName(const std::string& name);
+
+    /**
+     * @brief value with every project path expanded, made relative to [Project] when it is not
+     * absolute, and cleaned of '.' and '..', whether or not the folder exists. Empty for an empty
+     * value.
+     **/
+    std::string expandPathPreview(const std::string& value) const;
+
+    /**
+     * @brief The name of a project path other than except whose expanded value (see
+     * expandPathPreview()) is the expansion of value, or empty when there is none.
+     **/
+    std::string findPathVariableWithTarget(const std::string& value, const std::string& except = std::string()) const;
+
+    /**
+     * @brief Whether addPathVariable() would accept name. When it would not, reason says why: it is
+     * empty, built-in, not a valid Python identifier, the name of a project parameter, or an
+     * attribute of the app object.
+     **/
+    bool canAddPathVariable(const std::string& name, std::string* reason = nullptr) const;
+
+    /**
+     * @brief Adds a string variable to the project, name with the given value, which is a project
+     * path from then on. The value may use other project paths. This records nothing in the undo
+     * history.
+     * @returns the variable, or null with error set when canAddPathVariable() is false or the
+     * project's variables group refuses it.
+     **/
+    KnobIPtr addPathVariable(const std::string& name, const std::string& value, std::string* error = nullptr);
+
+    /**
+     * @brief Deletes the project path name added by addPathVariable(), and returns false without
+     * deleting anything for a built-in path or a parameter outside the project's variables group.
+     * Records nothing in the undo history.
+     **/
+    bool removePathVariable(const std::string& name);
+
+    /**
+     * @brief Gives the project path oldName the script name newName and the label label, and
+     * returns false without a change unless oldName is a string variable of the project and
+     * canAddPathVariable() accepts newName. File paths keep their spelling, see
+     * renamePathVariableInValue(). Records nothing in the undo history.
+     **/
+    bool renamePathVariable(const std::string& oldName, const std::string& newName, const std::string& label);
+
+    /**
+     * @brief Spells value through newName when it starts with the project path [oldName], the
+     * only place a project path is expanded in a file path. Returns whether value is different.
+     **/
+    static bool renamePathVariableInValue(const std::string& oldName, const std::string& newName, std::string* value);
+
+    /**
+     * @brief The project paths the expansion of value goes through: the one value starts with,
+     * the one that path's value starts with, and so on, plus [Project] when the expansion is a
+     * relative path.
+     **/
+    std::set<std::string> getPathVariablesUsedBy(const std::string& value) const;
+
+    /**
+     * @brief The file-path parameters of the project's nodes (input files, output files and
+     * single paths) whose value uses the project path name, directly or through other project
+     * paths (see getPathVariablesUsedBy()).
+     **/
+    KnobsVec getFilePathKnobsUsingPathVariable(const std::string& name) const;
+
+    /**
+     * @brief The file-path parameters of the project's nodes and the string variables of the
+     * project whose value starts with [name], as the value is typed.
+     **/
+    KnobsVec getKnobsSpellingPathVariable(const std::string& name) const;
+
+    /**
+     * @brief Re-evaluates each parameter getFilePathKnobsUsingPathVariable() returns as an edit of
+     * its value does, so that readers list their files again and the hashes follow the new path.
+     **/
+    void refreshFilePathKnobsUsingPathVariable(const std::string& name);
+
+    /**
+     * @brief Refreshes, as refreshFilePathKnobsUsingPathVariable() does, the file-path parameters
+     * whose value used a string variable of previous, or uses a current declaration, where the two
+     * declaration sets differ (a name present in only one, or a different value). Does nothing while the
+     * project loads or closes. RFV::refreshDeclarationSnapshot() calls it when the project's
+     * declarations change.
+     **/
+    void onPathVariableDeclarationsChanged(const RFVDeclarationsConstPtr& previous);
+
+    /**
+     * @brief The folder each project path names: the name of every project path (see
+     * getEnvironmentVariables()) whose value, with the project paths it uses expanded, is an
+     * absolute path, with that path cleaned of '.', '..' and a trailing '/'. A value that stays
+     * relative, such as a text that is not a path, is left out. MT-safe.
+     **/
+    void getPathVariableTargets(std::map<std::string, std::string>& targets) const;
+
+    /**
+     * @brief Rewrites each string variable of the project whose value starts with [projectPathName]
+     * as fixFilePath() rewrites a file path, so that it keeps naming the same folder once
+     * [projectPathName] is newProjectPath. File paths spelled through such a variable keep their
+     * files with it.
+     **/
+    void fixRelativePathVariables(const std::string& projectPathName, const std::string& newProjectPath);
 
     /**
      * @brief Expands the environment variables in the given string that are found in env
@@ -485,8 +596,9 @@ public:
     void canonicalizePath(std::string& str);
 
     /**
-     * @brief Tries to find any variable that str could start with and simplify the given path with the longest
-     * variable matching. It internally uses findReplaceVariable
+     * @brief Tries to find any project path whose folder (see getPathVariableTargets()) str could
+     * start with and simplify the given path with the longest one. It internally uses
+     * findReplaceVariable
      **/
     void simplifyPath(std::string& str);
 
@@ -511,6 +623,14 @@ public:
     bool isProjectUpAxisZ() const;
     double getProjectMetersPerUnit() const;
 
+    // The root prim name the project's scenes share materials under ("materials" for the
+    // Materials Scope /materials), or empty when shared materials are off.
+    std::string getProjectMaterialsScope() const;
+
+    // The root prim name a Materials Scope value names: empty unless it is a single absolute
+    // prim name, such as /materials.
+    static std::string validateMaterialsScope(const std::string& path);
+
     KnobPathPtr getEnvVarKnob() const;
 
     /**
@@ -526,7 +646,7 @@ public:
     void refreshVariablesAfterTimeChange(bool isPlayback, double time);
 
     /**
-     * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
+     * @brief The project's variables may have changed: every RFVSet node re-sorts
      * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
      **/
     virtual void onUserKnobsChanged() OVERRIDE FINAL;
@@ -635,6 +755,9 @@ Q_SIGNALS:
     // The user pressed the variables page's edit button.
     void mustEditVariables();
 
+    // The user pressed the variables page's add path variable button.
+    void mustAddPathVariable();
+
     void formatChanged(Format);
 
     void frameRangeChanged(int, int);
@@ -642,6 +765,10 @@ Q_SIGNALS:
     void autoPreviewChanged(bool);
 
     void projectNameChanged(QString name, bool modified);
+
+    // Emitted once a load has succeeded and isLoadingProject() is false again: views that ignore
+    // resizes during a load act on the restored graph here.
+    void loaded();
 
     // Emitted from the saving thread whenever saveProject_imp() ends, so that a save waiting on
     // the main thread can stop waiting.
@@ -669,6 +796,16 @@ private:
 
     // Re-keys the nodes whose hash includes the project frame range.
     void rehashNodesUsingFrameRange();
+
+    // The file-path parameters of the project's nodes whose value uses one of names under env, or
+    // under previousEnv when that is not empty.
+    KnobsVec getFilePathKnobsUsing(const std::map<std::string, std::string>& env,
+                                   const std::set<std::string>& names,
+                                   const std::map<std::string, std::string>& previousEnv) const;
+
+    // Refreshes the file-path parameters using a built-in project path whose value changed since
+    // the last call, outside project load and close.
+    void refreshFilePathKnobsUsingBuiltinPaths();
 
     std::string encodeLayersKnobTable() const;
 

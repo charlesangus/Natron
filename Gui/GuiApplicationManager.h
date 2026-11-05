@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 #include "Global/Enums.h"
 
+#include <functional>
 #include <list>
 
 #include <QtGlobal> // for Q_OS_*
@@ -73,6 +74,13 @@
 #define kNodesMenuPropPluginMajor "natronPluginMajor"
 #define kNodesMenuPropCategoryColor "natronCategoryColor"
 #define kNodesMenuPropShortcut "natronShortcut"
+// What the plug-in's first input takes (see TabMenuBridge::dataKindKey()), empty without inputs,
+// and the script name of its prim path or pattern knob, empty for none.
+#define kNodesMenuPropInputKind "natronInputKind"
+#define kNodesMenuPropPrimPathKnob "natronPrimPathKnob"
+// What the plug-in's inputs other than masks take, as dataKindKey()s joined by commas, empty
+// without such inputs.
+#define kNodesMenuPropInputKinds "natronInputKinds"
 
 // On grouping submenus' menu actions: the grouping's name, unescaped, and the icon the
 // toolbar draws for it.
@@ -142,6 +150,15 @@ public:
      * for callers that cannot tell beforehand whether an event opens the popup.
      **/
     void releaseNodesMenuTargetIfNotShown();
+
+    // Adds to the creation arguments of a node a nodes-menu action creates.
+    typedef std::function<void(CreateNodeArgs& args)> NodesMenuArgsDecorator;
+
+    /**
+     * @brief Until replaced, decorator is called on the arguments of every node created from the
+     * nodes menu, before the node is created. An empty one adds nothing. Returns the previous one.
+     **/
+    NodesMenuArgsDecorator swapNodesMenuArgsDecorator(const NodesMenuArgsDecorator& decorator);
 
     virtual bool isBackground() const OVERRIDE FINAL
     {
@@ -238,6 +255,7 @@ public:
 
     NodeClipBoard& getNodeClipBoard();
     virtual void reloadStylesheets() OVERRIDE FINAL;
+    virtual void onViewer3DNavigationChanged(int navigation) OVERRIDE FINAL;
     virtual void reloadScriptEditorFonts() OVERRIDE FINAL;
 
     void clearNodeClipBoard();

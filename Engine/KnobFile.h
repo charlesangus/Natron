@@ -96,6 +96,20 @@ public:
         return _fileExtensions;
     }
 
+    /**
+     * @brief Whether the knob shows its own reload icon. Nodes with a Reload button of their own
+     * turn it off, so their panel has one reload.
+     **/
+    void setShowsReloadButton(bool shows)
+    {
+        _showsReloadButton = shows;
+    }
+
+    bool showsReloadButton() const
+    {
+        return _showsReloadButton;
+    }
+
     void open_file()
     {
         Q_EMIT openFile();
@@ -109,8 +123,9 @@ public:
     void reloadFile();
 
     /**
-     * @brief getRandomFrameName
-     * @param f The index of the frame.
+     * @brief The file the knob names at the given frame and view, with project variables expanded
+     * (and a relative path made relative to the project) before any frame or view pattern is
+     * substituted. The stored value is left as written.
      */
     std::string getFileName(int time, ViewSpec view);
 
@@ -168,6 +183,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
+    bool _showsReloadButton;
     std::vector<std::string> _fileExtensions;
 };
 
@@ -223,6 +239,25 @@ public:
         return _sequenceDialog;
     }
 
+    /**
+     * @brief Whether the knob shows its rewrite icon beside the file field. Off for nodes whose
+     * written files are not rewritten from the field, such as the Write.
+     **/
+    void setShowsRewriteButton(bool shows)
+    {
+        _showsRewriteButton = shows;
+    }
+
+    bool showsRewriteButton() const
+    {
+        return _showsRewriteButton;
+    }
+
+    /**
+     * @brief The file written at the given frame and view, with project variables expanded (and a
+     * relative path made relative to the project) before any frame or view pattern is
+     * substituted. The stored value is left as written.
+     */
     QString generateFileNameAtTime(SequenceTime time, ViewSpec view);
 
 Q_SIGNALS:
@@ -240,6 +275,7 @@ private:
     static const std::string _typeNameStr;
     bool _isOutputImage;
     bool _sequenceDialog;
+    bool _showsRewriteButton;
 };
 
 

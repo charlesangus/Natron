@@ -188,6 +188,7 @@ enum PixmapEnum {
     NATRON_PIXMAP_TRANSFORM_GROUPING,
     NATRON_PIXMAP_DEEP_GROUPING,
     NATRON_PIXMAP_METADATA_GROUPING,
+    NATRON_PIXMAP_RFV_GROUPING,
     NATRON_PIXMAP_FILTER_GROUPING,
     NATRON_PIXMAP_MULTIVIEW_GROUPING,
     NATRON_PIXMAP_TOOLSETS_GROUPING,
@@ -604,6 +605,7 @@ enum DopeSheetItemType {
     eDopeSheetItemTypeRetime,
     eDopeSheetItemTypeTimeOffset,
     eDopeSheetItemTypeFrameRange,
+    eDopeSheetItemTypeAppendClip,
     eDopeSheetItemTypeGroup,
 
     // Others

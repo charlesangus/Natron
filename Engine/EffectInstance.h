@@ -65,13 +65,8 @@
 #define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
 #define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
 #define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CONSTANT     "net.sf.openfx.ConstantPlugin"
-#define PLUGINID_OFX_TIMEOFFSET   "net.sf.openfx.timeOffset"
-#define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
-#define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
-#define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
+#define PLUGINID_OFX_CONSTANT "net.sf.openfx.ConstantPlugin"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
-#define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
@@ -418,6 +413,31 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose stored hashes appendNodeContentHash() folds in, besides the
+     * node's inputs: they are hashed before it, and it is only clean once they are.
+     **/
+    virtual void appendExtraHashSources(std::vector<NodePtr>* /*sources*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose hashes fold this one's state in, besides its outputs: marking
+     * this node dirty marks them too.
+     **/
+    virtual void appendExtraHashDependents(std::vector<NodePtr>* /*dependents*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
+     * and the nodes its expressions read, each with the variables it sets on that node.
+     **/
+    virtual void appendExtraContextReadSuccessors(std::vector<NodePtr>* /*successors*/,
+                                                  std::vector<RenderContextReadSet>* /*overridden*/) const
+    {
+    }
+
+    /**
      * @brief Forwarded to the node's name
      **/
     const std::string & getScriptName() const WARN_UNUSED_RETURN;
@@ -539,6 +559,12 @@ public:
     {
         return 0;
     }
+
+    /**
+     * @brief Makes the curve context of a Geometry host, which may be a subclass holding the
+     * host's own data about its curves. Called once, when the node is created.
+     **/
+    virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Called by a geometry curve context when item is built, before it is cloned, loaded
@@ -1049,6 +1075,13 @@ public:
     void popParallelRenderArgsTLS();
 
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+
+    /**
+     * @brief Whether the calling thread renders this node: its frame args are installed and are not
+     * the ones the instance-changed action installs around knobChanged, which renders nothing.
+     * Outside a render, expressions read the enclosing loops' preview iterations.
+     **/
+    bool isRenderingTLS() const;
 
     /**
      * @brief Whether the frame the calling thread renders belongs to a sequence render started by
@@ -1938,9 +1971,37 @@ public:
     }
 
     /**
-     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
-     * under the context this effect's actions answer for on this thread, and if so that context:
-     * the one the input's region of definition, metadata and layers are read under, through an
+     * @brief True when this effect's render action pulls input inputNb itself at time/view under
+     * context, so the host does not pre-render it: what the request pass planned for it is then
+     * rendered once by the action, not once per rectangle the action renders.
+     **/
+    virtual bool pullsInputInRender(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const RenderContextPtr& /*context*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Images rendered elsewhere that this effect outputs unchanged for layers at args'
+     * time, view, mipmap level and depth, each covering roi (args.roi clipped to the region of
+     * definition). Returning true, renderRoI() returns code and, when it is eRenderRoIRetCodeOk,
+     * the images in outputLayers, as for an identity. False, the default, renders.
+     **/
+    virtual bool forwardsOutput(const RenderRoIArgs& /*args*/,
+                                const std::list<ImageLayerDesc>& /*layers*/,
+                                const RectI& /*roi*/,
+                                std::map<ImageLayerDesc, ImagePtr>* /*outputLayers*/,
+                                RenderRoIRetCode* /*code*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether getInputContexts() names contexts for input inputNb at time/view under the
+     * context this effect's actions answer for on this thread, and if so the last of them: the one
+     * the input's region of definition, metadata and layers are read under, through an
      * ActionContextScope, as the input renders under it.
      **/
     bool getInputActionContext(int inputNb,
@@ -1959,6 +2020,9 @@ public:
         ViewIdx view;
         RectD roi;
         std::list<ImageLayerDesc> comps;
+        // Planned once every consumer of this frame/view is: the request is asked again then,
+        // with roi the whole region they request, rather than once per region a consumer adds.
+        bool afterConsumers = false;
     };
 
     /**
@@ -2063,6 +2127,12 @@ public:
         return false;
     }
     virtual void clearLastRenderedImage();
+
+    /**
+     * @brief Stops threads the effect runs on its own, outside renders: asks them to stop and,
+     * blocking, waits for them. Called when the node is deactivated or its processing quits.
+     **/
+    virtual void quitBackgroundWork(bool /*blocking*/) { }
 
     void clearActionsCache();
 
@@ -2509,6 +2579,8 @@ public:
     bool onOverlayPenDoubleClicked_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos) WARN_UNUSED_RETURN;
 
     bool onOverlayPenUp_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
+
+    bool onOverlayWheel_public(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double delta, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
 
     bool onOverlayKeyDown_public(double time, const RenderScale & renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
 
@@ -3160,6 +3232,21 @@ protected:
                                 const QPointF & /*pos*/,
                                 double /*pressure*/,
                                 double /*timestamp*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief A mouse wheel turn over the viewer, delta in notches, positive away from the user.
+     * Returning true consumes it, so the viewer does not zoom. OpenFX has no wheel action.
+     **/
+    virtual bool onOverlayWheel(double /*time*/,
+                                const RenderScale& /*renderScale*/,
+                                ViewIdx /*view*/,
+                                const QPointF& /*viewportPos*/,
+                                const QPointF& /*pos*/,
+                                double /*delta*/,
+                                KeyboardModifiers /*modifiers*/) WARN_UNUSED_RETURN
     {
         return false;
     }

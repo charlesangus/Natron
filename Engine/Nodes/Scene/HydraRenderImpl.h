@@ -50,7 +50,9 @@ NATRON_NAMESPACE_ENTER
  * programs) belong to the context that created them and an engine must render where it was
  * made, a GL context is current on at most one thread at a time, and Storm makes no promise that
  * two engines can render at once in one process; serializing on one context is what it supports.
- * The GPU, not the calling threads, bounds the throughput anyway.
+ * The GPU, not the calling threads, bounds the throughput anyway. The thread's Storm work runs
+ * in StormGLSections, as the scene view's on the main thread does, since every HgiGL of the
+ * process shares one garbage collector.
  *
  * Each owner (a USDRender node) keeps one SceneStage and one UsdImagingGLEngine there between
  * renders, all engines sharing the thread's one HgiGL. A render syncs the owner's stage to the

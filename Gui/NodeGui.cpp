@@ -68,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/MissingPluginNode.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -429,6 +430,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(deactivated(bool)), this, SLOT(deactivate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
+    QObject::connect(internalNode.get(), SIGNAL(connectionsCommitted()), this, SLOT(onConnectionsCommitted()));
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
@@ -1305,6 +1307,9 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);
@@ -1373,6 +1378,7 @@ NodeGui::refreshPositionEnd(double x,
 {
     setPos(x, y);
     if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
         QRectF bbox = mapRectToScene( boundingRect() );
         const NodesGuiList & allNodes = _graph->getAllActiveNodes();
 
@@ -1823,6 +1829,32 @@ NodeGui::getOverlayColor(double* r,
     return true;
 }
 
+// Inspectors, such as Merge and Switch, show two inputs and unfold the rest one at a time on the
+// left. A native node with a run of numbered inputs is laid out the same way, however long the
+// run, so that its visible inputs are not spread as if every input of the run were shown.
+static bool
+unfoldsInputs(const NodePtr& node)
+{
+    if (!node) {
+        return false;
+    }
+    if (dynamic_cast<InspectorNode*>(node.get())) {
+        return true;
+    }
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    const NodeSpec* spec = native ? native->nodeSpec() : 0;
+    if (!spec) {
+        return false;
+    }
+    for (const InputSpec& input : spec->inputs) {
+        if (input.role == InputRole::Variadic) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void
 NodeGui::initializeInputsForInspector()
 {
@@ -1939,8 +1971,7 @@ NodeGui::initializeInputs()
 
     refreshDashedStateOfEdges();
 
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( node.get() );
-    if (isInspector) {
+    if (unfoldsInputs(node)) {
         initializeInputsForInspector();
     } else {
         double piDividedbyX = M_PI / (inputsCount + 1);
@@ -2045,8 +2076,7 @@ NodeGui::refreshEdgesVisility()
     }
 
     NodePtr node = getNode();
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( node.get() );
-    if (isInspector) {
+    if (unfoldsInputs(node)) {
         bool isViewer = node->isEffectViewer() != 0;
         int maxInitiallyOnTopVisibleInputs = isViewer ? 1 : 2;
         bool inputAsideDisplayed = false;
@@ -2258,6 +2288,9 @@ NodeGui::setUserSelected(bool b)
         QMutexLocker l(&_selectedMutex);
         _selected = b;
     }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2293,12 +2326,23 @@ NodeGui::findConnectedEdge(NodeGui* parent)
     return NULL;
 }
 
+void
+NodeGui::onConnectionsCommitted()
+{
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
+    }
+}
+
 bool
 NodeGui::connectEdge(int edgeNumber)
 {
     NodePtr node = getNode();
     if (!node) {
         return false;
+    }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
     }
     const std::vector<NodeWPtr> & inputs = node->getGuiInputs();
 
@@ -2324,7 +2368,7 @@ NodeGui::connectEdge(int edgeNumber)
     }
 
     assert(node);
-    if ( dynamic_cast<InspectorNode*>( node.get() ) ) {
+    if (unfoldsInputs(node)) {
         initializeInputsForInspector();
     }
 
@@ -2405,13 +2449,13 @@ NodeGui::showGui()
             output->doRefreshEdgesGUI();
         }
     }
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(true);
+    }
     ViewerInstance* viewer = node->isEffectViewer();
     if (viewer) {
         _graph->getGui()->activateViewerTab(viewer);
     } else {
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(true);
-        }
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->setNodeViewerInterface(thisShared);
 
@@ -2482,6 +2526,10 @@ NodeGui::hideGui()
         it->arrow->hide();
     }
     NodePtr node = getNode();
+    _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
+    if (_panelOpenedBeforeDeactivate) {
+        setVisibleSettingsPanel(false);
+    }
     ViewerInstance* isViewer = node ? node->isEffectViewer() : NULL;
     if (isViewer) {
         ViewerGL* viewerGui = dynamic_cast<ViewerGL*>( isViewer->getUiContext() );
@@ -2490,11 +2538,6 @@ NodeGui::hideGui()
             _graph->getGui()->deactivateViewerTab(isViewer);
         }
     } else {
-        _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
-        if (_panelOpenedBeforeDeactivate) {
-            setVisibleSettingsPanel(false);
-        }
-
         NodeGuiPtr thisShared = shared_from_this();
         _graph->getGui()->removeNodeViewerInterface(thisShared, false);
 
@@ -4988,6 +5031,8 @@ NodeGui::onRightClickMenuKnobPopulated()
             action->setCheckable(true);
             action->setChecked( button->getValue() );
         }
+        // A plug-in greys out an entry that would refuse the current selection.
+        action->setEnabled(button->isEnabled(0));
         QObject::connect( action, SIGNAL(triggered()), this, SLOT(onRightClickActionTriggered()) );
         m.addAction(action);
     }

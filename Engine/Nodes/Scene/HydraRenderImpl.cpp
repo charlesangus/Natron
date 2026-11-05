@@ -37,6 +37,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -78,6 +79,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -360,6 +362,8 @@ public:
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
             } else {
+                // An HgiGL that goes collects every thread's garbage.
+                StormGLSection section;
                 _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);
                 if (!_hgi || !_hgi->IsBackendSupported()) {
                     _contextError = "Storm cannot draw through OpenGL on " + _context->description() + ".";
@@ -393,9 +397,15 @@ public:
         if (found == _engines.end()) {
             return;
         }
+        std::optional<StormGLSection> section;
+        if (_gl) {
+            section.emplace();
+        }
         if (_gl && (!_context || !_context->makeCurrent())) {
             // Its GL objects cannot be freed without the context; leak them with the engine.
             (void)found->second.engine.release();
+        } else if (_gl) {
+            section->collectWith(_hgi.get());
         }
         _engines.erase(found);
         _engineCount = _engines.size();
@@ -492,6 +502,17 @@ private:
     explicit RenderThread(bool gl)
         : _gl(gl)
     {
+    }
+
+    // Storm's thread enters the process's HgiGL section, collecting with its Hgi. The other
+    // delegates' thread draws nothing through HgiGL, and must not hold the section through a
+    // render that runs until it converges.
+    void enterGLSection(std::optional<StormGLSection>* section)
+    {
+        if (_gl) {
+            section->emplace();
+            (*section)->collectWith(_hgi.get());
+        }
     }
 
     // Lets a barrier write that is waiting for the running job through, then carries on: called by
@@ -731,11 +752,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
     EngineEntry& entry = _engines[request.owner];
     _engineCount = _engines.size();
-    if (entry.engine && (entry.renderer != renderer)) {
-        entry.engine.reset();
-        entry.rendered = false;
-    }
-    if (entry.renderer != renderer) {
+    const bool rendererChanged = (entry.renderer != renderer);
+    if (rendererChanged) {
         RenderDelegates::Delegate delegate;
         entry.renderer = renderer;
         entry.rendererName = RenderDelegates::find(renderer, &delegate) ? delegate.displayName : renderer;
@@ -751,6 +769,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
     }
     const bool edited = entry.stage->sync(request.scene);
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
+    // A Storm engine goes inside the section: its HgiGL garbage is shared with the main thread's.
+    if (rendererChanged && entry.engine) {
+        entry.engine.reset();
+        entry.rendered = false;
+    }
     const UsdStageRefPtr& stage = entry.stage->getStage();
     bool headlight = entry.headlight;
     if (edited || !entry.engine) {
@@ -1020,6 +1045,8 @@ bool
 RenderThread::decodeIds(EngineEntry& entry,
                         std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     if (entry.idsDecoded) {
         return true;
     }
@@ -1073,6 +1100,8 @@ RenderThread::frame(EngineEntry& entry,
                     HydraRender::Result* result,
                     std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     std::string packError;
     if (!_gl || !packAvailable(&packError)) {
         return cpuFrame(entry, result, error);
@@ -1193,6 +1222,8 @@ RenderThread::pack(EngineEntry& entry,
                    GLuint buffer,
                    std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     if (!packAvailable(error)) {
         return false;
     }
@@ -1274,6 +1305,8 @@ RenderThread::readWindow(EngineEntry& entry,
                          std::vector<float>* pixels,
                          std::string* error)
 {
+    std::optional<StormGLSection> section;
+    enterGLSection(&section);
     const std::size_t count = window.floatCount();
     pixels->assign(count, 0.f);
     if (count == 0) {

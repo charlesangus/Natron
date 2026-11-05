@@ -453,6 +453,7 @@ Project::loadProject(const QString & path,
         return false;
     }
 
+    Q_EMIT loaded();
     refreshViewersAndPreviews();
 
     return true;
@@ -1735,25 +1736,14 @@ Project::initializeKnobs()
 
     _imp->envVars = AppManager::createKnob<KnobPath>( this, tr("Project Paths") );
     _imp->envVars->setName("projectPaths");
-    _imp->envVars->setHintToolTip(tr("Specify here project paths. Any path can be used "
-                                     "in file paths and can be used between brackets, for example: \n"
-                                     "[%1]MyProject.ntpz \n"
-                                     "You can add as many project paths as you want and can name them as you want. This way it "
-                                     "makes it easy to share your projects and move files around."
-                                     " You can chain up paths, like so:\n "
-                                     "[%1] = <PathToProject> \n"
-                                     "[Scene1] = [%1]/Rush/S_01 \n"
-                                     "[Shot1] = [Scene1]/Shot001 \n"
-                                     "By default if a file-path is NOT absolute (i.e: not starting with '/' "
-                                     " on Unix or a drive name on Windows) "
-                                     "then it will be expanded using the [%1] path. "
-                                     "Absolute paths are treated as normal."
-                                     " The [%1] path will be set automatically to "
-                                     " the location of the project file when saving and loading a project."
-                                     " The [%2] path will also be set automatically for better sharing of projects with reader nodes.")
+    _imp->envVars->setHintToolTip(tr("The built-in project paths: [%1], the folder of the project file, set when the "
+                                     "project is saved or loaded, and [%2], the folder of the OCIO config. Every string "
+                                     "variable of the project is a project path too, used in a file path as [name]; its "
+                                     "value may itself use project paths, such as [%1]/shots. A file path that is not "
+                                     "absolute is relative to [%1].")
                                       .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME))
                                       .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME)));
-    _imp->envVars->setSecret(false);
+    _imp->envVars->setSecret(true);
     _imp->envVars->setMultiPath(true);
 
     page->addKnob(_imp->envVars);
@@ -1865,6 +1855,16 @@ Project::initializeKnobs()
     _imp->metersPerUnit->setDisplayMinimum(0.001);
     _imp->metersPerUnit->setDisplayMaximum(1.);
     page->addKnob(_imp->metersPerUnit);
+
+    _imp->materialsScope = AppManager::createKnob<KnobString>(this, tr("Materials Scope"));
+    _imp->materialsScope->setName("materialsScope");
+    _imp->materialsScope->setHintToolTip(tr("The root prim the project's 3D scenes share materials under, such as /materials. "
+                                            "Re-parenting nodes leave it at the top of the scene instead of grafting it, and "
+                                            "re-point bindings into it. Empty, or anything but a single absolute prim name, "
+                                            "turns shared materials off."));
+    _imp->materialsScope->setAnimationEnabled(false);
+    _imp->materialsScope->setDefaultValue("/materials");
+    page->addKnob(_imp->materialsScope);
 
     _imp->gpuSupport = AppManager::createKnob<KnobChoice>( this, tr("GPU Rendering") );
     _imp->gpuSupport->setName("gpuRendering");
@@ -2151,6 +2151,13 @@ Project::initializeKnobs()
     _imp->rfvEditKnob->setName(kProjectParamRFVEdit);
     _imp->rfvEditKnob->setHintToolTip(tr("Add, edit, reorder or delete the project's variables."));
     rfvPage->addKnob(_imp->rfvEditKnob);
+
+    _imp->addPathVariableKnob = AppManager::createKnob<KnobButton>(this, tr(kProjectParamAddPathVariableLabel));
+    _imp->addPathVariableKnob->setName(kProjectParamAddPathVariable);
+    _imp->addPathVariableKnob->setHintToolTip(tr("Add a string variable naming a folder, used in file paths as [name]. "
+                                                 "Its value may use other project paths, such as [%1]/shots.")
+                                                  .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME)));
+    rfvPage->addKnob(_imp->addPathVariableKnob);
 
     _imp->rfvGroup = AppManager::createKnob<KnobGroup>(this, tr(kProjectParamRFVVariablesLabel));
     _imp->rfvGroup->setName(kProjectParamRFVVariables);
@@ -2871,6 +2878,12 @@ Project::onKnobValueChanged(KnobI* knob,
     bool ret = true;
     bool shouldAutoSave = false;
 
+    // Nodes that read a project variable outside an expression hash its value themselves.
+    if (knob && (RFV::findDeclaredVariable(this, knob->getName()).get() == knob)) {
+        RFV::rehashExtraContextReaders(*this, knob->getName(), reason != eValueChangedReasonTimeChanged);
+        RFV::scheduleReaderRefresh(getApp());
+    }
+
     if ( knob == _imp->viewsList.get() ) {
         /**
          * All cache entries are linked to a view index which may no longer be correct since the user changed the project settings.
@@ -2911,14 +2924,16 @@ Project::onKnobValueChanged(KnobI* knob,
         Q_EMIT mustCreateFormat();
     } else if ((knob == _imp->rfvEditKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
         Q_EMIT mustEditVariables();
+    } else if ((knob == _imp->addPathVariableKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
+        Q_EMIT mustAddPathVariable();
     } else if (knob == _imp->previewMode.get()) {
         Q_EMIT autoPreviewChanged( _imp->previewMode->getValue() );
         shouldAutoSave = true;
     } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
-    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get())) {
-        // Both are in the project digest and every scene layer key, so each scene node re-authors
+    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get()) || (knob == _imp->materialsScope.get())) {
+        // All are in the project digest and every scene layer key, so each scene node re-authors
         // its layer when next evaluated.
         forceComputeInputDependentDataOnAllTrees();
         getApp()->renderAllViewers(true);
@@ -2950,6 +2965,18 @@ Project::onKnobValueChanged(KnobI* knob,
             pushOCIOConfigToNodes();
             _imp->colorManagement->notifyConfigChanged();
         }
+        shouldAutoSave = true;
+    } else if (knob == _imp->envVars.get()) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            refreshFilePathKnobsUsingBuiltinPaths();
+        }
+        ret = false;
+    } else if (_imp->rfvGroup && (knob->getParentKnob() == _imp->rfvGroup) && dynamic_cast<KnobString*>(knob)) {
+        // A file path names its project paths as text, so it is no listener of the variable.
+        if ((reason != eValueChangedReasonTimeChanged) && !isLoadingProject() && !isProjectClosing()) {
+            refreshFilePathKnobsUsingPathVariable(knob->getName());
+        }
+        ret = false;
         shouldAutoSave = true;
     } else {
         ret = false;
@@ -3553,6 +3580,7 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
     h.appendDouble(getProjectFrameRate());
     h.appendBool(isProjectUpAxisZ());
     h.appendDouble(getProjectMetersPerUnit());
+    h.appendString(getProjectMaterialsScope());
 
     const std::vector<std::string>& views = getProjectViewNames();
     h.appendU64(views.size());
@@ -3702,15 +3730,473 @@ Project::unescapeXML(const std::string &istr)
     return str;
 }
 
+namespace {
+std::map<std::string, KnobIPtr>
+stringVariablesOf(const RFVDeclarationsConstPtr& declarations)
+{
+    std::map<std::string, KnobIPtr> ret;
+
+    if (declarations) {
+        for (const RFV::VariableDeclaration& declaration : *declarations) {
+            if (dynamic_cast<KnobString*>(declaration.knob.get()) && !Project::isBuiltinPathVariableName(declaration.name)) {
+                ret[declaration.name] = declaration.knob;
+            }
+        }
+    }
+
+    return ret;
+}
+
+void
+addStringVariables(const RFVDeclarationsConstPtr& declarations,
+                   std::map<std::string, std::string>& env)
+{
+    const std::map<std::string, KnobIPtr> variables = stringVariablesOf(declarations);
+
+    for (std::map<std::string, KnobIPtr>::const_iterator it = variables.begin(); it != variables.end(); ++it) {
+        env[it->first] = dynamic_cast<KnobString*>(it->second.get())->getValue();
+    }
+}
+
+std::map<std::string, std::string>
+builtinPathsOf(KnobPath& envVars)
+{
+    std::map<std::string, std::string> ret;
+    std::list<std::vector<std::string>> table;
+
+    envVars.getTable(&table);
+    for (std::list<std::vector<std::string>>::const_iterator it = table.begin(); it != table.end(); ++it) {
+        if ((it->size() == 2) && Project::isBuiltinPathVariableName((*it)[0])) {
+            ret[(*it)[0]] = (*it)[1];
+        }
+    }
+
+    return ret;
+}
+} // anon namespace
+
 void
 Project::getEnvironmentVariables(std::map<std::string, std::string>& env) const
 {
-    std::list<std::vector<std::string> > table;
+    addStringVariables(RFV::getDeclarationSnapshot(this), env);
 
-    _imp->envVars->getTable(&table);
-    for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-        assert(it->size() == 2);
-        env[(*it)[0]] = (*it)[1];
+    const std::map<std::string, std::string> builtins = builtinPathsOf(*_imp->envVars);
+    for (std::map<std::string, std::string>::const_iterator it = builtins.begin(); it != builtins.end(); ++it) {
+        env[it->first] = it->second;
+    }
+}
+
+void
+Project::getPathVariableTargets(std::map<std::string, std::string>& targets) const
+{
+    std::map<std::string, std::string> env;
+
+    getEnvironmentVariables(env);
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it) {
+        std::string str = it->second;
+        expandVariable(env, str);
+        if (!str.empty() && QDir::isAbsolutePath(QString::fromUtf8(str.c_str()))) {
+            targets[it->first] = QDir::cleanPath(QString::fromUtf8(str.c_str())).toStdString();
+        }
+    }
+}
+
+bool
+Project::isBuiltinPathVariableName(const std::string& name)
+{
+    return (name == NATRON_PROJECT_ENV_VAR_NAME) || (name == NATRON_OCIO_ENV_VAR_NAME);
+}
+
+std::string
+Project::expandPathPreview(const std::string& value) const
+{
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    std::string str = value;
+    expandVariable(env, str);
+    if (!str.empty() && isRelative(str)) {
+        std::map<std::string, std::string>::const_iterator foundProject = env.find(NATRON_PROJECT_ENV_VAR_NAME);
+        if ((foundProject != env.end()) && !foundProject->second.empty()) {
+            str = foundProject->second + '/' + str;
+        }
+    }
+    if (str.empty()) {
+        return str;
+    }
+
+    return QDir::cleanPath(QString::fromUtf8(str.c_str())).toStdString();
+}
+
+std::string
+Project::findPathVariableWithTarget(const std::string& value,
+                                    const std::string& except) const
+{
+    const std::string target = expandPathPreview(value);
+    if (target.empty()) {
+        return std::string();
+    }
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it) {
+        if ((it->first != except) && !it->second.empty() && (expandPathPreview(it->second) == target)) {
+            return it->first;
+        }
+    }
+
+    return std::string();
+}
+
+bool
+Project::canAddPathVariable(const std::string& name,
+                            std::string* reason) const
+{
+    std::string error;
+    if (name.empty()) {
+        error = "A project path needs a name";
+    } else if (isBuiltinPathVariableName(name)) {
+        error = "[" + name + "] is a built-in project path";
+    } else if (!RFV::isValidVariableName(name)) {
+        error = name + ": a project path name must be a valid Python identifier";
+    } else if (getKnobByName(name)) {
+        error = "The project already has a parameter named " + name;
+    } else if (RFV::isAppAttributeName(getApp(), name)) {
+        error = name + " is an attribute of the app object, so it cannot be a project variable";
+    }
+    if (reason) {
+        *reason = error;
+    }
+
+    return error.empty();
+}
+
+KnobIPtr
+Project::addPathVariable(const std::string& name,
+                         const std::string& value,
+                         std::string* error)
+{
+    if (!canAddPathVariable(name, error)) {
+        return KnobIPtr();
+    }
+    KnobStringPtr knob = createStringKnob(name, name);
+    if (!knob) {
+        if (error) {
+            *error = "Could not create the parameter " + name;
+        }
+
+        return KnobIPtr();
+    }
+    knob->setAnimationEnabled(false);
+    knob->setValue(value);
+    if (!RFV::addAsVariable(this, knob, error)) {
+        deleteKnob(knob.get(), true);
+
+        return KnobIPtr();
+    }
+
+    return knob;
+}
+
+namespace {
+bool
+startsWithPathVariable(const std::string& value,
+                       const std::string& name)
+{
+    return !name.empty() && (value.size() >= (name.size() + 2)) && (value[0] == '[') && (value.compare(1, name.size(), name) == 0) && (value[name.size() + 1] == ']');
+}
+
+bool
+isFilePathKnob(const KnobIPtr& knob)
+{
+    if (dynamic_cast<KnobFile*>(knob.get()) || dynamic_cast<KnobOutputFile*>(knob.get())) {
+        return true;
+    }
+    KnobPath* isPath = dynamic_cast<KnobPath*>(knob.get());
+
+    return isPath && !isPath->isMultiPath();
+}
+
+std::string
+pathKnobValue(const KnobIPtr& knob)
+{
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get());
+
+    return isString ? isString->getValue() : std::string();
+}
+} // anon namespace
+
+bool
+Project::removePathVariable(const std::string& name)
+{
+    if (isBuiltinPathVariableName(name)) {
+        return false;
+    }
+    KnobIPtr knob = getKnobByName(name);
+    if (!knob || !dynamic_cast<KnobString*>(knob.get()) || (knob->getParentKnob() != _imp->rfvGroup)) {
+        return false;
+    }
+    deleteKnob(knob.get(), true);
+    recreateUserKnobs(true);
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->refreshProjectParamsInPython();
+    }
+
+    return true;
+}
+
+bool
+Project::renamePathVariable(const std::string& oldName,
+                            const std::string& newName,
+                            const std::string& label)
+{
+    if ((oldName == newName) || isBuiltinPathVariableName(oldName) || !canAddPathVariable(newName)) {
+        return false;
+    }
+    KnobIPtr knob = getKnobByName(oldName);
+    if (!knob || !dynamic_cast<KnobString*>(knob.get()) || (knob->getParentKnob() != _imp->rfvGroup)) {
+        return false;
+    }
+    knob->setName(newName);
+    if (knob->getName() != newName) {
+        knob->setName(oldName);
+
+        return false;
+    }
+    knob->setLabel(label);
+    recreateUserKnobs(true);
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->refreshProjectParamsInPython();
+    }
+
+    return true;
+}
+
+bool
+Project::renamePathVariableInValue(const std::string& oldName,
+                                   const std::string& newName,
+                                   std::string* value)
+{
+    if (!value || (oldName == newName) || !startsWithPathVariable(*value, oldName)) {
+        return false;
+    }
+    value->replace(1, oldName.size(), newName);
+
+    return true;
+}
+
+namespace {
+std::set<std::string>
+pathVariablesUsedBy(const std::map<std::string, std::string>& env,
+                    const std::string& value)
+{
+    std::set<std::string> used;
+    std::string str = value;
+    for (int i = 0; i < NATRON_PROJECT_ENV_VAR_MAX_RECURSION; ++i) {
+        std::map<std::string, std::string>::const_iterator it = env.begin();
+        while ((it != env.end()) && !startsWithPathVariable(str, it->first)) {
+            ++it;
+        }
+        if (it == env.end()) {
+            break;
+        }
+        used.insert(it->first);
+        Project::expandVariable(it->first, it->second, str);
+    }
+    if (!str.empty() && Project::isRelative(str)) {
+        used.insert(NATRON_PROJECT_ENV_VAR_NAME);
+    }
+
+    return used;
+}
+
+bool
+usesAnyOf(const std::map<std::string, std::string>& env,
+          const std::string& value,
+          const std::set<std::string>& names)
+{
+    const std::set<std::string> used = pathVariablesUsedBy(env, value);
+
+    for (std::set<std::string>::const_iterator it = names.begin(); it != names.end(); ++it) {
+        if (used.count(*it)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+evaluateFilePathKnobs(const KnobsVec& knobs)
+{
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        (*it)->evaluateValueChange(0, (*it)->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
+    }
+}
+} // anon namespace
+
+std::set<std::string>
+Project::getPathVariablesUsedBy(const std::string& value) const
+{
+    std::map<std::string, std::string> env;
+
+    getEnvironmentVariables(env);
+
+    return pathVariablesUsedBy(env, value);
+}
+
+KnobsVec
+Project::getFilePathKnobsUsingPathVariable(const std::string& name) const
+{
+    std::map<std::string, std::string> env;
+
+    getEnvironmentVariables(env);
+
+    return getFilePathKnobsUsing(env, std::set<std::string> { name }, std::map<std::string, std::string>());
+}
+
+KnobsVec
+Project::getFilePathKnobsUsing(const std::map<std::string, std::string>& env,
+                               const std::set<std::string>& names,
+                               const std::map<std::string, std::string>& previousEnv) const
+{
+    KnobsVec ret;
+    NodesList nodes;
+
+    getNodes_recursive(nodes, true);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (!effect) {
+            continue;
+        }
+        const KnobsVec& knobs = effect->getKnobs();
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            if (!isFilePathKnob(*k)) {
+                continue;
+            }
+            const std::string value = pathKnobValue(*k);
+            if (!value.empty() && (usesAnyOf(env, value, names) || (!previousEnv.empty() && usesAnyOf(previousEnv, value, names)))) {
+                ret.push_back(*k);
+            }
+        }
+    }
+
+    return ret;
+}
+
+KnobsVec
+Project::getKnobsSpellingPathVariable(const std::string& name) const
+{
+    KnobsVec ret;
+    NodesList nodes;
+
+    getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (!effect) {
+            continue;
+        }
+        const KnobsVec& knobs = effect->getKnobs();
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            if (isFilePathKnob(*k) && startsWithPathVariable(pathKnobValue(*k), name)) {
+                ret.push_back(*k);
+            }
+        }
+    }
+    if (_imp->rfvGroup) {
+        const KnobsVec variables = _imp->rfvGroup->getChildren();
+        for (KnobsVec::const_iterator k = variables.begin(); k != variables.end(); ++k) {
+            if (dynamic_cast<KnobString*>(k->get()) && startsWithPathVariable(pathKnobValue(*k), name)) {
+                ret.push_back(*k);
+            }
+        }
+    }
+
+    return ret;
+}
+
+void
+Project::refreshFilePathKnobsUsingPathVariable(const std::string& name)
+{
+    evaluateFilePathKnobs(getFilePathKnobsUsingPathVariable(name));
+}
+
+void
+Project::onPathVariableDeclarationsChanged(const RFVDeclarationsConstPtr& previous)
+{
+    if (isLoadingProject() || isProjectClosing()) {
+        return;
+    }
+    const std::map<std::string, KnobIPtr> before = stringVariablesOf(previous);
+    const std::map<std::string, KnobIPtr> after = stringVariablesOf(RFV::getDeclarationSnapshot(this));
+    std::set<std::string> changed;
+    for (std::map<std::string, KnobIPtr>::const_iterator it = before.begin(); it != before.end(); ++it) {
+        std::map<std::string, KnobIPtr>::const_iterator found = after.find(it->first);
+        if ((found == after.end()) || (found->second != it->second)) {
+            changed.insert(it->first);
+        }
+    }
+    for (std::map<std::string, KnobIPtr>::const_iterator it = after.begin(); it != after.end(); ++it) {
+        if (!before.count(it->first)) {
+            changed.insert(it->first);
+        }
+    }
+    if (changed.empty()) {
+        return;
+    }
+
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    // A removed variable no longer leads anywhere, so its users are found through the old values.
+    std::map<std::string, std::string> previousEnv = builtinPathsOf(*_imp->envVars);
+    addStringVariables(previous, previousEnv);
+    evaluateFilePathKnobs(getFilePathKnobsUsing(env, changed, previousEnv));
+}
+
+void
+Project::refreshFilePathKnobsUsingBuiltinPaths()
+{
+    std::map<std::string, std::string> previousBuiltins = builtinPathsOf(*_imp->envVars);
+    previousBuiltins.swap(_imp->builtinPathValues);
+    if (isLoadingProject() || isProjectClosing()) {
+        return;
+    }
+    std::set<std::string> changed;
+    for (const char* name : { NATRON_PROJECT_ENV_VAR_NAME, NATRON_OCIO_ENV_VAR_NAME }) {
+        std::map<std::string, std::string>::const_iterator before = previousBuiltins.find(name);
+        std::map<std::string, std::string>::const_iterator after = _imp->builtinPathValues.find(name);
+        const bool hadIt = before != previousBuiltins.end();
+        const bool hasIt = after != _imp->builtinPathValues.end();
+        if ((hadIt != hasIt) || (hadIt && (before->second != after->second))) {
+            changed.insert(name);
+        }
+    }
+    if (changed.empty()) {
+        return;
+    }
+
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    evaluateFilePathKnobs(getFilePathKnobsUsing(env, changed, std::map<std::string, std::string>()));
+}
+
+void
+Project::fixRelativePathVariables(const std::string& projectPathName,
+                                  const std::string& newProjectPath)
+{
+    if (!_imp->rfvGroup) {
+        return;
+    }
+    const KnobsVec variables = _imp->rfvGroup->getChildren();
+    for (KnobsVec::const_iterator it = variables.begin(); it != variables.end(); ++it) {
+        KnobString* isString = dynamic_cast<KnobString*>(it->get());
+        if (!isString) {
+            continue;
+        }
+        std::string value = isString->getValue();
+        if (fixFilePath(projectPathName, newProjectPath, value)) {
+            isString->setValue(value);
+        }
     }
 }
 
@@ -3733,10 +4219,10 @@ Project::expandVariable(const std::string& varName,
                         const std::string& varValue,
                         std::string& str)
 {
-    if ( ( str.size() > (varName.size() + 2) ) && ///can contain the environment variable name
-         ( str[0] == '[') && /// env var name is bracketed
-         ( str.substr( 1, varName.size() ) == varName) && /// starts with the environment variable name
-         ( str[varName.size() + 1] == ']') ) { /// env var name is bracketed
+    if ((str.size() >= (varName.size() + 2)) && /// can contain the environment variable name
+        (str[0] == '[') && /// env var name is bracketed
+        (str.substr(1, varName.size()) == varName) && /// starts with the environment variable name
+        (str[varName.size() + 1] == ']')) { /// env var name is bracketed
         str.erase(str.begin() + varName.size() + 1);
         str.erase( str.begin() );
         str.replace(0, varName.size(), varValue);
@@ -3911,7 +4397,7 @@ Project::simplifyPath(std::string& str)
 {
     std::map<std::string, std::string> envvar;
 
-    getEnvironmentVariables(envvar);
+    getPathVariableTargets(envvar);
 
     Project::findReplaceVariable(envvar, str);
 }
@@ -3970,6 +4456,9 @@ Project::onOCIOConfigPathChanged(const std::string& path,
         if (oldEnv != newEnv) {
             if (!path.empty() && appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled()) {
                 fixRelativeFilePaths(NATRON_OCIO_ENV_VAR_NAME, path, block);
+                if (!isLoadingProject()) {
+                    fixRelativePathVariables(NATRON_OCIO_ENV_VAR_NAME, path);
+                }
             }
             _imp->envVars->setValue(newEnv);
         }
@@ -3995,6 +4484,30 @@ double
 Project::getProjectMetersPerUnit() const
 {
     return _imp->metersPerUnit->getValue();
+}
+
+std::string
+Project::validateMaterialsScope(const std::string& path)
+{
+    if ((path.size() < 2) || (path[0] != '/')) {
+        return std::string();
+    }
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const char c = path[i];
+        const bool letter = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '_');
+        const bool digit = (c >= '0') && (c <= '9');
+        if (!letter && !(digit && (i > 1))) {
+            return std::string();
+        }
+    }
+
+    return path.substr(1);
+}
+
+std::string
+Project::getProjectMaterialsScope() const
+{
+    return validateMaterialsScope(_imp->materialsScope->getValue());
 }
 
 KnobPathPtr
@@ -4029,6 +4542,8 @@ Project::onUserKnobsChanged()
     RFV::refreshNodeVariableGroups(*this);
     // An expression reading rfv may name a variable the project declares only from here on.
     RFV::refreshExpressionListeners(*this);
+    RFV::rehashExtraContextReaders(*this, std::string());
+    RFV::scheduleReaderRefresh(getApp());
     // Such an expression failed while the variable was undeclared and is applied again.
     AppInstancePtr app = getApp();
     if (app) {

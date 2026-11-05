@@ -461,8 +461,8 @@ try:
         yield ("sleep", SETTLE_MS)
 
         # =====================================================================================
-        # Splice into pipe: always on, unconnected nodes/chains only, Ctrl has no special
-        # meaning during the drag (it no longer suppresses splicing in favour of a hint).
+        # Splice into pipe: always on, unconnected nodes/chains only. Holding Ctrl during the
+        # drag aims a kiss connection instead and hides the splice hint until it is released.
         # =====================================================================================
 
         # ---- splice-vertical: hover-with-highlight, drop, and a single-node one-step undo/redo.
@@ -622,11 +622,11 @@ try:
              "splice-chain: redo also re-applies the destination's connection")
         graph_shot(graph_c, "splice-06b-chain-after-redo")
 
-        # ---- splice-no-splice-connected: an already-connected node dragged across another pipe
-        # does not splice (its preferred input is already taken, so planSplice's entry count is 0).
-        gt.section("splice-no-splice-connected")
+        # ---- splice-connected-free-input: a node whose preferred input is already connected,
+        # dragged across another pipe, enters through its first free input and keeps its own pipe.
+        gt.section("splice-connected-free-input")
         src_n1 = create("net.sf.openfx.ConstantPlugin", 2800, 0)
-        mid_n = create("net.sf.cimg.CImgBlur", 2800, 200)
+        mid_n = create("Merge", 2800, 200)
         connect(mid_n, 0, src_n1)
         src_n2 = create("net.sf.openfx.ConstantPlugin", 3100, 400)
         dst_n2 = create("net.sf.cimg.CImgBlur", 3100, 700)
@@ -642,21 +642,62 @@ try:
                         box(dst_n2)[0] + box(dst_n2)[2], box(dst_n2)[1] + box(dst_n2)[3])
         target_n = (node_center_scene(src_n2)[0], (node_center_scene(src_n2)[1] + node_center_scene(dst_n2)[1]) / 2.0)
         drag_node_to(graph_n, mid_n, target_n, modifiers=Qt.NoModifier, release=False)
-        graph_shot(graph_n, "splice-07-connected-node-no-splice-hover")
-        check_hint_present(graph_n, pipe_rect_n2, "no-splice: an already-connected node dragged over a pipe "
-                            "shows no highlight", want_present=False)
+        graph_shot(graph_n, "splice-07-connected-node-hover")
+        check_hint_present(graph_n, pipe_rect_n2, "connected-free-input: a node whose main input is connected "
+                            "dragged over a pipe shows the highlight")
         end_drag(graph_n, target_n)
         yield ("sleep", SETTLE_MS)
-        check(input_connected_from(mid_n, src_n1) is not None,
-             "no-splice: the dragged node's own connection is unchanged")
-        check(input_connected_from(dst_n2, src_n2) is not None,
+        check(input_connected_from(mid_n, src_n1) == 0,
+             "connected-free-input: the dragged node keeps its own input 0 connection")
+        free_in = input_connected_from(mid_n, src_n2)
+        check(free_in is not None and free_in != 0,
+             "connected-free-input: the pipe's source enters the dragged node through a free input (got %r)" % free_in)
+        check(input_connected_from(dst_n2, mid_n) is not None and input_connected_from(dst_n2, src_n2) is None,
+             "connected-free-input: the pipe's destination now connects from the dragged node")
+        trigger_action_prefix("undo")
+        yield ("sleep", SETTLE_MS)
+        check(input_connected_from(dst_n2, src_n2) is not None and input_connected_from(mid_n, src_n2) is None
+              and input_connected_from(mid_n, src_n1) == 0,
+             "connected-free-input: one Ctrl+Z restores both pipes")
+
+        # ---- splice-no-splice-full: a node with every input connected has no way in, so dragging it
+        # across a pipe neither highlights nor inserts.
+        gt.section("splice-no-splice-full")
+        src_f1 = create("net.sf.openfx.ConstantPlugin", 2800, 1200)
+        full_f = create("net.sf.cimg.CImgBlur", 2800, 1400)
+        for i in range(full_f.getMaxInputCount()):
+            connect(full_f, i, src_f1)
+        src_f2 = create("net.sf.openfx.ConstantPlugin", 3100, 1600)
+        dst_f2 = create("net.sf.cimg.CImgBlur", 3100, 1900)
+        connect(dst_f2, 0, src_f2)
+        app.clearSelection()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        graph_f = root_graph()
+        frame(graph_f, [src_f1, full_f, src_f2, dst_f2])
+        yield ("sleep", SETTLE_MS)
+
+        pipe_rect_f2 = (box(src_f2)[0], box(src_f2)[1],
+                        box(dst_f2)[0] + box(dst_f2)[2], box(dst_f2)[1] + box(dst_f2)[3])
+        target_f = (node_center_scene(src_f2)[0], (node_center_scene(src_f2)[1] + node_center_scene(dst_f2)[1]) / 2.0)
+        drag_node_to(graph_f, full_f, target_f, modifiers=Qt.NoModifier, release=False)
+        graph_shot(graph_f, "splice-07b-full-node-no-splice-hover")
+        check_hint_present(graph_f, pipe_rect_f2, "no-splice: a node with every input connected dragged over a pipe "
+                            "shows no highlight", want_present=False)
+        end_drag(graph_f, target_f)
+        yield ("sleep", SETTLE_MS)
+        check(all(input_connected_from(full_f, src_f1) is not None and full_f.getInput(i) is not None
+                  for i in range(full_f.getMaxInputCount())),
+             "no-splice: the dragged node's own connections are unchanged")
+        check(input_connected_from(dst_f2, src_f2) is not None,
              "no-splice: the pipe it was dragged across is unchanged")
-        check(input_connected_from(dst_n2, mid_n) is None,
+        check(input_connected_from(dst_f2, full_f) is None,
              "no-splice: the dragged node was not inserted into the other pipe")
 
-        # ---- splice-ctrl-still-splices: Ctrl has no special meaning during a node drag anymore,
-        # so a Ctrl-held drag over a pipe splices exactly like an unmodified one.
-        gt.section("splice-ctrl-still-splices")
+        # ---- splice-ctrl-suppresses-hint: Ctrl aims a kiss, so a Ctrl-held drag over a pipe shows
+        # no splice hint; a move without Ctrl brings the hint back and the drop splices. Nothing is
+        # in kiss reach here, so letting go of Ctrl connects nothing.
+        gt.section("splice-ctrl-suppresses-hint")
         src_ctrl = create("net.sf.openfx.ConstantPlugin", 3800, 0)
         dst_ctrl = create("net.sf.cimg.CImgBlur", 3800, 300)
         connect(dst_ctrl, 0, src_ctrl)
@@ -671,19 +712,24 @@ try:
         pipe_rect_ctrl = (3800.0, 0.0, 4200.0, 450.0)
         target_ctrl = (node_center_scene(src_ctrl)[0],
                        (node_center_scene(src_ctrl)[1] + node_center_scene(dst_ctrl)[1]) / 2.0)
+        start_ctrl = node_center_scene(mover_ctrl)
         drag_node_to(graph_ctrl, mover_ctrl, target_ctrl, modifiers=Qt.ControlModifier, release=False)
-        graph_shot(graph_ctrl, "splice-08-ctrl-still-splices")
+        graph_shot(graph_ctrl, "splice-08-ctrl-hides-hint")
         check_hint_present(graph_ctrl, pipe_rect_ctrl,
-                            "ctrl-still-splices: holding Ctrl still shows the splice highlight")
+                            "ctrl-suppresses-hint: holding Ctrl hides the splice highlight", want_present=False)
+        drag_step(graph_ctrl, start_ctrl, target_ctrl, 1.0, Qt.NoModifier)
+        graph_shot(graph_ctrl, "splice-09-ctrl-released-hint")
+        check_hint_present(graph_ctrl, pipe_rect_ctrl,
+                            "ctrl-suppresses-hint: a move without Ctrl shows the splice highlight again")
         end_drag(graph_ctrl, target_ctrl)
         yield ("sleep", SETTLE_MS)
 
         check(input_connected_from(mover_ctrl, src_ctrl) is not None,
-             "ctrl-still-splices: mover's preferred input now connects from the old source")
+             "ctrl-suppresses-hint: mover's preferred input now connects from the old source")
         check(input_connected_from(dst_ctrl, mover_ctrl) is not None,
-             "ctrl-still-splices: destination's pipe input now connects from the dropped node")
+             "ctrl-suppresses-hint: destination's pipe input now connects from the dropped node")
         check(input_connected_from(dst_ctrl, src_ctrl) is None,
-             "ctrl-still-splices: destination is no longer directly connected to the old source")
+             "ctrl-suppresses-hint: destination is no longer directly connected to the old source")
 
         # =====================================================================================
         # Render dialog: writers/preset/background checkbox, modal foreground progress.

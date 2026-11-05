@@ -252,7 +252,7 @@ ParityPair makeParityPair(const AppInstancePtr& app,
  **/
 NodePtr connectParityInput(ParityPair& pair, const std::string& inputLabel);
 
-NodePtr createNodeAtMajor(const AppInstancePtr& app, const std::string& id, int major);
+NodePtr createNodeAtMajor(const AppInstancePtr& app, const std::string& id, int major, bool allowNonUserCreatable = false);
 
 /**
  * @brief Sets knob `name` on both nodes of the pair (the OFX one only when live). For a

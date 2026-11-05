@@ -36,6 +36,7 @@
 #include <locale>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -118,6 +119,7 @@
 
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -188,6 +190,9 @@ namespace {
 // Set while this thread computes a hash. A hash read from inside it, such as an expression's
 // random seed, gets the stored hash: recomputing there would nest node locks in no fixed order.
 thread_local int hashComputeDepth = 0;
+
+// The hashes of the body nodes of the loop walkLoopBody() is hashing on this thread, if any.
+thread_local const std::function<U64(const Node&)>* enclosingLoopBodyHash = 0;
 
 class HashComputeScope {
 public:
@@ -291,7 +296,8 @@ Node::createRotoContextConditionnally()
         _imp->rotoContext = RotoContext::create( shared_from_this() );
         _imp->curveContext = _imp->rotoContext;
     } else {
-        _imp->curveContext = RotoCurveContext::create(shared_from_this());
+        _imp->curveContext = _imp->effect->createGeometryCurveContext(shared_from_this());
+        assert(_imp->curveContext);
     }
     _imp->effect->endChanges(true);
     _imp->curveContext->createBaseLayer();
@@ -1015,9 +1021,13 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 
 U64
 Node::computeContentHash(U64 projectDigest,
-                         const HashInputs& inputs) const
+                         const HashInputs& inputs,
+                         const std::function<U64(const Node&)>* inputHash) const
 {
     ContentHasher h;
+    auto hashOf = [inputHash](const Node& input) -> U64 {
+        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+    };
 
     h.appendString(getPluginID());
     if (_imp->plugin) {
@@ -1044,12 +1054,12 @@ Node::computeContentHash(U64 projectDigest,
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
             const NodePtr& input = inputs.bySlot[i].second;
-            h.appendU64(input ? input->getStoredContentHash() : 0);
+            h.appendU64(input ? hashOf(*input) : 0);
         }
     } else {
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
-            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
+            h.appendU64(hashOf(*inputs.bySlot[i].second));
         }
         h.appendU64(inputs.bySlot.size());
     }
@@ -1113,6 +1123,139 @@ Node::computeContentHash(U64 projectDigest,
     return h.finalize();
 } // Node::computeContentHash
 
+void
+Node::walkLoopBody(const std::vector<NodePtr>& begins,
+                   const NodePtr& tail,
+                   const NodePtr& end,
+                   U64* digest,
+                   std::vector<NodePtr>* outsideSources)
+{
+    // Stands for every one of begins, whatever they render: they all output the same iteration,
+    // and what their own hashes fold in is their inputs'.
+    const U64 kBeginTag = 0x6c6f6f70426567ULL;
+
+    if (digest) {
+        *digest = kBeginTag;
+    }
+    if (begins.empty() || !tail) {
+        return;
+    }
+    // The walk can run outside a hash refresh, and must not start one from inside its own hashing.
+    std::optional<HashComputeScope> computing;
+    if (digest) {
+        computing.emplace();
+    }
+    std::unordered_set<const Node*> beginSet;
+    for (const NodePtr& begin : begins) {
+        if (begin) {
+            beginSet.insert(begin.get());
+        }
+    }
+    const bool tailIsBegin = (beginSet.find(tail.get()) != beginSet.end());
+    // Downstream of begins, so only these can be in the body: the walk up from tail does not
+    // enter what feeds the body from outside.
+    std::unordered_set<const Node*> downstream;
+    {
+        std::vector<NodePtr> pending;
+        for (const NodePtr& begin : begins) {
+            if (begin) {
+                begin->appendOutputsWithGroupRedirection(&pending);
+            }
+        }
+        while (!pending.empty()) {
+            NodePtr node = std::move(pending.back());
+            pending.pop_back();
+            if (!node || (node == end) || (beginSet.find(node.get()) != beginSet.end()) || !downstream.insert(node.get()).second) {
+                continue;
+            }
+            node->appendOutputsWithGroupRedirection(&pending);
+        }
+    }
+    if (!tailIsBegin && (downstream.find(tail.get()) == downstream.end())) {
+        return;
+    }
+
+    std::unordered_map<const Node*, U64> bodyHashes;
+    const std::function<U64(const Node&)>* enclosing = enclosingLoopBodyHash;
+    const std::function<U64(const Node&)> hashOf = [&](const Node& node) -> U64 {
+        if (beginSet.find(&node) != beginSet.end()) {
+            return kBeginTag;
+        }
+        std::unordered_map<const Node*, U64>::const_iterator found = bodyHashes.find(&node);
+        if (found != bodyHashes.end()) {
+            return found->second;
+        }
+
+        return enclosing ? (*enclosing)(node) : node.getStoredContentHash();
+    };
+    const U64 projectDigest = digest ? tail->getApp()->getProject()->getContentDigest() : 0;
+    std::unordered_set<const Node*> sourcesSeen;
+    std::unordered_set<const Node*> entered;
+    // Post-order, so every body node is hashed after the body nodes it reads.
+    std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(tail, false));
+    HashInputs inputs;
+
+    struct LoopBodyHashScope {
+        const std::function<U64(const Node&)>* previous;
+        explicit LoopBodyHashScope(const std::function<U64(const Node&)>* current)
+            : previous(enclosingLoopBodyHash)
+        {
+            enclosingLoopBodyHash = current;
+        }
+
+        ~LoopBodyHashScope() { enclosingLoopBodyHash = previous; }
+    };
+    LoopBodyHashScope scope(&hashOf);
+    while (!stack.empty()) {
+        const NodePtr node = stack.back().first;
+        const bool expanded = stack.back().second;
+        if (beginSet.find(node.get()) != beginSet.end()) {
+            stack.pop_back();
+            continue;
+        }
+        if (expanded) {
+            stack.pop_back();
+            if (digest) {
+                node->getHashInputs(&inputs);
+                bodyHashes[node.get()] = node->computeContentHash(projectDigest, inputs, &hashOf);
+            } else {
+                bodyHashes[node.get()] = 0;
+            }
+            continue;
+        }
+        if (!entered.insert(node.get()).second) {
+            // Reached again through another path; a cycle leaves it to its first visit.
+            stack.pop_back();
+            continue;
+        }
+        stack.back().second = true;
+        node->getHashInputs(&inputs);
+        // A nested feedback loop's LoopBegin folds what feeds its body in: walked first, so it
+        // reads their hashes as this walk gives them.
+        std::vector<NodePtr> reads;
+        reads.reserve(inputs.bySlot.size() + inputs.extraSources.size());
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            reads.push_back(inputs.bySlot[i].second);
+        }
+        reads.insert(reads.end(), inputs.extraSources.begin(), inputs.extraSources.end());
+        for (const NodePtr& input : reads) {
+            if (!input || (beginSet.find(input.get()) != beginSet.end())) {
+                continue;
+            }
+            if (downstream.find(input.get()) != downstream.end()) {
+                if (entered.find(input.get()) == entered.end()) {
+                    stack.push_back(std::make_pair(input, false));
+                }
+            } else if (outsideSources && sourcesSeen.insert(input.get()).second) {
+                outsideSources->push_back(input);
+            }
+        }
+    }
+    if (digest && !tailIsBegin) {
+        *digest = hashOf(*tail);
+    }
+} // Node::walkLoopBody
+
 bool
 Node::dependsOnProjectFrameRange() const
 {
@@ -1168,6 +1311,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
+    _imp->effect->appendExtraHashDependents(dependents);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1195,6 +1339,7 @@ Node::getHashInputs(HashInputs* inputs) const
     inputs->isViewer = false;
     inputs->bySlot.clear();
     inputs->metadataSources.clear();
+    inputs->extraSources.clear();
     if (!_imp->effect) {
         return;
     }
@@ -1227,6 +1372,7 @@ Node::getHashInputs(HashInputs* inputs) const
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
     appendMetadataSources(&inputs->metadataSources, NULL);
+    _imp->effect->appendExtraHashSources(&inputs->extraSources);
 }
 
 bool
@@ -1603,6 +1749,7 @@ Node::flushHashDirtyMarks()
     std::vector<HashDirtyEntry>& batch = queue.batch;
     std::vector<NodePtr>& toExpand = queue.toExpand;
     std::vector<NodePtr>& dependents = queue.dependents;
+    std::vector<NodePtr> stopped;
     for (;;) {
         batch.clear();
         {
@@ -1622,7 +1769,12 @@ Node::flushHashDirtyMarks()
 
             return true;
         };
-        auto reach = [&visit, &toExpand](const NodePtr& node) {
+        // A feedback loop's LoopBegin folds its body's state in, not the body's hashes: a walk
+        // stopping at a dirty body node must still reach it, as it may be clean. Only a LoopEnd in
+        // Feedback mode or Cross Frame has its LoopBegins fold in its body or its knobs.
+        const bool feedbackLoops = LoopEnd::anyFeedbackExists();
+        std::optional<LoopEnd::FeedbackBeginsLookup> feedbackBegins;
+        auto reach = [&visit, &toExpand, &stopped, feedbackLoops](const NodePtr& node) {
             if (!node || !visit(node)) {
                 return;
             }
@@ -1633,6 +1785,8 @@ Node::flushHashDirtyMarks()
             // still pending, so the walk stops at dirty nodes that are not pending.
             if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
                 toExpand.push_back(node);
+            } else if (feedbackLoops) {
+                stopped.push_back(node);
             }
         };
         for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -1658,11 +1812,24 @@ Node::flushHashDirtyMarks()
                     }
                 }
             }
-            while (!toExpand.empty()) {
-                NodePtr node = std::move(toExpand.back());
-                toExpand.pop_back();
+            while (!toExpand.empty() || !stopped.empty()) {
                 dependents.clear();
-                node->getHashDependents(&dependents);
+                if (toExpand.empty()) {
+                    NodePtr node = std::move(stopped.back());
+                    stopped.pop_back();
+                    if (!feedbackBegins) {
+                        feedbackBegins.emplace();
+                    }
+                    feedbackBegins->appendFeedbackBeginsOf(node, &dependents);
+                    // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
+                    if (node->_imp->effect) {
+                        node->_imp->effect->appendExtraHashDependents(&dependents);
+                    }
+                } else {
+                    NodePtr node = std::move(toExpand.back());
+                    toExpand.pop_back();
+                    node->getHashDependents(&dependents);
+                }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
                     reach(dependents[d]);
                 }
@@ -1762,6 +1929,9 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         for (std::size_t i = 0; inputsClean && (i < inputs.metadataSources.size()); ++i) {
             inputsClean = !inputs.metadataSources[i]->isHashDirty();
         }
+        for (std::size_t i = 0; inputsClean && (i < inputs.extraSources.size()); ++i) {
+            inputsClean = !inputs.extraSources[i]->isHashDirty();
+        }
         if (!inputsClean && requireCleanInputs) {
             return false;
         }
@@ -1841,6 +2011,12 @@ Node::refreshDirtyHashes()
             }
             for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
                 const NodePtr& source = inputs.metadataSources[i];
+                if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
+                    stack.push_back(std::make_pair(source, false));
+                }
+            }
+            for (std::size_t i = 0; i < inputs.extraSources.size(); ++i) {
+                const NodePtr& source = inputs.extraSources[i];
                 if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
                     stack.push_back(std::make_pair(source, false));
                 }
@@ -2701,11 +2877,62 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->knobsInitialized);
 
-    const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
+    Q_UNUSED(updateKnobGui);
+    const bool wasRestoringKnobs = _imp->restoringKnobs;
+    _imp->restoringKnobs = true;
 
-    ///for all knobs of the node
-    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        loadKnob(nodeKnobs[j], serialization, updateKnobGui);
+    // Looked up by name, as a node can have thousands of knobs (an RFVSwitch with 1024 rows).
+    std::unordered_map<std::string, std::vector<const Serialization::KnobSerialization*>> savedByName;
+    for (const Serialization::KnobSerialization& saved : serialization.knobs) {
+        savedByName[NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name)].push_back(&saved);
+    }
+    // Loading a knob may add or delete knobs (a node whose knobs follow a choice), so this walks
+    // copies of the list, skips knobs deleted meanwhile, and goes again over the knobs added.
+    std::set<KnobIPtr> loaded;
+    // Addresses of the knobs in the list as of liveGeneration; only compared, never dereferenced.
+    std::unordered_set<const KnobI*> live;
+    bool liveValid = false;
+    U64 liveGeneration = 0;
+    for (;;) {
+        const std::vector<KnobIPtr> nodeKnobs = getKnobs();
+        bool loadedAny = false;
+        for (const KnobIPtr& knob : nodeKnobs) {
+            if (loaded.count(knob)) {
+                continue;
+            }
+            // The value-change generation would move on every knob loaded and force a rebuild each time.
+            const U64 generation = _imp->effect->getKnobListGeneration();
+            if (!liveValid || generation != liveGeneration) {
+                live.clear();
+                for (const KnobIPtr& k : getKnobs()) {
+                    live.insert(k.get());
+                }
+                liveGeneration = generation;
+                liveValid = true;
+            }
+            if (!live.count(knob.get())) {
+                continue;
+            }
+            loaded.insert(knob);
+            loadedAny = true;
+            const auto found = savedByName.find(knob->getName());
+            if (found == savedByName.end()) {
+                continue;
+            }
+            for (const Serialization::KnobSerialization* saved : found->second) {
+                // A knob might change its type between versions: fromSerialization() then loads nothing.
+                if (!knob->fromSerialization(*saved)) {
+                    continue;
+                }
+                if (knob->getName() == kOfxImageEffectFileParamName) {
+                    computeFrameRangeForReader(knob.get());
+                }
+                break;
+            }
+        }
+        if (!loadedAny) {
+            break;
+        }
     }
 
     ///now restore the roto context if the node has a roto context
@@ -2727,7 +2954,14 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     // no information and the hash must be recomputed from the freshly restored knobs and inputs.
     computeHash();
 
+    _imp->restoringKnobs = wasRestoringKnobs;
     _imp->effect->onKnobsLoaded();
+}
+
+bool
+Node::isRestoringKnobs() const
+{
+    return _imp->restoringKnobs;
 }
 
 void
@@ -2767,36 +3001,6 @@ Node::restoreSublabel()
         }
     }
 }
-
-void
-Node::loadKnob(const KnobIPtr& knob,
-               const Serialization::NodeSerialization& serialization,
-               bool /*updateKnobGui*/)
-{
-
-    const std::list<Serialization::KnobSerialization>& knobsValues = serialization.knobs;
-
-    for (std::list<Serialization::KnobSerialization>::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-
-        if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) != knob->getName()) {
-            continue;
-        }
-
-        // Non persistent knobs are loaded too when the project saved a value for them.
-        // A knob might change its type between versions: fromSerialization() then loads nothing.
-        if (!knob->fromSerialization(*it)) {
-            continue;
-        }
-
-        if (knob->getName() == kOfxImageEffectFileParamName) {
-            computeFrameRangeForReader( knob.get() );
-        }
-
-        break;
-    }
-
-} // Node::loadKnob
-
 
 void
 Node::setPagesOrder(const std::list<std::string>& pages)
@@ -2922,12 +3126,23 @@ Node::areAllProcessingThreadsQuit() const
         }
     }
 
+    if (isRotoPaintingNode()) {
+        RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get());
+        if (rotoPaint && rotoPaint->isObjectSelectEncoding()) {
+            return false;
+        }
+    }
+
     return true;
 }
 
 void
 Node::quitAnyProcessing_non_blocking()
 {
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(false);
+    }
+
     //If this effect has a RenderEngine, make sure it is finished
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( _imp->effect.get() );
 
@@ -2944,6 +3159,9 @@ Node::quitAnyProcessing_non_blocking()
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(false);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -2956,6 +3174,10 @@ void
 Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
 {
     QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
+
+    if (_imp->effect) {
+        _imp->effect->quitBackgroundWork(true);
+    }
 
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
@@ -2987,6 +3209,9 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
     }
 
     if ( isRotoPaintingNode() ) {
+        if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+            rotoPaint->abortObjectSelectEncoding(true);
+        }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
         for (NodesList::iterator it = rotopaintNodes.begin(); it != rotopaintNodes.end(); ++it) {
@@ -3950,6 +4175,11 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         return;
     }
 
+    // Disable, lifetime, caching, preview and the info page act on an image a node outputs; a
+    // viewer outputs none, so its panel holds its own knobs and the label.
+    if (dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+        return;
+    }
 
     ///find in all knobs a page param to set this param into
     const KnobsVec & knobs = _imp->effect->getKnobs();
@@ -4407,6 +4637,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
 
@@ -4624,6 +4855,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    LoopEnd::onGraphChanged();
     emitLinksChanged(NodesList());
 
     ///If the node is a group, deactivate all nodes within the group
@@ -4716,6 +4948,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = true; //< flag it true before notifying the GUI because the gui rely on this flag (especially the Viewer)
     }
+    LoopEnd::onGraphChanged();
 
     NodeCollectionPtr group = getGroup();
     if (group) {
@@ -7878,6 +8111,10 @@ Node::hasAnimatedKnob() const
                 }
             }
         }
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get());
+        if (helper && helper->hasAnimatedDriver()) {
+            hasAnimation = true;
+        }
         if (hasAnimation) {
             break;
         }
@@ -7912,6 +8149,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
                     keyframes->push_back( it->getTime() );
                 }
             }
+        }
+        if (const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get())) {
+            helper->getDriverKeyTimes(keyframes);
         }
     }
 }
@@ -8131,6 +8371,7 @@ Node::dequeueActions()
     // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
     // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
+    bool outputsCommitted = false;
     {
         bool rendering;
         std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
@@ -8152,7 +8393,15 @@ Node::dequeueActions()
             }
             {
                 QMutexLocker k(&_imp->outputsMutex);
+                outputsCommitted = (_imp->outputs.size() != _imp->guiOutputs.size());
+                NodesWList::const_iterator gui = _imp->guiOutputs.begin();
+                for (NodesWList::const_iterator it = _imp->outputs.begin(); !outputsCommitted && it != _imp->outputs.end(); ++it, ++gui) {
+                    outputsCommitted = (it->lock() != gui->lock());
+                }
                 _imp->outputs = _imp->guiOutputs;
+            }
+            if (!inputChanges.empty() || outputsCommitted) {
+                LoopEnd::onGraphChanged();
             }
             // Before a render can start, as in connectInput().
             if (!inputChanges.empty()) {
@@ -8168,6 +8417,9 @@ Node::dequeueActions()
             onInputChanged(*it);
         }
         endInputEdition(true);
+    }
+    if (!inputChanges.empty() || outputsCommitted) {
+        Q_EMIT connectionsCommitted();
     }
     if (valuesChanged) {
         computeHash();
@@ -8316,6 +8568,10 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     {
         std::list<const Node*> markedNodes;
         addIdentityNodesRecursively(this, this, time, view, &outputs, &markedNodes);
+    }
+    // A viewer without the GUI never pulls images, so it does not count as a reference.
+    if (appPTR->isBackground()) {
+        outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
     }
     std::size_t sz = outputs.size();
 
@@ -8792,6 +9048,10 @@ Node::refreshShownDownstreamInputRelatedData()
         }
         if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
             reached[i]->refreshPanelInputRelatedData();
+        } else if (ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(reached[i]->_imp->effect.get())) {
+            // A viewer's layer menu is on screen with its panel closed, and lists what its inputs
+            // present at the current frame, so it only needs telling that the list may differ.
+            isViewer->onChannelsSelectorRefreshed();
         }
     }
 }

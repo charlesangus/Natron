@@ -34,6 +34,8 @@
 
 #include <QDebug>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutex>
 #include <QSettings>
 #include <QTextStream>
@@ -48,6 +50,7 @@
 
 #include "Global/StrUtils.h"
 
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -59,6 +62,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -551,6 +555,7 @@ void
 Settings::initializeKnobsAi()
 {
     _aiPage = AppManager::createKnob<KnobPage>(this, tr("AI"));
+    _aiPage->setName("aiPage");
 
     _aiEnabled = AppManager::createKnob<KnobBool>(this, tr("AI Enabled"));
     _aiEnabled->setName("aiEnabled");
@@ -614,6 +619,12 @@ Settings::initializeKnobsAi()
     _aiDetectedProviders->setIsPersistent(false);
     _aiDetectedProviders->setAsLabel();
     _aiPage->addKnob(_aiDetectedProviders);
+
+    // Edited from the AI Models page, as a JSON object from task name to model id.
+    _aiDefaultModels = AppManager::createKnob<KnobString>(this, tr("AI Default Models"));
+    _aiDefaultModels->setName("aiDefaultModels");
+    _aiDefaultModels->setSecretByDefault(true);
+    _aiPage->addKnob(_aiDefaultModels);
 }
 
 void
@@ -1310,6 +1321,50 @@ Settings::initializeKnobsViewers()
                                             "displayed only for the render path for the current viewer "
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
+
+    _viewer3DNavigation = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Navigation"));
+    _viewer3DNavigation->setName("viewer3DNavigation");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("nuke", "Nuke", tr("Ctrl+Left drag tumbles, Alt+Left or Middle drag pans, Alt+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("maya", "Maya", tr("Alt+Left drag tumbles, Alt+Middle drag pans, Alt+Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("blender", "Blender", tr("Middle drag tumbles, Shift+Middle drag pans, Ctrl+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("houdini", "Houdini", tr("Space or Alt held: Left drag tumbles, Middle drag pans, Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("custom", "Custom", tr("The bindings set in the shortcut editor's 3DViewer group.").toStdString()));
+        _viewer3DNavigation->populateChoices(entries);
+    }
+    _viewer3DNavigation->setHintToolTip(tr("The mouse bindings of the viewer's 3D view. In every preset the wheel dollies, "
+                                           "a left click selects, Shift adds and Ctrl toggles, and a left drag from empty space "
+                                           "draws a selection marquee. Choosing a preset rewrites the bindings in the shortcut "
+                                           "editor's 3DViewer group; editing one there switches this to Custom."));
+    _viewersTab->addKnob(_viewer3DNavigation);
+
+    _viewer3DGuideSize = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Guide Size"));
+    _viewer3DGuideSize->setName("viewer3DGuideSize");
+    _viewer3DGuideSize->setHintToolTip(tr("How long camera frustums reach and how big light icons are in the viewer's 3D view, "
+                                          "in scene units. Only the guides change: the scene's cameras and lights are not "
+                                          "edited."));
+    _viewer3DGuideSize->setMinimum(1e-3);
+    _viewer3DGuideSize->setDisplayMinimum(0.1);
+    _viewer3DGuideSize->setDisplayMaximum(100.);
+    _viewersTab->addKnob(_viewer3DGuideSize);
+    _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
+    _viewer3DTransformTarget->setName("viewer3DTransformTarget");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("owner", "Owner, Else Edit Node", tr("The translate, rotate and scale of the node that made the prim, when it is in the viewed branch; "
+                                                                            "otherwise the USDEditTransform whose panel is open and that targets the prim, or a new one.")
+                                                                             .toStdString()));
+        entries.push_back(ChoiceOption("openEdit", "Open Edit Node", tr("The USDEditTransform whose panel is open, its pattern extended to the selection; a new one "
+                                                                        "when no panel is open.")
+                                                                         .toStdString()));
+        entries.push_back(ChoiceOption("alwaysEdit", "Always Edit Node", tr("A USDEditTransform after the viewed node, reused while the selection stays the same.").toStdString()));
+        _viewer3DTransformTarget->populateChoices(entries);
+    }
+    _viewer3DTransformTarget->setHintToolTip(tr("Where a drag of the viewer's 3D transform handles writes the change. A new USDEditTransform "
+                                                "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
+                                                "undo step."));
+    _viewersTab->addKnob(_viewer3DTransformTarget);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1753,6 +1808,9 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
+    _viewer3DGuideSize->setDefaultValue(3.);
+    _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2268,6 +2326,9 @@ Settings::restoreKnobsFromSettings(const std::vector<KnobI*>& knobs)
                 } else {
                     assert(false);
                 }
+            } else if (!_restoringSettings && knobs[i]->getIsPersistent()) {
+                // Never saved means the stored value is the default, so a discarded edit reverts to it.
+                knobs[i]->resetToDefaultValueWithoutSecretNessAndEnabledNess(j);
             }
         }
     }
@@ -2419,6 +2480,10 @@ Settings::onKnobValueChanged(KnobI* k,
                              ViewSpec /*view*/,
                              bool /*originatedFromMainThread*/)
 {
+    // Rewritten before settingChanged, so the shortcut editor shows the preset's bindings.
+    if ((k == _viewer3DNavigation.get()) && !_restoringSettings) {
+        appPTR->onViewer3DNavigationChanged((int)getViewer3DNavigation());
+    }
     Q_EMIT settingChanged(k);
     bool ret = true;
 
@@ -2438,6 +2503,7 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
         }
+        LoopFrameBudget::refreshShared();
         setCachingLabels();
     } else if (k == _diskCachePath.get()) {
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());
@@ -2591,6 +2657,36 @@ int
 Settings::getMaxOpenedNodesViewerContext() const
 {
     return _maximumNodeViewerUIOpened->getValue();
+}
+
+Settings::Viewer3DNavigationEnum
+Settings::getViewer3DNavigation() const
+{
+    return (Viewer3DNavigationEnum)_viewer3DNavigation->getValue();
+}
+
+double
+Settings::getViewer3DGuideSize() const
+{
+    return _viewer3DGuideSize->getValue();
+}
+
+void
+Settings::setViewer3DNavigation(Viewer3DNavigationEnum navigation)
+{
+    _viewer3DNavigation->setValue((int)navigation);
+}
+
+bool
+Settings::isViewer3DNavigationKnob(const KnobI* knob) const
+{
+    return knob == _viewer3DNavigation.get();
+}
+
+Settings::Viewer3DTransformTargetEnum
+Settings::getViewer3DTransformTarget() const
+{
+    return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
 }
 
 bool
@@ -3528,6 +3624,29 @@ std::string
 Settings::getAiOrtLibraryPath() const
 {
     return _aiOrtLibraryPath->getValue();
+}
+
+std::string
+Settings::getAiDefaultModel(AiModelTask task) const
+{
+    const QJsonObject defaults = QJsonDocument::fromJson(QByteArray::fromStdString(_aiDefaultModels->getValue())).object();
+
+    return defaults.value(QString::fromUtf8(aiModelTaskName(task).data(), (int)aiModelTaskName(task).size())).toString().toStdString();
+}
+
+void
+Settings::setAiDefaultModel(AiModelTask task,
+                            const std::string& id)
+{
+    QJsonObject defaults = QJsonDocument::fromJson(QByteArray::fromStdString(_aiDefaultModels->getValue())).object();
+    const QString key = QString::fromUtf8(aiModelTaskName(task).data(), (int)aiModelTaskName(task).size());
+
+    if (id.empty()) {
+        defaults.remove(key);
+    } else {
+        defaults.insert(key, QString::fromStdString(id));
+    }
+    _aiDefaultModels->setValue(QJsonDocument(defaults).toJson(QJsonDocument::Compact).toStdString());
 }
 
 bool

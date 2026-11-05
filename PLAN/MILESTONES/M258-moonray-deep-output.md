@@ -12,3 +12,8 @@ Acceptance sketch:
 - USDRender with Renderer = MoonRay can output a deep image whose samples carry z, zback, colour, alpha.
 - The deep image flows through the existing deep cache and RoI path with no side channel.
 - A deep comp matches a flat render within tolerance.
+- Volumes render as deep segments: each sample carries its own z and zback range, so a VDB from M346 - USDVolume Node composites correctly against deep elements through DeepMerge.
+
+## Decisions
+
+- 2026-11-05 — Volume segments are required in MoonRay deep output (user): smoke must hold out correctly in a deep comp. M255 - Delegate Output Spikes has to show the transport can carry them; if it can't, bring that back to the user rather than dropping this.

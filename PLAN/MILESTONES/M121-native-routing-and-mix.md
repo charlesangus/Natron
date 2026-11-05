@@ -198,4 +198,6 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 - 2026-11-05 — UAT: clamp Difference's alpha, then merge with no further UAT (user).
 
+- 2026-11-05 — Review round at 626973e51 (Codex): the alpha clamp runs after mask and mix through a ClampAlpha stage flag. The Glow GUI check is dropped: M123 - Native Sharpen And Glow made Glow native, with no Switches; LightWrap covers it (PM).
+
 **Verification gate:** release gate green with the Difference tests; `Tests/gui/m121_routing_mix.py` passes under Xvfb; review round closed.

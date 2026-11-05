@@ -38,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <QThread>
 
@@ -71,9 +72,11 @@ public:
         int renders = 0;
         int regionsOfDefinition = 0;
         std::set<Qt::HANDLE> threads;
+        std::vector<double> times;
     };
 
     typedef std::function<void(const Node* node)> RenderHook;
+    typedef std::function<void(const Node* node, KnobI* knob, double time)> KnobChangedHook;
 
     /**
      * @brief Counts the render calls running at once for its lifetime.
@@ -107,6 +110,7 @@ public:
 
         records().clear();
         hook() = RenderHook();
+        knobChangedHook() = KnobChangedHook();
         maxRendering() = 0;
     }
 
@@ -128,6 +132,30 @@ public:
         hook() = renderHook;
     }
 
+    /**
+     * @brief Called from every knobChanged, inside the instance-changed action, outside the registry's lock.
+     **/
+    static void setKnobChangedHook(const KnobChangedHook& changedHook)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+
+        knobChangedHook() = changedHook;
+    }
+
+    static void noteKnobChanged(const Node* node,
+                                KnobI* knob,
+                                double time)
+    {
+        KnobChangedHook changedHook;
+        {
+            std::lock_guard<std::mutex> k(mutex());
+            changedHook = knobChangedHook();
+        }
+        if (changedHook) {
+            changedHook(node, knob, time);
+        }
+    }
+
     static void noteRender(const Node* node)
     {
         RenderHook renderHook;
@@ -141,6 +169,25 @@ public:
         if (renderHook) {
             renderHook(node);
         }
+    }
+
+    static void noteRenderTime(const Node* node,
+                               double time)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+
+        records()[node].times.push_back(time);
+    }
+
+    /**
+     * @brief The times the node's render calls ran at since the last reset, in call order.
+     **/
+    static std::vector<double> renderTimes(const NodePtr& node)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        std::map<const Node*, Record>::const_iterator found = records().find(node.get());
+
+        return found == records().end() ? std::vector<double>() : found->second.times;
     }
 
     static void noteRegionOfDefinition(const Node* node)
@@ -212,6 +259,13 @@ private:
     static RenderHook& hook()
     {
         static RenderHook h;
+
+        return h;
+    }
+
+    static KnobChangedHook& knobChangedHook()
+    {
+        static KnobChangedHook h;
 
         return h;
     }
@@ -365,10 +419,22 @@ private:
         return eStatusOK;
     }
 
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum /*reason*/,
+                             ViewSpec /*view*/,
+                             double time,
+                             bool /*originatedFromMainThread*/) OVERRIDE
+    {
+        CountingTestRegistry::noteKnobChanged(getNode().get(), k, time);
+
+        return false;
+    }
+
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         CountingTestRegistry::ConcurrentRender concurrent;
         CountingTestRegistry::noteRender(getNode().get());
+        CountingTestRegistry::noteRenderTime(getNode().get(), args.time);
 
         KnobIntPtr delayKnob = _delayMs.lock();
         if (delayKnob && (delayKnob->getValue() > 0)) {

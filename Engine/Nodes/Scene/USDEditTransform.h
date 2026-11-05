@@ -30,9 +30,11 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -50,7 +52,7 @@ NATRON_NAMESPACE_ENTER
 struct SceneLayerEdit;
 
 /**
- * @brief Transforms the prims a prim pattern names in its input scene. Every match gets the same
+ * @brief Transforms the prims a prim pattern (a USD path expression) selects in its input scene. Every match gets the same
  * xformOp:transform:<node name> op (numbered if the prim already has an op of that name) as the
  * strongest opinion: in Append mode it goes after the prim's existing ops, so it acts in the
  * prim's local space under them; in Replace mode !resetXformStack! precedes it, discarding the
@@ -73,7 +75,8 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDEDITTRANSFORM,
         .label = "USDEditTransform",
-        .description = "Transform the prims a pattern names (paths, with * and ? wildcards) in the input scene. "
+        .description = "Transform the prims a pattern selects (a USD path expression: paths with * and ? wildcards, // for any "
+                       "depth, set operators) in the input scene. "
                        "Append adds the transform after each prim's existing ops, in its local space; Replace discards "
                        "the existing ops and the parent transform. The transform turns and scales about a pivot. "
                        "While its settings panel is open, the Viewer's 3D view shows move, rotate and scale handles.",
@@ -84,6 +87,8 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
+        .primPathKnob = kUSDEditTransformParamPrimPattern,
+        .primPathKnobTakesPattern = true,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -103,6 +108,20 @@ public:
     bool getHandleTarget(std::string* primPath,
                          std::string* opName) const;
 
+    /**
+     * @brief Every prim the last evaluation matched, in pattern order, and the name of the op the
+     * node authors on each. Both empty when it matched nothing.
+     **/
+    void getMatchedPrims(std::vector<std::string>* primPaths,
+                         std::vector<std::string>* opNames) const;
+
+    /**
+     * @brief Whether the node transforms the prim at primPath on the scene its last evaluation
+     * read: the pattern selects it and it can hold a transform. A pattern changed since that
+     * evaluation is evaluated on the same scene. False before any evaluation.
+     **/
+    bool transformsPrim(const std::string& primPath) const;
+
     const SceneTransformKnobs& getTransformKnobs() const
     {
         return _transform;
@@ -115,6 +134,8 @@ public:
 
     // The xformOp:transform:... name the node authors where the prim has no op of that name yet.
     std::string getBaseOpName() const;
+
+    ModeEnum getMode() const;
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -130,12 +151,10 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    ModeEnum getMode() const;
-
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 
-    KnobStringWPtr _primPattern;
+    PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
     KnobDoubleWPtr _pivot;
     KnobButtonWPtr _centrePivot;

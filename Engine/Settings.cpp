@@ -62,6 +62,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -1347,6 +1348,23 @@ Settings::initializeKnobsViewers()
     _viewer3DGuideSize->setDisplayMinimum(0.1);
     _viewer3DGuideSize->setDisplayMaximum(100.);
     _viewersTab->addKnob(_viewer3DGuideSize);
+    _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
+    _viewer3DTransformTarget->setName("viewer3DTransformTarget");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("owner", "Owner, Else Edit Node", tr("The translate, rotate and scale of the node that made the prim, when it is in the viewed branch; "
+                                                                            "otherwise the USDEditTransform whose panel is open and that targets the prim, or a new one.")
+                                                                             .toStdString()));
+        entries.push_back(ChoiceOption("openEdit", "Open Edit Node", tr("The USDEditTransform whose panel is open, its pattern extended to the selection; a new one "
+                                                                        "when no panel is open.")
+                                                                         .toStdString()));
+        entries.push_back(ChoiceOption("alwaysEdit", "Always Edit Node", tr("A USDEditTransform after the viewed node, reused while the selection stays the same.").toStdString()));
+        _viewer3DTransformTarget->populateChoices(entries);
+    }
+    _viewer3DTransformTarget->setHintToolTip(tr("Where a drag of the viewer's 3D transform handles writes the change. A new USDEditTransform "
+                                                "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
+                                                "undo step."));
+    _viewersTab->addKnob(_viewer3DTransformTarget);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1792,6 +1810,7 @@ Settings::setDefaultValues()
     _viewerOverlaysPath->setDefaultValue(true);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
+    _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2484,6 +2503,7 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
         }
+        LoopFrameBudget::refreshShared();
         setCachingLabels();
     } else if (k == _diskCachePath.get()) {
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());
@@ -2661,6 +2681,12 @@ bool
 Settings::isViewer3DNavigationKnob(const KnobI* knob) const
 {
     return knob == _viewer3DNavigation.get();
+}
+
+Settings::Viewer3DTransformTargetEnum
+Settings::getViewer3DTransformTarget() const
+{
+    return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
 }
 
 bool

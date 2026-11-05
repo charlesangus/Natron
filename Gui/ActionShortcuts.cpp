@@ -199,6 +199,13 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DUnshaded);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGrid);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGuides);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DSelectTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DTranslateTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DRotateTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DScaleTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -468,22 +475,33 @@ getViewer3DDefaultKeyBindings()
 {
     // The view keys are Nuke's.
     static const std::vector<Viewer3DKeyBinding> bindings = {
-        { kShortcutIDActionViewer3DFrameSelection, kShortcutDescActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F },
-        { kShortcutIDActionViewer3DFrameAll, kShortcutDescActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A },
-        { kShortcutIDActionViewer3DPerspective, kShortcutDescActionViewer3DPerspective, Qt::NoModifier, Qt::Key_V },
-        { kShortcutIDActionViewer3DFront, kShortcutDescActionViewer3DFront, Qt::NoModifier, Qt::Key_Z },
-        { kShortcutIDActionViewer3DBack, kShortcutDescActionViewer3DBack, Qt::ShiftModifier, Qt::Key_Z },
-        { kShortcutIDActionViewer3DRight, kShortcutDescActionViewer3DRight, Qt::NoModifier, Qt::Key_X },
-        { kShortcutIDActionViewer3DLeft, kShortcutDescActionViewer3DLeft, Qt::ShiftModifier, Qt::Key_X },
-        { kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C },
-        { kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C },
-        { kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L },
+        { kShortcutIDActionViewer3DFrameSelection, kShortcutDescActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DFrameAll, kShortcutDescActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPerspective, kShortcutDescActionViewer3DPerspective, Qt::NoModifier, Qt::Key_V, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DFront, kShortcutDescActionViewer3DFront, Qt::NoModifier, Qt::Key_Z, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DBack, kShortcutDescActionViewer3DBack, Qt::ShiftModifier, Qt::Key_Z, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DRight, kShortcutDescActionViewer3DRight, Qt::NoModifier, Qt::Key_X, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DLeft, kShortcutDescActionViewer3DLeft, Qt::ShiftModifier, Qt::Key_X, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L, Qt::NoModifier, Qt::Key(0) },
         // Maya's 4/5/6 draw-mode keys, with Ctrl: plain digits connect the viewer's inputs.
-        { kShortcutIDActionViewer3DWireframe, kShortcutDescActionViewer3DWireframe, Qt::ControlModifier, Qt::Key_4 },
-        { kShortcutIDActionViewer3DShaded, kShortcutDescActionViewer3DShaded, Qt::ControlModifier, Qt::Key_5 },
-        { kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6 },
-        { kShortcutIDActionViewer3DShowGrid, kShortcutDescActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G },
-        { kShortcutIDActionViewer3DShowGuides, kShortcutDescActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G },
+        { kShortcutIDActionViewer3DWireframe, kShortcutDescActionViewer3DWireframe, Qt::ControlModifier, Qt::Key_4, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DShaded, kShortcutDescActionViewer3DShaded, Qt::ControlModifier, Qt::Key_5, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DShowGrid, kShortcutDescActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DShowGuides, kShortcutDescActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G, Qt::NoModifier, Qt::Key(0) },
+        // Houdini's transform tool keys; Select also takes Esc. R and Y are the Viewer's Red and
+        // Luminance keys, which the 3D view does not use; it takes them while it has the focus.
+        { kShortcutIDActionViewer3DSelectTool, kShortcutDescActionViewer3DSelectTool, Qt::NoModifier, Qt::Key_Q, Qt::NoModifier, Qt::Key_Escape },
+        { kShortcutIDActionViewer3DTranslateTool, kShortcutDescActionViewer3DTranslateTool, Qt::NoModifier, Qt::Key_T, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DRotateTool, kShortcutDescActionViewer3DRotateTool, Qt::NoModifier, Qt::Key_R, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DScaleTool, kShortcutDescActionViewer3DScaleTool, Qt::NoModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DCycleTool, kShortcutDescActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DToggleSpace, kShortcutDescActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

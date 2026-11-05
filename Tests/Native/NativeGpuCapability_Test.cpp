@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
@@ -67,6 +68,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/ColorWheel.h"
@@ -80,6 +82,8 @@
 #include "Engine/Nodes/Keyer/Despill.h"
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -103,6 +107,7 @@
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -122,6 +127,7 @@ gpuCapableIds()
         PLUGINID_NATRON_COLORLOOKUP,
         PLUGINID_NATRON_COLORCORRECT,
         PLUGINID_NATRON_COLORBALANCERGB,
+        PLUGINID_NATRON_COLOREQUALIZER,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
@@ -181,6 +187,9 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_SPLINEWARP,
+        PLUGINID_NATRON_LOOPBEGIN,
+        PLUGINID_NATRON_LOOPEND,
         PLUGINID_NATRON_TIMEWARP,
         PLUGINID_NATRON_RETIME,
         PLUGINID_NATRON_CONTRASTTEXTURE,
@@ -188,6 +197,7 @@ gpuCapableIds()
         PLUGINID_NATRON_TIMEBLUR,
         PLUGINID_NATRON_APPENDCLIP,
         PLUGINID_NATRON_SLITSCAN,
+        PLUGINID_NATRON_VECTORBLUR,
     };
 
     return ids;

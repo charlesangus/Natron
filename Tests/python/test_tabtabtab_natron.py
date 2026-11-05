@@ -155,7 +155,8 @@ class _FakeApp(object):
 
     def triggerTabMenuAction(self, action):
         self.triggered.append(action)
-        action.trigger()
+        if action is not None:
+            action.trigger()
 
 
 class _FakeChoiceParam(object):
@@ -202,6 +203,10 @@ class _FakePopup(object):
         self._parent = parent
         self._flags = flags
         self.set_parent_calls = []
+        self.event_filters = []
+
+    def installEventFilter(self, watcher):
+        self.event_filters.append(watcher)
 
     def parent(self):
         return self._parent
@@ -248,6 +253,8 @@ class NatronAdapterTests(unittest.TestCase):
                 scheduled.append((delay_ms, callback))
 
         qtcore.QTimer = _StubQTimer
+        qtcore.QObject = type("QObject", (object,), {})
+        qtcore.QEvent = types.SimpleNamespace(Hide="Hide", Show="Show")
 
         class _StubQFile(object):
             @staticmethod
@@ -689,6 +696,279 @@ class NatronAdapterTests(unittest.TestCase):
 
         self.assertEqual(order, _DEFAULT_SPACE_MODE_ORDER)
         self.assertTrue(scroll)
+
+    # --- filtered launch --------------------------------------------------------
+
+    def _kind_menu(self, h):
+        def node(label, kind, prim_knob=""):
+            action = _plugin_action(label, label)
+            action._properties["natronInputKind"] = kind
+            action._properties["natronPrimPathKnob"] = prim_knob
+            return action
+
+        self._set_nodes_menu(h, [
+            _submenu("3D", [
+                _submenu("USD", [
+                    node("USDEditTransform", "scene", "primPattern"),
+                    node("USDPrune", "scene", "primPattern"),
+                    node("USDMerge", "scene"),
+                    node("USDMaterial", "", "primPath"),
+                    node("USDXformPrim", "scene", "primPath"),
+                ]),
+            ]),
+            _submenu("Filter", [node("Blur", "image")]),
+            _submenu("Color", [node("Grade", "image")]),
+            _submenu("Other", [node("Dot", "polymorphic")]),
+        ])
+        h.module.find_qt_menu_items = lambda menubar: [
+            {"menuobj": _FakeAction(), "menupath": "Edit/Preferences"}
+        ]
+        window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        h.app_holder["instance"] = _make_qapp(active=window)
+
+    def _labels(self, items):
+        return sorted(i["menupath"].split("/")[-1] for i in items)
+
+    def test_scene_context_lists_scene_nodes_with_a_prim_knob_only(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+
+        # USDMaterial is a source with no scene input, so nothing can be inserted
+        # after a scene node as one, prim path knob or not.
+        self.assertEqual(self._labels(items), ["USDEditTransform", "USDPrune", "USDXformPrim"])
+
+    def test_kind_context_without_knob_requirement_keeps_polymorphic_inputs(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "image", "needsPrimPathKnob": False})
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(self._labels(items), ["Blur", "Dot", "Grade"])
+
+    def test_plain_launch_after_a_filtered_one_lists_everything(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module.launch(_FakeApp())
+        items = h.module._plugin.get_items()
+
+        labels = self._labels(items)
+        self.assertIn("Blur", labels)
+        self.assertIn("USDMaterial", labels)
+        self.assertIn("Preferences", labels)
+
+    def test_filtered_choice_triggers_through_the_app(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+        prune = [i for i in items if i["menupath"].endswith("USDPrune")][0]
+        h.module._plugin.invoke(prune)
+        for _delay, callback in list(h.scheduled):
+            callback()
+
+        self.assertEqual(app.triggered, [prune["menuobj"]])
+
+    def _run_scheduled(self, h):
+        while h.scheduled:
+            _delay, callback = h.scheduled.pop(0)
+            callback()
+
+    def test_filtered_launch_closed_without_a_choice_ends_the_launch(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module._plugin.closed()
+
+        self.assertEqual(app.triggered, [None])
+
+    def test_filtered_launch_closed_after_a_choice_sends_the_choice_only(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        prune = [i for i in h.module._plugin.get_items() if i["menupath"].endswith("USDPrune")][0]
+        h.module._plugin.invoke(prune)
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [prune["menuobj"]])
+
+    def test_plain_launch_closed_without_a_choice_sends_nothing(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app)
+        h.module._plugin.closed()
+
+        self.assertEqual(app.triggered, [])
+
+    def test_hiding_the_popup_ends_a_filtered_launch_once(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        popup = _FakePopup()
+        h.core._tabtabtab_instance = popup
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        self.assertEqual(len(popup.event_filters), 1)
+        watcher = popup.event_filters[0]
+        hide = types.SimpleNamespace(type=lambda: "Hide")
+        self.assertFalse(watcher.eventFilter(popup, hide))
+        self._run_scheduled(h)
+        watcher.eventFilter(popup, hide)
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [None])
+
+    def _selected_kind_menu(self, h):
+        def node(label, kinds):
+            action = _plugin_action(label, label)
+            action._properties["natronInputKinds"] = kinds
+            return action
+
+        self._set_nodes_menu(h, [
+            _submenu("Deep", [
+                node("DeepFromImage", "image"),
+                node("DeepMerge", "deep"),
+                node("DeepToImage", "deep"),
+                node("DeepHoldout", "deep,image"),
+            ]),
+            _submenu("3D", [
+                node("USDPrune", "scene"),
+                node("USDMerge", "scene"),
+                node("Project3D", "image,scene"),
+                node("USDCamera", ""),
+            ]),
+            _submenu("Filter", [node("Blur", "image")]),
+            _submenu("Image", [node("Constant", "")]),
+            _submenu("Other", [node("Dot", "polymorphic")]),
+        ])
+        h.module.find_qt_menu_items = lambda menubar: [
+            {"menuobj": _FakeAction(), "menupath": "Edit/Preferences"}
+        ]
+        window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        h.app_holder["instance"] = _make_qapp(active=window)
+
+    def test_selected_deep_node_lists_nodes_with_a_deep_input_only(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"selectedKind": "deep"})
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(self._labels(items), ["DeepHoldout", "DeepMerge", "DeepToImage", "Dot", "Preferences"])
+
+    def test_selected_scene_node_lists_nodes_with_a_scene_input_only(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"selectedKind": "scene"})
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(self._labels(items), ["Dot", "Preferences", "Project3D", "USDMerge", "USDPrune"])
+
+    def test_selected_image_node_lists_nodes_with_an_image_input_only(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"selectedKind": "image"})
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(self._labels(items), ["Blur", "DeepFromImage", "DeepHoldout", "Dot", "Preferences", "Project3D"])
+
+    def test_selected_scene_node_lists_and_runs_menu_commands(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"selectedKind": "scene"})
+        items = h.module._plugin.get_items()
+        prefs = [i for i in items if i["menupath"] == "Edit/Preferences"]
+        self.assertEqual(len(prefs), 1)
+        h.module._plugin.invoke(prefs[0])
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered[0], prefs[0]["menuobj"])
+        self.assertEqual(prefs[0]["menuobj"].trigger_calls, 1)
+
+    def _menu_with_script_action(self, h):
+        self._selected_kind_menu(h)
+        blur = _plugin_action("Blur", "Blur")
+        blur._properties["natronInputKinds"] = "image"
+        constant = _plugin_action("Constant", "Constant")
+        constant._properties["natronInputKinds"] = ""
+        merge = _plugin_action("DeepMerge", "DeepMerge")
+        merge._properties["natronInputKinds"] = "deep"
+        self._set_nodes_menu(h, [
+            _submenu("Merge", [merge, _FakeAction(text="Script Action")]),
+            _submenu("Filter", [blur]),
+            _submenu("Image", [constant]),
+        ])
+
+    def test_selected_node_keeps_actions_scripts_added_to_the_nodes_menu(self):
+        h = self._load_adapter()
+        self._menu_with_script_action(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"selectedKind": "image"})
+        items = h.module._plugin.get_items()
+
+        # Constant has a plug-in and no inputs, so it stays out: only the action
+        # without a plug-in escapes the filter.
+        self.assertEqual(self._labels(items), ["Blur", "Preferences", "Script Action"])
+        action = [i for i in items if i["menupath"] == "Merge/Script Action"][0]
+        h.module._plugin.invoke(action)
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [action["menuobj"]])
+        self.assertEqual(action["menuobj"].trigger_calls, 1)
+
+    def test_input_kind_context_drops_actions_scripts_added_to_the_nodes_menu(self):
+        h = self._load_adapter()
+        self._menu_with_script_action(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "image", "needsPrimPathKnob": False})
+        items = h.module._plugin.get_items()
+
+        self.assertNotIn("Script Action", self._labels(items))
+
+    def test_scene_context_lists_no_menu_commands(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+
+        self.assertNotIn("Preferences", self._labels(items))
+
+    def test_empty_selection_keeps_the_full_menu(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"selectedKind": "deep"})
+        h.module.launch(_FakeApp())
+        items = h.module._plugin.get_items()
+
+        labels = self._labels(items)
+        self.assertIn("Blur", labels)
+        self.assertIn("Constant", labels)
+        self.assertIn("USDCamera", labels)
+        self.assertIn("Preferences", labels)
 
     # --- launch ---------------------------------------------------------------
 

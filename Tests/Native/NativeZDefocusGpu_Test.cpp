@@ -44,6 +44,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/BokehKnobs.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -234,6 +235,9 @@ TEST_F(NativeZDefocusGpuTest, Eligibility)
     ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputResult)));
     ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamAspectRatio, { 1. }));
     ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamMaxSize, { 16. }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 0.8 }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.3 }));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "lens aberrations";
     NodePtr kernel = makeConstant(RectI(0, 0, 8, 8), { 1., 1., 1., 1. });
     ASSERT_TRUE(bool(kernel));
     connectNodes(kernel, zdefocus, kZDefocusInputKernel, true);
@@ -316,4 +320,57 @@ TEST_F(NativeZDefocusGpuTest, NonFiniteSourceMatchesTheCpu)
     ASSERT_TRUE(bool(zdefocus));
 
     expectParity(zdefocus, "non-finite");
+}
+
+// Each lens case of the CPU tests across the parity source's depth slices, whose cells clip and
+// scale every slice's kernels differently across the window.
+TEST_F(NativeZDefocusGpuTest, CatEyeMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 1. }));
+
+    expectParity(zdefocus, "cat-eye");
+
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamAspectRatio, { 0.5 }));
+    expectParity(zdefocus, "cat-eye, aspect ratio 0.5");
+}
+
+TEST_F(NativeZDefocusGpuTest, SwirlMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 0.6 }));
+    ASSERT_TRUE(setKnobValue(zdefocus, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential)));
+
+    expectParity(zdefocus, "swirl");
+}
+
+// With chromatic aberration each channel group composites over its own coverage; with blue's
+// scale 0 its group stays sharp in every slice while the others blur.
+TEST_F(NativeZDefocusGpuTest, ChromaticAberrationMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.5 }));
+
+    expectParity(zdefocus, "chromatic aberration");
+
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticOffset, { -1., 0., -2. }));
+    expectParity(zdefocus, "chromatic aberration, a sharp blue");
+}
+
+TEST_F(NativeZDefocusGpuTest, CombinedLensAberrationsMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamCatEye, { 0.8 }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.3 }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamSphericalAberration, { 0.5 }));
+
+    expectParity(zdefocus, "cat-eye, chromatic and spherical aberrations");
 }

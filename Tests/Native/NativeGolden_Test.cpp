@@ -36,6 +36,7 @@
 #include "BaseTest.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
+#include "SplineWarpTestCurves.h"
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
@@ -43,6 +44,7 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
@@ -84,6 +86,7 @@
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_USING
@@ -302,6 +305,104 @@ addMergeCases(std::vector<GoldenVariant>* variants,
                                         return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
                                     })));
     variants->push_back(maskVariant("maskplain", allLayers(op)));
+}
+
+// SplineWarp curves live in the 64x48 frame, keyed at the time checkGolden renders.
+SplineWarpContextPtr
+splineWarpContext(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = SplineWarpTestCurves::contextOf(g.node);
+
+    if (!ctx) {
+        ADD_FAILURE() << "SplineWarp has no SplineWarp curve context";
+    }
+
+    return ctx;
+}
+
+// A scaled, shifted link and a shifted one bent by two correspondences.
+bool
+splineWarpTwoLinks(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx || !SplineWarpTestCurves::linkQuad(ctx, 10., 8., 12., 2., -1.5, 1.3)) {
+        return false;
+    }
+    SplineWarpLinkPtr bent = SplineWarpTestCurves::linkQuad(ctx, 38., 24., 10., -2.5, 2.);
+    if (!bent) {
+        return false;
+    }
+    ctx->addCorrespondence(bent, 0.5, 1.);
+    ctx->addCorrespondence(bent, 2.5, 2.25);
+
+    return true;
+}
+
+// A one-point curve moved against a still quadrilateral, which keeps the warp from being a plain
+// translation.
+bool
+splineWarpSinglePoint(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr from = SplineWarpTestCurves::makeCurve(ctx, { { 20., 16. } }, false);
+    BezierPtr to = SplineWarpTestCurves::makeCurve(ctx, { { 24., 19. } }, false);
+
+    return from && to && ctx->linkWithAlignment(from, to, 0., false) && SplineWarpTestCurves::linkQuad(ctx, 40., 28., 10., 0., 0.);
+}
+
+bool
+splineWarpOpenCurve(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr from = SplineWarpTestCurves::makeCurve(ctx, { { 8., 30. }, { 30., 38. }, { 56., 28. } }, false);
+    BezierPtr to = SplineWarpTestCurves::makeCurve(ctx, { { 8., 27. }, { 30., 41. }, { 56., 25. } }, false);
+
+    return from && to && ctx->linkWithAlignment(from, to, 0., false);
+}
+
+bool
+splineWarpFeatheredBoundary(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr boundary = SplineWarpTestCurves::makeRectangle(ctx, 14., 10., 50., 38.);
+    if (!boundary) {
+        return false;
+    }
+    boundary->setFeatherDistance(6., SplineWarpTestCurves::kTime);
+    ctx->setBoundary(boundary, true);
+
+    return bool(SplineWarpTestCurves::linkQuad(ctx, 26., 19., 8., 2.5, 1.5));
+}
+
+// Puts a rotating, scaling Transform between the source and the SplineWarp, which concatenates it
+// into its own resample.
+bool
+splineWarpAfterTransform(const GoldenGraph& g)
+{
+    NodePtr transform = createNodeAtMajor(g.node->getApp(), PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    if (!transform) {
+        return false;
+    }
+    if (!NodeCollection::connectNodes(0, g.source, transform) || !g.node->replaceInput(transform, kSplineWarpInputSource)) {
+        ADD_FAILURE() << "cannot put a Transform before the SplineWarp";
+
+        return false;
+    }
+    if (!setKnobValues(transform, kTransformNodeParamCenter, { 32., 24. }) || !setKnobValues(transform, kTransformNodeParamRotate, { 30. }) || !setKnobValues(transform, kTransformNodeParamScale, { 0.5, 0.5 })) {
+        return false;
+    }
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+
+    return ctx && SplineWarpTestCurves::linkQuad(ctx, 26., 18., 10., 2.5, 1.5);
 }
 
 } // namespace
@@ -1010,5 +1111,18 @@ TEST_F(NativeGoldenTest, ChromaKeyer)
         return chromaKey(g) && num(g, kChromaKeyerParamLinear, { 1. }) && choice(g, kChromaKeyerParamColorspace, "rec2020") && choice(g, kChromaKeyerParamShow, "composite");
     }));
     v.push_back(maskVariant("insidemask", [](const GoldenGraph& g) { return chromaKey(g) && choice(g, kChromaKeyerParamShow, "unpremultiplied"); }));
+    run(spec, v);
+}
+
+TEST_F(NativeGoldenTest, SplineWarp)
+{
+    GoldenNodeSpec spec = filterSpec("SplineWarp", PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    spec.allowNonUserCreatable = true;
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("twolinks", splineWarpTwoLinks));
+    v.push_back(variant("singlepoint", splineWarpSinglePoint));
+    v.push_back(variant("opencurve", splineWarpOpenCurve));
+    v.push_back(variant("featheredboundary", splineWarpFeatheredBoundary));
+    v.push_back(variant("aftertransform", splineWarpAfterTransform));
     run(spec, v);
 }

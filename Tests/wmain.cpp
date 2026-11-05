@@ -13,7 +13,6 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/ViewerInstance.h"
 
 #include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
@@ -31,6 +30,7 @@
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "SceneTestEffect.h"
+#include "SplineWarpHostTestEffect.h"
 #include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
@@ -92,9 +92,6 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
-    // The background AppManager does not register the Viewer, and the Viewer is the one image input
-    // that takes raw, so ViewerRaw_Test.cpp needs it registered by hand.
-    registerTestBuiltInPlugin<ViewerInstance>();
 }
 
 void
@@ -137,6 +134,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
+    registerTestBuiltInPlugin<SceneTestAuthored>();
 }
 
 void
@@ -155,6 +153,7 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextRegionTestEffect>();
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
+    registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
 }
 
 void
@@ -184,6 +183,14 @@ registerCurveHostTestPlugins()
     // Registered so CurveHost_Test.cpp can edit curves on a geometry curve host, which no shipped
     // node is yet.
     registerTestBuiltInPlugin<CurveHostTestEffect>();
+}
+
+void
+registerSplineWarpHostTestPlugins()
+{
+    // Registered so SplineWarpModel_Test.cpp can edit SplineWarp links on a geometry curve host
+    // before the SplineWarp node exists.
+    registerTestBuiltInPlugin<SplineWarpHostTestEffect>();
 }
 
 void
@@ -276,6 +283,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerSplineWarpHostTestPlugins();
     registerCacheStressTestPlugins();
     registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();

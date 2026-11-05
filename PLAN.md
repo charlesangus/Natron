@@ -225,7 +225,7 @@ future core work has solid ground to build on.
 | M71 | RFV Render Context | done | M70, M178 |  | E13 | | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | done |  | bosley-native-nodes | E13 | | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 | M92 | Linked Nodes | done | M24 | bosley-native-nodes | E10 | | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
-| M95 | Knob Cleanup And Keyer Redesign | doing | M69, M76, M137 | bosley-native-nodes | E3 | | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
+| M95 | Knob Cleanup And Keyer Redesign | done | M69, M76, M137 | bosley-native-nodes | E3 | | [M95-knob-cleanup-and-keyer-redesign.md](PLAN/MILESTONES/M95-knob-cleanup-and-keyer-redesign.md) |
 | M96 | Weighted Curve Tangents | done | M93, M16 | bosley-native-nodes | E7 | | [M96-weighted-curve-tangents.md](PLAN/MILESTONES/M96-weighted-curve-tangents.md) |
 | M97 | ~~Value-Based Node Hashing~~ | cancelled |  |  | E7 | | [M97-value-based-node-hashing.md](PLAN/MILESTONES/M97-value-based-node-hashing.md) |
 | M94 | Delete Unused Maintainer Skill | done | - | bosley-native-nodes | E2 | | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
@@ -239,7 +239,7 @@ future core work has solid ground to build on.
 | M125 | Native Multi-Frame Nodes | done | M124 | bosley-native-nodes | E3 | | [M125-native-multi-frame-nodes.md](PLAN/MILESTONES/M125-native-multi-frame-nodes.md) |
 | M126 | Runtime GPU Shaders | done | M85 | gpu | E5 | | [M126-runtime-gpu-shaders.md](PLAN/MILESTONES/M126-runtime-gpu-shaders.md) |
 | M127 | Native OCIO Nodes | done | M120, M126, M107 |  | E3 | | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
-| M128 | Native Shape Generators | doing | M120 | bosley-native-nodes | E3 | | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
+| M128 | Native Shape Generators | done | M120 | bosley-native-nodes | E3 | | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
 | M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | response | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
 | M131 | Native Defocus Family | done | M120 |  | E3 | | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |

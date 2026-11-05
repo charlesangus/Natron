@@ -54,6 +54,7 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class SceneStage;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -173,6 +174,15 @@ public:
     void clearScene();
 
     bool hasScene() const;
+
+    /**
+     * @brief Calls read under the lock that keeps syncs and paints out of the stage, with the
+     * stage shown, or null when no scene is. read must not call back into the renderer.
+     **/
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    // The shown stage's edit count, without the lock: 0 before the first sync.
+    U64 getStageEditCount() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -629,6 +639,9 @@ public:
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
+
+    // The renderer's stage holds the latest requested scene, or none (main thread).
+    void sceneSynced();
 
 protected:
     void initializeGL() override;

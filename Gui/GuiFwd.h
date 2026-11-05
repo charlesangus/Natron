@@ -198,6 +198,7 @@ class NodeViewerContext;
 class PanelWidget;
 class PreferencesPanel;
 class ProgressPanel;
+class SceneGraphPanel;
 class ProgressTaskInfo;
 class ProjectGui;
 class PropertiesBinWrapper;

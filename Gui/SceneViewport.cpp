@@ -267,6 +267,7 @@ struct SceneViewportRenderer::Implementation {
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
+    std::atomic<U64> stageEditCount { 0 };
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -1198,6 +1199,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     _imp->metersPerUnit = metadata.metersPerUnit;
     _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
     _imp->shown = !payload.isEmpty();
+    _imp->stageEditCount = _imp->sceneStage->getEditCount();
 
     return true;
 }
@@ -1238,6 +1240,21 @@ bool
 SceneViewportRenderer::hasScene() const
 {
     return _imp->shown;
+}
+
+void
+SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
+    read(shown ? _imp->sceneStage.get() : nullptr);
+}
+
+U64
+SceneViewportRenderer::getStageEditCount() const
+{
+    return _imp->stageEditCount;
 }
 
 double
@@ -2952,6 +2969,7 @@ SceneViewport::onSynced(U64 serial,
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
     publishState();
     update();
+    Q_EMIT sceneSynced();
 }
 
 bool

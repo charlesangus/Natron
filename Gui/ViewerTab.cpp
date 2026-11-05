@@ -1447,6 +1447,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->clearScene();
         _imp->viewer->show();
     }
+    Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
 NodePtr

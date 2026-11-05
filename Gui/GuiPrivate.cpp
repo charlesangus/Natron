@@ -107,6 +107,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/PythonPanels.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/RightClickableWidget.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
@@ -199,6 +200,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _groups()
     , _curveEditor(0)
     , _progressPanel(0)
+    , _sceneGraphPanel(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)
     , _propertiesBin(0)
@@ -439,6 +441,16 @@ GuiPrivate::createProgressPanelGui()
     _progressPanel->setLabel( tr("Progress").toStdString() );
     _progressPanel->setVisible(false);
     _gui->registerTab(_progressPanel, _progressPanel);
+}
+
+void
+GuiPrivate::createSceneGraphPanelGui()
+{
+    _sceneGraphPanel = new SceneGraphPanel(_gui);
+    _sceneGraphPanel->setScriptName("sceneGraph");
+    _sceneGraphPanel->setLabel(tr("Scene Graph").toStdString());
+    _sceneGraphPanel->setVisible(false);
+    _gui->registerTab(_sceneGraphPanel, _sceneGraphPanel);
 }
 
 TabWidget*

@@ -132,7 +132,7 @@ their images through M233 - Live Node Textures. Survey:
   - verify: A test sets gain and gamma on the viewer and checks the 3D card's pixel matches the 2D viewer's maths for the same input; toggling them off restores the plain transform.
   - size: M
 
-- [ ] M234.P6.T2 — Gain and gamma on rendered pixels only, if cheap
+- [x] ~~M234.P6.T2 — Gain and gamma on rendered pixels only, if cheap~~ (dropped: the user called it not a huge deal and accepted the build without it)
   - files: `Gui/SceneViewport.*`
   - approach: User, 2026-11-02: applying gain and gamma to the 3D viewport's background "is not ideal, if it can be applied only to rendered items that would be preferred but it's not a huge deal". If Hydra's colour correction can be limited to rendered pixels (for example by keeping the background out of the corrected AOV and compositing it after, or by drawing the background after the colour-correction task) without a second full-screen pass that slows the viewport, do it; otherwise leave it and record why.
   - verify: With gain 2 the background pixel is unchanged and the card is doubled; viewport frame time is unchanged.
@@ -143,4 +143,4 @@ their images through M233 - Live Node Textures. Survey:
 - 2026-11-02 — current M233 merged in; projection keeps its own glslfx material (Storm can't feed it into an emissive UsdPreviewSurface) but follows the emissive conventions: straight colour, image alpha as presence opacity, premultiplied in the shader, no Use Alpha knob (it would make beyond-data-window opaque); plate transform from M233's per-frame windows, whole-image coverage path removed. Storm goldens World/GeometryHeld/Overscan need recording (PM).
 - 2026-11-02 — Confirmed: no Use Alpha toggle on projections; an image smaller than its format gives a format-sized texture, transparent outside the image (user).
 - 2026-11-03 — M233 (502a5043e) merged in; Storm projection references re-recorded (c3bd90585; outside the projected frame is now transparent). Gate green. Round 3 UAT AppImage + steps built.
-- 2026-11-05 — UAT approved (user). Deps M233 - Live Node Textures, whose code this branch carries and which is not yet accepted.
+- 2026-11-05 — UAT approved together with M233 - Live Node Textures; they merge as one PR (user).

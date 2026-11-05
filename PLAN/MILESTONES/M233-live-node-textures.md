@@ -104,7 +104,7 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
   - verify: No-light diffuse is black; emissive texture matches the source independent of lights; lit mode responds to authored lights.
   - size: M
 
-- [ ] M233.P3.T4 — Fix NVIDIA live-texture USDRender crashes
+- [x] ~~M233.P3.T4 — Fix NVIDIA live-texture USDRender crashes~~ (closed: no crash on the user's NVIDIA host since 2026-11-01, no code change)
   - files: live-texture/Hydra GL buffer transfers, USDRender lifecycle, supplied crash fixture
   - approach: Reproduce the `HgiGLOps::CopyBufferGpuToGpu` invalid-value failure on NVIDIA, correct buffer sizes/lifetimes or synchronize transfers, and convert driver rejection into a safe error.
   - verify: The supplied scene renders repeatedly on the NVIDIA host without GL errors or segfaults and still passes llvmpipe coverage.
@@ -144,3 +144,4 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 - 2026-11-02 — P6.T1 at 16000672d: Use Alpha (default on) drives presence opacity from the live texture's alpha; the store holds straight colour. A disabled source node now passes its input through (LiveTextureStore::renderSource). Trade-off to confirm in UAT: Storm draws such surfaces in its translucent pass, which writes no prim id/depth where alpha < 1, so clicking a semi-transparent live-textured card may not select it; USDWrite exports straight-alpha EXRs (implementer).
 - 2026-11-02 — main merged in: headlight folded into main's Viewer 3D Lighting preference (Auto / Scene Lights / Headlight, default Scene Lights; Headlight replaces scene lights — confirm with user); gate running (PM).
 - 2026-11-02 — Lighting confirmed: one Viewer 3D Lighting setting with Auto / Scene Lights / Headlight, Headlight replaces scene lights (user).
+- 2026-11-05 — UAT approved together with M234 - Camera Projection Nodes; they merge as one PR (user).

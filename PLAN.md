@@ -179,7 +179,7 @@ future core work has solid ground to build on.
 | M335 | Viewer Render Draw States | todo | M254, M329 |  | E9 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
 | M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M337 | Geometry Spreadsheet | todo | M54, M333 |  | E9 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
-| M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | uat | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
+| M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | doing | M227, M233 | bosley-native-nodes | E9 | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |

@@ -62,6 +62,46 @@ public:
 typedef std::shared_ptr<SceneGraphStageSource> SceneGraphStageSourcePtr;
 
 /**
+ * @brief A walk over a stage's prims in the order the scene graph lists them: a prim, then its
+ * children, in the stage's order. It runs in slices with the stage's lock released between them,
+ * so only the next prim's path outlives a slice: a recomposition can invalidate any UsdPrim or
+ * sibling iterator. Moving along USD's sibling links never lists a prim's children whole, so the
+ * budget also holds inside a prim with millions of them, and finding the path again costs the same
+ * however far along the list the walk is.
+ **/
+class SceneGraphPrimWalk {
+public:
+    static constexpr int kPrimsPerClockRead = 256;
+
+    explicit SceneGraphPrimWalk(int primsPerClockRead = kPrimsPerClockRead);
+
+    ~SceneGraphPrimWalk();
+
+    // The next step() starts at the stage's root.
+    void start();
+
+    void stop();
+
+    bool isOver() const;
+
+    /**
+     * @brief Adds to found the paths of the prims whose names satisfy matches, until budgetMs is
+     * spent, or found holds cap paths with another listed prim next, or no prim is left. At least
+     * one prim is looked at. Called with stage's lock held; a null stage ends the walk. Clears found
+     * and starts over when the stage is another one, has been edited, or has lost the next prim.
+     **/
+    void step(const SceneStage* stage,
+              int budgetMs,
+              int cap,
+              const std::function<bool(const QString& name)>& matches,
+              QStringList* found);
+
+private:
+    struct Implementation;
+    std::unique_ptr<Implementation> _imp;
+};
+
+/**
  * @brief The prims of a composed stage as a tree: active, defined, non-abstract prims, instance
  * proxies included, in the stage's order. Children are read only when a view asks for them, in
  * batches, so a prim with many children or a deep stage costs what is shown. Every value data()

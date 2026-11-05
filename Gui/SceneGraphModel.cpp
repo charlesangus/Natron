@@ -34,6 +34,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QMimeData>
 #include <QtCore/QSet>
 #include <QtGui/QIcon>
@@ -58,6 +59,30 @@ childPredicate()
 {
     // Unloaded prims are shown, so a payload can be found before it is loaded.
     return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
+}
+
+// Unfiltered, as a run of prims the walk rejects is as long to skip as a run it lists: the
+// predicate is applied by the caller, where the budget can be checked between prims.
+UsdPrim
+nextPrimOfWalk(const UsdPrim& prim,
+               bool descend)
+{
+    static const Usd_PrimFlagsPredicate allPrims = UsdTraverseInstanceProxies(UsdPrimAllPrimsPredicate);
+
+    if (descend) {
+        const UsdPrimSiblingRange children = prim.GetFilteredChildren(allPrims);
+        if (!children.empty()) {
+            return *children.begin();
+        }
+    }
+    for (UsdPrim up = prim; up && !up.IsPseudoRoot(); up = up.GetParent()) {
+        const UsdPrim sibling = up.GetFilteredNextSibling(allPrims);
+        if (sibling) {
+            return sibling;
+        }
+    }
+
+    return UsdPrim();
 }
 
 struct PrimData {
@@ -961,6 +986,92 @@ Qt::DropActions
 SceneGraphModel::supportedDragActions() const
 {
     return Qt::CopyAction;
+}
+
+struct SceneGraphPrimWalk::Implementation {
+    int primsPerClockRead = kPrimsPerClockRead;
+    SdfPath next;
+    const SceneStage* stage = nullptr;
+    U64 editCount = 0;
+};
+
+SceneGraphPrimWalk::SceneGraphPrimWalk(int primsPerClockRead)
+    : _imp(new Implementation)
+{
+    _imp->primsPerClockRead = primsPerClockRead;
+}
+
+SceneGraphPrimWalk::~SceneGraphPrimWalk()
+{
+}
+
+void
+SceneGraphPrimWalk::start()
+{
+    _imp->next = SdfPath::AbsoluteRootPath();
+    _imp->stage = nullptr;
+}
+
+void
+SceneGraphPrimWalk::stop()
+{
+    _imp->next = SdfPath();
+    _imp->stage = nullptr;
+}
+
+bool
+SceneGraphPrimWalk::isOver() const
+{
+    return _imp->next.IsEmpty();
+}
+
+void
+SceneGraphPrimWalk::step(const SceneStage* stage,
+                         int budgetMs,
+                         int cap,
+                         const std::function<bool(const QString& name)>& matches,
+                         QStringList* found)
+{
+    if (!stage) {
+        stop();
+
+        return;
+    }
+    if (isOver()) {
+        return;
+    }
+    const UsdStageRefPtr& usdStage = stage->getStage();
+    UsdPrim prim;
+    if ((stage == _imp->stage) && (stage->getEditCount() == _imp->editCount)) {
+        prim = usdStage->GetPrimAtPath(_imp->next);
+    }
+    if (!prim) {
+        found->clear();
+        prim = usdStage->GetPseudoRoot();
+        _imp->stage = stage;
+        _imp->editCount = stage->getEditCount();
+    }
+
+    const Usd_PrimFlagsPredicate predicate = childPredicate();
+    QElapsedTimer timer;
+    timer.start();
+    int visited = 0;
+    while (prim) {
+        const bool isRoot = prim.IsPseudoRoot();
+        const bool listed = isRoot || predicate(prim);
+        // Not checked after adding a path: "more" must mean that a listed prim is left.
+        if (listed && (found->size() >= cap)) {
+            break;
+        }
+        if (listed && !isRoot && matches(QString::fromStdString(prim.GetName().GetString()))) {
+            *found << QString::fromStdString(prim.GetPath().GetString());
+        }
+        prim = nextPrimOfWalk(prim, listed);
+        if (((++visited % _imp->primsPerClockRead) == 0) && (timer.elapsed() >= budgetMs)) {
+            break;
+        }
+    }
+    _imp->next = prim ? prim.GetPath() : SdfPath();
 }
 
 NATRON_NAMESPACE_EXIT

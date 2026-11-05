@@ -8,6 +8,8 @@ QModelIndex alone.
 
 Checks:
   - the tree lists /World with Box, Ball and Cam under it, with their types;
+  - a pick in the viewer reveals a row the tree has not read yet: its ancestors open and its row
+    is current, and the same while a filter hides the prim, which stays selected;
   - closing and opening a row stays in the tree: the stage's edit count and change notices do not
     move, and the viewer is not asked to sync again;
   - selecting the box's row selects /World/Box in the viewer, and a click on the ball in the
@@ -156,6 +158,31 @@ try:
         QApplication.processEvents()
         return viewer_selection()
 
+    def pick_where(wanted):
+        """Clicks a grid over the viewer until wanted(the selection) holds; returns whether it did."""
+        v = view()
+        sx = max(1, v.width() // GRID_COLUMNS)
+        sy = max(1, v.height() // GRID_ROWS)
+        for row in range(GRID_ROWS):
+            for column in range(GRID_COLUMNS):
+                if wanted(click(v, QPoint(sx // 2 + column * sx, sy // 2 + row * sy))):
+                    return True
+            yield ("sleep", 0)
+        return False
+
+    def world_unread():
+        """Whether /World's row is closed and its children unread; never reads them itself."""
+        world = find(WORLD)
+        return world.isValid() and not tree().isExpanded(world) and model().rowCount(world) == 0
+
+    def check_revealed(path, how):
+        check(selected_rows() == [path], "%s, the prim's row alone is selected (got %r, want %r)" % (how, selected_rows(), path))
+        current = tree().selectionModel().currentIndex()
+        check(path_of(current) == path, "%s, the prim's row is current (got %r, want %r)" % (how, path_of(current), path))
+        parent = current.parent()
+        check(path_of(parent) == WORLD and tree().isExpanded(parent),
+              "%s, the prim's parent /World is open (got %r)" % (how, path_of(parent)))
+
     def ancestor_of_class(widget, name):
         w = widget
         while w is not None:
@@ -212,6 +239,63 @@ try:
               "natronSceneGraphNode names the viewed USDRead (got %r)" % (p.property("natronSceneGraphNode"),))
         check(not p.property("natronSceneGraphPinned"), "the panel follows the viewer at first")
 
+        # A pick reveals a row the tree has not read.
+        yield ("sleep", SETTLE_MS)
+        check(world_unread(), "the tree opens closed, with /World's children unread")
+        ok = yield from pick_where(bool)
+        require(ok, "a click in the viewer picks a prim")
+        picked = viewer_selection()
+        require(len(picked) == 1 and picked[0].startswith(WORLD + "/"), "the pick is one prim under /World (got %r)" % (picked,))
+        ok = yield ("until", lambda: selected_rows() == picked, POLL_TIMEOUT_S)
+        check(ok, "the first pick selects a row not read until now (got %r, want %r)" % (selected_rows(), picked))
+        check_revealed(picked[0], "picked before /World was read")
+        check(tree().visualRect(tree().selectionModel().currentIndex()).isValid(), "the picked prim's row is laid out")
+
+        # Again while a filter hides the prim. The other scene drops /World's row, and the row
+        # that comes back with the USDRead's scene has not read its children.
+        tree().selectionModel().clearSelection()
+        ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
+        check(ok, "clearing the rows clears the viewer's selection (got %r)" % (viewer_selection(),))
+        require(view_input(camera), "switch the Viewer to the USDCamera")
+        ok = yield ("until", lambda: top_paths() == [camera_root], POLL_TIMEOUT_S)
+        check(ok, "the tree shows the camera's scene (got %r)" % (top_paths(),))
+        require(view_input(usd), "switch the Viewer back to the USDRead")
+        ok = yield ("until", lambda: scene_drawn() and top_paths() == [WORLD], POLL_TIMEOUT_S)
+        check(ok, "the tree shows the USDRead's scene again (got %r)" % (top_paths(),))
+        yield ("sleep", SETTLE_MS)
+        require(world_unread(), "/World's row comes back closed, with its children unread")
+        line = child(QLineEdit, "sceneGraphFilter")
+        results = child(QListView, "sceneGraphResults")
+        require(line is not None and results is not None, "the panel has its filter and result list")
+        line.setText("NoPrimHasThisName")
+        ok = yield ("until", lambda: results.isVisible() and not p.property("natronSceneGraphFilterBusy"), POLL_TIMEOUT_S)
+        check(ok and results.model().rowCount() == 0, "the filter lists nothing (got %d rows)" % (results.model().rowCount(),))
+        ok = yield from pick_where(bool)
+        require(ok, "a click in the viewer picks a prim the filter hides")
+        picked = viewer_selection()
+        require(len(picked) == 1 and picked[0].startswith(WORLD + "/"), "the pick is one prim under /World (got %r)" % (picked,))
+        ok = yield ("until", lambda: selected_rows() == picked, POLL_TIMEOUT_S)
+        check(ok, "the pick selects its row behind the filter (got %r, want %r)" % (selected_rows(), picked))
+        check_revealed(picked[0], "picked with the filter hiding it")
+        check(results.isVisible(), "the result list stays up")
+
+        # Selecting what a new filter lists adds to the hidden prim instead of replacing it.
+        other = BALL if picked[0] != BALL else BOX
+        line.setText(other.rsplit("/", 1)[1])
+        ok = yield ("until", lambda: not p.property("natronSceneGraphFilterBusy") and results.model().rowCount() == 1, POLL_TIMEOUT_S)
+        check(ok, "the filter lists %s alone (got %d rows)" % (other, results.model().rowCount()))
+        check(viewer_selection() == picked, "the prim the filter hides stays selected (got %r, want %r)" % (viewer_selection(), picked))
+        results.selectionModel().select(results.model().index(0, 0), QItemSelectionModel.ClearAndSelect)
+        wanted = sorted(picked + [other])
+        ok = yield ("until", lambda: viewer_selection() == wanted, POLL_TIMEOUT_S)
+        check(ok, "selecting a result keeps the hidden prim selected (got %r, want %r)" % (viewer_selection(), wanted))
+        line.setText("")
+        ok = yield ("until", lambda: tree().isVisible(), POLL_TIMEOUT_S)
+        check(ok, "clearing the filter shows the tree again")
+        tree().selectionModel().clearSelection()
+        ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
+        check(ok, "clearing the rows clears the viewer's selection (got %r)" % (viewer_selection(),))
+
         # The tree.
         world = find(WORLD)
         tree().expand(world)
@@ -258,18 +342,7 @@ try:
         shot("scene-graph-select-box.png")
 
         # Viewer to tree: click a grid until the ball is picked.
-        v = view()
-        sx = max(1, v.width() // GRID_COLUMNS)
-        sy = max(1, v.height() // GRID_ROWS)
-        picked = False
-        for row in range(GRID_ROWS):
-            for column in range(GRID_COLUMNS):
-                if click(v, QPoint(sx // 2 + column * sx, sy // 2 + row * sy)) == [BALL]:
-                    picked = True
-                    break
-            if picked:
-                break
-            yield ("sleep", 0)
+        picked = yield from pick_where(lambda selection: selection == [BALL])
         require(picked, "a click in the viewer picks the ball")
         ok = yield ("until", lambda: selected_rows() == [BALL], POLL_TIMEOUT_S)
         check(ok, "the ball picked in the viewer selects its row (got %r)" % (selected_rows(),))

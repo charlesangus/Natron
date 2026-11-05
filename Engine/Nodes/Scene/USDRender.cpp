@@ -450,7 +450,7 @@ USDRender::prepareRender(double time,
         return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
     }
     // Hydra reads live textures from the store and never renders them: render the frame's first.
-    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene), time, view);
+    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene), time);
     // The camera is read from a pooled stage, given back before the render: Storm renders the
     // node's own stage on the render thread.
     SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);

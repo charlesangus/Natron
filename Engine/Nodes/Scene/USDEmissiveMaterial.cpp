@@ -150,21 +150,9 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
         return PXR_NS::GfVec3f((float)color->getValueAtTime(frame, 0), (float)color->getValueAtTime(frame, 1), (float)color->getValueAtTime(frame, 2));
     };
 
-    // No diffuse, and the specular workflow with a black specular colour, which, unlike the
-    // metallic workflow's dielectric, reflects nothing: what is left is the emission alone.
-    const PXR_NS::UsdShadeInput diffuseInput = surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f);
-    const PXR_NS::UsdShadeInput metallicInput = surface.CreateInput(PXR_NS::TfToken("metallic"), PXR_NS::SdfValueTypeNames->Float);
-    const PXR_NS::UsdShadeInput roughnessInput = surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float);
-    const PXR_NS::UsdShadeInput specularWorkflow = surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int);
-    const PXR_NS::UsdShadeInput specularColor = surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f);
-    PXR_NS::UsdShadeInput emissiveInput = surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    PXR_NS::UsdShadeInput emissiveInput;
     const bool authored = surfaceOutput && material.CreateSurfaceOutput().ConnectToSource(surfaceOutput)
-        && diffuseInput && diffuseInput.Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f))
-        && metallicInput && metallicInput.Set(0.f)
-        && roughnessInput && roughnessInput.Set(1.f)
-        && specularWorkflow && specularWorkflow.Set(1)
-        && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f))
-        && emissiveInput;
+        && SceneNodeAuthoring::authorUnlitSurfaceInputs(surface, &emissiveInput);
     if (!authored) {
         *errorMessage = tr("USD could not author the surface of the material at %1.").arg(pathString).toStdString();
 

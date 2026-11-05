@@ -710,7 +710,7 @@ TEST_F(USDProject3DTest, WithCropOffTheOverscanIsInTheProjectedTexture)
     LiveTextureStore& store = LiveTextureStore::instance();
     store.clear();
     int numFailed = -1;
-    std::thread worker([&]() { numFailed = store.prepare(sources, 1., ViewIdx(0)); });
+    std::thread worker([&]() { numFailed = store.prepare(sources, 1.); });
     worker.join();
     ASSERT_EQ(0, numFailed) << store.getFailure(uri);
     const LiveTextureBufferConstPtr buffer = store.find(uri);
@@ -909,6 +909,46 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
     EXPECT_EQ(frames, frame.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
     EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.)), geometryFrame, 1e-9));
+}
+
+// The placement is memoized: whatever it reads must still reach it.
+TEST_F(USDProject3DTest, AnAssignedPlacementFollowsTheHoldFrameAndTheGeometry)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    KnobDouble* hold = getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold);
+    hold->setValue(1.);
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(card && assign);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., 1., ViewSpec::all(), 0);
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(card).GetString());
+    ASSERT_TRUE(assign->connectInput(card, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    const auto placedAtX = [&]() {
+        const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+        const PXR_NS::UsdShadeShader shader = stage ? getShader(stage, PXR_NS::SdfPath("/materials/Project1")) : PXR_NS::UsdShadeShader();
+        const PXR_NS::UsdShadeInput frame = shader ? shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)) : PXR_NS::UsdShadeInput();
+        PXR_NS::GfMatrix4d matrix(0.);
+        EXPECT_TRUE(frame && frame.Get(&matrix));
+
+        return matrix.ExtractTranslation()[0];
+    };
+    EXPECT_NEAR(0., placedAtX(), 1e-9);
+    EXPECT_NEAR(0., placedAtX(), 1e-9);
+    hold->setValue(11.);
+    EXPECT_NEAR(1., placedAtX(), 1e-9);
+    translate->setValueAtTime(11., 3., ViewSpec::all(), 0);
+    EXPECT_NEAR(3., placedAtX(), 1e-9);
 }
 
 TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartItFollowsTheFirstAndWarns)

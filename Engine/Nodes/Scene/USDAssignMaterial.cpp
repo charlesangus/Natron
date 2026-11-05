@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -153,8 +154,16 @@ getRootPrim(const PXR_NS::SdfPath& path)
 }
 } // anonymous namespace
 
+struct USDAssignMaterial::PlacementMemo {
+    std::mutex lock;
+    bool valid = false;
+    U64 key = 0;
+    ProjectionPlacement placement;
+};
+
 USDAssignMaterial::USDAssignMaterial(NodePtr node)
     : NativeEffectBase(node)
+    , _placementMemo(new PlacementMemo)
 {
 }
 
@@ -380,7 +389,38 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
         if (!roots.empty() && !projection.geometryProjectionShader.empty()) {
             SceneLayerEdit range;
             app->getProject()->getFrameRange(&range.firstFrame, &range.lastFrame);
-            placement = readProjectionPlacement(stage, roots, projection, upstream, range, app->getProject()->getProjectFrameRate());
+            const double framesPerSecond = app->getProject()->getProjectFrameRate();
+            ContentHasher keyHasher;
+            keyHasher.appendU64(upstream.getStackHash());
+            SceneNodeAuthoring::appendUpstreamMetadata(upstream, &keyHasher);
+            keyHasher.appendString(projection.geometryProjectionShader);
+            keyHasher.appendBool(projection.projectionHeld);
+            keyHasher.appendDouble(projection.projectionHoldFrame);
+            keyHasher.appendDouble(range.firstFrame);
+            keyHasher.appendDouble(range.lastFrame);
+            keyHasher.appendDouble(framesPerSecond);
+            for (const RootMatches& matches : roots) {
+                keyHasher.appendU64(matches.paths.size());
+                for (const PXR_NS::SdfPath& path : matches.paths) {
+                    keyHasher.appendString(path.GetString());
+                }
+            }
+            const U64 placementKey = keyHasher.finalize();
+            bool memoized = false;
+            {
+                std::lock_guard<std::mutex> l(_placementMemo->lock);
+                if (_placementMemo->valid && (_placementMemo->key == placementKey)) {
+                    placement = _placementMemo->placement;
+                    memoized = true;
+                }
+            }
+            if (!memoized) {
+                placement = readProjectionPlacement(stage, roots, projection, upstream, range, framesPerSecond);
+                std::lock_guard<std::mutex> l(_placementMemo->lock);
+                _placementMemo->valid = true;
+                _placementMemo->key = placementKey;
+                _placementMemo->placement = placement;
+            }
             if (!placement.othersAt.empty()) {
                 warnings += tr("A projection in Geometry space takes one placement per material, and the matches lie at "
                                "several: it follows %1, so %2 shows it offset. Project them in World space, or through a "

@@ -33,6 +33,7 @@
 #include <cmath>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -281,6 +282,19 @@ protected:
     static USDWrite* getWriter(const NodePtr& node)
     {
         return dynamic_cast<USDWrite*>(node->getEffectInstance().get());
+    }
+
+    // A write runs on a render thread, and the live textures it exports are not rendered on the
+    // main thread, which the tests run on.
+    static StatusEnum writeOffMainThread(const NodePtr& node,
+                                         int firstFrame,
+                                         int lastFrame)
+    {
+        StatusEnum status = eStatusFailed;
+        std::thread renderThread([&]() { status = getWriter(node)->writeFrameRange(firstFrame, lastFrame, ViewIdx(0)); });
+        renderThread.join();
+
+        return status;
     }
 
     static PXR_NS::UsdStageRefPtr composeOutput(const NodePtr& node)
@@ -736,7 +750,7 @@ TEST_F(USDWriteLiveTextureTest, AnAnimatedLiveTextureIsExportedOneFilePerFrame)
     const QString path = outDir + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(material, path, USDWrite::eExportModeLayered, 1, 3);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
     EXPECT_FALSE(writer->hasPersistentMessage());
 
     const QString texturesDir = outDir + QString::fromUtf8("/scene_textures");
@@ -771,7 +785,7 @@ TEST_F(USDWriteLiveTextureTest, AStaticLiveTextureIsExportedOnce)
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 3);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
 
     const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
     EXPECT_EQ(QStringList() << QString::fromUtf8("Constant1_rgba.exr"), fileNames(texturesDir));
@@ -783,6 +797,52 @@ TEST_F(USDWriteLiveTextureTest, AStaticLiveTextureIsExportedOnce)
     ASSERT_TRUE(file.Get(&asset));
     EXPECT_EQ(std::string("./scene_textures/Constant1_rgba.exr"), asset.GetAssetPath());
     EXPECT_NEAR(0.1, centreRedOf(texturesDir + QString::fromUtf8("/Constant1_rgba.exr")), 1e-3);
+}
+
+TEST_F(USDWriteLiveTextureTest, ATextureThatCannotBeWrittenLeavesNoUsdFile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    // A file where the textures' folder goes.
+    QFile blocker(tmp.path() + QString::fromUtf8("/scene_textures"));
+    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+
+    EXPECT_EQ(eStatusFailed, writeOffMainThread(writer, 1, 1));
+    EXPECT_FALSE(QFile::exists(path));
+}
+
+TEST_F(USDWriteLiveTextureTest, AUriWhoseSourceIsGoneWarnsAsSuch)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    const QString earlier = tmp.path() + QString::fromUtf8("/earlier.usda");
+    NodePtr earlierWriter = createWriter(material, earlier, USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(earlierWriter && getWriter(earlierWriter));
+    getKnob<KnobBool>(earlierWriter, kUSDWriteParamExportLiveTextures)->setValue(false);
+    ASSERT_EQ(eStatusOK, writeOffMainThread(earlierWriter, 1, 1));
+
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(reader));
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(earlier.toStdString());
+    NodePtr writer = createWriter(reader, tmp.path() + QString::fromUtf8("/later.usda"), USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    writer->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("no longer available"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("Export Live Textures"))) << message.toStdString();
 }
 
 TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
@@ -797,7 +857,7 @@ TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
     KnobBool* exportLiveTextures = getKnob<KnobBool>(writer, kUSDWriteParamExportLiveTextures);
     ASSERT_TRUE(exportLiveTextures != NULL);
     exportLiveTextures->setValue(false);
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
 
     EXPECT_FALSE(QFileInfo(tmp.path() + QString::fromUtf8("/scene_textures")).exists());
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
@@ -913,7 +973,7 @@ TEST_F(USDWriteProjectionTest, AnAssignedProjectionIsBakedAsADirectOneIs)
         const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
         NodePtr writer = createWriter(assign, path, USDWrite::eExportModeFlattened, 1, 3);
         ASSERT_TRUE(writer && getWriter(writer));
-        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
         EXPECT_FALSE(writer->hasPersistentMessage()) << purpose.second.GetString() << ": " << messageOf(writer).toStdString();
 
         const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
@@ -950,7 +1010,7 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 3);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
     // Facing the camera, the card's UVs are exact: no warning.
     EXPECT_FALSE(writer->hasPersistentMessage()) << messageOf(writer).toStdString();
     EXPECT_EQ(QStringList() << QString::fromUtf8("Plate1_rgba.exr"), fileNames(tmp.path() + QString::fromUtf8("/scene_textures")));
@@ -1016,6 +1076,82 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     EXPECT_FALSE(projection.IsActive());
 }
 
+TEST_F(USDWriteProjectionTest, AProjectionBoundToNothingWarns)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr writer = createWriter(projector, tmp.path() + QString::fromUtf8("/scene.usda"), USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    const QString message = messageOf(writer);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Project1"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("bound to no geometry"))) << message.toStdString();
+}
+
+TEST_F(USDWriteProjectionTest, ControlsTheBakeCannotHonourWarn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(card));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectOn)->setValue((int)USDProject3D::eProjectOnFront);
+    getKnob<KnobBool>(projector, kUSDProject3DParamClipNearFar)->setValue(true);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamOutside)->setValue((int)USDProject3D::eOutsideTransparent);
+    NodePtr writer = createWriter(card, tmp.path() + QString::fromUtf8("/scene.usda"), USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    const QString message = messageOf(writer);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Project On"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Clip Near Far"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Outside"))) << message.toStdString();
+}
+
+// compose() resolves a camera named by path into a layer of its own, which a layered write does
+// not write.
+TEST_F(USDWriteProjectionTest, ALayeredWriteHoldsTheResolvedCameraOfAnUnbakedProjection)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    camera->setScriptName("Camera1");
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue("/Camera1");
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(bool(merge));
+    ASSERT_TRUE(merge->connectInput(projector, 0));
+    ASSERT_TRUE(merge->connectInput(camera, 1));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(merge, path, USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+    const auto matrixOf = [](const PXR_NS::UsdStageRefPtr& stage) {
+        PXR_NS::GfMatrix4d matrix(0.);
+        bool found = false;
+        if (stage) {
+            for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+                if (prim.GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera))) {
+                    found = PXR_NS::UsdShadeShader(prim).GetInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector)).Get(&matrix);
+                }
+            }
+        }
+        EXPECT_TRUE(found);
+
+        return matrix;
+    };
+    const PXR_NS::GfMatrix4d resolved = matrixOf(composeOutput(merge));
+    EXPECT_FALSE(PXR_NS::GfIsClose(resolved, PXR_NS::GfMatrix4d(1.), 1e-6));
+    EXPECT_FALSE(PXR_NS::GfIsClose(resolved, PXR_NS::GfMatrix4d(0.), 1e-6));
+    EXPECT_TRUE(PXR_NS::GfIsClose(resolved, matrixOf(PXR_NS::UsdStage::Open(path.toStdString())), 1e-9));
+}
+
 TEST_F(USDWriteProjectionTest, AMovingCameraBakesUVsPerFrame)
 {
     QTemporaryDir tmp;
@@ -1028,7 +1164,7 @@ TEST_F(USDWriteProjectionTest, AMovingCameraBakesUVsPerFrame)
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeLayered, 1, 3);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
 
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
     ASSERT_TRUE(bool(stage));
@@ -1060,7 +1196,7 @@ TEST_F(USDWriteProjectionTest, ATiltedCoarseCardBakesWithoutAWarning)
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 1);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
     EXPECT_FALSE(writer->hasPersistentMessage()) << messageOf(writer).toStdString();
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
     ASSERT_TRUE(bool(stage));
@@ -1084,7 +1220,7 @@ TEST_F(USDWriteProjectionTest, AHeldGeometrySpaceProjectionBakesUVsThatStickToTh
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 3);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
 
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
     ASSERT_TRUE(bool(stage));
@@ -1120,7 +1256,7 @@ TEST_F(USDWriteProjectionTest, AnOverscanPlateBakesUVsSpanningItsFormat)
     const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 1);
     ASSERT_TRUE(writer && getWriter(writer));
-    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
     ASSERT_TRUE(writer->hasPersistentMessage());
     const QString message = messageOf(writer);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/Project1"))) << message.toStdString();
@@ -1152,7 +1288,7 @@ TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
         const QString path = dir + QString::fromUtf8("/out.usda");
         NodePtr writer = createWriter(merge, path, mode, 1, 1);
         ASSERT_TRUE(writer && getWriter(writer));
-        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
         ASSERT_TRUE(QFile::exists(path));
 
         PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());

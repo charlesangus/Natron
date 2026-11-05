@@ -643,14 +643,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, plate);
             const PXR_NS::UsdShadeInput file = texture.CreateInput(PXR_NS::TfToken("file"), PXR_NS::SdfValueTypeNames->Asset);
             ok = file && SceneNodeAuthoring::authorValue(file.GetAttr(), edit, live.varying, [&live](double frame) { return PXR_NS::SdfAssetPath(live.getUri(frame)); });
-            bool windowVaries = false;
-            for (std::size_t i = 1; i < live.windows.size(); ++i) {
-                if ((live.windows[i].format != live.windows[0].format) || (live.windows[i].window != live.windows[0].window)) {
-                    windowVaries = true;
-                    break;
-                }
-            }
-            ok = ok && SceneNodeAuthoring::authorValue(window.GetAttr(), edit, windowVaries, [&live](double frame) {
+            ok = ok && SceneNodeAuthoring::authorValue(window.GetAttr(), edit, SceneNodeAuthoring::liveTextureWindowVaries(live), [&live](double frame) {
                      double scale[2];
                      double translation[2];
                      live.getWindow(frame).getUvTransform(scale, translation);

@@ -44,8 +44,12 @@ Natron session can read) to OpenEXR files in a `name_textures` folder beside
 is `<node>_<layer>.exr` for an image that does not change over time, and
 `<node>_<layer>.####.exr`, one per frame of the range with its frame number, for
 one that does, the path time-sampled per frame. A texture spans the image's
-format and its data beyond it, overscan included. The files are half-float RGBA, ZIP-compressed. Off, the `natron://` paths are written as they are, and the node
-warns that the file is not portable.
+format and its data beyond it, overscan included. The files are half-float RGBA, ZIP-compressed, with straight colour rather than
+premultiplied, of the project's first view. They are written before the USD files,
+so a texture that fails leaves the earlier USD files as they were. Off, the
+`natron://` paths are written as they are, and the node warns that the file is not
+portable. A `natron://` path whose source is no longer available, such as one read
+from an earlier file, is written as it is with a warning saying so.
 
 A layer already open on a written file, such as a USDRead of it, is reloaded in
 place, so every viewer and node reading it shows the new content.

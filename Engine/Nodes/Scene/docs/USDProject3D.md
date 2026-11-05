@@ -7,7 +7,9 @@ names, or bind it by its path as any material in the scene is bound (a collectio
 binding included). The projection is per fragment and perspective
 correct, so coarse geometry does not warp it. It is a Storm (glslfx) surface: it
 shows in the Viewer's 3D view and in USDRender; USDWrite bakes it to UVs and a
-`UsdPreviewSurface` for other renderers. The surface is unlit and emissive: it shows
+`UsdPreviewSurface` for other renderers, and warns about a material it cannot bake:
+one bound to no geometry, bound to a gprim that is not a mesh, or inside an
+instance. The image is always rendered in the project's first view. The surface is unlit and emissive: it shows
 the image as it is, whatever lights the scene has. The image's alpha is its
 opacity, as with USDEmissiveMaterial's Use Alpha on: the surface shows the image as
 it would be composited over what is behind it, so where the image is transparent
@@ -41,16 +43,17 @@ Controls:
   camera in the geometry's own coordinates. USDAssignMaterial places it where the
   matched geometry is at that node. The material holds one placement, so matches
   at different places follow the first, with a node warning.
-- Project On: Both, Front (faces facing the camera) or Back.
+- Project On: Both, Front (faces facing the camera) or Back. A baked export ignores
+  it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
   image has no data, black. Off, the image's data beyond its format shows there, and
   its edge pixels extend beyond that. A baked export cannot crop, so it shows the
   overscan, with a warning.
 - Clip Near Far: nearer than the camera's near plane or beyond its far one, the
-  surface shows Outside.
+  surface shows Outside. A baked export ignores it, with a warning.
 - Outside: Black, or Transparent (not drawn). Behind the camera is always Outside.
   A baked export shows Black as transparent beyond the image's data: the baked
-  texture's border is clear.
+  texture's border is clear. Set to anything else, it warns that it is ignored.
 - Fit Mode: how the camera's aperture is conformed to the image's format, as in
   USDRender.
 - Use Frame Hold, Frame Hold: project through the camera as it is at Frame Hold on

@@ -93,7 +93,8 @@ copyRow(const Image::ReadAccess& access,
             // Natron's images are premultiplied, a UsdUVTexture's are not: Storm multiplies the
             // colour by the alpha the material's opacity reads, so it is divided out here.
             const float alpha = pix[3] * scale;
-            const float unpremult = (alpha > 0.f) ? (1.f / alpha) : 1.f;
+            // The reciprocal of a subnormal alpha is infinite, and would turn a zero colour to NaN.
+            const float unpremult = (alpha >= std::numeric_limits<float>::min()) ? (1.f / alpha) : 1.f;
             row[0] = pix[0] * scale * unpremult;
             row[1] = pix[1] * scale * unpremult;
             row[2] = pix[2] * scale * unpremult;
@@ -204,6 +205,12 @@ fillTransparentColour(LiveTextureBuffer& buffer)
         frontier.swap(next);
     }
 } // fillTransparentColour
+
+// The URI names no view and the layers that hold it are not per view, so a texture has one.
+const ViewIdx kLiveTextureView(0);
+
+// Failure messages kept for getFailure().
+const std::size_t kMaxFailures = 256;
 
 LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
@@ -476,6 +483,7 @@ LiveTextureStore::clear()
     _entries.clear();
     _uses.clear();
     _failures.clear();
+    _lastPrepared.clear();
     _byteSize = 0;
 }
 
@@ -506,14 +514,24 @@ LiveTextureStore::getByteSize() const
 void
 LiveTextureStore::evictLocked()
 {
-    // The most recent texture stays even over budget: it is the one about to be read.
-    while ((_byteSize > _byteBudget) && (_uses.size() > 1)) {
-        std::map<std::string, Entry>::iterator victim = _entries.find(_uses.back());
-        _uses.pop_back();
+    // The most recent texture stays even over budget: it is the one about to be read. So do the
+    // ones a frame on screen or being prepared reads: going over budget costs memory, while
+    // dropping one shows Storm's fallback with nothing to say why.
+    std::list<std::string>::iterator use = _uses.end();
+    while ((_byteSize > _byteBudget) && (use != _uses.begin())) {
+        --use;
+        if (use == _uses.begin()) {
+            break;
+        }
+        if ((_pinned.find(*use) != _pinned.end()) || (_lastPrepared.find(*use) != _lastPrepared.end())) {
+            continue;
+        }
+        std::map<std::string, Entry>::iterator victim = _entries.find(*use);
         if (victim != _entries.end()) {
             _byteSize -= victim->second.buffer->getByteSize();
             _entries.erase(victim);
         }
+        use = _uses.erase(use);
     }
 }
 
@@ -528,8 +546,7 @@ LiveTextureStore::getFailure(const std::string& uri) const
 
 int
 LiveTextureStore::prepare(const LiveTextureSourceList& sources,
-                          double frame,
-                          ViewIdx view)
+                          double frame)
 {
     // A render on the main thread would block the UI and could deadlock against it.
     QCoreApplication* app = QCoreApplication::instance();
@@ -557,6 +574,21 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         return numMissing;
     }
 
+    if (sources.empty()) {
+        return 0;
+    }
+
+    std::set<std::string> uris;
+    for (const LiveTextureSource& source : sources) {
+        uris.insert(source.getUri(frame));
+    }
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (const std::string& uri : uris) {
+            ++_pinned[uri];
+        }
+    }
+
     int numFailed = 0;
     for (const LiveTextureSource& source : sources) {
         const std::string uri = source.getUri(frame);
@@ -578,10 +610,13 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         LiveTextureBufferConstPtr buffer;
         std::thread renderer([&]() {
             try {
-                buffer = renderSource(source, source.getSourceFrame(frame), view, &failure);
+                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, &failure);
             } catch (const std::exception& e) {
                 buffer.reset();
                 failure = e.what();
+            } catch (...) {
+                buffer.reset();
+                failure = "an unknown error occurred";
             }
         });
         renderer.join();
@@ -594,6 +629,11 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
             if (buffer) {
                 _failures.erase(uri);
             } else {
+                // A varying source's every frame and every edit has a URI of its own, most of which
+                // are never tried again, so erasing on success alone would not bound this.
+                if ((_failures.size() >= kMaxFailures) && (_failures.find(uri) == _failures.end())) {
+                    _failures.clear();
+                }
                 _failures[uri] = failure;
             }
         }
@@ -607,6 +647,18 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                                                "The live texture " + uri + " shows the renderer's fallback: " + failure + ".");
             }
         }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (const std::string& uri : uris) {
+            std::map<std::string, int>::iterator pin = _pinned.find(uri);
+            if (--pin->second == 0) {
+                _pinned.erase(pin);
+            }
+        }
+        _lastPrepared.swap(uris);
+        evictLocked();
     }
 
     return numFailed;

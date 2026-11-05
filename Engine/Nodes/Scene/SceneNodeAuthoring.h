@@ -120,6 +120,9 @@ void appendLiveTextureSource(const LiveTextureSource& source,
 LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
                                     const LiveTextureSource& source);
 
+// True when the window of recorded changes over the frames it was recorded for.
+bool liveTextureWindowVaries(const LiveTextureSource& recorded);
+
 /**
  * @brief Connects the texture coordinates st of a texture showing recorded to coordinates, through
  * a UsdTransform2d defined at transformPath that takes 0 to 1 over the image's format to the
@@ -141,6 +144,13 @@ bool connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
  **/
 bool connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
                            PXR_NS::UsdShadeShader texture);
+
+/**
+ * @brief Authors the inputs of the UsdPreviewSurface surface that leave only its emission showing,
+ * and creates its emissiveColor input for the caller to feed.
+ **/
+bool authorUnlitSurfaceInputs(PXR_NS::UsdShadeShader surface,
+                              PXR_NS::UsdShadeInput* emissive);
 
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);

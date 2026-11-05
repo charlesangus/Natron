@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -57,20 +58,6 @@ isBlank(const std::string& s)
     return s.find_first_not_of(" \t\r\n") == std::string::npos;
 }
 
-// Whether the transform of prim or of any ancestor may change over time.
-bool
-transformMightVary(const PXR_NS::UsdPrim& prim)
-{
-    for (PXR_NS::UsdPrim p = prim; p && !p.IsPseudoRoot(); p = p.GetParent()) {
-        const PXR_NS::UsdGeomXformable xformable(p);
-        if (xformable && xformable.TransformMightBeTimeVarying()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 bool
 attributeMightVary(const PXR_NS::UsdAttribute& attribute)
 {
@@ -80,7 +67,7 @@ attributeMightVary(const PXR_NS::UsdAttribute& attribute)
 bool
 cameraMightVary(const PXR_NS::UsdGeomCamera& camera)
 {
-    return transformMightVary(camera.GetPrim())
+    return SceneProjectionCameras::transformMightVary(camera.GetPrim())
         || attributeMightVary(camera.GetProjectionAttr())
         || attributeMightVary(camera.GetFocalLengthAttr())
         || attributeMightVary(camera.GetHorizontalApertureAttr())
@@ -967,7 +954,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
                 }
                 continue;
             }
-            bool meshVaries = transformMightVary(prim)
+            bool meshVaries = SceneProjectionCameras::transformMightVary(prim)
                 || attributeMightVary(mesh.GetPointsAttr())
                 || attributeMightVary(mesh.GetFaceVertexCountsAttr())
                 || attributeMightVary(mesh.GetFaceVertexIndicesAttr());

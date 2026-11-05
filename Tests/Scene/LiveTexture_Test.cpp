@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -91,7 +92,7 @@ prepareOffMainThread(const LiveTextureSourceList& sources,
                      double frame)
 {
     int numFailed = -1;
-    std::thread worker([&]() { numFailed = LiveTextureStore::instance().prepare(sources, frame, ViewIdx(0)); });
+    std::thread worker([&]() { numFailed = LiveTextureStore::instance().prepare(sources, frame); });
     worker.join();
 
     return numFailed;
@@ -303,7 +304,7 @@ TEST_F(LiveTextureTest, PrepareRendersAMissingTextureOnce)
 
     // The main thread never renders.
     LiveTextureStore::instance().clear();
-    EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
+    EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1.));
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
 }
 
@@ -336,6 +337,72 @@ TEST_F(LiveTextureTest, TheTextureColourIsNotPremultiplied)
     EXPECT_NEAR(0.4, center[1], 1e-5);
     EXPECT_NEAR(0.2, center[2], 1e-5);
     EXPECT_NEAR(0.5, center[3], 1e-5);
+}
+
+// Natron's images hold premultiplied colour, so a subnormal alpha comes with a colour no larger.
+TEST_F(LiveTextureTest, ASubnormalAlphaLeavesTheColourFinite)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    for (int channel = 0; channel < 4; ++channel) {
+        color->setValue(1e-40, ViewSpec::all(), channel);
+    }
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(source.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    for (int channel = 0; channel < 4; ++channel) {
+        EXPECT_TRUE(std::isfinite(center[channel])) << channel;
+        EXPECT_LE(center[channel], 1.f) << channel;
+    }
+}
+
+// Going over budget costs memory; dropping a texture of the frame shows the fallback.
+TEST_F(LiveTextureTest, TheBudgetEvictsNoTextureOfTheLastFramePrepared)
+{
+    const auto sourceOf = [](const NodePtr& constant) {
+        LiveTextureSource source;
+        source.node = constant;
+        source.nodeName = constant->getFullyQualifiedName();
+        source.layer = "rgba";
+        source.contentHash = constant->getEffectInstance()->getHash();
+        source.firstFrame = 1.;
+        source.lastFrame = 1.;
+
+        return source;
+    };
+    NodePtr constants[3];
+    for (NodePtr& constant : constants) {
+        constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        ASSERT_TRUE(bool(constant));
+    }
+    LiveTextureStore& store = LiveTextureStore::instance();
+    store.setByteBudget(1);
+
+    LiveTextureSourceList frame;
+    frame.push_back(sourceOf(constants[0]));
+    frame.push_back(sourceOf(constants[1]));
+    ASSERT_EQ(0, prepareOffMainThread(frame, 1.));
+    EXPECT_TRUE(store.contains(frame[0].getUri(1.)));
+    EXPECT_TRUE(store.contains(frame[1].getUri(1.)));
+
+    // The next frame prepared releases them.
+    const LiveTextureSource next = sourceOf(constants[2]);
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, next), 1.));
+    EXPECT_TRUE(store.contains(next.getUri(1.)));
+    EXPECT_FALSE(store.contains(frame[0].getUri(1.)));
+    EXPECT_FALSE(store.contains(frame[1].getUri(1.)));
 }
 
 // A disabled node passes its input through in the 2D graph, and its texture shows that input.
@@ -571,11 +638,11 @@ TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)
 
     // Already stored: nothing is missing, so no warning.
     LiveTextureStore::instance().insert(uri, makeGradient(4, 4));
-    EXPECT_EQ(0, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
+    EXPECT_EQ(0, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1.));
     EXPECT_FALSE(consumer->hasPersistentMessage());
 
     LiveTextureStore::instance().clear();
-    EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
+    EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1.));
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
     ASSERT_TRUE(consumer->hasPersistentMessage());
     QString message;
@@ -604,4 +671,28 @@ TEST_F(LiveTextureTest, ADeletedSourceLeavesTheTextureMissing)
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
     EXPECT_FALSE(LiveTextureStore::instance().getFailure(uri).empty());
     EXPECT_TRUE(PXR_NS::ArGetResolver().Resolve(uri).IsEmpty());
+}
+
+// Each edit of a source gives its texture a new URI, which may fail once and never be tried again.
+TEST_F(LiveTextureTest, TheFailuresKeptAreBounded)
+{
+    LiveTextureSource source;
+    {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        ASSERT_TRUE(bool(constant));
+        source.node = constant;
+        source.nodeName = constant->getFullyQualifiedName();
+        source.layer = "rgba";
+        constant->destroyNode(true, false);
+    }
+    source.contentHash = 1;
+    const std::string first = source.getUri(1.);
+    ASSERT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    EXPECT_FALSE(LiveTextureStore::instance().getFailure(first).empty());
+    for (U64 hash = 2; hash <= 300; ++hash) {
+        source.contentHash = hash;
+        ASSERT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    }
+    EXPECT_TRUE(LiveTextureStore::instance().getFailure(first).empty());
+    EXPECT_FALSE(LiveTextureStore::instance().getFailure(source.getUri(1.)).empty());
 }

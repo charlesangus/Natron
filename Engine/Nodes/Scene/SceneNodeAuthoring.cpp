@@ -319,6 +319,39 @@ getMetersPerUnit(const SceneLayerEdit& edit)
     return (edit.metersPerUnit > 0.) ? edit.metersPerUnit : SceneMetadata().metersPerUnit;
 }
 
+bool
+liveTextureWindowVaries(const LiveTextureSource& recorded)
+{
+    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
+        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+authorUnlitSurfaceInputs(PXR_NS::UsdShadeShader surface,
+                         PXR_NS::UsdShadeInput* emissive)
+{
+    // No diffuse, and the specular workflow with a black specular colour, which, unlike the
+    // metallic workflow's dielectric, reflects nothing: what is left is the emission alone.
+    const PXR_NS::UsdShadeInput diffuse = surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    const PXR_NS::UsdShadeInput metallic = surface.CreateInput(PXR_NS::TfToken("metallic"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput roughness = surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput specularWorkflow = surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int);
+    const PXR_NS::UsdShadeInput specularColor = surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    *emissive = surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f);
+
+    return diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f))
+        && metallic && metallic.Set(0.f)
+        && roughness && roughness.Set(1.f)
+        && specularWorkflow && specularWorkflow.Set(1)
+        && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f))
+        && *emissive;
+}
+
 void
 appendUpstreamMetadata(const ScenePayload& upstream,
                        ContentHasher* h)
@@ -1039,13 +1072,7 @@ connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
         return false;
     }
 
-    bool windowVaries = false;
-    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
-        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
-            windowVaries = true;
-            break;
-        }
-    }
+    const bool windowVaries = liveTextureWindowVaries(recorded);
     const auto scaleAt = [&recorded](double frame) {
         double s[2];
         double t[2];

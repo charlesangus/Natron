@@ -3249,6 +3249,9 @@ struct SceneViewport::Implementation {
     // frame it had until the worker has rendered them, so Hydra never asks for one not stored.
     U64 requestedSerial = 0;
     U64 syncedSerial = 0;
+    // A new engine reads each texture once and caches a fallback for one the store lacks under a
+    // URI that does not change, so after the store was emptied it draws nothing until this sync.
+    U64 paintHeldUntilSerial = 0;
     QString requestedError;
     ScenePayload requestedPayload;
     bool requestedLiveTextures = false;
@@ -3340,7 +3343,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (liveTextures.empty()) {
                 ok = imp->renderer.syncScene(payload, &error, serial);
             } else {
-                LiveTextureStore::instance().prepare(liveTextures, frame, ViewIdx(0));
+                LiveTextureStore::instance().prepare(liveTextures, frame);
                 liveTextures.clear();
                 ok = imp->renderer.syncScene(payload, frame, framesPerSecond, &error, serial);
             }
@@ -4260,7 +4263,13 @@ SceneViewport::releaseEngine()
         _imp->renderer.releaseGL();
         doneCurrent();
     }
-    publishState();
+    if (_imp->requestedLiveTextures) {
+        // Free GPU Memory emptied the store too, and only the worker's sync renders textures.
+        requestSync(_imp->requestedPayload, _imp->requestedError);
+        _imp->paintHeldUntilSerial = _imp->requestedSerial;
+    } else {
+        publishState();
+    }
     // A hidden view makes its engine when it is next shown.
     update();
 }
@@ -4284,6 +4293,10 @@ SceneViewport::resizeGL(int /*w*/,
 void
 SceneViewport::paintGL()
 {
+    if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
+        // onSynced asks for the repaint.
+        return;
+    }
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);

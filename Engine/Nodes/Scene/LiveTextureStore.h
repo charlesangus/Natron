@@ -180,8 +180,10 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
 /**
  * @brief The rendered live textures by URI, which the natron:// resolver serves. Filled only by
  * renders (prepare()), never by the resolver, and bounded by a byte budget that drops the least
- * recently used. Cleared on cache purge and Free GPU Memory: a texture Storm needs again is
- * rendered again by the consumer that needs it. MT-safe.
+ * recently used, except the textures of a prepare() under way and of the last one finished, which
+ * stay even over budget. Cleared on cache purge and Free GPU Memory: a texture Storm needs again is
+ * rendered again by the consumer that needs it. A texture is always of the project's first view:
+ * neither its URI nor the layers authoring it are per view. MT-safe.
  **/
 class LiveTextureStore {
 public:
@@ -209,8 +211,7 @@ public:
      * fallback, and its consumer gets a warning. Returns how many it could not render.
      **/
     int prepare(const LiveTextureSourceList& sources,
-                double frame,
-                ViewIdx view);
+                double frame);
 
     // The reason uri could not be rendered, empty if it was not tried or succeeded.
     std::string getFailure(const std::string& uri) const;
@@ -232,6 +233,9 @@ private:
     std::list<std::string> _uses;
     std::set<std::string> _rendering;
     std::map<std::string, std::string> _failures;
+    // The URIs of the prepare() calls under way, with how many hold each.
+    std::map<std::string, int> _pinned;
+    std::set<std::string> _lastPrepared;
     std::size_t _byteSize = 0;
     std::size_t _byteBudget;
 };

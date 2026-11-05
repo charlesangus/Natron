@@ -69,6 +69,24 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
   - verify: the new ctest renders the fixture through Cycles without crashing and the sphere is visible; `.local/Collected_World_Lobby/World_Lobby.usd` renders through Cycles with all materials active.
   - size: L
 
+## Phase 249.4: Render exceptions and oversized Ptex (Island UAT, 2026-11-05)
+
+- [ ] M249.P4.T1 — Keep packed Ptex below USD's 32-bit overflow
+  - files: Gui/SceneViewport.cpp, Hydra engine setup in the viewport and Engine USD render path
+  - approach: `HdStPtexMipmapTextureLoader::generateBuffers` (`pxr/imaging/hdSt/ptexMipmapTextureLoader.cpp:1051-1053`) does `int pageStride = ...; new unsigned char[pageStride * numPages]`, so a Ptex packing past 2 GiB goes negative (`isDunesB/Color/dune0001_geo.ptx`, about 2.07 GiB packed). Set a Ptex budget with `HdStResourceRegistry::SetMemoryRequestForTextureType` if Natron can reach the registry through the engine: `optimizePacking` honours `targetMemory`, which also bounds RAM. Neither route has been tried. If the registry is unreachable, patch USD to `size_t`, which means rebuilding it in the base image; put that to the user first.
+  - verify: `.local/island/usd/island.usda` in a USDRead with the viewer connected no longer throws `std::bad_alloc`, including with `isBeach` and `isDunesB` active.
+  - size: L
+- [ ] M249.P4.T2 — Catch exceptions around Hydra render calls
+  - files: Gui/SceneViewport.cpp (around line 2394), Engine HydraRenderImpl.cpp (render calls near lines 1218, 1235, 2891), a test
+  - approach: The exception crosses TBB in `HdSt_TextureObjectRegistry::Commit`, rethrows on the GUI thread and goes up through `UsdImagingGLEngine::Render` from the paint event, with no handler, so any exception in Hydra terminates. Catch around `engine->Render`, report through `natronSceneError`, and discard the engine since Hydra's state is then unknown. USDRender runs its calls on a pool thread, so cover those too.
+  - verify: a test that makes the engine throw shows an error and leaves Natron running; a later render builds a fresh engine.
+  - size: M
+- [ ] M249.P4.T3 — Check the island on a real GPU
+  - files: none expected; result in `## Decisions`
+  - approach: With `isBeach` and `isDunesB` deactivated there is no crash, but under llvmpipe RSS plateaus at 41 GB and nothing drew in over 10 minutes with the GUI blocked. Software GL exaggerates this. Real-GPU behaviour is untested. The scene has 13,313 Catmull-Clark meshes, 2.9 M PointInstancer instances and 26,659 Ptex references. Heaviness itself belongs with M327 - Heavy Scene Spike and M336 - Heavy Scene Acceptance.
+  - verify: the island is run on RADV after M249.P4.T1 and T2, and the outcome is recorded; a crash reopens the fix.
+  - size: M
+
 ## Decisions
 
 - 2026-10-28: Storm tests failed with Cycles installed: the GL engine path never set rendererPluginId, so USD picked its default, and Cycles (priority 0, name sorts before HdStormRendererPlugin) won the tie. Every Hydra engine now names its renderer; Cycles' plugInfo priority patched 0 → 99 (USD defaults to the LOWEST priority); a test checks Storm leads the renderer list.

@@ -194,23 +194,6 @@ namespace {
         return v && std::strcmp(v, "1") == 0;
     }
 
-    // RADV exposes its SDMA engines as a transfer-only queue family only under RADV_PERFTEST=transfer_queue, which it
-    // reads as each instance is created. Copies there run several times faster than on the compute queue and stop
-    // contending with kernels; other drivers ignore the variable.
-    void requestTransferOnlyFamily()
-    {
-#ifndef _WIN32
-        static std::once_flag once;
-        std::call_once(once, [] {
-            const char* current = std::getenv("RADV_PERFTEST");
-            const std::string value = withPerftestToken(current, "transfer_queue");
-            if (!current || value != current) {
-                setenv("RADV_PERFTEST", value.c_str(), 1);
-            }
-        });
-#endif
-    }
-
     GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
                              bool& validationOn, bool& messengerOn)
     {
@@ -291,6 +274,24 @@ pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates)
         }
     }
     return pick;
+}
+
+// RADV exposes its SDMA engines as a transfer-only queue family only under RADV_PERFTEST=transfer_queue, which it
+// reads as each instance is created. Copies there run several times faster than on the compute queue and stop
+// contending with kernels; other drivers ignore the variable.
+void
+requestTransferOnlyFamily()
+{
+#ifndef _WIN32
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const char* current = std::getenv("RADV_PERFTEST");
+        const std::string value = withPerftestToken(current, "transfer_queue");
+        if (!current || value != current) {
+            setenv("RADV_PERFTEST", value.c_str(), 1);
+        }
+    });
+#endif
 }
 
 std::string

@@ -162,6 +162,11 @@ std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> 
 // A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
 std::string withPerftestToken(const char* current, std::string_view token);
 
+// Adds the transfer_queue token to RADV_PERFTEST, once per process. It edits the environment, so call it from the
+// main thread before any thread that reads the environment is started; GpuDevice::create calls it too for programs
+// without that early call.
+void requestTransferOnlyFamily();
+
 class GpuDevice {
 public:
     static GpuStatus create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out);

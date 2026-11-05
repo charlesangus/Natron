@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "GpuDevice.h"
+#include "GpuTestDevice.h"
 
 using namespace gpu;
 
@@ -140,4 +143,16 @@ TEST(GpuPerftestToken, PresentTokenIsNotAddedTwice)
     EXPECT_EQ(withPerftestToken("sam,transfer_queue", "transfer_queue"), "sam,transfer_queue");
     EXPECT_EQ(withPerftestToken("transfer_queue,sam", "transfer_queue"), "transfer_queue,sam");
     EXPECT_EQ(withPerftestToken("sam transfer_queue", "transfer_queue"), "sam transfer_queue");
+}
+
+TEST(GpuPerftestToken, DeviceCreationRequestsTheTransferQueue)
+{
+    std::unique_ptr<GpuDevice> dev;
+    const GpuStatus s = gputest::createDevice(dev);
+    GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+
+    const char* env = std::getenv("RADV_PERFTEST");
+    ASSERT_NE(env, nullptr);
+    const std::string list = std::string(",") + env + ",";
+    EXPECT_NE(list.find(",transfer_queue,"), std::string::npos) << "RADV_PERFTEST=" << env;
 }

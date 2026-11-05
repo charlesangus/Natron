@@ -1607,7 +1607,7 @@ private:
 
 struct QueueRow {
     std::string config, direction, load, note;
-    uint32_t copyFamily = 0, copyIndex = 0;
+    uint32_t copyFamily = UINT32_MAX, copyIndex = 0;
     uint32_t loadFamily = UINT32_MAX, loadIndex = 0;
     double median = kNaN, lo = kNaN, hi = kNaN;
 };
@@ -1624,13 +1624,16 @@ writeQueueRow(std::ofstream& csv, const QueueRow& r, size_t bytes, int reps)
     std::string perf = env ? env : "";
     std::replace(perf.begin(), perf.end(), ',', ';');
     const bool loaded = r.loadFamily != UINT32_MAX;
-    csv << r.config << ',' << r.direction << ',' << r.load << ',' << r.copyFamily << ',' << r.copyIndex << ','
+    const bool copied = r.copyFamily != UINT32_MAX;
+    csv << r.config << ',' << r.direction << ',' << r.load << ',' << (copied ? std::to_string(r.copyFamily) : "-") << ','
+        << (copied ? std::to_string(r.copyIndex) : "-") << ','
         << (loaded ? std::to_string(r.loadFamily) : "-") << ',' << (loaded ? std::to_string(r.loadIndex) : "-") << ','
         << num(bytes / 1e6) << ',' << reps << ',' << num(r.median) << ',' << num(r.lo) << ',' << num(r.hi) << ',' << perf << ',' << n << '\n';
     csv.flush();
     const std::string loadQ = loaded ? std::to_string(r.loadFamily) + "/" + std::to_string(r.loadIndex) : std::string("-");
-    std::printf("  %-18s %-4s load %-11s copy q %u/%u load q %-5s %7.2f GB/s (min %6.2f max %6.2f)%s%s\n", r.config.c_str(),
-                r.direction.c_str(), r.load.c_str(), r.copyFamily, r.copyIndex, loadQ.c_str(), r.median, r.lo, r.hi,
+    const std::string copyQ = copied ? std::to_string(r.copyFamily) + "/" + std::to_string(r.copyIndex) : std::string("-");
+    std::printf("  %-18s %-4s load %-11s copy q %-5s load q %-5s %7.2f GB/s (min %6.2f max %6.2f)%s%s\n", r.config.c_str(),
+                r.direction.c_str(), r.load.c_str(), copyQ.c_str(), loadQ.c_str(), r.median, r.lo, r.hi,
                 n.empty() ? "" : " | ", n.c_str());
 }
 

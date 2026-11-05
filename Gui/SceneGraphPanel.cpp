@@ -37,6 +37,9 @@
 #include <thread>
 #include <vector>
 
+#include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -45,6 +48,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QMenu>
 #include <QMimeData>
 #include <QPointer>
 #include <QRegularExpression>
@@ -1004,6 +1008,13 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->results, &QListView::clicked, this, &SceneGraphPanel::onResultActivated);
     // Queued: the model fetches no rows while it is resetting, so nothing could be reopened then.
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
+    // Ctrl+C is claimed in the views' own event filter so a window-level Copy shortcut cannot take it.
+    _imp->tree->installEventFilter(this);
+    _imp->results->installEventFilter(this);
+    _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
+    QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     if (gui) {
@@ -1144,6 +1155,48 @@ QStringList
 SceneGraphPanel::getSelection() const
 {
     return _imp->selectedPaths((_imp->stack->currentWidget() == _imp->results) ? (QAbstractItemView*)_imp->results : (QAbstractItemView*)_imp->tree);
+}
+
+void
+SceneGraphPanel::copySelectedPaths()
+{
+    const QStringList paths = getSelection();
+
+    if (!paths.isEmpty()) {
+        QApplication::clipboard()->setText(paths.join(QLatin1Char(' ')));
+    }
+}
+
+void
+SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
+{
+    if (!view->indexAt(pos).isValid()) {
+        return;
+    }
+    QMenu menu(view);
+    QAction* copyPath = menu.addAction(tr("Copy Path"));
+    copyPath->setObjectName(QString::fromUtf8("sceneGraphCopyPath"));
+    copyPath->setEnabled(!getSelection().isEmpty());
+    QObject::connect(copyPath, &QAction::triggered, this, &SceneGraphPanel::copySelectedPaths);
+    menu.exec(view->viewport()->mapToGlobal(pos));
+}
+
+bool
+SceneGraphPanel::eventFilter(QObject* watched, QEvent* e)
+{
+    if (((watched == _imp->tree) || (watched == _imp->results)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+        QKeyEvent* key = static_cast<QKeyEvent*>(e);
+        if (key->matches(QKeySequence::Copy)) {
+            if (e->type() == QEvent::KeyPress) {
+                copySelectedPaths();
+            }
+            e->accept();
+
+            return true;
+        }
+    }
+
+    return QWidget::eventFilter(watched, e);
 }
 
 void

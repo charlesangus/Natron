@@ -30,6 +30,7 @@
 
 #include <memory>
 
+#include <QAbstractItemView>
 #include <QWidget>
 #include <QtCore/QModelIndex>
 #include <QtCore/QStringList>
@@ -126,8 +127,12 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
+    bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
+    void copySelectedPaths();
+    void showRowMenu(QAbstractItemView* view, const QPoint& pos);
+
     // Reads node's scene into a stage of the panel's own; null shows the followed scene.
     void showNodeScene(const NodePtr& node);
 

@@ -54,3 +54,4 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 - 2026-11-02 — main merged in; IDefocus gpuWeight follows main's Defocus (M239); gate fails only on unrecorded goldens — recording (PM).
 - 2026-11-03 — GUI check fixed (script: black reference, overlay samples, Fit zoom) in ccb70c814; GUI 75/75 (run 41595030509). UAT: build/appimages/Natron-m186-exact-idefocus.AppImage + .md; screenshots sent.
 - 2026-11-05 — UAT approved (user).
+- 2026-11-05 — Review round closed at 288788e0e (Claude reviewer). Copied knob logic from Defocus declined, no behaviour risk (PM).

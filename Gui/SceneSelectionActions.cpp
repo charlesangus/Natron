@@ -109,7 +109,7 @@ addInitialPrims(CreateNodeArgs& args,
     if (!plugin || plugin->getPrimPathKnob().empty() || paths.isEmpty()) {
         return;
     }
-    args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), primPathsText(plugin->getPrimPathKnobTakesPattern() ? KnobString::ePrimPathHintPattern : KnobString::ePrimPathHintPath, paths));
+    args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), SceneSelectionActions::primPathsText(plugin->getPrimPathKnobTakesPattern() ? KnobString::ePrimPathHintPattern : KnobString::ePrimPathHintPath, paths));
     if (pluginID == QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM)) {
         args.addParamDefaultValue<int>(kSceneReparentParamMode, (int)eSceneReparentModeWrap);
     }
@@ -123,7 +123,7 @@ pushSet(Gui* gui,
         const QStringList& paths)
 {
     UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
-    const std::string text = primPathsText(knob->getPrimPathHint(), paths);
+    const std::string text = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
 
     if (!history || (text == knob->getValue(0))) {
         return false;

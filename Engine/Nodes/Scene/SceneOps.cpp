@@ -542,6 +542,72 @@ frameToTimeCode(const ScenePayload& payload,
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
 }
 
+bool
+parsePrimExpression(const std::string& text,
+                    PXR_NS::SdfPathExpression* expression,
+                    std::string* errorMessage)
+{
+    *expression = PXR_NS::SdfPathExpression();
+    if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+        return true;
+    }
+    PXR_NS::SdfPathExpression parsed;
+    {
+        PXR_NS::TfErrorMark mark;
+        parsed = PXR_NS::SdfPathExpression(text);
+        mark.Clear();
+    }
+    if (!parsed.GetParseError().empty()) {
+        *errorMessage = "\"" + text + "\" is not a valid prim selection: " + parsed.GetParseError();
+
+        return false;
+    }
+    if (!parsed.IsAbsolute()) {
+        *errorMessage = "\"" + text + "\" holds a relative path; prim selections name absolute paths such as /World/Geo or //*Light*.";
+
+        return false;
+    }
+    if (parsed.ContainsExpressionReferences()) {
+        *errorMessage = "\"" + text + "\" references a collection (%), which a prim selection cannot resolve.";
+
+        return false;
+    }
+    *expression = parsed;
+
+    return true;
+}
+
+bool
+selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+            const std::string& expression,
+            std::vector<PXR_NS::SdfPath>* paths,
+            std::string* errorMessage)
+{
+    paths->clear();
+    PXR_NS::SdfPathExpression parsed;
+    if (!parsePrimExpression(expression, &parsed, errorMessage)) {
+        return false;
+    }
+    if (!stage || parsed.IsEmpty()) {
+        return true;
+    }
+    const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+    PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+    PXR_NS::UsdPrimRange range = stage->Traverse();
+    for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+        const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+        if (result.GetValue()) {
+            paths->push_back(it->GetPath());
+        } else if (result.IsConstant()) {
+            // Nothing below can match: a literal path such as /World/Box costs its depth, not
+            // the stage's size.
+            it.PruneChildren();
+        }
+    }
+
+    return true;
+}
+
 double
 getMetricsCorrectionAngle(const SceneMetricsCorrection& correction)
 {
@@ -1414,6 +1480,17 @@ reparentRoots(const SceneReparentArgs& args,
     return true;
 } // reparentRoots
 
+PXR_NS::SdfLayerRefPtr
+createStackLayer(const ScenePayload& input,
+                 const std::string& tag)
+{
+    if (input.isEmpty()) {
+        return PXR_NS::SdfLayerRefPtr();
+    }
+
+    return createWrapper(input, tag);
+}
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {
@@ -1503,6 +1580,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.materialsScope = key.materialsScope;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
+    std::shared_ptr<const SceneLayerDependencies> dependencies;
+    edit.dependencies = &dependencies;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -1528,6 +1607,7 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    entry.dependencies = dependencies;
     if (keyStillValid && !keyStillValid(key)) {
         // The layer is not what key describes, so it must not hash like one authored under it:
         // stack hashes key what downstream caches hold.

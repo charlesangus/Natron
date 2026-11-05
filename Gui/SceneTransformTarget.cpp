@@ -520,66 +520,6 @@ createEditNode(const NodePtr& viewed,
     return node;
 } // createEditNode
 
-std::vector<std::string>
-splitPrimPath(const std::string& path)
-{
-    std::vector<std::string> names;
-    std::size_t pos = 1;
-
-    while (pos <= path.size()) {
-        std::size_t slash = path.find('/', pos);
-        if (slash == std::string::npos) {
-            slash = path.size();
-        }
-        names.push_back(path.substr(pos, slash - pos));
-        pos = slash + 1;
-    }
-
-    return names;
-}
-
-// Whether the USDEditTransform pattern names primPath, by the rules SceneNodeAuthoring::matchPrims
-// applies to a stage: one glob per prim name, as many names as the path has.
-bool
-patternNamesPrim(const std::string& pattern,
-                 const std::string& primPath)
-{
-    if ((primPath.size() < 2) || (primPath[0] != '/')) {
-        return false;
-    }
-    const std::vector<std::string> names = splitPrimPath(primPath);
-    std::size_t pos = 0;
-
-    while (pos < pattern.size()) {
-        const std::size_t begin = pattern.find_first_not_of(" \t\r\n", pos);
-        if (begin == std::string::npos) {
-            break;
-        }
-        std::size_t end = pattern.find_first_of(" \t\r\n", begin);
-        if (end == std::string::npos) {
-            end = pattern.size();
-        }
-        const std::string entry = pattern.substr(begin, end - begin);
-        pos = end;
-        if ((entry.size() < 2) || (entry[0] != '/')) {
-            continue;
-        }
-        const std::vector<std::string> globs = splitPrimPath(entry);
-        if (globs.size() != names.size()) {
-            continue;
-        }
-        bool matched = true;
-        for (std::size_t i = 0; matched && (i < names.size()); ++i) {
-            matched = SceneNodeAuthoring::matchesGlob(names[i], globs[i]);
-        }
-        if (matched) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 // A Replace-mode USDEditTransform discards every transform authored upstream of it on the prims
 // it matches, so for those prims it is the only node whose writes show.
 bool
@@ -588,12 +528,7 @@ replacesTransformOf(const NodePtr& node,
 {
     USDEditTransform* edit = toEditTransform(node);
 
-    if (!edit || (edit->getMode() != USDEditTransform::eModeReplace)) {
-        return false;
-    }
-    KnobStringPtr pattern = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUSDEditTransformParamPrimPattern));
-
-    return pattern && patternNamesPrim(pattern->getValue(), primPath);
+    return edit && (edit->getMode() == USDEditTransform::eModeReplace) && edit->transformsPrim(primPath);
 }
 
 NodePtr

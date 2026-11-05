@@ -133,6 +133,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
+    registerTestBuiltInPlugin<SceneTestAuthored>();
 }
 
 void

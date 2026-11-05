@@ -64,12 +64,6 @@ getFreeOpName(const PXR_NS::UsdPrim& prim,
     }
 }
 
-bool
-isBlank(const std::string& s)
-{
-    return s.find_first_not_of(" \t\r\n") == std::string::npos;
-}
-
 /**
  * @brief Whether order, the op order spec authors, is an Append-mode USDEditTransform's: it ends with
  * an op of this node's naming that spec's layer authors too, after the order the node saw, and
@@ -137,6 +131,28 @@ getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
 
     return result;
 } // getAppendBaseOrder
+
+// The prims of stage that pattern selects and that can hold a transform, in stage order.
+bool
+selectXformables(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& pattern,
+                 std::vector<PXR_NS::UsdPrim>* prims,
+                 std::string* errorMessage)
+{
+    prims->clear();
+    std::vector<PXR_NS::SdfPath> found;
+    if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
+        return false;
+    }
+    for (const PXR_NS::SdfPath& path : found) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+        if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
+            prims->push_back(prim);
+        }
+    }
+
+    return true;
+}
 } // anonymous namespace
 
 struct USDEditTransform::Implementation {
@@ -178,15 +194,8 @@ USDEditTransform::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kUSDEditTransformParamPrimPattern);
-    primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
-    primPattern->setHintToolTip(tr("The prims to transform: absolute prim paths separated by spaces, whose names may use * "
-                                   "(any run of characters) and ? (any one character), such as /World/Geo/*. "
-                                   "Only prims that can hold a transform match."));
-    primPattern->setAnimationEnabled(false);
-    page->addKnob(primPattern);
-    _primPattern = primPattern;
+    _primPattern.create(this, page, kUSDEditTransformParamPrimPattern, tr("Prim Pattern"),
+                        tr("The prims to transform. Only prims that can hold a transform match."));
 
     KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode"));
     mode->setName(kUSDEditTransformParamMode);
@@ -299,6 +308,43 @@ USDEditTransform::getMatchedPrims(std::vector<std::string>* primPaths,
 }
 
 bool
+USDEditTransform::transformsPrim(const std::string& primPath) const
+{
+    const std::string pattern = _primPattern.getExpression();
+    ScenePayload upstream;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->matchesValid && (_imp->matchedPattern == pattern)) {
+            for (const PXR_NS::SdfPath& path : _imp->matches) {
+                if (path.GetString() == primPath) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        upstream = _imp->lastUpstream;
+    }
+    if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
+        return false;
+    }
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    std::vector<PXR_NS::UsdPrim> found;
+    if (!stage || !selectXformables(stage, pattern, &found, &error)) {
+        return false;
+    }
+    for (const PXR_NS::UsdPrim& prim : found) {
+        if (prim.GetPath().GetString() == primPath) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
 USDEditTransform::getHandleTarget(std::string* primPath,
                                   std::string* opName) const
 {
@@ -372,16 +418,20 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
                               std::string* errorMessage)
 {
     const ScenePayload upstream = args.getInputScene(0);
-    KnobStringPtr patternKnob = _primPattern.lock();
-    const std::string pattern = patternKnob ? patternKnob->getValue() : std::string();
+    const std::string pattern = _primPattern.getExpression();
     const std::string baseOpName = getBaseOpName();
+    if (!PrimSelector::validate(pattern, errorMessage)) {
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
+    }
 
     // What the layer reads of the input: the matches, the op name each gets and the order an
     // Append-mode op goes after. Read here, so the layer is keyed on them alone.
     std::vector<PXR_NS::SdfPath> matches;
     std::vector<PXR_NS::TfToken> opNames;
     std::vector<PXR_NS::VtTokenArray> baseOrders;
-    if (!upstream.isEmpty() && !isBlank(pattern)) {
+    if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
         bool cached = false;
         {
             std::lock_guard<std::mutex> l(_imp->lock);
@@ -403,19 +453,16 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
 
                 return eStatusFailed;
             }
-            std::vector<PXR_NS::SdfPath> found;
-            if (!SceneNodeAuthoring::matchPrims(stage, pattern, &found, errorMessage)) {
+            std::vector<PXR_NS::UsdPrim> found;
+            if (!selectXformables(stage, pattern, &found, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
             }
-            for (const PXR_NS::SdfPath& path : found) {
-                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-                if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
-                    matches.push_back(path);
-                    opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
-                    baseOrders.push_back(getAppendBaseOrder(prim));
-                }
+            for (const PXR_NS::UsdPrim& prim : found) {
+                matches.push_back(prim.GetPath());
+                opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
+                baseOrders.push_back(getAppendBaseOrder(prim));
             }
         }
     }
@@ -423,7 +470,7 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
     {
         std::lock_guard<std::mutex> l(_imp->lock);
         _imp->lastUpstream = upstream;
-        _imp->matchesValid = !upstream.isEmpty() && !isBlank(pattern);
+        _imp->matchesValid = !upstream.isEmpty() && !PrimSelector::isBlank(pattern);
         _imp->matchedStack = upstream.getStackHash();
         _imp->matchedPattern = pattern;
         _imp->matchedOpName = baseOpName;
@@ -437,7 +484,7 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
     if (matches.empty()) {
         // Nothing to transform: the scene goes through untouched.
         *outputScene = upstream;
-        if (!upstream.isEmpty() && !isBlank(pattern)) {
+        if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
             setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim that can hold a transform; "
                                                          "the scene is passed through unchanged.")
                                                           .arg(QString::fromStdString(pattern))

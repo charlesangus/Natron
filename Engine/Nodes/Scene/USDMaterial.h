@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -109,6 +110,7 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
+        .primPathKnob = kSceneParamPrimPath,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

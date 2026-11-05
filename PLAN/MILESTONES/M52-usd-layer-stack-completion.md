@@ -81,7 +81,7 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - verify: test green in `build-and-test`.
   - size: M
 
-- [ ] M52.P9.T1 — USDReference shows one Reload
+- [x] M52.P9.T1 — USDReference shows one Reload
   - files: `Engine/Nodes/Scene/USDReference.{h,cpp}`, its docs and tests
   - approach: remove the duplicate of the file knob's own reload; reload keeps rereading every sublayer.
   - verify: a test proves reload rereads a changed file through the surviving control.

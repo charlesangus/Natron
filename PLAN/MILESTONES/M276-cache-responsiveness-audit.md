@@ -26,6 +26,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 
 ## Decisions
 
+- 2026-11-06 — Attribution on the software host (16 configs, GPU off): panel closed, 50 executions per config, `not_admitted`; panel open, 40, the new `behind_hit`: the task graph runs a task's dependencies without asking whether its consumer is cached, so `RawInputColor` hits while the four raw nodes above it run. Hashes never moved. M300 - Unified Tiered Cache's gate needs `behind_hit` gone and none of its tasks covers it: `/cat-plan` should add a pruning task there (recommended). `gpu_region_member`, `placement_iscached_miss`, eviction and the drag's draft switch are unmeasured: no region formed under lavapipe.
 - 2026-11-01 — **Broadened from "Cache Responsiveness Audit" (user):** the RAW → Grade report and the GPU-caching question fold in here. The fixes move to M300 - Unified Tiered Cache and M301 - GPU Cache Tier, so this milestone measures and baselines, and fixes only the independent placement-key bug.
 - 2026-11-05 — Freshness check: M276.P2.T1 rebriefed; the lambda's location moved and the test needs a real app and cache.
 - 2026-11-01 — **The benchmark uses existing raw fixtures (user):** no new camera raws (LFS quota). The latency gate is judged on the user's host with a release AppImage.
@@ -44,7 +45,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
   - verify: A run against a release AppImage writes one JSON line per edit per configuration, with latency and per-node execution counts.
   - size: M
 
-- [ ] M276.P1.T3 — Attribute every upstream execution
+- [x] M276.P1.T3 — Attribute every upstream execution
   - files: `docs/perf/interactive-edit-attribution.md` (new), `tools/bench/edit_latency_bench.py` (classifier)
   - approach: Run the benchmark's configuration matrix. Classify each upstream execution by cause: not admitted (`shouldCacheOutput` false), GPU region member (no cache), mip or draft key change, placement `isCached` miss, eviction, or genuine hash change. Each cause cites the code path. State which later milestone owns each cause.
   - verify: The report accounts for every upstream execution in every configuration, with none left unclassified.

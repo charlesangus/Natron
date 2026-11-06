@@ -356,7 +356,7 @@ future core work has solid ground to build on.
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | done | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | | | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
-| M276 | Upstream Reuse On Edits | doing | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
+| M276 | Upstream Reuse On Edits | doing | M260 | misty-marten | E6 | F6 | response | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M300 | Unified Tiered Cache | todo | M276 |  | E6 | F6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
 | M301 | GPU Cache Tier | todo | M300 |  | E6 | F6 | | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
 | M302 | Viewer Render State Cues | doing | - | misty-marten | E6 | F6 | | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
@@ -472,6 +472,7 @@ future core work has solid ground to build on.
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 
 # Open questions
+- **M276 - Upstream Reuse On Edits (PM, 2026-11-06):** the latency baseline and GPU counts need your host: `build/appimages/Natron-m276-upstream-reuse-on-edits.AppImage` with the steps in its `.md`. Also: add a task to M300 - Unified Tiered Cache that prunes dependencies behind a cache hit? Recommend yes; its gate can't pass without it.
 - **M118 - Large Graph GUI Responsiveness, bulk delete prompt (PM, 2026-11-06):** deleting nodes whose knobs other nodes link to prompts once per node, so a bulk delete means N clicks. Show one summary prompt instead? Recommend yes.
 - **NativeSplineWarpGpuTest timeouts (PM, 2026-11-06):** the suite takes about 150-285 s against a 300 s limit on loaded runners and timed out in one leg on the M296 - Raw Prepare Output Format, M333 - Prim Inspector and M320 - Write All Input Metadata runs, with no spline or warp code touched. Treated as runner load. M270 - Lanczos Sinc Resampling Filters adds filters to this suite, so it raises the limit or splits the suite in P2.T4.
 - **F3 - Cycles And MoonRay Delegates, render settings that do nothing (PM, 2026-11-06):** MoonRay's denoiser likely doesn't run in our build (traced, not run), and Cycles' Path Guiding isn't compiled in. Keep them as controls whose tooltips say so? Recommend: patch MoonRay to select OIDN and mark the guides on outputs (a follow-up milestone), and build Cycles with openpgl only if you want guiding. Raise with the panel screenshots.

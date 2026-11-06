@@ -36,7 +36,7 @@ USD API use (`usdviewq/appController.py:4298-4314,4441-4509,4604-4607`).
   - verify: GUI script — on USDCamera → USDEditTransform, focal length names USDCamera and the transform names USDEditTransform; relationships and metadata list; no read runs on main (heartbeat within budget on a selection change on the flat file).
   - size: L
 
-- [ ] M333.P1.T2 — Composition tab
+- [x] M333.P1.T2 — Composition tab
   - files: `Gui/ScenePrimInspector.cpp`, `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Tests/Scene/SceneProvenance_Test.cpp`
   - approach: walk `GetPrimIndex().GetRootNode()` for the arc tree, using `UsdPrimCompositionQuery` for arc type, ancestral flag and introducing layer. Layers map to nodes through the existing owner registry. Pxr types stay behind `SceneOps`.
   - verify: gtest — a prim with a reference, a payload, a variant and an inherit reports each arc and layer; an unloaded payload reports "not loaded". Screenshot shared.

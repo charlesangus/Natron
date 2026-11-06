@@ -47,7 +47,7 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 
 ## Phase 173.1: Glyph and HUD mockup
 
-- [ ] M173.P1.T1 — Build a Qt mockup of every kind's reveal glyph, widget cursor and HUD
+- [x] M173.P1.T1 — Build a Qt mockup of every kind's reveal glyph, widget cursor and HUD
   - files: `build/m173-mockup/` (standalone Qt program and screenshot script; not shipped)
   - approach: Reuse M119's disc/ring drawing (copy its ring function if linking is awkward). Render translate, rotate, scale, size, skew, generic 1D and generic 2D spatial as reveal discs with direction labels outside the ring, plus the split HUD under each (knob name; Q/W/E/R/A for a lone knob, Q/W/E/R/T + 1/2/A for the transform group; gearing hints), in the theme colours. Start from the sketches in `## Scope`. Run under Xvfb (`build/deeprepro/run-gui.sh` recipe) and save one PNG per kind plus the group HUD.
   - verify: PNGs exist for all seven kinds and the group HUD; send them to the user with SendUserFile.

@@ -287,7 +287,7 @@ future core work has solid ground to build on.
 | M167 | Per-Frame Node Metadata | done | M100 |  | E14 | | | [M167-per-frame-node-metadata.md](PLAN/MILESTONES/M167-per-frame-node-metadata.md) |
 | M168 | NVIDIA Viewer Hand-off Validation | done | M107, M91 | bosley-faux | E5 | | | [M168-nvidia-viewer-hand-off-validation.md](PLAN/MILESTONES/M168-nvidia-viewer-hand-off-validation.md) |
 | M169 | Pipelined Strip Member Timing | done | M107, M91 | bosley-faux | E5 | | | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
-| M173 | Global Mode For Value Knobs | doing | M119 | misty-marten | E10 | | | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
+| M173 | Global Mode For Value Knobs | doing | M119 | misty-marten | E10 | | response | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | | | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 | M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | | | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 | M176 | Splice-Vertical Regression | done | - |  | E10 | | | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
@@ -472,6 +472,7 @@ future core work has solid ground to build on.
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 
 # Open questions
+- **M173 - Global Mode For Value Knobs (PM, 2026-11-06):** approve the reveal glyph, widget cursor and HUD mockups, sent as PNGs (`.worktrees/m173/build/m173-mockup/png/`), per P1.T2. Also: should the transform group's HUD get a reveal disc too, or only the HUD block? Recommend the HUD block alone. Implementation waits on this.
 - **M254 - Progressive Viewer Render, display transform (PM, 2026-11-05):** progressive frames are 8-bit sRGB from `srgbTable()`, so the viewer's OCIO view, gain and gamma don't apply to them, and neither does the viewer's lighting mode. Fixing it needs a design choice; raise with the F3 - Cycles And MoonRay Delegates UAT unless the user answers sooner.
 - **M251 - Cycles Rendering, camera exposure (inbox, 2026-11-05):** Lobby cameras author `exposure = -10`, no renderer path in Natron reads it, and the Cycles frame averages about 8,000, so it reads as blown out. Should USDRender and the viewer apply it? Raise at UAT.
 - **M130 - Native Edge-Preserving And Directional Filters:** does the DirBlur and GodRays hot-pixel artifact happen with Preferences > GPU compute set to Off, or only on Auto? Tests at low mips pass on CPU and software GPU, so the cause isn't reproduced (PM, 2026-11-05).

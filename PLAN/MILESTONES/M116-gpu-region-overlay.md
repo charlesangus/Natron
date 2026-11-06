@@ -50,7 +50,7 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
 
 ## Phase 116.1: Engine reasons
 
-- [ ] M116.P1.T1 — Reason category enum plus optional detail string
+- [x] M116.P1.T1 — Reason category enum plus optional detail string
   - files: `Engine/GpuPlacement.h`, `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach: Record a reason on each silent exit of `placeGraph` (~355-520): not `canRenderOnGpu`, `dropIncompleteRawRuns`, `tryAssign` cycle refusal, the regionGain shrink loop (`kMaxRegionShrinkSteps`) and identity. Extend `canRenderOnGpu` (currently `bool(Task&)`) with a detail out-param, feeding `makeGpuTaskPlanes`'s existing `refusal` string (~811) into it. Don't change any placement decision.
   - verify: one new `TEST(GpuPlacement, ...)` per category, using the fake `PlacementInputs`.

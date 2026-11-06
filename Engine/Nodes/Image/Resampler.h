@@ -707,6 +707,7 @@ struct RegionParams {
     bool isIdentity;
     bool doMasking;
     double mix;
+    bool readsUnprocessed;
 
     RegionParams()
         : invert(false)
@@ -716,6 +717,7 @@ struct RegionParams {
         , isIdentity(false)
         , doMasking(false)
         , mix(1.)
+        , readsUnprocessed(false)
     {
     }
 };

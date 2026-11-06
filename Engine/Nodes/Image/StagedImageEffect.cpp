@@ -37,6 +37,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -659,6 +660,19 @@ StagedImageEffect::getResampleRegionStages(double time,
         stages.mix = getMixValue(time, view);
     }
     stages.maskInput = getMaskInput();
+    if (stages.passThrough) {
+        // A node without a Channels knob processes every channel.
+        KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(getKnobByName(kNodeParamChannelSet));
+        if (channels) {
+            stages.readsUnprocessed = true;
+            for (const ResolvedLayer& layer : channels->resolve(std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()))) {
+                if (layer.desc.isColorLayer()) {
+                    stages.readsUnprocessed = !layer.channels.all();
+                    break;
+                }
+            }
+        }
+    }
 
     return stages;
 }

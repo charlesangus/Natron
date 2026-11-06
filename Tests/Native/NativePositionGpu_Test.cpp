@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <list>
 #include <memory>
 #include <sstream>
@@ -354,16 +355,14 @@ expectExact(const std::vector<float>& expected,
 }
 
 // Renders roi on the CPU and on the device from the source over the node's region of interest of
-// roi, clipped to the source's own region, and compares them exactly. The pixels of roi whose
-// unshifted position lies outside that source are counted into *outside.
+// roi, clipped to the source's own region, and compares them exactly.
 void
 expectShiftMatches(GpuParityRuntime& runtime,
                    const NodePtr& source,
                    const NodePtr& node,
                    unsigned mipmapLevel,
                    const RectI& roi,
-                   const std::string& what,
-                   std::size_t* outside = NULL)
+                   const std::string& what)
 {
     StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL) << what;
@@ -387,19 +386,31 @@ expectShiftMatches(GpuParityRuntime& runtime,
     if (!bounds.isNull()) {
         ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &inputs[0])) << what;
     }
-    if (outside) {
-        *outside = 0;
-        const RectI roiSource = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
-        for (int y = roi.y1; y < roi.y2; ++y) {
-            for (int x = roi.x1; x < roi.x2; ++x) {
-                if (!roiSource.contains(x, y)) {
-                    ++*outside;
-                }
+    const GpuRunResult run = runRenderGpu(runtime, *effect, query, inputs, nullptr, roi, outputLayout());
+    expectExact(cpu.pixels, run, roi, 4, what);
+}
+
+// The pixels of roi inside the source and outside the source shifted by c, grown by a pixel for the
+// fraction and the mipmap scale of the shift.
+std::size_t
+unshiftedOnly(const RectI& roi,
+              const RectI& sourceRod,
+              unsigned mipmapLevel,
+              const TranslateCase& c)
+{
+    const double scale = 1. / (double)(1u << mipmapLevel);
+    const RectI shifted((int)std::floor(sourceRod.x1 + c.x * scale) - 1, (int)std::floor(sourceRod.y1 + c.y * scale) - 1, (int)std::ceil(sourceRod.x2 + c.x * scale) + 1, (int)std::ceil(sourceRod.y2 + c.y * scale) + 1);
+    std::size_t count = 0;
+
+    for (int y = roi.y1; y < roi.y2; ++y) {
+        for (int x = roi.x1; x < roi.x2; ++x) {
+            if (sourceRod.contains(x, y) && !shifted.contains(x, y)) {
+                ++count;
             }
         }
     }
-    const GpuRunResult run = runRenderGpu(runtime, *effect, query, inputs, nullptr, roi, outputLayout());
-    expectExact(cpu.pixels, run, roi, 4, what);
+
+    return count;
 }
 
 } // namespace
@@ -464,9 +475,10 @@ TEST_F(NativePositionGpuTest, SourceMovedOutOfTheWindow)
 }
 
 // Unprocessed channels are the source under the output pixel, unshifted. With the alpha and then
-// the red and blue channels left out, they come from the unshifted position, which for the pixels
-// near the window's edge lies outside the source the device is given: both sides then read zero,
-// the CPU because the uncached source it fetched is exactly that region.
+// the red and blue channels left out, the node's region of definition grows to cover the source
+// too, and its region of interest asks for the source under the window: the pixels the shift
+// leaves uncovered, inside the source and outside the shifted source, still read their unshifted
+// values on both sides.
 TEST_F(NativePositionGpuTest, UnprocessedChannelsReadTheUnshiftedSource)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -490,14 +502,17 @@ TEST_F(NativePositionGpuTest, UnprocessedChannelsReadTheUnshiftedSource)
                 const std::string level = std::string(c.name) + " channels " + channels.to_string() + " mipmap " + std::to_string(mipmapLevel);
                 const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
                 ASSERT_FALSE(rod.isNull()) << level;
+                const RectI sourceRod = pixelRegionOfDefinition(source, mipmapLevel);
+                EXPECT_TRUE(rod.contains(sourceRod)) << level << ": the region of definition leaves out the source its unprocessed channels read";
                 const GpuQuery query = queryFor(node, mipmapLevel);
                 for (int i = 0; i < 4; ++i) {
                     ASSERT_EQ(channels[i], query.processChannels[i]) << level << " channel " << i;
                 }
                 for (const RectI& roi : testWindows(rod)) {
-                    std::size_t outside = 0;
-                    expectShiftMatches(*runtime, source, node, mipmapLevel, roi, level + " " + describeRoI(roi), &outside);
-                    EXPECT_GT(outside, 0u) << level << " " << describeRoI(roi) << ": no pixel reads its unprocessed channels from outside the source region";
+                    expectShiftMatches(*runtime, source, node, mipmapLevel, roi, level + " " + describeRoI(roi));
+                    if (roi == rod) {
+                        EXPECT_GT(unshiftedOnly(roi, sourceRod, mipmapLevel, c), 0u) << level << ": no pixel of the region of definition lies in the source but outside the shifted source";
+                    }
                     if (HasFatalFailure()) {
                         return;
                     }

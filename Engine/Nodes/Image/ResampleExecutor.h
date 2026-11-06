@@ -126,11 +126,13 @@ struct ResampleRequest {
  * @brief The stage state the region actions of a Resample op depend on: whether the node has the
  * MaskMix stage, whether its mask is connected and enabled (doMasking), its mix knob (1 without
  * the stage), whether it has the PassThroughUnprocessed stage, which reads the reference row with
- * or without MaskMix, and its mask input, -1 for none.
+ * or without MaskMix, whether a channel of the colour layer is left unprocessed so the output
+ * region must also cover the source, and its mask input, -1 for none.
  **/
 struct ResampleRegionStages {
     bool maskMix = false;
     bool passThrough = false;
+    bool readsUnprocessed = false;
     bool doMasking = false;
     double mix = 1.;
     int maskInput = -1;

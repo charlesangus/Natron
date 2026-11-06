@@ -2046,7 +2046,7 @@ getRegionOfDefinition(const CanonicalTransformFn& fn,
     if (!params.isIdentity) {
         expandRoD(dstPar, sx, sy, params.blackOutside, rod);
     }
-    if (params.doMasking || (params.mix != 1.)) {
+    if (params.doMasking || (params.mix != 1.) || params.readsUnprocessed) {
         rectBoundingBox(*rod, srcRoD, rod);
     }
 }

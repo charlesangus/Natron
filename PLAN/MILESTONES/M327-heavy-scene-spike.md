@@ -29,7 +29,7 @@ the numbers that settle how draw states reach Hydra. Design:
 
 ## Phase 327.1: Fixtures and harness
 
-- [ ] M327.P1.T1 — Heavy scene fixture generator
+- [x] M327.P1.T1 — Heavy scene fixture generator
   - files: `tools/bench/heavy_scene_make.py` (new), `tools/bench/README.md`
   - approach: deterministic generator writing under `build/bench`. Payload city: about 300 blocks of buildings, each building a payload to its own `.usdc`, with `assembly` and `component` kinds, about 1M prims once all are loaded, `extentsHint` authored outside the payload on 90% of payload prims, and none on the rest so markers get exercised. Flat file: 1M prims, no payloads. Reuse `scene_edit_bench.py make-file` where it fits.
   - verify: inside natron-dev, a pxr script opens each with `LoadNone` and `LoadAll` and prints prim counts: the city's composed count before loading is under 100k, and about 1M once loaded; the flat file is about 1M either way.

@@ -65,7 +65,7 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
   - approach: Run `placeGraph` a second time on a copy of the inputs with `isCached` false, returning both placements and marking which members the real plan serves from cache. M276 - Upstream Reuse On Edits changes the key that lambda probes, so override it from outside rather than editing it.
   - verify: a cached member is CPU in the real plan and GPU in the shadow plan.
   - size: M
-- [ ] M116.P1.T4 — Capture the runtime fallback per region
+- [x] M116.P1.T4 — Capture the runtime fallback per region
   - files: `Engine/RenderScheduler.cpp` (`executeRegion` ~1265-1361), `Engine/RenderScheduler.h` (`RegionReport` ~242-350), `Tests/GpuRegionFallback_Test.cpp`
   - approach: `executeRegion` writes `cpuFallback`, `deviceLost` and `retries` only to the profile sink. Also keep them on the frame result, mapped from the `kFallback*` strings set in `runGpuRegion` (`GpuRegionTask.cpp` ~3395-3535).
   - verify: each `kFallback*` cause surfaces on the result.

@@ -25,7 +25,7 @@ POLL_TIMEOUT_S = 30.0
 WATCHDOG_S = 200
 SETTLE_MS = 500
 OVERLAY_ID = "test.natron.built-in.Overlay"
-VIEWER_ID = "fr.inria.built-in.Viewer"
+VIEWER_ID = "Viewer"
 DRAG_PX = (50.0, -30.0)
 
 try:

@@ -727,7 +727,7 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
         glCheckError();
         {
             NodesList overlayNodes;
-            _imp->viewerTab->getGui()->getNodesEntitledForOverlays(overlayNodes);
+            _imp->viewerTab->getGui()->getNodesEntitledForOverlayImages(overlayNodes);
             // Reversed like the overlays, so that the first panel's images are on top.
             overlayNodes.reverse();
             _imp->overlayImageRenderer.draw(overlayNodes, getCurrentlyDisplayedTime(), getCurrentView());

@@ -26,7 +26,7 @@ POLL_TIMEOUT_S = 30.0
 WATCHDOG_S = 200
 SETTLE_MS = 600
 NODE_ID = "test.natron.built-in.OverlayImageGui"
-VIEWER_ID = "fr.inria.built-in.Viewer"
+VIEWER_ID = "Viewer"
 LINE_X = 200
 LINE_Y = (20, 230)
 BLOCK = (300, 100, 364, 164)
@@ -122,6 +122,11 @@ try:
                 hits += 1
         return hits
 
+    def image_visible(image):
+        wx, wy = to_widget(LINE_X - 50, 128) if mapping() else (0, 0)
+        p = pixel(image, wx, wy)
+        return mapping() is not None and p[0] > 20 and abs(p[0] - p[1]) < 10
+
     def zoom_to(text):
         ok = choose(held["zoom_combo"], text)
         check(ok, "the viewer zooms to " + text)
@@ -142,6 +147,12 @@ try:
         if viewer is None:
             viewer = app.createNode(VIEWER_ID)
         gt.require(viewer is not None, "the project has a viewer", gt.plugin_problem(VIEWER_ID))
+        # The viewer zooms about the format's centre, so a format the size of the node's frame keeps the
+        # frame on screen at 100%.
+        app.addFormat("m165frame 512x256")
+        fmt = app.getProjectParam("outputFormat")
+        options = list(fmt.getOptions())
+        fmt.setValue(next((i for i, o in enumerate(options) if "m165frame" in str(o)), len(options) - 1))
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         node = app.createNode(NODE_ID, -1, None, props)
         gt.require(node is not None, "create the Overlay Image Gui node", gt.plugin_problem(NODE_ID))
@@ -166,10 +177,13 @@ try:
               "the viewer shows the Un-tone-mapped (or Raw) view (items %r)" % (view_combo.property("natronItems"),))
         zoom_to("100%")
         yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: image_visible(grab()), POLL_TIMEOUT_S)
+        gt.require(ok, "the grey frame is drawn")
         ok = yield ("until", lambda: mapping() is not None, POLL_TIMEOUT_S)
         gt.require(ok, "the viewer publishes natronCanonicalToWidget")
 
         gt.section("mask off")
+        gt.shot("m165-overlay-images-start.png")
         img = grab()
         wx, wy = to_widget(LINE_X + 0.5, 128)
         check(not any_in_box(img, wx, wy, 2, is_red), "no mask is drawn while Show Mask is off")

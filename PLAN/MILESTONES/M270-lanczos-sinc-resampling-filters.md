@@ -38,7 +38,8 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
-- 2026-11-06 — Edge band measured (4x Lanczos 3 of a 64 px source): one-pixel stripes with Black Outside off go 0.57 then 1.0 at the first pixel past the source, the ramp 0.98 then 1.0; with it on, 0.51 then 0.02. No band wider than one output pixel, and past the edge the clamped kernel reads a constant anyway, so the zeroed-row rule stands and needs no question to the user.
+- 2026-11-06 — Edge band measured (4x Lanczos 3 of a 64 px source): one-pixel stripes with Black Outside off go 0.57 then 1.0 at the first pixel past the source, the ramp 0.98 then 1.0; with it on, 0.94 then 0.02 on this grid. No band wider than one output pixel, so the zeroed-row rule stands. But a Black Outside edge sliding sub-pixel jumps (a replica reads 0.377 at fx = 64.49 and -0.006 at 64.51, ringing to -0.11 at 65), which could flicker under animation: check at the Xvfb stage and raise with the user at the panel screenshots if it shows.
+- 2026-11-06 — P1 triage: no product bug in the CPU suites. Golden and parity diffs in IDistort, STMap, ITransform, ICornerPin, Reformat and Transform come from the widened kernel, not rounding (max 0.41 on noise UVs); re-record in P3.T3. `NativeSplineWarpGpuTest` is the only timeout.
 - 2026-11-06 — P1.T1 and T2: CPU clamp range counts black out-of-source reads, otherwise a fading edge clamps back up, and skips zero-weight taps; spread taps count their interpolated read. The support is an open interval, so a tap on its edge is dropped. Spread taps sit at `(k + 0.5) * 2R / 81 - R`. Lobes clamp to 2-8. Phase 270.2 mirrors all of these. Keeping the zeroed-row rule means a pixel centred past the source uses the plain kernel, so the kernel narrows at the edge under minification: P1.T4 checks for a visible band, and the user hears about it if it shows.
 - 2026-11-06 — Re-elaborated for "Same filters everywhere": added AutoStraighten, LensCorrect and SplineWarp's kernel; dropped TransformMasked (M111 - Native Node Identity Cleanup landed).
 - 2026-11-06 — Row-norm kernel scale replaces column norms: column norms mis-scale a 90° anisotropic transform and blur pure rotations.
@@ -163,7 +164,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 ## Phase 270.4: Goldens, docs and sign-off
 
 - [ ] M270.P3.T3 — Re-record goldens and add node tests
-  - files: `Tests/Native/NativeGolden_Test.cpp`, `Tests/Native/NativeReformat_Test.cpp`, `Tests/fixtures/native-golden/` (Transform, ITransform, ICornerPin, Reformat, STMapMap, IDistortMap, SplineWarp)
+  - files: `Tests/Native/NativeGolden_Test.cpp`, `Tests/Native/NativeReformat_Test.cpp`, `Tests/fixtures/native-golden/` (Transform, ITransform, ICornerPin, Reformat, STMapMap, IDistortMap, SplineWarp), `Tests/fixtures/native-parity/{Transform,Reformat}/` (rotate30-scale05-cubic, skew-yx, mask-mix05, project, format-par, box-fit; `NATRON_PARITY_RECORD_DIR`), `Tests/Native/NativeTransform_Test.cpp` and `NativeReformat_Test.cpp` tolerance comments
   - approach: Re-record only goldens whose output changed; rounding-only diffs are re-recorded without reopening the design, and the commit records the cause per directory. Add one Reformat downscale golden for Lanczos 3, one Transform golden for Sinc at Lobes 3 and one STMap minifying golden for Lanczos 3, as ≤256 px half-float compressed crops. Add a test that a 1/4 Lanczos 3 Reformat has lower alias energy than Impulse.
   - verify: `ctest -R "NativeTransform|NativeReformat|NativeGolden"` passes at the phase build; `du -sh Tests/fixtures/native-golden` grows by under 1 MB.
   - size: M

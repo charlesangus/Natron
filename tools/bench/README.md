@@ -327,8 +327,13 @@ fixture -> RawPrepare -> RawTemperature -> RawHighlights -> RawDemosaic -> RawIn
 being written with the first completed viewer frame; the file's modification time, so a few
 milliseconds of granularity), `detect_ms` (the same as seen by a 50 ms poll, an upper bound), the root
 node and mip level, `upstream_executed` and `nodes` (per node: device, cache state, executed, GPU
-region, wall time). A summary table prints at the end. Edits are set programmatically, so the draft
-switch auto-proxy makes at the start of a pointer drag is not exercised.
+region, wall time), `hashes_before` and `hashes` (each node's content hash across the edit) and `loadavg`.
+A summary table prints at the end, then the attribution table from
+`python3 -I tools/bench/edit_latency_bench.py --classify <out-dir>`, which reads the JSON lines and each
+configuration's render profile, gives every upstream execution a cause and exits 1 if any stays
+unclassified (causes and code paths: `docs/perf/interactive-edit-attribution.md`). Use a fresh out-dir per
+run: the JSON lines append, and the classifier expects one render profile per configuration. Edits are set
+programmatically, so the draft switch auto-proxy makes at the start of a pointer drag is not exercised.
 
 ```
 tools/bench/edit_latency.sh build/appimages/Natron.AppImage build/bench/edit-latency
@@ -337,7 +342,8 @@ BENCH_CASES=grade BENCH_ZOOMS=fit BENCH_PANELS=closed BENCH_GPUS=off BENCH_AUTOP
 ```
 
 Under Xvfb the GPU is unused, so `NATRON_GPU=auto` only means something against a real display:
-set `GUI_TEST_HOST_DISPLAY=:0` (and `XAUTHORITY`) to run on the host's display.
+set `GUI_TEST_HOST_DISPLAY=:0` (and `XAUTHORITY`) to run on the host's display. `BENCH_GPUS=force` also
+accepts lavapipe, a CPU Vulkan device; its region counts are usable and its timings are not.
 
 ## Bezier keying cost
 

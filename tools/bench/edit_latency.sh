@@ -78,4 +78,5 @@ for key, rows in groups.items():
     up = sorted(r.get("upstream_executed", 0) for r in rows)
     print("%-6s %-5s %-7s %-5s %-6s %5d %10s %10s %12s" % (key + (len(rows), lat[len(lat) // 2] if lat else "-", lat[-1] if lat else "-", up[len(up) // 2])))
 PY
+python3 -I "$REPO/tools/bench/edit_latency_bench.py" --classify "$OUT" || failed=$((failed + 1))
 exit $((failed > 0))

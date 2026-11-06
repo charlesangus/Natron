@@ -30,7 +30,12 @@ the frame's root.
 
 Edits are set programmatically, not dragged, so auto-proxy's drag-start draft switch is not exercised;
 the preference still governs the viewer's other proxy paths.
+
+Outside Natron, "python3 -I edit_latency_bench.py --classify <out-dir>" attributes every upstream
+execution of every recorded edit to a cause, reading edit_latency.jsonl and each configuration's render
+profile, and exits 1 if any execution is left unclassified. See docs/perf/interactive-edit-attribution.md.
 """
+import collections
 import glob
 import json
 import os
@@ -43,13 +48,14 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 # Wrappers of child widgets die with their parent wrapper, so the ones the script drives stay referenced here.
 KEEP = []
 
+# lumaRange is Outer Low, Inner Low, Centre, Inner High, Outer High; the offsets only move the key's falloffs,
+# which the image's luma may never reach, whereas the centre moves the whole range.
+LUMA_CENTRE_DIMENSION = 2
+
 CHAIN = ("RawPrepare", "RawTemperature", "RawHighlights", "RawDemosaic", "RawInputColor")
 SETTLE_S = 0.4
-
-
-def log(msg):
-    print("[edit-latency] " + msg)
-    sys.stdout.flush()
+# Records reach the file only when a frame ends, so a quiet file proves nothing during a 15 s render.
+IDLE_CPU_FRACTION = 0.25
 
 
 class Profile:
@@ -61,6 +67,7 @@ class Profile:
         self.path = None
         self.grew_at_ns = None
         self.last_growth_s = time.time()
+        self.cpu_mark = (time.time(), time.process_time())
 
     def _locate(self):
         if self.path is None:
@@ -98,7 +105,12 @@ class Profile:
 
     def quiet_for(self, seconds):
         self.read_new()
-        return time.time() - self.last_growth_s >= seconds
+        now = time.time()
+        if now - self.cpu_mark[0] >= seconds:
+            busy = (time.process_time() - self.cpu_mark[1]) / (now - self.cpu_mark[0])
+            self.cpu_mark = (now, time.process_time())
+            return busy < IDLE_CPU_FRACTION and now - self.last_growth_s >= seconds
+        return False
 
 
 def frame_roots(tasks):
@@ -153,6 +165,145 @@ def summarise(frames, edited_node):
     }
 
 
+CAUSES = collections.OrderedDict([
+    ("not_admitted", ("M300 - Unified Tiered Cache", "Node::shouldCacheOutput false, so renderRoI sets createInCache false")),
+    ("behind_hit", ("M300 - Unified Tiered Cache", "the task graph runs every dependency though a consumer's image is cached")),
+    ("gpu_region_member", ("M301 - GPU Cache Tier", "GpuRegionTask storeOutputs writes only the per-frame store")),
+    ("mip_or_draft_key", ("M303 - Interactive Edit Latency", "no cached image at this mip; draft is in ImageKey")),
+    ("placement_iscached_miss", ("M301 - GPU Cache Tier", "placed on the device although the host cache held the image")),
+    ("eviction", ("M300 - Unified Tiered Cache", "stored earlier under the same hash and mip, gone now")),
+    ("hash_change", ("none: the render is required", "the node's content hash changed across the edit")),
+    ("first_store", ("none: nothing to reuse yet", "the node's first cached image of the run")),
+    ("partial_roi", ("M300 - Unified Tiered Cache", "the cached image lacks part of the requested RoI")),
+    ("unclassified", ("-", "the evidence fits no cause")),
+])
+# renderRoI returns before its cache lookup for an identity node or an empty RoI, leaving the state bypass.
+NO_WORK_MS = 0.5
+
+
+def behind_a_hit(tasks):
+    """The tasks some cached image downstream made unnecessary."""
+    by_index = {rec["task"]: rec for rec in tasks}
+    behind = set()
+    stack = [rec["task"] for rec in tasks if rec.get("cache") == "hit"]
+    while stack:
+        for dep in by_index[stack.pop()].get("deps", []):
+            if dep in by_index and dep not in behind:
+                behind.add(dep)
+                stack.append(dep)
+    return behind
+
+
+def classify_task(rec, edit, history, behind):
+    """The cause of one executed task, or None if the task did no work. history holds the same node's
+    earlier cached (mip, state) pairs, oldest first, from every earlier frame of the run. The profile carries
+    no draft flag, so a draft key change at an unchanged mip would read as an eviction; programmatic edits
+    never switch to draft, so in this benchmark it cannot occur."""
+    node = rec["node"]
+    wall_ms = rec["wallNs"] / 1e6
+    state = rec.get("cache", "bypass")
+    on_device = rec.get("device") == "gpu" or rec.get("regionId", -1) >= 0
+    before = edit.get("hashes_before", {}).get(node)
+    after = edit.get("hashes", {}).get(node)
+    if before is None or after is None:
+        return "unclassified"
+    if before != after:
+        return "hash_change"
+    if rec["task"] in behind and wall_ms >= NO_WORK_MS:
+        return "behind_hit"
+    if on_device:
+        return "placement_iscached_miss" if any(mip == rec["mipmapLevel"] for mip, _ in history) else "gpu_region_member"
+    if state == "bypass":
+        return None if wall_ms < NO_WORK_MS else "not_admitted"
+    if state == "partial":
+        return "partial_roi"
+    if state == "miss":
+        if not history:
+            return "first_store"
+        # A finer image serves a coarser request through the lookup's downscale, so only those count.
+        if any(mip <= rec["mipmapLevel"] for mip, _ in history):
+            return "eviction"
+        return "mip_or_draft_key"
+    return "unclassified"
+
+
+def load_profile(path):
+    frames = collections.OrderedDict()
+    for line in open(path):
+        line = line.strip()
+        if line:
+            rec = json.loads(line)
+            if rec.get("kind") != "region":
+                frames.setdefault(rec["frame"], []).append(rec)
+    return frames
+
+
+def classify_run(profile_path, edits, edited_node):
+    """(per-cause execution counts, per-cause wall ms, per-node cause counts, tasks that did no work)
+    of the recorded edits, for one configuration."""
+    edits = sorted((e for e in edits if e.get("frame") is not None), key=lambda e: e["frame"])
+    counts = collections.Counter()
+    wall = collections.Counter()
+    per_node = collections.defaultdict(collections.Counter)
+    no_work = 0
+    history = collections.defaultdict(list)
+    for seq, tasks in sorted(load_profile(profile_path).items()):
+        edit = None
+        for candidate in edits:
+            if candidate["frame"] <= seq:
+                edit = candidate
+        behind = behind_a_hit(tasks)
+        depended = set()
+        for rec in tasks:
+            depended.update(rec.get("deps", []))
+        for rec in tasks:
+            state = rec.get("cache", "bypass")
+            is_upstream = rec["node"] != edited_node and rec["task"] in depended
+            if edit is not None and is_upstream and state != "hit":
+                cause = classify_task(rec, edit, history[rec["node"]], behind)
+                if cause is None:
+                    no_work += 1
+                else:
+                    counts[cause] += 1
+                    wall[cause] += rec["wallNs"] / 1e6
+                    per_node[rec["node"]][cause] += 1
+            if state in ("miss", "partial", "hit"):
+                history[rec["node"]].append((rec["mipmapLevel"], state))
+    return counts, wall, per_node, no_work
+
+
+def classify_main(out_dir):
+    groups = collections.OrderedDict()
+    for line in open(os.path.join(out_dir, "edit_latency.jsonl")):
+        if line.strip():
+            r = json.loads(line)
+            tag = "%s-%s-panel-%s-gpu-%s-proxy-%s" % (r["case"], r["zoom"], r["panel"], r["gpu"], r["autoproxy"])
+            groups.setdefault(tag, []).append(r)
+    unclassified = 0
+    names = [c for c in CAUSES]
+    print("| configuration | edits | upstream executions | " + " | ".join(names) + " | no work | wall ms per edit |")
+    print("|---|---|---|" + "---|" * (len(names) + 2))
+    for tag, edits in groups.items():
+        found = glob.glob(os.path.join(out_dir, tag, "render.prof.*"))
+        if len(found) != 1:
+            print("| %s | no single render profile: %d found |" % (tag, len(found)))
+            unclassified += 1
+            continue
+        edited = edits[0].get("edited")
+        counts, wall, _, no_work = classify_run(found[0], edits, edited)
+        unclassified += counts["unclassified"]
+        total = sum(counts.values())
+        print("| %s | %d | %d | %s | %d | %.0f |" % (
+            tag, len(edits), total, " | ".join(str(counts[c]) for c in names), no_work,
+            sum(wall.values()) / max(1, len(edits))))
+    print()
+    print("unclassified: %d" % unclassified)
+    return 1 if unclassified else 0
+
+
+if "--classify" in getattr(sys, "argv", []):
+    sys.exit(classify_main(sys.argv[sys.argv.index("--classify") + 1]))
+
 try:
     import NatronEngine
     from PySide6.QtCore import QMetaObject, Q_ARG
@@ -186,11 +337,13 @@ try:
     read = app.createReader(raw)
     require(read is not None, "create a reader for the raw file")
     previous = read
+    chain_nodes = [read]
     for plugin_id in CHAIN:
         node = app.createNode(plugin_id)
         require(node is not None, "create " + plugin_id)
         node.connectInput(0, previous)
         previous = node
+        chain_nodes.append(node)
     if case == "grade":
         edited = app.createNode("Grade")
     else:
@@ -198,6 +351,10 @@ try:
     require(edited is not None, "create the edited node")
     edited.connectInput(0, previous)
     edited_name = edited.getScriptName()
+    chain_nodes.append(edited)
+
+    def content_hashes():
+        return {n.getScriptName(): n.getContentHash() for n in chain_nodes}
 
     if case == "grade":
         knob = edited.getParam("multiply")
@@ -210,8 +367,8 @@ try:
         knob = edited.getParam("lumaRange")
 
         def set_edit(i):
-            value = 0.30 + 0.005 * (i + 1)
-            knob.setValue(value, 0)
+            value = 0.5 + 0.005 * (i + 1)
+            knob.setValue(value, LUMA_CENTRE_DIMENSION)
             return value
 
     require(knob is not None, "the edited node has its knob")
@@ -239,12 +396,15 @@ try:
 
     def set_zoom():
         gl = visible("ViewerGL")
-        require(gl is not None, "a viewer is visible")
-        KEEP.append(gl)
+        tab = visible("ViewerTab")
+        require(gl is not None and tab is not None, "a viewer is visible")
+        KEEP.extend([gl, tab])
+        # invokeMethod only warns about a name that is no slot, so the outcome has to be checked.
         if zoom == "fit":
-            QMetaObject.invokeMethod(gl, "fitImageToFormat")
+            invoked = QMetaObject.invokeMethod(tab, "centerViewer")
         else:
-            QMetaObject.invokeMethod(gl, "zoomSlot", Q_ARG(int, 100))
+            invoked = QMetaObject.invokeMethod(gl, "zoomSlot", Q_ARG(int, 100))
+        require(invoked is not False, "the zoom slot ran")
         QApplication.processEvents()
 
     profile = Profile(prefix)
@@ -281,8 +441,10 @@ try:
         require(ok, "the first frame settles")
         set_zoom()
         reset()
+        yield ("sleep", 1000)
         ok = yield ("until", settled, first_timeout)
         require(ok, "the view settles after the zoom change")
+        gt.shot("%s-%s-%s-%s.png" % (case, zoom, panel, autoproxy))
 
         recorded = 0
         for i in range(warmup + edits):
@@ -290,6 +452,7 @@ try:
             ok = yield ("until", settled, edit_timeout)
             check(ok, "quiet before edit %d" % i)
             reset()
+            hashes_before = content_hashes()
             t0_ns = time.time_ns()
             value = set_edit(i)
             ok = yield ("until", collect, edit_timeout)
@@ -308,6 +471,10 @@ try:
                 "panel": panel,
                 "autoproxy": autoproxy,
                 "gpu": os.environ.get("NATRON_GPU", "unset"),
+                "edited": edited_name,
+                "hashes_before": hashes_before,
+                "hashes": content_hashes(),
+                "loadavg": round(os.getloadavg()[0], 1),
                 "file": os.path.basename(raw),
                 "edit": i - warmup,
                 "value": round(value, 6),
@@ -322,7 +489,10 @@ try:
                 f.write(json.dumps(record) + "\n")
             recorded += 1
             check(not timed_out, "edit %d reached the viewer" % (i - warmup))
-        log("%s zoom=%s panel=%s autoproxy=%s: %d edits recorded in %s" % (case, zoom, panel, autoproxy, recorded, result_path))
+            if summary:
+                expected_mip = summary["mip"] == 0 if zoom == "100" else summary["mip"] > 0
+                check(expected_mip, "edit %d rendered at the zoom's mip (%d)" % (i - warmup, summary["mip"]))
+        gt.report("NOTE %s zoom=%s panel=%s autoproxy=%s: %d edits recorded in %s" % (case, zoom, panel, autoproxy, recorded, result_path))
 
     run(steps())
 except Exception:

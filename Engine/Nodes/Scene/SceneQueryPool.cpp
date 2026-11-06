@@ -33,6 +33,33 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+std::mutex spikeLoadSetMutex;
+PXR_NS::SdfPathSet spikeLoadSet;
+}
+
+SceneQueryPool::SpikeStats&
+SceneQueryPool::getSpikeStats()
+{
+    static SpikeStats stats;
+
+    return stats;
+}
+
+U64
+SceneQueryPool::spikeElapsedUs(std::chrono::steady_clock::time_point since)
+{
+    return U64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since).count());
+}
+
+void
+SceneQueryPool::setSpikeLoadSet(const PXR_NS::SdfPathSet& paths)
+{
+    std::lock_guard<std::mutex> lock(spikeLoadSetMutex);
+
+    spikeLoadSet = paths;
+}
+
 SceneQueryPool::Lease::Lease()
     : _pool(nullptr)
 {
@@ -162,6 +189,16 @@ SceneQueryPool::borrow(const ScenePayload& payload,
     }
     // Outside the pool's mutex: a large resync must not hold up other borrowers.
     lease._stage->sync(payload);
+    if (SceneOps::drawStateLoadNone()) {
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        PXR_NS::SdfPathSet wanted;
+        {
+            std::lock_guard<std::mutex> lock(spikeLoadSetMutex);
+            wanted = spikeLoadSet;
+        }
+        lease._stage->applyLoadSet(wanted);
+        getSpikeStats().queryLoadUs += spikeElapsedUs(start);
+    }
 
     return lease;
 }

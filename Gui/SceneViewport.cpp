@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -75,6 +76,7 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
@@ -554,11 +556,17 @@ public:
         ++count;
         resyncedPaths += notice.GetResyncedPaths().size();
         infoOnlyPaths += notice.GetChangedInfoOnlyPaths().size();
+        for (const SdfPath& path : notice.GetResyncedPaths()) {
+            if (path.IsAbsoluteRootPath()) {
+                ++rootResyncs;
+            }
+        }
     }
 
     std::atomic<U64> count { 0 };
     std::atomic<U64> resyncedPaths { 0 };
     std::atomic<U64> infoOnlyPaths { 0 };
+    std::atomic<U64> rootResyncs { 0 };
 };
 
 // The default predicate less UsdPrimIsLoaded: an unloaded payload prim is a row like any other.
@@ -930,6 +938,45 @@ struct SceneViewportRenderer::Implementation {
     U64 spikeRevealPrims = 0;
     double spikeRevealMs = 0.;
     double spikeRevealWorstFrameMs = 0.;
+
+    enum LoadPhaseEnum {
+        eLoadPhaseIdle = -1,
+        eLoadPhaseWalk,
+        eLoadPhaseOpen,
+        eLoadPhaseWait,
+        eLoadPhaseHold,
+        eLoadPhaseCount
+    };
+
+    std::thread loadThread;
+    std::atomic<bool> loadActive { false };
+    std::atomic<bool> loadAwaitsFrame { false };
+    std::atomic<int> loadPhase { eLoadPhaseIdle };
+    std::atomic<double> loadWalkMs { 0. };
+    std::atomic<double> loadOpenMs { 0. };
+    std::atomic<double> loadWaitMs { 0. };
+    std::atomic<double> loadHoldMs { 0. };
+    std::atomic<int> loadLayersAlreadyOpen { 0 };
+    std::atomic<bool> loadPreopened { false };
+    // Written by the load thread under stageMutex, and moved for the paint to report under it.
+    std::vector<std::string> loadAssets;
+    // Main thread only.
+    std::vector<std::string> loadAssetsReported;
+    U64 loadFrames[eLoadPhaseCount] = {};
+    U64 loadBusyPaints[eLoadPhaseCount] = {};
+    U64 loadHoldCameraMoves = 0;
+    bool loadHoldCameraSeen = false;
+    double loadHoldAzimuth = 0.;
+    U64 loadSerial = 0;
+    double loadFrameMs = 0.;
+    double loadFrozenMs = 0.;
+    SceneHydraFilter::Clock::time_point lastFrameEnd;
+
+    std::atomic<U64> swapEdits { 0 };
+    std::atomic<double> swapMs { 0. };
+    std::atomic<bool> swapAwaitsFrame { false };
+    U64 swapFrames = 0;
+    double swapFrameMs = 0.;
 
     // Worldspace min and max per box. Written by boxThread and read by paints, both under stageMutex.
     std::thread boxThread;
@@ -1891,6 +1938,111 @@ struct SceneViewportRenderer::Implementation {
         });
     } // startBoxes
 
+    void startLoad(const SdfPath& path,
+                   bool preopen)
+    {
+        const UsdStageRefPtr stage = currentStage();
+        if (loadActive || !stage) {
+            return;
+        }
+        if (loadThread.joinable()) {
+            loadThread.join();
+        }
+        std::fill(std::begin(loadFrames), std::end(loadFrames), U64(0));
+        std::fill(std::begin(loadBusyPaints), std::end(loadBusyPaints), U64(0));
+        loadHoldCameraMoves = 0;
+        loadHoldCameraSeen = false;
+        loadPreopened = preopen;
+        loadActive = true;
+        loadPhase = eLoadPhaseWalk;
+        loadThread = std::thread([this, stage, path, preopen]() { runLoad(stage, path, preopen); });
+    }
+
+    // The walk happens in both modes, so that a comparison of the two differs only in the open.
+    void runLoad(const UsdStageRefPtr& stage,
+                 const SdfPath& path,
+                 bool preopen)
+    {
+        using Clock = SceneHydraFilter::Clock;
+        // Before the viewer lock, the order every reader takes them in.
+        SceneWriteBarrier::ReadScope read;
+        std::vector<std::string> assets;
+        {
+            std::lock_guard<std::mutex> lock(stageMutex);
+            const Clock::time_point start = Clock::now();
+            const UsdPrim root = stage->GetPrimAtPath(path);
+            if (root) {
+                UsdPrimRange range(root, kSessionRowPredicate);
+                for (UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+                    if (!it->HasAuthoredPayloads()) {
+                        continue;
+                    }
+                    it.PruneChildren();
+                    for (const SdfPrimSpecHandle& spec : it->GetPrimStack()) {
+                        for (const SdfPayload& payload : spec->GetFieldAs<SdfPayloadListOp>(SdfFieldKeys->Payload).GetAppliedItems()) {
+                            if (!payload.GetAssetPath().empty()) {
+                                assets.push_back(SdfComputeAssetPathRelativeToLayer(spec->GetLayer(), payload.GetAssetPath()));
+                            }
+                        }
+                    }
+                }
+            }
+            loadAssets = assets;
+            loadWalkMs = elapsedMs(start, Clock::now());
+        }
+
+        loadPhase = eLoadPhaseOpen;
+        const Clock::time_point openStart = Clock::now();
+        int alreadyOpen = 0;
+        // Holding these is the point: the stage then finds each one open in the registry.
+        std::vector<SdfLayerRefPtr> held;
+        for (const std::string& asset : assets) {
+            if (SdfLayer::Find(asset)) {
+                ++alreadyOpen;
+            }
+            if (preopen) {
+                const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(asset);
+                if (layer) {
+                    held.push_back(layer);
+                }
+            }
+        }
+        loadLayersAlreadyOpen = alreadyOpen;
+        loadOpenMs = elapsedMs(openStart, Clock::now());
+
+        loadPhase = eLoadPhaseWait;
+        const Clock::time_point waitStart = Clock::now();
+        {
+            std::lock_guard<std::mutex> lock(stageMutex);
+            const Clock::time_point holdStart = Clock::now();
+            loadWaitMs = elapsedMs(waitStart, holdStart);
+            loadPhase = eLoadPhaseHold;
+            stage->LoadAndUnload(SdfPathSet { path }, SdfPathSet());
+            loadHoldMs = elapsedMs(holdStart, Clock::now());
+            SceneQueryPool::setSpikeLoadSet(stage->GetLoadSet());
+            loadPhase = eLoadPhaseIdle;
+            loadAwaitsFrame = true;
+        }
+        // After the lock goes, or a paint could find it taken with no frame left to ask for.
+        loadActive = false;
+    } // runLoad
+
+    void noteLoadPaint(int phase,
+                       bool busy)
+    {
+        if (phase == eLoadPhaseIdle) {
+            return;
+        }
+        ++(busy ? loadBusyPaints : loadFrames)[phase];
+        if (busy && (phase == eLoadPhaseHold)) {
+            if (loadHoldCameraSeen && (loadHoldAzimuth != freeCamera.azimuth)) {
+                ++loadHoldCameraMoves;
+            }
+            loadHoldCameraSeen = true;
+            loadHoldAzimuth = freeCamera.azimuth;
+        }
+    }
+
     bool spikeRevealing() const
     {
         const SceneHydraFilter* const filter = get_pointer(spikeFilter);
@@ -1928,7 +2080,18 @@ struct SceneViewportRenderer::Implementation {
             std::string verb, argument;
             int first = 0, second = 0;
             words >> verb;
-            if (verb == "boxes") {
+            if (verb == "stats") {
+            } else if (verb == "load") {
+                std::string mode;
+                words >> argument >> mode;
+                startLoad(SdfPath(argument), mode == "preopen");
+            } else if (verb == "unload_all") {
+                const UsdStageRefPtr stage = currentStage();
+                if (stage) {
+                    stage->LoadAndUnload(SdfPathSet(), stage->GetLoadSet());
+                    SceneQueryPool::setSpikeLoadSet(SdfPathSet());
+                }
+            } else if (verb == "boxes") {
                 words >> first >> second;
                 startBoxes(first, second);
             } else if (session) {
@@ -1992,6 +2155,17 @@ struct SceneViewportRenderer::Implementation {
             spikeRevealMs = elapsedMs(spikeRevealStart, now);
             spikeRevealWorstFrameMs = std::max(spikeRevealWorstFrameMs, frameMs);
         }
+        if (loadAwaitsFrame.exchange(false)) {
+            loadFrameMs = frameMs;
+            loadFrozenMs = elapsedMs(lastFrameEnd, now);
+            loadAssetsReported.swap(loadAssets);
+            ++loadSerial;
+        }
+        if (swapAwaitsFrame.exchange(false)) {
+            swapFrameMs = frameMs;
+            ++swapFrames;
+        }
+        lastFrameEnd = now;
     }
 
     bool ensureBoxProgram()
@@ -2105,6 +2279,9 @@ SceneViewportRenderer::~SceneViewportRenderer()
     if (_imp->boxThread.joinable()) {
         _imp->boxThread.join();
     }
+    if (_imp->loadThread.joinable()) {
+        _imp->loadThread.join();
+    }
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->engine) {
@@ -2157,7 +2334,12 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         // In the same step as the sync, so no frame shows the scene without the drag.
         _imp->clearPreviewLocked();
     }
-    _imp->sceneStage->sync(payload);
+    const SceneHydraFilter::Clock::time_point swapStart = SceneHydraFilter::Clock::now();
+    if (_imp->sceneStage->sync(payload)) {
+        _imp->swapMs = _imp->swapMs + elapsedMs(swapStart, SceneHydraFilter::Clock::now());
+        ++_imp->swapEdits;
+        _imp->swapAwaitsFrame = true;
+    }
     if (framesPerSecond > 0.) {
         _imp->frame = frame;
         _imp->framesPerSecond = framesPerSecond;
@@ -3117,13 +3299,18 @@ SceneViewportRenderer::renderIfIdle(unsigned int fbo,
                                     int width,
                                     int height)
 {
+    const int loadPhase = _imp->loadPhase;
     std::unique_lock<std::mutex> lock(_imp->stageMutex, std::try_to_lock);
 
     if (!lock.owns_lock()) {
+        _imp->noteLoadPaint(loadPhase, true);
+
         return eRenderStatusBusy;
     }
+    const bool converged = renderLocked(fbo, width, height);
+    _imp->noteLoadPaint(loadPhase, false);
 
-    return renderLocked(fbo, width, height) ? eRenderStatusDone : eRenderStatusRefining;
+    return converged ? eRenderStatusDone : eRenderStatusRefining;
 }
 
 bool
@@ -3319,7 +3506,7 @@ SceneViewportRenderer::queueSpikeCommand(const std::string& command)
 bool
 SceneViewportRenderer::spikeNeedsFrame() const
 {
-    return !_imp->spikeCommands.empty() || _imp->boxesBuilding || (_imp->boxesReady != _imp->boxesDrawn) || _imp->spikeRevealing();
+    return !_imp->spikeCommands.empty() || _imp->boxesBuilding || (_imp->boxesReady != _imp->boxesDrawn) || _imp->spikeRevealing() || _imp->loadActive || _imp->loadAwaitsFrame;
 }
 
 int
@@ -3358,6 +3545,43 @@ SceneViewportRenderer::getSpikeStats() const
     stats[QStringLiteral("resyncedPaths")] = _imp->spikeListener ? double(_imp->spikeListener->resyncedPaths) : 0.;
     stats[QStringLiteral("infoOnlyPaths")] = _imp->spikeListener ? double(_imp->spikeListener->infoOnlyPaths) : 0.;
     stats[QStringLiteral("stageEdits")] = double(_imp->stageEditCount);
+    stats[QStringLiteral("rootResyncs")] = _imp->spikeListener ? double(_imp->spikeListener->rootResyncs) : 0.;
+    stats[QStringLiteral("loadSerial")] = double(_imp->loadSerial);
+    stats[QStringLiteral("loadPreopened")] = bool(_imp->loadPreopened);
+    stats[QStringLiteral("loadWalkMs")] = double(_imp->loadWalkMs);
+    stats[QStringLiteral("loadOpenMs")] = double(_imp->loadOpenMs);
+    stats[QStringLiteral("loadWaitMs")] = double(_imp->loadWaitMs);
+    stats[QStringLiteral("loadHoldMs")] = double(_imp->loadHoldMs);
+    stats[QStringLiteral("loadLayersAlreadyOpen")] = int(_imp->loadLayersAlreadyOpen);
+    stats[QStringLiteral("loadFrameMs")] = _imp->loadFrameMs;
+    stats[QStringLiteral("loadFrozenMs")] = _imp->loadFrozenMs;
+    stats[QStringLiteral("loadHoldCameraMoves")] = double(_imp->loadHoldCameraMoves);
+    {
+        QJsonArray frames, busy, assets;
+        for (int phase = 0; phase < Implementation::eLoadPhaseCount; ++phase) {
+            frames.append(double(_imp->loadFrames[phase]));
+            busy.append(double(_imp->loadBusyPaints[phase]));
+        }
+        for (const std::string& asset : _imp->loadAssetsReported) {
+            assets.append(QString::fromStdString(asset));
+        }
+        stats[QStringLiteral("loadFrames")] = frames;
+        stats[QStringLiteral("loadBusyPaints")] = busy;
+        stats[QStringLiteral("loadAssets")] = assets;
+    }
+    stats[QStringLiteral("swapEdits")] = double(_imp->swapEdits);
+    stats[QStringLiteral("swapMs")] = double(_imp->swapMs);
+    stats[QStringLiteral("swapFrames")] = double(_imp->swapFrames);
+    stats[QStringLiteral("swapFrameMs")] = _imp->swapFrameMs;
+    {
+        const SceneQueryPool::SpikeStats& rematch = SceneQueryPool::getSpikeStats();
+        stats[QStringLiteral("matchCalls")] = double(rematch.calls);
+        stats[QStringLiteral("matchCount")] = double(rematch.matches);
+        stats[QStringLiteral("borrowMs")] = double(rematch.borrowUs) / 1000.;
+        stats[QStringLiteral("queryLoadMs")] = double(rematch.queryLoadUs) / 1000.;
+        stats[QStringLiteral("matchMs")] = double(rematch.matchUs) / 1000.;
+        stats[QStringLiteral("authorMs")] = double(rematch.authorUs) / 1000.;
+    }
     if (const SpikeSessionDrawMode* const session = _imp->spikeSession.get()) {
         stats[QStringLiteral("counted")] = double(_imp->spikeCounted);
         stats[QStringLiteral("rowsWithoutExtent")] = session->getRowsWithoutExtent();

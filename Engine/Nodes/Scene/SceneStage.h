@@ -107,6 +107,12 @@ public:
 
     bool hasPreviewTransforms() const;
 
+    /**
+     * @brief Loads and unloads payloads so the stage's load set is wanted. Paths the stage lacks
+     * are left alone: a node upstream may have deactivated them, and they stay wanted.
+     **/
+    void applyLoadSet(const PXR_NS::SdfPathSet& wanted);
+
 private:
     void syncProjections();
 

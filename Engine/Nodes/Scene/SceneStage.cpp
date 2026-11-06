@@ -281,4 +281,27 @@ SceneStage::hasPreviewTransforms() const
     return !_preview.empty();
 }
 
+void
+SceneStage::applyLoadSet(const PXR_NS::SdfPathSet& wanted)
+{
+    if (!_stage) {
+        return;
+    }
+    const PXR_NS::SdfPathSet current = _stage->GetLoadSet();
+    PXR_NS::SdfPathSet load, unload;
+    for (const PXR_NS::SdfPath& path : wanted) {
+        if ((current.count(path) == 0) && _stage->GetPrimAtPath(path)) {
+            load.insert(path);
+        }
+    }
+    for (const PXR_NS::SdfPath& path : current) {
+        if (wanted.count(path) == 0) {
+            unload.insert(path);
+        }
+    }
+    if (!load.empty() || !unload.empty()) {
+        _stage->LoadAndUnload(load, unload);
+    }
+}
+
 NATRON_NAMESPACE_EXIT

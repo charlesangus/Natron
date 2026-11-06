@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <list>
 #include <memory>
@@ -108,6 +110,23 @@ public:
     std::size_t getNumIdle() const;
 
     std::size_t getCapacity() const;
+
+    // Running totals of pattern re-matching, in microseconds where named so.
+    struct SpikeStats {
+        std::atomic<U64> calls { 0 };
+        std::atomic<U64> matches { 0 };
+        std::atomic<U64> borrowUs { 0 };
+        std::atomic<U64> queryLoadUs { 0 };
+        std::atomic<U64> matchUs { 0 };
+        std::atomic<U64> authorUs { 0 };
+    };
+
+    static SpikeStats& getSpikeStats();
+
+    static U64 spikeElapsedUs(std::chrono::steady_clock::time_point since);
+
+    // What every lease composes when stages open with payloads unloaded.
+    static void setSpikeLoadSet(const PXR_NS::SdfPathSet& paths);
 
 private:
     void giveBack(std::unique_ptr<SceneStage> stage);

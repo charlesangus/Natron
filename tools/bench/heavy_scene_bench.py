@@ -25,6 +25,12 @@
         BENCH_BOXES      boxes orbit10k draws (default 10000)
         BENCH_BOX_DEPTH  path depth of the prims that get a box (default flat 2, city 4, or 3 with
                          payloads unloaded)
+        BENCH_LOAD_BUILDING  payload prim load_building_* loads (default /World/Block0/B1)
+        BENCH_LOAD_BLOCK     prim load_block_*, load_orbit and load_hover load (default /World/Block1)
+        BENCH_LOAD_MODE      preopen (default) or direct: how load_orbit and load_hover load
+        BENCH_CHAIN_BLOCK    block chain_load loads and the chain's patterns reach (default
+                         /World/Block2)
+        BENCH_CHAIN_MODE     deactivate (default) or hide: what the chain's matching nodes do
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_RESULT     JSON-lines file the results are appended to
@@ -45,6 +51,25 @@ reveal releases direct children per frame, and boxes authors bounds on the rows 
 mask holding out the rest, which a later restore lifts at the cost of recomposing the whole stage;
 run orbit10k last. It has no filter to time the stage scene index, so first_render_ms is the upper
 bound on population, and stage_edits is reported rather than judged since it edits by design.
+
+The load actions need payloads unloaded and the city. Each unloads everything first, then loads on
+a worker: it walks the prim for its payload assets under the stage lock, opens them with no lock in
+preopen mode only, and takes the lock for LoadAndUnload. load_hold_ms is the comparison between the
+modes, and it only means something while load_layers_already_open is 0, so compare across processes
+or across prims: a page cache warmed by an earlier run favours whichever mode runs second.
+load_frames and load_busy_paints count paints that drew or found the lock taken, per phase (walk,
+open, wait, hold). load_orbit tumbles throughout; load_hover moves the mouse with no button.
+
+The chain actions run in this order in one process: open_chain, chain_load, rematch_chain,
+rematch_nomatch, rematch_match, rematch_offset. open_chain puts ten USDPrune nodes below USDRead,
+even ones matching a floor inside the chain block's payloads and odd ones matching nothing, so
+nothing matches until chain_load. A load re-cooks no node by itself, so rematch_chain changes the
+head's knob, which re-cooks all ten with the load set and is the deferred re-match; run again, it
+selects the same prims. rematch_nomatch and rematch_match change only the last node.
+rematch_ms is borrow_ms plus match_ms, and borrow_ms includes query_load_ms. swap_ms is the viewer
+stage's sync; swap_frame_ms is the frame that drew it. root_resyncs counts resyncs of /, the whole
+stage. rematch_offset is the control: a USDRead frame offset is the edit known to resync the whole
+stage, so root_resyncs at 0 there means the counter is not working.
 
 Budgets: main-thread stall under 100 ms; first boxes under 2 s on the payload city; no payload file
 opened that the action did not request; orbit at or above 30 fps.
@@ -149,10 +174,12 @@ try:
             self.values = {}
             self.requested_layers = set()
 
+    scene_output = [usd]
+
     def action_open(m):
         t0 = time.time()
         usd.getParam("filename").setValue(path)
-        require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
+        require(viewer.connectInput(0, scene_output[0]), "connect the Viewer to the scene")
         ok = yield ("until", first_frame_drawn, TIMEOUT_S)
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
@@ -171,7 +198,8 @@ try:
         check(ok, "edit: the edit reached the screen")
         m.values["edit_ms"] = round(prop("natronSceneLastPaintMs", time.time() * 1000.0) - t0, 1)
 
-    def action_orbit(m):
+    def begin_navigation():
+        """Maya navigation on a focused view; returns the view and what puts the preference back."""
         navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
         require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
         original = navigation.getValue()
@@ -182,11 +210,18 @@ try:
         v.activateWindow()
         v.setFocus()
         QApplication.processEvents()
+        return v, lambda: navigation.setValue(original)
+
+    def send_mouse(v, kind, pos, button, buttons):
+        event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
+        QApplication.sendEvent(v, event)
+
+    def action_orbit(m):
+        v, end_navigation = begin_navigation()
         centre = v.rect().center()
 
         def mouse(kind, pos, button, buttons):
-            event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
-            QApplication.sendEvent(v, event)
+            send_mouse(v, kind, pos, button, buttons)
 
         paints = set()
         deadline = time.time() + orbit_s
@@ -203,7 +238,7 @@ try:
                 paints.add(painted)
         mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
         elapsed = time.time() - started
-        navigation.setValue(original)
+        end_navigation()
         m.values["orbit_s"] = round(elapsed, 2)
         m.values["orbit_frames"] = len(paints)
         m.values["orbit_fps"] = round(len(paints) / elapsed, 1) if elapsed > 0 else None
@@ -368,6 +403,171 @@ try:
         m.values["stage_edit_count"] = after[1] - before[1]
         m.values["stage_edits"] = m.values["stage_notices"] + m.values["stage_edit_count"]
 
+    load_building = os.environ.get("BENCH_LOAD_BUILDING", "/World/Block0/B1")
+    load_block = os.environ.get("BENCH_LOAD_BLOCK", "/World/Block1")
+    load_mode = os.environ.get("BENCH_LOAD_MODE", "preopen")
+    require(load_mode in ("preopen", "direct"), "BENCH_LOAD_MODE is preopen or direct, not %r" % load_mode)
+
+    def prepare_load():
+        require(fixture == "city" and load_none, "load actions need the city with NATRON_DRAW_STATE_LOAD_NONE=1")
+        return (yield from spike("unload_all"))
+
+    def request_load(prim, mode):
+        """Starts a load; returns the loadSerial its first frame will publish."""
+        v = view()
+        require(v is not None, "load: a scene view is visible")
+        target = spike_stats().get("loadSerial", 0) + 1
+        v.setProperty("natronHydraSpikeCommand", "load %s %s" % (prim, mode))
+        return target
+
+    def record_load(m, before, prim, mode):
+        stats = spike_stats()
+        m.values["load_path"] = prim
+        m.values["load_mode"] = mode
+        m.values["load_assets"] = len(stats["loadAssets"])
+        m.values["load_layers_already_open"] = stats["loadLayersAlreadyOpen"]
+        m.values["load_walk_lock_ms"] = round(stats["loadWalkMs"], 2)
+        m.values["load_open_ms"] = round(stats["loadOpenMs"], 2)
+        m.values["load_wait_ms"] = round(stats["loadWaitMs"], 2)
+        m.values["load_hold_ms"] = round(stats["loadHoldMs"], 2)
+        m.values["load_first_frame_ms"] = round(stats["loadFrameMs"], 2)
+        m.values["load_no_new_frame_ms"] = round(stats["loadFrozenMs"], 2)
+        m.values["load_frames"] = stats["loadFrames"]
+        m.values["load_busy_paints"] = stats["loadBusyPaints"]
+        m.values["load_hold_camera_moves"] = stats["loadHoldCameraMoves"]
+        m.values["load_resynced_paths"] = stats["resyncedPaths"] - before["resyncedPaths"]
+        m.values["load_root_resyncs"] = stats["rootResyncs"] - before["rootResyncs"]
+        names = set(os.path.basename(a) for a in stats["loadAssets"])
+        m.requested_layers.update(i for i in (loaded_layers() or ()) if os.path.basename(i) in names)
+
+    def load_action(prim, mode):
+        def action(m):
+            before = yield from prepare_load()
+            heartbeat.start()
+            target = request_load(prim, mode)
+            ok = yield ("until", lambda: spike_stats().get("loadSerial", 0) >= target, TIMEOUT_S)
+            check(ok, "load %s %s: its first frame was drawn" % (prim, mode))
+            record_load(m, before, prim, mode)
+        return action
+
+    def load_while_moving(m, drag):
+        before = yield from prepare_load()
+        v, end_navigation = begin_navigation()
+        centre = v.rect().center()
+        buttons = Qt.LeftButton if drag else Qt.NoButton
+        heartbeat.start()
+        target = request_load(load_block, load_mode)
+        deadline = time.time() + TIMEOUT_S
+        if drag:
+            send_mouse(v, QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+        step = 0
+        while spike_stats().get("loadSerial", 0) < target and time.time() < deadline:
+            step += 1
+            offset = QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20))
+            send_mouse(v, QEvent.MouseMove, centre + offset, Qt.NoButton, buttons)
+            yield ("sleep", 0)
+        if drag:
+            send_mouse(v, QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+        end_navigation()
+        check(spike_stats().get("loadSerial", 0) >= target, "load while moving: its first frame was drawn")
+        m.values["mouse_moves_sent"] = step
+        record_load(m, before, load_block, load_mode)
+
+    def action_load_orbit(m):
+        yield from load_while_moving(m, True)
+
+    def action_load_hover(m):
+        yield from load_while_moving(m, False)
+
+    chain_length = 10
+    chain_block = os.environ.get("BENCH_CHAIN_BLOCK", "/World/Block2")
+    chain_mode = os.environ.get("BENCH_CHAIN_MODE", "deactivate")
+    require(chain_mode in ("deactivate", "hide"), "BENCH_CHAIN_MODE is deactivate or hide, not %r" % chain_mode)
+    chain = []
+    # A pattern used before could come back from the node's cache, with nothing re-matched.
+    pattern_serial = [0]
+
+    def next_pattern_serial():
+        pattern_serial[0] += 1
+        return pattern_serial[0]
+
+    def chain_pattern(i):
+        if i % 2 == 0:
+            return "%s//Floor%d" % (chain_block, i)
+        return "%s//NoMatch%d*" % (chain_block, i)
+
+    def action_open_chain(m):
+        require(fixture == "city" and load_none, "open_chain needs the city with NATRON_DRAW_STATE_LOAD_NONE=1")
+        previous = usd
+        for i in range(chain_length):
+            node = app.createNode("USDPrune")
+            require(node is not None, "create USDPrune %d" % i)
+            require(node.connectInput(0, previous), "connect USDPrune %d" % i)
+            node.getParam("primPattern").setValue(chain_pattern(i))
+            node.getParam("mode").setValue(1 if chain_mode == "hide" else 0)
+            chain.append(node)
+            previous = node
+        scene_output[0] = previous
+        heartbeat.start()
+        yield from action_open(m)
+
+    def measure_edit(m, knob, value):
+        # Stats publish only from a paint, so the baseline has to come from one.
+        before = yield from spike("stats %d" % next_pattern_serial())
+        heartbeat.start()
+        t0 = int(time.time() * 1000.0)
+
+        def on_screen():
+            # Forces the paint that publishes stats, whether or not the sync edited anything.
+            view().update()
+            return prop("natronSceneSyncedAtMs", 0) >= t0 and prop("natronSceneLastPaintMs", 0) > prop("natronSceneSyncedAtMs", 0)
+
+        knob.setValue(value)
+        ok = yield ("until", on_screen, TIMEOUT_S)
+        check(ok, "the edit reached the screen")
+        after = spike_stats()
+
+        def change(name):
+            return after[name] - before[name]
+
+        m.values["rematch_calls"] = change("matchCalls")
+        m.values["rematch_matches"] = change("matchCount")
+        m.values["rematch_ms"] = round(change("borrowMs") + change("matchMs"), 2)
+        m.values["borrow_ms"] = round(change("borrowMs"), 2)
+        m.values["query_load_ms"] = round(change("queryLoadMs"), 2)
+        m.values["match_ms"] = round(change("matchMs"), 2)
+        m.values["author_ms"] = round(change("authorMs"), 2)
+        m.values["swap_edits"] = change("swapEdits")
+        m.values["swap_ms"] = round(change("swapMs"), 2)
+        m.values["swap_frame_ms"] = round(after["swapFrameMs"], 2) if change("swapFrames") > 0 else None
+        m.values["resynced_paths"] = change("resyncedPaths")
+        m.values["info_only_paths"] = change("infoOnlyPaths")
+        m.values["root_resyncs"] = change("rootResyncs")
+        m.values["edit_to_screen_ms"] = round(prop("natronSceneLastPaintMs", 0) - t0, 1)
+
+    def pattern_knob(node):
+        require(chain, "run open_chain first")
+        return node.getParam("primPattern")
+
+    def action_rematch_chain(m):
+        head = pattern_knob(chain[0])
+        yield from measure_edit(m, head, "%s /World/Unused%d" % (chain_pattern(0), next_pattern_serial()))
+
+    def action_rematch_nomatch(m):
+        last = pattern_knob(chain[-1])
+        yield from measure_edit(m, last, "%s//NoMatchAgain%d*" % (chain_block, next_pattern_serial()))
+
+    def action_rematch_match(m):
+        last = pattern_knob(chain[-1])
+        yield from measure_edit(m, last, "%s//Floor%d" % (chain_block, chain_length - 1))
+
+    def action_rematch_offset(m):
+        require(chain, "run open_chain first")
+        knob = usd.getParam("frameOffset")
+        require(knob is not None, "USDRead has a frameOffset parameter")
+        m.values["control"] = True
+        yield from measure_edit(m, knob, float(next_pattern_serial()))
+
     ACTIONS = {
         "open": action_open,
         "edit": action_edit,
@@ -380,6 +580,18 @@ try:
         "orbit10k": action_orbit10k,
         "sibling_state": action_sibling_state,
         "noedit": action_noedit,
+        "load_building_preopen": load_action(load_building, "preopen"),
+        "load_building_direct": load_action(load_building, "direct"),
+        "load_block_preopen": load_action(load_block, "preopen"),
+        "load_block_direct": load_action(load_block, "direct"),
+        "load_orbit": action_load_orbit,
+        "load_hover": action_load_hover,
+        "open_chain": action_open_chain,
+        "chain_load": load_action(chain_block, load_mode),
+        "rematch_chain": action_rematch_chain,
+        "rematch_nomatch": action_rematch_nomatch,
+        "rematch_match": action_rematch_match,
+        "rematch_offset": action_rematch_offset,
     }
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
@@ -406,6 +618,8 @@ try:
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "stage_edits" in m.values:
             budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True, applicable=not session)
+        if "swap_ms" in m.values:
+            budgets["swap_ms"] = verdict(m.values["swap_ms"], STALL_BUDGET_MS, True, applicable=not m.values.get("control"))
         if "orbit_fps" in m.values:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
         return budgets

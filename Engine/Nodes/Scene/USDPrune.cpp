@@ -98,7 +98,11 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
     }
     std::vector<PXR_NS::SdfPath> matches;
     if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
+        SceneQueryPool::SpikeStats& spike = SceneQueryPool::getSpikeStats();
+        const std::chrono::steady_clock::time_point borrowStart = std::chrono::steady_clock::now();
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        spike.borrowUs += SceneQueryPool::spikeElapsedUs(borrowStart);
+        const std::chrono::steady_clock::time_point matchStart = std::chrono::steady_clock::now();
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (errorMessage->empty()) {
@@ -119,6 +123,9 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
                 matches.push_back(path);
             }
         }
+        spike.matchUs += SceneQueryPool::spikeElapsedUs(matchStart);
+        ++spike.calls;
+        spike.matches += matches.size();
         if (matches.empty()) {
             *outputScene = upstream;
             setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim to remove; the scene is "
@@ -178,7 +185,10 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
-    if (!emitSceneLayer(upstream, reads, author, outputScene, errorMessage)) {
+    const std::chrono::steady_clock::time_point authorStart = std::chrono::steady_clock::now();
+    const bool emitted = emitSceneLayer(upstream, reads, author, outputScene, errorMessage);
+    SceneQueryPool::getSpikeStats().authorUs += SceneQueryPool::spikeElapsedUs(authorStart);
+    if (!emitted) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

@@ -978,6 +978,33 @@ TEST(Resampler, SincFamilyKernels)
     EXPECT_EQ(filterTaps(FilterSpec(eFilterSinc, 3)), 6);
 }
 
+// The clamp range counts any nonzero tap, so these must not depend on a position's last bits.
+TEST(Resampler, KernelsWithADoubleRootAtTheEdgeVanishInTheBand)
+{
+    const FilterSpec specs[] = {
+        FilterSpec(eFilterKeys),
+        FilterSpec(eFilterSimon),
+        FilterSpec(eFilterRifman),
+        FilterSpec(eFilterMitchell),
+        FilterSpec(eFilterBicubic),
+        FilterSpec(eFilterSinc, 2),
+        FilterSpec(eFilterSinc, 4),
+        FilterSpec(eFilterSinc, 8),
+    };
+
+    for (const FilterSpec& spec : specs) {
+        const double r = spec.radius();
+        for (int k = 1; k < 256; ++k) {
+            EXPECT_EQ(spec.weight(r - k * 0x1p-50), 0.) << "filter " << spec.filter << " lobes " << spec.lobes << " k " << k;
+        }
+        EXPECT_EQ(spec.weight(r - 0x1.fp-27), 0.) << "filter " << spec.filter << " lobes " << spec.lobes;
+        for (double outside : { 0x1p-26, 0x1.4p-25, 0x1p-24 }) {
+            EXPECT_NE(spec.weight(r - outside), 0.) << "filter " << spec.filter << " lobes " << spec.lobes << " distance " << outside;
+        }
+    }
+    EXPECT_NE(FilterSpec(eFilterLanczos3).weight(3. - 0x1p-50), 0.);
+}
+
 TEST(Resampler, BicubicMatchesTheNamedCubics)
 {
     struct Case {

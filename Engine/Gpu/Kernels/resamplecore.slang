@@ -562,12 +562,10 @@ float filterValue(FilterSpec spec, FF a, bool onZero)
 // counts towards the clamp range; so small a weight moves no result.
 static const float kCountedWeight = 1e-30;
 
-// Keys, Simon, Rifman and Mitchell end in (2 - a)^2 or higher, which the CPU's double polynomials
-// lose to rounding within about 2^-27 of the edge: its weight is then zero, and the tap does not
-// count. Bicubic sums its terms differently and keeps a rounding residue there, so it still counts.
-static const float kPolynomialZeroBand = 7.450580596923828e-09;
+// Resampler.cpp's kEdgeZeroBand and vanishesInEdgeBand.
+static const float kEdgeZeroBand = 1.4901161193847656e-08;
 
-bool polynomialZeroAtEdge(FilterSpec spec, FF a)
+bool inEdgeZeroBand(FilterSpec spec, FF a)
 {
     switch (spec.filter)
     {
@@ -575,9 +573,11 @@ bool polynomialZeroAtEdge(FilterSpec spec, FF a)
     case kFilterSimon:
     case kFilterRifman:
     case kFilterMitchell:
+    case kFilterSinc:
+    case kFilterBicubic:
     {
         const FF edge = ffAddF(ffNeg(a), filterRadius(spec));
-        return edge.hi + edge.lo < kPolynomialZeroBand;
+        return edge.hi + edge.lo < kEdgeZeroBand;
     }
     default:
         return false;
@@ -589,7 +589,7 @@ float tapWeight(FilterSpec spec, FF offset, FF scale)
 {
     const FF off = ffLess(offset, ffMake(0.0, 0.0)) ? ffNeg(offset) : offset;
     const FF a = (scale.hi == 1.0 && scale.lo == 0.0) ? off : ffDiv(off, scale);
-    if (!ffLess(a, ffMake(filterRadius(spec), 0.0)))
+    if (!ffLess(a, ffMake(filterRadius(spec), 0.0)) || inEdgeZeroBand(spec, a))
         return 0.0;
     // The quotient may be noisy on a device whose division is not correctly rounded, so whether it
     // lies on an integer is read from the product, which is exact.
@@ -602,7 +602,7 @@ float tapWeight(FilterSpec spec, FF offset, FF scale)
         onInteger = diff.hi == 0.0 && diff.lo == 0.0;
     }
     const float w = filterValue(spec, a, onInteger);
-    return (w == 0.0 && !onInteger && !polynomialZeroAtEdge(spec, a)) ? kCountedWeight : w;
+    return (w == 0.0 && !onInteger) ? kCountedWeight : w;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

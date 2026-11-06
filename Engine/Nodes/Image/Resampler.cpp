@@ -130,6 +130,28 @@ namespace {
     {
         return (std::max)(2, (std::min)(lobes, 8));
     }
+
+    // These kernels end in a double root or higher, so within this band their weight is under
+    // 2^-50 and doubles leave only a rounding residue, zero or not by a position's last bits. The
+    // clamp range counts any nonzero tap, so the band is off the support outright: the range then
+    // does not follow those bits, which floats on the GPU could not.
+    const double kEdgeZeroBand = 0x1p-26;
+
+    inline bool
+    vanishesInEdgeBand(FilterEnum filter)
+    {
+        switch (filter) {
+        case eFilterKeys:
+        case eFilterSimon:
+        case eFilterRifman:
+        case eFilterMitchell:
+        case eFilterSinc:
+        case eFilterBicubic:
+            return true;
+        default:
+            return false;
+        }
+    }
 } // anon namespace
 
 double
@@ -169,8 +191,9 @@ double
 FilterSpec::weight(double x) const
 {
     const double a = std::fabs(x);
+    const double r = radius();
 
-    if (!(a < radius())) {
+    if (!(a < r) || (vanishesInEdgeBand(filter) && (r - a < kEdgeZeroBand))) {
         return 0.;
     }
     switch (filter) {
@@ -180,8 +203,12 @@ FilterSpec::weight(double x) const
         return sincPi(a) * sincPi(a / 3.);
     case eFilterLanczos4:
         return sincPi(a) * sincPi(a / 4.);
-    case eFilterSinc:
-        return sincPi(a) * (0.5 + 0.5 * std::cos(M_PI * a / usableLobes(lobes)));
+    case eFilterSinc: {
+        // 0.5 + 0.5 cos(2 theta) as cos^2(theta): at 8 lobes the sum rounds to 0 as far as 2^-25
+        // from the edge, past the band, which would drop those taps from the clamp range.
+        const double c = std::cos(M_PI * a / (2. * r));
+        return sincPi(a) * c * c;
+    }
     case eFilterBlackmanHarris:
         return taperedToEdge(blackmanHarrisWindow(a / 2.), blackmanHarrisWindow(1.));
     case eFilterGaussian:

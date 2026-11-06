@@ -49,10 +49,10 @@
 #include "Engine/Nodes/Transform/LensModels3DE.h"
 #include "Engine/Nodes/Transform/LensModelsGpu.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
-#include "Engine/TimeLine.h"
 #endif
 
 NATRON_NAMESPACE_ENTER

@@ -46,10 +46,10 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
-#include "Engine/TimeLine.h"
 #endif
 
 NATRON_NAMESPACE_ENTER

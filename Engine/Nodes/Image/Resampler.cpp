@@ -1347,6 +1347,43 @@ namespace {
     }
 } // anon namespace
 
+namespace {
+    struct RenderSample {
+        double time;
+        double amount;
+    };
+
+    // The (time, amount) pairs the render evaluates its matrix at, in order; the region actions
+    // visit the same ones. A shutter takes precedence over a directional blur, as in the render.
+    void
+    renderSamples(double time,
+                  const BlurSettings& blur,
+                  std::vector<RenderSample>* out)
+    {
+        const size_t alloc = (size_t)kMotionBlurTransformCount;
+        out->clear();
+        if ((blur.shutter != 0.) && (blur.motionBlur != 0.)) {
+            double tStart, tEnd;
+            shutterRange(time, blur.shutter, blur.shutterOffset, blur.shutterCustomOffset, &tStart, &tEnd);
+            out->reserve(alloc);
+            for (size_t i = 0; i < alloc; ++i) {
+                const RenderSample sample = { (i == 0) ? tStart : (tStart + i * (tEnd - tStart) / (double)(alloc - 1)), 1. };
+                out->push_back(sample);
+            }
+        } else if (blur.directionalBlur) {
+            out->reserve(alloc);
+            for (size_t i = 0; i < alloc; ++i) {
+                const double a = 1. - (i + 1) / (double)(alloc);
+                const RenderSample sample = { time, blur.amountFrom + (blur.amountTo - blur.amountFrom) * a };
+                out->push_back(sample);
+            }
+        } else {
+            const RenderSample sample = { time, 1. };
+            out->push_back(sample);
+        }
+    }
+} // anon namespace
+
 void
 buildSamplingTransforms(const CanonicalTransformFn& fn,
                         double time,
@@ -1365,17 +1402,15 @@ buildSamplingTransforms(const CanonicalTransformFn& fn,
 
     const Mat3 canonicalToPixel = TransformMath::canonicalToPixel(srcPar, sx, sy, fielded);
     const Mat3 pixelToCanonical = TransformMath::pixelToCanonical(dstPar, sx, sy, fielded);
-    const size_t alloc = (size_t)kMotionBlurTransformCount;
+    std::vector<RenderSample> samples;
+    renderSamples(time, blur, &samples);
     Mat3 canonical;
 
     if ((blur.shutter != 0.) && (blur.motionBlur != 0.)) {
-        double tStart, tEnd;
-        shutterRange(time, blur.shutter, blur.shutterOffset, blur.shutterCustomOffset, &tStart, &tEnd);
-        out->invTransforms.resize(alloc);
+        out->invTransforms.resize(samples.size());
         bool allEqual = true;
-        for (size_t i = 0; i < alloc; ++i) {
-            double t = (i == 0) ? tStart : (tStart + i * (tEnd - tStart) / (double)(alloc - 1));
-            if (fn(t, 1., invert, &canonical)) {
+        for (size_t i = 0; i < samples.size(); ++i) {
+            if (fn(samples[i].time, samples[i].amount, invert, &canonical)) {
                 out->invTransforms[i] = canonicalToPixel * canonical * pixelToCanonical;
             } else {
                 out->invTransforms[i] = nullSamplingMatrix();
@@ -1386,13 +1421,12 @@ buildSamplingTransforms(const CanonicalTransformFn& fn,
             out->invTransforms.resize(1);
         }
     } else if (blur.directionalBlur) {
-        out->invTransforms.reserve(alloc);
-        out->alphas.reserve(alloc);
+        out->invTransforms.reserve(samples.size());
+        out->alphas.reserve(samples.size());
         bool allEqual = true;
-        for (size_t i = 0; i < alloc; ++i) {
-            double a = 1. - (i + 1) / (double)(alloc);
-            double amt = blur.amountFrom + (blur.amountTo - blur.amountFrom) * a;
-            if (fn(time, amt, invert, &canonical)) {
+        for (size_t i = 0; i < samples.size(); ++i) {
+            const double amt = samples[i].amount;
+            if (fn(samples[i].time, amt, invert, &canonical)) {
                 out->alphas.push_back(amt);
                 out->invTransforms.push_back(canonicalToPixel * canonical * pixelToCanonical);
                 allEqual = allEqual && (out->invTransforms.back() == out->invTransforms.front());
@@ -1413,7 +1447,7 @@ buildSamplingTransforms(const CanonicalTransformFn& fn,
             }
         }
     } else {
-        if (fn(time, 1., invert, &canonical)) {
+        if (fn(samples[0].time, samples[0].amount, invert, &canonical)) {
             out->invTransforms.push_back(canonicalToPixel * canonical * pixelToCanonical);
         } else {
             out->invTransforms.push_back(nullSamplingMatrix());
@@ -1804,8 +1838,6 @@ transformRegionFromRect(const RectD& rect,
 }
 
 namespace {
-    typedef std::function<void(const Mat3&)> MatrixVisitor;
-
     void
     transformRegionVisiting(const CanonicalTransformFn& fn,
                             const RectD& rectFrom,
@@ -1813,8 +1845,7 @@ namespace {
                             bool invert,
                             const BlurSettings& blur,
                             bool isIdentity,
-                            RectD* rectTo,
-                            const MatrixVisitor& visit)
+                            RectD* rectTo)
     {
         double rangeMin, rangeMax;
         const bool hasmotionblur = ((blur.shutter != 0. || blur.directionalBlur) && blur.motionBlur != 0.);
@@ -1850,9 +1881,6 @@ namespace {
                 rectTo->y1 = kOfxFlagInfiniteMin;
                 rectTo->y2 = kOfxFlagInfiniteMax;
                 return;
-            }
-            if (visit) {
-                visit(transform);
             }
             Point3 p[4];
             RectD thisRoD;
@@ -1912,7 +1940,7 @@ transformRegion(const CanonicalTransformFn& fn,
                 bool isIdentity,
                 RectD* rectTo)
 {
-    transformRegionVisiting(fn, rectFrom, time, invert, blur, isIdentity, rectTo, MatrixVisitor());
+    transformRegionVisiting(fn, rectFrom, time, invert, blur, isIdentity, rectTo);
 }
 
 void
@@ -2074,13 +2102,30 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
     double scaleX = 1.;
     double scaleY = 1.;
     bool cornerBehind = false;
-    MatrixVisitor visit;
-    if (kernelFilter && (roi.x2 > roi.x1) && (roi.y2 > roi.y1)) {
-        visit = [&](const Mat3& M) {
-            growKernelScales(M, roi, srcPar, dstPar, sx, sy, &scaleX, &scaleY, &cornerBehind);
-        };
+    transformRegionVisiting(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI);
+    // The render's own matrices, not the sampled ones above: a peak of the scale or of the position
+    // between samples must not leave the RoI short.
+    std::vector<RenderSample> samples;
+    renderSamples(time, params.blur, &samples);
+    const bool grow = kernelFilter && (roi.x2 > roi.x1) && (roi.y2 > roi.y1);
+    const bool blurred = samples.size() > 1;
+    if (grow || blurred) {
+        Mat3 canonical;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            if (!fn(samples[i].time, samples[i].amount, params.invert, &canonical)) {
+                continue;
+            }
+            if (blurred) {
+                RectD region;
+                Point3 corners[4];
+                regionFromRect(roi, canonical, corners, &region);
+                rectBoundingBox(*srcRoI, region, srcRoI);
+            }
+            if (grow) {
+                growKernelScales(canonical, roi, srcPar, dstPar, sx, sy, &scaleX, &scaleY, &cornerBehind);
+            }
+        }
     }
-    transformRegionVisiting(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI, visit);
     if (cornerBehind && !rectIsEmpty(srcRoD)) {
         *srcRoI = srcRoD;
         if (params.doMasking || (params.mix != 1.)) {

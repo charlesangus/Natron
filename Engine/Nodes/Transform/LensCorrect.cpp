@@ -58,10 +58,10 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
-#include "Engine/TimeLine.h"
 #endif
 
 NATRON_NAMESPACE_ENTER

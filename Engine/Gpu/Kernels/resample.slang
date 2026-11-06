@@ -4,8 +4,9 @@
 // several per pixel as Resampler::motionBlurPixel does. Both carry sample positions in two floats,
 // which the unclamped kernels are continuous in. Impulse and box pick a source pixel, and box its
 // integration, by floors of the CPU's double positions that two floats round to the other side of
-// on exact scales, and a clamp range jumps where a tap enters the footprint, however small its
-// weight; their entries, resample_exact_main and resample_blur_exact_main, decide every floor as
+// on exact scales, a clamp range jumps where a tap enters the footprint, however small its
+// weight, and a minifying matrix's kernel narrows to scale 1 once the position leaves the source;
+// their entries, resample_exact_main and resample_blur_exact_main, decide every floor as
 // those doubles do: with two floats where those lie provably clear of the decision, and with the
 // doubles computed bit for bit otherwise. The integer double emulation is kept out of the two-float
 // entries because it is many times slower to run and to compile. It has no division, so projective

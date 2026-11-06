@@ -28,9 +28,9 @@ struct GpuResampleParams {
     uint32_t filter;
     uint32_t flags;
     uint32_t states;
-    // The matrix's six doubles: for the exact kernels (impulse, box and every clamped filter) each
-    // as its low then its high 32 bits, for the others the six high floats' bits and then the six
-    // low floats'.
+    // The matrix's six doubles: for the exact kernels (impulse, box, every clamped filter and every
+    // filter on a minifying matrix) each as its low then its high 32 bits, for the others the six
+    // high floats' bits and then the six low floats'.
     uint32_t matrix[12];
     int32_t lobes;
     float B;

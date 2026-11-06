@@ -1355,6 +1355,56 @@ TEST(Resampler, RoIReadsAreInsideTheRegion)
     }
 }
 
+TEST(Resampler, RoIOfAMotionBlurCoversAScalePeakBetweenSamples)
+{
+    const RectI bounds(0, 0, 256, 256);
+    std::vector<float> data = makeImage(bounds, [](int x, int y) {
+        return (float)(0.5 + 0.45 * std::sin(0.31 * x) * std::cos(0.17 * y) + 0.05 * ((x * 7 + y * 13) % 5));
+    });
+    const SourceImage full(&data.front(), bounds, 1);
+
+    // A 4x minification lasting a hundredth of the shutter, which the quarter frames miss.
+    const CanonicalTransformFn spike = [](double t, double, bool, Mat3* out) {
+        const double d = (t - 0.37) / 0.01;
+        const double k = 1. + 3. * std::exp(-d * d);
+        *out = Mat3(k, 0., 0., 0., k, 0., 0., 0., 1.);
+        return true;
+    };
+    BlurSettings blur;
+    blur.motionBlur = 1.;
+    blur.shutter = 1.;
+    blur.shutterOffset = eShutterOffsetStart;
+
+    RegionParams region;
+    region.filter = FilterSpec(eFilterLanczos3);
+    region.blur = blur;
+    const RectD window(40., 40., 56., 56.);
+    RectD srcRoI;
+    getRegionOfInterest(spike, window, RectD(0., 0., 256., 256.), RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., region, &srcRoI);
+
+    SamplingTransforms transforms;
+    buildSamplingTransforms(spike, 0., false, blur, 1., 1., false, 1., 1., &transforms);
+    ASSERT_GT(transforms.invTransforms.size(), 1u);
+    const ResampleParams params = makeResampleParams(transforms, region.filter, false, true);
+
+    const RectI crop((int)std::floor(srcRoI.x1), (int)std::floor(srcRoI.y1), (int)std::ceil(srcRoI.x2), (int)std::ceil(srcRoI.y2));
+    ASSERT_TRUE(crop.x1 >= 0 && crop.y1 >= 0 && crop.x2 <= 256 && crop.y2 <= 256);
+    std::vector<float> cropped = makeImage(crop, [&](int x, int y) {
+        return data[(size_t)y * 256 + x];
+    });
+    const SourceImage part(&cropped.front(), crop, 1);
+
+    for (int y = 40; y < 56; y += 3) {
+        std::vector<float> a((size_t)16, -1.f);
+        std::vector<float> b((size_t)16, -2.f);
+        resampleRow(params, full, y, 40, 56, &a.front());
+        resampleRow(params, part, y, 40, 56, &b.front());
+        for (size_t i = 0; i < a.size(); ++i) {
+            ASSERT_EQ(a[i], b[i]) << "y " << y << " i " << i;
+        }
+    }
+}
+
 TEST(Resampler, RoIBehindTheCameraReadsTheWholeSource)
 {
     RegionParams params;

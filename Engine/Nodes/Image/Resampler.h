@@ -757,7 +757,9 @@ void growKernelScales(const TransformMath::Mat3& matrix,
  * mix 0 under a mask; otherwise the back-transformed roi (transformRegion() with the render's
  * inverse matrix), expanded by expandRoI(). The expansion follows the kernel's widening: the
  * scale per source axis is the largest kernelScale() of the pixel matrix's Jacobian over the
- * corners of roi and over every matrix of a blur. A kernel filter whose corner falls at or behind
+ * corners of roi and over every matrix buildSamplingTransforms() evaluates for the blur (each of
+ * them, not a sample), whose back-transformed roi is also unioned in. That is
+ * kMotionBlurTransformCount calls of fn for a blur. A kernel filter whose corner falls at or behind
  * z = 0 reads the whole of srcRoD. An infinite result is replaced by its intersection with
  * srcRoD, unioned with the project rectangle projectRect. srcPar and dstPar are the source's and
  * the output's PAR.

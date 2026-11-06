@@ -706,7 +706,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
     const bool hasSrcRoD = sourceRegionOfDefinition(input, time, scale, view, &srcRoD);
     const OfxPointD s = scale.toOfxPointD();
     const double srcPar = effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput);
-    const bool readsReference = stages.maskMix && (stages.doMasking || (stages.mix != 1.)) && !renderWindow.isNull();
+    const bool readsReference = ((stages.maskMix && (stages.doMasking || (stages.mix != 1.))) || stages.passThrough) && !renderWindow.isNull();
 
     RectD srcRoI = renderWindow;
     if (request.form == ResampleRequest::Form::Matrix) {

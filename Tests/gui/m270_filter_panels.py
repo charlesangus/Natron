@@ -79,6 +79,18 @@ try:
         else:
             check(False, "save screenshot " + path)
 
+    def check_state(name, node, filter_id):
+        expected = {
+            "clamp": filter_id in CLAMPED,
+            "lobes": filter_id == "sinc",
+            "bicubicB": filter_id == "bicubic",
+            "bicubicC": filter_id == "bicubic",
+        }
+        for script_name, want in expected.items():
+            param = node.getParam(script_name)
+            require(param is not None, "%s has %s" % (name, script_name))
+            check(param.getIsEnabled() == want, "%s %s enabled=%s with %s" % (name, script_name, want, filter_id))
+
     def check_enabling(name, node, panel):
         choice = node.getParam("filter")
         options = choice.getOptions()
@@ -86,17 +98,34 @@ try:
         for filter_id in FILTERS:
             choice.set(filter_id)
             yield ("sleep", 100)
-            expected = {
-                "clamp": filter_id in CLAMPED,
-                "lobes": filter_id == "sinc",
-                "bicubicB": filter_id == "bicubic",
-                "bicubicC": filter_id == "bicubic",
-            }
-            for script_name, want in expected.items():
-                param = node.getParam(script_name)
-                require(param is not None, "%s has %s" % (name, script_name))
-                check(param.getIsEnabled() == want, "%s %s enabled=%s with %s" % (name, script_name, want, filter_id))
+            check_state(name, node, filter_id)
         report("NOTE %s enabling checked over %d filters" % (name, len(FILTERS)))
+
+    def check_after_reload():
+        path = os.path.join(gt.OUT, "m270_filter_panels.ntpz")
+        created = {}
+        for name, shown in NODES:
+            node = app.createNode(name)
+            require(node is not None, "create " + name, gt.plugin_problem(name))
+            node.getParam("filter").set(shown)
+            created[name] = node.getScriptName()
+        yield ("sleep", 300)
+        require(app.saveProjectAs(path), "save the project to " + path)
+        require(app.resetProject(), "reset the project")
+        reloaded = app.loadProject(path)
+        yield ("sleep", 800)
+        require(reloaded is not None, "reload " + path)
+        for name, shown in NODES:
+            node = reloaded.getNode(created[name])
+            require(node is not None, "the reloaded project has " + name)
+            choice = node.getParam("filter")
+            check(choice.getOption(choice.getValue()) == shown, "%s keeps filter %s after reload" % (name, shown))
+            check_state(name + " after reload", node, shown)
+            other = "lanczos3"
+            node.getParam("filter").set(other)
+            yield ("sleep", 100)
+            check_state(name + " after reload", node, other)
+        report("NOTE enabling checked after project load")
 
     def check_labels_fit(name, panel):
         height = QGuiApplication.primaryScreen().geometry().height()
@@ -132,6 +161,8 @@ try:
             del panel
             node.destroy()
             yield ("sleep", 200)
+        gt.close_all_panels()
+        yield from check_after_reload()
 
     gt.run(steps())
 except Exception:

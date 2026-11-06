@@ -653,6 +653,7 @@ StagedImageEffect::getResampleRegionStages(double time,
     ResampleRegionStages stages;
 
     stages.maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
+    stages.passThrough = imagePipelineSpec().stages.has(Stage::PassThroughUnprocessed);
     if (stages.maskMix) {
         stages.doMasking = isMaskApplied();
         stages.mix = getMixValue(time, view);

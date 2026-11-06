@@ -43,9 +43,9 @@ try:
           "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample",
           "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu"),
         G("cyclesLightPaths", True,
-          G("cyclesBounces", True, "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce",
+          G("cyclesBounces", False, "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce",
             "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce"),
-          G("cyclesClamping", True, "cyclesSampleClampDirect", "cyclesSampleClampIndirect"),
+          G("cyclesClamping", False, "cyclesSampleClampDirect", "cyclesSampleClampIndirect"),
           G("cyclesCaustics", False, "cyclesCausticsReflective", "cyclesCausticsRefractive", "cyclesFilterGlossy"),
           G("cyclesFastGi", False, "cyclesAoBounces", "cyclesAoFactor", "cyclesAoDistance", "cyclesAoAdditiveFactor")),
         G("cyclesLights", False, "cyclesUseLightTree", "cyclesLightSamplingThreshold"),
@@ -171,26 +171,26 @@ try:
         return None
 
     def scroll_area(node):
+        """The Properties bin's scroll area: a node panel's tabs have none of their own."""
         tabs = panel_tabs(node)
-        if tabs is None:
-            return None
-        page = hold(tabs.currentWidget())
-        if page is None:
-            return None
-        if isinstance(page, QScrollArea):
-            return page
-        inner = page.findChildren(QScrollArea)
-        return hold(inner[0]) if inner else None
+        w = tabs.parentWidget() if tabs is not None else None
+        while w is not None and not isinstance(w, QScrollArea):
+            w = hold(w).parentWidget()
+        return hold(w)
+
+    def current_page(node):
+        tabs = panel_tabs(node)
+        return hold(tabs.currentWidget()) if tabs is not None else None
 
     def knob_labels(node):
         """The knob labels on the current tab, as (text, widget, visible)."""
-        sa = scroll_area(node)
-        if sa is None:
+        page = current_page(node)
+        if page is None:
             return []
         found = []
-        for w in sa.widget().findChildren(QLabel):
+        for w in page.findChildren(QLabel):
             try:
-                if class_name(w) != "KnobClickableLabel":
+                if class_name(w) != "ClickableLabel":
                     continue
                 text = w.text().replace("&", "").strip()
             except RuntimeError:
@@ -202,8 +202,7 @@ try:
     def visible_rows(node):
         """The visible knob labels of the current tab grouped into on-screen rows, top to bottom
         and left to right: a list of rows, each a list of (text, widget)."""
-        sa = scroll_area(node)
-        content = sa.widget()
+        content = current_page(node)
         placed = []
         for text, w, visible in knob_labels(node):
             if visible:
@@ -289,7 +288,9 @@ try:
                     continue
                 want = GROUP_INDENT_PX if parent_of[name] is not None else 0
                 try:
-                    got = w.parentWidget().layout().contentsMargins().left()
+                    container = w.parentWidget()
+                    row_layout = container.layout()
+                    got = row_layout.contentsMargins().left()
                 except (AttributeError, RuntimeError):
                     got = None
                 if got != want:
@@ -373,7 +374,7 @@ try:
     def storm_tree():
         """The Storm tab's table from its parameters: groups, with their knobs, in layout order."""
         everything = [hold(p) for p in settings.getParams()]
-        mine = [p for p in everything if p.getScriptName().startswith("storm")]
+        mine = [p for p in everything if p.getScriptName().startswith("storm") and p.getScriptName() != "storm"]
         by_name = {p.getScriptName(): p for p in mine}
         children = {}
         for p in mine:
@@ -456,6 +457,7 @@ try:
             check_grey(["moonrayEnableOIDN"], True, "Enable Denoise on")
             yield from toggle("moonrayEnableDenoise", False)
             check_grey(guiding, True, "Enable Denoise off again")
+            check_grey(["moonrayDisableLighting"], True, "always, it crashes hdMoonray")
 
     run(steps())
 except Exception:

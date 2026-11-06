@@ -95,8 +95,8 @@ make()
     c.groups.push_back(groupSpec("sampling", "", true, "How long the render runs and how clean it gets. More samples mean less noise and more time."));
     c.groups.push_back(groupSpec("denoise", "", true, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
     c.groups.push_back(groupSpec("lightPaths", "", true, "How far light travels through the scene, and shortcuts that trade accuracy for less noise or time."));
-    c.groups.push_back(groupSpec("bounces", "lightPaths", true, "How many times light may bounce. More bounces give fuller, brighter light and take longer."));
-    c.groups.push_back(groupSpec("clamping", "lightPaths", true, "Limits very bright samples to remove fireflies, at the cost of some light energy."));
+    c.groups.push_back(groupSpec("bounces", "lightPaths", false, "How many times light may bounce. More bounces give fuller, brighter light and take longer."));
+    c.groups.push_back(groupSpec("clamping", "lightPaths", false, "Limits very bright samples to remove fireflies, at the cost of some light energy."));
     c.groups.push_back(groupSpec("caustics", "lightPaths", false, "Light focused by shiny or glassy surfaces. Pretty but noisy, so these controls can reduce or remove it."));
     c.groups.push_back(groupSpec("fastGi", "lightPaths", false, "Replaces distant indirect light with a cheap approximation. Faster and cleaner, but less accurate."));
     c.groups.push_back(groupSpec("lights", "", false, "How the render chooses which lights to sample. It affects noise in scenes with many lights."));

@@ -620,6 +620,7 @@ TEST_F(RenderSettingsKnobsTest, SwitchesGreyTheirDependents)
     const std::string prefix = "natronTestSettingsRenderer";
     const RenderSettingsKnobs::Curated table = switchTable();
     RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList(1, descriptor("test:other", VtValue(1))));
     NodePtr node = createSettings();
     ASSERT_TRUE(bool(node));
     const RenderSettingsKnobs* settings = settingsOf(node);
@@ -673,6 +674,7 @@ TEST_F(RenderSettingsKnobsTest, InvalidGroupTableFallsBackToTheCuratedGroup)
     RenderSettingsKnobs::Curated table = groupedTable();
     table.groups.push_back(groupSpec("inner", "beta", true));
     RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList(1, descriptor("test:other", VtValue(1))));
     NodePtr node = createSettings();
     ASSERT_TRUE(bool(node));
     const RenderSettingsKnobs* settings = settingsOf(node);
@@ -693,6 +695,7 @@ TEST_F(RenderSettingsKnobsTest, GroupsDoNotMoveTheDigestOrTheValues)
     for (int layout = 0; layout < 2; ++layout) {
         const RenderSettingsKnobs::Curated table = layout ? flatTable() : groupedTable();
         RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+        RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList(1, descriptor("test:other", VtValue(1))));
         NodePtr node = createSettings();
         ASSERT_TRUE(bool(node));
         setKnob(node, prefix + "A1", VtValue(5));

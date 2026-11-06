@@ -171,7 +171,13 @@ make()
     add("denoise", declared("denoiseNormalGuiding", "Guides the denoiser with the surface normals, which keeps shape detail at some cost in time. It needs a render output marked as the normal input, which nothing sets up today, so expect no effect.", VtValue(false)));
 
     add("sceneToggles", declared("enableMotionBlur", "Blurs what moves while the camera's shutter is open; the camera's shutter close must be later than its open. It takes more time and memory. Leave it on for finals and turn it off for faster previews.", VtValue(true)));
-    add("sceneToggles", declared("disableLighting", "Sets every light to zero, so only glowing surfaces show. Use it to check emission or to rule out lights while tracking down a problem; leave it off otherwise.", VtValue(false)));
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("disableLighting", "Sets every light to zero, so only glowing surfaces show. Use it to check emission or to rule out lights while tracking down a problem; leave it off otherwise.", VtValue(false));
+        // hdMoonray's setDisableLighting uses its render index before the first render pass exists,
+        // so a first render with this on and any light in the scene is a null dereference in-process.
+        s.disabledReason = "This build of MoonRay crashes on the first render of a scene with lights when this is on.";
+        add("sceneToggles", s);
+    }
     add("sceneToggles", declared("doubleSided", "Makes all geometry visible from both sides. It fixes surfaces that vanish when seen from behind, and shows geometry the scene meant to hide, so leave it off unless something is missing.", VtValue(false)));
     add("sceneToggles", declared("decodeNormals", "Treats normal map textures as raw data and remaps them from 0 to 1 into -1 to 1. Turn it on if normal maps look wrong because the material does not do this itself; otherwise leave it off.", VtValue(false)));
     add("sceneToggles", declared("forcePolygon", "Renders subdivision surfaces as plain polygons. It saves time and memory, but curved surfaces show their facets. Good for previews; leave it off for finals.", VtValue(false)));

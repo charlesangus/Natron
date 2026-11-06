@@ -42,11 +42,21 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief What PlacementInputs::canRenderOnGpu may say about a task it refuses. detail stays empty when the refusal has
+ * nothing more specific to say than its reason.
+ **/
+struct GpuRefusal {
+    FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::NoGpuPath;
+    std::string detail;
+};
+
+/**
  * @brief What placeGraph() asks about the tasks of a graph. Every callback is optional.
  **/
 struct PlacementInputs {
-    // Whether the task's effect can render it on the GPU. Unset: no task can.
-    std::function<bool(const FrameGraph::Task&)> canRenderOnGpu;
+    // Whether the task's effect can render it on the GPU. Unset: no task can. The refusal it is given is never null, and
+    // is ignored when it answers true.
+    std::function<bool(const FrameGraph::Task&, GpuRefusal*)> canRenderOnGpu;
 
     // Whether the task's output is already in the image cache, so rendering it costs nothing on the CPU. Unset: none is.
     std::function<bool(const FrameGraph::Task&)> isCached;
@@ -115,6 +125,9 @@ const int kMaxRegionShrinkSteps = 16;
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
  * contraction acyclic, and splits what is left into its connected parts. After kMaxRegionShrinkSteps steps, or when
  * no member can go, what is left stays on the CPU, as do the dropped members.
+ *
+ * Each task records why it was kept out of a region in Task::placementReason and Task::placementDetail. A region exit is
+ * an edge from a member to a consumer outside that region; the exit's reason is the consumer's.
  **/
 void placeGraph(FrameGraph& graph, const PlacementInputs& inputs);
 

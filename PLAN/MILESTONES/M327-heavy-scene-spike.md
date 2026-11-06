@@ -35,7 +35,7 @@ the numbers that settle how draw states reach Hydra. Design:
   - verify: inside natron-dev, a pxr script opens each with `LoadNone` and `LoadAll` and prints prim counts: the city's composed count before loading is under 100k, and about 1M once loaded; the flat file is about 1M either way.
   - size: M
 
-- [ ] M327.P1.T2 — Budget harness
+- [x] M327.P1.T2 — Budget harness
   - files: `tools/bench/heavy_scene_bench.py` (new), `tools/bench/README.md`
   - approach: a Natron GUI script run under the existing bench conventions. Heartbeat `QTimer` for the longest main-thread gap, time from file set to first boxes drawn, `Sdf.Layer.GetLoadedLayers()` before and after an action to catch unrequested payload files, scripted orbit for frame rate. Prints one JSON line per scenario with pass or fail against the budgets in the design note. Scenarios take the action as a parameter, so later milestones add theirs.
   - verify: run against main with the flat file under Xvfb; it prints stall and layer numbers, and reports frame rate as not valid on llvmpipe.

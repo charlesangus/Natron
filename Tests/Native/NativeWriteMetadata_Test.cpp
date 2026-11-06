@@ -201,12 +201,12 @@ protected:
         file->setValue(output);
     }
 
-    void setWriteMetadata(bool on)
+    void setMetadataMode(int index)
     {
-        KnobBool* knob = dynamic_cast<KnobBool*>(_write->getKnobByName(kNatronWriteParamWriteMetadata).get());
+        KnobChoice* knob = dynamic_cast<KnobChoice*>(_write->getKnobByName(kNatronWriteParamMetadata).get());
 
         ASSERT_TRUE(knob != NULL);
-        knob->setValue(on);
+        knob->setValue(index);
     }
 
     void renderFrame()
@@ -328,12 +328,12 @@ TEST_F(NativeWriteMetadataTest, SourceLayoutIsNotWritten)
     EXPECT_NE("none", spec->get_string_attribute("compression"));
 }
 
-TEST_F(NativeWriteMetadataTest, SwitchedOffWritesNoneOfTheCustomAttributes)
+TEST_F(NativeWriteMetadataTest, NoMetadataWritesNoneOfTheCustomAttributes)
 {
     ASSERT_TRUE(writeSourceExr(pathOf("src.0001.exr")));
     buildChain(pathOf("src.####.exr"), pathOf("out.exr"));
     ASSERT_TRUE(bool(_write));
-    setWriteMetadata(false);
+    setMetadataMode(0);
 
     renderFrame();
 
@@ -344,13 +344,14 @@ TEST_F(NativeWriteMetadataTest, SwitchedOffWritesNoneOfTheCustomAttributes)
     }
 }
 
-TEST_F(NativeWriteMetadataTest, WriteMetadataDefaultsOn)
+TEST_F(NativeWriteMetadataTest, MetadataDefaultsToAllExceptInput)
 {
     NodePtr write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
     ASSERT_TRUE(bool(write));
-    KnobBool* knob = dynamic_cast<KnobBool*>(write->getKnobByName(kNatronWriteParamWriteMetadata).get());
+    KnobChoice* knob = dynamic_cast<KnobChoice*>(write->getKnobByName(kNatronWriteParamMetadata).get());
     ASSERT_TRUE(knob != NULL);
-    EXPECT_TRUE(knob->getValue());
+    EXPECT_EQ(2, knob->getValue());
+    EXPECT_EQ(std::string(kNatronWriteMetadataAllExceptInput), knob->getActiveEntry().id);
 }
 
 TEST_F(NativeWriteMetadataTest, JpegKeepsTheExifFieldsItCanHold)

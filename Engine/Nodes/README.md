@@ -277,8 +277,14 @@ routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
   to every format.
 - `ofx/timecode` and `ofx/edgecode` are written as `smpte:TimeCode` and
   `smpte:KeyCode`.
-- Other `ofx/` keys, `quicktime/` keys, keys that describe the source file's
-  layout and a few excluded `oiio/`, `tiff/` and `dpx/` names are never written.
+- The Write's `metadata` choice selects the mode. Default Metadata stops at the
+  rules above: other `ofx/` keys, `quicktime/` keys and user keys are not
+  written. All Metadata Except Input (the default) also writes those under
+  their full key name (PNG takes text only; formats without custom attributes
+  keep their standard tags), and All Metadata adds the file-identity keys
+  `ofx/filepath`, `ofx/frame`, `ofx/filesize` and `ofx/mtime`. No Metadata
+  writes none. Keys that describe the source file's layout and a few excluded
+  `oiio/`, `tiff/` and `dpx/` names are never written.
 - A key the target format does not take is dropped, with a debug log line.
 
 `Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata: `ModifyMetadata`,

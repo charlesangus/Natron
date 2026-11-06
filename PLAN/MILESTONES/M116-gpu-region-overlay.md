@@ -1,7 +1,5 @@
 # M116 - GPU Region Overlay
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
-
 Make the scheduler's GPU placement visible in the node graph, so users can see how the comp is being optimized and restructure it to keep work resident on the GPU. A subtle outline wraps the nodes and pipes of each resident region that M84 - GPU Placement And Residency's placement pass formed (`FrameGraph::Task::regionId` and `FrameGraph::Region`, `Engine/RenderScheduler.h`; `placeGraph` in `Engine/GpuPlacement.cpp`). Every pipe where a region ends gets a red X, with short text beside it that says why the region stopped there. The overlay shows the regions of the frame the active viewer rendered most recently, and updates after each viewer render (user, 2026-10-13).
 
 Today `placeGraph` drops or splits candidates without recording why, and nothing passes placement to the GUI. This milestone adds both:
@@ -10,14 +8,7 @@ Today `placeGraph` drops or splits candidates without recording why, and nothing
 
 It reuses the precedent of the node graph's Show Expressions toggle: a View-menu action with a node-graph shortcut (`kShortcutIDActionGraphShowExpressions`, `Gui/NodeGraph35.cpp:445`, `Gui/GuiApplicationManager10.cpp:925`). The difference is that this toggle also persists as a preference.
 
-Blocked on: the rest of E5 - GPU Compute. The user placed this milestone at the end of the epic (2026-10-13). Region formation is still changing: M85 - Native GPU Kernels ports most nodes, M109 - GPU Region Engine Hardening makes multi-plane tasks candidates, and M87 - Point-Op Kernel Fusion may fuse members. The set of end reasons and where they are decided is only stable once those land.
-
-Acceptance sketch:
-- With the overlay on and a GPU present, a comp's GPU regions after a viewer render are drawn as subtle outlines around their member nodes and the pipes between them. Neighbouring regions can be told apart, and the outline stays readable in a dense graph without hiding node colours or labels.
-- Every pipe leaving a region for a consumer outside it carries a red X with a one-line reason. Example reasons: "no GPU path", "mask input unsupported on GPU", "multi-plane", "cost model: transfer outweighs gain", "cached on CPU", "would form a cycle", "out of device memory → CPU fallback".
-- Changing the graph or the viewed frame and rendering again updates the overlay to the new placement. A stale overlay is never shown for a graph that changed since its render.
-- A preference turns the overlay on or off and persists across sessions. A node-graph shortcut and a View-menu action toggle the same state.
-- With GPU compute off, or with no GPU, enabling the overlay draws nothing and does not error.
+The overlay shows every region exit with a red X and reason, entry pipes with a neutral tick, cached members faded, a distinct outline for a runtime fallback, and "mixed" where merged graphs disagree. A preference on the Node Graph page (default off), a node-graph shortcut (Shift+G unless taken) and a View-menu action share one state. With GPU compute off or no GPU, enabling it draws nothing and raises no error. The shortcut precedent is ShowLinkLines: action `Gui/NodeGraph35.cpp:445`, slot `toggleKnobLinksVisible` `:292`, keybind dispatch `Gui/NodeGraph25.cpp:430`, registration `Gui/GuiApplicationManager10.cpp:943`, IDs `Gui/ActionShortcuts.h:521`, preferences `Engine/Settings.cpp` ~1431, and `Settings::setAutoTurboModeEnabled` used at `NodeGraph25.cpp:511` for an action writing a preference.
 
 ## Scope
 
@@ -57,8 +48,72 @@ Acceptance sketch:
 - A dry run (request pass plus placement, no pixels) is cheap enough to run after every graph change while the overlay is on. If it is not, debounce it at elaboration.
 - The GUI bench rule applies only if M117 - GUI Perf Harness And Baseline has landed by the time this milestone's gate runs.
 
+## Phase 116.1: Engine reasons
+
+- [ ] M116.P1.T1 — Reason category enum plus optional detail string
+  - files: `Engine/GpuPlacement.h`, `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
+  - approach: Record a reason on each silent exit of `placeGraph` (~355-520): not `canRenderOnGpu`, `dropIncompleteRawRuns`, `tryAssign` cycle refusal, the regionGain shrink loop (`kMaxRegionShrinkSteps`) and identity. Extend `canRenderOnGpu` (currently `bool(Task&)`) with a detail out-param, feeding `makeGpuTaskPlanes`'s existing `refusal` string (~811) into it. Don't change any placement decision.
+  - verify: one new `TEST(GpuPlacement, ...)` per category, using the fake `PlacementInputs`.
+  - size: L
+- [ ] M116.P1.T2 — Keep `inputNb` on graph edges
+  - files: `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Tests/FrameGraphBuild_Test.cpp`
+  - approach: `buildGraph` (~494-555) drops `TaskEdge::inputNb` (`ParallelRenderArgs.h:314`). Add a parallel `dependencyInputNbs` vector kept in sync with `dependencies` and `consumerTasks`, including the second copy at ~711-716, the region unit graph.
+  - verify: a diamond graph and a graph with duplicate edges keep their input numbers.
+  - size: M
+- [ ] M116.P1.T3 — Shadow plan with `isCached` forced false
+  - files: `Engine/GpuPlacement.cpp`, `Engine/GpuPlacement.h`, `Tests/GpuPlacement_Test.cpp`
+  - approach: Run `placeGraph` a second time on a copy of the inputs with `isCached` false, returning both placements and marking which members the real plan serves from cache. M276 - Upstream Reuse On Edits changes the key that lambda probes, so override it from outside rather than editing it.
+  - verify: a cached member is CPU in the real plan and GPU in the shadow plan.
+  - size: M
+- [ ] M116.P1.T4 — Capture the runtime fallback per region
+  - files: `Engine/RenderScheduler.cpp` (`executeRegion` ~1265-1361), `Engine/RenderScheduler.h` (`RegionReport` ~242-350), `Tests/GpuRegionFallback_Test.cpp`
+  - approach: `executeRegion` writes `cpuFallback`, `deviceLost` and `retries` only to the profile sink. Also keep them on the frame result, mapped from the `kFallback*` strings set in `runGpuRegion` (`GpuRegionTask.cpp` ~3395-3535).
+  - verify: each `kFallback*` cause surfaces on the result.
+  - size: M
+
+## Phase 116.2: Publish and plan
+
+- [ ] M116.P2.T1 — Per-viewer snapshot
+  - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Engine/ViewerInstancePrivate.h`, `Tests/Native/ViewerRootOnDevice_Test.cpp`
+  - approach: Build the snapshot from both placements plus the fallbacks, under its own lock, in `submitViewerFrameToRenderScheduler` (:1301-1309), only while the overlay is on. Merge the split-rect graphs (submitted at ~2558) and the A/B calls into one snapshot, tagging disagreement "mixed". Ignore the Write path at `OutputSchedulerThread.cpp:2594`.
+  - verify: with the overlay off, no shadow plan and no snapshot; split rects that disagree produce "mixed".
+  - size: L
+- [ ] M116.P2.T2 — Dry-run planner
+  - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Tests/Native/ViewerRootOnDevice_Test.cpp`
+  - approach: Re-plan after every graph change using ParallelRenderArgsSetter, `computeRequestPass`, `FrameRenderContext::createFromSetter`, `buildGraph` and `placeRenderGraph`. Do not copy `getRenderViewerArgsAndCheckCache_public` (:1729): it calls `createNewRenderRequest`, which bumps `renderAge` and aborts real renders, and M302 - Viewer Render State Cues reads `renderAge`.
+  - verify: a dry run leaves `renderAge[2]`/`displayAge[2]` untouched and aborts no render in flight.
+  - size: L
+- [ ] M116.P2.T3 — Queued signal to the GUI
+  - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`
+  - approach: Emit a signal when the snapshot changes. Freeze it during playback.
+  - verify: a signal-spy test sees one emission per change and none during playback.
+  - size: M
+
+## Phase 116.3: GUI
+
+Waits for M118 - Large Graph GUI Responsiveness: it rewrites the same `Gui/NodeGraph*` and `NodeGui` code, with new hit-testing and low-zoom detail. Re-scout these tasks against it first.
+
+- [ ] M116.P3.T1 — Preference, shortcut and View-menu action on one state
+  - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph25.cpp`, `Gui/GuiApplicationManager10.cpp`, `Gui/ActionShortcuts.h`, `Gui/ActionShortcuts.cpp`
+  - approach: Copy the ShowLinkLines wiring above. The preference sits on the Node Graph page, default off. The action writes it through a `Settings::setXxx`.
+  - verify: the View action, the shortcut and the preference stay in sync, checked by the UAT script.
+  - size: M
+- [ ] M116.P3.T2 — Overlay item in the node graph
+  - files: `Gui/GpuOverlay.{h,cpp}` (new), `Gui/NodeGraph.h`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGui.cpp`, `Gui/Edge.h`, `Gui/CMakeLists.txt`
+  - approach: Draw a region outline and a distinct outline for a runtime fallback. Draw a red X plus label on exit pipes only and a neutral tick with no text on entry pipes. Fade cached members. Identify a pipe by (dest `NodeGui`, `Edge::getInputNumber()`). Map group interiors to the enclosing group's `NodeGui` through `Node::getGroup()`.
+  - verify: a unit test of the pipe mapping, then the UAT script.
+  - size: L
+- [ ] M116.P3.T3 — Xvfb UAT script
+  - files: `Tests/gui/m116_gpu_overlay.py`, `Tests/gui/guitest.py`
+  - approach: Cover a mixed graph, a forced fallback, a cached member, toggling the overlay, and a no-GPU host, launched with `--gui`.
+  - verify: the script passes and produces its screenshots, one file each.
+  - size: M
+
+**Verification gate:** one remote build per phase. Phases 1 and 2 run the new gtests plus `GpuPlacement_Test`, `FrameGraphBuild_Test`, `GpuRegionFallback_Test`, `ViewerRootOnDevice_Test` and `CacheStressGpu_Test` (the GPU ones on RADV). Phase 3 runs a `--gui` Xvfb UAT, one screenshot file per shot, shared with the user before sign-off. `tools/bench/gui/run.sh --xvfb` plus `compare.py` applies if M117 - GUI Perf Harness And Baseline has landed.
+
 ## Decisions
 
+- 2026-11-05 — Elaborated per the 2026-10-25 decisions; the stub's Acceptance sketch is replaced by them. M116 - GPU Region Overlay's Phase 116.3 follows M118 - Large Graph GUI Responsiveness. Default shortcut Shift+G (PM): free in the nodegraph group.
 - 2026-10-25 — Reasons are a category enum plus an optional effect detail string: this matches the stub's example reasons without giving every refusal branch its own message.
 - 2026-10-25 — A runtime fallback is drawn as a distinct outline with the runtime reason: it shows both what was planned and what ran.
 - 2026-10-25 — Scheduler-less viewer renders keep the last placement: a paint stroke or tracker step must not make the overlay flicker off.

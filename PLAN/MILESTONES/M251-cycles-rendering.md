@@ -86,6 +86,7 @@ M253 - Delegate Render Settings.
 
 ## Decisions
 
+- 2026-11-05 — M251.P2.T2 and T3 written: Cycles fork commit 01caacb60 in /tmp/m251-cycles, unpushed. `emissiveColor` → `emission_color`, with the node's strength 1 and colour black. Per input: `opacityThreshold` implemented, since the spec makes opacity a cutout and Principled `alpha` takes 0/1; `clearcoat` → `coat_weight`, `clearcoatColor` → `coat_tint`; `useSpecularWorkflow` and `specularColor` ignored, since Principled has no direct F0 input; `occlusion` ignored, since a path tracer computes it; `displacement` ignored, since it needs tessellation; `fallback` ignored, since Cycles has no equivalent. Ignored inputs no longer warn. Pin, goldens and boxes follow at the phase build. `minFilter`/`magFilter` still warn.
 - 2026-11-05 — M251.P2.T1 written: Cycles fork commit 161c2f848 in /tmp/m251-cycles, unpushed; pin bump and the CyclesNormalMapReference golden follow when Phase 251.2 is complete. Box stays open until then.
 
 - 2026-10-28: Cycles rendered empty: on USD 26.08 the engine runs on scene indices and UsdGeom Cube/Sphere/Cone/Cylinder/Capsule/Plane reach the delegate as implicit surfaces; Cycles 5.2 accepts only mesh/basisCurves/points/volume and only Storm registers ImplicitSurfaceSceneIndexPlugin. CyclesAovs::registerSceneIndices() registers HdsiImplicitSurfaceSceneIndex for Cycles, called before every UsdImagingGLEngine (hdsi linked). MoonRay (M252) likely needs the same. The fixture's metersPerUnit 0.01 is irrelevant (stageMetersPerUnit scales camera and geometry together).

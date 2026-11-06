@@ -1,0 +1,456 @@
+"""The Scene Graph panel's prim inspector: its tabs, who authored each row, and that reading a prim
+leaves the main thread free.
+
+Graph: USDCamera into USDEditTransform into Viewer1, and a USDRead of a scene the script writes to
+$NATRON_GUI_TEST_OUT: a small prim with authored values, relationships and metadata, a flat Scope
+with FLAT_PRIMS children, a prim with HEAVY_ATTRIBUTES large arrays, and an instance.
+
+Checks:
+  - on the camera, focalLength names the USDCamera, and the transform op and op order name the
+    USDEditTransform;
+  - on the file, the Source column tells a default value, time samples and a schema fallback apart,
+    and file opinions name the file;
+  - a value at another frame reads at that frame;
+  - the Relationships tab lists targets, and the Metadata tab lists fields and authors;
+  - a long value is cut in the table with all of it in the tooltip;
+  - an instance shows its prototype;
+  - selecting a prim keeps a heartbeat on the main thread within HEARTBEAT_BUDGET_MS, while a slow
+    read shows the last result greyed, and a new selection cancels the read under way.
+
+Screenshots go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off. Run through
+Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
+"""
+import os
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+
+POLL_TIMEOUT_S = 20.0
+STARTUP_TIMEOUT_S = 60.0
+LOAD_TIMEOUT_S = 120.0
+SETTLE_MS = 400
+HEARTBEAT_MS = 10
+HEARTBEAT_BUDGET_MS = 100.0
+FLAT_PRIMS = 50000
+HEAVY_ATTRIBUTES = 200
+HEAVY_ELEMENTS = 10000
+LONG_VALUE_LENGTH = 600
+MAX_CELL_LENGTH = 200
+
+ROOT = "/Inspect"
+SMALL = ROOT + "/Small"
+OTHER = ROOT + "/Other"
+FLAT = ROOT + "/Flat"
+HEAVY = ROOT + "/Heavy"
+INSTANCE = ROOT + "/Inst"
+
+ATTRIBUTES = "sceneGraphAttributes"
+RELATIONSHIPS = "sceneGraphRelationships"
+METADATA = "sceneGraphMetadata"
+
+LONG_VALUE = "".join(chr(ord("a") + n % 26) for n in range(LONG_VALUE_LENGTH))
+
+
+def write_scene(path):
+    heavy_value = "[" + ", ".join(["1.25"] * HEAVY_ELEMENTS) + "]"
+    with open(path, "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "Inspect"\n    timeCodesPerSecond = 24\n)\n\n')
+        f.write('def Xform "Inspect"\n{\n')
+        f.write('    def Scope "Small" (\n        kind = "component"\n        doc = "A prim to inspect"\n'
+                '        customData = {\n            string note = "hello"\n        }\n    )\n    {\n')
+        f.write('        custom double size = 3\n')
+        f.write('        custom double animated.timeSamples = {\n            1: 10,\n            20: 200,\n        }\n')
+        f.write('        custom string longValue = "%s"\n' % LONG_VALUE)
+        f.write('        custom rel links = [</Inspect/Other>, </Inspect/Flat>]\n')
+        f.write('    }\n\n')
+        f.write('    def Scope "Other"\n    {\n        custom double otherValue = 1\n    }\n\n')
+        f.write('    def Scope "Proto"\n    {\n        def Scope "Child"\n        {\n        }\n    }\n\n')
+        f.write('    def Scope "Inst" (\n        instanceable = true\n        references = </Inspect/Proto>\n    )\n    {\n    }\n\n')
+        f.write('    def Scope "Heavy"\n    {\n')
+        for n in range(HEAVY_ATTRIBUTES):
+            f.write('        custom float[] heavy_%d = %s\n' % (n, heavy_value))
+        f.write('    }\n\n')
+        f.write('    def Scope "Flat"\n    {\n')
+        for n in range(FLAT_PRIMS):
+            f.write('        def Scope "P%d"\n        {\n        }\n' % n)
+        f.write('    }\n}\n')
+
+
+try:
+    import NatronEngine
+    from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
+    from PySide6.QtWidgets import QTabWidget, QToolButton, QTreeView, QWidget
+
+    from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+
+    PATH_ROLE = Qt.UserRole + 1
+
+    os.makedirs(OUT, exist_ok=True)
+    scene_name = "scene-prim-inspector.usda"
+    scene_path = os.path.join(OUT, scene_name)
+    write_scene(scene_path)
+
+    usd = app.createNode("USDRead")
+    require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("filename").setValue(scene_path)
+    camera = app.createNode("USDCamera")
+    require(camera is not None, "create USDCamera", plugin_problem("USDCamera"))
+    edit = app.createNode("USDEditTransform")
+    require(edit is not None, "create USDEditTransform", plugin_problem("USDEditTransform"))
+    viewer = app.getNode("Viewer1")
+    if viewer is None:
+        viewer = app.createNode("Viewer")
+    require(viewer is not None, "a Viewer exists")
+    usd.setPosition(400, 0)
+    camera.setPosition(0, 0)
+    edit.setPosition(0, 100)
+    viewer.setPosition(0, 200)
+    require(edit.connectInput(0, camera), "connect the USDEditTransform to the USDCamera")
+    camera_prim = str(camera.getParam("primPath").getValue())
+    edit.getParam("primPattern").setValue(camera_prim)
+    edit.getParam("translate").set(1.0, 2.0, 3.0)
+    transform_attribute = "xformOp:transform:" + edit.getScriptName()
+
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
+    def view():
+        views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
+        return hold(views[0]) if views else None
+
+    def panel():
+        panels = widgets_of("SceneGraphPanel")
+        return hold(panels[0]) if panels else None
+
+    def child(cls, name):
+        p = panel()
+        try:
+            return hold(p.findChild(cls, name)) if p is not None else None
+        except RuntimeError:
+            return None
+
+    def tree():
+        return child(QTreeView, "sceneGraphTree")
+
+    def model():
+        t = tree()
+        try:
+            return hold(t.model()) if t is not None else None
+        except RuntimeError:
+            return None
+
+    def inspector():
+        return child(QWidget, "sceneGraphInspector")
+
+    def state(name):
+        return inspector().property("natronSceneGraphInspector" + name)
+
+    def rows(parent=QModelIndex()):
+        m = model()
+        if m is None:
+            return []
+        try:
+            while m.canFetchMore(parent):
+                m.fetchMore(parent)
+            return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
+        except RuntimeError:
+            return []
+
+    def path_of(index):
+        return str(index.data(PATH_ROLE))
+
+    def find(path):
+        parent = QModelIndex()
+        found = QModelIndex()
+        for depth in range(1, path.count("/") + 1):
+            prefix = "/" + "/".join(path.strip("/").split("/")[:depth])
+            found = QModelIndex()
+            for index in rows(parent):
+                if path_of(index) == prefix:
+                    found = index
+                    break
+            if not found.isValid():
+                return found
+            parent = found
+        return found
+
+    def top_paths():
+        return [path_of(i) for i in rows()]
+
+    def select(index):
+        selection = tree().selectionModel()
+        selection.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+
+    def table(name):
+        """The tab's rows as {first column: [every column's text]}."""
+        v = child(QTreeView, name)
+        m = v.model() if v is not None else None
+        if m is None:
+            return {}
+        result = {}
+        for r in range(m.rowCount()):
+            cells = [m.index(r, c).data() for c in range(m.columnCount())]
+            result[str(cells[0])] = ["" if c is None else str(c) for c in cells]
+        return result
+
+    def tooltip(name, key, column):
+        v = child(QTreeView, name)
+        m = v.model()
+        for r in range(m.rowCount()):
+            if str(m.index(r, 0).data()) == key:
+                return str(m.index(r, column).data(Qt.ToolTipRole))
+        return ""
+
+    def foreground(name):
+        v = child(QTreeView, name)
+        m = v.model()
+        return m.index(0, 0).data(Qt.ForegroundRole) if m.rowCount() > 0 else None
+
+    def show_tab(index):
+        child(QTabWidget, "sceneGraphInspectorTabs").setCurrentIndex(index)
+
+    def settled_on(path):
+        return str(state("Path")) == path and not state("Busy")
+
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if w.metaObject().className().split("::")[-1] == name:
+                return w
+            w = w.parentWidget()
+        return None
+
+    def view_input(node):
+        """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""
+        viewer.disconnectInput(0)
+        return viewer.connectInput(0, node)
+
+    class Heartbeat:
+        """The longest the main thread's event loop has gone without running a short timer."""
+
+        def __init__(self):
+            self.timer = QTimer()
+            self.timer.setInterval(HEARTBEAT_MS)
+            self.timer.timeout.connect(self.beat)
+            self.reset()
+
+        def reset(self):
+            self.last = time.monotonic()
+            self.worst_ms = 0.0
+
+        def beat(self):
+            now = time.monotonic()
+            self.worst_ms = max(self.worst_ms, (now - self.last) * 1000.0)
+            self.last = now
+
+        def start(self):
+            self.reset()
+            self.timer.start()
+
+        def stop(self):
+            self.timer.stop()
+            return self.worst_ms
+
+    def camera_section():
+        index = find(camera_prim)
+        require(index.isValid(), "the tree lists the camera %s (got %r)" % (camera_prim, top_paths()))
+        select(index)
+        ok = yield ("until", lambda: "focalLength" in table(ATTRIBUTES) and settled_on(camera_prim), POLL_TIMEOUT_S)
+        attributes = table(ATTRIBUTES)
+        check(ok, "the attributes tab lists the camera's focal length (got %r)" % (sorted(attributes.keys())[:12],))
+        report("NOTE camera attributes: %r" % (sorted(attributes.keys())[:24],))
+
+        def author(name):
+            return attributes.get(name, [""] * 5)[4]
+
+        check(author("focalLength") == camera.getScriptName(),
+              "focalLength names the USDCamera (got %r)" % (author("focalLength"),))
+        check(author(transform_attribute) == edit.getScriptName(),
+              "the transform op names the USDEditTransform (got %r)" % (author(transform_attribute),))
+        check(author("xformOpOrder") == edit.getScriptName(),
+              "the op order names the USDEditTransform (got %r)" % (author("xformOpOrder"),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-camera-attributes.png")
+
+        show_tab(2)
+        ok = yield ("until", lambda: bool(table(METADATA)) and settled_on(camera_prim), POLL_TIMEOUT_S)
+        metadata = table(METADATA)
+        check(ok, "the metadata tab lists the camera's metadata (got %r)" % (sorted(metadata.keys()),))
+        if "specifier" in metadata:
+            check(metadata["specifier"][2] == camera.getScriptName(),
+                  "the specifier names the node that defined the prim, not an edit's over (got %r)" % (metadata["specifier"][2],))
+        show_tab(0)
+
+    def file_section(py_viewer):
+        select(find(SMALL))
+        ok = yield ("until", lambda: "size" in table(ATTRIBUTES) and settled_on(SMALL), POLL_TIMEOUT_S)
+        attributes = table(ATTRIBUTES)
+        check(ok, "the attributes tab lists the small prim (got %r)" % (sorted(attributes.keys())[:12],))
+        report("NOTE small prim attributes: %r" % (sorted(attributes.keys()),))
+        empty = [""] * 5
+        check(attributes.get("size", empty)[3] == "Default Value",
+              "a default value says so (got %r)" % (attributes.get("size", empty)[3],))
+        check(attributes.get("animated", empty)[3] == "Time Samples",
+              "samples say so (got %r)" % (attributes.get("animated", empty)[3],))
+        check(attributes.get("size", empty)[4].endswith(scene_name),
+              "an opinion from a file names the file (got %r)" % (attributes.get("size", empty)[4],))
+        check(attributes.get("visibility", empty)[3] == "Fallback" and attributes.get("visibility", empty)[4] == "Schema Fallback",
+              "an unauthored attribute is its schema's fallback (got %r)" % (attributes.get("visibility", empty),))
+
+        cut = attributes.get("longValue", empty)[2]
+        check(len(cut) == MAX_CELL_LENGTH + 3 and cut.endswith("...") and LONG_VALUE.startswith(cut[:-3]),
+              "a long value is cut in the table (got %d characters)" % (len(cut),))
+        tip = tooltip(ATTRIBUTES, "longValue", 2)
+        check(tip.replace("\n", "") == LONG_VALUE, "the tooltip holds the whole value (got %d characters)" % (len(tip),))
+        check(max(len(line) for line in tip.split("\n")) < LONG_VALUE_LENGTH, "the tooltip's lines are wrapped to fit the screen")
+
+        def animated():
+            return float(table(ATTRIBUTES).get("animated", ["", "", "nan"])[2])
+
+        py_viewer.seek(1)
+        ok = yield ("until", lambda: animated() == 10.0, POLL_TIMEOUT_S)
+        check(ok, "at frame 1 the samples read 10 (got %r)" % (animated(),))
+        py_viewer.seek(20)
+        ok = yield ("until", lambda: animated() == 200.0, POLL_TIMEOUT_S)
+        check(ok, "at frame 20 the samples read 200 (got %r)" % (animated(),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-attributes.png")
+
+        show_tab(1)
+        ok = yield ("until", lambda: "links" in table(RELATIONSHIPS) and settled_on(SMALL), POLL_TIMEOUT_S)
+        relationships = table(RELATIONSHIPS)
+        check(ok, "the relationships tab lists links (got %r)" % (sorted(relationships.keys()),))
+        links = relationships.get("links", ["", "", ""])
+        check(links[1] == OTHER + ", " + FLAT, "links lists its targets (got %r)" % (links[1],))
+        check(links[2].endswith(scene_name), "links names the file (got %r)" % (links[2],))
+        check(relationships.get("proxyPrim", ["", "", ""])[2] == "Schema Fallback",
+              "an unauthored relationship is its schema's (got %r)" % (relationships.get("proxyPrim"),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-relationships.png")
+
+        show_tab(2)
+        ok = yield ("until", lambda: "kind" in table(METADATA) and settled_on(SMALL), POLL_TIMEOUT_S)
+        metadata = table(METADATA)
+        check(ok, "the metadata tab lists kind (got %r)" % (sorted(metadata.keys()),))
+        check(metadata.get("kind", ["", "", ""])[1] == "component", "kind has its value (got %r)" % (metadata.get("kind"),))
+        check(metadata.get("kind", ["", "", ""])[2].endswith(scene_name), "kind names the file (got %r)" % (metadata.get("kind"),))
+        check("documentation" in metadata and "customData" in metadata, "documentation and custom data are listed (got %r)" % (sorted(metadata.keys()),))
+        check("Prototype" not in metadata, "a prim that is no instance shows no prototype")
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-metadata.png")
+
+        select(find(INSTANCE))
+        ok = yield ("until", lambda: "Prototype" in table(METADATA) and settled_on(INSTANCE), POLL_TIMEOUT_S)
+        prototype = table(METADATA).get("Prototype", ["", "", ""])[1]
+        check(ok and prototype.startswith("/__Prototype"), "an instance shows its prototype (got %r)" % (prototype,))
+        show_tab(0)
+
+    def responsiveness_section():
+        beat = Heartbeat()
+
+        # One batch only: reading the whole flat Scope here would measure the tree, not the inspector.
+        flat = find(FLAT)
+        require(flat.isValid(), "the tree lists the flat Scope")
+        m = model()
+        if m.canFetchMore(flat):
+            m.fetchMore(flat)
+        require(m.rowCount(flat) > 0, "the flat Scope's first rows are read")
+        flat_child = m.index(0, 0, flat)
+        flat_child_path = path_of(flat_child)
+
+        select(find(SMALL))
+        ok = yield ("until", lambda: settled_on(SMALL) and "size" in table(ATTRIBUTES), POLL_TIMEOUT_S)
+        require(ok, "the small prim is shown before the measurement")
+
+        beat.start()
+        select(flat_child)
+        ok = yield ("until", lambda: settled_on(flat_child_path), POLL_TIMEOUT_S)
+        worst = beat.stop()
+        check(ok, "the flat Scope's child is read (got %r)" % (state("Path"),))
+        report("NOTE worst main-thread gap selecting in the flat Scope: %.1f ms" % (worst,))
+        check(worst <= HEARTBEAT_BUDGET_MS, "selecting in the flat Scope keeps the main thread free (%.1f ms)" % (worst,))
+
+        select(find(SMALL))
+        ok = yield ("until", lambda: settled_on(SMALL) and "size" in table(ATTRIBUTES), POLL_TIMEOUT_S)
+        require(ok, "the small prim is shown again")
+
+        beat.start()
+        select(find(HEAVY))
+        ok = yield ("until", lambda: bool(state("Stale")), POLL_TIMEOUT_S)
+        check(ok, "a slow read greys the last result")
+        check(str(state("Path")) == SMALL and "size" in table(ATTRIBUTES),
+              "the last result stays up during the read (got %r)" % (state("Path"),))
+        check(foreground(ATTRIBUTES) is not None, "the last result's rows are greyed")
+        shot("scene-prim-inspector-stale.png")
+
+        cancelled = int(state("ReadsCancelled"))
+        select(find(OTHER))
+        ok = yield ("until", lambda: settled_on(OTHER) and "otherValue" in table(ATTRIBUTES), LOAD_TIMEOUT_S)
+        check(ok, "a new selection shows its own prim (got %r)" % (state("Path"),))
+        ok = yield ("until", lambda: int(state("ReadsCancelled")) > cancelled, LOAD_TIMEOUT_S)
+        check(ok, "a new selection cancels the read under way")
+        check(not any(name.startswith("heavy_") for name in table(ATTRIBUTES)), "nothing of the cancelled read is shown")
+        check(not state("Stale") and foreground(ATTRIBUTES) is None, "the rows are no longer greyed")
+
+        select(find(HEAVY))
+        ok = yield ("until", lambda: settled_on(HEAVY), LOAD_TIMEOUT_S)
+        worst = beat.stop()
+        check(ok, "the large arrays are read (got %r)" % (state("Path"),))
+        heavy = table(ATTRIBUTES)
+        check(sum(1 for name in heavy if name.startswith("heavy_")) == HEAVY_ATTRIBUTES, "every large array is listed (got %d rows)" % (len(heavy),))
+        report("NOTE worst main-thread gap reading large arrays: %.1f ms" % (worst,))
+        check(worst <= HEARTBEAT_BUDGET_MS, "reading large arrays keeps the main thread free (%.1f ms)" % (worst,))
+
+    def steps():
+        require(viewer.connectInput(0, edit), "connect the Viewer to the USDEditTransform")
+        ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
+        ok = yield ("until", lambda: view() is not None, POLL_TIMEOUT_S)
+        require(ok, "the scene view is up")
+        require(panel() is not None, "the Scene Graph panel exists")
+
+        home = ancestor_of_class(view(), "TabWidget")
+        require(home is not None, "the scene view is in a pane")
+        split = app.getTabWidget(home.objectName()).splitHorizontally()
+        require(split is not None, "split the viewer's pane")
+        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        split = None
+        camera_root = "/" + camera_prim.strip("/").split("/")[0]
+        ok = yield ("until", lambda: panel().isVisible() and camera_root in top_paths(), POLL_TIMEOUT_S)
+        require(ok, "the docked panel lists the camera's scene (got %r)" % (top_paths(),))
+        require(inspector() is not None, "the panel has its inspector")
+
+        yield from camera_section()
+
+        py_viewer = hold(app.getViewer(viewer.getScriptName()))
+        require(view_input(usd), "switch the Viewer to the USDRead")
+        ok = yield ("until", lambda: ROOT in top_paths(), LOAD_TIMEOUT_S)
+        require(ok, "the tree shows the file's scene (got %r)" % (top_paths(),))
+        yield from file_section(py_viewer)
+
+        # Pinned, a selection does not reach the viewer, whose repaint is not what is measured.
+        pin = child(QToolButton, "sceneGraphPin")
+        require(pin is not None, "the panel has its pin button")
+        pin.click()
+        ok = yield ("until", lambda: bool(panel().property("natronSceneGraphPinned")) and ROOT in top_paths(), LOAD_TIMEOUT_S)
+        require(ok, "the pin button pins the panel to the USDRead (got %r)" % (top_paths(),))
+        require(view_input(edit), "switch the Viewer back to the camera")
+        yield ("sleep", SETTLE_MS)
+        yield from responsiveness_section()
+
+    run(steps())
+except Exception:
+    try:
+        check(False, "setup error: " + traceback.format_exc())
+        finish()
+    except NameError:
+        traceback.print_exc()
+        os._exit(1)

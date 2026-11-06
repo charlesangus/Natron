@@ -51,7 +51,7 @@ public:
 
     /**
      * @brief Calls read with the stage, or null when there is none, holding whatever keeps edits
-     * of the stage out until read returns. Called on the main thread.
+     * of the stage out until read returns. MT-safe.
      **/
     virtual void readStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
 

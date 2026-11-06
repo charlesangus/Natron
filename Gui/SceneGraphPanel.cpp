@@ -30,7 +30,7 @@
 
 #include <algorithm>
 #include <list>
-#include <sstream>
+#include <shared_mutex>
 #include <vector>
 
 #include <QAction>
@@ -52,7 +52,6 @@
 #include <QSet>
 #include <QSplitter>
 #include <QStackedWidget>
-#include <QStandardItemModel>
 #include <QStringListModel>
 #include <QTimer>
 #include <QToolButton>
@@ -62,7 +61,6 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
@@ -75,10 +73,9 @@
 #include "Gui/NodeGui.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
+#include "Gui/ScenePrimInspector.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/ViewerTab.h"
-
-PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
@@ -98,21 +95,29 @@ const int kPinnedPollMs = 250;
 
 const int kSelectionPollMs = 250;
 
-const int kMaxValueLength = 200;
-
-// The 3D viewer's stage.
+// The 3D viewer's stage. The inspector's worker may hold this while the viewer is destroyed on the
+// main thread, which a QPointer cannot guard across threads: the viewport's destructor waits here
+// for the read under way.
 class ViewerStageSource
     : public SceneGraphStageSource {
 public:
     explicit ViewerStageSource(SceneViewport* viewport)
-        : _viewport(viewport)
+        : _gate(std::make_shared<Gate>())
     {
+        _gate->renderer = &viewport->getRenderer();
+        std::shared_ptr<Gate> gate = _gate;
+        QObject::connect(viewport, &SceneViewport::closing, viewport, [gate]() {
+            std::unique_lock<std::shared_mutex> lock(gate->mutex);
+            gate->renderer = nullptr;
+        });
     }
 
     void readStage(const std::function<void(const SceneStage* stage)>& read) const override
     {
-        if (_viewport) {
-            _viewport->getRenderer().readStage(read);
+        std::shared_lock<std::shared_mutex> lock(_gate->mutex);
+
+        if (_gate->renderer) {
+            _gate->renderer->readStage(read);
         } else {
             read(nullptr);
         }
@@ -120,11 +125,18 @@ public:
 
     U64 getEditCount() const override
     {
-        return _viewport ? _viewport->getRenderer().getStageEditCount() : 0;
+        std::shared_lock<std::shared_mutex> lock(_gate->mutex);
+
+        return _gate->renderer ? _gate->renderer->getStageEditCount() : 0;
     }
 
 private:
-    QPointer<SceneViewport> _viewport;
+    struct Gate {
+        std::shared_mutex mutex;
+        SceneViewportRenderer* renderer = nullptr;
+    };
+
+    std::shared_ptr<Gate> _gate;
 };
 
 // The filter's matches, which drag their paths as the tree's rows do.
@@ -240,22 +252,6 @@ private:
     Gui* _gui;
 };
 
-QString
-valueString(const VtValue& value)
-{
-    if (value.IsEmpty()) {
-        return QString();
-    }
-    std::ostringstream os;
-    os << value;
-    std::string text = os.str();
-    if ((int)text.size() > kMaxValueLength) {
-        text = text.substr(0, kMaxValueLength) + "...";
-    }
-
-    return QString::fromStdString(text);
-}
-
 } // anon namespace
 
 struct SceneGraphPanel::Implementation {
@@ -271,8 +267,7 @@ struct SceneGraphPanel::Implementation {
     QTreeView* tree = nullptr;
     QListView* results = nullptr;
     QLabel* noScene = nullptr;
-    QTreeView* attributes = nullptr;
-    QStandardItemModel* attributeModel = nullptr;
+    ScenePrimInspector* inspector = nullptr;
     FilterResultsModel* resultsModel = nullptr;
     SceneGraphModel* model = nullptr;
 
@@ -321,7 +316,7 @@ struct SceneGraphPanel::Implementation {
     int filterCap = kFilterCap;
     bool filterCapped = false;
 
-    QTimer attributeRefresh;
+    QTimer inspectorRefresh;
 
     Implementation(SceneGraphPanel* panel,
                    Gui* gui)
@@ -580,7 +575,7 @@ struct SceneGraphPanel::Implementation {
             }
             viewerTimeLine = viewer ? viewer->getTimeLine().get() : nullptr;
             if (viewerTimeLine) {
-                QObject::connect(viewerTimeLine, &TimeLine::frameChanged, panel, [this]() { attributeRefresh.start(); });
+                QObject::connect(viewerTimeLine, &TimeLine::frameChanged, panel, [this]() { inspectorRefresh.start(); });
             }
         }
         connectViewport((viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr);
@@ -588,7 +583,7 @@ struct SceneGraphPanel::Implementation {
             panel->showSelection(viewport->getSelection());
         }
         updateStatus();
-        attributeRefresh.start();
+        inspectorRefresh.start();
     }
 
     QStringList selectedPaths(QAbstractItemView* view) const
@@ -869,18 +864,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->stack->addWidget(_imp->noScene);
     _imp->stack->setCurrentWidget(_imp->noScene);
 
-    _imp->attributeModel = new QStandardItemModel(0, 5, this);
-    _imp->attributeModel->setHorizontalHeaderLabels(QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Animated") << tr("Authored By"));
-    _imp->attributes = new QTreeView(splitter);
-    _imp->attributes->setObjectName(QString::fromUtf8("sceneGraphAttributes"));
-    _imp->attributes->setModel(_imp->attributeModel);
-    _imp->attributes->setRootIsDecorated(false);
-    _imp->attributes->setUniformRowHeights(true);
-    _imp->attributes->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    _imp->attributes->setSelectionBehavior(QAbstractItemView::SelectRows);
-    _imp->attributes->header()->setSectionResizeMode(QHeaderView::Interactive);
+    _imp->inspector = new ScenePrimInspector(splitter);
     splitter->addWidget(_imp->stack);
-    splitter->addWidget(_imp->attributes);
+    splitter->addWidget(_imp->inspector);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
     layout->addWidget(splitter, 1);
@@ -888,8 +874,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->filterDebounce.setSingleShot(true);
     _imp->filterDebounce.setInterval(200);
     _imp->filterStep.setInterval(0);
-    _imp->attributeRefresh.setSingleShot(true);
-    _imp->attributeRefresh.setInterval(0);
+    _imp->inspectorRefresh.setSingleShot(true);
+    _imp->inspectorRefresh.setInterval(0);
     _imp->pinnedPoll.setInterval(kPinnedPollMs);
     _imp->retiredReap.setInterval(kPinnedPollMs);
     _imp->selectionPoll.setInterval(kSelectionPollMs);
@@ -899,9 +885,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->filter, &QLineEdit::textChanged, &_imp->filterDebounce, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
-    QObject::connect(&_imp->attributeRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshAttributes);
+    QObject::connect(&_imp->inspectorRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshInspector);
     // Each page has its own current row, and showing a page changes neither of them.
-    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, &_imp->attributeRefresh, qOverload<>(&QTimer::start));
+    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, &_imp->inspectorRefresh, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->pinnedPoll, &QTimer::timeout, this, &SceneGraphPanel::onPinnedPoll);
     QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
     QObject::connect(&_imp->selectionPoll, &QTimer::timeout, this, &SceneGraphPanel::onSelectionPoll);
@@ -928,7 +914,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QObject::connect(gui, &Gui::viewersChanged, this, &SceneGraphPanel::onActiveViewerChanged);
         GuiAppInstancePtr app = gui->getApp();
         if (app && app->getTimeLine()) {
-            QObject::connect(app->getTimeLine().get(), &TimeLine::frameChanged, this, [this]() { _imp->attributeRefresh.start(); });
+            QObject::connect(app->getTimeLine().get(), &TimeLine::frameChanged, this, [this]() { _imp->inspectorRefresh.start(); });
         }
     }
     _imp->followViewer();
@@ -936,6 +922,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
 
 SceneGraphPanel::~SceneGraphPanel()
 {
+    _imp->inspector->stop();
     // Waits, once: no worker may call back into a destroyed panel.
     for (const std::shared_ptr<SceneNodeStageSource>& source : _imp->retired) {
         source->stop();
@@ -1054,7 +1041,7 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     if (!_imp->filterPattern.isEmpty()) {
         _imp->selectResults(paths);
     }
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 QStringList
@@ -1126,7 +1113,7 @@ SceneGraphPanel::onSceneSynced()
         }
     }
     _imp->updateStatus();
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
@@ -1275,7 +1262,7 @@ SceneGraphPanel::onPinnedSynced(bool ok,
         _imp->filterDebounce.start();
     }
     _imp->updateStatus();
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
@@ -1327,69 +1314,13 @@ SceneGraphPanel::onSelectionPoll()
 void
 SceneGraphPanel::onCurrentChanged(const QModelIndex& /*current*/)
 {
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
-SceneGraphPanel::refreshAttributes()
+SceneGraphPanel::refreshInspector()
 {
-    const QString path = _imp->currentPath();
-    SceneGraphStageSourcePtr source = _imp->model->getSource();
-    struct Row {
-        QString name, type, value, animated, author, authorTip;
-    };
-    std::vector<Row> rows;
-
-    if (!path.isEmpty() && source) {
-        const double frame = _imp->currentFrame();
-        const double fps = _imp->framesPerSecond();
-        source->readStage([&](const SceneStage* sceneStage) {
-            if (!sceneStage) {
-                return;
-            }
-            const std::string pathString = path.toStdString();
-            if (!SdfPath::IsValidPathString(pathString)) {
-                return;
-            }
-            const UsdPrim prim = sceneStage->getStage()->GetPrimAtPath(SdfPath(pathString));
-            if (!prim) {
-                return;
-            }
-            const UsdTimeCode time(SceneOps::frameToTimeCode(sceneStage->getPayload(), frame, fps));
-            for (const UsdAttribute& attribute : prim.GetAttributes()) {
-                Row row;
-                row.name = QString::fromStdString(attribute.GetName().GetString());
-                row.type = QString::fromStdString(attribute.GetTypeName().GetAsToken().GetString());
-                VtValue value;
-                if (attribute.Get(&value, time)) {
-                    row.value = valueString(value);
-                }
-                const UsdResolveInfoSource resolved = attribute.GetResolveInfo(time).GetSource();
-                if ((resolved == UsdResolveInfoSourceTimeSamples) || (resolved == UsdResolveInfoSourceValueClips) || (resolved == UsdResolveInfoSourceSpline)) {
-                    row.animated = tr("Animated");
-                }
-                std::string layerIdentifier;
-                NodePtr node = SceneOps::authoringNodeOf(attribute, time, &layerIdentifier);
-                if (node) {
-                    row.author = QString::fromStdString(node->getFullyQualifiedName());
-                } else if (resolved == UsdResolveInfoSourceFallback) {
-                    row.author = tr("Schema Fallback");
-                } else if (!layerIdentifier.empty() && !SdfLayer::IsAnonymousLayerIdentifier(layerIdentifier)) {
-                    row.author = QString::fromStdString(layerIdentifier);
-                }
-                row.authorTip = QString::fromStdString(layerIdentifier);
-                rows.push_back(row);
-            }
-        });
-    }
-    _imp->attributeModel->removeRows(0, _imp->attributeModel->rowCount());
-    for (const Row& row : rows) {
-        QList<QStandardItem*> items;
-        items << new QStandardItem(row.name) << new QStandardItem(row.type) << new QStandardItem(row.value) << new QStandardItem(row.animated) << new QStandardItem(row.author);
-        items[2]->setToolTip(row.value);
-        items[4]->setToolTip(row.authorTip);
-        _imp->attributeModel->appendRow(items);
-    }
+    _imp->inspector->setPrim(_imp->model->getSource(), _imp->currentPath(), _imp->currentFrame(), _imp->framesPerSecond());
 }
 
 void

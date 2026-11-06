@@ -144,6 +144,26 @@ if grep -qF 'showAllHostsName' "$file"; then
     exit 1
 fi
 
+# MoonRay's TextureSampler rejects any image that is not tiled and MIP-mapped, so a plain jpg or png
+# fails with "image was untiled" and shades black unless it was first run through maketx. It now
+# accepts them and has OpenImageIO generate the MIP levels on demand. autotile stays 0, one tile per
+# level: scanline formats read only forwards, so a JPEG re-decodes from its first row whenever a tile
+# above the last one read is asked for, which outweighs the finer eviction of 64x64 tiles. A missing
+# anchor fails the build.
+file="${src}/moonray/moonray/lib/rendering/texturing/sampler/TextureSampler.cc"
+for attribute in automip accept_untiled accept_unmipped; do
+    anchor="    mTextureSystem->attribute(\"${attribute}\", int(false));"
+    if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+        echo "build-moonray: ${attribute} setting not found exactly once in ${file}" >&2
+        exit 1
+    fi
+    sed -i "s/^    mTextureSystem->attribute(\"${attribute}\", int(false));\$/    mTextureSystem->attribute(\"${attribute}\", int(true));/" "$file"
+    if grep -qxF "$anchor" "$file"; then
+        echo "build-moonray: ${attribute} patch did not apply to ${file}" >&2
+        exit 1
+    fi
+done
+
 # HdxTaskController adds a "depth" AOV next to "color" for any non-Storm delegate. hdMoonray maps
 # both depth and cameraDepth to RESULT_DEPTH, and an unnamed RenderOutput takes its channel name from
 # its result ("Z"), so MoonRay skips one of the two with an error-level "both target channel" log on

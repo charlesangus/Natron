@@ -98,6 +98,10 @@ namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray.usda";
 // The fixture with a PortalLight, which hdMoonray has no Hydra prim type for.
 const char* const kPortalFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-portal.usda";
+// A quad with the same image as a plain JPEG, as a plain PNG, and through maketx.
+const char* const kTexturedJpg = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured.usda";
+const char* const kTexturedPng = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-png.usda";
+const char* const kTexturedMaketx = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-tx.usda";
 const char* const kCamera = "/World/Cam";
 const int kSize = 32;
 const int kRow = 16;
@@ -664,5 +668,43 @@ TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
             differing += same ? 0 : 1;
         }
         EXPECT_EQ(0u, differing) << "plane " << plane << " differs between two renders on this host";
+    }
+}
+
+// The quad shows about 9 texels a pixel, so these lookups come from MIP levels. OpenImageIO's
+// on-demand levels and maketx's are the same box filter and can differ only in the rounding of an
+// 8-bit texel, 1/255 before MoonRay's 2.2 gamma; 0.02 holds that under the scene's lighting, while
+// a render reading only the top level aliases the fixture's two-texel checker far beyond it.
+TEST_F(USDRenderMoonRayTest, PlainTexturesMatchTheirMaketxConversion)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const float tolerance = 0.02f;
+    NodePtr maketxNode = createGraph(kTexturedMaketx);
+    ASSERT_TRUE(bool(maketxNode));
+    std::vector<RenderedPlane> maketx;
+    ASSERT_TRUE(renderAll(maketxNode, &maketx));
+    double sum = 0.;
+    for (float value : maketx[0].pixels) {
+        sum += value;
+    }
+    EXPECT_GT(sum / (double)maketx[0].pixels.size(), 0.05);
+
+    for (const char* fixture : { kTexturedJpg, kTexturedPng }) {
+        NodePtr node = createGraph(fixture);
+        ASSERT_TRUE(bool(node));
+        std::vector<RenderedPlane> plain;
+        ASSERT_TRUE(renderAll(node, &plain));
+        EXPECT_FALSE(node->hasPersistentMessage()) << fixture;
+        std::size_t differing = 0;
+        std::size_t notFinite = 0;
+        for (std::size_t i = 0; i < plain[0].pixels.size(); ++i) {
+            const float value = plain[0].pixels[i];
+            notFinite += std::isfinite(value) ? 0 : 1;
+            differing += (std::fabs(value - maketx[0].pixels[i]) <= tolerance) ? 0 : 1;
+        }
+        EXPECT_EQ(0u, notFinite) << fixture;
+        EXPECT_EQ(0u, differing) << fixture;
     }
 }

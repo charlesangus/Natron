@@ -3533,7 +3533,18 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
    {
         EXPR_RECURSION_LEVEL();
 
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, 0) ) {
+        {
+            std::stringstream callSs;
+            callSs << '\n'
+                   << funcExecScript << '(' << getCurrentTime() << ", " << getCurrentView() << ")\n";
+            script.append(callSs.str());
+        }
+        bool evaluated;
+        {
+            PyRFV::ExpressionScope rfvScope(this, getCurrentTime(), getCurrentView());
+            evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, 0);
+        }
+        if (!evaluated) {
             throw std::runtime_error(error);
         }
         if (function) {
@@ -3543,17 +3554,6 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
                 Py_INCREF(defined);
                 definedFunction.reset(defined);
             }
-        }
-
-        std::stringstream ss;
-        ss << funcExecScript << '(' << getCurrentTime() << ", " <<  getCurrentView() << ")\n";
-        bool evaluated;
-        {
-            PyRFV::ExpressionScope rfvScope(this, getCurrentTime(), getCurrentView());
-            evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, 0);
-        }
-        if (!evaluated) {
-            throw std::runtime_error(error);
         }
 
         PyObject *ret = PyObject_GetAttrString(NATRON_PYTHON_NAMESPACE::getMainModule(), "ret"); //get our ret variable created above

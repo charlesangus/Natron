@@ -68,12 +68,12 @@ Filed 2026-10-23 at the user's request.
   - approach: darktable release-5.6.2.
   - verify: gtest; Xvfb screenshot.
   - size: M
-- [ ] M165.P3.T3 — RawHotPixels Mark Fixed
+- [x] M165.P3.T3 — RawHotPixels Mark Fixed
   - files: Engine/Nodes/Raw/RawHotPixels.{h,cpp}, Tests/Native/
   - approach: replaces the cancelled M80.P7.T24.
   - verify: gtest on marked pixels; Xvfb screenshot.
   - size: M
-- [ ] M165.P3.T4 — RawColorCalibration patch grid and ΔE overlay (Q3)
+- [x] M165.P3.T4 — RawColorCalibration patch grid and ΔE overlay (Q3)
   - files: Engine/Nodes/Raw/RawColorCalibrationChecker*.cpp
   - approach: draw-list primitives (P1).
   - verify: Xvfb screenshot.

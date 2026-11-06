@@ -65,19 +65,19 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: at the phase build, `ctest -R Resampler -E Gpu` passes, including the identity, constant-image and minification tests of T4.
   - size: L
 
-- [ ] M270.P1.T3 — Generalise the region-of-interest expansion
+- [x] M270.P1.T3 — Generalise the region-of-interest expansion
   - files: `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/Image/Resampler.cpp`, `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Nodes/Image/ResampleExecutor.h`
   - approach: `filterRoIExpansion` takes `FilterSpec` and per-axis scale and returns radius·scale − 0.5 (today's 0.5 and 1.5 at scale 1), 0 for Impulse and Box. `RegionParams` and `ResampleSettings` carry the spec. `getRegionOfInterest` takes scale from the matrix's Jacobian at the window corners, over every blur matrix; a corner at or behind z = 0 takes the source's whole region. Update the reference path at `ResampleExecutor.cpp:726`. No cap.
   - verify: at the phase build, `ctest -R "Resampler|StagedResample" -E Gpu` passes, including a test that a 4x Lanczos 3 downscale of a window reads only inside the reported region.
   - size: M
 
-- [ ] M270.P1.T4 — Test the kernels and the matrix path
+- [x] M270.P1.T4 — Test the kernels and the matrix path
   - files: `Tests/Native/Resampler_Test.cpp`, `Tests/Native/StagedResample_Test.cpp`
   - approach: Per new filter: weights sum to 1 at fractional offsets; Lanczos and Sinc reproduce the source at 1:1; each kernel is 0 at its support edge; Bicubic at (0, 0.5) equals Keys and at (1/3, 1/3) equals Mitchell. Resampler: a constant image stays constant under every filter with Black Outside off; a 4x downscale of a one-pixel checkerboard has alias energy below 1e-2 for Lanczos 3 where Impulse does not; a 64x downscale reads the full footprint within budget; clamp holds a step inside the source range; Lobes 2 to 8 widen the footprint; J = [[0,4],[1,0]] scales (4,1) and a 45° rotation (1,1). Replace the assertions at `Resampler_Test.cpp:218,291-327,352`.
   - verify: at the phase build, these pass and reverting T2's normalisation makes the constant-image test fail.
   - size: M
 
-- [ ] M270.P1.T5 — Test the per-pixel coordinate path on the CPU
+- [x] M270.P1.T5 — Test the per-pixel coordinate path on the CPU
   - files: `Tests/Native/ResamplerCoordMap_Test.cpp`
   - approach: Cases through `resampleRowFromCoords` for each new filter: a null Jacobian samples the plain kernel; a minifying Jacobian widens it; eWrapClamp and out-of-source rows give scale 1; a non-finite or huge Jacobian stays finite and within budget; wrap modes fold the centre only.
   - verify: `ctest -R ResamplerCoordMap` passes at the phase build.

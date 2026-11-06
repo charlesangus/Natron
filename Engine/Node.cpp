@@ -6230,6 +6230,33 @@ Node::clearPersistentMessageForPreview()
     }
 }
 
+OverlayImageFrameConstPtr
+Node::getOverlayImageFrame() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageFrame;
+}
+
+void
+Node::setOverlayImageFrame(const OverlayImageFrameConstPtr& frame)
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    _imp->overlayImageFrame = frame;
+}
+
+bool
+Node::clearOverlayImageFrame()
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+    const bool hadFrame = (bool)_imp->overlayImageFrame;
+
+    _imp->overlayImageFrame.reset();
+
+    return hadFrame;
+}
+
 void
 Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
                                             NodesList* nodes)

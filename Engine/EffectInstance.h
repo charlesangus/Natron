@@ -2610,6 +2610,54 @@ public:
     OverlayDrawState getOverlayDrawState() const;
 
     /**
+     * @brief True when the viewer should show this node's overlay images: its view knob is on and
+     * its panel is open.
+     **/
+    bool isOverlayImageRequested() const;
+
+    /**
+     * @brief True while the render running on this thread is the node's overlay image pass, the
+     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
+     * must write the same pixels to its output: the pass can fill the cache.
+     **/
+    bool isOverlayImageRender() const;
+
+    /**
+     * @brief Publishes values, one per pixel of bounds and row by row from y1, as part of the named
+     * overlay plane. bounds is in pixels at mipmapLevel. Render threads may call it concurrently.
+     * The tint of the first tile added to a plane is the plane's.
+     **/
+    void addOverlayImageTile(const std::string& plane,
+                             const OverlayColor& tint,
+                             const RectI& bounds,
+                             unsigned int mipmapLevel,
+                             std::vector<float>&& values);
+
+    /**
+     * @brief True if a pass is needed for the viewer to have what request asks for.
+     **/
+    bool overlayImagesStale(const OverlayImageRequest& request) const;
+
+    /**
+     * @brief Runs the node's render action over the part of request.visibleCanonical in its region
+     * of definition and publishes the tiles it adds, all at once, on success. An aborted or failed
+     * pass publishes nothing. Must not be called under another render's frame args.
+     **/
+    bool renderOverlayImages(const OverlayImageRequest& request, const AbortableRenderInfoPtr& abortInfo);
+
+    /**
+     * @brief What the viewer should draw for this node at time and view: null when no overlay image
+     * is requested or the last pass is not of this state of the node, time and view.
+     **/
+    OverlayImageFrameConstPtr getOverlayImages(double time, ViewIdx view) const;
+
+    /**
+     * @brief Brings the viewers up to date after the view knob or the panel changed: neither moves
+     * the node's hash, so nothing else would. Main thread only.
+     **/
+    void refreshOverlayImages();
+
+    /**
      * @brief True when the tree of the render running on this thread is rooted at a viewer,
      * current-frame renders and playback alike. Writer and analysis renders are not viewer
      * renders. Outside a render it is false.
@@ -2647,6 +2695,16 @@ public:
      * respectively the width and height of the frame.)
      */
     virtual bool hasOverlay() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Returns the value of the knob that turns the node's overlay images on. That knob must
+     * stay out of the node's hash (Knob::setHashExempt) and its knobChanged must call
+     * refreshOverlayImages().
+     **/
+    virtual bool isOverlayImageViewOn() const
     {
         return false;
     }

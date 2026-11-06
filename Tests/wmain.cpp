@@ -28,6 +28,7 @@
 #include "Native/GlHostWrapTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
+#include "OverlayImageTestEffect.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "SceneTestEffect.h"
@@ -144,6 +145,8 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered because no shipped node publishes overlay images yet.
+    registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.

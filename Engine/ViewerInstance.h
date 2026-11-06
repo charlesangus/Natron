@@ -33,10 +33,12 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
@@ -108,6 +110,9 @@ public:
     bool isDoingPartialUpdates;
     // Taken before the render reads anything.
     std::shared_ptr<const CleanHashSnapshot> cleanHash;
+    // Nodes upstream whose overlay images this render has to bring up to date first.
+    std::vector<EffectInstancePtr> staleOverlayImageEffects;
+    OverlayImageRequest overlayImageRequest;
 };
 
 class ViewerInstance

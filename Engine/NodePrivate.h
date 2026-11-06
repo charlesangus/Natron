@@ -425,6 +425,9 @@ public:
         KnobIWPtr liveKnob; //< null when hash below is memoized
         U64 hash;
     };
+    mutable QMutex overlayImageFrameMutex;
+    OverlayImageFrameConstPtr overlayImageFrame;
+
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
     mutable bool knobsDigestValid = false;
     mutable U64 knobsDigestGeneration = 0;

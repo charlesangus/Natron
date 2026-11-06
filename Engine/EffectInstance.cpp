@@ -67,6 +67,7 @@
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
@@ -4116,7 +4117,159 @@ EffectInstance::isViewerRender() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
 
-    return args && args->treeRoot && args->treeRoot->isEffectViewer();
+    return args && (args->overlayImagePass || (args->treeRoot && args->treeRoot->isEffectViewer()));
+}
+
+bool
+EffectInstance::isOverlayImageRequested() const
+{
+    return isOverlayImageViewOn() && getNode()->isSettingsPanelVisible();
+}
+
+bool
+EffectInstance::isOverlayImageRender() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->overlayImagePass;
+}
+
+void
+EffectInstance::addOverlayImageTile(const std::string& plane,
+                                    const OverlayColor& tint,
+                                    const RectI& bounds,
+                                    unsigned int mipmapLevel,
+                                    std::vector<float>&& values)
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    if (args && args->overlayImagePass) {
+        args->overlayImagePass->addTile(plane, tint, bounds, mipmapLevel, std::move(values));
+    }
+}
+
+bool
+EffectInstance::overlayImagesStale(const OverlayImageRequest& request) const
+{
+    if (request.visibleCanonical.isNull()) {
+        return false;
+    }
+    const OverlayImageFrameConstPtr frame = getNode()->getOverlayImageFrame();
+    U64 hash = 0;
+
+    return !frame || !getNode()->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
+}
+
+bool
+EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
+                                    const AbortableRenderInfoPtr& abortInfo)
+{
+    const NodePtr node = getNode();
+    ParallelRenderArgsSetter frameArgs(request.time,
+                                       request.view,
+                                       true /*isRenderUserInteraction*/,
+                                       false /*isSequential*/,
+                                       abortInfo,
+                                       node,
+                                       0 /*textureIndex*/,
+                                       node->getApp()->getTimeLine().get(),
+                                       NodePtr() /*rotoPaintNode*/,
+                                       false /*isAnalysis*/,
+                                       request.draftMode,
+                                       RenderStatsPtr());
+    const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>();
+
+    getParallelRenderArgsTLS()->overlayImagePass = pass;
+
+    // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
+    try {
+        const U64 hash = getRenderHash();
+        const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
+        RectD rod;
+        bool isProjectFormat;
+        if (getRegionOfDefinition_public(hash, request.time, scale, request.view, &rod, &isProjectFormat) == eStatusFailed) {
+            return false;
+        }
+        const double par = getRenderMetadata(request.time, request.view)->getPixelAspectRatio(-1);
+        const RectD visible(request.visibleCanonical.x1, request.visibleCanonical.y1, request.visibleCanonical.x2, request.visibleCanonical.y2);
+        const RectD canonicalRoI = rod.intersect(visible);
+        const RectI roi = canonicalRoI.toPixelEnclosing(request.mipmapLevel, par);
+
+        if (!roi.isNull()) {
+            std::shared_ptr<FrameRequestMap> requestPass = std::make_shared<FrameRequestMap>();
+            if (computeRequestPass(request.time, request.view, request.mipmapLevel, canonicalRoI, node, *requestPass) == eStatusFailed) {
+                return false;
+            }
+            frameArgs.updateNodesRequest(*requestPass);
+
+            std::list<ImageLayerDesc> components;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+            RenderRoIArgs args(request.time,
+                               scale,
+                               request.mipmapLevel,
+                               request.view,
+                               false /*byPassCache*/,
+                               roi,
+                               rod,
+                               components,
+                               eImageBitDepthFloat,
+                               false /*calledFromGetImage*/,
+                               0 /*caller*/,
+                               eStorageModeRAM,
+                               request.time);
+            // The side buffer is CPU memory, and a GPU route of a node has no tile to hand over.
+            args.allowGPURendering = false;
+
+            std::map<ImageLayerDesc, ImagePtr> planes;
+            if ((renderRoI(args, &planes) != eRenderRoIRetCodeOk) || aborted()) {
+                return false;
+            }
+        }
+
+        std::shared_ptr<OverlayImageFrame> frame = std::make_shared<OverlayImageFrame>();
+        frame->nodeHash = hash;
+        frame->request = request;
+        frame->pixelAspectRatio = par;
+        frame->planes = pass->takePlanes();
+        node->setOverlayImageFrame(frame);
+    } catch (const std::exception& e) {
+        qDebug() << "Overlay image render failed:" << e.what();
+
+        return false;
+    }
+
+    return true;
+}
+
+OverlayImageFrameConstPtr
+EffectInstance::getOverlayImages(double time,
+                                 ViewIdx view) const
+{
+    if (!isOverlayImageRequested()) {
+        return OverlayImageFrameConstPtr();
+    }
+    const OverlayImageFrameConstPtr frame = getNode()->getOverlayImageFrame();
+    U64 hash = 0;
+    if (!frame || !getNode()->getHashValueIfUpToDate(&hash) || (frame->nodeHash != hash) || (frame->request.time != time) || (frame->request.view != view)) {
+        return OverlayImageFrameConstPtr();
+    }
+
+    return frame;
+}
+
+void
+EffectInstance::refreshOverlayImages()
+{
+    const AppInstancePtr app = getApp();
+
+    if (!app) {
+        return;
+    }
+    if (isOverlayImageRequested()) {
+        app->renderAllViewers(true /*canAbort*/);
+    } else if (getNode()->clearOverlayImageFrame()) {
+        app->redrawAllViewers();
+    }
 }
 
 bool

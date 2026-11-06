@@ -1824,6 +1824,19 @@ public:
 
     bool hasHostOverlayForParam(const KnobI* knob) const;
 
+    /**
+     * @brief The overlay images of the node's last finished pass. Held on the node because a render
+     * clone produces them and the viewer reads them from the main instance.
+     **/
+    OverlayImageFrameConstPtr getOverlayImageFrame() const;
+
+    void setOverlayImageFrame(const OverlayImageFrameConstPtr& frame);
+
+    /**
+     * @brief Drops the overlay images. Returns whether there were any.
+     **/
+    bool clearOverlayImageFrame();
+
     void setPluginIDAndVersionForGui(const std::list<std::string>& grouping,
                                      const std::string& pluginLabel,
                                      const std::string& pluginID,

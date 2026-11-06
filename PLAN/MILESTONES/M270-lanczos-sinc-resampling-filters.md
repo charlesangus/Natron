@@ -38,6 +38,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-11-07 — Black Outside edge under slow translate at 4x down (0.01 output px per frame, 201 frames): max one-frame pixel change is 0.338 for main's cubic, 0.380 for the branch's Cubic, 0.392 for Lanczos 3, against 0.010 for an interior step; Lanczos 3 also rings to -0.118 at the edge. The jump exists on main too, once per output pixel crossed. Whether it shows in playback is unchecked: for the user at the gate.
 - 2026-11-07 — Extends "a tap on the support edge is dropped": Keys, Simon, Rifman, Mitchell, Sinc and Bicubic weigh 0 within 2^-26 of the edge, on CPU and GPU. The CPU's polynomials rounded to zero there unpredictably, moving the clamp range by up to 0.04 against the GPU; mirroring that would need double multiplication per tap. Weights in the band are under 2^-50, so no visible change. Sinc's window is `cos²` to match. Phase 270.3 factors Bicubic's outer lobe, since non-default B and C arrive with its knobs.
 - 2026-11-06 — Edge band measured (4x Lanczos 3 of a 64 px source): one-pixel stripes with Black Outside off go 0.57 then 1.0 at the first pixel past the source, the ramp 0.98 then 1.0; with it on, 0.94 then 0.02 on this grid. No band wider than one output pixel, so the zeroed-row rule stands. But a Black Outside edge sliding sub-pixel jumps (a replica reads 0.377 at fx = 64.49 and -0.006 at 64.51, ringing to -0.11 at 65), which could flicker under animation: check at the Xvfb stage and raise with the user at the panel screenshots if it shows.
 - 2026-11-06 — P1 triage: no product bug in the CPU suites. Golden and parity diffs in IDistort, STMap, ITransform, ICornerPin, Reformat and Transform come from the widened kernel, not rounding (max 0.41 on noise UVs); re-record in P3.T3. `NativeSplineWarpGpuTest` is the only timeout.
@@ -170,7 +171,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: `ctest -R "NativeTransform|NativeReformat|NativeGolden"` passes at the phase build; `du -sh Tests/fixtures/native-golden` grows by under 1 MB.
   - size: M
 
-- [ ] M270.P3.T4 — Document the filters on the Transform and Reformat pages
+- [x] M270.P3.T4 — Document the filters on the Transform and Reformat pages
   - files: `Engine/Nodes/Transform/docs/Transform.md`, `Engine/Nodes/Transform/docs/Reformat.md`, the Filter hints in `Engine/Nodes/Image/Resampler.cpp`
   - approach: List all seventeen filters with when to use each; describe Lobes, Bicubic B and Bicubic C; state that the kernel widens when minifying and how the tap budget spreads samples. Name only the filters themselves as references, never other applications.
   - verify: `git grep -c "Lanczos 3" -- Engine/Nodes/Transform/docs` shows both pages.
@@ -182,7 +183,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: `git grep -il supersampl -- Engine/Nodes/Transform/docs` returns nothing.
   - size: M
 
-- [ ] M270.P9.T1 — SplineWarp offers the new filters
+- [x] M270.P9.T1 — SplineWarp offers the new filters
   - files: `Tests/Native/NativeSplineWarpGpu_Test.cpp` (`EachFilterMatchesTheCpu`, `:498`; `TpsFrameMatchesTheCpuForEachFi...`, `:855`)
   - approach: Moved from M274 - SplineWarp Remaining Controls. The menu fills from `filterOptions()`; confirm both tests cover the new entries, including set lobes and (B, C). The Lanczos6 mentioned in M274 stays Sinc-only territory: there is no entry for it.
   - verify: both tests pass on lavapipe at the phase build; an Xvfb check lists the new entries on SplineWarp.

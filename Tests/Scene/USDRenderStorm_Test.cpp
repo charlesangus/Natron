@@ -41,6 +41,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -74,6 +75,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
@@ -2238,3 +2240,33 @@ TEST_F(USDRenderStormTest, ASharedMaterialAssignedByPatternRendersAsBound)
         }
     }
 } // TEST_F
+
+// An exception out of Hydra fails the render with its text on the node and leaves the render thread
+// able to render again.
+TEST_F(USDRenderStormTest, AnExceptionFromHydraFailsTheRenderAndTheNextRenderSucceeds)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createReferenceGraph();
+    ASSERT_TRUE(node != nullptr);
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const bool failed = renderOffMainThread(node, 1., &planes, &error);
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(failed);
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_NE(std::string::npos, message.toStdString().find("texture commit failed")) << message.toStdString();
+
+    planes.clear();
+    error.clear();
+    ASSERT_TRUE(renderOffMainThread(node, 1., &planes, &error)) << error;
+    ASSERT_EQ(3u, planes.size());
+    checkAgainstReference(planes[0], kGoldenCase);
+}

@@ -65,6 +65,12 @@
 #include "Gui/GuiGLRequirements.h"
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/driver.h>
+#include <pxr/imaging/hdSt/renderDelegate.h>
+#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 
 NATRON_NAMESPACE_USING
 
@@ -1319,4 +1325,31 @@ TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRender
     EXPECT_GT(countNonBackground(render()), 0);
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// applyStormPtexBudget reaches the engine's resource registry through a delegate of its own given
+// the engine's Hgi, which only works while Storm shares one registry per Hgi. Neither the engine's
+// delegate nor the registry's per-type memory request can be read back, so the sharing is all that
+// can be checked.
+TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
+{
+    if (_skip) {
+        return;
+    }
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine(new PXR_NS::UsdImagingGLEngine(parameters));
+    PXR_NS::Hgi* hgi = engine->GetHgi();
+    ASSERT_TRUE(hgi != nullptr);
+
+    PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
+    PXR_NS::HdStRenderDelegate first;
+    PXR_NS::HdStRenderDelegate second;
+    first.SetDrivers({ &driver });
+    second.SetDrivers({ &driver });
+
+    ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
+    EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+
+    engine.reset();
 }

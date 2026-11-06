@@ -63,3 +63,7 @@ USD API use (`usdviewq/appController.py:4298-4314,4441-4509,4604-4607`).
   - size: M
 
 **Verification gate:** release gate green; GUI scripts pass under Xvfb; a selection change on the flat file stays within the stall budget; screenshots of each tab shared before sign-off; accepted from the UAT AppImage.
+
+## Decisions
+
+- 2026-11-06 — Gate findings: `GetTargetLayer()` names the target layer stack's root, a composed or `-wrapper` layer no node owns, so the Composition tab now names the strongest layer holding the target's spec. The selection stall budget under software GL is 100 ms of main-thread CPU plus 400 ms including blocking, since a repaint alone blocks 75-106 ms on llvmpipe; the user's host judges wall time. Expanding the flat Scope stalls 425-611 ms in `QTreeView::sizeHintForColumn` and `UsdImagingGLEngine::Render`: not inspector code, belongs to the heavy-scene work.

@@ -1342,14 +1342,18 @@ TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
     PXR_NS::Hgi* hgi = engine->GetHgi();
     ASSERT_TRUE(hgi != nullptr);
 
-    PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
-    PXR_NS::HdStRenderDelegate first;
-    PXR_NS::HdStRenderDelegate second;
-    first.SetDrivers({ &driver });
-    second.SetDrivers({ &driver });
+    {
+        // The delegates release their registry in their destructors, which needs the Hgi the
+        // engine owns, so they must be gone before the engine is.
+        PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
+        PXR_NS::HdStRenderDelegate first;
+        PXR_NS::HdStRenderDelegate second;
+        first.SetDrivers({ &driver });
+        second.SetDrivers({ &driver });
 
-    ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
-    EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+        ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
+        EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+    }
 
     engine.reset();
 }

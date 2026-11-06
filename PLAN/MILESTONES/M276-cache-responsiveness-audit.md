@@ -32,7 +32,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 
 ## Phase 276.1: Instrument and reproduce
 
-- [ ] M276.P1.T1 — Record cache hits and the executing device in the render profile
+- [x] M276.P1.T1 — Record cache hits and the executing device in the render profile
   - files: `Engine/RenderScheduler.cpp` (profile writer ~:185), `Engine/GpuRegionTask.cpp` (region record), `tools/bench/render-profile-report.py`, `tools/bench/render-profile-sample.jsonl`
   - approach: Add `cache` (`hit` | `partial` | `miss` | `bypass`) and `device` (`cpu` | `gpu`) to each task record. Each region record lists the members that executed, as opposed to those served from a store. Determine the hit state where `renderRoI` finds `rectsToRender` empty or non-empty (`EffectInstanceRenderRoI.cpp` ~:1885). Teach the report script to print per-node counts of hits and executions.
   - verify: A unit or script test renders a two-node graph twice and the second profile shows the upstream task as `hit`. The report script prints per-node hit/execute counts on the updated sample.

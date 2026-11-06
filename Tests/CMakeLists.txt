@@ -316,6 +316,7 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    OverlayImageRenderer_Test.cpp
     RenderDialogRange_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp

@@ -48,6 +48,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -69,7 +70,8 @@ const char* const kReformatID = PLUGINID_NATRON_REFORMAT;
 const int kNativeReformatMajor = PLUGIN_MAJOR_NATRON_REFORMAT;
 const double kTime = 1.;
 
-// Both resample through the same filter arithmetic in double, accumulating in float.
+// The references are recorded from this resampler in one build; another build's float association
+// order may differ in the last bits.
 const ParityTolerance kReformatTolerance = ParityTolerance::resampling();
 
 bool
@@ -480,6 +482,64 @@ TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)
             }
         }
     }
+}
+
+// Every fourth pixel of a one-pixel checkerboard has the same colour, so Impulse lands wholly on
+// black or white: the alias shows as distance from the board's mean, not as variation in the output.
+TEST_F(NativeReformatTest, AQuarterScaleLanczos3HasLessAliasEnergyThanImpulse)
+{
+    resetProject(128, 128);
+    NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr reformat = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
+    ASSERT_TRUE(bool(checker));
+    ASSERT_TRUE(isNative(reformat));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamBoxSize, { 1., 1. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamLineWidth, { 0. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamCenterLineWidth, { 0. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamColor0, { 0., 0., 0., 1. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamColor1, { 1., 1., 1., 1. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamColor2, { 0., 0., 0., 1. }));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamColor3, { 1., 1., 1., 1. }));
+    connectNodes(checker, reformat, 0, true);
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionScale));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamScale, { 0.25, 0.25 }));
+
+    const RectI full = regionOfDefinition(reformat, kTime).toPixelEnclosing(0, 1.);
+    ASSERT_GE(full.width(), 32);
+    ASSERT_GE(full.height(), 32);
+    // The inset keeps the kernels away from the edge, where Black Outside darkens them.
+    const int inset = 8;
+    const auto aliasEnergy = [&](const std::string& filter) {
+        EXPECT_TRUE(setKnobValue(reformat, kResamplerParamFilterType, filter));
+        std::list<ImageLayerDesc> layers;
+        layers.push_back(ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        EXPECT_TRUE(renderNodePlanesDirect(reformat, kTime, ViewIdx(0), 0, full, layers, &planes, &error)) << error;
+        if (planes.size() != 1) {
+            ADD_FAILURE() << filter << " rendered " << planes.size() << " planes";
+
+            return -1.;
+        }
+        const std::size_t nComps = planes[0].channels.size();
+        double energy = 0.;
+        int n = 0;
+        for (int y = full.y1 + inset; y < full.y2 - inset; ++y) {
+            for (int x = full.x1 + inset; x < full.x2 - inset; ++x) {
+                const double v = planes[0].pixels[((std::size_t)(y - full.y1) * full.width() + (x - full.x1)) * nComps];
+                energy += (v - 0.5) * (v - 0.5);
+                ++n;
+            }
+        }
+
+        return energy / n;
+    };
+
+    const double impulse = aliasEnergy("impulse");
+    const double lanczos = aliasEnergy("lanczos3");
+    EXPECT_GT(impulse, 0.2);
+    EXPECT_GE(lanczos, 0.);
+    EXPECT_LT(lanczos, 1e-2);
 }
 
 TEST_F(NativeReformatTest, RegisteredIdentity)

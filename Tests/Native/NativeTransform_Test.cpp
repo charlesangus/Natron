@@ -64,8 +64,8 @@ const char* const kTransformID = PLUGINID_NATRON_TRANSFORM;
 const int kNativeTransformMajor = PLUGIN_MAJOR_NATRON_TRANSFORM;
 const double kTime = 1.;
 
-// The resampler repeats the OpenFX double arithmetic, but sums in a different association order
-// in places, so values may differ in the last float bits.
+// The references are recorded from this resampler in one build; another build's float association
+// order may differ in the last bits.
 const ParityTolerance kResamplingTolerance = ParityTolerance::resampling();
 // Motion blur averages up to hundreds of samples, each with the rounding above.
 const ParityTolerance kMotionBlurTolerance = ParityTolerance::iir();

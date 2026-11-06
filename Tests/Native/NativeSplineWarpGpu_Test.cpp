@@ -188,7 +188,7 @@ struct KernelCase {
     RectI srcBounds;
     int nComps = 4;
     std::vector<float> src;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter = Resampler::eFilterCubic;
     bool clamp = false;
     bool blackOutside = true;
     // With motion blur, the fields averaged in place of `field`, null for one that moves nothing.
@@ -199,7 +199,7 @@ std::string
 describe(const KernelCase& c)
 {
     std::ostringstream s;
-    s << c.name << " filter " << (int)c.filter << " clamp " << c.clamp << " blackOutside " << c.blackOutside
+    s << c.name << " filter " << (int)c.filter.filter << " lobes " << c.filter.lobes << " B " << c.filter.B << " C " << c.filter.C << " clamp " << c.clamp << " blackOutside " << c.blackOutside
       << " nComps " << c.nComps << " sub-frames " << c.subFrames.size();
 
     return s.str();
@@ -246,7 +246,7 @@ renderCpu(const KernelCase& c)
 {
     const Resampler::SourceImage src(c.src.data(), c.srcBounds, c.nComps);
     const int width = c.window.width();
-    const bool impulse = c.filter == Resampler::eFilterImpulse;
+    const bool impulse = c.filter.filter == Resampler::eFilterImpulse;
     std::vector<float> out((std::size_t)c.window.area() * c.nComps, 0.f);
     std::vector<float> sx(width);
     std::vector<float> sy(width);
@@ -329,9 +329,12 @@ renderGpu(GpuParityRuntime& runtime,
     std::vector<float> dst((std::size_t)c.window.area() * c.nComps, std::numeric_limits<float>::quiet_NaN());
 
     SplineWarpGpuParams params;
-    params.filter = (uint32_t)c.filter;
-    params.flags = kSplineWarpGpuSample | ((c.clamp && Resampler::filterHonoursClamp(c.filter)) ? kSplineWarpGpuClamp : 0u)
-        | (c.blackOutside ? kSplineWarpGpuBlackOutside : 0u) | ((c.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
+    params.filter = (uint32_t)c.filter.filter;
+    params.lobes = c.filter.lobes;
+    params.bicubicB = (float)c.filter.B;
+    params.bicubicC = (float)c.filter.C;
+    params.flags = kSplineWarpGpuSample | ((c.clamp && Resampler::filterHonoursClamp(c.filter.filter)) ? kSplineWarpGpuClamp : 0u)
+        | (c.blackOutside ? kSplineWarpGpuBlackOutside : 0u) | ((c.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
     std::vector<uint32_t> words;
     SplineWarpFieldGpuLayout layout;
     if (c.subFrames.empty()) {
@@ -433,9 +436,23 @@ expectParity(GpuParityRuntime& runtime,
 
 #endif // NATRON_HAVE_GPU
 
-const Resampler::FilterEnum kFilters[] = { Resampler::eFilterImpulse, Resampler::eFilterBox, Resampler::eFilterBilinear, Resampler::eFilterCubic,
-                                           Resampler::eFilterKeys, Resampler::eFilterSimon, Resampler::eFilterRifman, Resampler::eFilterMitchell,
-                                           Resampler::eFilterParzen, Resampler::eFilterNotch };
+const Resampler::FilterSpec kFilters[] = { Resampler::eFilterImpulse,
+                                           Resampler::eFilterBox,
+                                           Resampler::eFilterBilinear,
+                                           Resampler::eFilterCubic,
+                                           Resampler::eFilterKeys,
+                                           Resampler::eFilterSimon,
+                                           Resampler::eFilterRifman,
+                                           Resampler::eFilterMitchell,
+                                           Resampler::eFilterParzen,
+                                           Resampler::eFilterNotch,
+                                           Resampler::eFilterLanczos2,
+                                           Resampler::eFilterLanczos3,
+                                           Resampler::eFilterLanczos4,
+                                           Resampler::FilterSpec(Resampler::eFilterSinc, 3),
+                                           Resampler::eFilterBlackmanHarris,
+                                           Resampler::eFilterGaussian,
+                                           Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0.2, 0.4) };
 
 const RectI kWindow(0, 0, 36, 28);
 
@@ -507,7 +524,7 @@ TEST(SplineWarpGpuKernel, EachFilterMatchesTheCpu)
     const std::vector<SplineWarpBoundaryShape> none;
     const SplineWarpField field(bendMap(), none, kWindow, 1., 1., 2.);
     ASSERT_FALSE(field.isIdentity());
-    for (Resampler::FilterEnum filter : kFilters) {
+    for (const Resampler::FilterSpec& filter : kFilters) {
         for (bool clamp : { false, true }) {
             KernelCase c = makeCase("bend", field);
             c.filter = filter;
@@ -858,12 +875,15 @@ TEST_F(NativeSplineWarpGpuTest, TpsFrameMatchesTheCpuForEachFilter)
     NodePtr source = makeSource();
     NodePtr warp = makeWarp(source, false);
     ASSERT_TRUE(source && warp);
-    for (Resampler::FilterEnum filter : kFilters) {
-        ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterType, { (double)filter }));
+    for (const Resampler::FilterSpec& filter : kFilters) {
+        ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterType, { (double)filter.filter }));
+        ASSERT_TRUE(setKnobValues(warp, kResamplerParamLobes, { (double)filter.lobes }));
+        ASSERT_TRUE(setKnobValues(warp, kResamplerParamBicubicB, { filter.B }));
+        ASSERT_TRUE(setKnobValues(warp, kResamplerParamBicubicC, { filter.C }));
         for (bool clamp : { false, true }) {
             ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
             std::ostringstream what;
-            what << "TPS filter " << (int)filter << " clamp " << clamp;
+            what << "TPS filter " << (int)filter.filter << " clamp " << clamp;
             expectWarpRunsOnTheGpu(source, warp, what.str());
         }
     }

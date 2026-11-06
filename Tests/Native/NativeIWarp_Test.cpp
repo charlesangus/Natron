@@ -559,15 +559,23 @@ TEST_F(NativeIWarpTest, TilesMatchTheWholeFrameUnderASteepMapAndMinification)
     EXPECT_TRUE(setKnobValues(mapped, kTransformNodeParamTranslate, { 30., 0. }));
     EXPECT_TRUE(setKnobValues(unmapped, kTransformNodeParamScale, { 0.1, 0.1 }));
 
-    const int midX = kWindow.x1 + kWindow.width() / 2;
-    const RectI tiles[] = {
-        RectI(kWindow.x1, kWindow.y1, midX, kWindow.y2),
-        RectI(midX, kWindow.y1, kWindow.x2, kWindow.y2),
-    };
     for (const NodePtr& node : { mapped, unmapped }) {
         EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterLanczos3].id)));
         RenderedPlane whole;
         ASSERT_TRUE(renderRGBA(node, kWindow, &whole));
+        // renderRoI gives no plane for a tile outside the region of definition, and at a scale of
+        // 0.1 the image covers a few pixels right of the frame's centre, so the split follows it.
+        EffectInstancePtr effect = node->getEffectInstance();
+        RectD rod;
+        bool isProjectFormat = false;
+        ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+        const RectI covered = rod.toPixelEnclosing(0u, 1.).intersect(kWindow);
+        ASSERT_GE(covered.width(), 2) << node->getScriptName();
+        const int midX = covered.x1 + covered.width() / 2;
+        const RectI tiles[] = {
+            RectI(covered.x1, kWindow.y1, midX, kWindow.y2),
+            RectI(midX, kWindow.y1, covered.x2, kWindow.y2),
+        };
         for (const RectI& tile : tiles) {
             RenderedPlane part;
             ASSERT_TRUE(renderRGBA(node, tile, &part));

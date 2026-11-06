@@ -196,6 +196,10 @@ private:
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL;
+
     void refreshOverrides();
 
     // Without usable maps the Flat Field choice does nothing, and says so.

@@ -224,6 +224,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
+    friend class GpuPlacementPlanner;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -306,11 +307,31 @@ public:
     static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
 
     /**
-     * @brief Whether viewer renders place a shadow plan and publish a snapshot. Off by default, for every viewer, and a
-     * snapshot published before it was turned off stays until the next render of that viewer replaces it.
+     * @brief Whether viewer renders place a shadow plan and publish a snapshot. Off by default, for every viewer.
+     * Turning it on discards every earlier snapshot and asks each viewer for a dry run.
      **/
     static void setGpuPlacementOverlayEnabled(bool enabled);
     static bool isGpuPlacementOverlayEnabled();
+
+    /**
+     * @brief Asks for a plan of the current frame and view, without rendering, on a thread of the viewer once the
+     * requests have paused. A burst of requests gives one plan. It does nothing while the overlay is off and it is held
+     * during playback, a paint stroke, tracking and a project load. May be called from any thread.
+     **/
+    void requestGpuPlacementDryRun();
+    static void requestGpuPlacementDryRunForEveryViewer();
+
+    /**
+     * @brief How many dry runs viewers have carried out in this process.
+     **/
+    static int getGpuPlacementDryRunCountForTests();
+
+    /**
+     * @brief Makes every viewer behave as if it were playing back.
+     **/
+    static void setGpuPlacementFrozenForTests(bool frozen);
+
+    void getRenderAgesForTests(int textureIndex, U64* renderAge, U64* displayAge) const;
 
     /**
      * @brief How many shadow plans viewer renders have placed in this process.
@@ -318,8 +339,8 @@ public:
     static int getGpuShadowPlacementCountForTests();
 
     /**
-     * @brief The placement of the last viewer render that reached the RenderScheduler, null while the overlay is off or
-     * before any such render. May be called from any thread.
+     * @brief The placement of the last viewer render that reached the RenderScheduler or of the last dry run, null while
+     * the overlay is off or before either since it was turned on. May be called from any thread.
      **/
     GpuPlacementSnapshotPtr getGpuPlacementSnapshot() const;
 
@@ -669,11 +690,28 @@ Q_SIGNALS:
     // result. Emitted from the render thread.
     void sceneEvaluated(int textureIndex);
 
+    // getGpuPlacementSnapshot() changed. Emitted from the thread that published it, a render thread or the viewer's
+    // planner, and not during playback.
+    void gpuPlacementSnapshotChanged();
+
 private:
+    bool isGpuPlacementFrozen() const;
+    bool isGpuPlacementDryRunHeld() const;
+    void runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo);
+    void planGpuPlacementOfInput(int textureIndex,
+                                 SequenceTime time,
+                                 ViewIdx view,
+                                 OpenGLViewerI* uiContext,
+                                 const AbortableRenderInfoPtr& abortInfo,
+                                 GpuPlacementSnapshotBuilder* builder);
+    void computeMipmapLevels(OpenGLViewerI* uiContext, ViewerArgs* outArgs) const;
+
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******
      *******************************************/
 
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
     virtual bool isOutput() const OVERRIDE FINAL
     {
         return true;

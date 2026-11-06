@@ -31,6 +31,7 @@
 #include "ViewerInstance.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +65,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GpuPlacementPlanner;
 
 struct AbortableRenderInfo_CompareAge
 {
@@ -274,18 +276,24 @@ public:
         Q_EMIT mustRedrawViewer();
     }
 
-    void publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder)
-    {
-        if (!ViewerInstance::isGpuPlacementOverlayEnabled()) {
-            return;
-        }
-        GpuPlacementSnapshotPtr snapshot = builder.build();
-        if (!snapshot) {
-            return;
-        }
-        std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
-        gpuPlacementSnapshot = std::move(snapshot);
-    }
+    // Which state of the overlay and of the graph a plan was started against.
+    struct GpuPlacementStamp {
+        U64 overlayGeneration = 0;
+        U64 graphEdits = 0;
+
+        bool operator==(const GpuPlacementStamp&) const = default;
+    };
+
+    GpuPlacementStamp currentGpuPlacementStamp() const;
+
+    // Whether a real render already published against the current state of the graph, which a dry run could only
+    // replace with less: it has no fallback information.
+    bool hasRealRenderGpuPlacement() const;
+
+    // Returns whether this changed what getGpuPlacementSnapshot() returns, by more than the identity of the snapshot.
+    bool publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
+                             const GpuPlacementStamp& stamp,
+                             bool isDryRun);
 
 public:
 
@@ -479,8 +487,12 @@ public:
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
 
-    std::mutex gpuPlacementSnapshotMutex;
+    mutable std::mutex gpuPlacementSnapshotMutex;
     GpuPlacementSnapshotPtr gpuPlacementSnapshot;
+    GpuPlacementStamp gpuPlacementSnapshotStamp;
+    bool gpuPlacementSnapshotFromRender = false;
+    std::atomic<U64> gpuPlacementGraphEdits { 0 };
+    std::shared_ptr<GpuPlacementPlanner> gpuPlacementPlanner;
 
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.

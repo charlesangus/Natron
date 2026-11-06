@@ -47,6 +47,7 @@
 
 #include "Tests/BaseTest.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
@@ -314,6 +315,35 @@ anyTileHoldsRam(const UpdateViewerParams& params)
 }
 
 // Leaves the process as the test found it, whatever it asserted on the way.
+struct RenderAges {
+    U64 render[2] = { 0, 0 };
+    U64 display[2] = { 0, 0 };
+
+    explicit RenderAges(const ViewerInstance* viewer = 0)
+    {
+        if (viewer) {
+            read(viewer);
+        }
+    }
+
+    void read(const ViewerInstance* viewer)
+    {
+        for (int texture = 0; texture < 2; ++texture) {
+            viewer->getRenderAgesForTests(texture, &render[texture], &display[texture]);
+        }
+    }
+};
+
+void
+expectSameRenderAges(const RenderAges& before,
+                     const RenderAges& after)
+{
+    for (int texture = 0; texture < 2; ++texture) {
+        EXPECT_EQ(before.render[texture], after.render[texture]);
+        EXPECT_EQ(before.display[texture], after.display[texture]);
+    }
+}
+
 struct PlacementOverlayScope {
     GpuPlacementAvailableFunc savedAvailable;
 
@@ -326,6 +356,7 @@ struct PlacementOverlayScope {
 
     ~PlacementOverlayScope()
     {
+        ViewerInstance::setGpuPlacementFrozenForTests(false);
         ViewerInstance::setGpuPlacementOverlayEnabled(false);
         setGpuPlacementAvailableFunc(savedAvailable);
     }
@@ -335,6 +366,56 @@ bool
 placementAlwaysAvailable()
 {
     return true;
+}
+
+// Dry runs happen on the viewer's own thread, some time after the request.
+bool
+waitForDryRunCount(int count)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
+    while (ViewerInstance::getGpuPlacementDryRunCountForTests() < count) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        QThread::msleep(5);
+    }
+
+    return true;
+}
+
+// Counts on the emitting thread, so a test sees an emission as soon as it happened, with no event loop to run.
+class SnapshotChangeSpy {
+public:
+    explicit SnapshotChangeSpy(ViewerInstance* viewer)
+        : _count(std::make_shared<std::atomic<int>>(0))
+    {
+        std::shared_ptr<std::atomic<int>> count = _count;
+        _connection = QObject::connect(viewer, &ViewerInstance::gpuPlacementSnapshotChanged, [count]() {
+            count->fetch_add(1);
+        });
+    }
+
+    ~SnapshotChangeSpy()
+    {
+        QObject::disconnect(_connection);
+    }
+
+    int count() const
+    {
+        return _count->load();
+    }
+
+private:
+    std::shared_ptr<std::atomic<int>> _count;
+    QMetaObject::Connection _connection;
+};
+
+// Longer than the planner's debounce and its poll while held, so that a plan it was going to make has been made.
+void
+letThePlannerSettle()
+{
+    QThread::msleep(500);
 }
 
 const char* const kTexturesBitDepthKnob = "texturesBitDepth";
@@ -480,23 +561,24 @@ protected:
      * @brief Renders the current frame on a thread of its own, neither the main thread nor one of the pool, as the
      * viewer's render thread does.
      **/
-    RenderOutcome renderFrame(const RenderStatsPtr& stats)
+    RenderOutcome renderFrame(const RenderStatsPtr& stats,
+                              bool sequential = false)
     {
         RenderOutcome outcome;
         const SequenceTime time = (SequenceTime)getApp()->getTimeLine()->currentFrame();
         const U64 viewerHash = _viewer->getHash();
         ViewerArgsPtr args[2];
         args[0] = std::make_shared<ViewerArgs>();
-        const ViewerInstance::ViewerRenderRetCode prepared = _viewer->getRenderViewerArgsAndCheckCache_public(time, false, ViewIdx(0), 0, viewerHash, true, NodePtr(), stats, args[0].get());
+        const ViewerInstance::ViewerRenderRetCode prepared = _viewer->getRenderViewerArgsAndCheckCache_public(time, sequential, ViewIdx(0), 0, viewerHash, true, NodePtr(), stats, args[0].get());
         if ((prepared == ViewerInstance::eViewerRenderRetCodeFail) || (prepared == ViewerInstance::eViewerRenderRetCodeBlack)) {
             outcome.ret = prepared;
 
             return outcome;
         }
         ViewerInstance* viewer = _viewer;
-        std::thread renderThread([&outcome, &args, viewer, viewerHash, stats]() {
+        std::thread renderThread([&outcome, &args, viewer, viewerHash, stats, sequential]() {
             try {
-                outcome.ret = viewer->renderViewer(ViewIdx(0), false, false, viewerHash, true, NodePtr(), true, args,
+                outcome.ret = viewer->renderViewer(ViewIdx(0), false, sequential, viewerHash, true, NodePtr(), true, args,
                                                    ViewerCurrentFrameRequestSchedulerStartArgsPtr(), stats);
             } catch (...) {
                 outcome.ret = ViewerInstance::eViewerRenderRetCodeFail;
@@ -721,6 +803,298 @@ TEST_P(ViewerDeviceRoot, WithNoPlacementAvailableTheOverlayHasNothingToDraw)
     const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
     ASSERT_TRUE(bool(snapshot));
     EXPECT_TRUE(snapshot->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, TurningTheOverlayOnPlansWithoutARender)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int dryRunsBefore = ViewerInstance::getGpuPlacementDryRunCountForTests();
+    const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
+    const RenderAges agesBefore(_viewer);
+    const int preparesBefore = _ui.prepares.load();
+
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+
+    ASSERT_TRUE(waitForDryRunCount(dryRunsBefore + 1));
+    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_FALSE(snapshot->regions.empty());
+    for (std::size_t i = 0; i < snapshot->regions.size(); ++i) {
+        EXPECT_FALSE(snapshot->regions[i].fellBack);
+    }
+
+    EXPECT_EQ(shadowsBefore, ViewerInstance::getGpuShadowPlacementCountForTests());
+    EXPECT_EQ(preparesBefore, _ui.prepares.load());
+    expectSameRenderAges(agesBefore, RenderAges(_viewer));
+}
+
+TEST_P(ViewerDeviceRoot, ADryRunDuringARenderLeavesItsAgesAloneAndDoesNotAbortIt)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    ViewerInstance* viewer = _viewer;
+    RenderAges agesBefore, agesAfter;
+    bool planned = false;
+    ViewerInstance::setSchedulerResultHookForTests([&](const FrameRenderContextPtr&,
+                                                       std::map<ImageLayerDesc, ImagePtr>*) {
+        agesBefore.read(viewer);
+        const int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests();
+        viewer->requestGpuPlacementDryRun();
+        planned = waitForDryRunCount(dryRuns + 1);
+        agesAfter.read(viewer);
+    });
+
+    const RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
+    ViewerInstance::setSchedulerResultHookForTests(ViewerInstance::SchedulerResultHook());
+
+    ASSERT_TRUE(planned);
+    expectSameRenderAges(agesBefore, agesAfter);
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
+    ASSERT_TRUE(bool(outcome.params));
+    EXPECT_FALSE(outcome.params->abortInfo->isAborted());
+}
+
+TEST_P(ViewerDeviceRoot, ABurstOfRequestsGivesOneDryRun)
+{
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, nullptr);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    for (int i = 0; i < 20; ++i) {
+        _viewer->requestGpuPlacementDryRun();
+        QThread::msleep(2);
+    }
+
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun + 1));
+    letThePlannerSettle();
+    EXPECT_EQ(firstDryRun + 1, ViewerInstance::getGpuPlacementDryRunCountForTests());
+}
+
+TEST_P(ViewerDeviceRoot, TurningTheOverlayOnDoesNotShowAnEarlierSnapshot)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, renderFrame(std::make_shared<RenderStats>(false)).ret);
+    const GpuPlacementSnapshotPtr earlier = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(earlier));
+
+    ViewerInstance::setGpuPlacementOverlayEnabled(false);
+    const int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests();
+    ViewerInstance::setGpuPlacementOverlayEnabled(true);
+    EXPECT_FALSE(bool(_viewer->getGpuPlacementSnapshot()));
+
+    ASSERT_TRUE(waitForDryRunCount(dryRuns + 1));
+    const GpuPlacementSnapshotPtr replaced = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(replaced));
+    EXPECT_NE(earlier.get(), replaced.get());
+}
+
+TEST_P(ViewerDeviceRoot, ARealRenderReplacesADryRun)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+    const GpuPlacementSnapshotPtr planned = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(planned));
+
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, renderFrame(std::make_shared<RenderStats>(false)).ret);
+
+    const GpuPlacementSnapshotPtr rendered = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(rendered));
+    EXPECT_NE(planned.get(), rendered.get());
+}
+
+TEST_P(ViewerDeviceRoot, APendingDryRunNeverReplacesARealRenderOfTheSameState)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    // The render starts inside the plan's debounce and takes the stamp of the request, so both describe one state.
+    _viewer->requestGpuPlacementDryRun();
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, renderFrame(std::make_shared<RenderStats>(false)).ret);
+    const GpuPlacementSnapshotPtr rendered = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(rendered));
+
+    letThePlannerSettle();
+
+    EXPECT_EQ(rendered.get(), _viewer->getGpuPlacementSnapshot().get());
+}
+
+TEST_P(ViewerDeviceRoot, InLegacyModeADryRunPublishesAnEmptySnapshot)
+{
+    appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(snapshot));
+    EXPECT_TRUE(snapshot->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, SwitchingTheSchedulerModeReplansEveryViewer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (std::getenv("NATRON_RENDER_SCHEDULER")) {
+        std::printf("[  SKIPPED ] NATRON_RENDER_SCHEDULER pins the scheduler mode\n");
+
+        return;
+    }
+    const SnapshotChangeSpy spy(_viewer);
+    int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(dryRuns));
+    ASSERT_EQ(1, spy.count());
+    ASSERT_FALSE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+
+    appPTR->onRenderSchedulerModeSettingChanged(eRenderSchedulerModeLegacy);
+    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
+    EXPECT_EQ(2, spy.count());
+    EXPECT_TRUE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+
+    appPTR->onRenderSchedulerModeSettingChanged(eRenderSchedulerModeTaskGraph);
+    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
+    EXPECT_EQ(3, spy.count());
+    EXPECT_FALSE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, WithNoGpuADryRunPublishesAnEmptySnapshot)
+{
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, nullptr);
+
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(snapshot));
+    EXPECT_TRUE(snapshot->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, PlaybackHoldsADryRunUntilItStops)
+{
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, nullptr);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    ViewerInstance::setGpuPlacementFrozenForTests(true);
+    _viewer->requestGpuPlacementDryRun();
+    letThePlannerSettle();
+    EXPECT_EQ(firstDryRun, ViewerInstance::getGpuPlacementDryRunCountForTests());
+
+    ViewerInstance::setGpuPlacementFrozenForTests(false);
+    EXPECT_TRUE(waitForDryRunCount(firstDryRun + 1));
+}
+
+TEST_P(ViewerDeviceRoot, TheSnapshotSignalFiresOncePerChange)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const SnapshotChangeSpy spy(_viewer);
+    int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+
+    ASSERT_TRUE(waitForDryRunCount(dryRuns));
+    EXPECT_EQ(1, spy.count());
+
+    _viewer->requestGpuPlacementDryRun();
+    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
+    EXPECT_EQ(1, spy.count());
+    EXPECT_FALSE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+
+    setGpuPlacementAvailableFunc(nullptr);
+    _viewer->requestGpuPlacementDryRun();
+    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
+    EXPECT_EQ(2, spy.count());
+    EXPECT_TRUE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, TheSnapshotSignalReachesAMainThreadReceiverQueued)
+{
+    QObject receiver;
+    int deliveries = 0;
+    bool deliveredOnReceiverThread = false;
+    const QThread* const receiverThread = QThread::currentThread();
+    QObject::connect(_viewer, &ViewerInstance::gpuPlacementSnapshotChanged, &receiver, [&]() {
+        ++deliveries;
+        deliveredOnReceiverThread = QThread::currentThread() == receiverThread;
+    });
+
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, nullptr);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+    EXPECT_EQ(0, deliveries);
+
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, deliveries);
+    EXPECT_TRUE(deliveredOnReceiverThread);
+}
+
+TEST_P(ViewerDeviceRoot, PlaybackFreezesTheSnapshotAndItsSignalThenUpdatesOnce)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const SnapshotChangeSpy spy(_viewer);
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+    ASSERT_EQ(1, spy.count());
+    const GpuPlacementSnapshotPtr beforePlayback = _viewer->getGpuPlacementSnapshot();
+    ASSERT_FALSE(beforePlayback->regions.empty());
+
+    ViewerInstance::setGpuPlacementFrozenForTests(true);
+    setGpuPlacementAvailableFunc(nullptr);
+    _viewer->requestGpuPlacementDryRun();
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, renderFrame(std::make_shared<RenderStats>(false)).ret);
+    letThePlannerSettle();
+
+    EXPECT_EQ(1, spy.count());
+    EXPECT_EQ(beforePlayback.get(), _viewer->getGpuPlacementSnapshot().get());
+
+    ViewerInstance::setGpuPlacementFrozenForTests(false);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun + 1));
+    letThePlannerSettle();
+
+    EXPECT_EQ(2, spy.count());
+    EXPECT_TRUE(_viewer->getGpuPlacementSnapshot()->regions.empty());
+}
+
+TEST_P(ViewerDeviceRoot, ASequentialRenderPlacesNoShadow)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+    const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
+    const GpuPlacementSnapshotPtr beforePlayback = _viewer->getGpuPlacementSnapshot();
+    ViewerInstance::setGpuPlacementFrozenForTests(true);
+
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, renderFrame(std::make_shared<RenderStats>(false), true).ret);
+
+    EXPECT_EQ(shadowsBefore, ViewerInstance::getGpuShadowPlacementCountForTests());
+    EXPECT_EQ(beforePlayback.get(), _viewer->getGpuPlacementSnapshot().get());
 }
 
 INSTANTIATE_TEST_CASE_P(TexturesBitDepth, ViewerDeviceRoot, ::testing::Values(std::string("8u"), std::string("32f")));

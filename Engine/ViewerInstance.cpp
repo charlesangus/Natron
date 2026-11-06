@@ -29,7 +29,9 @@
 #include <algorithm> // min, max
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring> // for std::memcpy
 #include <limits>
 #include <list>
@@ -57,6 +59,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/GenericSchedulerThread.h"
 #include "Engine/GpuPlacement.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -205,6 +208,117 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const std::chrono::milliseconds kGpuPlacementDebounce(100);
+
+// Nothing signals the end of what holds a plan, playback least of all: its engine may still report it active right when
+// it reports having finished.
+const std::chrono::milliseconds kGpuPlacementHoldPoll(100);
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+/**
+ * @brief Runs a viewer's dry runs. The thread starts with the first request, so a viewer pays nothing while the overlay
+ * has never been on. A plan waits until requests have paused for kGpuPlacementDebounce: a knob drag edits the graph many
+ * times a second, and the viewer's real renders keep the overlay current until the drag pauses.
+ **/
+class GpuPlacementPlanner
+    : public GenericSchedulerThread {
+public:
+    explicit GpuPlacementPlanner(ViewerInstance* viewer)
+        : GenericSchedulerThread()
+        , _viewer(viewer)
+    {
+        setThreadName("GpuPlacementPlanner");
+    }
+
+    virtual ~GpuPlacementPlanner()
+    {
+    }
+
+    void request()
+    {
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _pending = true;
+            _lastRequest = std::chrono::steady_clock::now();
+        }
+        _wake.notify_all();
+        startTask(std::make_shared<GenericThreadStartArgs>());
+    }
+
+private:
+    virtual TaskQueueBehaviorEnum tasksQueueBehaviour() const OVERRIDE FINAL
+    {
+        return eTaskQueueBehaviorSkipToMostRecent;
+    }
+
+    virtual void onQuitRequested(bool /*allowRestarts*/) OVERRIDE FINAL
+    {
+        AbortableRenderInfoPtr running;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            running = _running;
+        }
+        if (running) {
+            running->setAborted();
+        }
+        _wake.notify_all();
+    }
+
+    virtual ThreadStateEnum threadLoopOnce(const GenericThreadStartArgsPtr& /*inArgs*/) OVERRIDE FINAL
+    {
+        const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+
+        for (;;) {
+            // Neither of these may run under _mutex: quitThread() can hold what they lock while it calls onQuitRequested().
+            const ThreadStateEnum state = resolveState();
+            if (state != eThreadStateActive) {
+                return state;
+            }
+            const bool held = _viewer->isGpuPlacementDryRunHeld();
+
+            std::unique_lock<std::mutex> k(_mutex);
+            if (!_pending) {
+                return eThreadStateActive;
+            }
+            const std::chrono::steady_clock::time_point quietAt = _lastRequest + kGpuPlacementDebounce;
+            if (std::chrono::steady_clock::now() < quietAt) {
+                _wake.wait_until(k, quietAt);
+            } else if (held) {
+                _wake.wait_for(k, kGpuPlacementHoldPoll);
+            } else {
+                _pending = false;
+                _running = abortInfo;
+                break;
+            }
+        }
+        // aborted() prefers what is stored on an AbortableThread over the frame args, and this thread outlives a plan.
+        setAbortInfo(true, abortInfo, _viewer->getNode()->getEffectInstance());
+        try {
+            _viewer->runGpuPlacementDryRun(abortInfo);
+        } catch (const std::exception& e) {
+            // GenericSchedulerThread::run() has no handler, so a throw from an effect's action would end the process.
+            qDebug() << "GPU placement dry run failed:" << e.what();
+        } catch (...) {
+            qDebug() << "GPU placement dry run failed";
+        }
+        clearAbortInfo();
+        std::lock_guard<std::mutex> k(_mutex);
+        _running.reset();
+
+        return eThreadStateActive;
+    }
+
+    ViewerInstance* const _viewer;
+    std::mutex _mutex;
+    std::condition_variable _wake;
+    bool _pending = false;
+    std::chrono::steady_clock::time_point _lastRequest;
+    AbortableRenderInfoPtr _running;
+};
+
 EffectInstance*
 ViewerInstance::BuildEffect(NodePtr n)
 {
@@ -222,6 +336,8 @@ ViewerInstance::ViewerInstance(NodePtr node)
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
+
+    _imp->gpuPlacementPlanner = std::make_shared<GpuPlacementPlanner>(this);
 
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
     QObject::connect( _imp.get(), SIGNAL(mustRedrawViewer()), this, SLOT(redrawViewer()) );
@@ -242,6 +358,9 @@ ViewerInstance::~ViewerInstance()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
+    // A plan reads this viewer until its thread has stopped.
+    _imp->gpuPlacementPlanner->quitThread(false);
+    _imp->gpuPlacementPlanner->waitForThreadToQuit_enforce_blocking();
 
     // If _imp->updateViewerRunning is true, that means that the next updateViewer call was
     // not yet processed. Since we're in the main thread and it is processed in the main thread,
@@ -333,6 +452,10 @@ ViewerInstance::invalidateUiContext()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _imp->uiContext = NULL;
+
+    // The caller destroys the UI context next, and a running plan may still hold it.
+    _imp->gpuPlacementPlanner->quitThread(true);
+    _imp->gpuPlacementPlanner->waitForThreadToQuit_enforce_blocking();
 #ifdef NATRON_HAVE_GPU
     _imp->stagedFrames[0].reset();
     _imp->stagedFrames[1].reset();
@@ -878,6 +1001,8 @@ ViewerInstance::applyActiveInput(int side,
 void
 ViewerInstance::onInspectorActiveInputsChanged()
 {
+    requestGpuPlacementDryRun();
+
     NodePtr node = getNode();
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(node.get());
     if (!isInspector) {
@@ -1112,6 +1237,11 @@ ViewerInstance::SchedulerResultHook gSchedulerResultHook;
 
 std::atomic<bool> gGpuPlacementOverlayEnabled(false);
 std::atomic<int> gGpuShadowPlacementCount(0);
+std::atomic<int> gGpuPlacementDryRunCount(0);
+std::atomic<bool> gGpuPlacementFrozenForTests(false);
+
+// Lets a snapshot from before the overlay was last turned on be told from a current one without reaching every viewer.
+std::atomic<U64> gGpuPlacementOverlayGeneration(0);
 
 ViewerInstance::SchedulerResultHook
 schedulerResultHook()
@@ -1262,21 +1392,100 @@ noteHandoffRefusal(const RenderStatsPtr& stats,
 }
 #endif
 
-// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
-// back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
-FrameFuturePtr
-submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
-                                   const std::shared_ptr<FrameRequestMap>& request,
-                                   const ViewerArgs& inArgs,
-                                   bool hasRotoPaintNode,
-                                   ViewIdx view,
-                                   const RectI& roi,
-                                   const std::list<ImageLayerDesc>& components,
-                                   ImageBitDepthEnum bitdepth,
-                                   const RenderStatsPtr& stats,
-                                   OpenGLViewerI* uiContext,
-                                   GpuPlacementSnapshotBuilder* placementBuilder,
-                                   FrameRenderContextPtr* contextOut)
+// The graph of the viewer input for one frame, empty when the request pass does not reach the input. The root task
+// renders exactly what renderRoI would: the viewer's RoI and displayed layers.
+FrameGraph
+buildViewerFrameGraph(const FrameRenderContextPtr& context,
+                      const ViewerArgs& inArgs,
+                      ViewIdx view,
+                      const RectI& roi,
+                      const std::list<ImageLayerDesc>& components,
+                      ImageBitDepthEnum bitdepth,
+                      OpenGLViewerI* uiContext)
+{
+#ifdef NATRON_HAVE_GPU
+    context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext));
+#else
+    Q_UNUSED(uiContext);
+#endif
+    FrameGraph graph = RenderScheduler::buildGraph(context, inArgs.activeInputToRender->getNode(), inArgs.params->time, view, inArgs.params->mipmapLevel);
+    if (!graph.tasks.empty()) {
+        FrameGraph::Task& root = graph.tasks.front();
+        root.roi = roi;
+        root.components = components;
+        root.bitdepth = bitdepth;
+    }
+
+    return graph;
+}
+
+// Returns whether a shadow plan was placed.
+bool
+addPlacedGraphToSnapshot(FrameGraph* graph,
+                         const FrameRenderContextPtr& context,
+                         GpuPlacementSnapshotBuilder* builder)
+{
+    ShadowPlacement shadow;
+    if (placeRenderGraph(*graph, context, &shadow)) {
+        builder->addGraph(*graph, shadow);
+
+        return true;
+    }
+    builder->addUnplacedGraph();
+
+    return false;
+}
+
+// Which layers the viewer asks of its input, none when it has no layer to show, and where the alpha it shows sits in
+// them.
+void
+computeViewerRequestedLayers(const ViewerArgs& inArgs,
+                             const ImageLayerDesc& inputLayers,
+                             std::list<ImageLayerDesc>* requestedComponents,
+                             int* alphaChannelIndex)
+{
+    *alphaChannelIndex = -1;
+    if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
+        /// We fetch the Layer specified in the gui
+        if (inArgs.params->layer.getNumComponents() > 0) {
+            requestedComponents->push_back(inArgs.params->layer);
+        }
+    } else {
+        /// We fetch the alpha layer
+        if (!inArgs.params->alphaChannelName.empty()) {
+            requestedComponents->push_back(inArgs.params->alphaLayer);
+            const std::vector<std::string>& channels = inArgs.params->alphaLayer.getChannels();
+            for (std::size_t i = 0; i < channels.size(); ++i) {
+                if (channels[i] == inArgs.params->alphaChannelName) {
+                    *alphaChannelIndex = i;
+                    break;
+                }
+            }
+            // alphaChannelIndex stays -1 when the colour views name an A the stream lacks (an
+            // RGB-only plane): that alpha reads as zero, so the A display below renders black.
+        }
+        if (inArgs.channels == eDisplayChannelsMatte) {
+            // For the matte overlay also display the alpha mask on top of the red channel of the image
+            if ((inArgs.params->layer.getNumComponents() > 0) && (inArgs.params->layer != inArgs.params->alphaLayer)) {
+                requestedComponents->push_back(inArgs.params->layer);
+            }
+        }
+    }
+
+    // Raw is shown from the input's own plane (its 1 or 3 channels), whatever layer the Viewer
+    // is set to, and converted to RGBA with alpha 1 by RawDisplay below.
+    if (inArgs.rawUpstream) {
+        requestedComponents->clear();
+        requestedComponents->push_back(inputLayers);
+        *alphaChannelIndex = ((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) ? 3 : -1;
+    }
+}
+
+ViewerInstance::SchedulerEligibility
+computeViewerFrameEligibility(const ParallelRenderArgsSetter* setter,
+                              const std::shared_ptr<FrameRequestMap>& request,
+                              const ViewerArgs& inArgs,
+                              bool hasRotoPaintNode)
 {
     const NodePtr inputNode = inArgs.activeInputToRender->getNode();
     ViewerInstance::SchedulerEligibility eligibility;
@@ -1294,30 +1503,37 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
     eligibility.onPoolThread = QThreadPool::globalInstance()->contains(QThread::currentThread());
     eligibility.onMainThread = QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread());
 
+    return eligibility;
+}
+
+// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
+// back to renderRoI.
+FrameFuturePtr
+submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
+                                   const std::shared_ptr<FrameRequestMap>& request,
+                                   const ViewerArgs& inArgs,
+                                   bool hasRotoPaintNode,
+                                   ViewIdx view,
+                                   const RectI& roi,
+                                   const std::list<ImageLayerDesc>& components,
+                                   ImageBitDepthEnum bitdepth,
+                                   const RenderStatsPtr& stats,
+                                   OpenGLViewerI* uiContext,
+                                   GpuPlacementSnapshotBuilder* placementBuilder,
+                                   FrameRenderContextPtr* contextOut)
+{
+    const ViewerInstance::SchedulerEligibility eligibility = computeViewerFrameEligibility(setter, request, inArgs, hasRotoPaintNode);
     const char* reason = 0;
     if (ViewerInstance::isFrameEligibleForScheduler(eligibility, &reason)) {
         FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
         context->setRequest(request);
-#ifdef NATRON_HAVE_GPU
-        context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext));
-#else
-        Q_UNUSED(uiContext);
-#endif
-        FrameGraph graph = RenderScheduler::buildGraph(context, inputNode, inArgs.params->time, view, inArgs.params->mipmapLevel);
+        FrameGraph graph = buildViewerFrameGraph(context, inArgs, view, roi, components, bitdepth, uiContext);
         if (graph.tasks.empty()) {
             reason = "request does not reach the viewer input";
         } else {
-            FrameGraph::Task& root = graph.tasks.front();
-            root.roi = roi;
-            root.components = components;
-            root.bitdepth = bitdepth;
             if (placementBuilder) {
-                ShadowPlacement shadow;
-                if (placeRenderGraph(graph, context, &shadow)) {
+                if (addPlacedGraphToSnapshot(&graph, context, placementBuilder)) {
                     gGpuShadowPlacementCount.fetch_add(1, std::memory_order_relaxed);
-                    placementBuilder->addGraph(graph, shadow);
-                } else {
-                    placementBuilder->addUnplacedGraph();
                 }
             } else {
                 placeRenderGraph(graph, context);
@@ -1609,7 +1825,13 @@ GpuPlacementSnapshotBuilder::build() const
 void
 ViewerInstance::setGpuPlacementOverlayEnabled(bool enabled)
 {
-    gGpuPlacementOverlayEnabled.store(enabled);
+    if (gGpuPlacementOverlayEnabled.exchange(enabled) == enabled) {
+        return;
+    }
+    if (enabled) {
+        gGpuPlacementOverlayGeneration.fetch_add(1);
+        requestGpuPlacementDryRunForEveryViewer();
+    }
 }
 
 bool
@@ -1631,8 +1853,370 @@ ViewerInstance::getGpuPlacementSnapshot() const
         return GpuPlacementSnapshotPtr();
     }
     std::lock_guard<std::mutex> k(_imp->gpuPlacementSnapshotMutex);
+    if (_imp->gpuPlacementSnapshotStamp.overlayGeneration != gGpuPlacementOverlayGeneration.load()) {
+        return GpuPlacementSnapshotPtr();
+    }
 
     return _imp->gpuPlacementSnapshot;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+sameNode(const NodeWPtr& a,
+         const NodeWPtr& b)
+{
+    return !a.owner_before(b) && !b.owner_before(a);
+}
+
+bool
+samePipe(const GpuPlacementSnapshot::Pipe& a,
+         const GpuPlacementSnapshot::Pipe& b)
+{
+    return sameNode(a.destNode, b.destNode) && (a.inputNb == b.inputNb);
+}
+
+bool
+sameMember(const GpuPlacementSnapshot::Member& a,
+           const GpuPlacementSnapshot::Member& b)
+{
+    return sameNode(a.node, b.node) && (a.cached == b.cached) && (a.mixed == b.mixed);
+}
+
+bool
+sameExit(const GpuPlacementSnapshot::Exit& a,
+         const GpuPlacementSnapshot::Exit& b)
+{
+    return samePipe(a.pipe, b.pipe) && (a.reason == b.reason) && (a.detail == b.detail) && (a.mixed == b.mixed);
+}
+
+bool
+sameRegion(const GpuPlacementSnapshot::Region& a,
+           const GpuPlacementSnapshot::Region& b)
+{
+    return std::equal(a.members.begin(), a.members.end(), b.members.begin(), b.members.end(), sameMember) && std::equal(a.exits.begin(), a.exits.end(), b.exits.begin(), b.exits.end(), sameExit) && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), b.entries.end(), samePipe) && (a.fellBack == b.fellBack) && (a.fallbackReason == b.fallbackReason) && (a.deviceLost == b.deviceLost) && (a.retries == b.retries) && (a.fallbackMixed == b.fallbackMixed);
+}
+
+bool
+sameGpuPlacement(const GpuPlacementSnapshot& a,
+                 const GpuPlacementSnapshot& b)
+{
+    return std::equal(a.regions.begin(), a.regions.end(), b.regions.begin(), b.regions.end(), sameRegion);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+ViewerInstance::ViewerInstancePrivate::GpuPlacementStamp
+ViewerInstance::ViewerInstancePrivate::currentGpuPlacementStamp() const
+{
+    GpuPlacementStamp stamp;
+
+    stamp.overlayGeneration = gGpuPlacementOverlayGeneration.load();
+    stamp.graphEdits = gpuPlacementGraphEdits.load();
+
+    return stamp;
+}
+
+bool
+ViewerInstance::ViewerInstancePrivate::hasRealRenderGpuPlacement() const
+{
+    const GpuPlacementStamp stamp = currentGpuPlacementStamp();
+    std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+
+    return gpuPlacementSnapshotFromRender && (gpuPlacementSnapshotStamp == stamp);
+}
+
+bool
+ViewerInstance::ViewerInstancePrivate::publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
+                                                           const GpuPlacementStamp& stamp,
+                                                           bool isDryRun)
+{
+    if (!ViewerInstance::isGpuPlacementOverlayEnabled() || instance->isGpuPlacementFrozen()) {
+        return false;
+    }
+    GpuPlacementSnapshotPtr snapshot = builder.build();
+    if (!snapshot) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+
+    // Checked under the lock so that of a real render and a dry run racing on one state, the real render wins whichever
+    // finishes first. A plan of an older state is dropped: a re-plan of the new one is already asked for.
+    if (stamp != currentGpuPlacementStamp()) {
+        return false;
+    }
+    if (isDryRun && gpuPlacementSnapshotFromRender && (gpuPlacementSnapshotStamp == stamp)) {
+        return false;
+    }
+    const bool hadSnapshot = gpuPlacementSnapshot && (gpuPlacementSnapshotStamp.overlayGeneration == stamp.overlayGeneration);
+    const bool changed = !hadSnapshot || !sameGpuPlacement(*gpuPlacementSnapshot, *snapshot);
+    gpuPlacementSnapshot = std::move(snapshot);
+    gpuPlacementSnapshotStamp = stamp;
+    gpuPlacementSnapshotFromRender = !isDryRun;
+
+    return changed;
+}
+
+void
+ViewerInstance::requestGpuPlacementDryRun()
+{
+    if (!isGpuPlacementOverlayEnabled()) {
+        return;
+    }
+    _imp->gpuPlacementGraphEdits.fetch_add(1);
+    _imp->gpuPlacementPlanner->request();
+}
+
+void
+ViewerInstance::requestGpuPlacementDryRunForEveryViewer()
+{
+    if (!isGpuPlacementOverlayEnabled() || !appPTR) {
+        return;
+    }
+    const AppInstanceVec apps = appPTR->getAppInstances();
+    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
+        std::list<ViewerInstance*> viewers;
+        (*app)->getProject()->getViewers(&viewers);
+        for (std::list<ViewerInstance*>::const_iterator viewer = viewers.begin(); viewer != viewers.end(); ++viewer) {
+            (*viewer)->requestGpuPlacementDryRun();
+        }
+    }
+}
+
+int
+ViewerInstance::getGpuPlacementDryRunCountForTests()
+{
+    return gGpuPlacementDryRunCount.load();
+}
+
+void
+ViewerInstance::setGpuPlacementFrozenForTests(bool frozen)
+{
+    gGpuPlacementFrozenForTests.store(frozen);
+}
+
+void
+ViewerInstance::getRenderAgesForTests(int textureIndex,
+                                      U64* renderAge,
+                                      U64* displayAge) const
+{
+    QMutexLocker k(&_imp->renderAgeMutex);
+
+    *renderAge = _imp->renderAge[textureIndex];
+    *displayAge = _imp->displayAge[textureIndex];
+}
+
+bool
+ViewerInstance::isGpuPlacementFrozen() const
+{
+    return gGpuPlacementFrozenForTests.load() || isDoingSequentialRender();
+}
+
+bool
+ViewerInstance::isGpuPlacementDryRunHeld() const
+{
+    if (isGpuPlacementFrozen() || isDoingPartialUpdates()) {
+        return true;
+    }
+    const AppInstancePtr app = getApp();
+    if (!app) {
+        return true;
+    }
+    const ProjectPtr project = app->getProject();
+    if (project->isLoadingProject() || project->isProjectClosing()) {
+        return true;
+    }
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr stroke;
+    bool isPainting = false;
+    app->getActiveRotoDrawingStroke(&rotoPaintNode, &stroke, &isPainting);
+
+    return isPainting;
+}
+
+void
+ViewerInstance::onNodeHashChanged(U64 hash)
+{
+    OutputEffectInstance::onNodeHashChanged(hash);
+
+    // A plan that finds the hash dirty reads the graph as that edit left it, so it would only drop itself for a re-plan.
+    if (QThread::currentThread() != _imp->gpuPlacementPlanner.get()) {
+        requestGpuPlacementDryRun();
+    }
+}
+
+void
+ViewerInstance::quitBackgroundWork(bool blocking)
+{
+    OutputEffectInstance::quitBackgroundWork(blocking);
+    _imp->gpuPlacementPlanner->quitThread(true);
+    if (blocking) {
+        _imp->gpuPlacementPlanner->waitForThreadToQuit_enforce_blocking();
+    }
+}
+
+static bool checkTreeCanRender(Node* node);
+
+void
+ViewerInstance::planGpuPlacementOfInput(int textureIndex,
+                                        SequenceTime time,
+                                        ViewIdx view,
+                                        OpenGLViewerI* uiContext,
+                                        const AbortableRenderInfoPtr& abortInfo,
+                                        GpuPlacementSnapshotBuilder* builder)
+{
+    int activeInputs[2];
+    getActiveInputs(activeInputs[0], activeInputs[1]);
+
+    ViewerArgs args;
+    args.activeInputIndex = activeInputs[textureIndex];
+    const EffectInstancePtr upstream = getInput(args.activeInputIndex);
+    if (upstream) {
+        args.activeInputToRender = upstream->getNearestNonDisabled(time);
+    }
+    if (!args.activeInputToRender || !checkTreeCanRender(args.activeInputToRender->getNode().get())) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    args.deepUpstream = args.activeInputToRender->producesDeepData();
+    if (args.deepUpstream || upstream->producesSceneData()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    args.rawUpstream = args.activeInputToRender->getNode()->getEffectiveOutputDataKind() == eDataKindRaw;
+    args.forceRender = false;
+    args.userRoIEnabled = uiContext->isUserRegionOfInterestEnabled();
+    args.mustComputeRoDAndLookupCache = false;
+    args.autoContrast = isAutoContrastEnabled();
+    args.channels = getChannels(textureIndex);
+    args.params = std::make_shared<UpdateViewerParams>();
+    args.params->textureIndex = textureIndex;
+    args.params->time = time;
+    args.params->view = view;
+    args.params->abortInfo = abortInfo;
+    args.params->nbCachedTile = 0;
+    {
+        QMutexLocker locker(&_imp->viewerParamsMutex);
+        args.params->layer = _imp->viewerParamsLayer;
+        args.params->alphaLayer = _imp->viewerParamsAlphaLayer;
+        args.params->alphaChannelName = _imp->viewerParamsAlphaChannelName;
+        args.isDoingPartialUpdates = _imp->isDoingPartialUpdates;
+    }
+    computeMipmapLevels(uiContext, &args);
+    const unsigned int mipmapLevel = args.mipmapLevelWithDraft;
+    args.params->mipmapLevel = mipmapLevel;
+
+    ViewerParallelRenderArgsSetter frameArgs(time,
+                                             view,
+                                             true,
+                                             false,
+                                             abortInfo,
+                                             getNode(),
+                                             textureIndex,
+                                             getTimeline().get(),
+                                             false,
+                                             NodePtr(),
+                                             args.activeInputToRender->getNode(),
+                                             args.draftModeEnabled,
+                                             RenderStatsPtr());
+
+    const EffectInstance::SupportsEnum supportsRS = args.activeInputToRender->supportsRenderScaleMaybe();
+    args.activeInputHash = args.activeInputToRender->getHash();
+    RectD rod;
+    if (args.activeInputToRender->getRegionOfDefinition_public(args.activeInputHash,
+                                                               time,
+                                                               (supportsRS == eSupportsNo) ? RenderScale::identity : RenderScale::fromMipmapLevel(mipmapLevel),
+                                                               view,
+                                                               &rod,
+                                                               0)
+        == eStatusFailed) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    ifInfiniteclipRectToProjectDefault(&rod);
+    args.params->rod = rod;
+
+    const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
+    args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
+    RectI roi;
+    if (args.userRoIEnabled || args.autoContrast || args.isDoingPartialUpdates) {
+        roi = uiContext->getExactImageRectangleDisplayed(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel);
+    } else {
+        // Regions can depend on the RoI, so this asks for the tile-rounded one a real render would.
+        std::vector<RectI> tiles, tilesRounded;
+        int tileSize;
+        RectI roiNotRounded;
+        roi = uiContext->getImageRectangleDisplayedRoundedToTileSize(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, &tiles, &tilesRounded, &tileSize, &roiNotRounded);
+    }
+    if (roi.isNull()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    const RectD canonicalRoi = roi.toCanonical(mipmapLevel, args.params->pixelAspectRatio, rod);
+    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, canonicalRoi, getNode(), *request) == eStatusFailed) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    frameArgs.updateNodesRequest(*request);
+
+    ImageLayerDesc layers, pairedLayers;
+    EffectInstance::getLayersFromMetadata(*metadata, -1, &layers, &pairedLayers);
+    std::list<ImageLayerDesc> requestedLayers;
+    int alphaChannelIndex;
+    computeViewerRequestedLayers(args, layers, &requestedLayers, &alphaChannelIndex);
+    if (requestedLayers.empty()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    if (!ViewerInstance::isFrameEligibleForScheduler(computeViewerFrameEligibility(&frameArgs, request, args, false), 0)) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, RenderStatsPtr(), time, view);
+    context->setRequest(request);
+    FrameGraph graph = buildViewerFrameGraph(context, args, view, roi, requestedLayers, metadata->getBitDepth(-1), uiContext);
+    if (graph.tasks.empty()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    addPlacedGraphToSnapshot(&graph, context, builder);
+} // ViewerInstance::planGpuPlacementOfInput
+
+void
+ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
+{
+    OpenGLViewerI* uiContext = _imp->uiContext;
+    if (!isGpuPlacementOverlayEnabled() || !uiContext || !getNode()->isActivated() || _imp->hasRealRenderGpuPlacement()) {
+        return;
+    }
+    const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
+    GpuPlacementSnapshotBuilder builder;
+    if ((appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) || !isGpuPlacementAvailable()) {
+        builder.addUnplacedGraph();
+    } else {
+        const SequenceTime time = (SequenceTime)getTimeline()->currentFrame();
+        const ViewIdx view = uiContext->getCurrentView();
+        const int inputCount = (uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ? 1 : 2;
+        for (int i = 0; i < inputCount; ++i) {
+            planGpuPlacementOfInput(i, time, view, uiContext, abortInfo, &builder);
+        }
+    }
+    if (!abortInfo->isAborted() && _imp->publishGpuPlacement(builder, stamp, true)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
+    }
+    gGpuPlacementDryRunCount.fetch_add(1);
 }
 
 ViewerInstance::ViewerRenderRetCode
@@ -1660,8 +2244,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
     NodePtr thisNode = getNode();
     ViewerArgsPtr args[2];
     std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
+    ViewerInstancePrivate::GpuPlacementStamp placementStamp;
     if (isGpuPlacementOverlayEnabled()) {
         placementBuilder.emplace();
+        placementStamp = _imp->currentGpuPlacementStamp();
     }
     for (int i = 0; i < 2; ++i) {
         args[i] = std::make_shared<ViewerArgs>();
@@ -1821,8 +2407,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
         }
     }
 
-    if (placementBuilder) {
-        _imp->publishGpuPlacement(*placementBuilder);
+    if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
     }
 
     if ( (status[0] == eViewerRenderRetCodeFail) && (status[1] == eViewerRenderRetCodeFail) ) {
@@ -1861,8 +2447,10 @@ ViewerInstance::renderViewer(ViewIdx view,
         eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw
     };
     std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
-    if (isGpuPlacementOverlayEnabled()) {
+    ViewerInstancePrivate::GpuPlacementStamp placementStamp;
+    if (isGpuPlacementOverlayEnabled() && !isSequentialRender) {
         placementBuilder.emplace();
+        placementStamp = _imp->currentGpuPlacementStamp();
     }
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
@@ -1930,8 +2518,8 @@ ViewerInstance::renderViewer(ViewIdx view,
         }
     }
 
-    if (placementBuilder) {
-        _imp->publishGpuPlacement(*placementBuilder);
+    if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
     }
 
     if ( (ret[0] == eViewerRenderRetCodeFail) || (ret[1] == eViewerRenderRetCodeFail) ) {
@@ -2058,6 +2646,12 @@ ViewerInstance::getRenderViewerArgsAndCheckCache_public(SequenceTime time,
                                                         const RenderStatsPtr& stats,
                                                         ViewerArgs* outArgs)
 {
+    // Held until playback stops, then planned on the frame it stopped at. Here rather than in renderViewer(), which a
+    // playback of cached frames never reaches.
+    if (isSequential) {
+        requestGpuPlacementDryRun();
+    }
+
     AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(textureIndex, canAbort, isSequential);
     ViewerRenderRetCode stat = getRenderViewerArgsAndCheckCache(time, isSequential, view, textureIndex, viewerHash, rotoPaintNode, abortInfo, stats, outArgs);
 
@@ -2078,28 +2672,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 {
     assert(_imp->uiContext);
 
-    // This is the current zoom factor (1. == 100%) currently set by the user in the viewport
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-
-    outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
-    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
-
-    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
-
-    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
-    if ( outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled() ) {
-        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
-        if (zoomFactor > 1) {
-            //Decrease draft mode at each inverse mipmaplevel level taken
-            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
-            if (invLevel < autoProxyLevel) {
-                autoProxyLevel -= invLevel;
-            } else {
-                autoProxyLevel = 0;
-            }
-        }
-        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
-    }
+    computeMipmapLevels(_imp->uiContext, outArgs);
 
     // The hash of the node to render, we store it and make sure we never call getHash() again for the render of this frame.
     // It is the hash the metadata read here belong to, so the PAR placing the tiles looked up
@@ -2165,6 +2738,34 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     // Flag that we are going to render
     outArgs->isRenderingFlag = std::make_shared<RenderingFlagSetter>( getNode() );
 } // ViewerInstance::setupMinimalUpdateViewerParams
+
+void
+ViewerInstance::computeMipmapLevels(OpenGLViewerI* uiContext,
+                                    ViewerArgs* outArgs) const
+{
+    // This is the current zoom factor (1. == 100%) currently set by the user in the viewport
+    double zoomFactor = uiContext->getZoomFactor();
+
+    outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
+    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
+
+    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
+
+    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
+    if (outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled()) {
+        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
+        if (zoomFactor > 1) {
+            // Decrease draft mode at each inverse mipmaplevel level taken
+            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
+            if (invLevel < autoProxyLevel) {
+                autoProxyLevel -= invLevel;
+            } else {
+                autoProxyLevel = 0;
+            }
+        }
+        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
+    }
+}
 
 void
 ViewerInstance::getRegionsOfInterest(double /*time*/,
@@ -2737,40 +3338,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ImageBitDepthEnum imageDepth = renderMetadata->getBitDepth(-1);
     std::list<ImageLayerDesc> requestedComponents;
     int alphaChannelIndex = -1;
-    if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
-        ///We fetch the Layer specified in the gui
-        if (inArgs.params->layer.getNumComponents() > 0) {
-            requestedComponents.push_back(inArgs.params->layer);
-        }
-    } else {
-        ///We fetch the alpha layer
-        if ( !inArgs.params->alphaChannelName.empty() ) {
-            requestedComponents.push_back(inArgs.params->alphaLayer);
-            const std::vector<std::string>& channels = inArgs.params->alphaLayer.getChannels();
-            for (std::size_t i = 0; i < channels.size(); ++i) {
-                if (channels[i] == inArgs.params->alphaChannelName) {
-                    alphaChannelIndex = i;
-                    break;
-                }
-            }
-            // alphaChannelIndex stays -1 when the colour views name an A the stream lacks (an
-            // RGB-only plane): that alpha reads as zero, so the A display below renders black.
-        }
-        if (inArgs.channels == eDisplayChannelsMatte) {
-            //For the matte overlay also display the alpha mask on top of the red channel of the image
-            if ( (inArgs.params->layer.getNumComponents() > 0) && (inArgs.params->layer != inArgs.params->alphaLayer) ) {
-                requestedComponents.push_back(inArgs.params->layer);
-            }
-        }
-    }
-
-    // Raw is shown from the input's own plane (its 1 or 3 channels), whatever layer the Viewer
-    // is set to, and converted to RGBA with alpha 1 by RawDisplay below.
-    if (inArgs.rawUpstream) {
-        requestedComponents.clear();
-        requestedComponents.push_back(components);
-        alphaChannelIndex = ((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) ? 3 : -1;
-    }
+    computeViewerRequestedLayers(inArgs, components, &requestedComponents, &alphaChannelIndex);
 
     if (requestedComponents.empty()) {
         return eViewerRenderRetCodeBlack;

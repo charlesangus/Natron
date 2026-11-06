@@ -3103,6 +3103,9 @@ AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
         return;
     }
     _imp->renderSchedulerMode = (int)mode;
+
+    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
+    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void

@@ -94,7 +94,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
 
 **Constraints.** Groups are unhashed and the digest walks the flat knob list (`Engine/Node.cpp:980-1058`), and `values()`/`author()` walk `_imp->settings`, so moving knobs under groups changes neither. Grey with knob-level enable: not group disable (`KnobGuiGroup::setEnabled` keeps its own restore list) and not secret. `setAddNewLine(false)` for bool pairs only. Indent is a constant 12 px, so no third level. Add `GI` to the label acronym list. No tooltip mentions Nuke. Layouts fit 1920x1080 scale 1. This phase adds no new controls.
 
-- [ ] M253.P4.T1 — Add table-driven nested groups to the renderer pages
+- [x] M253.P4.T1 — Add table-driven nested groups to the renderer pages
   - files: `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
   - approach: Add `Curated::groups` (`GroupSpec{name, parent, open, tooltip}`) and `CuratedSetting::group`. Create groups lazily in table order, labels from `labelFromScriptName(name, prefix)`. Reject depth above 2. A group name equal to a setting's natural script name fails a test rather than using the fallback at `:1029-1034`. A setting with no group goes to the existing curated group, so Cycles and MoonRay are unchanged until T3 and T4.
   - verify: with a test table via `setDescriptorsForTests`, parents and order match, empty groups are absent, open states match; namespace digests are equal for the same values under two layouts; toggling a group leaves the digest and `values()` unchanged.

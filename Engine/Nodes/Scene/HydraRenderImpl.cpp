@@ -2884,6 +2884,7 @@ ProgressiveRender::Implementation::run()
         VtDictionary before;
         VtDictionary stats;
         std::string error;
+        std::string renderFailure;
         std::shared_ptr<Frame> read;
         {
             std::unique_lock<std::mutex> stageGuard(*stageLock);
@@ -2914,10 +2915,11 @@ ProgressiveRender::Implementation::run()
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
-                engine->Render(stage->GetPseudoRoot(), params);
-                rendered = true;
-                converged = engine->IsConverged();
-                stats = engine->GetRenderStats();
+                if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
+                    rendered = true;
+                    converged = engine->IsConverged();
+                    stats = engine->GetRenderStats();
+                }
             }
         }
         const int samples = samplesOf(stats, cap);
@@ -2928,6 +2930,19 @@ ProgressiveRender::Implementation::run()
         }
         if (generation != passGeneration) {
             // Edited during the pass: what it rendered is stale.
+            continue;
+        }
+        if (!renderFailure.empty()) {
+            // A delegate that throws would throw again: it fails as one that cannot start, and a later render builds a fresh engine.
+            failedRenderer = renderer;
+            status.error = renderFailure;
+            status.active = false;
+            lock.unlock();
+            dropEngine();
+            if (listener) {
+                listener();
+            }
+            lock.lock();
             continue;
         }
         if (!rendered) {

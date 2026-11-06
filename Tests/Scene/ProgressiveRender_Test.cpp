@@ -36,6 +36,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,6 +46,7 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Tests/Scene/CyclesTestUtils.h"
@@ -415,6 +417,40 @@ TEST_F(ProgressiveRenderTest, AFailureReachesTheListener)
     const int after = calls.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     EXPECT_EQ(after, calls.load());
+    _render.reset();
+}
+
+// An exception out of Hydra's Render() on the worker fails the render as one that cannot start,
+// and choosing the delegate again builds a fresh engine that renders.
+TEST_F(ProgressiveRenderTest, AnExceptionFromHydraFailsTheRenderAndALaterRenderRecovers)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    _render.reset();
+    std::atomic<int> calls(0);
+    SceneStage* stage = _stage.get();
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    _render->setRenderer(kRenderDelegateCyclesId);
+    _render->setThreads([]() { return 2; });
+    _render->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_GT(calls.load(), 0) << "the listener was not called";
+    const ProgressiveRender::Status failed = _render->getStatus();
+    EXPECT_NE(std::string::npos, failed.error.find("texture commit failed")) << failed.error;
+    EXPECT_FALSE(failed.active);
+
+    _render->setRenderer(std::string());
+    _render->setRenderer(kRenderDelegateCyclesId);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    EXPECT_TRUE(collectUntilDone(&frames));
+    EXPECT_FALSE(frames.empty());
     _render.reset();
 }
 

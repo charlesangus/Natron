@@ -38,7 +38,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
   - verify: A unit or script test renders a two-node graph twice and the second profile shows the upstream task as `hit`. The report script prints per-node hit/execute counts on the updated sample.
   - size: M
 
-- [ ] M276.P1.T2 — Build the edit-latency benchmark
+- [x] M276.P1.T2 — Build the edit-latency benchmark
   - files: `tools/bench/edit_latency_bench.py` (new), `tools/bench/edit_latency.sh` (new), `tools/bench/README.md`
   - approach: A GUI script run under Xvfb (recipe: `build/deeprepro/run-gui.sh`; pre-seed `checkForUpdates=false`). It builds Read(Canon fixture) → the raw develop chain used by `tools/bench/raw_large_bench.sh` → Grade → Viewer, plus a Raw chain → HSVKeyer variant. It sets the viewer to fit-to-window or 100%, then applies N successive value changes to the last node's knob. Per edit it records the latency from knob set to completion of the viewer's root task (from the profile) and the per-node executions. Switches: `NATRON_GPU` on/off, auto-proxy on/off, the edited node's panel open/closed. Output is JSON lines.
   - verify: A run against a release AppImage writes one JSON line per edit per configuration, with latency and per-node execution counts.

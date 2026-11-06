@@ -37,14 +37,14 @@ Deps: M80 - Native RAW Support.
 ## Phase 296.2: DNG default crop
 
 - [ ] M296.P2.T1 — Check the Read window against the DNG DefaultCrop
-  - files: `Engine/Nodes/IO/RawDecodeSupport.cpp`, `Engine/Nodes/IO/RawspeedRuntime.cpp`, `Tests/Native/RawDevelop_Test.cpp`
-  - approach: For the existing small DNG fixtures in `Tests/fixtures/raw/reference/`, find out whether rawspeed's crop (the header window at `RawDecodeSupport.cpp` ~:600-615) applies both ActiveArea and DefaultCropOrigin/DefaultCropSize, or only ActiveArea. Read the tags with rawspeed's TIFF IFD API, which is already linked. If only ActiveArea is applied, intersect the window with the DefaultCrop, mapped into the ActiveArea frame and then into Natron's y-up frame, in `RawDecodeSupport.cpp`. Record the finding in this file's `## Decisions` either way. Don't add any new camera raws (LFS quota).
-  - verify: A `Tests/Native/RawDevelop_Test.cpp` case asserts that, for a DNG fixture, the Read's format is the sensor size and its RoD has the DefaultCrop size (read from the file's tags inside the test). If the fixtures carry no DefaultCrop smaller than their ActiveArea, the case asserts that and the decision says so.
+  - files: `Engine/Nodes/IO/RawDecodeSupport.cpp`, `Engine/Nodes/IO/RawspeedRuntime.cpp`, `Tests/Native/RawDecodeSupport_Test.cpp`
+  - approach: For the existing small DNG fixtures in `Tests/fixtures/raw/reference/`, find out whether rawspeed's crop (the header window at `RawDecodeSupport.cpp` ~:651-680, `setCrop` at ~:775) applies both ActiveArea and DefaultCropOrigin/DefaultCropSize, or only ActiveArea. Read the tags with rawspeed's TIFF IFD API, which is already linked. If only ActiveArea is applied, intersect the window with the DefaultCrop, mapped into the ActiveArea frame and then into Natron's y-up frame, in `RawDecodeSupport.cpp`. Record the finding in this file's `## Decisions` either way. Don't add any new camera raws (LFS quota).
+  - verify: A `Tests/Native/RawDecodeSupport_Test.cpp` case asserts that, for a DNG fixture, the Read's format is the sensor size and its RoD has the DefaultCrop size (read from the file's tags inside the test). If the fixtures carry no DefaultCrop smaller than their ActiveArea, the case asserts that and the decision says so.
   - size: M
 
 - [ ] M296.P2.T2 — End-to-end format on a real raw
-  - files: `Tests/Native/RawDevelop_Test.cpp`
-  - approach: Using the existing `Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2` and one reference DNG, build Read → RawPrepare. Assert that the Read's format equals the sensor, its RoD equals the window, and RawPrepare's format equals the window's size at (0,0), with the RoD equal to the format.
+  - files: `Tests/Native/NativeReadRaw_Test.cpp`
+  - approach: With `RawFixtures.h`, using the existing `Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2` and one reference DNG, build Read → RawPrepare. Assert that the Read's format equals the sensor, its RoD equals the window, and RawPrepare's format equals the window's size at (0,0), with the RoD equal to the format.
   - verify: The new cases pass in `ctest`.
   - size: M
 

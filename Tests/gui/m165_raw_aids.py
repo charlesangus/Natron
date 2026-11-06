@@ -128,6 +128,24 @@ try:
                 count += 1
         return count
 
+    def where_changed(a, b):
+        """Bounding box and up to 40 coordinates of the pixels changed_pixels counts, for diagnosis."""
+        from PySide6.QtGui import QImage
+        da = bytes(a.convertToFormat(QImage.Format_RGB32).constBits())
+        db = bytes(b.convertToFormat(QImage.Format_RGB32).constBits())
+        width = a.width()
+        points = []
+        for i in range(0, min(len(da), len(db)), 4):
+            if (abs(da[i] - db[i]) > CHANNEL_DELTA or abs(da[i + 1] - db[i + 1]) > CHANNEL_DELTA
+                    or abs(da[i + 2] - db[i + 2]) > CHANNEL_DELTA):
+                points.append(((i // 4) % width, (i // 4) // width, da[i + 2], da[i + 1], da[i], db[i + 2], db[i + 1], db[i]))
+        if not points:
+            return "none"
+        xs = [q[0] for q in points]
+        ys = [q[1] for q in points]
+        return "n=%d bbox x %d..%d y %d..%d sample (x,y,rgb_before,rgb_now) %r" % (
+            len(points), min(xs), max(xs), min(ys), max(ys), points[:40])
+
     def picture_pixels(image):
         """How many pixels differ from the viewer's background."""
         from PySide6.QtGui import QImage
@@ -236,6 +254,7 @@ try:
                 set_knob(node, knob, "off" if isinstance(value, str) else False)
                 ok = yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), before) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
                 check(ok, "%s: turning the view off restores the picture (%d pixels differ)" % (shot_name, changed_pixels(viewer_crop(), before)))
+                report("NOTE %s residual: %s" % (shot_name, where_changed(viewer_crop(), before)))
                 check(node.getContentHash() == hash_before, "%s: the hash is unchanged after the view is off" % shot_name)
 
             if node_id == "RawHighlights":

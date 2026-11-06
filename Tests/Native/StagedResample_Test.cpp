@@ -518,7 +518,7 @@ TEST_F(StagedResampleTest, RegionsOfInterestFollowTheMatrix)
             const double s = scale.toOfxPointD().x;
             const Resampler::RegionParams params = testRegionParams(masked != 0, kMix);
             RectD want;
-            Resampler::getRegionOfInterest(testTransformFn(), window, srcRoD, projectRect(), kTime, 1., s, s, params, &want);
+            Resampler::getRegionOfInterest(testTransformFn(), window, srcRoD, projectRect(), kTime, 1., 1., s, s, params, &want);
             if (masked) {
                 RectD reference = window;
                 Resampler::expandRoI(window, 1., s, s, params.filter, false, 1., &reference);

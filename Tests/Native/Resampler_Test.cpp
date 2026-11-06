@@ -25,7 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -51,6 +54,13 @@ const FilterEnum kAllFilters[] = {
     eFilterMitchell,
     eFilterParzen,
     eFilterNotch,
+    eFilterLanczos2,
+    eFilterLanczos3,
+    eFilterLanczos4,
+    eFilterSinc,
+    eFilterBlackmanHarris,
+    eFilterGaussian,
+    eFilterBicubic,
 };
 
 // The filters that reproduce the samples exactly at d = 0.
@@ -61,7 +71,41 @@ const FilterEnum kInterpolatingFilters[] = {
     eFilterKeys,
     eFilterSimon,
     eFilterRifman,
+    eFilterLanczos2,
+    eFilterLanczos3,
+    eFilterLanczos4,
+    eFilterSinc,
 };
+
+const FilterEnum kNewFilters[] = {
+    eFilterLanczos2,
+    eFilterLanczos3,
+    eFilterLanczos4,
+    eFilterSinc,
+    eFilterBlackmanHarris,
+    eFilterGaussian,
+    eFilterBicubic,
+};
+
+// Every filter that goes through the weighted kernel path, with the parameter variants that
+// change the kernel.
+std::vector<FilterSpec>
+kernelSpecs()
+{
+    std::vector<FilterSpec> specs;
+
+    for (FilterEnum f : kAllFilters) {
+        if (f != eFilterImpulse && f != eFilterBox) {
+            specs.push_back(FilterSpec(f));
+        }
+    }
+    specs.push_back(FilterSpec(eFilterSinc, 2));
+    specs.push_back(FilterSpec(eFilterSinc, 8));
+    specs.push_back(FilterSpec(eFilterBicubic, 4, 0., 0.5));
+    specs.push_back(FilterSpec(eFilterBicubic, 4, 1., 0.));
+
+    return specs;
+}
 
 const double kEps = 1e-12;
 
@@ -212,11 +256,28 @@ TEST(Resampler, ClampOnlyAppliesToTheSharpeningFilters)
     EXPECT_FALSE(filterHonoursClamp(eFilterNotch));
     EXPECT_FALSE(filterHonoursClamp(eFilterBilinear));
 
+    for (FilterEnum f : { eFilterLanczos2, eFilterLanczos3, eFilterLanczos4, eFilterSinc, eFilterBicubic }) {
+        EXPECT_TRUE(filterHonoursClamp(f)) << "filter " << f;
+    }
+    for (FilterEnum f : { eFilterBlackmanHarris, eFilterGaussian }) {
+        EXPECT_FALSE(filterHonoursClamp(f)) << "filter " << f;
+    }
+
     EXPECT_EQ(filterTaps(eFilterImpulse), 1);
     EXPECT_EQ(filterTaps(eFilterCubic), 2);
     EXPECT_EQ(filterTaps(eFilterNotch), 4);
-    EXPECT_EQ(filterOptions().size(), 10u);
+    EXPECT_EQ(filterTaps(eFilterLanczos3), 6);
+    EXPECT_EQ(filterTaps(FilterSpec(eFilterSinc, 8)), 16);
+    EXPECT_EQ(filterTaps(eFilterGaussian), 3);
+    EXPECT_EQ(filterOptions().size(), 17u);
     EXPECT_STREQ(filterOptions()[eFilterCubic].id, "cubic");
+    EXPECT_STREQ(filterOptions()[eFilterLanczos2].id, "lanczos2");
+    EXPECT_STREQ(filterOptions()[eFilterLanczos3].id, "lanczos3");
+    EXPECT_STREQ(filterOptions()[eFilterLanczos4].id, "lanczos4");
+    EXPECT_STREQ(filterOptions()[eFilterSinc].id, "sinc");
+    EXPECT_STREQ(filterOptions()[eFilterBlackmanHarris].id, "blackmanHarris");
+    EXPECT_STREQ(filterOptions()[eFilterGaussian].id, "gaussian");
+    EXPECT_STREQ(filterOptions()[eFilterBicubic].id, "bicubic");
     EXPECT_EQ(shutterOffsetOptions().size(), 4u);
 }
 
@@ -303,24 +364,26 @@ TEST(Resampler, SupersampleLevels)
     EXPECT_EQ(ly, 4);
 }
 
-TEST(Resampler, MinificationSupersamples)
+TEST(Resampler, MinificationWidensTheKernel)
 {
     const RectI bounds(0, 0, 32, 32);
     std::vector<float> data = makeImage(bounds, checker);
     const SourceImage src(&data.front(), bounds, 1);
     float v = -1.f;
 
-    // Without supersampling the centre of pixel (10, 10) reads that pixel.
+    // Without minification the centre of pixel (10, 10) reads that pixel.
     interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0., 0., 0., 0., src, true, &v);
     EXPECT_EQ(v, 1.f);
     interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 1., 0., 0., 1., src, true, &v);
     EXPECT_EQ(v, 1.f);
+    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0.5, 0., 0., 0.5, src, true, &v);
+    EXPECT_EQ(v, 1.f);
 
-    // A 3x minification averages the 3x3 neighbourhood: 5 ones, 4 zeros.
+    // A 3x minification widens the tent to pixels 8 to 12 with weights 1, 2, 3, 2, 1 over 9 on
+    // each axis; the parity of the pixels makes the even ones weigh 5/9 and the odd ones 4/9, so
+    // the 2-D mean of the checkerboard is (5/9)^2 + (4/9)^2.
     interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 3., 0., 0., 3., src, true, &v);
-    EXPECT_NEAR(v, 5. / 9, 1e-6);
-    interpolateSuper(eFilterKeys, false, 10.5, 10.5, 3., 0., 0., 3., src, true, &v);
-    EXPECT_NEAR(v, 5. / 9, 1e-6);
+    EXPECT_NEAR(v, 41. / 81, 1e-5);
 
     // The box filter integrates over the back-transformed pixel [9.5, 11.5]^2:
     // (1 + 4 * 0.25) / 4.
@@ -346,6 +409,13 @@ TEST(Resampler, RoIExpansion)
         { eFilterMitchell, 1.5 },
         { eFilterParzen, 1.5 },
         { eFilterNotch, 1.5 },
+        { eFilterLanczos2, 1.5 },
+        { eFilterLanczos3, 2.5 },
+        { eFilterLanczos4, 3.5 },
+        { eFilterSinc, 3.5 },
+        { eFilterBlackmanHarris, 1.5 },
+        { eFilterGaussian, 1. },
+        { eFilterBicubic, 1.5 },
     };
 
     for (const Case& c : cases) {
@@ -362,6 +432,22 @@ TEST(Resampler, RoIExpansion)
         expandRoI(roi, 2., 0.5, 0.5, c.f, false, 1., &srcRoI);
         EXPECT_EQ(srcRoI.x1, -4. * c.e);
         EXPECT_EQ(srcRoI.y1, -2. * c.e);
+    }
+
+    // The reach is radius * scale - 0.5 along each source axis; Impulse and Box ignore the scale.
+    EXPECT_EQ(filterRoIExpansion(eFilterLanczos3, 4.), 11.5);
+    EXPECT_EQ(filterRoIExpansion(FilterSpec(eFilterSinc, 8), 2.), 15.5);
+    EXPECT_EQ(filterRoIExpansion(eFilterLanczos3, 0.25), 2.5);
+    EXPECT_EQ(filterRoIExpansion(eFilterImpulse, 4.), 0.);
+    EXPECT_EQ(filterRoIExpansion(eFilterBox, 4.), 0.);
+    EXPECT_EQ(filterRoIExpansion(eFilterLanczos3, std::numeric_limits<double>::infinity()), 2.5);
+    {
+        RectD wide = roi;
+        expandRoI(roi, 1., 1., 1., eFilterLanczos3, false, 1., &wide, 4., 1.);
+        EXPECT_EQ(wide.x1, -11.5);
+        EXPECT_EQ(wide.x2, 21.5);
+        EXPECT_EQ(wide.y1, -2.5);
+        EXPECT_EQ(wide.y2, 12.5);
     }
 
     // Masking or mixing also needs the source under the output window.
@@ -424,7 +510,7 @@ TEST(Resampler, RegionsOfTranslation)
 
     // The RoI is the output window moved back, plus the cubic filter's half pixel.
     RectD srcRoI;
-    getRegionOfInterest(fn, RectD(0., 0., 10., 10.), srcRoD, RectD(0., 0., 1920., 1080.), 1., 1., 1., 1., params, &srcRoI);
+    getRegionOfInterest(fn, RectD(0., 0., 10., 10.), srcRoD, RectD(0., 0., 1920., 1080.), 1., 1., 1., 1., 1., params, &srcRoI);
     EXPECT_NEAR(srcRoI.x1, -10.5, kEps);
     EXPECT_NEAR(srcRoI.x2, 0.5, kEps);
     EXPECT_NEAR(srcRoI.y1, -0.5, kEps);
@@ -820,4 +906,448 @@ TEST(TransformMath, PixelConversion)
     t.invTransforms.push_back(Mat3::identity());
     concatenateInputTransform(TransformMath::translation(5., 0.), &t);
     expectMatrixNear(t.invTransforms[0], TransformMath::translation(-5., 0.), kEps);
+}
+
+namespace {
+// The inverse (destination to source) pixel matrix of a uniform scale about the origin.
+Mat3
+scaling(double s)
+{
+    return Mat3(s, 0., 0., 0., s, 0., 0., 0., 1.);
+}
+
+void
+renderRows(const Mat3& inverse,
+           const FilterSpec& filter,
+           bool clamp,
+           bool blackOutside,
+           const SourceImage& src,
+           int y,
+           int x1,
+           int x2,
+           std::vector<float>* out)
+{
+    SamplingTransforms t;
+
+    t.invTransforms.push_back(inverse);
+    const ResampleParams params = makeResampleParams(t, filter, clamp, blackOutside);
+    out->assign((size_t)(x2 - x1) * src.nComps, -1.f);
+    resampleRow(params, src, y, x1, x2, &out->front());
+}
+
+CanonicalTransformFn
+fixedMatrix(const Mat3& m)
+{
+    return [m](double, double, bool, Mat3* out) {
+        *out = m;
+        return true;
+    };
+}
+
+CanonicalTransformFn
+scalingFn(double sx,
+          double sy)
+{
+    return [sx, sy](double, double amount, bool invert, Mat3* out) {
+        TransformParams p;
+        p.scaleX = sx;
+        p.scaleY = sy;
+        *out = TransformMath::inverseTransformCanonical(p, amount, invert);
+        return true;
+    };
+}
+} // anon namespace
+
+TEST(Resampler, KernelsAreNormalisedAndSymmetric)
+{
+    for (const FilterSpec& spec : kernelSpecs()) {
+        for (double x : { 0.1, 0.5, 0.9, 1.3, 1.7 }) {
+            EXPECT_NEAR(spec.weight(x), spec.weight(-x), 1e-12) << "filter " << spec.filter << " x " << x;
+        }
+        EXPECT_EQ(spec.weight(spec.radius() + 0.1), 0.) << "filter " << spec.filter;
+        EXPECT_EQ(spec.weight(-spec.radius() - 0.1), 0.) << "filter " << spec.filter;
+    }
+}
+
+TEST(Resampler, SincFamilyKernels)
+{
+    const FilterSpec specs[] = {
+        FilterSpec(eFilterLanczos2),
+        FilterSpec(eFilterLanczos3),
+        FilterSpec(eFilterLanczos4),
+        FilterSpec(eFilterSinc, 2),
+        FilterSpec(eFilterSinc, 4),
+        FilterSpec(eFilterSinc, 8),
+    };
+
+    for (const FilterSpec& spec : specs) {
+        EXPECT_EQ(spec.weight(0.), 1.) << "filter " << spec.filter << " lobes " << spec.lobes;
+        for (int n = 1; n < (int)spec.radius(); ++n) {
+            EXPECT_NEAR(spec.weight((double)n), 0., 1e-12) << "filter " << spec.filter << " n " << n;
+        }
+        EXPECT_NEAR(spec.weight(spec.radius() - 1e-9), 0., 1e-6) << "filter " << spec.filter;
+    }
+
+    EXPECT_EQ(FilterSpec(eFilterLanczos2).radius(), 2.);
+    EXPECT_EQ(FilterSpec(eFilterLanczos3).radius(), 3.);
+    EXPECT_EQ(FilterSpec(eFilterLanczos4).radius(), 4.);
+    EXPECT_EQ(FilterSpec(eFilterSinc, 5).radius(), 5.);
+    EXPECT_EQ(FilterSpec(eFilterSinc, 1).radius(), 2.);
+    EXPECT_EQ(FilterSpec(eFilterSinc, 12).radius(), 8.);
+    EXPECT_EQ(filterTaps(FilterSpec(eFilterSinc, 3)), 6);
+}
+
+TEST(Resampler, BicubicMatchesTheNamedCubics)
+{
+    struct Case {
+        FilterSpec spec;
+        FilterEnum named;
+    };
+    const Case cases[] = {
+        { FilterSpec(eFilterBicubic, 4, 0., 0.5), eFilterKeys },
+        { FilterSpec(eFilterBicubic, 4, 1. / 3., 1. / 3.), eFilterMitchell },
+        { FilterSpec(eFilterBicubic), eFilterMitchell },
+    };
+
+    for (const Case& c : cases) {
+        for (double d : { 0., 0.2, 0.5, 0.8 }) {
+            double w[4];
+            filterWeights(c.named, d, w);
+            EXPECT_NEAR(c.spec.weight(d + 1.), w[0], 1e-12) << "d " << d;
+            EXPECT_NEAR(c.spec.weight(d), w[1], 1e-12) << "d " << d;
+            EXPECT_NEAR(c.spec.weight(1. - d), w[2], 1e-12) << "d " << d;
+            EXPECT_NEAR(c.spec.weight(2. - d), w[3], 1e-12) << "d " << d;
+        }
+    }
+}
+
+TEST(Resampler, SincFamilyReproducesTheSourceAtOneToOne)
+{
+    const RectI bounds(0, 0, 40, 40);
+    std::vector<float> data = makeImage(bounds, [](int x, int y) {
+        return (float)(0.5 + 0.4 * std::sin(0.9 * x + 0.37 * y));
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+
+    for (FilterEnum f : { eFilterLanczos2, eFilterLanczos3, eFilterLanczos4, eFilterSinc }) {
+        for (bool clamp : { false, true }) {
+            for (bool black : { false, true }) {
+                std::vector<float> row;
+                renderRows(Mat3(1., 0., -3., 0., 1., 2., 0., 0., 1.), f, clamp, black, src, 20, 10, 30, &row);
+                for (int x = 10; x < 30; ++x) {
+                    EXPECT_NEAR(row[(size_t)(x - 10)], data[(size_t)22 * 40 + (x - 3)], 1e-6) << "filter " << f << " clamp " << clamp << " x " << x;
+                }
+            }
+        }
+    }
+}
+
+TEST(Resampler, ConstantImagesStayConstantWhenMinified)
+{
+    const RectI bounds(0, 0, 128, 128);
+    std::vector<float> data = makeImage(bounds, [](int, int) {
+        return 0.75f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+
+    std::vector<Mat3> matrices;
+    matrices.push_back(scaling(4.));
+    matrices.push_back(scaling(0.5));
+    matrices.push_back(scaling(64.));
+    matrices.push_back(Mat3(5., 3., 0., -3., 5., 0., 0., 0., 1.));
+    TransformParams p;
+    p.rotate = 30.;
+    p.scaleX = 0.25;
+    p.scaleY = 0.25;
+    matrices.push_back(TransformMath::inverseTransformCanonical(p, 1., false));
+
+    for (const Mat3& m : matrices) {
+        for (const FilterSpec& spec : kernelSpecs()) {
+            for (int y : { 8, 16 }) {
+                std::vector<float> row;
+                renderRows(m, spec, false, false, src, y, -8, 24, &row);
+                for (size_t i = 0; i < row.size(); ++i) {
+                    ASSERT_NEAR(row[i], 0.75f, 1e-5) << "filter " << spec.filter << " scale " << m(0, 0) << " y " << y << " i " << i;
+                }
+            }
+        }
+    }
+}
+
+TEST(Resampler, MinifiedBlackOutsideFadesAtTheSourceEdge)
+{
+    const RectI bounds(0, 0, 128, 128);
+    std::vector<float> data = makeImage(bounds, [](int, int) {
+        return 1.f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+    std::vector<float> row;
+
+    renderRows(scaling(4.), eFilterLanczos3, false, true, src, 16, 0, 24, &row);
+    EXPECT_LT(row[0], 0.9f);
+    EXPECT_NEAR(row[16], 1.f, 1e-4);
+}
+
+TEST(Resampler, MinificationRemovesAliasing)
+{
+    const RectI bounds(0, 0, 128, 128);
+    std::vector<float> data = makeImage(bounds, checker);
+    const SourceImage src(&data.front(), bounds, 1);
+
+    struct Case {
+        FilterSpec spec;
+        double maxEnergy;
+        double minEnergy;
+    };
+    const Case cases[] = {
+        { FilterSpec(eFilterLanczos3), 1e-2, 0. },
+        { FilterSpec(eFilterGaussian), 1e-2, 0. },
+        { FilterSpec(eFilterImpulse), 1., 0.25 },
+    };
+
+    for (const Case& c : cases) {
+        double energy = 0.;
+        int n = 0;
+        for (int y = 8; y < 24; ++y) {
+            std::vector<float> row;
+            renderRows(scaling(4.), c.spec, false, false, src, y, 8, 24, &row);
+            for (float v : row) {
+                energy += (v - 0.5) * (v - 0.5);
+                ++n;
+            }
+        }
+        energy /= n;
+        EXPECT_LE(energy, c.maxEnergy) << "filter " << c.spec.filter;
+        EXPECT_GE(energy, c.minEnergy - 1e-9) << "filter " << c.spec.filter;
+    }
+}
+
+TEST(Resampler, ClampHoldsTheSharpFiltersInsideTheSourceRange)
+{
+    const RectI bounds(0, 0, 32, 32);
+    std::vector<float> data = makeImage(bounds, [](int x, int) {
+        return x < 16 ? 0.f : 1.f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+    const Mat3 halfPixel(1., 0., -0.5, 0., 1., 0., 0., 0., 1.);
+    const FilterSpec specs[] = {
+        FilterSpec(eFilterLanczos2),
+        FilterSpec(eFilterLanczos3),
+        FilterSpec(eFilterLanczos4),
+        FilterSpec(eFilterSinc),
+        FilterSpec(eFilterBicubic, 4, 0., 0.5),
+    };
+
+    for (const FilterSpec& spec : specs) {
+        std::vector<float> clamped;
+        std::vector<float> loose;
+        renderRows(halfPixel, spec, true, false, src, 16, 6, 26, &clamped);
+        renderRows(halfPixel, spec, false, false, src, 16, 6, 26, &loose);
+        float lo = 0.f;
+        float hi = 1.f;
+        for (size_t i = 0; i < clamped.size(); ++i) {
+            EXPECT_GE(clamped[i], 0.f) << "filter " << spec.filter;
+            EXPECT_LE(clamped[i], 1.f) << "filter " << spec.filter;
+            lo = (std::min)(lo, loose[i]);
+            hi = (std::max)(hi, loose[i]);
+        }
+        EXPECT_TRUE(lo < -1e-3f || hi > 1.f + 1e-3f) << "filter " << spec.filter;
+    }
+}
+
+TEST(Resampler, LobesWidenTheFootprint)
+{
+    const RectI bounds(0, 0, 64, 64);
+    std::vector<float> data = makeImage(bounds, [](int x, int y) {
+        return (x == 32 && y == 20) ? 1.f : 0.f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+
+    for (int lobes = 2; lobes <= 8; ++lobes) {
+        std::vector<float> row;
+        renderRows(Mat3(1., 0., -0.5, 0., 1., 0., 0., 0., 1.), FilterSpec(eFilterSinc, lobes), false, false, src, 20, 0, 64, &row);
+        EXPECT_NE(row[(size_t)(32 + lobes)], 0.f) << "lobes " << lobes;
+        EXPECT_EQ(row[(size_t)(32 + lobes + 1)], 0.f) << "lobes " << lobes;
+        EXPECT_NE(row[(size_t)(32 - lobes + 1)], 0.f) << "lobes " << lobes;
+        EXPECT_EQ(row[(size_t)(32 - lobes)], 0.f) << "lobes " << lobes;
+    }
+}
+
+TEST(Resampler, WideMinificationStaysWithinTheTapBudget)
+{
+    const RectI bounds(0, 0, 742, 1024);
+    std::vector<float> data = makeImage(bounds, [](int, int) {
+        return 1.f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+    const FilterSpec spec(eFilterLanczos3);
+    const double scale = 64.;
+    const int destX = 10;
+    std::vector<float> row;
+
+    renderRows(scaling(scale), spec, false, true, src, 8, destX, destX + 1, &row);
+
+    // The x taps spread over [centre - R, centre + R] at (i + 0.5) * 2R / 81 with bilinear reads;
+    // y lies wholly inside the source.
+    const double centre = (destX + 0.5) * scale - 0.5;
+    const double reach = spec.radius() * scale;
+    const int taps = kFilterMaxTapsPerAxis;
+    double sum = 0.;
+    double inside = 0.;
+    for (int i = 0; i < taps; ++i) {
+        const double offset = (i + 0.5) * 2. * reach / taps - reach;
+        const double position = centre + offset;
+        const double w = spec.weight(offset / scale);
+        const double lo = std::floor(position);
+        const double frac = position - lo;
+        auto in = [&](double k) {
+            return (k >= 0. && k < 742.) ? 1. : 0.;
+        };
+        sum += w;
+        inside += w * (in(lo) * (1. - frac) + in(lo + 1.) * frac);
+    }
+    const double expected = inside / sum;
+
+    EXPECT_NEAR(row[0], expected, 1e-3);
+    EXPECT_GT(std::fabs(expected - 1.), 0.01);
+}
+
+TEST(Resampler, KernelScalePerSourceAxis)
+{
+    EXPECT_EQ(kernelScale(0., 4.), 4.);
+    EXPECT_EQ(kernelScale(1., 0.), 1.);
+    EXPECT_NEAR(kernelScale(std::cos(0.785398163397448), -std::sin(0.785398163397448)), 1., 1e-12);
+    EXPECT_EQ(kernelScale(0., 0.), 1.);
+    EXPECT_EQ(kernelScale(0.3, 0.2), 1.);
+    EXPECT_EQ(kernelScale(std::numeric_limits<double>::quiet_NaN(), 3.), 1.);
+    EXPECT_EQ(kernelScale(std::numeric_limits<double>::infinity(), 0.), 1.);
+
+    const RectI bounds(0, 0, 64, 64);
+    std::vector<float> data = makeImage(bounds, [](int x, int) {
+        return (float)(x % 2);
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+    float v = -1.f;
+
+    // Row x wide: the stripes average away. Only the y row wide, or a rotation, leaves x plain.
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 4., 0., 0., 1., src, false, &v);
+    EXPECT_NEAR(v, 0.5, 0.1);
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 1., 0., 0., 4., src, false, &v);
+    EXPECT_NEAR(v, 0., 1e-6);
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 0.70710678, -0.70710678, 0.70710678, 0.70710678, src, false, &v);
+    EXPECT_NEAR(v, 0., 1e-6);
+}
+
+TEST(Resampler, RoIGrowsWithTheKernelScale)
+{
+    RegionParams params;
+    params.filter = FilterSpec(eFilterLanczos3);
+    const RectD srcRoD(0., 0., 256., 256.);
+    const RectD window(16., 16., 48., 48.);
+    RectD srcRoI;
+
+    // A 4x minification reads 3 * 4 - 0.5 beyond the back-transformed window on both axes.
+    getRegionOfInterest(scalingFn(0.25, 0.25), window, srcRoD, RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+    EXPECT_NEAR(srcRoI.x1, 52.5, 1e-9);
+    EXPECT_NEAR(srcRoI.x2, 203.5, 1e-9);
+    EXPECT_NEAR(srcRoI.y1, 52.5, 1e-9);
+    EXPECT_NEAR(srcRoI.y2, 203.5, 1e-9);
+
+    // Only the axis that minifies grows.
+    getRegionOfInterest(scalingFn(0.25, 1.), window, srcRoD, RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+    EXPECT_NEAR(srcRoI.x1, 52.5, 1e-9);
+    EXPECT_NEAR(srcRoI.x2, 203.5, 1e-9);
+    EXPECT_NEAR(srcRoI.y1, 13.5, 1e-9);
+    EXPECT_NEAR(srcRoI.y2, 50.5, 1e-9);
+
+    // Magnification keeps the plain reach.
+    getRegionOfInterest(scalingFn(2., 2.), window, srcRoD, RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+    EXPECT_NEAR(srcRoI.x1, 8. - 2.5, 1e-9);
+    EXPECT_NEAR(srcRoI.x2, 24. + 2.5, 1e-9);
+
+    // The impulse filter reads one pixel whatever the scale.
+    params.filter = FilterSpec(eFilterImpulse);
+    getRegionOfInterest(scalingFn(0.25, 0.25), window, srcRoD, RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+    EXPECT_NEAR(srcRoI.x1, 64., 1e-9);
+    EXPECT_NEAR(srcRoI.x2, 192., 1e-9);
+}
+
+TEST(Resampler, RoIReadsAreInsideTheRegion)
+{
+    const RectI bounds(0, 0, 256, 256);
+    std::vector<float> data = makeImage(bounds, [](int x, int y) {
+        return (float)(0.5 + 0.45 * std::sin(0.31 * x) * std::cos(0.17 * y));
+    });
+    const SourceImage full(&data.front(), bounds, 1);
+
+    RegionParams params;
+    params.filter = FilterSpec(eFilterLanczos3);
+    RectD srcRoI;
+    getRegionOfInterest(scalingFn(0.25, 0.25), RectD(16., 16., 48., 48.), RectD(0., 0., 256., 256.), RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+
+    const RectI crop((int)std::floor(srcRoI.x1), (int)std::floor(srcRoI.y1), (int)std::ceil(srcRoI.x2), (int)std::ceil(srcRoI.y2));
+    std::vector<float> cropped = makeImage(crop, [&](int x, int y) {
+        return data[(size_t)y * 256 + x];
+    });
+    const SourceImage part(&cropped.front(), crop, 1);
+
+    for (int y = 16; y < 48; y += 5) {
+        std::vector<float> a;
+        std::vector<float> b;
+        renderRows(scaling(4.), params.filter, false, true, full, y, 16, 48, &a);
+        renderRows(scaling(4.), params.filter, false, true, part, y, 16, 48, &b);
+        for (size_t i = 0; i < a.size(); ++i) {
+            ASSERT_EQ(a[i], b[i]) << "y " << y << " i " << i;
+        }
+    }
+}
+
+TEST(Resampler, RoIBehindTheCameraReadsTheWholeSource)
+{
+    RegionParams params;
+    params.filter = FilterSpec(eFilterLanczos3);
+    const RectD srcRoD(0., 0., 100., 50.);
+    RectD srcRoI;
+
+    getRegionOfInterest(fixedMatrix(Mat3(1., 0., 0., 0., 1., 0., -0.2, 0., 1.)), RectD(0., 0., 10., 10.), srcRoD, RectD(0., 0., 1920., 1080.), 0., 1., 1., 1., 1., params, &srcRoI);
+    EXPECT_EQ(srcRoI.x1, 0.);
+    EXPECT_EQ(srcRoI.x2, 100.);
+    EXPECT_EQ(srcRoI.y1, 0.);
+    EXPECT_EQ(srcRoI.y2, 50.);
+}
+
+TEST(Resampler, MinifiedEdgeBandFromZeroedRows)
+{
+    const RectI bounds(0, 0, 64, 64);
+
+    for (int pattern = 0; pattern < 2; ++pattern) {
+        const char* name = pattern == 0 ? "stripes" : "ramp";
+        std::vector<float> data = makeImage(bounds, [&](int x, int) {
+            return pattern == 0 ? (float)(x % 2) : (float)x / 63.f;
+        });
+        const SourceImage src(&data.front(), bounds, 1);
+        // What a 4x minification settles to: the stripes' mean, or the ramp at the pixel's centre.
+        auto expectedAt = [&](int x) {
+            return pattern == 0 ? 0.5 : (4. * x + 1.5) / 63.;
+        };
+
+        for (int black = 0; black < 2; ++black) {
+            std::vector<float> row;
+            renderRows(scaling(4.), eFilterLanczos3, false, black != 0, src, 8, 0, 24, &row);
+            double outsideDev = 0.;
+            double insideDev = 0.;
+            for (int x = 16; x < 24; ++x) {
+                outsideDev = (std::max)(outsideDev, std::fabs((double)row[(size_t)x] - expectedAt(x)));
+            }
+            for (int x = 4; x < 12; ++x) {
+                insideDev = (std::max)(insideDev, std::fabs((double)row[(size_t)x] - expectedAt(x)));
+            }
+            std::printf("M270 edge band: %s blackOutside=%d max|v-expected| outside(x>=16)=%.5f interior(x 4..11)=%.5f\n", name, black, outsideDev, insideDev);
+            std::printf("M270 edge band: %s blackOutside=%d x12..20:", name, black);
+            for (int x = 12; x <= 20; ++x) {
+                std::printf(" %.4f", row[(size_t)x]);
+            }
+            std::printf("\n");
+        }
+    }
 }

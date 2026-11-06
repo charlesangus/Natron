@@ -176,7 +176,7 @@ future core work has solid ground to build on.
 | M330 | Graph Draw Policy | todo | M329 |  | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
 | M331 | Deferred Pattern Matching | todo | M52, M327, M328 |  | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
 | M332 | Scene Graph Points | todo | M328 |  | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
-| M333 | Prim Inspector | doing | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
+| M333 | Prim Inspector | done | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
 | M334 | Knob Prim Tools | todo | M52, M232, M331 |  | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
 | M335 | Viewer Render Draw States | todo | M254, M329 |  | E9 | F4 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
 | M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | F4 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |

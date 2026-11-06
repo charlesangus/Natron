@@ -145,7 +145,8 @@ public:
  * natronSceneGraphInspectorReadsCancelled, natronSceneGraphInspectorCompositionQueries (how many
  * UsdPrimCompositionQuery the Composition tab has run) and
  * natronSceneGraphInspectorDefinitionReads (how many times the Layer tab has flattened a prim)
- * properties.
+ * properties. A script sets natronSceneGraphInspectorHoldReads to true to keep every read from
+ * starting until it sets it back, which holds one under way for as long as a test needs.
  **/
 class ScenePrimInspector
     : public QWidget {
@@ -176,6 +177,7 @@ public:
     void stop();
 
 protected:
+    bool event(QEvent* e) override;
     void showEvent(QShowEvent* e) override;
     void hideEvent(QHideEvent* e) override;
 

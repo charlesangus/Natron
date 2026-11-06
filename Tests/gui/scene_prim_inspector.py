@@ -186,6 +186,9 @@ try:
     def state(name):
         return inspector().property("natronSceneGraphInspector" + name)
 
+    def hold_reads(hold):
+        inspector().setProperty("natronSceneGraphInspectorHoldReads", hold)
+
     def rows(parent=QModelIndex()):
         m = model()
         if m is None:
@@ -656,8 +659,7 @@ try:
         ok = yield ("until", lambda: settled_on(SMALL) and "size" in table(ATTRIBUTES), POLL_TIMEOUT_S)
         require(ok, "the small prim is shown again")
 
-        # The grab blocks the main thread for longer than this read lasts, so the screenshot gets a
-        # read of its own, outside the measured one that a new selection has to catch running.
+        hold_reads(True)
         select(find(HEAVY))
         ok = yield ("until", lambda: bool(state("Stale")), POLL_TIMEOUT_S)
         check(ok, "a slow read greys the last result")
@@ -665,6 +667,7 @@ try:
               "the last result stays up during the read (got %r)" % (state("Path"),))
         check(foreground(ATTRIBUTES) is not None, "the last result's rows are greyed")
         shot("scene-prim-inspector-stale.png")
+        hold_reads(False)
         ok = yield ("until", lambda: settled_on(HEAVY), LOAD_TIMEOUT_S)
         require(ok, "the large arrays are read for the screenshot (got %r)" % (state("Path"),))
         select(find(SMALL))
@@ -676,12 +679,14 @@ try:
         started = int(state("ReadsStarted"))
         cancelled = int(state("ReadsCancelled"))
         beat.start()
+        hold_reads(True)
         select(heavy_index)
-        # Not the grey state, which comes 100 ms in and leaves a short read too little time to catch.
         ok = yield ("until", lambda: int(state("ReadsStarted")) > started, POLL_TIMEOUT_S)
         require(ok, "the read to cancel is under way")
 
         select(other_index)
+        yield ("sleep", SETTLE_MS)
+        hold_reads(False)
         ok = yield ("until", lambda: settled_on(OTHER) and "otherValue" in table(ATTRIBUTES), LOAD_TIMEOUT_S)
         check(ok, "a new selection shows its own prim (got %r)" % (state("Path"),))
         ok = yield ("until", lambda: int(state("ReadsCancelled")) > cancelled, LOAD_TIMEOUT_S)

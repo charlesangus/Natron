@@ -40,6 +40,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDialog>
+#include <QDynamicPropertyChangeEvent>
 #include <QElapsedTimer>
 #include <QFontDatabase>
 #include <QHeaderView>
@@ -1196,6 +1197,7 @@ struct ScenePrimInspector::Implementation {
     std::atomic<qulonglong> definitionReads { 0 };
 
     std::atomic<U64> generation { 0 };
+    bool holdReads = false;
     std::mutex queueMutex;
     std::condition_variable queueChanged;
     bool hasRequest = false;
@@ -1240,9 +1242,21 @@ struct ScenePrimInspector::Implementation {
     void cancelRead()
     {
         ++generation;
-        std::lock_guard<std::mutex> lock(queueMutex);
-        hasRequest = false;
-        request = Request();
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            hasRequest = false;
+            request = Request();
+        }
+        queueChanged.notify_all();
+    }
+
+    void setHoldReads(bool hold)
+    {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            holdReads = hold;
+        }
+        queueChanged.notify_all();
     }
 
     void startRead()
@@ -1322,9 +1336,13 @@ struct ScenePrimInspector::Implementation {
                 next = std::move(request);
                 request = Request();
                 hasRequest = false;
+                queueChanged.wait(lock, [this, &next]() { return quit || !holdReads || (next.generation != generation); });
+                if (quit) {
+                    return;
+                }
             }
             std::function<void()> show;
-            {
+            if (next.generation == generation) {
                 const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node);
                 show = next.tab->read(read);
             }
@@ -1456,6 +1474,19 @@ ScenePrimInspector::setPrim(const SceneGraphStageSourcePtr& source,
     _imp->frame = frame;
     _imp->framesPerSecond = framesPerSecond;
     _imp->startRead();
+}
+
+bool
+ScenePrimInspector::event(QEvent* e)
+{
+    if (e->type() == QEvent::DynamicPropertyChange) {
+        QDynamicPropertyChangeEvent* change = static_cast<QDynamicPropertyChangeEvent*>(e);
+        if (change->propertyName() == "natronSceneGraphInspectorHoldReads") {
+            _imp->setHoldReads(property("natronSceneGraphInspectorHoldReads").toBool());
+        }
+    }
+
+    return QWidget::event(e);
 }
 
 void

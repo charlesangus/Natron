@@ -281,7 +281,7 @@ struct EngineEntry {
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
     EnginePtr engine;
-    // Whether the engine lights the stage with a headlight, as Storm's does when the stage has no light.
+    // Whether the engine lights the stage with a light at the camera.
     bool headlight = false;
     // The render settings the engine was made with: the request's, setRendererSettings()'s on top.
     std::map<std::string, VtValue> settings;
@@ -400,20 +400,7 @@ takeGlError()
     return first;
 }
 
-// Whether stage has a light of its own; without one, renders get a light at the camera.
-bool
-hasSceneLight(const UsdStageRefPtr& stage)
-{
-    for (const UsdPrim& prim : stage->Traverse()) {
-        if (prim.HasAPI<UsdLuxLightAPI>()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// The light at the camera usdview and the viewer's scene view give a stage without lights.
+// The light at the camera usdview gives a stage, which the request may ask for.
 void
 setHeadlight(UsdImagingGLEngine* engine)
 {
@@ -1074,12 +1061,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.rendered = false;
     }
     const UsdStageRefPtr& stage = entry.stage->getStage();
-    // The headlight is Storm's: a path tracer lights a stage without lights as it does itself, and
-    // MoonRay, which renders no Hydra simple light, leaves it black.
-    bool headlight = entry.headlight;
-    if (_gl && (edited || !entry.engine)) {
-        headlight = !hasSceneLight(stage);
-    }
     RendererSettings settings = request.settings;
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
@@ -1088,12 +1069,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (cycles) {
         followCyclesThreads(request.threads);
     }
-    // A headlight once set cannot be taken back, so the engine is made again when the stage gains
-    // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
-    // when they change, so an engine is made again under new ones too, as a MoonRay engine is under
-    // a new thread budget.
+    // A headlight once set cannot be taken back, so the engine is made again when the request
+    // drops it; and some settings, such as Cycles' integrator's, restart a render only when they
+    // change, so an engine is made again under new ones too, as a MoonRay engine is under a new
+    // thread budget.
     const bool budgetChanged = MoonRayAovs::isMoonRay(renderer) && (request.threads != entry.threads);
-    if (!entry.engine || (headlight != entry.headlight) || (settings != entry.settings) || budgetChanged) {
+    if (!entry.engine || (request.headlight != entry.headlight) || (settings != entry.settings) || budgetChanged) {
         entry.engine.reset();
         entry.rendered = false;
         // Named even for Storm: with no id the engine takes USD's default delegate, the first by
@@ -1178,8 +1159,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
             return nullptr;
         }
-        entry.headlight = headlight;
-        if (headlight) {
+        entry.headlight = request.headlight;
+        if (entry.headlight) {
             setHeadlight(entry.engine.get());
         }
     }

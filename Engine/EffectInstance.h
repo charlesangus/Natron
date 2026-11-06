@@ -53,40 +53,33 @@
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
-#define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
-#define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"
+#define PLUGINID_OFX_DOTEXAMPLE "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_SENOISE      "net.sf.openfx.SeNoise"
 #define PLUGINID_OFX_READOIIO     "fr.inria.openfx.ReadOIIO"
 #define PLUGINID_OFX_WRITEOIIO    "fr.inria.openfx.WriteOIIO"
 #define PLUGINID_OFX_ROTO         "net.sf.openfx.RotoPlugin"
-#define CLIP_OFX_ROTO             "Roto" // The Roto input clip from the Roto plugin
-#define PLUGINID_OFX_TRANSFORM    "net.sf.openfx.TransformPlugin"
-#define PLUGINID_OFX_GRADE        "net.sf.openfx.GradePlugin"
-#define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
-#define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
-#define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CONSTANT "net.sf.openfx.ConstantPlugin"
+#define CLIP_OFX_ROTO "Roto" // The Roto input clip from the Roto plugin
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 
-#define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
-#define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
-#define PLUGINID_NATRON_DOT       (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Dot")
-#define PLUGINID_NATRON_READQT    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.ReadQt")
-#define PLUGINID_NATRON_WRITEQT   (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.WriteQt")
-#define PLUGINID_NATRON_GROUP     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Group")
-#define PLUGINID_NATRON_INPUT     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Input")
-#define PLUGINID_NATRON_OUTPUT    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Output")
-#define PLUGINID_NATRON_BACKDROP  (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.BackDrop") // DO NOT change the capitalization, even if it's wrong
-#define PLUGINID_NATRON_ROTOPAINT (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.RotoPaint")
-#define PLUGINID_NATRON_ROTO (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Roto")
-#define PLUGINID_NATRON_ROTOSMEAR (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.RotoSmear")
-#define PLUGINID_NATRON_PRECOMP     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Precomp")
-#define PLUGINID_NATRON_TRACKER   (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Tracker")
-#define PLUGINID_NATRON_JOINVIEWS     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.JoinViews")
-#define PLUGINID_NATRON_READ    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Read")
-#define PLUGINID_NATRON_WRITE    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Write")
-#define PLUGINID_NATRON_MISSING_PLUGIN (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.MissingPlugin")
-#define PLUGINID_NATRON_ONEVIEW    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.OneView")
+#define PLUGINID_NATRON_VIEWER "Viewer"
+#define PLUGINID_NATRON_DISKCACHE "DiskCache"
+#define PLUGINID_NATRON_DOT "Dot"
+#define PLUGINID_NATRON_READQT "ReadQt"
+#define PLUGINID_NATRON_WRITEQT "WriteQt"
+#define PLUGINID_NATRON_GROUP "Group"
+#define PLUGINID_NATRON_INPUT "Input"
+#define PLUGINID_NATRON_OUTPUT "Output"
+#define PLUGINID_NATRON_BACKDROP "Backdrop"
+#define PLUGINID_NATRON_ROTOPAINT "RotoPaint"
+#define PLUGINID_NATRON_ROTO "Roto"
+#define PLUGINID_NATRON_ROTOSMEAR "RotoSmear"
+#define PLUGINID_NATRON_PRECOMP "Precomp"
+#define PLUGINID_NATRON_TRACKER "Tracker"
+#define PLUGINID_NATRON_JOINVIEWS "JoinViews"
+#define PLUGINID_NATRON_READ "Read"
+#define PLUGINID_NATRON_WRITE "Write"
+#define PLUGINID_NATRON_MISSING_PLUGIN "MissingPlugin"
+#define PLUGINID_NATRON_ONEVIEW "OneView"
 
 #define kReaderParamNameOriginalFrameRange "originalFrameRange"
 
@@ -445,6 +438,31 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose stored hashes appendNodeContentHash() folds in, besides the
+     * node's inputs: they are hashed before it, and it is only clean once they are.
+     **/
+    virtual void appendExtraHashSources(std::vector<NodePtr>* /*sources*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose hashes fold this one's state in, besides its outputs: marking
+     * this node dirty marks them too.
+     **/
+    virtual void appendExtraHashDependents(std::vector<NodePtr>* /*dependents*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
+     * and the nodes its expressions read, each with the variables it sets on that node.
+     **/
+    virtual void appendExtraContextReadSuccessors(std::vector<NodePtr>* /*successors*/,
+                                                  std::vector<RenderContextReadSet>* /*overridden*/) const
+    {
+    }
+
+    /**
      * @brief Forwarded to the node's name
      **/
     const std::string & getScriptName() const WARN_UNUSED_RETURN;
@@ -566,6 +584,12 @@ public:
     {
         return 0;
     }
+
+    /**
+     * @brief Makes the curve context of a Geometry host, which may be a subclass holding the
+     * host's own data about its curves. Called once, when the node is created.
+     **/
+    virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Called by a geometry curve context when item is built, before it is cloned, loaded
@@ -791,6 +815,16 @@ public:
      * what you'll see displayed when the user clicks the '?' button on the node's panel in the user interface.
      **/
     virtual std::string getPluginDescription() const WARN_UNUSED_RETURN = 0;
+
+    /**
+     * @brief Text the node graph shows in parentheses after the node's name, empty for none.
+     * An effect that overrides it calls Node::refreshSublabel() whenever it changes. OpenFX
+     * plug-ins give theirs through the kNatronOfxParamStringSublabelName knob instead.
+     **/
+    virtual std::string getSublabel() const WARN_UNUSED_RETURN
+    {
+        return std::string();
+    }
 
     /**
      * @brief Returns whether the plugin  description is written in markdown or not
@@ -1076,6 +1110,13 @@ public:
     void popParallelRenderArgsTLS();
 
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+
+    /**
+     * @brief Whether the calling thread renders this node: its frame args are installed and are not
+     * the ones the instance-changed action installs around knobChanged, which renders nothing.
+     * Outside a render, expressions read the enclosing loops' preview iterations.
+     **/
+    bool isRenderingTLS() const;
 
     /**
      * @brief Whether the frame the calling thread renders belongs to a sequence render started by
@@ -1965,9 +2006,37 @@ public:
     }
 
     /**
-     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
-     * under the context this effect's actions answer for on this thread, and if so that context:
-     * the one the input's region of definition, metadata and layers are read under, through an
+     * @brief True when this effect's render action pulls input inputNb itself at time/view under
+     * context, so the host does not pre-render it: what the request pass planned for it is then
+     * rendered once by the action, not once per rectangle the action renders.
+     **/
+    virtual bool pullsInputInRender(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const RenderContextPtr& /*context*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Images rendered elsewhere that this effect outputs unchanged for layers at args'
+     * time, view, mipmap level and depth, each covering roi (args.roi clipped to the region of
+     * definition). Returning true, renderRoI() returns code and, when it is eRenderRoIRetCodeOk,
+     * the images in outputLayers, as for an identity. False, the default, renders.
+     **/
+    virtual bool forwardsOutput(const RenderRoIArgs& /*args*/,
+                                const std::list<ImageLayerDesc>& /*layers*/,
+                                const RectI& /*roi*/,
+                                std::map<ImageLayerDesc, ImagePtr>* /*outputLayers*/,
+                                RenderRoIRetCode* /*code*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether getInputContexts() names contexts for input inputNb at time/view under the
+     * context this effect's actions answer for on this thread, and if so the last of them: the one
+     * the input's region of definition, metadata and layers are read under, through an
      * ActionContextScope, as the input renders under it.
      **/
     bool getInputActionContext(int inputNb,
@@ -1986,6 +2055,9 @@ public:
         ViewIdx view;
         RectD roi;
         std::list<ImageLayerDesc> comps;
+        // Planned once every consumer of this frame/view is: the request is asked again then,
+        // with roi the whole region they request, rather than once per region a consumer adds.
+        bool afterConsumers = false;
     };
 
     /**
@@ -2090,6 +2162,12 @@ public:
         return false;
     }
     virtual void clearLastRenderedImage();
+
+    /**
+     * @brief Stops threads the effect runs on its own, outside renders: asks them to stop and,
+     * blocking, waits for them. Called when the node is deactivated or its processing quits.
+     **/
+    virtual void quitBackgroundWork(bool /*blocking*/) { }
 
     void clearActionsCache();
 

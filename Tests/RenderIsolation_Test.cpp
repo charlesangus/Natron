@@ -43,6 +43,7 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
 
 #include <SequenceParsing.h>
 
@@ -56,10 +57,12 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
@@ -69,7 +72,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 const int kFirstFrame = 1;
 const int kLastFrame = 20;
 const int kActionFrame = 3;
@@ -98,7 +101,7 @@ protected:
     {
         _source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
         ASSERT_TRUE(bool(_source));
-        _grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        _grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         ASSERT_TRUE(bool(_grade));
         _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
@@ -396,7 +399,7 @@ TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
     buildGraph(tmp);
     ASSERT_TRUE(bool(_writer));
 
-    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(loose));
     KnobColor* looseMultiply = dynamic_cast<KnobColor*>(loose->getKnobByName("multiply").get());
     ASSERT_TRUE(looseMultiply != NULL);
@@ -580,9 +583,9 @@ TEST_F(RenderIsolation, EditUpstreamOfMetadataSourceIsRefusedDuringWriteRender)
     ASSERT_TRUE(bool(_writer));
 
     // upstream -> metadataSource, outside the Write's inputs.
-    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(upstream));
-    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(metadataSource));
     connectNodes(upstream, metadataSource, 0, true);
 
@@ -732,6 +735,73 @@ TEST_F(RenderIsolation, ForegroundRenderWritesEveryFrameBeforeReturning)
     getApp()->renderForeground(works);
 
     EXPECT_FALSE(getApp()->isRenderActiveOrQueued(writerEffect));
+    for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
+        EXPECT_TRUE(QFile::exists(frameFile(frame))) << "frame " << frame << " was not written";
+    }
+}
+
+// Lowering the parallel-render cap below the number of frame threads mid-render stops the extra threads
+// one at a time but keeps the last, which a quitting thread leaves the queued frames to.
+TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    buildGraph(tmp);
+    ASSERT_TRUE(bool(_writer));
+
+    struct ParallelRendersScope {
+        int saved;
+
+        ParallelRendersScope()
+            : saved(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(4);
+        }
+
+        ~ParallelRendersScope()
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(saved);
+        }
+    } parallelRenders;
+
+    // With a single pool thread task-graph mode never opens a second frame thread and there is nothing to stop.
+    struct PoolThreadsScope {
+        int saved;
+
+        PoolThreadsScope()
+            : saved(QThreadPool::globalInstance()->maxThreadCount())
+        {
+            if (saved < 2) {
+                QThreadPool::globalInstance()->setMaxThreadCount(2);
+            }
+        }
+
+        ~PoolThreadsScope()
+        {
+            QThreadPool::globalInstance()->setMaxThreadCount(saved);
+        }
+    } poolThreads;
+
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+    RenderEnginePtr engine = writerEffect->getRenderEngine();
+
+    std::atomic<int> capSeenByAction { -1 };
+    std::atomic<int> threadsSeenByAction { -1 };
+    const std::function<void()> lowerCap = [&capSeenByAction, &threadsSeenByAction, engine]() {
+        // Read as is: the scheduler thread, which opens frame threads, is blocked on this action.
+        const int nThreads = engine->getNRenderThreads();
+        threadsSeenByAction = nThreads;
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(1);
+        capSeenByAction = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+    };
+    bool actionRan = false;
+    const int finishedCode = renderWithActionAtFrame(lowerCap, eActionThreadOwn, &actionRan);
+
+    ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
+    EXPECT_GT(threadsSeenByAction.load(), 1) << "only " << threadsSeenByAction.load() << " live render thread(s) when the cap was lowered, so no thread was left to stop";
+    EXPECT_EQ(1, capSeenByAction.load()) << "the Settings write was refused mid-render";
+    EXPECT_EQ(0, finishedCode);
     for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
         EXPECT_TRUE(QFile::exists(frameFile(frame))) << "frame " << frame << " was not written";
     }

@@ -477,10 +477,8 @@ TEST_F(NativeWriteRangeTest, TheFileNameIsTheSubLabel)
 {
     setFile(_writer, pathOf("label.####.exr"));
 
-    KnobString* subLabel = knob<KnobString>(_writer, kNatronOfxParamStringSublabelName);
-    ASSERT_TRUE(subLabel != NULL);
-    EXPECT_EQ(std::string("label.####.exr"), subLabel->getValue());
-    EXPECT_TRUE(subLabel->getIsSecret());
+    EXPECT_FALSE(bool(_writer->getKnobByName(kNatronOfxParamStringSublabelName)));
+    EXPECT_EQ(std::string("label.####.exr"), _writer->getSublabel());
 }
 
 TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplannedPulls)

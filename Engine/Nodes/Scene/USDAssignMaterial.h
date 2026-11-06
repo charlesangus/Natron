@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -125,6 +126,10 @@ private:
     KnobChoiceWPtr _purpose;
     KnobChoiceWPtr _strength;
     SceneGraftMemo _graftMemo;
+
+    // The last placement read for a projection in Geometry space, which costs frames x gprims.
+    struct PlacementMemo;
+    std::unique_ptr<PlacementMemo> _placementMemo;
 };
 
 NATRON_NAMESPACE_EXIT

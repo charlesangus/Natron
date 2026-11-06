@@ -31,6 +31,7 @@
 #include <vector>
 
 #include <QMetaObject>
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -47,6 +48,7 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -159,6 +161,15 @@ USDRender::initializeKnobs()
     renderer->setAnimationEnabled(false);
     page->addKnob(renderer);
     _renderer = renderer;
+
+    KnobBoolPtr headlight = createKnob<KnobBool>(tr("Headlight"));
+    headlight->setName(kUSDRenderParamHeadlight);
+    headlight->setHintToolTip(tr("Adds a light at the camera to the scene's own lights. Off, only the scene's lights light "
+                                 "it, and a scene with none renders its lit surfaces black."));
+    headlight->setDefaultValue(false);
+    headlight->setAnimationEnabled(false);
+    page->addKnob(headlight);
+    _headlight = headlight;
 } // USDRender::initializeKnobs
 
 void
@@ -566,7 +577,7 @@ struct USDRender::RenderSetup {
     HydraRender::Request request;
     // The render's pixels in the output image.
     RectI pixels;
-    // What the render cannot do as the settings prim asks, empty if nothing.
+    // What renders but not as asked, shown once the render succeeds.
     std::string warning;
 };
 
@@ -623,6 +634,18 @@ USDRender::prepareRender(double time,
     const PXR_NS::UsdStageRefPtr& stage = active.stage;
     const QString primPath = active.prim ? QString::fromStdString(active.prim.GetPath().GetString()) : QString();
 
+    // Hydra reads live textures from the store and never renders them: render the frame's first.
+    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(active.scene), time);
+    auto addWarning = [setup](const std::string& warning) {
+        setup->warning = setup->warning.empty() ? warning : setup->warning + "\n" + warning;
+    };
+    for (const SceneProjectionCameras::Unresolved& projection : active.lease.getUnresolvedProjections()) {
+        addWarning(tr("%1 projects through %2, which the scene has no camera at: it projects nothing.")
+                       .arg(QString::fromStdString(projection.shader.GetString()))
+                       .arg(QString::fromStdString(projection.camera))
+                       .toStdString());
+    }
+
     RectI format;
     double par;
     if (active.prim) {
@@ -642,9 +665,9 @@ USDRender::prepareRender(double time,
         getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
         format = projectFormat;
         par = projectFormat.getPixelAspectRatio();
-        setup->warning = tr("The input scene has no active render settings prim: its first camera renders the project's "
-                            "format with the renderer's own settings.")
-                             .toStdString();
+        addWarning(tr("The input scene has no active render settings prim: its first camera renders the project's "
+                      "format with the renderer's own settings.")
+                       .toStdString());
     }
     setup->pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
     if (setup->pixels.isNull()) {
@@ -661,18 +684,19 @@ USDRender::prepareRender(double time,
     }
     HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
     if (active.prim && !fitModeForPolicy(active.standard.aspectRatioConformPolicy, &fit)) {
-        const std::string warning = tr("The render settings prim at %1 asks for the %2 aspect ratio conform policy, which "
-                                       "the render does not do: the aperture is expanded instead (expandAperture).")
-                                        .arg(primPath)
-                                        .arg(QString::fromStdString(active.standard.aspectRatioConformPolicy.GetString()))
-                                        .toStdString();
-        setup->warning = setup->warning.empty() ? warning : setup->warning + "\n" + warning;
+        addWarning(tr("The render settings prim at %1 asks for the %2 aspect ratio conform policy, which "
+                      "the render does not do: the aperture is expanded instead (expandAperture).")
+                       .arg(primPath)
+                       .arg(QString::fromStdString(active.standard.aspectRatioConformPolicy.GetString()))
+                       .toStdString());
     }
     setup->request.owner = this;
     setup->request.scene = active.scene;
     setup->request.time = active.time;
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
+    KnobBoolPtr headlightKnob = _headlight.lock();
+    setup->request.headlight = headlightKnob && headlightKnob->getValue();
     setup->request.renderer = active.renderer;
     if (active.prim) {
         setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
@@ -785,14 +809,22 @@ USDRender::render(const RenderActionArgs& args)
     }
     if (!result.errors.empty()) {
         setPersistentMessage(eMessageTypeError, warning.empty() ? result.errors : result.errors + "\n" + warning);
-    } else if (!warning.empty()) {
-        setPersistentMessage(eMessageTypeWarning, warning);
     } else {
-        clearPersistentMessage(false);
+        showWarning(warning);
     }
 
     return eStatusOK;
 } // USDRender::render
+
+void
+USDRender::showWarning(const std::string& warning)
+{
+    if (warning.empty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeWarning, warning);
+    }
+}
 
 std::optional<OpKind>
 USDRender::opKind() const
@@ -855,6 +887,7 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
         return eStatusFailed;
     }
+    showWarning(setup.warning);
 
     return eStatusOK;
 #else

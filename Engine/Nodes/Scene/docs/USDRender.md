@@ -63,11 +63,15 @@ the prim it renders with. Editing another renderer's tab on a
 USDRenderSettings keeps the cached frames. Changing the renderer, the prim, or
 a setting of the active renderer renders again.
 
+Headlight, off by default, adds a light at the camera to the scene's own
+lights. With it off, only the scene's lights light it: a scene with no light
+renders its lit surfaces black, and only emission shows.
+
 The output has three layers:
 
 - `rgba`: the colour as the renderer shades it, with the scene's materials and lights,
-  in the project's working space with no colour transform. A scene without
-  lights is lit from the camera. Where nothing was hit it is transparent black.
+  in the project's working space with no colour transform. Where nothing was
+  hit it is transparent black.
 - `depth.Z`: the distance from the camera along its view axis, in scene units,
   so a plane facing the camera has one depth throughout. Where nothing was hit
   it is +inf.

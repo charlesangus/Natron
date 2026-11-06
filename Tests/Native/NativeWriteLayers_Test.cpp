@@ -177,12 +177,7 @@ protected:
         _writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
         ASSERT_TRUE(bool(_writer));
         // The values are compared with the constants that went in, so the file is written without conversion.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_writer->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_writer->getKnobByName("ocioOutputSpaceSet").get());
-        ASSERT_TRUE(outputSpace != NULL);
-        ASSERT_TRUE(outputSpaceSet != NULL);
-        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        outputSpaceSet->setValue(true);
+        fileInWorkingSpace(_writer);
         connectNodes(reader, _writer, 0, true);
         _reader = reader;
 
@@ -220,11 +215,7 @@ protected:
             file->setValue(path);
         }
         // The values are compared with the constants that went in, so the file is read without conversion.
-        KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-        EXPECT_TRUE(inputSpace != NULL);
-        if (inputSpace) {
-            inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        }
+        fileInWorkingSpace(node);
         node->getEffectInstance()->dropCachedMetadata();
 
         return node;

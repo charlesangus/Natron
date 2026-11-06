@@ -31,10 +31,10 @@ WATCHDOG_S = 300
 SETTLE_MS = 500
 RENDER_MS = 2000
 POLL_TIMEOUT_S = 20.0
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
-PLUGIN_CROP = "net.sf.openfx.CropPlugin"
+PLUGIN_CONSTANT = "Constant"
+PLUGIN_CROP = "Crop"
 PLUGIN_VECTORBLUR = "VectorBlur"
-PLUGIN_SHUFFLECOPY = "fr.natron.ShuffleCopy"
+PLUGIN_SHUFFLECOPY = "ShuffleCopy"
 PLUGIN_MERGE = "Merge"
 VIEW_NAME = "Un-tone-mapped"
 SCREEN_HEIGHT = 1080
@@ -174,7 +174,7 @@ try:
 
     def viewer_node():
         if not _viewer:
-            _viewer.append(app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer"))
+            _viewer.append(app.getNode("Viewer1") or app.createNode("Viewer"))
             require(_viewer[0] is not None, "the project has a Viewer")
         return _viewer[0]
 

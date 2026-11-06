@@ -42,6 +42,7 @@
 #define PLUGINID_NATRON_USDRENDER "USDRender"
 
 #define kUSDRenderParamSettingsPrim "settingsPrim"
+#define kUSDRenderParamHeadlight "headlight"
 #define kUSDRenderParamRenderer "renderer"
 
 // The id of the Settings Prim entry that renders with the stage's active render settings prim
@@ -72,8 +73,9 @@ public:
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. A scene without lights is lit from the camera. "
-                       "Without a render settings prim, the scene's first camera renders the project's format.",
+                       "frame metadata maps each hash to its path. Only the scene's lights light it, unless Headlight "
+                       "adds one at the camera. Without a render settings prim, the scene's first camera renders the "
+                       "project's format.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -206,11 +208,15 @@ private:
                        RenderSetup* setup,
                        std::string* error);
 
+    // Shows warning, or clears the node's message when it is empty.
+    void showWarning(const std::string& warning);
+
     // The output format in pixels and its pixel aspect ratio: the active prim's resolution and
     // pixel aspect ratio, the project's format without one.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 
     KnobChoiceWPtr _settingsPrim;
+    KnobBoolWPtr _headlight;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
 };

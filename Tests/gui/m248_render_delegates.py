@@ -36,7 +36,7 @@ try:
     require(cube is not None, "create USDCube", plugin_problem("USDCube"))
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     cube.setPosition(0, 0)
     viewer.setPosition(0, 150)

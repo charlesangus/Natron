@@ -459,7 +459,7 @@ TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
 
     connectNodes(reader, blur, 0, true);
@@ -544,7 +544,7 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
     EXPECT_EQ(std::string("0"), row[2]);
     EXPECT_TRUE(findLayersKnobRow(layersKnob, "specular", &row));
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     connectNodes(reader, blur, 0, true);
 
@@ -600,7 +600,7 @@ TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
 
     connectNodes(reader, blur, 0, true);

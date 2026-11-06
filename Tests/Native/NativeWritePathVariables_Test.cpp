@@ -62,7 +62,7 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
+const char* const kOutputSpaceMenuKnob = "colorspace";
 const char* const kOutVariable = "Out";
 const char* const kOutSubdir = "out";
 

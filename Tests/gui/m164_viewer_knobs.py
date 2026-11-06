@@ -64,9 +64,9 @@ COLOUR_SLACK = 4
 FAR = 100000.0
 HALF_PI = 1.5707963267948966
 
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-VIEWER_PLUGIN = "fr.inria.built-in.Viewer"
+PLUGIN_CONSTANT = "Constant"
+PLUGIN_CHECKER = "CheckerBoard"
+VIEWER_PLUGIN = "Viewer"
 V1 = "Viewer1"
 V2 = "Viewer2"
 MISSING_LAYER = "m164Layer"

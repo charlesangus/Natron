@@ -56,6 +56,8 @@
 #include "Gui/KnobGuiString.h"
 #include "Gui/KnobGuiTrapezoid.h"
 #include "Gui/KnobGuiValue.h"
+#include "Gui/LoopDriverTable.h"
+#include "Gui/LoopFeedbackBeginList.h"
 
 NATRON_NAMESPACE_ENTER
 using std::make_pair;
@@ -129,6 +131,13 @@ KnobGuiFactory::createGuiForKnob(KnobIPtr knob,
     KnobDoublePtr isDouble = std::dynamic_pointer_cast<KnobDouble>(knob);
     if (isDouble && isDouble->isRangeWidget()) {
         return KnobGuiTrapezoid::BuildKnobGui(knob, container);
+    }
+    // LoopEnd's driven-knob table stands on a placeholder string knob.
+    if (LoopDriverTable::isTableKnob(knob)) {
+        return LoopDriverTable::BuildKnobGui(knob, container);
+    }
+    if (LoopFeedbackBeginList::isListKnob(knob)) {
+        return LoopFeedbackBeginList::BuildKnobGui(knob, container);
     }
     KnobSeparatorPtr isSeparator = std::dynamic_pointer_cast<KnobSeparator>(knob);
     if (isSeparator && !isSeparator->getColorWheelGrid().empty()) {

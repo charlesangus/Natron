@@ -41,12 +41,23 @@
 
 #define kSceneReparentParamKind "kind"
 #define kSceneReparentParamAutoRename "autoRename"
+#define kSceneReparentParamMode "mode"
+#define kSceneReparentParamWrapName "wrapName"
 
 #define kSceneReparentInputCount 64
 
 NATRON_NAMESPACE_ENTER
 
 struct SceneLayerEdit;
+
+// What a SceneReparentNode that offers both does with its Prim Path.
+enum SceneReparentModeEnum {
+    // Defines the prim at Prim Path and grafts every input's root prims under it.
+    eSceneReparentModeGraft = 0,
+    // Defines the prim beside the input 0 prim at Prim Path, named Wrap Name, and moves that prim
+    // and its descendants under it.
+    eSceneReparentModeWrap
+};
 
 /**
  * @brief A node that makes the node graph's shape the scene's: it defines one prim at its Prim
@@ -67,11 +78,37 @@ public:
 
     virtual ~SceneReparentNode();
 
+    // Whether the node is in wrap mode.
+    bool isWrapping() const;
+
+    /**
+     * @brief The path of the prim the node defines: Prim Path, or in wrap mode Prim Path's parent
+     * with Wrap Name appended. Empty when the knobs name no valid path.
+     **/
+    std::string getDefinedPrimPath() const;
+
+    /**
+     * @brief Where the prim at outputPath in the node's scene comes from in the scenes of the inputs
+     * the node reads: every input, or input 0 alone in wrap mode. Empty for the defined prim
+     * itself, for a path under none of the grafts, and for a path in wrap mode left without a prim
+     * by the move. Grafts renamed by Auto Rename are not followed.
+     **/
+    std::string mapToInputPath(const std::string& outputPath) const;
+
 protected:
     explicit SceneReparentNode(NodePtr node);
 
-    // Creates the Prim Path, Kind and Auto Rename knobs on page.
+    /**
+     * @brief Creates the Prim Path, Kind and Auto Rename knobs on page, and the Mode and Wrap Name
+     * knobs when offersWrapMode().
+     **/
     void createReparentKnobs(const KnobPagePtr& page);
+
+    // Whether the node offers wrap mode besides grafting.
+    virtual bool offersWrapMode() const
+    {
+        return false;
+    }
 
     // The schema type of the prim and of its missing ancestors, such as Xform.
     virtual std::string getPrimTypeName() const = 0;
@@ -101,9 +138,19 @@ private:
                          int kind,
                          std::string* errorMessage) const;
 
+    StatusEnum renderWrap(const SceneRenderActionArgs& args,
+                          const std::string& wrappedPath,
+                          int kind,
+                          ScenePayload* outputScene,
+                          std::string* errorMessage);
+
+    std::string getDefaultWrapName() const;
+
     KnobStringWPtr _primPath;
     KnobChoiceWPtr _kind;
     KnobBoolWPtr _autoRename;
+    KnobChoiceWPtr _mode;
+    KnobStringWPtr _wrapName;
     SceneGraftMemo _graftMemo;
 };
 

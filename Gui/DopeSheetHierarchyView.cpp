@@ -39,6 +39,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
+#include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheet.h"
 #include "Gui/Gui.h"
@@ -436,8 +437,18 @@ HierarchyViewPrivate::checkKnobVisibleState(DSKnob *dsKnob)
                 showContext = true;
             }
         }
+    } else if (DriverCurveGuiPtr driverCurve = dsKnob->getDriverCurve()) {
+        showContext = driverCurve->isShown();
     } else {
         showContext = !dsKnob->getKeyFrames(dim).empty();
+    }
+
+    const std::list<DSKnob*>& driverRows = dsKnob->getDriverRows();
+    for (std::list<DSKnob*>::const_iterator it = driverRows.begin(); it != driverRows.end(); ++it) {
+        const bool shown = (*it)->getDriverCurve()->isShown();
+        (*it)->getTreeItem()->setHidden(!shown);
+        (*it)->getTreeItem()->setData(0, QT_ROLE_CONTEXT_IS_ANIMATED, shown);
+        showContext = showContext || shown;
     }
 
     QTreeWidgetItem *treeItem = dsKnob->getTreeItem();

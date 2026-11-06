@@ -42,9 +42,9 @@ SETTLE_MS = 400
 RENDER_MS = 1200
 EPS = 1e-9
 
-TRANSFORM = "net.sf.openfx.TransformPlugin"
-POSITION = "net.sf.openfx.Position"
-CONSTANT = "net.sf.openfx.ConstantPlugin"
+TRANSFORM = "Transform"
+POSITION = "Position"
+CONSTANT = "Constant"
 
 # Distinct per-dimension values keep 2D knobs unfolded in the panel, so each dimension has a box.
 TRANSFORM_KEYS = {"translate": (3.0, 10.0), "rotate": (7.0,), "scale": (1.5, 1.25)}
@@ -498,7 +498,7 @@ try:
         require(ok, "the main window is active")
         gt.close_all_panels()
 
-        viewer_node = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 400, 400)
+        viewer_node = app.getNode("Viewer1") or create("Viewer", 400, 400)
         constant = create(CONSTANT, 0, 0)
         for d, v in enumerate((0.0, 0.0, 0.0, 1.0)):
             constant.getParam("color").setValue(v, d)
@@ -553,7 +553,9 @@ try:
         yield from overlay_shot(transform, frame, "m275-transform-scale", True)
 
         frame = 40
-        transform.getParam("interactive").setValue(False)
+        render_on_release = NatronEngine.natron.getSettings().getParam("renderOnEditingFinished")
+        saved_render_on_release = render_on_release.get()
+        render_on_release.set(True)
         viewer.seek(frame)
         yield ("sleep", RENDER_MS)
         m = calibrate(viewer_gl())
@@ -564,7 +566,7 @@ try:
             transform, TRANSFORM_KEYS, "transform rotate f%d" % frame, frame,
             offset(centre, rot, grab), offset(centre, rot + math.radians(30.0), grab), False,
             {"rotate": ((0, r0 + 30.0, 2.0),)})
-        transform.getParam("interactive").setValue(True)
+        render_on_release.set(saved_render_on_release)
         yield from overlay_shot(transform, frame, "m275-transform-rotate", True)
 
         gt.section("transform reference")

@@ -77,6 +77,12 @@ SceneQueryPool::Lease::getStage() const
     return _stage ? _stage->getStage() : PXR_NS::UsdStageRefPtr();
 }
 
+std::vector<SceneProjectionCameras::Unresolved>
+SceneQueryPool::Lease::getUnresolvedProjections() const
+{
+    return _stage ? _stage->getUnresolvedProjections() : std::vector<SceneProjectionCameras::Unresolved>();
+}
+
 void
 SceneQueryPool::Lease::release()
 {

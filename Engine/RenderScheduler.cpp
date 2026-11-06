@@ -1340,6 +1340,16 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost && report.cpuFallback.empty()) {
+            const std::vector<int>& members = frame->graph.regions[region].members;
+            // memberNs is 0 for a member that recorded no device work, an identity one or one served from a store.
+            for (std::size_t i = 0; (i < members.size()) && (i < report.memberNs.size()); ++i) {
+                const NodePtr& memberNode = frame->graph.tasks[members[i]].key.node;
+                if (memberNode && (report.memberNs[i] > 0)) {
+                    memberNode->noteExecution(Node::eExecutionDeviceGpu);
+                }
+            }
+        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));

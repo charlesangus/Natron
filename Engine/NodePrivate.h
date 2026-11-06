@@ -232,6 +232,7 @@ public:
         , lastRenderStartedMutex()
         , lastRenderStartedSlotCallTime()
         , renderStartedCounter(0)
+        , executionCounts()
         , inputIsRenderingCounter(0)
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
@@ -495,6 +496,7 @@ public:
     QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & lastInputNRenderStartedSlotCallTime
     timeval lastRenderStartedSlotCallTime;
     int renderStartedCounter;
+    std::atomic<int> executionCounts[2];
     std::vector<int> inputIsRenderingCounter;
     timeval lastInputNRenderStartedSlotCallTime;
 

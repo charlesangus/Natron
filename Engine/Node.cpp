@@ -6400,6 +6400,23 @@ Node::getIsNodeRenderingCounter() const
 }
 
 void
+Node::noteExecution(ExecutionDeviceEnum device,
+                    int count)
+{
+    if (count <= 0) {
+        return;
+    }
+    _imp->executionCounts[device].fetch_add(count);
+    Q_EMIT executionCountChanged();
+}
+
+int
+Node::takeExecutionCount(ExecutionDeviceEnum device)
+{
+    return _imp->executionCounts[device].exchange(0);
+}
+
+void
 Node::setOutputFilesForWriter(const std::string & pattern)
 {
     assert(_imp->effect);

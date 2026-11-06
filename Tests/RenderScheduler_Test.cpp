@@ -141,6 +141,9 @@ struct RegionBodyState {
     // Returned once the first member rendered, instead of rendering the others; Ok renders every member.
     EffectInstance::RenderRoIRetCode stopWith = EffectInstance::eRenderRoIRetCodeOk;
     bool throwAfterFirst = false;
+
+    // Members that report no device time, as a member served from a store would.
+    std::set<const Node*> unmeasured;
 };
 
 // Shared with the render hook, like SiblingState.
@@ -638,7 +641,15 @@ protected:
                                           int region,
                                           const RenderScheduler::CpuFallbackLease& /*leaseCpu*/,
                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
-                                          RenderScheduler::RegionReport* /*report*/) {
+                                          RenderScheduler::RegionReport* report) {
+            const FrameGraph::Region& members = graph.regions[region];
+            report->memberNs.assign(members.members.size(), 1000);
+            for (std::size_t i = 0; i < members.members.size(); ++i) {
+                if (state->unmeasured.count(graph.tasks[members.members[i]].key.node.get())) {
+                    report->memberNs[i] = 0;
+                }
+            }
+
             return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
         });
     }
@@ -1200,6 +1211,32 @@ TEST_F(RenderSchedulerTest, RegionRunsBetweenItsInputsAndItsConsumers)
 }
 
 // A region whose output another region reads beside a CPU task: A alone, then D on the CPU, then B merging A and D.
+TEST_F(RenderSchedulerTest, RegionMembersThatRunCountOneGpuExecutionEach)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+
+    for (int served = 0; served < 2; ++served) {
+        SCOPED_TRACE(served ? "one member served from a store" : "every member runs");
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu);
+        }
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        if (served) {
+            state->unmeasured.insert(nodes[3].get());
+        }
+        FrameRun run;
+        renderRegionDiamond(nodes, state, EffectInstance::eRenderRoIRetCodeOk, &run);
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const bool member = (i >= 1) && (i <= 3);
+            const int expected = (member && !(served && (i == 3))) ? 1 : 0;
+            EXPECT_EQ(expected, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "node " << i;
+            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
+            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "latched counts are taken once, node " << i;
+        }
+    }
+}
+
 TEST_F(RenderSchedulerTest, RegionFeedsAnotherRegion)
 {
     NodePtr a = createCounting(kTestPluginIDCounting, 1.);

@@ -1316,6 +1316,23 @@ public:
 
     int getIsNodeRenderingCounter() const;
 
+    enum ExecutionDeviceEnum {
+        eExecutionDeviceCpu = 0,
+        eExecutionDeviceGpu = 1
+    };
+
+    /**
+     * @brief Records that this node's effect really ran count times on the device, whatever the render took from a
+     * store or a cache. Safe from any render thread; emits executionCountChanged().
+     **/
+    void noteExecution(ExecutionDeviceEnum device, int count = 1);
+
+    /**
+     * @brief The executions on the device since the last call to this for it, which is then reset, so a render shorter
+     * than a reader's interval is still seen once. Whoever reads the counts owns them: two readers share the executions.
+     **/
+    int takeExecutionCount(ExecutionDeviceEnum device);
+
     /**
      * @brief forwarded to the live instance
      **/
@@ -2377,6 +2394,8 @@ Q_SIGNALS:
     void inputNIsFinishedRendering(int inputNb);
 
     void renderingStarted();
+
+    void executionCountChanged();
 
     void renderingEnded();
 

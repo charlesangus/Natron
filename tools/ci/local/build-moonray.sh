@@ -162,6 +162,26 @@ if grep -qF 'showAllHostsName' "$file"; then
     exit 1
 fi
 
+# MoonRay's TextureSampler rejects any image that is not tiled and MIP-mapped, so a plain jpg or png
+# fails with "image was untiled" and shades black unless it was first run through maketx. It now
+# accepts them and has OpenImageIO generate the MIP levels on demand. autotile stays 0, one tile per
+# level: scanline formats read only forwards, so a JPEG re-decodes from its first row whenever a tile
+# above the last one read is asked for, which outweighs the finer eviction of 64x64 tiles. A missing
+# anchor fails the build.
+file="${src}/moonray/moonray/lib/rendering/texturing/sampler/TextureSampler.cc"
+for attribute in automip accept_untiled accept_unmipped; do
+    anchor="    mTextureSystem->attribute(\"${attribute}\", int(false));"
+    if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+        echo "build-moonray: ${attribute} setting not found exactly once in ${file}" >&2
+        exit 1
+    fi
+    sed -i "s/^    mTextureSystem->attribute(\"${attribute}\", int(false));\$/    mTextureSystem->attribute(\"${attribute}\", int(true));/" "$file"
+    if grep -qxF "$anchor" "$file"; then
+        echo "build-moonray: ${attribute} patch did not apply to ${file}" >&2
+        exit 1
+    fi
+done
+
 # HdxTaskController adds a "depth" AOV next to "color" for any non-Storm delegate. hdMoonray maps
 # both depth and cameraDepth to RESULT_DEPTH, and an unnamed RenderOutput takes its channel name from
 # its result ("Z"), so MoonRay skips one of the two with an error-level "both target channel" log on
@@ -178,6 +198,54 @@ if ! grep -qF 'ro.setChannelName("hydraDepth");' "$file"; then
 fi
 if [ "$(grep -cF 'ro.setChannelName("hydraDepth");' "$file")" != 1 ]; then
     echo "build-moonray: depth AOV channel patch did not apply to ${file}" >&2
+    exit 1
+fi
+
+# A light's Sync reads its lightLink and shadowLink tokens with VtValue::Get<TfToken>(), and the
+# scene delegate answers nothing for a light without links, so each light posts two "Attempted to
+# get value of type 'TfToken' from empty VtValue" coding errors and falls back to the empty token
+# anyway; GetWithDefault<TfToken>() is that fallback without the error. The same Sync dirties every
+# rprim to pick up the categories through the change tracker, which in a render index fed by a
+# scene index (Natron's) posts "Calling method on HdChangeTracker that requires emulation" and then
+# applies the dirty bits all the same (pxr/imaging/hd/changeTracker.cpp, MarkAllRprimsDirty), so
+# the error is the only fault. That call goes through RenderDelegate::markAllRprimsDirty, which
+# takes the error off the thread's stack. A missing anchor fails the build.
+lights="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/Light.cc"
+for link in lightLink shadowLink; do
+    anchor="sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link}).Get<pxr::TfToken>();"
+    if [ "$(grep -cF "$anchor" "$lights")" != 1 ]; then
+        echo "build-moonray: ${link} read not found exactly once in ${lights}" >&2
+        exit 1
+    fi
+    sed -i "s|sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link})\\.Get<pxr::TfToken>();|sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link}).GetWithDefault<pxr::TfToken>();|" "$lights"
+    if grep -qF "$anchor" "$lights"; then
+        echo "build-moonray: ${link} patch did not apply to ${lights}" >&2
+        exit 1
+    fi
+done
+anchor='sceneDelegate->GetRenderIndex().GetChangeTracker().MarkAllRprimsDirty('
+if [ "$(grep -cF "$anchor" "$lights")" != 1 ]; then
+    echo "build-moonray: MarkAllRprimsDirty call not found exactly once in ${lights}" >&2
+    exit 1
+fi
+sed -i 's|sceneDelegate->GetRenderIndex()\.GetChangeTracker()\.MarkAllRprimsDirty(|renderDelegate.markAllRprimsDirty(|' "$lights"
+if grep -qF "$anchor" "$lights"; then
+    echo "build-moonray: MarkAllRprimsDirty patch did not apply to ${lights}" >&2
+    exit 1
+fi
+file="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/RenderDelegate.cc"
+anchor='    if (mRenderIndex) mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);'
+if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+    echo "build-moonray: markAllRprimsDirty body not found exactly once in ${file}" >&2
+    exit 1
+fi
+if [ "$(grep -cxF '#include <pxr/base/gf/vec2f.h>' "$file")" != 1 ]; then
+    echo "build-moonray: vec2f include not found exactly once in ${file}" >&2
+    exit 1
+fi
+sed -i 's|^    if (mRenderIndex) mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);$|    if (mRenderIndex) {\n        pxr::TfErrorMark mark;\n        mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);\n        mark.Clear();\n    }|; s|^#include <pxr/base/gf/vec2f.h>$|&\n#include <pxr/base/tf/errorMark.h>|' "$file"
+if ! grep -qxF '        pxr::TfErrorMark mark;' "$file" || ! grep -qxF '#include <pxr/base/tf/errorMark.h>' "$file"; then
+    echo "build-moonray: markAllRprimsDirty patch did not apply to ${file}" >&2
     exit 1
 fi
 

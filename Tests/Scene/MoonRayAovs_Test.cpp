@@ -196,6 +196,20 @@ TEST(MoonRayAovs, WarnsOnePerKindAndKeepsOtherErrorsForTheNode)
     EXPECT_EQ(std::string("RenderPassState without camera is unsupported"), MoonRayAovs::errorText(stage, notices));
 }
 
+TEST(MoonRayAovs, NamesTheTextureFilesNotThePrimsTheyShade)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    std::vector<MoonRayAovs::Notice> notices;
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelError, "UsdUVTexture(\"/World/Looks/Red/Tex.rgb\"): FATAL: failed to open texture file \"/tex/a.jpg\" (Invalid image file \"/tex/a.jpg\": image was untiled)"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelError, "/World/Ground: FATAL: failed to open texture file \"/tex/b.png\" ()"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelError, "UsdUVTexture(\"/World/Looks/Red/Tex.rgb\"): FATAL: failed to open texture file \"/tex/a.jpg\" ()"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelError, "Unable to read texture file /tex/c.png"));
+
+    const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), notices);
+    EXPECT_EQ(std::string("MoonRay could not read these texture files: /tex/a.jpg, /tex/b.png, /tex/c.png"), warning);
+    EXPECT_TRUE(MoonRayAovs::errorText(stage, notices).empty());
+}
+
 TEST(MoonRayAovs, NothingToSayForACleanRender)
 {
     const PXR_NS::UsdStageRefPtr stage = lightStage();

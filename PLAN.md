@@ -458,7 +458,7 @@ future core work has solid ground to build on.
 |----|------|--------|-------|-------|--------|------|
 | F1 | VDB Volumes | open |  |  | feature/f1-vdb-volumes | Bring a VDB into the scene, shade it with one material across Storm, Cycles and MoonRay, and inspect it in the viewer. |
 | F2 | Native Shader Networks | open |  |  | feature/f2-native-shader-networks | Build, tweak and render each renderer's native shading networks from one builder node, with full or nearly full coverage of Cycles and MoonRay. |
-| F3 | Cycles And MoonRay Delegates | open |  |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
+| F3 | Cycles And MoonRay Delegates | open |  | uat | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |

@@ -124,7 +124,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
   - approach: Each curated setting gets its effect, trade-off and sensible values, read from Cycles and scene_rdl2 source rather than memory, keeping the "Authored as ..." suffix. Example: "Limits the brightness of indirect samples. Lower values remove fireflies but lose energy; 10 is a good start, 0 turns it off." Add group tooltips and the same-row bool pairs; rewrite docs `:45-54`.
   - verify: a test fails on any curated tooltip equal to its descriptor name or containing "Nuke"; the docs group list matches the tables.
   - size: L
-- [ ] M253.P4.T7 — Check the layout in a remote GUI run
+- [x] M253.P4.T7 — Check the layout in a remote GUI run
   - files: `Tests/gui/m253_render_settings_layout.py`, reusing `Tests/gui/m253_render_settings.py` and `Tests/gui/guitest.py:156`
   - approach: At 1920x1080, capture each of the Controls, Storm, Cycles and MoonRay tabs in default state and with every group expanded, one file per screenshot; if an expanded page exceeds the window, take successive scroll positions as separate files. Assert group order and open state, indents, and grey states after toggling Use Denoise, Use Guiding and Use Light Tree.
   - verify: `tools/ci/remote/build.sh release --from-run <id> --gui "Tests/gui/m253_render_settings_layout.py"` passes; the Cycles and MoonRay default states show no scrollbar; expanding and collapsing nested groups keeps row order; the user approves the screenshots.

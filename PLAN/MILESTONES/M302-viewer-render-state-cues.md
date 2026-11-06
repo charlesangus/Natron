@@ -27,6 +27,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 
 ## Decisions
 
+- 2026-11-06 — Freshness check: P1.T1 rebriefed onto the existing ages. M118 - Large Graph GUI Responsiveness replaced the idle poll with a dirty set (`NodeGraph::scheduleNodeRenderStateRefresh`, `NodeGraph35.cpp:174`, feeding `refreshRenderStateTimer`; `NodeGui::refreshRenderingIndicator`, `NodeGui.cpp:2850`), so Phase 302.2's dot and edge tasks wait for it and hook that path, not the 300 ms loop their briefs describe. M116 - GPU Region Overlay's dry run must leave `renderAge` alone.
 - 2026-11-01 — **Coloured viewer border, stale and current states only (user).**
 - 2026-11-01 — **The border delay is a user preference (user);** default 150 ms (planner).
 - 2026-11-01 — **Dots mean real execution, coloured by device (user).**
@@ -34,8 +35,8 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 ## Phase 302.1: Viewer stale state
 
 - [ ] M302.P1.T1 — Track stale vs current per viewer
-  - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Tests/ViewerStaleState_Test.cpp` (new)
-  - approach: Each render request carries a monotonically increasing request age. The viewer records the age of the image it displays per input. It is stale while the latest requested age, after abort coalescing, exceeds the displayed age, and it emits `staleChanged(bool)` on transitions. Viewer-cache playback frames count as current.
+  - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Engine/ViewerInstancePrivate.h`, `Tests/ViewerStaleState_Test.cpp` (new)
+  - approach: Don't add a request age: derive stale from `renderAge[2]` against `displayAge[2]` (`ViewerInstancePrivate.h:157-164`), using `isLatestRender` and `checkAndUpdateDisplayAge`, per input for A/B and after abort coalescing. Emit `staleChanged(bool)` on transitions. Viewer-cache playback frames count as current.
   - verify: A test requests renders, aborts one, and checks the stale/current transitions and the A/B rule.
   - size: M
 

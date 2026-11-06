@@ -27,6 +27,7 @@ BLACK_MAX_CHANNEL = 2
 LIT_FRACTION = 0.9
 ASPECT_TOLERANCE = 0.01
 MIN_FILL = 0.5
+FRAME_FRACTION = 0.2
 
 try:
     from PySide6.QtCore import QMetaObject
@@ -99,24 +100,23 @@ try:
         return False
 
     def drawn_image_rect(image):
-        """(left, top, right, bottom) of the picture on screen: from the middle of the widget
-        outwards along the centre row and column until the viewer's background starts again."""
+        """(left, top, right, bottom) of the picture on screen, from the rows and columns that
+        are mostly not the viewer's background. The viewer draws a frame round the image, so these
+        include the edge rows even where the picture itself is as black as the background."""
         background = rgb(image, 2, 2)
-        cx, cy = image.width() // 2, image.height() // 2
-
-        def reach(start, limit, step, at):
-            pos = start
-            while 0 <= pos + 3 * step < limit:
-                if all(at(pos + k * step) == background for k in (1, 2, 3)):
-                    break
-                pos += step
-            return pos
-
-        left = reach(cx, image.width(), -1, lambda x: rgb(image, x, cy))
-        right = reach(cx, image.width(), 1, lambda x: rgb(image, x, cy))
-        top = reach(cy, image.height(), -1, lambda y: rgb(image, cx, y))
-        bottom = reach(cy, image.height(), 1, lambda y: rgb(image, cx, y))
-        return left, top, right, bottom
+        w, h = image.width(), image.height()
+        cols = [0] * w
+        rows = [0] * h
+        for y in range(h):
+            for x in range(w):
+                if rgb(image, x, y) != background:
+                    cols[x] += 1
+                    rows[y] += 1
+        xs = [x for x in range(w) if cols[x] >= FRAME_FRACTION * h]
+        ys = [y for y in range(h) if rows[y] >= FRAME_FRACTION * w]
+        if not xs or not ys:
+            return 0, 0, 0, 0
+        return xs[0], ys[0], xs[-1] + 1, ys[-1] + 1
 
     def edge_points(rect):
         left, top, right, bottom = rect
@@ -147,6 +147,8 @@ try:
               "%s's format is the %dx%d crop (%dx%d)" % (label, size[0], size[1], fmt.width(), fmt.height()))
 
     def steps():
+        # A viewer widget only exists once a Viewer node does.
+        app.getNode("Viewer1") or app.createNode("Viewer")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "viewer widget is up")
         gt.close_all_panels()

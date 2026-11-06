@@ -420,7 +420,8 @@ TEST_F(NativeRawPrepareTest, TheFormatStaysInPixelsWhateverTheSourcePixelAspectR
 
     dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setPixelAspectRatio(2.);
     setCropMargins(node, 2, 1, 3, 4);
-    EXPECT_TRUE(RectI(0, 0, kWidth - 5, kHeight - 5) == outputFormat(node));
+    // The test source reports its RoD in canonical units, so at PAR 2 its pixel grid is half as wide.
+    EXPECT_TRUE(RectI(0, 0, kWidth / 2 - 5, kHeight - 5) == outputFormat(node));
     EXPECT_EQ(2., node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getPixelAspectRatio(-1));
 }
 

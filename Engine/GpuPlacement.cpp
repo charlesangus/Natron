@@ -1018,15 +1018,19 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
-    // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
-    // will key with, either counts; a false hit only keeps a task on the CPU.
-    inputs.isCached = [](const FrameGraph::Task& task) -> bool {
+    // Probes the keys renderRoI looks up: the non-draft one, and the draft one when the frame is a draft frame and the
+    // node varies with it. Not knowing which full-scale flag renderRoI will key with, either counts; a false hit only
+    // keeps a task on the CPU.
+    inputs.isCached = [context](const FrameGraph::Task& task) -> bool {
         if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
             return false;
         }
-        for (int fullScaleWithDownscaleInputs = 0; fullScaleWithDownscaleInputs < 2; ++fullScaleWithDownscaleInputs) {
-            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., false,
-                         fullScaleWithDownscaleInputs != 0);
+        const ParallelRenderArgsPtr frameArgs = context ? context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr();
+        const bool probesDraft = frameArgs && frameArgs->draftMode && task.key.node->isDraftModeUsed();
+        // Bit 0 is the full-scale flag, bit 1 the draft flag.
+        for (int variant = 0; variant < (probesDraft ? 4 : 2); ++variant) {
+            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., (variant & 2) != 0,
+                         (variant & 1) != 0);
             std::list<ImagePtr> images;
             if (!appPTR->getImage(key, &images)) {
                 continue;

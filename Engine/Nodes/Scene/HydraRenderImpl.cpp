@@ -80,6 +80,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBudget.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -828,6 +829,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             _engineCount = _engines.size();
 
             return nullptr;
+        }
+        if (_gl) {
+            applyStormPtexBudget(_hgi.get());
         }
         entry.engine->SetEnablePresentation(false);
         if (!entry.engine->SetRendererAovs(aovs)) {

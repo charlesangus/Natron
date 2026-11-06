@@ -69,8 +69,9 @@ endif()
 # UsdShade's materials, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
 # and USDRender's Storm render: UsdImagingGLEngine on HgiGL, its AOV render buffers, garch's GL
 # loader for the framebuffer it renders under, the camera framing and conforming and the GL
-# lights it hands the engine, and hio's image reader interface for the natron:// live textures.
-set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
+# lights it hands the engine, hio's image reader interface for the natron:// live textures, and
+# hdSt's resource registry for the Ptex memory limit.
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdSt hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
 set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})

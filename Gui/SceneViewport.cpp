@@ -74,6 +74,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -1017,6 +1018,9 @@ struct SceneViewportRenderer::Implementation {
 
                 return false;
             }
+        }
+        if (RenderDelegates::isStorm(rendererId)) {
+            applyStormPtexBudget(engine->GetHgi());
         }
         // Without a render output Storm draws straight into the bound framebuffer and the colour
         // correction task, which only acts on the color AOV, leaves scene-linear values on screen.

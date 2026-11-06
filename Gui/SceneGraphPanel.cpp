@@ -29,8 +29,12 @@
 #include "Gui/SceneViewport.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <list>
-#include <sstream>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
 #include <vector>
 
 #include <QAction>
@@ -52,7 +56,6 @@
 #include <QSet>
 #include <QSplitter>
 #include <QStackedWidget>
-#include <QStandardItemModel>
 #include <QStringListModel>
 #include <QTimer>
 #include <QToolButton>
@@ -64,6 +67,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
@@ -73,12 +77,12 @@
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
+#include "Gui/ScenePrimInspector.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/ViewerTab.h"
-
-PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
@@ -98,21 +102,34 @@ const int kPinnedPollMs = 250;
 
 const int kSelectionPollMs = 250;
 
-const int kMaxValueLength = 200;
+// expandAll() lays out every row on the main thread. Past this many the filtered tree opens one
+// level and the user opens the rest.
+const int kChangedHereExpandAllRows = 20000;
 
-// The 3D viewer's stage.
+// The 3D viewer's stage. The inspector's worker may hold this while the viewer is destroyed on the
+// main thread, which a QPointer cannot guard across threads: the viewport's destructor waits here
+// for the read under way.
 class ViewerStageSource
     : public SceneGraphStageSource {
 public:
     explicit ViewerStageSource(SceneViewport* viewport)
-        : _viewport(viewport)
+        : _gate(std::make_shared<Gate>())
     {
+        _gate->renderer = &viewport->getRenderer();
+        std::shared_ptr<Gate> gate = _gate;
+        QObject::connect(viewport, &SceneViewport::closing, viewport, [gate]() {
+            std::unique_lock<std::shared_mutex> lock(gate->mutex);
+            gate->renderer = nullptr;
+        });
     }
 
     void readStage(const std::function<void(const SceneStage* stage)>& read) const override
     {
-        if (_viewport) {
-            _viewport->getRenderer().readStage(read);
+        SceneWriteBarrier::ReadScope scope;
+        std::shared_lock<std::shared_mutex> lock(_gate->mutex);
+
+        if (_gate->renderer) {
+            _gate->renderer->readStage(read);
         } else {
             read(nullptr);
         }
@@ -120,11 +137,18 @@ public:
 
     U64 getEditCount() const override
     {
-        return _viewport ? _viewport->getRenderer().getStageEditCount() : 0;
+        std::shared_lock<std::shared_mutex> lock(_gate->mutex);
+
+        return _gate->renderer ? _gate->renderer->getStageEditCount() : 0;
     }
 
 private:
-    QPointer<SceneViewport> _viewport;
+    struct Gate {
+        std::shared_mutex mutex;
+        SceneViewportRenderer* renderer = nullptr;
+    };
+
+    std::shared_ptr<Gate> _gate;
 };
 
 // The filter's matches, which drag their paths as the tree's rows do.
@@ -240,22 +264,6 @@ private:
     Gui* _gui;
 };
 
-QString
-valueString(const VtValue& value)
-{
-    if (value.IsEmpty()) {
-        return QString();
-    }
-    std::ostringstream os;
-    os << value;
-    std::string text = os.str();
-    if ((int)text.size() > kMaxValueLength) {
-        text = text.substr(0, kMaxValueLength) + "...";
-    }
-
-    return QString::fromStdString(text);
-}
-
 } // anon namespace
 
 struct SceneGraphPanel::Implementation {
@@ -271,8 +279,7 @@ struct SceneGraphPanel::Implementation {
     QTreeView* tree = nullptr;
     QListView* results = nullptr;
     QLabel* noScene = nullptr;
-    QTreeView* attributes = nullptr;
-    QStandardItemModel* attributeModel = nullptr;
+    ScenePrimInspector* inspector = nullptr;
     FilterResultsModel* resultsModel = nullptr;
     SceneGraphModel* model = nullptr;
 
@@ -321,7 +328,44 @@ struct SceneGraphPanel::Implementation {
     int filterCap = kFilterCap;
     bool filterCapped = false;
 
-    QTimer attributeRefresh;
+    QTimer inspectorRefresh;
+
+    struct ChangedHereRequest {
+        SceneGraphStageSourcePtr source;
+        NodePtr node;
+        bool wantRows = false;
+        U64 generation = 0;
+    };
+
+    QToolButton* changedHereButton = nullptr;
+    QTreeView* changedHereTree = nullptr;
+    SceneChangedHereModel* changedHereModel = nullptr;
+    SceneGraphStageSourcePtr changedHereSource;
+    NodeWPtr changedHereNode;
+    U64 changedHereEditCount = 0;
+    bool changedHereRead = false;
+    bool changedHereRowsAsked = false;
+    bool changedHereBusy = false;
+    // The viewer's selection moved while the lazy tree was off screen. Selecting there can read a
+    // whole sibling list, so it waits until that page shows again and the worker has read the rows.
+    bool treeSelectionOwed = false;
+    struct OwedRowsRequest {
+        SceneGraphStageSourcePtr source;
+        QStringList paths;
+        U64 editCount = 0;
+        U64 generation = 0;
+    };
+
+    std::atomic<U64> owedRowsGeneration { 0 };
+    bool hasOwedRowsRequest = false;
+    OwedRowsRequest owedRowsRequest;
+    std::atomic<U64> changedHereGeneration { 0 };
+    std::mutex changedHereMutex;
+    std::condition_variable changedHereQueued;
+    bool hasChangedHereRequest = false;
+    bool changedHereQuit = false;
+    ChangedHereRequest changedHereRequest;
+    std::thread changedHereWorker;
 
     Implementation(SceneGraphPanel* panel,
                    Gui* gui)
@@ -429,6 +473,10 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphFollow", (follow == SceneGraphPanel::eFollowSelection) ? QString::fromUtf8("selection") : QString::fromUtf8("viewer"));
         panel->setProperty("natronSceneGraphNode", node ? QString::fromStdString(node->getFullyQualifiedName()) : QString());
         panel->setProperty("natronSceneGraphHasScene", hasScene());
+        panel->setProperty("natronSceneGraphChangedHereOnly", changedHereOnly());
+        panel->setProperty("natronSceneGraphChangedHereBusy", changedHereBusy);
+        panel->setProperty("natronSceneGraphChangedHereCount", model->getChangedHereCount());
+        panel->setProperty("natronSceneGraphChangedHereRows", changedHereModel->getRowCount());
         panel->setProperty("natronSceneGraphFilterBusy", filterStep.isActive() || filterDebounce.isActive());
         const SceneGraphStageSourcePtr& source = model->getSource();
         panel->setProperty("natronSceneGraphStageEditCount", QVariant::fromValue<qulonglong>(source ? source->getEditCount() : 0));
@@ -486,7 +534,7 @@ struct SceneGraphPanel::Implementation {
         if (!filterPattern.isEmpty()) {
             stack->setCurrentWidget(results);
         } else if (hasScene()) {
-            stack->setCurrentWidget(tree);
+            stack->setCurrentWidget(changedHereOnly() ? changedHereTree : tree);
         } else {
             stack->setCurrentWidget(noScene);
         }
@@ -580,7 +628,7 @@ struct SceneGraphPanel::Implementation {
             }
             viewerTimeLine = viewer ? viewer->getTimeLine().get() : nullptr;
             if (viewerTimeLine) {
-                QObject::connect(viewerTimeLine, &TimeLine::frameChanged, panel, [this]() { attributeRefresh.start(); });
+                QObject::connect(viewerTimeLine, &TimeLine::frameChanged, panel, [this]() { inspectorRefresh.start(); });
             }
         }
         connectViewport((viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr);
@@ -588,7 +636,7 @@ struct SceneGraphPanel::Implementation {
             panel->showSelection(viewport->getSelection());
         }
         updateStatus();
-        attributeRefresh.start();
+        inspectorRefresh.start();
     }
 
     QStringList selectedPaths(QAbstractItemView* view) const
@@ -602,7 +650,7 @@ struct SceneGraphPanel::Implementation {
             if (view == results && resultsModel->isMoreRow(row)) {
                 continue;
             }
-            const QString path = (view == tree) ? model->pathOf(row) : row.data().toString();
+            const QString path = (view == results) ? row.data().toString() : row.data(SceneGraphModel::ePrimPathRole).toString();
             if (current.isValid() && (current.row() == row.row()) && (current.parent() == row.parent())) {
                 currentPath = path;
             } else {
@@ -629,6 +677,266 @@ struct SceneGraphPanel::Implementation {
             }
         }
         restoringExpansion = false;
+    }
+
+    bool changedHereOnly() const
+    {
+        return changedHereButton && changedHereButton->isChecked();
+    }
+
+    void selectChangedHereRows(const QStringList& paths)
+    {
+        const bool wasSyncing = syncingSelection;
+        QItemSelection selection;
+        QModelIndex current;
+
+        syncingSelection = true;
+        for (int i = std::max(0, (int)paths.size() - kShownSelectionCap); i < paths.size(); ++i) {
+            const QModelIndex index = changedHereModel->indexOfPath(paths[i]);
+            if (index.isValid()) {
+                current = index;
+                selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
+            }
+        }
+        changedHereTree->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
+        if (current.isValid()) {
+            changedHereTree->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+            changedHereTree->scrollTo(current);
+        } else {
+            changedHereTree->selectionModel()->clearCurrentIndex();
+        }
+        syncingSelection = wasSyncing;
+    }
+
+    void setChangedHereRows(const SceneChangedHereRowsPtr& rows)
+    {
+        if (rows == changedHereModel->getRows()) {
+            return;
+        }
+        changedHereModel->setRows(rows);
+        if (changedHereModel->getRowCount() <= kChangedHereExpandAllRows) {
+            changedHereTree->expandAll();
+        } else {
+            changedHereTree->expandToDepth(0);
+        }
+        selectChangedHereRows(selectionOrder);
+        inspectorRefresh.start();
+    }
+
+    void onChangedHereStackPageShown()
+    {
+        ++owedRowsGeneration;
+        if (stack->currentWidget() == changedHereTree) {
+            selectChangedHereRows(selectionOrder);
+        } else if ((stack->currentWidget() == tree) && treeSelectionOwed) {
+            askForOwedRows();
+        }
+    }
+
+    void askForOwedRows()
+    {
+        const SceneGraphStageSourcePtr source = model->getSource();
+
+        if (!source || selectionOrder.isEmpty()) {
+            selectTreeRows(selectionOrder);
+
+            return;
+        }
+        OwedRowsRequest request;
+        request.source = source;
+        request.paths = selectionOrder.mid(std::max(0, (int)selectionOrder.size() - kShownSelectionCap));
+        request.editCount = source->getEditCount();
+        request.generation = ++owedRowsGeneration;
+        {
+            std::lock_guard<std::mutex> lock(changedHereMutex);
+            owedRowsRequest = std::move(request);
+            hasOwedRowsRequest = true;
+        }
+        changedHereQueued.notify_one();
+    }
+
+    void readOwedRows(const OwedRowsRequest& request)
+    {
+        const U64 generation = request.generation;
+        SceneGraphPathRowsBuilder builder(request.paths);
+
+        while (!builder.isDone() && (owedRowsGeneration == generation)) {
+            request.source->readStage([&](const SceneStage* stage) {
+                if (owedRowsGeneration == generation) {
+                    builder.readBatch(stage);
+                }
+            });
+        }
+        if (owedRowsGeneration != generation) {
+            return;
+        }
+        QMetaObject::invokeMethod(panel, [this, generation, source = request.source, editCount = request.editCount, rows = builder.take()]() { onOwedRowsRead(generation, source, editCount, rows); }, Qt::QueuedConnection);
+    }
+
+    void onOwedRowsRead(U64 generation,
+                        const SceneGraphStageSourcePtr& source,
+                        U64 editCount,
+                        const SceneGraphPathRowsPtr& rows)
+    {
+        if (owedRowsGeneration != generation) {
+            return;
+        }
+        // Rows read across an edit may not be the model's. What they leave out is read below, on
+        // this thread, as selecting always could.
+        if ((source == model->getSource()) && (source->getEditCount() == editCount)) {
+            model->addPathRows(rows);
+        }
+        selectTreeRows(selectionOrder);
+    }
+
+    // Asks the worker for the prims the shown node's own layers have specs for, and for the filter's
+    // rows when the filter is on, unless the last read was for this node, stage and edit count.
+    void updateChangedHere()
+    {
+        const SceneGraphStageSourcePtr source = model->getSource();
+        const NodePtr node = panel->getShownNode();
+        const U64 editCount = source ? source->getEditCount() : 0;
+        const NodeWPtr nodeWeak = node;
+        const bool sameNode = !changedHereNode.owner_before(nodeWeak) && !nodeWeak.owner_before(changedHereNode);
+        const bool wantRows = changedHereOnly();
+
+        if (changedHereRead && (source == changedHereSource) && sameNode && (editCount == changedHereEditCount) && (!wantRows || changedHereRowsAsked)) {
+            return;
+        }
+        changedHereRead = true;
+        changedHereRowsAsked = wantRows;
+        changedHereSource = source;
+        changedHereNode = node;
+        changedHereEditCount = editCount;
+        const U64 generation = ++changedHereGeneration;
+        ChangedHereRequest request;
+
+        if (source && node) {
+            request.source = source;
+            request.node = node;
+            request.wantRows = wantRows;
+            request.generation = generation;
+        }
+        {
+            std::lock_guard<std::mutex> lock(changedHereMutex);
+            hasChangedHereRequest = source && node;
+            changedHereRequest = std::move(request);
+        }
+        if (!source || !node) {
+            changedHereBusy = false;
+            model->setChangedHere(QSet<QString>());
+            setChangedHereRows(SceneChangedHereRowsPtr());
+
+            return;
+        }
+        changedHereBusy = true;
+        changedHereQueued.notify_one();
+    }
+
+    void onChangedHereRead(U64 generation,
+                           const QSet<QString>& marked,
+                           const SceneChangedHereRowsPtr& rows)
+    {
+        if (changedHereGeneration != generation) {
+            return;
+        }
+        changedHereBusy = false;
+        model->setChangedHere(marked);
+        if (rows) {
+            setChangedHereRows(rows);
+        }
+        publishState();
+    }
+
+    void runChangedHere()
+    {
+        // Reused when a read finds the rows it found last time, so that the main thread keeps the
+        // filtered tree as it is: an edit elsewhere must not reset its selection and scroll position.
+        SceneChangedHereRowsPtr lastRows;
+
+        for (;;) {
+            ChangedHereRequest next;
+            {
+                std::unique_lock<std::mutex> lock(changedHereMutex);
+                changedHereQueued.wait(lock, [this]() { return changedHereQuit || hasChangedHereRequest || hasOwedRowsRequest; });
+                if (changedHereQuit) {
+                    return;
+                }
+                if (hasOwedRowsRequest) {
+                    const OwedRowsRequest owed = std::move(owedRowsRequest);
+                    owedRowsRequest = OwedRowsRequest();
+                    hasOwedRowsRequest = false;
+                    lock.unlock();
+                    readOwedRows(owed);
+                    continue;
+                }
+                next = std::move(changedHereRequest);
+                changedHereRequest = ChangedHereRequest();
+                hasChangedHereRequest = false;
+            }
+            const U64 generation = next.generation;
+            const auto readChangedHereStage = [&](const std::function<void(const SceneStage*)>& read) {
+                if (changedHereGeneration != generation) {
+                    return;
+                }
+                next.source->readStage([&](const SceneStage* stage) {
+                    if (changedHereGeneration == generation) {
+                        read(stage);
+                    }
+                });
+            };
+            ScenePayload payload;
+
+            readChangedHereStage([&payload](const SceneStage* stage) {
+                if (stage) {
+                    payload = stage->getPayload();
+                }
+            });
+            if (changedHereGeneration != generation) {
+                continue;
+            }
+            QSet<QString> marked;
+
+            for (const std::string& authored : SceneOps::getAuthoredPrimPaths(payload, next.node)) {
+                QString path = QString::fromStdString(authored);
+                while ((path.size() > 1) && !marked.contains(path)) {
+                    marked.insert(path);
+                    path.truncate(path.lastIndexOf(QLatin1Char('/')));
+                }
+            }
+            SceneChangedHereRowsPtr rows;
+
+            if (next.wantRows) {
+                SceneChangedHereRowsBuilder builder(marked);
+                while (!builder.isDone() && (changedHereGeneration == generation)) {
+                    readChangedHereStage([&builder](const SceneStage* stage) { builder.readBatch(stage); });
+                }
+                if (changedHereGeneration != generation) {
+                    continue;
+                }
+                rows = builder.take();
+                if (lastRows && lastRows->hasSameRows(*rows)) {
+                    rows = lastRows;
+                } else {
+                    lastRows = rows;
+                }
+            }
+            QMetaObject::invokeMethod(panel, [this, generation, marked, rows]() { onChangedHereRead(generation, marked, rows); }, Qt::QueuedConnection);
+        }
+    }
+
+    void stopChangedHere()
+    {
+        ++changedHereGeneration;
+        ++owedRowsGeneration;
+        {
+            std::lock_guard<std::mutex> lock(changedHereMutex);
+            changedHereQuit = true;
+        }
+        changedHereQueued.notify_all();
+        if (changedHereWorker.joinable()) {
+            changedHereWorker.join();
+        }
     }
 
     void startFilter()
@@ -728,6 +1036,8 @@ struct SceneGraphPanel::Implementation {
 
         syncingSelection = true;
         restoringExpansion = true;
+        treeSelectionOwed = false;
+        ++owedRowsGeneration;
         // A path shown twice keeps its last place, so the current prim stays last.
         const QStringList ordered = paths;
         selectionOrder.clear();
@@ -768,6 +1078,15 @@ struct SceneGraphPanel::Implementation {
         syncingSelection = wasSyncing;
     }
 
+    QAbstractItemView* shownRowsView() const
+    {
+        if (stack->currentWidget() == results) {
+            return results;
+        }
+
+        return (stack->currentWidget() == changedHereTree) ? changedHereTree : tree;
+    }
+
     QString currentPath() const
     {
         // A selected prim the filter hides has no result row, only its row in the tree.
@@ -777,6 +1096,16 @@ struct SceneGraphPanel::Implementation {
             if (current.isValid() && !resultsModel->isMoreRow(current)) {
                 return current.data().toString();
             }
+        }
+        if (stack->currentWidget() == changedHereTree) {
+            const QModelIndex current = changedHereTree->selectionModel()->currentIndex();
+
+            if (current.isValid()) {
+                return current.data(SceneGraphModel::ePrimPathRole).toString();
+            }
+        }
+        if (treeSelectionOwed) {
+            return selectionOrder.isEmpty() ? QString() : selectionOrder.back();
         }
 
         return model->pathOf(tree->selectionModel()->currentIndex());
@@ -830,7 +1159,18 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->filter->setObjectName(QString::fromUtf8("sceneGraphFilter"));
     _imp->filter->setPlaceholderText(tr("Filter by name (* and ? match any text and any character)"));
     _imp->filter->setClearButtonEnabled(true);
-    layout->addWidget(_imp->filter);
+    _imp->changedHereButton = new QToolButton(this);
+    _imp->changedHereButton->setObjectName(QString::fromUtf8("sceneGraphChangedHere"));
+    _imp->changedHereButton->setText(tr("Changed Here"));
+    _imp->changedHereButton->setCheckable(true);
+    _imp->changedHereButton->setToolTip(tr("Lists only the prims the shown node's own layer authors something on, and their ancestors. "
+                                           "The rows are marked in bold whether or not this is on."));
+    QHBoxLayout* filterLayout = new QHBoxLayout();
+    filterLayout->setContentsMargins(0, 0, 2, 0);
+    filterLayout->setSpacing(4);
+    filterLayout->addWidget(_imp->filter, 1);
+    filterLayout->addWidget(_imp->changedHereButton);
+    layout->addLayout(filterLayout);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
@@ -852,6 +1192,20 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
     _imp->stack->addWidget(_imp->tree);
 
+    _imp->changedHereModel = new SceneChangedHereModel(this);
+    _imp->changedHereTree = new QTreeView(_imp->stack);
+    _imp->changedHereTree->setObjectName(QString::fromUtf8("sceneGraphChangedHereTree"));
+    _imp->changedHereTree->setModel(_imp->changedHereModel);
+    _imp->changedHereTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    _imp->changedHereTree->setSelectionBehavior(QAbstractItemView::SelectRows);
+    _imp->changedHereTree->setUniformRowHeights(true);
+    _imp->changedHereTree->setDragEnabled(true);
+    _imp->changedHereTree->setDragDropMode(QAbstractItemView::DragOnly);
+    _imp->changedHereTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    _imp->changedHereTree->header()->setStretchLastSection(false);
+    _imp->changedHereTree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
+    _imp->stack->addWidget(_imp->changedHereTree);
+
     _imp->resultsModel = new FilterResultsModel(this);
     _imp->results = new QListView(_imp->stack);
     _imp->results->setObjectName(QString::fromUtf8("sceneGraphResults"));
@@ -869,18 +1223,14 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->stack->addWidget(_imp->noScene);
     _imp->stack->setCurrentWidget(_imp->noScene);
 
-    _imp->attributeModel = new QStandardItemModel(0, 5, this);
-    _imp->attributeModel->setHorizontalHeaderLabels(QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Animated") << tr("Authored By"));
-    _imp->attributes = new QTreeView(splitter);
-    _imp->attributes->setObjectName(QString::fromUtf8("sceneGraphAttributes"));
-    _imp->attributes->setModel(_imp->attributeModel);
-    _imp->attributes->setRootIsDecorated(false);
-    _imp->attributes->setUniformRowHeights(true);
-    _imp->attributes->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    _imp->attributes->setSelectionBehavior(QAbstractItemView::SelectRows);
-    _imp->attributes->header()->setSectionResizeMode(QHeaderView::Interactive);
+    _imp->inspector = new ScenePrimInspector(splitter);
+    if (gui) {
+        _imp->inspector->setNodeOpener([gui](const NodePtr& node) {
+            gui->showNodeSettingsPanel(std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()));
+        });
+    }
     splitter->addWidget(_imp->stack);
-    splitter->addWidget(_imp->attributes);
+    splitter->addWidget(_imp->inspector);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
     layout->addWidget(splitter, 1);
@@ -888,8 +1238,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->filterDebounce.setSingleShot(true);
     _imp->filterDebounce.setInterval(200);
     _imp->filterStep.setInterval(0);
-    _imp->attributeRefresh.setSingleShot(true);
-    _imp->attributeRefresh.setInterval(0);
+    _imp->inspectorRefresh.setSingleShot(true);
+    _imp->inspectorRefresh.setInterval(0);
     _imp->pinnedPoll.setInterval(kPinnedPollMs);
     _imp->retiredReap.setInterval(kPinnedPollMs);
     _imp->selectionPoll.setInterval(kSelectionPollMs);
@@ -899,9 +1249,14 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->filter, &QLineEdit::textChanged, &_imp->filterDebounce, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
-    QObject::connect(&_imp->attributeRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshAttributes);
+    QObject::connect(&_imp->inspectorRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshInspector);
+    QObject::connect(_imp->changedHereButton, &QToolButton::toggled, this, [this]() {
+        _imp->updateChangedHere();
+        _imp->updateStatus();
+    });
+    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, this, [this]() { _imp->onChangedHereStackPageShown(); });
     // Each page has its own current row, and showing a page changes neither of them.
-    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, &_imp->attributeRefresh, qOverload<>(&QTimer::start));
+    QObject::connect(_imp->stack, &QStackedWidget::currentChanged, &_imp->inspectorRefresh, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->pinnedPoll, &QTimer::timeout, this, &SceneGraphPanel::onPinnedPoll);
     QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
     QObject::connect(&_imp->selectionPoll, &QTimer::timeout, this, &SceneGraphPanel::onSelectionPoll);
@@ -912,14 +1267,18 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
+    QObject::connect(_imp->changedHereTree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onChangedHereSelectionChanged);
+    QObject::connect(_imp->changedHereTree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results, &QListView::clicked, this, &SceneGraphPanel::onResultActivated);
     // Queued: the model fetches no rows while it is resetting, so nothing could be reopened then.
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
     // Keys are claimed in the views' own event filter so a window-level shortcut cannot take them.
     _imp->tree->installEventFilter(this);
     _imp->results->installEventFilter(this);
+    _imp->changedHereTree->installEventFilter(this);
     _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
+    QObject::connect(_imp->changedHereTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->changedHereTree, pos); });
     QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
@@ -928,14 +1287,17 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QObject::connect(gui, &Gui::viewersChanged, this, &SceneGraphPanel::onActiveViewerChanged);
         GuiAppInstancePtr app = gui->getApp();
         if (app && app->getTimeLine()) {
-            QObject::connect(app->getTimeLine().get(), &TimeLine::frameChanged, this, [this]() { _imp->attributeRefresh.start(); });
+            QObject::connect(app->getTimeLine().get(), &TimeLine::frameChanged, this, [this]() { _imp->inspectorRefresh.start(); });
         }
     }
+    _imp->changedHereWorker = std::thread([this]() { _imp->runChangedHere(); });
     _imp->followViewer();
 }
 
 SceneGraphPanel::~SceneGraphPanel()
 {
+    _imp->inspector->stop();
+    _imp->stopChangedHere();
     // Waits, once: no worker may call back into a destroyed panel.
     for (const std::shared_ptr<SceneNodeStageSource>& source : _imp->retired) {
         source->stop();
@@ -1050,17 +1412,23 @@ SceneGraphPanel::getShownNode() const
 void
 SceneGraphPanel::showSelection(const QStringList& paths)
 {
-    _imp->selectTreeRows(paths);
+    if (_imp->stack->currentWidget() == _imp->changedHereTree) {
+        _imp->selectionOrder = paths;
+        _imp->treeSelectionOwed = true;
+        _imp->selectChangedHereRows(paths);
+    } else {
+        _imp->selectTreeRows(paths);
+    }
     if (!_imp->filterPattern.isEmpty()) {
         _imp->selectResults(paths);
     }
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 QStringList
 SceneGraphPanel::getSelection() const
 {
-    const QStringList selected = _imp->selectedPaths((_imp->stack->currentWidget() == _imp->results) ? (QAbstractItemView*)_imp->results : (QAbstractItemView*)_imp->tree);
+    const QStringList selected = _imp->selectedPaths(_imp->shownRowsView());
 
     return SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, selected);
 }
@@ -1126,7 +1494,7 @@ SceneGraphPanel::onSceneSynced()
         }
     }
     _imp->updateStatus();
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
@@ -1144,10 +1512,40 @@ SceneGraphPanel::onTreeSelectionChanged()
     if (_imp->syncingSelection) {
         return;
     }
+    _imp->treeSelectionOwed = false;
+    ++_imp->owedRowsGeneration;
     _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->tree));
     if (!_imp->sharesViewerSelection()) {
         return;
     }
+    _imp->syncingSelection = true;
+    _imp->viewport->setSelection(_imp->selectionOrder);
+    _imp->syncingSelection = false;
+}
+
+void
+SceneGraphPanel::onChangedHereSelectionChanged()
+{
+    if (_imp->syncingSelection) {
+        return;
+    }
+    _imp->treeSelectionOwed = true;
+    if (!_imp->sharesViewerSelection()) {
+        _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->changedHereTree));
+
+        return;
+    }
+    // Selected prims the filter hides stay selected.
+    const QStringList viewerSelection = _imp->viewport->getSelection();
+    QStringList paths;
+
+    for (const QString& path : viewerSelection) {
+        if (!_imp->changedHereModel->contains(path)) {
+            paths << path;
+        }
+    }
+    paths << _imp->selectedPaths(_imp->changedHereTree);
+    _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(viewerSelection, paths);
     _imp->syncingSelection = true;
     _imp->viewport->setSelection(_imp->selectionOrder);
     _imp->syncingSelection = false;
@@ -1275,7 +1673,7 @@ SceneGraphPanel::onPinnedSynced(bool ok,
         _imp->filterDebounce.start();
     }
     _imp->updateStatus();
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
@@ -1327,69 +1725,15 @@ SceneGraphPanel::onSelectionPoll()
 void
 SceneGraphPanel::onCurrentChanged(const QModelIndex& /*current*/)
 {
-    _imp->attributeRefresh.start();
+    _imp->inspectorRefresh.start();
 }
 
 void
-SceneGraphPanel::refreshAttributes()
+SceneGraphPanel::refreshInspector()
 {
-    const QString path = _imp->currentPath();
-    SceneGraphStageSourcePtr source = _imp->model->getSource();
-    struct Row {
-        QString name, type, value, animated, author, authorTip;
-    };
-    std::vector<Row> rows;
-
-    if (!path.isEmpty() && source) {
-        const double frame = _imp->currentFrame();
-        const double fps = _imp->framesPerSecond();
-        source->readStage([&](const SceneStage* sceneStage) {
-            if (!sceneStage) {
-                return;
-            }
-            const std::string pathString = path.toStdString();
-            if (!SdfPath::IsValidPathString(pathString)) {
-                return;
-            }
-            const UsdPrim prim = sceneStage->getStage()->GetPrimAtPath(SdfPath(pathString));
-            if (!prim) {
-                return;
-            }
-            const UsdTimeCode time(SceneOps::frameToTimeCode(sceneStage->getPayload(), frame, fps));
-            for (const UsdAttribute& attribute : prim.GetAttributes()) {
-                Row row;
-                row.name = QString::fromStdString(attribute.GetName().GetString());
-                row.type = QString::fromStdString(attribute.GetTypeName().GetAsToken().GetString());
-                VtValue value;
-                if (attribute.Get(&value, time)) {
-                    row.value = valueString(value);
-                }
-                const UsdResolveInfoSource resolved = attribute.GetResolveInfo(time).GetSource();
-                if ((resolved == UsdResolveInfoSourceTimeSamples) || (resolved == UsdResolveInfoSourceValueClips) || (resolved == UsdResolveInfoSourceSpline)) {
-                    row.animated = tr("Animated");
-                }
-                std::string layerIdentifier;
-                NodePtr node = SceneOps::authoringNodeOf(attribute, time, &layerIdentifier);
-                if (node) {
-                    row.author = QString::fromStdString(node->getFullyQualifiedName());
-                } else if (resolved == UsdResolveInfoSourceFallback) {
-                    row.author = tr("Schema Fallback");
-                } else if (!layerIdentifier.empty() && !SdfLayer::IsAnonymousLayerIdentifier(layerIdentifier)) {
-                    row.author = QString::fromStdString(layerIdentifier);
-                }
-                row.authorTip = QString::fromStdString(layerIdentifier);
-                rows.push_back(row);
-            }
-        });
-    }
-    _imp->attributeModel->removeRows(0, _imp->attributeModel->rowCount());
-    for (const Row& row : rows) {
-        QList<QStandardItem*> items;
-        items << new QStandardItem(row.name) << new QStandardItem(row.type) << new QStandardItem(row.value) << new QStandardItem(row.animated) << new QStandardItem(row.author);
-        items[2]->setToolTip(row.value);
-        items[4]->setToolTip(row.authorTip);
-        _imp->attributeModel->appendRow(items);
-    }
+    _imp->updateChangedHere();
+    _imp->inspector->setNode(getShownNode());
+    _imp->inspector->setPrim(_imp->model->getSource(), _imp->currentPath(), _imp->currentFrame(), _imp->framesPerSecond());
 }
 
 void
@@ -1412,7 +1756,7 @@ SceneGraphPanel::eventFilter(QObject* watched,
 {
     // Copy and the 3D viewer's selection keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
-    if (((watched == _imp->tree) || (watched == _imp->results)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+    if (((watched == _imp->tree) || (watched == _imp->results) || (watched == _imp->changedHereTree)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
         if (k->matches(QKeySequence::Copy)) {
             if (e->type() == QEvent::KeyPress) {

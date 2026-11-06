@@ -30,8 +30,11 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include <QtCore/QAbstractItemModel>
+#include <QtCore/QHash>
+#include <QtCore/QSet>
 #include <QtCore/QStringList>
 
 #include "Global/GlobalDefines.h"
@@ -51,7 +54,7 @@ public:
 
     /**
      * @brief Calls read with the stage, or null when there is none, holding whatever keeps edits
-     * of the stage out until read returns. Called on the main thread.
+     * of the stage out until read returns. MT-safe.
      **/
     virtual void readStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
 
@@ -101,6 +104,9 @@ private:
     std::unique_ptr<Implementation> _imp;
 };
 
+struct SceneGraphPathRows;
+typedef std::shared_ptr<SceneGraphPathRows> SceneGraphPathRowsPtr;
+
 /**
  * @brief The prims of a composed stage as a tree: active, defined, non-abstract prims, instance
  * proxies included, in the stage's order. Children are read only when a view asks for them, in
@@ -129,6 +135,8 @@ public:
     enum RoleEnum {
         // The prim's path, a QString.
         ePrimPathRole = Qt::UserRole + 1,
+        // Whether the prim has a spec in the viewed node's own layers or has a descendant that does, a bool.
+        eChangedHereRole,
     };
 
     // How many children one fetchMore() adds.
@@ -155,7 +163,24 @@ public:
     // The index of the prim at path, column 0, reading the children on the way when populate.
     QModelIndex indexOfPath(const QString& path, bool populate);
 
+    /**
+     * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that
+     * indexOfPath() finds their paths without reading them. A parent whose children differ from what
+     * the builder saw is passed over, as are all of them when the model shows another stage.
+     **/
+    void addPathRows(const SceneGraphPathRowsPtr& rows);
+
     QString pathOf(const QModelIndex& index) const;
+
+    /**
+     * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
+     * are marked too, so the set stays small however large the stage is.
+     **/
+    void setChangedHere(const QSet<QString>& paths);
+
+    bool isChangedHere(const QString& path) const;
+
+    int getChangedHereCount() const;
 
     // How many items have been read, the root's children and down.
     int getItemCount() const;
@@ -183,6 +208,117 @@ public:
 private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
+};
+
+struct SceneChangedHereRow {
+    QString path;
+    QString name;
+    QString type;
+    QString kind;
+    // Indexes into SceneChangedHereRows::rows; a top-level row has no parent, -1.
+    int parent = -1;
+    int rowInParent = 0;
+    std::vector<int> children;
+
+    bool operator==(const SceneChangedHereRow& other) const = default;
+};
+
+struct SceneChangedHereRows {
+    std::vector<SceneChangedHereRow> rows;
+    std::vector<int> topLevel;
+    QHash<QString, int> rowOfPath;
+
+    bool hasSameRows(const SceneChangedHereRows& other) const;
+};
+
+typedef std::shared_ptr<const SceneChangedHereRows> SceneChangedHereRowsPtr;
+
+/**
+ * @brief Reads, on any thread, the rows SceneGraphModel::indexOfPath() would read for paths, which
+ * can be a whole sibling list, a batch at a time so that the stage's lock is let go in between.
+ **/
+class SceneGraphPathRowsBuilder {
+public:
+    explicit SceneGraphPathRowsBuilder(const QStringList& paths);
+
+    ~SceneGraphPathRowsBuilder();
+
+    bool isDone() const;
+
+    // Called with stage's lock held; a null stage ends the read with no rows.
+    void readBatch(const SceneStage* stage);
+
+    SceneGraphPathRowsPtr take();
+
+private:
+    SceneGraphPathRowsPtr _rows;
+    std::size_t _nextParent = 0;
+};
+
+/**
+ * @brief Reads the rows of the Changed Here filter from the marked paths alone, one prim by path at
+ * a time, so that the cost follows how many prims the node authored and not how many siblings they
+ * have. Siblings come out sorted by name, the stage's order being known only by listing all of them.
+ * A marked path the scene graph would not list (an over with no def, an inactive or abstract prim)
+ * has no row, nor have its descendants.
+ **/
+class SceneChangedHereRowsBuilder {
+public:
+    // The paths come with their ancestors, as SceneGraphModel::setChangedHere() wants them.
+    explicit SceneChangedHereRowsBuilder(const QSet<QString>& paths);
+
+    ~SceneChangedHereRowsBuilder();
+
+    bool isDone() const;
+
+    // Reads up to kBatchSize paths. Called with stage's lock held; a null stage reads no prim.
+    void readBatch(const SceneStage* stage);
+
+    SceneChangedHereRowsPtr take();
+
+    static constexpr int kBatchSize = 1000;
+
+private:
+    QStringList _paths;
+    int _next = 0;
+    std::shared_ptr<SceneChangedHereRows> _rows;
+};
+
+/**
+ * @brief A tree of the rows a SceneChangedHereRowsBuilder read, with SceneGraphModel's columns and
+ * roles. It holds what it shows, so data() never touches the stage and no row needs fetching.
+ **/
+class SceneChangedHereModel
+    : public QAbstractItemModel {
+public:
+    explicit SceneChangedHereModel(QObject* parent = nullptr);
+
+    ~SceneChangedHereModel() override;
+
+    // Resets the model, which shows nothing for null.
+    void setRows(const SceneChangedHereRowsPtr& rows);
+
+    const SceneChangedHereRowsPtr& getRows() const;
+
+    int getRowCount() const;
+
+    bool contains(const QString& path) const;
+
+    QModelIndex indexOfPath(const QString& path) const;
+
+    QModelIndex index(int row, int column, const QModelIndex& parent = QModelIndex()) const override;
+    QModelIndex parent(const QModelIndex& index) const override;
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
+    QStringList mimeTypes() const override;
+    QMimeData* mimeData(const QModelIndexList& indexes) const override;
+    Qt::DropActions supportedDragActions() const override;
+
+private:
+    SceneChangedHereRowsPtr _rows;
 };
 
 NATRON_NAMESPACE_EXIT

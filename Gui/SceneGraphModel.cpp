@@ -37,6 +37,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QMimeData>
 #include <QtCore/QSet>
+#include <QtGui/QFont>
 #include <QtGui/QIcon>
 
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -144,6 +145,40 @@ iconForType(const QString& type)
     return QIcon();
 }
 
+QVariant
+columnHeader(int section,
+             Qt::Orientation orientation,
+             int role)
+{
+    if ((orientation != Qt::Horizontal) || (role != Qt::DisplayRole)) {
+        return QVariant();
+    }
+    switch (section) {
+    case SceneGraphModel::eColumnName:
+        return SceneGraphModel::tr("Name");
+    case SceneGraphModel::eColumnType:
+        return SceneGraphModel::tr("Type");
+    case SceneGraphModel::eColumnKind:
+        return SceneGraphModel::tr("Kind");
+    default:
+        return QVariant();
+    }
+}
+
+QMimeData*
+mimeDataOfPaths(const QStringList& paths)
+{
+    if (paths.isEmpty()) {
+        return nullptr;
+    }
+    QMimeData* mime = new QMimeData;
+    const QString joined = paths.join(QLatin1Char('\n'));
+    mime->setData(SceneGraphModel::primPathsMimeType(), joined.toUtf8());
+    mime->setText(joined);
+
+    return mime;
+}
+
 // Collects what the stage's edits resynced, on whichever thread edits the stage.
 class StageListener
     : public TfWeakBase {
@@ -248,6 +283,21 @@ struct SceneGraphModelItem {
 
 typedef SceneGraphModelItem Item;
 
+std::unique_ptr<Item>
+makeItem(const SdfPath& parentPath,
+         const TfToken& name,
+         const PrimData& data)
+{
+    std::unique_ptr<Item> item(new Item);
+
+    item->path = parentPath.AppendChild(name);
+    item->nameToken = name;
+    item->pathString = QString::fromStdString(item->path.GetString());
+    item->data = data;
+
+    return item;
+}
+
 // What one item reads from the stage, gathered under the stage's lock and applied after it.
 struct ItemUpdate {
     Item* item = nullptr;
@@ -263,6 +313,22 @@ struct ItemUpdate {
 
 } // anon namespace
 
+struct SceneGraphPathRows {
+    struct Parent {
+        SdfPath path;
+        std::unordered_set<TfToken, TfToken::HashFunctor> wanted;
+        bool namesRead = false;
+        TfTokenVector names;
+        // How many of names have to be read to reach the last one wanted.
+        std::size_t rowCount = 0;
+        std::vector<std::unique_ptr<Item>> rows;
+    };
+
+    const UsdStage* stage = nullptr;
+    // A parent before its children: its rows are what the children's parent is found in.
+    std::vector<Parent> parents;
+};
+
 struct SceneGraphModel::Implementation {
     SceneGraphModel* model;
     SceneGraphStageSourcePtr source;
@@ -274,6 +340,7 @@ struct SceneGraphModel::Implementation {
     U64 lastEditCount = 0;
     int itemCount = 0;
     int resetCount = 0;
+    QSet<QString> changedHere;
     // Set while the model changes rows: a slot connected to the change signals must not fetch,
     // since children are not yet a prefix of childNames and a nested insert would land inside
     // the change in flight.
@@ -299,6 +366,18 @@ struct SceneGraphModel::Implementation {
     {
         root.path = SdfPath::AbsoluteRootPath();
         root.pathString = QString::fromUtf8("/");
+    }
+
+    void emitChangedHere(Item* item)
+    {
+        if (item->children.empty()) {
+            return;
+        }
+        Q_EMIT model->dataChanged(model->createIndex(0, 0, item->children.front().get()),
+                                  model->createIndex((int)item->children.size() - 1, eColumnCount - 1, item->children.back().get()));
+        for (const std::unique_ptr<Item>& child : item->children) {
+            emitChangedHere(child.get());
+        }
     }
 
     Item* itemOf(const QModelIndex& index) const
@@ -345,13 +424,9 @@ struct SceneGraphModel::Implementation {
                                     const TfToken& name,
                                     const PrimData& data)
     {
-        std::unique_ptr<Item> child(new Item);
+        std::unique_ptr<Item> child = makeItem(parent->path, name, data);
 
         child->parent = parent;
-        child->path = parent->path.AppendChild(name);
-        child->nameToken = name;
-        child->pathString = QString::fromStdString(child->path.GetString());
-        child->data = data;
 
         return child;
     }
@@ -629,6 +704,7 @@ SceneGraphModel::setSource(const SceneGraphStageSourcePtr& source)
         _imp->source->readStage([this](const SceneStage*) { _imp->stopListening(); });
     }
     _imp->source = source;
+    _imp->changedHere.clear();
     _imp->resetTo(false, PrimData());
     refresh();
 }
@@ -782,10 +858,141 @@ SceneGraphModel::indexOfPath(const QString& path,
     return _imp->indexOf(item);
 }
 
+void
+SceneGraphModel::addPathRows(const SceneGraphPathRowsPtr& rows)
+{
+    if (!rows || !rows->stage || _imp->changing || (rows->stage != get_pointer(_imp->listenedStage))) {
+        return;
+    }
+    for (SceneGraphPathRows::Parent& parent : rows->parents) {
+        Item* item = _imp->findItem(parent.path);
+        if (!item || !parent.namesRead || (item->namesRead && (item->childNames != parent.names))) {
+            continue;
+        }
+        Implementation::ChangeScope scope(_imp.get());
+        if (!item->namesRead) {
+            item->namesRead = true;
+            item->childNames = std::move(parent.names);
+        }
+        const std::size_t first = item->children.size();
+        if (first >= parent.rows.size()) {
+            continue;
+        }
+        beginInsertRows(_imp->indexOf(item), (int)first, (int)parent.rows.size() - 1);
+        _imp->itemCount += (int)(parent.rows.size() - first);
+        for (std::size_t i = first; i < parent.rows.size(); ++i) {
+            std::unique_ptr<Item>& child = parent.rows[i];
+            child->parent = item;
+            child->row = (int)i;
+            item->children.push_back(std::move(child));
+        }
+        item->rowOfValid = false;
+        endInsertRows();
+    }
+}
+
+SceneGraphPathRowsBuilder::SceneGraphPathRowsBuilder(const QStringList& paths)
+    : _rows(std::make_shared<SceneGraphPathRows>())
+{
+    std::map<SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>> wanted;
+
+    for (const QString& path : paths) {
+        const std::string pathString = path.toStdString();
+        if (!SdfPath::IsValidPathString(pathString)) {
+            continue;
+        }
+        const SdfPath sdfPath(pathString);
+        if (!sdfPath.IsAbsolutePath() || !sdfPath.IsPrimPath()) {
+            continue;
+        }
+        for (const SdfPath& prefix : sdfPath.GetPrefixes()) {
+            if (!prefix.IsAbsoluteRootPath()) {
+                wanted[prefix.GetParentPath()].insert(prefix.GetNameToken());
+            }
+        }
+    }
+    for (std::pair<const SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>>& entry : wanted) {
+        SceneGraphPathRows::Parent parent;
+        parent.path = entry.first;
+        parent.wanted = std::move(entry.second);
+        _rows->parents.push_back(std::move(parent));
+    }
+}
+
+SceneGraphPathRowsBuilder::~SceneGraphPathRowsBuilder() = default;
+
+bool
+SceneGraphPathRowsBuilder::isDone() const
+{
+    return _nextParent >= _rows->parents.size();
+}
+
+void
+SceneGraphPathRowsBuilder::readBatch(const SceneStage* stage)
+{
+    const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+
+    if (!usdStage) {
+        _rows->stage = nullptr;
+        _nextParent = _rows->parents.size();
+
+        return;
+    }
+    _rows->stage = get_pointer(usdStage);
+    SceneGraphPathRows::Parent& parent = _rows->parents[_nextParent];
+    if (!parent.namesRead) {
+        const UsdPrim prim = usdStage->GetPrimAtPath(parent.path);
+        if (prim) {
+            parent.names = prim.GetFilteredChildrenNames(childPredicate());
+        }
+        parent.namesRead = true;
+        for (std::size_t i = 0; i < parent.names.size(); ++i) {
+            if (parent.wanted.find(parent.names[i]) != parent.wanted.end()) {
+                parent.rowCount = i + 1;
+            }
+        }
+    }
+    const std::size_t end = std::min(parent.rowCount, parent.rows.size() + SceneGraphModel::kFetchBatchSize);
+    for (std::size_t i = parent.rows.size(); i < end; ++i) {
+        parent.rows.push_back(makeItem(parent.path, parent.names[i], readPrimData(usdStage->GetPrimAtPath(parent.path.AppendChild(parent.names[i])))));
+    }
+    if (parent.rows.size() >= parent.rowCount) {
+        ++_nextParent;
+    }
+}
+
+SceneGraphPathRowsPtr
+SceneGraphPathRowsBuilder::take()
+{
+    return std::move(_rows);
+}
+
 QString
 SceneGraphModel::pathOf(const QModelIndex& index) const
 {
     return index.isValid() ? _imp->itemOf(index)->pathString : QString();
+}
+
+void
+SceneGraphModel::setChangedHere(const QSet<QString>& paths)
+{
+    if (paths == _imp->changedHere) {
+        return;
+    }
+    _imp->changedHere = paths;
+    _imp->emitChangedHere(&_imp->root);
+}
+
+bool
+SceneGraphModel::isChangedHere(const QString& path) const
+{
+    return _imp->changedHere.contains(path);
+}
+
+int
+SceneGraphModel::getChangedHereCount() const
+{
+    return _imp->changedHere.size();
 }
 
 int
@@ -880,7 +1087,7 @@ SceneGraphModel::data(const QModelIndex& index,
             return QVariant();
         }
     case Qt::ToolTipRole:
-        return item->pathString;
+        return _imp->changedHere.contains(item->pathString) ? tr("%1\nChanged here").arg(item->pathString) : item->pathString;
     case Qt::DecorationRole:
         if (index.column() == eColumnName) {
             const QIcon icon = iconForType(item->data.type);
@@ -892,6 +1099,17 @@ SceneGraphModel::data(const QModelIndex& index,
         return QVariant();
     case ePrimPathRole:
         return item->pathString;
+    case eChangedHereRole:
+        return _imp->changedHere.contains(item->pathString);
+    case Qt::FontRole:
+        if ((index.column() == eColumnName) && _imp->changedHere.contains(item->pathString)) {
+            QFont font;
+            font.setBold(true);
+
+            return font;
+        }
+
+        return QVariant();
     default:
         return QVariant();
     }
@@ -902,19 +1120,7 @@ SceneGraphModel::headerData(int section,
                             Qt::Orientation orientation,
                             int role) const
 {
-    if ((orientation != Qt::Horizontal) || (role != Qt::DisplayRole)) {
-        return QVariant();
-    }
-    switch (section) {
-    case eColumnName:
-        return tr("Name");
-    case eColumnType:
-        return tr("Type");
-    case eColumnKind:
-        return tr("Kind");
-    default:
-        return QVariant();
-    }
+    return columnHeader(section, orientation, role);
 }
 
 Qt::ItemFlags
@@ -971,19 +1177,267 @@ SceneGraphModel::mimeData(const QModelIndexList& indexes) const
             paths << item->pathString;
         }
     }
-    if (paths.isEmpty()) {
-        return nullptr;
-    }
-    QMimeData* mime = new QMimeData;
-    const QString joined = paths.join(QLatin1Char('\n'));
-    mime->setData(primPathsMimeType(), joined.toUtf8());
-    mime->setText(joined);
 
-    return mime;
+    return mimeDataOfPaths(paths);
 }
 
 Qt::DropActions
 SceneGraphModel::supportedDragActions() const
+{
+    return Qt::CopyAction;
+}
+
+bool
+SceneChangedHereRows::hasSameRows(const SceneChangedHereRows& other) const
+{
+    return rows == other.rows;
+}
+
+SceneChangedHereRowsBuilder::SceneChangedHereRowsBuilder(const QSet<QString>& paths)
+    : _paths(paths.values())
+    , _rows(std::make_shared<SceneChangedHereRows>())
+{
+    // A parent's path is a prefix of its children's, so it sorts first and is read before them.
+    std::sort(_paths.begin(), _paths.end());
+}
+
+SceneChangedHereRowsBuilder::~SceneChangedHereRowsBuilder() = default;
+
+bool
+SceneChangedHereRowsBuilder::isDone() const
+{
+    return _next >= _paths.size();
+}
+
+void
+SceneChangedHereRowsBuilder::readBatch(const SceneStage* stage)
+{
+    const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+
+    for (int i = 0; (i < kBatchSize) && !isDone(); ++i) {
+        const QString& path = _paths.at(_next++);
+        const int separator = (int)path.lastIndexOf(QLatin1Char('/'));
+        int parent = -1;
+
+        if (separator > 0) {
+            const auto found = _rows->rowOfPath.constFind(path.left(separator));
+            if (found == _rows->rowOfPath.constEnd()) {
+                continue;
+            }
+            parent = found.value();
+        }
+        const std::string pathString = path.toStdString();
+        const UsdPrim prim = (usdStage && SdfPath::IsValidPathString(pathString)) ? usdStage->GetPrimAtPath(SdfPath(pathString)) : UsdPrim();
+        if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+            continue;
+        }
+        const PrimData data = readPrimData(prim);
+        const int row = (int)_rows->rows.size();
+        SceneChangedHereRow added;
+
+        added.path = path;
+        added.name = data.name;
+        added.type = data.type;
+        added.kind = data.kind;
+        added.parent = parent;
+        std::vector<int>& siblings = (parent >= 0) ? _rows->rows[parent].children : _rows->topLevel;
+        added.rowInParent = (int)siblings.size();
+        siblings.push_back(row);
+        _rows->rows.push_back(std::move(added));
+        _rows->rowOfPath.insert(path, row);
+    }
+}
+
+SceneChangedHereRowsPtr
+SceneChangedHereRowsBuilder::take()
+{
+    SceneChangedHereRowsPtr rows = std::move(_rows);
+
+    _rows = std::make_shared<SceneChangedHereRows>();
+
+    return rows;
+}
+
+SceneChangedHereModel::SceneChangedHereModel(QObject* parent)
+    : QAbstractItemModel(parent)
+{
+}
+
+SceneChangedHereModel::~SceneChangedHereModel() = default;
+
+void
+SceneChangedHereModel::setRows(const SceneChangedHereRowsPtr& rows)
+{
+    beginResetModel();
+    _rows = rows;
+    endResetModel();
+}
+
+const SceneChangedHereRowsPtr&
+SceneChangedHereModel::getRows() const
+{
+    return _rows;
+}
+
+int
+SceneChangedHereModel::getRowCount() const
+{
+    return _rows ? (int)_rows->rows.size() : 0;
+}
+
+bool
+SceneChangedHereModel::contains(const QString& path) const
+{
+    return _rows && _rows->rowOfPath.contains(path);
+}
+
+QModelIndex
+SceneChangedHereModel::indexOfPath(const QString& path) const
+{
+    if (!contains(path)) {
+        return QModelIndex();
+    }
+    const int row = _rows->rowOfPath.value(path);
+
+    return createIndex(_rows->rows[row].rowInParent, 0, (quintptr)row);
+}
+
+QModelIndex
+SceneChangedHereModel::index(int row,
+                             int column,
+                             const QModelIndex& parent) const
+{
+    if (!hasIndex(row, column, parent)) {
+        return QModelIndex();
+    }
+    const std::vector<int>& siblings = parent.isValid() ? _rows->rows[parent.internalId()].children : _rows->topLevel;
+
+    return createIndex(row, column, (quintptr)siblings[row]);
+}
+
+QModelIndex
+SceneChangedHereModel::parent(const QModelIndex& index) const
+{
+    if (!index.isValid()) {
+        return QModelIndex();
+    }
+    const int parentRow = _rows->rows[index.internalId()].parent;
+
+    if (parentRow < 0) {
+        return QModelIndex();
+    }
+
+    return createIndex(_rows->rows[parentRow].rowInParent, 0, (quintptr)parentRow);
+}
+
+int
+SceneChangedHereModel::rowCount(const QModelIndex& parent) const
+{
+    if (!_rows || (parent.column() > 0)) {
+        return 0;
+    }
+
+    return (int)(parent.isValid() ? _rows->rows[parent.internalId()].children.size() : _rows->topLevel.size());
+}
+
+int
+SceneChangedHereModel::columnCount(const QModelIndex& /*parent*/) const
+{
+    return SceneGraphModel::eColumnCount;
+}
+
+QVariant
+SceneChangedHereModel::data(const QModelIndex& index,
+                            int role) const
+{
+    if (!index.isValid()) {
+        return QVariant();
+    }
+    const SceneChangedHereRow& row = _rows->rows[index.internalId()];
+
+    switch (role) {
+    case Qt::DisplayRole:
+        switch (index.column()) {
+        case SceneGraphModel::eColumnName:
+            return row.name;
+        case SceneGraphModel::eColumnType:
+            return row.type;
+        case SceneGraphModel::eColumnKind:
+            return row.kind;
+        default:
+            return QVariant();
+        }
+    case Qt::ToolTipRole:
+        return SceneGraphModel::tr("%1\nChanged here").arg(row.path);
+    case Qt::DecorationRole:
+        if (index.column() == SceneGraphModel::eColumnName) {
+            const QIcon icon = iconForType(row.type);
+            if (!icon.isNull()) {
+                return icon;
+            }
+        }
+
+        return QVariant();
+    case SceneGraphModel::ePrimPathRole:
+        return row.path;
+    case SceneGraphModel::eChangedHereRole:
+        return true;
+    case Qt::FontRole:
+        if (index.column() == SceneGraphModel::eColumnName) {
+            QFont font;
+            font.setBold(true);
+
+            return font;
+        }
+
+        return QVariant();
+    default:
+        return QVariant();
+    }
+}
+
+QVariant
+SceneChangedHereModel::headerData(int section,
+                                  Qt::Orientation orientation,
+                                  int role) const
+{
+    return columnHeader(section, orientation, role);
+}
+
+Qt::ItemFlags
+SceneChangedHereModel::flags(const QModelIndex& index) const
+{
+    if (!index.isValid()) {
+        return Qt::NoItemFlags;
+    }
+
+    return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled;
+}
+
+QStringList
+SceneChangedHereModel::mimeTypes() const
+{
+    return QStringList() << SceneGraphModel::primPathsMimeType() << QString::fromUtf8("text/plain");
+}
+
+QMimeData*
+SceneChangedHereModel::mimeData(const QModelIndexList& indexes) const
+{
+    QStringList paths;
+    QSet<quintptr> seen;
+
+    for (const QModelIndex& index : indexes) {
+        if (index.isValid() && !seen.contains(index.internalId())) {
+            seen.insert(index.internalId());
+            paths << _rows->rows[index.internalId()].path;
+        }
+    }
+
+    return mimeDataOfPaths(paths);
+}
+
+Qt::DropActions
+SceneChangedHereModel::supportedDragActions() const
 {
     return Qt::CopyAction;
 }

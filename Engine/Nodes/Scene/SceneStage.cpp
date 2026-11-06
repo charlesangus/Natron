@@ -235,6 +235,7 @@ SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS
         }
     }
 
+    ++_previewGeneration;
     PXR_NS::SdfChangeBlock block;
     for (PreviewPrim& preview : _preview) {
         for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
@@ -263,6 +264,7 @@ SceneStage::clearPreviewTransforms()
         return;
     }
     _preview.clear();
+    ++_previewGeneration;
     _root->SetRootPrims(PXR_NS::SdfPrimSpecHandleVector());
 }
 
@@ -270,6 +272,12 @@ bool
 SceneStage::hasPreviewTransforms() const
 {
     return !_preview.empty();
+}
+
+U64
+SceneStage::getPreviewGeneration() const
+{
+    return _previewGeneration;
 }
 
 NATRON_NAMESPACE_EXIT

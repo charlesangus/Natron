@@ -103,6 +103,9 @@ public:
 
     bool hasPreviewTransforms() const;
 
+    // Moves whenever the preview changes what the stage composes, which getEditCount() does not count.
+    U64 getPreviewGeneration() const;
+
 private:
     void syncProjections();
 
@@ -125,6 +128,7 @@ private:
     U64 _editCount = 0;
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
+    U64 _previewGeneration = 0;
 };
 
 NATRON_NAMESPACE_EXIT

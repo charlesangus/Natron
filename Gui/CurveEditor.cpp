@@ -1068,26 +1068,7 @@ CurveEditor::onItemDoubleClicked(QTreeWidgetItem* item,
         }
     }
 
-
-    DockablePanel* panel = 0;
-    if (node) {
-        node->ensurePanelCreated();
-    }
-    if ( node && node->getParentMultiInstance() ) {
-        panel = node->getParentMultiInstance()->getSettingPanel();
-    } else if (node) {
-        panel = node->getSettingPanel();
-    }
-    if ( node && panel && node->isVisible() ) {
-        if ( !node->isSettingsPanelVisible() ) {
-            node->setVisibleSettingsPanel(true);
-        }
-        if ( !node->wasBeginEditCalled() ) {
-            node->beginEditKnobs();
-        }
-        getGui()->putSettingsPanelFirst( node->getSettingPanel() );
-        getGui()->getApp()->redrawAllViewers();
-    }
+    getGui()->showNodeSettingsPanel(node);
 } // CurveEditor::onItemDoubleClicked
 
 NodeCurveEditorElement*

@@ -48,15 +48,19 @@ class SceneGraphModel;
  * viewer shows, or, following the node selection, that of the scene node last selected in the
  * node graph, or the scene of a pinned node. When the rows are the viewer's prims, selecting rows
  * selects the prims in the viewer and the viewer's selection selects the rows. A name filter
- * lists the matching prims instead of the tree. Below the tree, the current prim's attributes at
- * the viewer's frame, with the node that authored each one. Rows drag their prim paths onto prim
- * path and pattern knobs.
+ * lists the matching prims instead of the tree. Below the tree, a ScenePrimInspector on the current
+ * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
  *
- * Scripts find its widgets by object name: sceneGraphTree, sceneGraphResults, sceneGraphFilter,
- * sceneGraphPin, sceneGraphFollow, sceneGraphNode, sceneGraphStatus and sceneGraphAttributes. It
- * mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow ("viewer" or
- * "selection"), natronSceneGraphNode, natronSceneGraphHasScene, natronSceneGraphFilterBusy,
- * natronSceneGraphStageEditCount and natronSceneGraphStageNotices properties.
+ * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
+ * sceneGraphResults, sceneGraphFilter, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
+ * sceneGraphChangedHere and sceneGraphStatus, and the inspector's. Rows the shown node's own layers
+ * author something on, and their ancestors, are marked (SceneGraphModel::eChangedHereRole); the
+ * Changed Here button swaps the tree for one listing only those (SceneChangedHereModel), leaving
+ * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow
+ * ("viewer" or "selection"), natronSceneGraphNode, natronSceneGraphHasScene,
+ * natronSceneGraphFilterBusy, natronSceneGraphStageEditCount, natronSceneGraphStageNotices,
+ * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount
+ * and natronSceneGraphChangedHereRows properties.
  **/
 class SceneGraphPanel
     : public QWidget,
@@ -106,6 +110,7 @@ private Q_SLOTS:
     void onSceneSynced();
     void onViewportSelectionChanged(const QStringList& paths);
     void onTreeSelectionChanged();
+    void onChangedHereSelectionChanged();
     void onResultsSelectionChanged();
     void onResultActivated(const QModelIndex& index);
     void onFilterEdited();
@@ -119,7 +124,7 @@ private Q_SLOTS:
     void onExpanded(const QModelIndex& index);
     void onCollapsed(const QModelIndex& index);
     void onCurrentChanged(const QModelIndex& current);
-    void refreshAttributes();
+    void refreshInspector();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* e) override;

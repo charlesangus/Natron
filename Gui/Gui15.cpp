@@ -46,7 +46,10 @@
 #include "Engine/ViewIdx.h"
 
 #include "Gui/DockablePanel.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/SequenceFileDialog.h"
 
@@ -303,6 +306,28 @@ Gui::updateViewsActions(int viewsCount)
 
         _imp->viewersMenu->addAction( _imp->viewersViewMenu->menuAction() );
     }
+}
+
+void
+Gui::showNodeSettingsPanel(const NodeGuiPtr& node)
+{
+    if (!node) {
+        return;
+    }
+    node->ensurePanelCreated();
+    const NodeGuiPtr multiInstance = node->getParentMultiInstance();
+    DockablePanel* panel = multiInstance ? multiInstance->getSettingPanel() : node->getSettingPanel();
+    if (!panel || !node->isVisible()) {
+        return;
+    }
+    if (!node->isSettingsPanelVisible()) {
+        node->setVisibleSettingsPanel(true);
+    }
+    if (!node->wasBeginEditCalled()) {
+        node->beginEditKnobs();
+    }
+    putSettingsPanelFirst(node->getSettingPanel());
+    getApp()->redrawAllViewers();
 }
 
 void

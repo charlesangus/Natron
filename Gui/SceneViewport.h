@@ -695,6 +695,9 @@ Q_SIGNALS:
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
+    // First thing in the destructor, with the renderer still whole (main thread).
+    void closing();
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;

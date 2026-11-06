@@ -3358,6 +3358,7 @@ SceneViewport::SceneViewport(QWidget* parent)
 
 SceneViewport::~SceneViewport()
 {
+    Q_EMIT closing();
     {
         std::lock_guard<std::mutex> lock(_imp->queueMutex);
         _imp->quit = true;

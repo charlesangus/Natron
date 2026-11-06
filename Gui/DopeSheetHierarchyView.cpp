@@ -1140,33 +1140,7 @@ HierarchyView::onItemDoubleClicked(QTreeWidgetItem *item,
     Q_UNUSED(column);
 
     DSNodePtr itemDSNode = _imp->dopeSheetModel->findParentDSNode(item);
-    NodeGuiPtr nodeGui = itemDSNode->getNodeGui();
-
-    // Move the nodeGui's settings panel on top
-    DockablePanel *panel = 0;
-
-    if (nodeGui) {
-        nodeGui->ensurePanelCreated();
-    }
-
-    if ( nodeGui && nodeGui->getParentMultiInstance() ) {
-        panel = nodeGui->getParentMultiInstance()->getSettingPanel();
-    } else {
-        panel = nodeGui->getSettingPanel();
-    }
-
-    if ( nodeGui && panel && nodeGui->isVisible() ) {
-        if ( !nodeGui->isSettingsPanelVisible() ) {
-            nodeGui->setVisibleSettingsPanel(true);
-        }
-
-        if ( !nodeGui->wasBeginEditCalled() ) {
-            nodeGui->beginEditKnobs();
-        }
-
-        _imp->gui->putSettingsPanelFirst( nodeGui->getSettingPanel() );
-        _imp->gui->getApp()->redrawAllViewers();
-    }
+    _imp->gui->showNodeSettingsPanel(itemDSNode->getNodeGui());
 }
 
 void

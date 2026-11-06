@@ -1934,6 +1934,25 @@ public:
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
     };
 
+    /**
+     * @brief While one lives on the main thread, activating, deactivating and reconnecting nodes
+     * leaves invalid-expression rechecks, input-related refreshes and the project's layer table to
+     * the end of the outermost one, which does each once. An edit of many nodes would otherwise
+     * walk everything downstream of each, reading expressions that name nodes it has not restored
+     * yet.
+     **/
+    class InputEditBatch {
+    public:
+        explicit InputEditBatch(const AppInstancePtr& app);
+        ~InputEditBatch();
+
+        InputEditBatch(const InputEditBatch&) = delete;
+        InputEditBatch& operator=(const InputEditBatch&) = delete;
+
+    private:
+        AppInstancePtr _app;
+    };
+
     void markAllInputRelatedDataDirty();
 
     /**
@@ -2256,6 +2275,8 @@ private:
     // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
     // shows: its hash folds in only those, so the others are not read through it.
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
+    static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
+    static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 

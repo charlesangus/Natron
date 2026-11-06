@@ -207,25 +207,27 @@ AddMultipleNodesCommand::undo()
     _isUndone = true;
     std::list<ViewerInstance*> viewersToRefresh;
 
-
-    for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        NodeGuiPtr node = it->lock();
-        if (!node) {
-            continue;
-        }
-        std::list<ViewerInstance* > viewers;
-        node->getNode()->hasViewersConnected(&viewers);
-        for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
-            std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
-            if ( foundViewer == viewersToRefresh.end() ) {
-                viewersToRefresh.push_back(*it2);
+    {
+        Node::InputEditBatch batch(_graph->getGui()->getApp());
+        for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+            NodeGuiPtr node = it->lock();
+            if (!node) {
+                continue;
             }
+            std::list<ViewerInstance*> viewers;
+            node->getNode()->hasViewersConnected(&viewers);
+            for (std::list<ViewerInstance*>::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
+                std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
+                if (foundViewer == viewersToRefresh.end()) {
+                    viewersToRefresh.push_back(*it2);
+                }
+            }
+            node->getNode()->deactivate(NodesList(), // outputs to disconnect
+                                        true, // disconnect all nodes, disregarding the first parameter.
+                                        true, // reconnect outputs to inputs of this node?
+                                        true, // hide nodeGui?
+                                        false); // triggerRender
         }
-        node->getNode()->deactivate(NodesList(), //outputs to disconnect
-                                    true, //disconnect all nodes, disregarding the first parameter.
-                                    true, //reconnect outputs to inputs of this node?
-                                    true, //hide nodeGui?
-                                    false); // triggerRender
     }
 
     _graph->clearSelection();
@@ -256,6 +258,7 @@ AddMultipleNodesCommand::redo()
         return;
     }
     if (_firstRedoCalled) {
+        Node::InputEditBatch batch(_graph->getGui()->getApp());
         for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
             (*it)->getNode()->activate(NodesList(), //inputs to restore
                                        true, //restore all inputs ?
@@ -354,42 +357,45 @@ RemoveMultipleNodesCommand::undo()
     if ( next != _nodes.end() ) {
         ++next;
     }
-    for (std::list<NodeToRemove>::iterator it = _nodes.begin();
-         it != _nodes.end();
-         ++it) {
-        NodeGuiPtr node = it->node.lock();
-        if (!node) {
+    {
+        Node::InputEditBatch batch(_graph->getGui()->getApp());
+        for (std::list<NodeToRemove>::iterator it = _nodes.begin();
+             it != _nodes.end();
+             ++it) {
+            NodeGuiPtr node = it->node.lock();
+            if (!node) {
+                if (next != _nodes.end()) {
+                    ++next;
+                }
+                continue;
+            }
+            NodesList outputsToRestore;
+            for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
+                NodePtr output = it2->lock();
+                if (output) {
+                    outputsToRestore.push_back(output);
+                }
+            }
+
+            node->getNode()->activate(outputsToRestore, false, false);
+            if (node->isSettingsPanelVisible()) {
+                node->getNode()->showKeyframesOnTimeline(next == _nodes.end());
+            }
+            std::list<ViewerInstance*> viewers;
+            node->getNode()->hasViewersConnected(&viewers);
+            for (std::list<ViewerInstance*>::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
+                std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
+                if (foundViewer == viewersToRefresh.end()) {
+                    viewersToRefresh.push_back(*it2);
+                }
+            }
+
+            // increment for next iteration
             if (next != _nodes.end()) {
                 ++next;
             }
-            continue;
-        }
-        NodesList outputsToRestore;
-        for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
-            NodePtr output = it2->lock();
-            if (output) {
-                outputsToRestore.push_back(output);
-            }
-        }
-
-        node->getNode()->activate(outputsToRestore, false, false);
-        if ( node->isSettingsPanelVisible() ) {
-            node->getNode()->showKeyframesOnTimeline( next == _nodes.end() );
-        }
-        std::list<ViewerInstance* > viewers;
-        node->getNode()->hasViewersConnected(&viewers);
-        for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
-            std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
-            if ( foundViewer == viewersToRefresh.end() ) {
-                viewersToRefresh.push_back(*it2);
-            }
-        }
-
-        // increment for next iteration
-        if ( next != _nodes.end() ) {
-            ++next;
-        }
-    } // for(it)
+        } // for(it)
+    }
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
         (*it)->renderCurrentFrame(true);
     }
@@ -411,82 +417,83 @@ RemoveMultipleNodesCommand::redo()
     if ( next != _nodes.end() ) {
         ++next;
     }
-    for (std::list<NodeToRemove>::iterator it = _nodes.begin();
-         it != _nodes.end();
-         ++it) {
-        NodeGuiPtr node = it->node.lock();
-        if (!node) {
-            if (next != _nodes.end()) {
-                ++next;
-            }
-            continue;
-        }
-        ///Make a copy before calling deactivate which will modify the list
-        NodesWList outputs = node->getNode()->getGuiOutputs();
-        std::list<ViewerInstance* > viewers;
-        node->getNode()->hasViewersConnected(&viewers);
-        for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
-            std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
-            if ( foundViewer == viewersToRefresh.end() ) {
-                viewersToRefresh.push_back(*it2);
-            }
-        }
-
-        NodesList outputsToRestore;
-        for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
-            NodePtr output = it2->lock();
-            if (output) {
-                outputsToRestore.push_back(output);
-            }
-        }
-
-        node->getNode()->deactivate(outputsToRestore, false, _nodes.size() == 1, true, false);
-
-
-        if (_nodes.size() == 1) {
-            ///If we're deleting a single node and there's a viewer in output,reconnect the viewer to another connected input it has
-            for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
-                NodePtr output = it2->lock();
-
-                if (!output) {
-                    continue;
+    {
+        Node::InputEditBatch batch(_graph->getGui()->getApp());
+        for (std::list<NodeToRemove>::iterator it = _nodes.begin();
+             it != _nodes.end();
+             ++it) {
+            NodeGuiPtr node = it->node.lock();
+            if (!node) {
+                if (next != _nodes.end()) {
+                    ++next;
                 }
+                continue;
+            }
+            /// Make a copy before calling deactivate which will modify the list
+            NodesWList outputs = node->getNode()->getGuiOutputs();
+            std::list<ViewerInstance*> viewers;
+            node->getNode()->hasViewersConnected(&viewers);
+            for (std::list<ViewerInstance*>::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
+                std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
+                if (foundViewer == viewersToRefresh.end()) {
+                    viewersToRefresh.push_back(*it2);
+                }
+            }
 
-                ///the output must be in the outputs to restore
-                NodesList::const_iterator found = std::find(outputsToRestore.begin(), outputsToRestore.end(), output);
+            NodesList outputsToRestore;
+            for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
+                NodePtr output = it2->lock();
+                if (output) {
+                    outputsToRestore.push_back(output);
+                }
+            }
 
-                if ( found != outputsToRestore.end() ) {
-                    InspectorNode* inspector = dynamic_cast<InspectorNode*>( output.get() );
-                    ///if the node is an inspector, when disconnecting the active input just activate another input instead
-                    if (inspector) {
-                        const std::vector<NodeWPtr> & inputs = inspector->getGuiInputs();
-                        ///set as active input the first non null input
-                        for (std::size_t i = 0; i < inputs.size(); ++i) {
-                            NodePtr input = inputs[i].lock();
-                            if (input) {
-                                inspector->setActiveInputAndRefresh(i, true);
-                                ///make sure we don't refresh it a second time
-                                std::list<ViewerInstance*>::iterator foundViewer =
-                                    std::find( viewersToRefresh.begin(), viewersToRefresh.end(), inspector->isEffectViewer() );
-                                if ( foundViewer != viewersToRefresh.end() ) {
-                                    viewersToRefresh.erase(foundViewer);
+            node->getNode()->deactivate(outputsToRestore, false, _nodes.size() == 1, true, false);
+
+            if (_nodes.size() == 1) {
+                /// If we're deleting a single node and there's a viewer in output,reconnect the viewer to another connected input it has
+                for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
+                    NodePtr output = it2->lock();
+
+                    if (!output) {
+                        continue;
+                    }
+
+                    /// the output must be in the outputs to restore
+                    NodesList::const_iterator found = std::find(outputsToRestore.begin(), outputsToRestore.end(), output);
+
+                    if (found != outputsToRestore.end()) {
+                        InspectorNode* inspector = dynamic_cast<InspectorNode*>(output.get());
+                        /// if the node is an inspector, when disconnecting the active input just activate another input instead
+                        if (inspector) {
+                            const std::vector<NodeWPtr>& inputs = inspector->getGuiInputs();
+                            /// set as active input the first non null input
+                            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                                NodePtr input = inputs[i].lock();
+                                if (input) {
+                                    inspector->setActiveInputAndRefresh(i, true);
+                                    /// make sure we don't refresh it a second time
+                                    std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), inspector->isEffectViewer());
+                                    if (foundViewer != viewersToRefresh.end()) {
+                                        viewersToRefresh.erase(foundViewer);
+                                    }
+                                    break;
                                 }
-                                break;
                             }
                         }
                     }
                 }
             }
-        }
-        if ( node->isSettingsPanelVisible() ) {
-            node->getNode()->hideKeyframesFromTimeline( next == _nodes.end() );
-        }
+            if (node->isSettingsPanelVisible()) {
+                node->getNode()->hideKeyframesFromTimeline(next == _nodes.end());
+            }
 
-        // increment for next iteration
-        if ( next != _nodes.end() ) {
-            ++next;
-        }
-    } // for(it)
+            // increment for next iteration
+            if (next != _nodes.end()) {
+                ++next;
+            }
+        } // for(it)
+    }
 
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
         (*it)->renderCurrentFrame(true);

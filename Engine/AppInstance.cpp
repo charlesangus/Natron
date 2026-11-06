@@ -207,6 +207,8 @@ public:
     std::unordered_map<std::string, std::set<const KnobI*>> invalidExprKnobsByName;
     std::set<const KnobI*> invalidExprKnobsAlways;
     U64 invalidExprRechecks;
+    int invalidExprRecheckBatchDepth;
+    std::set<std::string> invalidExprRecheckBatchNames;
 
     void unindexInvalidExpressionKnob(const KnobI* knob, const InvalidExprEntry& entry)
     {
@@ -278,6 +280,7 @@ public:
         , invalidExprKnobsByName()
         , invalidExprKnobsAlways()
         , invalidExprRechecks(0)
+        , invalidExprRecheckBatchDepth(0)
         , projectBeingLoaded()
         , creationContext()
         , undoRecorder()
@@ -2969,7 +2972,33 @@ AppInstance::recheckInvalidExpressions()
 void
 AppInstance::recheckInvalidExpressionsReferencing(const std::set<std::string>& names)
 {
+    if ((_imp->invalidExprRecheckBatchDepth > 0) && (QThread::currentThread() == qApp->thread())) {
+        _imp->invalidExprRecheckBatchNames.insert(names.begin(), names.end());
+
+        return;
+    }
     recheckInvalidExpressionsInternal(&names);
+}
+
+void
+AppInstance::beginInvalidExpressionRecheckBatch()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    ++_imp->invalidExprRecheckBatchDepth;
+}
+
+void
+AppInstance::endInvalidExpressionRecheckBatch()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (--_imp->invalidExprRecheckBatchDepth > 0) {
+        return;
+    }
+    std::set<std::string> names;
+    names.swap(_imp->invalidExprRecheckBatchNames);
+    if (!names.empty()) {
+        recheckInvalidExpressionsInternal(&names);
+    }
 }
 
 void

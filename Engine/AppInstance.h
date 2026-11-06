@@ -446,6 +446,13 @@ public:
     void recheckInvalidExpressionsReferencing(const std::set<std::string>& names);
 
     /**
+     * @brief Between these, recheckInvalidExpressionsReferencing() on the main thread only collects
+     * the names, and the last end rechecks once for all of them.
+     **/
+    void beginInvalidExpressionRecheckBatch();
+    void endInvalidExpressionRecheckBatch();
+
+    /**
      * @brief For tests: how many knobs the rechecks above have rechecked.
      **/
     U64 getInvalidExpressionRechecksCount() const;

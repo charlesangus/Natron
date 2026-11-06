@@ -215,6 +215,37 @@ public:
 
 thread_local int inputRelatedDataRefreshDeferralDepth = 0;
 
+int inputEditBatchDepth = 0;
+std::vector<NodeWPtr> inputEditBatchEdited;
+
+int layerTableRefreshHoldDepth = 0;
+ProjectWPtr layerTableRefreshPending;
+
+// Encoding the project's layer table visits every node, and the table's widget is rebuilt when it
+// changes, so a refresh reaching many nodes does this once, after the last of them.
+void
+releaseLayerTableRefreshHold()
+{
+    if (--layerTableRefreshHoldDepth > 0) {
+        return;
+    }
+    ProjectPtr project = layerTableRefreshPending.lock();
+    layerTableRefreshPending.reset();
+    if (project && !project->isLoadingProject() && !project->isProjectClosing()) {
+        project->refreshLayersKnob();
+    }
+}
+
+class LayerTableRefreshHold {
+public:
+    LayerTableRefreshHold() { ++layerTableRefreshHoldDepth; }
+
+    ~LayerTableRefreshHold() { releaseLayerTableRefreshHold(); }
+
+    LayerTableRefreshHold(const LayerTableRefreshHold&) = delete;
+    LayerTableRefreshHold& operator=(const LayerTableRefreshHold&) = delete;
+};
+
 bool
 isSkippedByHashInputs(const Node& node)
 {
@@ -5013,6 +5044,9 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         return;
     }
 
+    // A refresh from reconnecting an output below would read this node's expressions before they
+    // can run: its Python attributes are only declared further down.
+    InputEditBatch batch(getApp());
 
     ///No need to lock, guiInputs is only written to by the main-thread
     NodePtr thisShared = shared_from_this();
@@ -5076,6 +5110,12 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     emitLinksChanged(NodesList());
 
     declareAllPythonAttributes();
+    {
+        const KnobsVec& knobs = getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            (*it)->restoreExpressionFunctions();
+        }
+    }
     {
         std::set<std::string> names;
         names.insert(getScriptName_mt_safe());
@@ -8029,6 +8069,11 @@ Node::Implementation::notifyLayerReferencesChanged()
     if (!project || project->isLoadingProject() || project->isProjectClosing()) {
         return;
     }
+    if (layerTableRefreshHoldDepth > 0) {
+        layerTableRefreshPending = project;
+
+        return;
+    }
     project->refreshLayersKnob();
 }
 
@@ -9099,35 +9144,90 @@ void
 Node::refreshInputRelatedDataAfterInputChange()
 {
     assert(QThread::currentThread() == qApp->thread());
-    markAllInputRelatedDataDirty();
-    refreshShownDownstreamInputRelatedData();
-
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
-    if (isGroup) {
-        // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
-        // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
-        // it, so its selectors are refreshed here like those of the node the edit is on.
-        if (_imp->layerKnob.lock()) {
-            refreshChannelSelectors();
-        }
+    if (inputEditBatchDepth > 0) {
+        inputEditBatchEdited.push_back(shared_from_this());
 
         return;
     }
+    refreshInputRelatedDataAfterInputChanges(std::vector<NodePtr>(1, shared_from_this()));
+}
+
+void
+Node::refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited)
+{
+    LayerTableRefreshHold holdLayerTable;
+
+    for (const NodePtr& node : edited) {
+        node->markAllInputRelatedDataDirty();
+    }
+    refreshShownDownstreamInputRelatedData(edited);
 
     std::set<Node*> visited;
-    refreshShownInputRelatedData(visited);
+    for (const NodePtr& node : edited) {
+        NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->_imp->effect.get());
+        if (isGroup) {
+            // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
+            // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
+            // it, so its selectors are refreshed here like those of the node the edit is on.
+            if (node->_imp->layerKnob.lock()) {
+                node->refreshChannelSelectors();
+            }
+            continue;
+        }
+        node->refreshShownInputRelatedData(visited);
+    }
+}
+
+Node::InputEditBatch::InputEditBatch(const AppInstancePtr& app)
+    : _app(app)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    ++inputEditBatchDepth;
+    ++layerTableRefreshHoldDepth;
+    if (_app) {
+        _app->beginInvalidExpressionRecheckBatch();
+    }
+}
+
+Node::InputEditBatch::~InputEditBatch()
+{
+    // Rechecks first, so that the refresh below reads the expressions they restore. A recheck that
+    // edits a node still lands in the batch.
+    if (_app) {
+        _app->endInvalidExpressionRecheckBatch();
+    }
+    if (--inputEditBatchDepth == 0) {
+        std::vector<NodePtr> edited;
+        std::unordered_set<const Node*> seen;
+        for (const NodeWPtr& weak : inputEditBatchEdited) {
+            NodePtr node = weak.lock();
+            if (node && node->isActivated() && seen.insert(node.get()).second) {
+                edited.push_back(node);
+            }
+        }
+        inputEditBatchEdited.clear();
+        refreshInputRelatedDataAfterInputChanges(edited);
+    }
+    releaseLayerTableRefreshHold();
 }
 
 void
 Node::refreshShownDownstreamInputRelatedData()
 {
+    refreshShownDownstreamInputRelatedData(std::vector<NodePtr>(1, shared_from_this()));
+}
+
+void
+Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
+{
     assert(QThread::currentThread() == qApp->thread());
 
     std::unordered_set<const Node*> visited;
-    visited.insert(this);
     // Breadth first: the vector is the queue, read from the front without erasing.
     std::vector<NodePtr> toVisit;
-    appendOutputsWithGroupRedirection(&toVisit);
+    for (const NodePtr& node : edited) {
+        node->appendOutputsWithGroupRedirection(&toVisit);
+    }
     std::vector<NodePtr> reached;
     for (std::size_t next = 0; next < toVisit.size(); ++next) {
         NodePtr node = toVisit[next];

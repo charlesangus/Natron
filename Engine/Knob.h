@@ -755,6 +755,12 @@ public:
      * @brief Tries to re-apply invalid expressions, returns true if they are all valid
      **/
     virtual bool checkInvalidExpressions() = 0;
+
+    /**
+     * @brief Puts this knob's expression functions back on its Python parameter, which is a new
+     * object once the node's Python attributes have been declared again.
+     **/
+    virtual void restoreExpressionFunctions() = 0;
     virtual bool isExpressionValid(int dimension, std::string* error) const = 0;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) = 0;
 
@@ -1888,6 +1894,7 @@ public:
     virtual bool isAnimated( int dimension, ViewSpec view = ViewSpec::current() ) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasAnimation() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool checkInvalidExpressions() OVERRIDE FINAL;
+    virtual void restoreExpressionFunctions() OVERRIDE FINAL;
     virtual bool isExpressionValid(int dimension, std::string* error) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
 

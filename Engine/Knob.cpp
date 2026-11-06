@@ -3395,6 +3395,30 @@ isPythonIdentifierChar(char c)
     return isPythonIdentifierStart(c) || ((c >= '0') && (c <= '9'));
 }
 
+// A new reference to names[0].names[1]... from __main__, or null with no Python error set.
+PyObject*
+lookupMainAttributes(const std::vector<std::string>& names)
+{
+    // The first name is a global of __main__; builtins are left to the script.
+    PyObject* object = PyDict_GetItemString(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule()), names[0].c_str());
+    if (!object) {
+        return 0;
+    }
+    Py_INCREF(object);
+    for (std::size_t n = 1; n < names.size(); ++n) {
+        PyObject* attr = PyObject_GetAttrString(object, names[n].c_str());
+        Py_DECREF(object);
+        if (!attr) {
+            PyErr_Clear();
+
+            return 0;
+        }
+        object = attr;
+    }
+
+    return object;
+}
+
 // The function an expression of the form "ret = a.b.c" names, found the way the script
 // "ret = a.b.c(frame, view)" finds it from __main__, or null (with no Python error set) if the
 // expression has another form or a name does not resolve.
@@ -3426,21 +3450,9 @@ resolveExpressionFunction(const std::string& expr)
         i = end + 1;
     }
 
-    // The first name is a global of __main__; builtins are left to the script.
-    PyObject* object = PyDict_GetItemString(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule()), names[0].c_str());
+    PyObject* object = lookupMainAttributes(names);
     if (!object) {
         return 0;
-    }
-    Py_INCREF(object);
-    for (std::size_t n = 1; n < names.size(); ++n) {
-        PyObject* attr = PyObject_GetAttrString(object, names[n].c_str());
-        Py_DECREF(object);
-        if (!attr) {
-            PyErr_Clear();
-
-            return 0;
-        }
-        object = attr;
     }
     if (!PyCallable_Check(object)) {
         Py_DECREF(object);
@@ -3449,6 +3461,45 @@ resolveExpressionFunction(const std::string& expr)
     }
 
     return object;
+}
+
+std::string
+pythonParameterPath(KnobHolder* holder,
+                    const std::string& knobName)
+{
+    const std::string appID = holder->getApp()->getAppIDString();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+    if (effect) {
+        NodePtr node = effect->getNode();
+        assert(node);
+
+        return appID + "." + node->getFullyQualifiedName() + "." + knobName;
+    }
+
+    return appID + "." + knobName;
+}
+
+std::vector<std::string>
+splitPythonAttributePath(const std::string& path)
+{
+    std::vector<std::string> names;
+    std::size_t start = 0;
+    for (std::size_t dot = path.find('.'); dot != std::string::npos; dot = path.find('.', start)) {
+        names.push_back(path.substr(start, dot - start));
+        start = dot + 1;
+    }
+    names.push_back(path.substr(start));
+
+    return names;
+}
+
+std::string
+expressionFunctionName(int dimension)
+{
+    std::stringstream ss;
+    ss << "expression" << dimension;
+
+    return ss.str();
 }
 
 // (frame, view) as the script "f(<time>, <view>)" written by a std::ostream passes them: the
@@ -3580,25 +3631,8 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
         throw std::runtime_error("This parameter cannot have an expression");
     }
 
-    std::string appID = getHolder()->getApp()->getAppIDString();
-    std::string exprFuncPrefix;
-    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-    if (effect) {
-        NodePtr node = effect->getNode();
-        assert(node);
-        std::string nodeName = node->getFullyQualifiedName();
-        std::string nodeFullName = appID + "." + nodeName;
-        exprFuncPrefix = nodeFullName + "." + getName() + ".";
-    } else {
-        exprFuncPrefix = appID + "." + getName() + ".";
-    }
-
-    std::string exprFuncName;
-    {
-        std::stringstream tmpSs;
-        tmpSs << "expression" << dimension;
-        exprFuncName = tmpSs.str();
-    }
+    const std::string exprFuncPrefix = pythonParameterPath(holder, getName()) + ".";
+    const std::string exprFuncName = expressionFunctionName(dimension);
 
     exprCpy.append("\n    return ret\n");
 
@@ -3748,12 +3782,22 @@ KnobHelper::setExpressionInvalid(int dimension,
                                  bool valid,
                                  const std::string& error)
 {
-    KnobContentWrite write;
     int ndims = getDimension();
 
     if ( (dimension < 0) || (dimension >= ndims) ) {
         return;
     }
+    // Every read of a failing expression lands here. Were a repeat counted as a content write, no
+    // metadata derived while one runs could be stored, and each read of the node's hash or metadata
+    // would derive it again with everything upstream of it.
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const std::string& current = _imp->expressions[dimension].exprInvalid;
+        if ((current == error) && (current.empty() == valid)) {
+            return;
+        }
+    }
+    KnobContentWrite write;
     bool wasValid;
     {
         QMutexLocker k(&_imp->expressionMutex);
@@ -4026,6 +4070,47 @@ void
 KnobHelper::moveHashedMetadataSourcesGeneration()
 {
     gHashedMetadataSourcesGeneration.fetch_add(1);
+}
+
+void
+KnobHelper::restoreExpressionFunctions()
+{
+#ifndef NATRON_RUN_WITHOUT_PYTHON
+    KnobHolder* holder = getHolder();
+    if (!holder || !holder->getApp()) {
+        return;
+    }
+    PythonGILLocker pgl;
+    const int ndims = getDimension();
+    for (int i = 0; i < ndims; ++i) {
+        std::string original;
+        bool hasRet = false;
+        PyObjectRef function;
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            const Expr& e = _imp->expressions[i];
+            if (!e.exprInvalid.empty()) {
+                continue;
+            }
+            original = e.originalExpression;
+            hasRet = e.hasRet;
+            Py_XINCREF(e.function);
+            function.reset(e.function);
+        }
+        if (original.empty()) {
+            continue;
+        }
+        if (function.get()) {
+            PyObjectRef parameter;
+            parameter.reset(lookupMainAttributes(splitPythonAttributePath(pythonParameterPath(holder, getName()))));
+            if (parameter.get() && (PyObject_SetAttrString(parameter.get(), expressionFunctionName(i).c_str(), function.get()) == 0)) {
+                continue;
+            }
+            PyErr_Clear();
+        }
+        setExpressionInternal(i, original, hasRet, false, false);
+    }
+#endif
 }
 
 void
@@ -4430,6 +4515,14 @@ KnobHelper::executeExpression(double time,
         if (!e.metadataCycle.empty()) {
             *ret = 0;
             *error = e.metadataCycle;
+
+            return false;
+        }
+        // Validation failed, so what is stored is the text as typed, not a call of a defined
+        // function. Only a recheck can bring it back; running it would report a meaningless error.
+        if (!e.exprInvalid.empty() && (e.expression == e.originalExpression)) {
+            *ret = 0;
+            *error = e.exprInvalid;
 
             return false;
         }

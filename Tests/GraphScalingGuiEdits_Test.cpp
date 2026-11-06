@@ -155,6 +155,106 @@ TEST_F(GraphScalingGuiEdits, InvalidExpressionsRecheckedByName)
     EXPECT_EQ(0u, getApp()->getInvalidExpressionRechecksCount() - beforeSecondConnect);
 }
 
+TEST_F(GraphScalingGuiEdits, ExpressionFunctionsSurviveDeactivation)
+{
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(grade));
+    KnobDoubleBasePtr offset = std::dynamic_pointer_cast<KnobDoubleBase>(grade->getKnobByName("offset"));
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "frame * 2", false, true));
+
+    grade->deactivate();
+    grade->activate();
+
+    const U64 scriptsBefore = KnobHelper::getExpressionScriptsRunCount();
+    EXPECT_DOUBLE_EQ(14., offset->getValueAtTime(7., 0, ViewSpec::current(), false));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - scriptsBefore);
+}
+
+TEST_F(GraphScalingGuiEdits, RepeatedExpressionFailureWritesNoContent)
+{
+    NodePtr target = createNamedNode(getApp(), kGradePluginID, "Target");
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = std::dynamic_pointer_cast<KnobDoubleBase>(reader->getKnobByName("offset"));
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Target.mix.get()", false, true));
+
+    target->deactivate();
+    (void)offset->getValueAtTime(1., 0, ViewSpec::current(), false);
+    ASSERT_FALSE(offset->isExpressionValid(0, 0));
+
+    const U64 writes = KnobContentWrite::snapshot();
+    const U64 marks = reader->getHashMarkCount();
+    for (int i = 2; i < 12; ++i) {
+        (void)offset->getValueAtTime(i, 0, ViewSpec::current(), false);
+    }
+    EXPECT_EQ(writes, KnobContentWrite::snapshot());
+    EXPECT_EQ(marks, reader->getHashMarkCount());
+}
+
+TEST_F(GraphScalingGuiEdits, InvalidExpressionTextIsNotRun)
+{
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(grade));
+    KnobDoubleBasePtr offset = std::dynamic_pointer_cast<KnobDoubleBase>(grade->getKnobByName("offset"));
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Target.mix.get()", false, false));
+    std::string validationError;
+    ASSERT_FALSE(offset->isExpressionValid(0, &validationError));
+
+    const U64 scriptsBefore = KnobHelper::getExpressionScriptsRunCount();
+    (void)offset->getValueAtTime(1., 0, ViewSpec::current(), false);
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - scriptsBefore);
+    std::string errorAfterRead;
+    EXPECT_FALSE(offset->isExpressionValid(0, &errorAfterRead));
+    EXPECT_EQ(validationError, errorAfterRead);
+}
+
+TEST_F(GraphScalingGuiEdits, InputEditBatchRechecksOnceAtItsEnd)
+{
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(grade));
+    KnobIPtr offset = grade->getKnobByName("offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Target.mix.get()", false, false));
+
+    const std::set<std::string> names = { "Target" };
+    const U64 before = getApp()->getInvalidExpressionRechecksCount();
+    {
+        Node::InputEditBatch batch(getApp());
+        {
+            Node::InputEditBatch nested(getApp());
+            getApp()->recheckInvalidExpressionsReferencing(names);
+        }
+        getApp()->recheckInvalidExpressionsReferencing(names);
+        EXPECT_EQ(0u, getApp()->getInvalidExpressionRechecksCount() - before);
+    }
+    EXPECT_EQ(1u, getApp()->getInvalidExpressionRechecksCount() - before);
+}
+
+TEST_F(GraphScalingGuiEdits, InputEditBatchRefreshesEditedNodesAtItsEnd)
+{
+    NodePtr source = createNamedNode(getApp(), kGradePluginID, "Source");
+    NodePtr first = createNamedNode(getApp(), kGradePluginID, "First");
+    NodePtr second = createNamedNode(getApp(), kGradePluginID, "Second");
+    ASSERT_TRUE(source && first && second);
+    connectNodes(first, second, 0, true);
+    first->forceRefreshAllInputRelatedData();
+    ASSERT_FALSE(first->isInputRelatedDataDirty());
+    ASSERT_FALSE(second->isInputRelatedDataDirty());
+
+    {
+        Node::InputEditBatch batch(getApp());
+        connectNodes(source, first, 0, true);
+        EXPECT_FALSE(first->isInputRelatedDataDirty());
+        EXPECT_FALSE(second->isInputRelatedDataDirty());
+    }
+    EXPECT_FALSE(first->isInputRelatedDataDirty());
+    EXPECT_TRUE(second->isInputRelatedDataDirty());
+}
+
 TEST_F(GraphScalingGuiEdits, DiamondListenersRefreshedOnce)
 {
     const int kLevels = 20;

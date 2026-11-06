@@ -67,9 +67,9 @@ WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(6 * 3600)))
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow
 
     import gen_graph
     import guitest as gt
@@ -191,6 +191,33 @@ try:
 
     def invoke(slot):
         QMetaObject.invokeMethod(root_graph(), slot)
+
+    def delete_selection():
+        """Deletes the selection, confirming each broken-link prompt; returns how many there were."""
+        answered = [0]
+
+        # deleteSelection asks once per selected node that a surviving node's expression reads, and
+        # the prompt's event loop would otherwise block the driver for good.
+        def answer():
+            dialog = QApplication.activeModalWidget()
+            if dialog is None:
+                return
+            for button in dialog.findChildren(QAbstractButton):
+                if button.text().replace("&", "") == "Yes":
+                    answered[0] += 1
+                    button.click()
+                    return
+            dialog.reject()
+
+        timer = QTimer()
+        timer.setInterval(1)
+        timer.timeout.connect(answer)
+        timer.start()
+        try:
+            invoke("deleteSelection")
+        finally:
+            timer.stop()
+        return answered[0]
 
     def repaint():
         graph = root_graph()
@@ -574,7 +601,7 @@ try:
             select(st["names"])
 
         def events(ctx, st, rep):
-            invoke("deleteSelection")
+            st["record"]["prompts"] = delete_selection()
             yield None
 
         def after(ctx, st, rep):
@@ -586,7 +613,7 @@ try:
     def op_undo(count):
         def before(ctx, st, rep):
             select(st["names"])
-            invoke("deleteSelection")
+            st["record"]["prompts"] = delete_selection()
 
         def events(ctx, st, rep):
             trigger("undo")
@@ -600,7 +627,7 @@ try:
     def op_redo(count):
         def before(ctx, st, rep):
             select(st["names"])
-            invoke("deleteSelection")
+            st["record"]["prompts"] = delete_selection()
             trigger("undo")
 
         def events(ctx, st, rep):

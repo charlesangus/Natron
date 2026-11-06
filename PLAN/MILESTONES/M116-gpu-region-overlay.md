@@ -55,7 +55,7 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
   - approach: Record a reason on each silent exit of `placeGraph` (~355-520): not `canRenderOnGpu`, `dropIncompleteRawRuns`, `tryAssign` cycle refusal, the regionGain shrink loop (`kMaxRegionShrinkSteps`) and identity. Extend `canRenderOnGpu` (currently `bool(Task&)`) with a detail out-param, feeding `makeGpuTaskPlanes`'s existing `refusal` string (~811) into it. Don't change any placement decision.
   - verify: one new `TEST(GpuPlacement, ...)` per category, using the fake `PlacementInputs`.
   - size: L
-- [ ] M116.P1.T2 — Keep `inputNb` on graph edges
+- [x] M116.P1.T2 — Keep `inputNb` on graph edges
   - files: `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`, `Tests/FrameGraphBuild_Test.cpp`
   - approach: `buildGraph` (~494-555) drops `TaskEdge::inputNb` (`ParallelRenderArgs.h:314`). Add a parallel `dependencyInputNbs` vector kept in sync with `dependencies` and `consumerTasks`, including the second copy at ~711-716, the region unit graph.
   - verify: a diamond graph and a graph with duplicate edges keep their input numbers.

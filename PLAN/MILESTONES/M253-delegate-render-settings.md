@@ -114,7 +114,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
   - approach: The same promotion. Move the two `disabledKeys` entries into Remote with their reasons, add the Execution Mode string menu, add `Curated::pageLabel` so the tab reads "MoonRay" rather than "Moonray" (`RenderSettingsKnobs.cpp:1002-1004`). Keep the Enable Denoise leader before Enable OIDN. The `moonraySettings` group knob goes away; tests at `:815` change.
   - verify: the audit at `USDRenderMoonRay_Test.cpp:862-871` shows no gaps and exclusions unchanged; parents and tab label match; `follows` still syncs.
   - size: M
-- [ ] M253.P4.T5 — Grey dependent knobs from their switches
+- [x] M253.P4.T5 — Grey dependent knobs from their switches
   - files: `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Engine/Nodes/Scene/USDRenderSettings.cpp`, `Engine/Nodes/Scene/CyclesSettings.cpp`, `Engine/Nodes/Scene/MoonRaySettings.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
   - approach: Add `enabledBy` rules (key plus inverted flag, all must hold) and `refreshEnabled()`, called from `knobChanged` (`RenderSettingsKnobs.cpp:1144-1155`), after `addRenderer`, and from `onKnobsLoaded`. Saved per-dimension `enabled` state (`Serialization/KnobSerialization.h:96`) must not win over the computed one. `disabledReason` knobs always stay off. An expression driving a switch does not re-grey dependents; accepted, since values still render correctly.
   - verify: toggling a switch greys and restores dependents; AND rules work; a `disabledReason` knob never turns on; state is correct after save and load; `values()` and the digest are identical with enablement toggled and values fixed.

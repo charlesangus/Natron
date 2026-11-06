@@ -427,7 +427,10 @@ float pow2f(int n)
     return asfloat(uint(min(n, 127) + 127) << 23);
 }
 
-// The double to two floats, its 53 bits split 24 + 29 so that the high part is exact.
+// The double to two floats, its 53 bits split 24 + 29 so that the high part is exact. The high part
+// rounds to nearest: a position just below an integer has nearly all of its low 29 bits set, and
+// floats would round those up onto the integer, losing the distance a tap's weight and clamp range
+// depend on.
 FF dblToFF(Dbl d)
 {
     if (dblIsZero(d))
@@ -435,8 +438,11 @@ FF dblToFF(Dbl d)
     const DblParts p = dblUnpack(d);
     const uint top = (p.m.y << 3) | (p.m.x >> 29);
     const uint bottom = p.m.x & 0x1fffffffu;
+    const bool roundUp = bottom >= 0x10000000u;
+    const float high = float(roundUp ? top + 1u : top);
+    const float low = roundUp ? -float(0x20000000u - bottom) : float(bottom);
     const float s = p.neg ? -1.0 : 1.0;
-    return ffQuick(s * float(top) * pow2f(p.e + 29), s * float(bottom) * pow2f(p.e));
+    return ffQuick(s * high * pow2f(p.e + 29), s * low * pow2f(p.e));
 }
 
 float dblToFloat(Dbl d)

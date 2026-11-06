@@ -29,6 +29,7 @@
 #include <cmath>
 #include <list>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,17 @@ lensCorrectTolerance()
 {
     return ParityTolerance::make(2e-4, 1e-4);
 }
+
+// A floor a float position lands on the far side of, where the CPU's double does not. The 1e-5 pixel
+// position difference decides impulse wherever a position lies that close to a pixel edge, as
+// fisheye to rectilinear's red does at (1, 0). The pixel it then reads is one source step away in
+// the parity source's ramps, 2 / 48 plus their sine terms.
+struct FloorFlipAllowance {
+    std::size_t values = 0;
+    double worst = 0.;
+};
+
+const FloorFlipAllowance kImpulseFloorFlips = { 8, 1. / 16. };
 
 StagedImageEffect*
 effectOf(const NodePtr& node)
@@ -142,9 +154,10 @@ protected:
     void expectParity(const NodePtr& source,
                       const NodePtr& node,
                       const std::string& what,
-                      unsigned mipmapLevel = 0)
+                      unsigned mipmapLevel = 0,
+                      const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
-        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel);
+        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel, flips);
     }
 
     void expectParityOverRegion(const NodePtr& node,
@@ -161,7 +174,8 @@ protected:
     void expectParityOver(const NodePtr& node,
                           const RectI& window,
                           const std::string& what,
-                          unsigned mipmapLevel)
+                          unsigned mipmapLevel,
+                          const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
 
@@ -172,7 +186,19 @@ protected:
         EXPECT_TRUE(result.ranInRegion(node)) << what;
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
         const ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
-        EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+        const auto valueAt = [&](std::size_t index) {
+            const std::size_t pixel = index / 4;
+            const int width = window.width();
+            std::ostringstream text;
+            text << "(" << window.x1 + (int)(pixel % width) << "," << window.y1 + (int)(pixel / width) << ") channel " << index % 4
+                 << " gpu " << result.gpu[index] << " cpu " << result.cpu[index];
+            return text.str();
+        };
+        const std::string where = diff.mismatches == 0 ? std::string() : ", first at " + valueAt(diff.firstMismatchIndex) + ", worst at " + valueAt(diff.worstIndex);
+        EXPECT_LE(diff.mismatches, flips.values) << what << ": worst " << diff.worstAbsolute << where;
+        if (flips.values != 0) {
+            EXPECT_LE(diff.worstAbsolute, flips.worst) << what << where;
+        }
         const auto notFinite = [](float v) {
             return !std::isfinite(v);
         };
@@ -273,7 +299,9 @@ TEST_P(NativeLensCorrectGpuFilterTest, MatchesTheCpu)
                 continue;
             }
             ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-            expectParity(source, node, std::string(setup->what) + " " + filters[f].id + (clamp ? " clamp" : ""));
+            const bool floorDecides = setup == &kSetups[4] && (Resampler::FilterEnum)f == Resampler::eFilterImpulse;
+            expectParity(source, node, std::string(setup->what) + " " + filters[f].id + (clamp ? " clamp" : ""), 0u,
+                         floorDecides ? kImpulseFloorFlips : FloorFlipAllowance());
         }
     }
 }

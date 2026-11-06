@@ -26,11 +26,15 @@ namespace {
     constexpr uint32_t kFilterBox = 1;
 
     // The filters whose output jumps where a floor of the CPU's double position changes run the
-    // kernels that take those doubles bit for bit: impulse and box, and every clamped filter, as a
-    // tap entering the footprint widens the clamp range however small its weight.
-    bool exactPositions(uint32_t filter, bool clamp)
+    // kernels that take those doubles bit for bit: impulse and box, every clamped filter, as a tap
+    // entering the footprint widens the clamp range however small its weight, and every minifying
+    // matrix, as its kernel narrows to scale 1 once the position leaves the source.
+    bool exactPositions(const GpuResample& r)
     {
-        return filter == kFilterImpulse || filter == kFilterBox || clamp;
+        const bool minifies = std::any_of(r.matrices.begin(), r.matrices.end(), [](const GpuResampleMatrix& m) {
+            return m.scaleX > 1. || m.scaleY > 1.;
+        });
+        return r.filter == kFilterImpulse || r.filter == kFilterBox || r.clamp || minifies;
     }
 
     // Impulse and box need no kernel scale, so their exact matrix fits the push constants.
@@ -295,7 +299,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // The exact kernels emulate no division, so a projective matrix runs the two-float ones.
     const bool projective
         = std::any_of(r.matrices.begin(), r.matrices.end(), [](const GpuResampleMatrix& m) { return m.isProjective(); });
-    const bool exact = exactPositions(r.filter, r.clamp) && !projective;
+    const bool exact = exactPositions(r) && !projective;
     if (!blurred && !projective && !(exact && exactReadsScales(r.filter))) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);

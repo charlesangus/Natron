@@ -562,6 +562,28 @@ float filterValue(FilterSpec spec, FF a, bool onZero)
 // counts towards the clamp range; so small a weight moves no result.
 static const float kCountedWeight = 1e-30;
 
+// Keys, Simon, Rifman and Mitchell end in (2 - a)^2 or higher, which the CPU's double polynomials
+// lose to rounding within about 2^-27 of the edge: its weight is then zero, and the tap does not
+// count. Bicubic sums its terms differently and keeps a rounding residue there, so it still counts.
+static const float kPolynomialZeroBand = 7.450580596923828e-09;
+
+bool polynomialZeroAtEdge(FilterSpec spec, FF a)
+{
+    switch (spec.filter)
+    {
+    case kFilterKeys:
+    case kFilterSimon:
+    case kFilterRifman:
+    case kFilterMitchell:
+    {
+        const FF edge = ffAddF(ffNeg(a), filterRadius(spec));
+        return edge.hi + edge.lo < kPolynomialZeroBand;
+    }
+    default:
+        return false;
+    }
+}
+
 // Resampler::FilterSpec::weight(offset / scale). The support is an open interval.
 float tapWeight(FilterSpec spec, FF offset, FF scale)
 {
@@ -580,7 +602,7 @@ float tapWeight(FilterSpec spec, FF offset, FF scale)
         onInteger = diff.hi == 0.0 && diff.lo == 0.0;
     }
     const float w = filterValue(spec, a, onInteger);
-    return (w == 0.0 && !onInteger) ? kCountedWeight : w;
+    return (w == 0.0 && !onInteger && !polynomialZeroAtEdge(spec, a)) ? kCountedWeight : w;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

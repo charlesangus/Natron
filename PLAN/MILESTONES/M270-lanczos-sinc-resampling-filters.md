@@ -38,6 +38,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-11-06 — P1.T1 and T2: CPU clamp range counts black out-of-source reads, otherwise a fading edge clamps back up, and skips zero-weight taps; spread taps count their interpolated read. The support is an open interval, so a tap on its edge is dropped. Spread taps sit at `(k + 0.5) * 2R / 81 - R`. Lobes clamp to 2-8. Phase 270.2 mirrors all of these. Keeping the zeroed-row rule means a pixel centred past the source uses the plain kernel, so the kernel narrows at the edge under minification: P1.T4 checks for a visible band, and the user hears about it if it shows.
 - 2026-11-06 — Re-elaborated for "Same filters everywhere": added AutoStraighten, LensCorrect and SplineWarp's kernel; dropped TransformMasked (M111 - Native Node Identity Cleanup landed).
 - 2026-11-06 — Row-norm kernel scale replaces column norms: column norms mis-scale a 90° anisotropic transform and blur pure rotations.
 - 2026-11-06 — Tap budget of 81 per axis replaces the 32 px footprint cap: per-pixel Jacobians from data make unbounded tap counts a hang, and the budget matches main's worst case without clipping the footprint. Raised to the user at the gate, as is the CPU cost: at 4x down, Lanczos 3 reads about 625 taps per pixel where main takes 9 samples.
@@ -52,13 +53,13 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Phase 270.1: CPU kernels and scale-aware resampler
 
-- [ ] M270.P1.T1 — Add the kernel table and the seven new filters
+- [x] M270.P1.T1 — Add the kernel table and the seven new filters
   - files: `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/Image/Resampler.cpp`
   - approach: Extend `FilterEnum` after eFilterNotch and `filterOptions()` as in Scope; hints never mention other applications. Add `struct FilterSpec { FilterEnum filter; int lobes = 4; double B = 1./3, C = 1./3; }`, implicitly constructible from `FilterEnum` so Mirror and existing tests still compile, with `radius()` and `weight(double x)`. Existing filters derive `weight` from `filterWeights()` (`Resampler.h:261`) by mapping |x| to a tap and d. Lanczos a = 2/3/4: sinc(x)·sinc(x/a). Sinc: sinc(x)·Hann(x/lobes) over `lobes`. Blackman-Harris: 4-term, radius 2. Gaussian: sigma 0.5, radius 1.5. Bicubic: Mitchell-Netravali. Apply the edge-value and exact-integer rules from Scope. Update `filterTaps` and `filterHonoursClamp`.
   - verify: `ctest -R Resampler` at the phase build passes the kernel-property tests of T4.
   - size: M
 
-- [ ] M270.P1.T2 — Replace supersampling with the scale-aware kernel path
+- [x] M270.P1.T2 — Replace supersampling with the scale-aware kernel path
   - files: `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/Image/Resampler.cpp`
   - approach: Rewrite `interpolate` and `interpolateSuperT` as one runtime weighted path taking `FilterSpec` (still templated on nComps), for every filter except Impulse and Box. Box keeps its bounding-box integration. Per pixel, compute each axis's scale (row norms), tap positions and weights into stack arrays of 81, normalise, then read row by row. Accumulate in float; apply the footprint clamp and `blackOutside`. Thread `FilterSpec` through `ResampleParams`, `makeResampleParams`, `resampleRow`, `motionBlurPixel` and `resampleRowFromCoords`. Remove the bilinear supersamples and fix the header comments, including the claim of reproducing OFX to rounding. Keep `supersampleLevels` for `ResampleExecutor.cpp:412` until P2.T1 removes it.
   - verify: at the phase build, `ctest -R Resampler -E Gpu` passes, including the identity, constant-image and minification tests of T4.
@@ -91,8 +92,8 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - size: L
 
 - [ ] M270.P2.T2 — Test matrix-path CPU and GPU parity for the new filters
-  - files: `Tests/Native/NativeTransformGpu_Test.cpp`, `Tests/Native/StagedResample_Test.cpp`
-  - approach: Using `NativeGpuParity.h` and the neighbouring tolerance, cover each new filter at 1:1, 2x up, 4x and 64x down, with and without Clamp, on exact and inexact scales (3x up lands near tap boundaries); Sinc at Lobes 2 and 8; Bicubic at two (B, C) pairs; one motion-blur case; one projective case. The filter loops at `NativeTransformGpu_Test.cpp:583`, `NativeReformatGpu_Test.cpp:431`, `NativeCornerPinGpu_Test.cpp:580` and `NativeAutoStraightenGpu_Test.cpp:422` pick up the new entries. Small synthetic fixtures only.
+  - files: `Tests/Native/NativeTransformGpu_Test.cpp`, `Tests/Native/NativeReformatGpu_Test.cpp`, `Tests/Native/NativeCornerPinGpu_Test.cpp`, `Tests/Native/NativeAutoStraightenGpu_Test.cpp`, `Tests/Native/StagedResample_Test.cpp`
+  - approach: Using `NativeGpuParity.h` and the neighbouring tolerance, cover each new filter at 1:1, 2x up, 4x and 64x down, with and without Clamp, on exact and inexact scales (3x up lands near tap boundaries); Sinc at Lobes 2 and 8; Bicubic at two (B, C) pairs; one motion-blur case; one projective case. The filter loops at `NativeTransformGpu_Test.cpp:583`, `NativeReformatGpu_Test.cpp:431`, `NativeCornerPinGpu_Test.cpp:580` and `NativeAutoStraightenGpu_Test.cpp:422` assert `eFilterNotch + 1 == filters.size()` and instantiate up to it: raise them, and `CoordMapGpu_Test.cpp:519` in P2.T5. Small synthetic fixtures only.
   - verify: `ctest -R "NativeTransformGpu|NativeReformatGpu|NativeCornerPinGpu|NativeAutoStraightenGpu|StagedResample"` passes on lavapipe at the phase build.
   - size: M
 

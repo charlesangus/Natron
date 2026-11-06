@@ -45,6 +45,7 @@
 #include <QString>
 #include <QThread>
 
+#include "NativeParity.h"
 #include "Tests/BaseTest.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -61,6 +62,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
@@ -80,6 +82,9 @@ namespace {
 
 const int kSize = 64;
 
+// Past kGpuRegionMinPixels, which keeps any region of a kSize frame on the CPU.
+const int kRegionFrameSize = 512;
+
 // The viewer widget as the render thread sees it: the whole frame at 100%, in tiles of the size the viewer cache
 // was set up for.
 class FakeViewerUi
@@ -87,6 +92,7 @@ class FakeViewerUi
 public:
     FakeViewerUi()
         : timeline()
+        , frameSize(kSize)
         , rung(ViewerHandoffRung::HostSync)
         , refusePrepare(false)
         , prepares(0)
@@ -136,7 +142,7 @@ public:
                                                       int* tileSize,
                                                       RectI* roiNotRounded) OVERRIDE
     {
-        const RectI frame(0, 0, kSize >> mipmapLevel, kSize >> mipmapLevel);
+        const RectI frame(0, 0, frameSize >> mipmapLevel, frameSize >> mipmapLevel);
         RectI roi = rod.toPixelEnclosing(mipmapLevel, par);
         roi.clip(frame);
         // The viewer cache is tiled at the settings' tile size and bit depth, so every texture tile must be too.
@@ -173,7 +179,7 @@ public:
                                           unsigned int mipmapLevel) OVERRIDE
     {
         RectI roi = rod.toPixelEnclosing(mipmapLevel, par);
-        roi.clip(RectI(0, 0, kSize >> mipmapLevel, kSize >> mipmapLevel));
+        roi.clip(RectI(0, 0, frameSize >> mipmapLevel, frameSize >> mipmapLevel));
 
         return roi;
     }
@@ -257,8 +263,8 @@ public:
 
     void getViewportSize(double& width, double& height) const OVERRIDE
     {
-        width = kSize;
-        height = kSize;
+        width = frameSize;
+        height = frameSize;
     }
 
     void getPixelScale(double& xScale, double& yScale) const OVERRIDE
@@ -274,7 +280,7 @@ public:
         r = g = b = 0.;
     }
 
-    RectD getViewportRect() const OVERRIDE { return RectD(0, 0, kSize, kSize); }
+    RectD getViewportRect() const OVERRIDE { return RectD(0, 0, frameSize, frameSize); }
 
     void getCursorPosition(double& x, double& y) const OVERRIDE
     {
@@ -283,6 +289,7 @@ public:
     }
 
     TimeLinePtr timeline;
+    int frameSize;
     std::atomic<ViewerHandoffRung> rung;
     std::atomic<bool> refusePrepare;
     std::atomic<int> prepares;
@@ -438,6 +445,7 @@ protected:
         , _ui()
         , _gpu()
         , _viewer(0)
+        , _constant()
         , _viewerNode()
         , _savedMode(eRenderSchedulerModeTaskGraph)
         , _savedTexturesDepth(-1)
@@ -470,16 +478,16 @@ protected:
             _skipReason = unavailable->empty() ? std::string("no Vulkan device") : *unavailable;
         }
 
-        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        _constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
         CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
         viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
         _viewerNode = getApp()->createNode(viewerArgs);
-        ASSERT_TRUE(constant && _viewerNode);
+        ASSERT_TRUE(_constant && _viewerNode);
         _viewer = _viewerNode->isEffectViewer();
         ASSERT_TRUE(_viewer != NULL);
         _ui.timeline = getApp()->getTimeLine();
         _viewer->setUiContext(&_ui);
-        connectNodes(constant, _viewerNode, 0, true);
+        connectNodes(_constant, _viewerNode, 0, true);
     }
 
     virtual void TearDown() OVERRIDE
@@ -490,6 +498,7 @@ protected:
         }
         _viewer = 0;
         _viewerNode.reset();
+        _constant.reset();
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
         _gpu.reset();
@@ -555,6 +564,14 @@ protected:
                 rootPlanes->clear();
             }
         });
+    }
+
+    void useAFrameLargeEnoughForARegion()
+    {
+        ASSERT_TRUE(setKnobValue(_constant, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+        ASSERT_TRUE(setKnobValues(_constant, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+        ASSERT_TRUE(setKnobValues(_constant, kNativeGeneratorParamSize, { (double)kRegionFrameSize, (double)kRegionFrameSize }));
+        _ui.frameSize = kRegionFrameSize;
     }
 
     /**
@@ -640,6 +657,7 @@ protected:
     FakeViewerUi _ui;
     std::unique_ptr<GpuContext> _gpu;
     ViewerInstance* _viewer;
+    NodePtr _constant;
     NodePtr _viewerNode;
     RenderSchedulerModeEnum _savedMode;
     int _savedTexturesDepth;
@@ -805,11 +823,27 @@ TEST_P(ViewerDeviceRoot, WithNoPlacementAvailableTheOverlayHasNothingToDraw)
     EXPECT_TRUE(snapshot->regions.empty());
 }
 
+TEST_P(ViewerDeviceRoot, AFrameTooSmallForARegionPlansNone)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+
+    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
+
+    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(snapshot));
+    EXPECT_TRUE(snapshot->regions.empty());
+}
+
 TEST_P(ViewerDeviceRoot, TurningTheOverlayOnPlansWithoutARender)
 {
     if (!gpuOrSkip()) {
         return;
     }
+    useAFrameLargeEnoughForARegion();
     const int dryRunsBefore = ViewerInstance::getGpuPlacementDryRunCountForTests();
     const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
     const RenderAges agesBefore(_viewer);
@@ -959,6 +993,7 @@ TEST_P(ViewerDeviceRoot, SwitchingTheSchedulerModeReplansEveryViewer)
 
         return;
     }
+    useAFrameLargeEnoughForARegion();
     const SnapshotChangeSpy spy(_viewer);
     int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
     const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
@@ -1009,6 +1044,7 @@ TEST_P(ViewerDeviceRoot, TheSnapshotSignalFiresOncePerChange)
     if (!gpuOrSkip()) {
         return;
     }
+    useAFrameLargeEnoughForARegion();
     const SnapshotChangeSpy spy(_viewer);
     int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
     const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
@@ -1054,6 +1090,7 @@ TEST_P(ViewerDeviceRoot, PlaybackFreezesTheSnapshotAndItsSignalThenUpdatesOnce)
     if (!gpuOrSkip()) {
         return;
     }
+    useAFrameLargeEnoughForARegion();
     const SnapshotChangeSpy spy(_viewer);
     const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
     const PlacementOverlayScope scope(true, &placementAlwaysAvailable);

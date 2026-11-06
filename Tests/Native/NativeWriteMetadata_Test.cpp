@@ -462,6 +462,103 @@ TEST(OiioWriteMetadata, StandardOfxKeysMapToTheirTagsAndNativeKeysWin)
     EXPECT_EQ("native", both.get_string_attribute("Software"));
 }
 
+TEST(OiioWriteMetadata, AllExceptInputWritesRemainingKeysVerbatimToExrAndPng)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("shot", "sh010");
+    metadata.setString("ofx/creator", "tool");
+    metadata.setDouble("ofx/custom", 0.1);
+    metadata.setInt("ofx/count", 7);
+    metadata.setString("exr/Lens", "50mm");
+    metadata.setString("quicktime/Reel", "r1");
+    metadata.setString("ofx/filepath", "/x");
+    metadata.setInt("ofx/frame", 4);
+    metadata.setDouble("ofx/filesize", 10.);
+    metadata.setDouble("ofx/mtime", 11.);
+    metadata.setString("exr/compression", "none");
+    metadata.setString("compression", "zip");
+    metadata.setString("name", "n");
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("sh010", exr.get_string_attribute("shot"));
+    EXPECT_EQ("tool", exr.get_string_attribute("ofx/creator"));
+    EXPECT_EQ("tool", exr.get_string_attribute("Exif:Software"));
+    EXPECT_EQ("50mm", exr.get_string_attribute("Lens"));
+    EXPECT_EQ("r1", exr.get_string_attribute("quicktime/Reel"));
+    const OIIO::ParamValue* custom = exr.find_attribute("ofx/custom");
+    ASSERT_TRUE(custom != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::DOUBLE, custom->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, *(const double*)custom->data());
+    EXPECT_EQ(7, exr.get_int_attribute("ofx/count", -1));
+    EXPECT_TRUE(exr.find_attribute("ofx/filepath") == NULL);
+    EXPECT_TRUE(exr.find_attribute("ofx/frame") == NULL);
+    EXPECT_TRUE(exr.find_attribute("ofx/filesize") == NULL);
+    EXPECT_TRUE(exr.find_attribute("ofx/mtime") == NULL);
+    EXPECT_TRUE(exr.find_attribute("compression") == NULL);
+    EXPECT_TRUE(exr.find_attribute("name") == NULL);
+
+    OIIO::ImageSpec png;
+    OiioWriteSupport::applyMetadata(png, metadata, "png", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("sh010", png.get_string_attribute("shot"));
+    EXPECT_EQ("tool", png.get_string_attribute("ofx/creator"));
+    EXPECT_EQ("50mm", png.get_string_attribute("exr/Lens"));
+    EXPECT_EQ("7", png.get_string_attribute("ofx/count"));
+    const OIIO::ParamValue* text = png.find_attribute("ofx/custom");
+    ASSERT_TRUE(text != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::STRING, text->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, std::stod(png.get_string_attribute("ofx/custom")));
+    EXPECT_TRUE(png.find_attribute("exr/compression") == NULL);
+    EXPECT_TRUE(png.find_attribute("compression") == NULL);
+    EXPECT_TRUE(png.find_attribute("ofx/filepath") == NULL);
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_TRUE(tiff.find_attribute("shot") == NULL);
+    EXPECT_TRUE(tiff.find_attribute("ofx/creator") == NULL);
+    EXPECT_TRUE(tiff.find_attribute("exr/Lens") == NULL);
+    EXPECT_EQ("tool", tiff.get_string_attribute("Software"));
+}
+
+TEST(OiioWriteMetadata, AllAddsTheInputIdentityKeysAndDefaultAddsNoCustomKeys)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("shot", "sh010");
+    metadata.setString("ofx/filepath", "/x");
+    metadata.setInt("ofx/frame", 4);
+    metadata.setDouble("ofx/filesize", 10.);
+    metadata.setDouble("ofx/mtime", 11.);
+    metadata.setString("oiio/ColorSpace", "x");
+    metadata.setString("tiff/Compression", "8");
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_EQ("sh010", exr.get_string_attribute("shot"));
+    EXPECT_EQ("/x", exr.get_string_attribute("ofx/filepath"));
+    EXPECT_EQ(4, exr.get_int_attribute("ofx/frame", -1));
+    EXPECT_TRUE(exr.find_attribute("ofx/filesize") != NULL);
+    EXPECT_TRUE(exr.find_attribute("ofx/mtime") != NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio/ColorSpace") == NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio:ColorSpace") == NULL);
+    EXPECT_TRUE(exr.find_attribute("tiff/Compression") == NULL);
+
+    OIIO::ImageSpec png;
+    OiioWriteSupport::applyMetadata(png, metadata, "png", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_EQ("/x", png.get_string_attribute("ofx/filepath"));
+    EXPECT_EQ("4", png.get_string_attribute("ofx/frame"));
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_TRUE(tiff.find_attribute("ofx/filepath") == NULL);
+
+    OIIO::ImageSpec defaults;
+    OiioWriteSupport::applyMetadata(defaults, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_TRUE(defaults.find_attribute("shot") == NULL);
+    EXPECT_TRUE(defaults.find_attribute("ofx/filepath") == NULL);
+}
+
 TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
 {
     ImageMetadata metadata;

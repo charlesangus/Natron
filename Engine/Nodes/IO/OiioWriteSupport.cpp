@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
@@ -31,6 +32,7 @@
 #include <mutex>
 #include <new>
 #include <set>
+#include <string>
 #include <system_error>
 #include <variant>
 
@@ -832,7 +834,44 @@ namespace {
         spec.attribute(name, OIIO::TypeRational, rate);
     }
 
-    void setValue(OIIO::ImageSpec& spec, const std::string& name, const ImageMetadata::Value& value)
+    bool isInputIdentityKey(const std::string& key)
+    {
+        return oneOf({ kOfxMetadataKeyFilePath, kOfxMetadataKeySourceFrame, kOfxMetadataKeyFileSize,
+                       kOfxMetadataKeyMTime },
+                     key);
+    }
+
+    // PNG's text chunks hold only strings, so every other type is written as its text.
+    std::string valueText(const ImageMetadata::Value& value)
+    {
+        char buffer[40];
+
+        if (const int* i = std::get_if<int>(&value)) {
+            return std::to_string(*i);
+        }
+        if (const double* d = std::get_if<double>(&value)) {
+            std::snprintf(buffer, sizeof(buffer), "%.17g", *d);
+            return buffer;
+        }
+        if (const std::string* str = std::get_if<std::string>(&value)) {
+            return *str;
+        }
+        std::string text;
+        if (const std::vector<int>* ints = std::get_if<std::vector<int>>(&value)) {
+            for (std::size_t n = 0; n < ints->size(); ++n) {
+                text += (n ? "," : "") + std::to_string((*ints)[n]);
+            }
+        } else if (const std::vector<double>* doubles = std::get_if<std::vector<double>>(&value)) {
+            for (std::size_t n = 0; n < doubles->size(); ++n) {
+                std::snprintf(buffer, sizeof(buffer), "%.17g", (*doubles)[n]);
+                text += (n ? "," : "") + std::string(buffer);
+            }
+        }
+
+        return text;
+    }
+
+    void setValue(OIIO::ImageSpec& spec, const std::string& name, const ImageMetadata::Value& value, bool keepDouble = false)
     {
         if (const int* i = std::get_if<int>(&value)) {
             if (name == "FramesPerSecond") {
@@ -843,8 +882,10 @@ namespace {
         } else if (const double* d = std::get_if<double>(&value)) {
             if (name == "FramesPerSecond") {
                 setRational(spec, name, *d);
+            } else if (keepDouble) {
+                spec.attribute(name, OIIO::TypeDouble, d);
             } else {
-                // OpenEXR has no double attribute, and the tags of the other formats take a float.
+                // The standard tags of every format take a float.
                 spec.attribute(name, (float)*d);
             }
         } else if (const std::string* str = std::get_if<std::string>(&value)) {
@@ -939,15 +980,21 @@ void
 applyMetadata(OIIO::ImageSpec& spec,
               const ImageMetadata& metadata,
               const std::string& formatName,
-              WriteMetadataMode /*mode*/)
+              WriteMetadataMode mode)
 {
     const bool openExr = formatName == "openexr";
+    const bool png = formatName == "png";
     std::string dropped;
+    std::vector<ImageMetadata::const_iterator> verbatim;
 
     for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
         const std::string& key = it->first;
         std::string name;
         bool writable = true;
+        bool keepDouble = false;
+        // Set when the key has no native home in this file and its name does not describe the
+        // layout of the file it came from.
+        bool wholeKey = false;
 
         if (key == kOfxMetadataKeyTimecode || key == kOfxMetadataKeyEdgecode) {
             const std::string* text = std::get_if<std::string>(&it->second);
@@ -960,6 +1007,8 @@ applyMetadata(OIIO::ImageSpec& spec,
         if (startsWith(key, kOfxMetadataKeyPrefixExr)) {
             const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExr));
             writable = openExr && !describesSourceLayout(rest);
+            wholeKey = !openExr && !describesSourceLayout(rest);
+            keepDouble = openExr;
             name = rest;
         } else if (startsWith(key, kOfxMetadataKeyPrefixExif)) {
             const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExif));
@@ -972,28 +1021,39 @@ applyMetadata(OIIO::ImageSpec& spec,
         } else if (startsWith(key, kOfxMetadataKeyPrefixTiff)) {
             const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixTiff));
             writable = formatName == "tiff" && !isExcludedTiffName(rest);
+            wholeKey = formatName != "tiff" && !isExcludedTiffName(rest) && !describesSourceLayout(rest);
             name = "tiff:" + rest;
         } else if (startsWith(key, kOfxMetadataKeyPrefixDpx)) {
             const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixDpx));
             writable = formatName == "dpx" && !isExcludedDpxName(rest);
+            wholeKey = formatName != "dpx" && !isExcludedDpxName(rest) && !describesSourceLayout(rest);
             name = "dpx:" + rest;
         } else if (startsWith(key, kOfxMetadataKeyPrefixCin)) {
             writable = formatName == "cineon";
+            wholeKey = !writable && !describesSourceLayout(key.substr(std::strlen(kOfxMetadataKeyPrefixCin)));
             name = "cineon:" + key.substr(std::strlen(kOfxMetadataKeyPrefixCin));
         } else if (startsWith(key, "oiio/")) {
             const std::string rest = key.substr(5);
             writable = !isExcludedOiioName(rest);
             name = "oiio:" + rest;
         } else {
-            // The remaining ofx/ keys describe the source file or the frame, and quicktime/ has
-            // no OIIO attribute; neither is worth a log line per frame.
+            // Without a native attribute, the remaining ofx/ keys, quicktime/ keys and user keys
+            // can only go in under their own name, which is not worth a log line per frame in
+            // Default mode.
+            if (mode != WriteMetadataMode::Default && !describesSourceLayout(key) && !isExcludedOiioName(key)) {
+                verbatim.push_back(it);
+            }
             continue;
         }
         if (!writable || name.empty()) {
-            dropped += " " + key;
+            if (wholeKey && mode != WriteMetadataMode::Default) {
+                verbatim.push_back(it);
+            } else {
+                dropped += " " + key;
+            }
             continue;
         }
-        setValue(spec, name, it->second);
+        setValue(spec, name, it->second, keepDouble);
     }
     // Run after the loop so a format-native key for the same tag, which the loop has already
     // written, takes precedence.
@@ -1019,6 +1079,22 @@ applyMetadata(OIIO::ImageSpec& spec,
         const std::string name = (tagName == "FramesPerSecond" || (!openExr && isUnprefixedExifTag(tagName))) ? tagName : "Exif:" + tagName;
         if (spec.find_attribute(name) == NULL) {
             setValue(spec, name, *value);
+        }
+    }
+    for (const ImageMetadata::const_iterator& it : verbatim) {
+        const std::string& key = it->first;
+        if (mode == WriteMetadataMode::AllExceptInput && isInputIdentityKey(key)) {
+            continue;
+        }
+        if (spec.find_attribute(key) != NULL) {
+            continue;
+        }
+        if (openExr) {
+            setValue(spec, key, it->second, true);
+        } else if (png) {
+            spec.attribute(key, valueText(it->second));
+        } else {
+            dropped += " " + key;
         }
     }
     if (!dropped.empty()) {

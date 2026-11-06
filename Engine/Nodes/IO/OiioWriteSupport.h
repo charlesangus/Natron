@@ -206,11 +206,17 @@ enum class WriteMetadataMode {
  * ImageDescription, FramesPerSecond, FocalLength, FNumber, ExposureTime) unless a format-native
  * key already set it.
  *
- * Never written: the file-identity keys (ofx/filepath, ofx/frame, ofx/filesize, ofx/mtime),
- * oiio/ColorSpace, whose owner is the colour handling, every other ofx/ and quicktime/ key, and the keys that describe the layout of the file the metadata came from
- * (compression, tiling, packing, sub-image naming, line order, pixel aspect), which the writer
- * decides itself. A key that the format cannot hold is left for OIIO to drop; the others
- * dropped here are logged.
+ * AllExceptInput and All also write every key that has no native attribute in the file (the other
+ * ofx/ keys, quicktime/ keys, user keys without a prefix, and the keys of another format's
+ * namespace) under its full key name, and the ofx/ keys above under theirs as well. OpenEXR takes
+ * every type, doubles included; PNG takes strings only, so other types are written as their text;
+ * formats with no arbitrary attributes keep their standard tags only. All adds the file-identity
+ * keys (ofx/filepath, ofx/frame, ofx/filesize, ofx/mtime), which AllExceptInput leaves out.
+ *
+ * Never written in any mode: oiio/ColorSpace, whose owner is the colour handling, and the keys
+ * that describe the layout of the file the metadata came from (compression, tiling, packing,
+ * sub-image naming, line order, pixel aspect), which the writer decides itself. A key that the
+ * format cannot hold is left for OIIO to drop; the others dropped here are logged.
  **/
 void applyMetadata(OIIO::ImageSpec& spec, const ImageMetadata& metadata, const std::string& formatName,
                    WriteMetadataMode mode);

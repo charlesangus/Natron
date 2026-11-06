@@ -79,6 +79,7 @@ const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
 // A mesh card filling the centre, ten units from the camera, beside two cylinder lights, which
 // Cycles 5.2's delegate does not make.
 const char* const kUnsupportedFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-unsupported.usda";
+const char* const kMdlOnlyFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-mdl-only.usda";
 const float kCardDistance = 10.f;
 const char* const kCamera = "/World/Cam";
 const int kSize = 64;
@@ -490,6 +491,27 @@ TEST_F(USDRenderCyclesTest, WarnsOncePerUnsupportedPrimType)
     ASSERT_TRUE(file != nullptr);
     file->setValue(std::string(kFixture));
     ASSERT_TRUE(renderAll(node, &planes));
+}
+
+// A material authored only for another render context gets Cycles' fallback shader, and the
+// node's warning names it.
+TEST_F(USDRenderCyclesTest, WarnsOfAMaterialWithNoSurfaceForCycles)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kMdlOnlyFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error)) << error;
+
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_NE(std::string::npos, message.toStdString().find("/World/MdlOnly")) << message.toStdString();
 }
 
 // A render that would take minutes is aborted: render() returns within a second, and once the

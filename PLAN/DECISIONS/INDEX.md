@@ -122,3 +122,4 @@
 - 2026-11-04 — scene-graph-draw-model: twirl, per-viewer draw state and load set are independent; loading is intentional; display state stays out of USD; patterns match what the evaluator has loaded (user) → DECISIONS/2026-11-04-scene-graph-draw-model.md
 - 2026-11-05 — no-cycles-osl: Cycles stays built without OSL; native shader support excludes the OSL script node → DECISIONS/2026-11-05-no-cycles-osl.md
 - 2026-11-05 — native-shader-networks: native per-renderer networks in one VOP-like USDMaterialBuilder of real Natron nodes, subject to M349 - Shader Node Spike → DECISIONS/2026-11-05-native-shader-networks.md
+- 2026-11-05 — feature-grouping: group milestones into Features to cut rebase churn, CI and build waits and UAT load; member user sign-offs collect at the Feature's UAT (user) → DECISIONS/2026-11-05-feature-grouping.md

@@ -348,6 +348,18 @@ public:
 
     bool isLatestRender(int textureIndex, U64 renderAge) const;
 
+    /**
+     * @brief True while the image shown is older than the newest render requested on either input.
+     * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
+     **/
+    bool isStale() const;
+
+    /**
+     * @brief Stand in for a render request starting and for it reaching the display, so that a
+     * test can drive the stale state without rendering. Returns the age of the request.
+     **/
+    U64 requestRenderForTests(int textureIndex, bool canAbort, bool isSequential);
+    void renderShownForTests(int textureIndex, U64 renderAge);
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
@@ -534,6 +546,10 @@ Q_SIGNALS:
     void availableComponentsChanged();
 
     void disconnectTextureRequest(int index,bool clearRoD);
+
+    // Emitted queued, so it is safe for it to originate on a render thread. The argument is
+    // the state the viewer entered.
+    void staleChanged(bool stale);
 
     void viewerRenderingStarted();
     void viewerRenderingEnded();

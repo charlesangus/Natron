@@ -138,6 +138,7 @@ set(Tests_SOURCES
     ViewerDisplayTransform_Test.cpp
     ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
+    ViewerStaleState_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp

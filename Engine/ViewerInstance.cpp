@@ -222,6 +222,10 @@ ViewerInstance::ViewerInstance(NodePtr node)
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
 
+    _imp->staleNotifier = [this](bool stale) {
+        QMetaObject::invokeMethod(this, [this, stale]() { Q_EMIT staleChanged(stale); }, Qt::QueuedConnection);
+    };
+
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
     QObject::connect( _imp.get(), SIGNAL(mustRedrawViewer()), this, SLOT(redrawViewer()) );
     QObject::connect( this, SIGNAL(s_callRedrawOnMainThread()), this, SLOT(redrawViewer()) );
@@ -5083,6 +5087,27 @@ ViewerInstance::isLatestRender(int textureIndex,
                                U64 renderAge) const
 {
     return _imp->isLatestRender(textureIndex, renderAge);
+}
+
+bool
+ViewerInstance::isStale() const
+{
+    return _imp->isStale();
+}
+
+U64
+ViewerInstance::requestRenderForTests(int textureIndex,
+                                      bool canAbort,
+                                      bool isSequential)
+{
+    return _imp->createNewRenderRequest(textureIndex, canAbort, isSequential)->getRenderAge();
+}
+
+void
+ViewerInstance::renderShownForTests(int textureIndex,
+                                    U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAge(textureIndex, renderAge);
 }
 
 void

@@ -61,22 +61,22 @@ M253 - Delegate Render Settings.
 
 ## Phase 251.2: UsdPreviewSurface translation (Lobby UAT, 2026-11-05)
 
-- [ ] M251.P2.T1 — Apply UsdUVTexture scale and bias, and route normals through a normal-map node
+- [x] M251.P2.T1 — Apply UsdUVTexture scale and bias, and route normals through a normal-map node
   - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), tools/ci/local/build-cycles.sh (NATRON_CYCLES_COMMIT), Tests/ fixture and reference
   - approach: `scale` and `bias` have no mapping (358 warnings each), so a normal map's 0..1 values are never remapped to -1..1, and `UsdPreviewSurface.normal` goes straight to the principled normal. With the 92 `normal` connections cut, the black vase, reception desk and wall sculpture light correctly.
   - verify: a normal-mapped fixture matches a recorded reference; the Lobby's vase, desk and sculpture are lit correctly with normal maps connected.
   - size: M
-- [ ] M251.P2.T2 — Restore emission
+- [x] M251.P2.T2 — Restore emission
   - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), Tests/ fixture and reference
   - approach: `emissiveColor` warns `Could not find parameter` on all 151 Lobby surfaces: the mapping names `emission`, which is not a socket on the node. Map it to the actual emission sockets.
   - verify: an emissive fixture renders lit with no parameter warning.
   - size: M
-- [ ] M251.P2.T3 — Implement or silence the remaining dropped UsdPreviewSurface inputs
+- [x] M251.P2.T3 — Implement or silence the remaining dropped UsdPreviewSurface inputs
   - files: charlesangus/cycles natron/deep-5.2 src/hydra/ (node translation), Tests/
   - approach: `opacityThreshold`, `useSpecularWorkflow`, `specularColor`, `occlusion`, `displacement`, `clearcoat` and `fallback` are dropped; with the above that is about 2,000 warnings per Lobby render. Decide per input, record the choice in `## Decisions`.
   - verify: a Lobby render logs no warning for an input that is handled or deliberately ignored; a fixture covers each implemented input.
   - size: M
-- [ ] M251.P2.T4 — Report a fallback material on the node
+- [x] M251.P2.T4 — Report a fallback material on the node
   - files: Engine USDRender and Cycles delegate warning path, a test
   - approach: After M249.P3.T1 a material with no usable network falls back. Raise a node warning naming the material, as MoonRay's prim warning does.
   - verify: rendering the M249.P3.T1 fixture shows a warning on the node naming the material.
@@ -86,6 +86,7 @@ M253 - Delegate Render Settings.
 
 ## Decisions
 
+- 2026-11-06 — Phase 251.2 gate: run with pin 3dbd87c10, 743 of 743 tests on both schedulers, goldens recorded and viewed: the normal-map card shows a smooth sphere lit from the top right with no diagonal seam. The Lobby check stays for the F3 - Cycles And MoonRay Delegates UAT, since the scene isn't on this host.
 - 2026-11-06 — First build: 0.000224 normal-map contrast was the fixture's light (USD distant-light intensity is radiance, so 4 over a 0.5 degree disc shades at 0.000136). Rendering it found a real fork bug: `MikkMeshWrapper` read vertex-interpolated `st` per corner, past the attribute's end, seaming the card's diagonal; Cycles fork 3dbd87c10 fixes it, compiled but not yet rendered. Whether the Lobby's vase hits the seam depends on its `st` interpolation: check at the UAT. `--record-goldens` now covers USDRenderCyclesTest.
 - 2026-11-05 — M251.P2.T2 and T3 written: Cycles fork commit 01caacb60 in /tmp/m251-cycles, unpushed. `emissiveColor` → `emission_color`, with the node's strength 1 and colour black. Per input: `opacityThreshold` implemented, since the spec makes opacity a cutout and Principled `alpha` takes 0/1; `clearcoat` → `coat_weight`, `clearcoatColor` → `coat_tint`; `useSpecularWorkflow` and `specularColor` ignored, since Principled has no direct F0 input; `occlusion` ignored, since a path tracer computes it; `displacement` ignored, since it needs tessellation; `fallback` ignored, since Cycles has no equivalent. Ignored inputs no longer warn. Pin, goldens and boxes follow at the phase build. `minFilter`/`magFilter` still warn.
 - 2026-11-05 — M251.P2.T1 written: Cycles fork commit 161c2f848 in /tmp/m251-cycles, unpushed; pin bump and the CyclesNormalMapReference golden follow when Phase 251.2 is complete. Box stays open until then.

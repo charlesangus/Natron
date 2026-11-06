@@ -61,7 +61,7 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 
 ## Phase 249.3: Cycles material crash (Lobby UAT, 2026-11-05)
 
-- [ ] M249.P3.T1 — hdCycles survives a material with no universal surface output
+- [x] M249.P3.T1 — hdCycles survives a material with no universal surface output
   - files: charlesangus/cycles natron/deep-5.2 src/hydra/material.cpp, tools/ci/local/build-cycles.sh (NATRON_CYCLES_COMMIT), Tests/ fixture and delegate test
   - approach: Four Lobby materials have only `outputs:mdl:surface`; `HdCyclesMaterial::Sync` (`src/hydra/material.cpp:258`, read from v5.2.0 source, not confirmed by symbols) logs "Could not get a material network" and still calls `_shader->tag_update()`, which dereferences `graph->output()` (`src/scene/shader.cpp:357`) on a shader with no graph. Give such a shader a default graph so the mesh renders with a fallback, keep the message, bump the pin. Fixture is about 30 lines: a sphere bound to a Material whose only output is `outputs:mdl:surface.connect` to a Shader with `info:implementationSource = "sourceAsset"` and `info:mdl:sourceAsset = @OmniPBR.mdl@`.
   - verify: the new ctest renders the fixture through Cycles without crashing and the sphere is visible; `.local/Collected_World_Lobby/World_Lobby.usd` renders through Cycles with all materials active.

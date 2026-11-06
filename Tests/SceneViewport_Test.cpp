@@ -33,6 +33,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1294,5 +1295,28 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     EXPECT_GT(countNonBackground(render()), 0);
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
+    EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRenderMakesAnother)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(_renderer.hasEngine());
+    const std::string error = _renderer.takeRenderError();
+    EXPECT_NE(std::string::npos, error.find("texture commit failed")) << error;
+    EXPECT_TRUE(_renderer.takeRenderError().empty());
+
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
 }

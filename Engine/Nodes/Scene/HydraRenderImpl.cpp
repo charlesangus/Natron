@@ -89,6 +89,33 @@ namespace {
 // Storm renders a frame in passes until it converges; a rasterizer needs one.
 const int kMaxRenderPasses = 8;
 
+// Hydra's worker threads rethrow into the caller of Render(), and nothing above it handles an
+// exception. False with what() in *what when one came out.
+bool
+renderGuarded(UsdImagingGLEngine* engine,
+              const UsdPrim& root,
+              const UsdImagingGLRenderParams& params,
+              std::string* what)
+{
+    try {
+        RenderDelegates::runRenderFaultHook();
+        engine->Render(root, params);
+    } catch (const std::exception& e) {
+        *what = e.what();
+        if (what->empty()) {
+            *what = "unknown exception";
+        }
+
+        return false;
+    } catch (...) {
+        *what = "unknown exception";
+
+        return false;
+    }
+
+    return true;
+}
+
 // How long a render of another delegate waits between its passes, polling for convergence.
 const std::chrono::milliseconds kConvergencePoll(10);
 
@@ -846,9 +873,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // The colour AOV is read as Storm shades it, in the scene's linear space.
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
+    std::string renderFailure;
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
-            engine->Render(stage->GetPseudoRoot(), params);
+            if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
+                break;
+            }
             if (engine->IsConverged()) {
                 break;
             }
@@ -860,7 +890,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         // Without an abort callback nothing could stop a delegate that never converges.
         const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         for (;;) {
-            engine->Render(stage->GetPseudoRoot(), params);
+            if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
+                break;
+            }
             if (engine->IsConverged()) {
                 break;
             }
@@ -883,6 +915,15 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
+    }
+
+    if (!renderFailure.empty()) {
+        *error = "The " + entry.rendererName + " render failed: " + renderFailure;
+        // Hydra's state after an exception is unknown; the next render makes the engine again.
+        entry.engine.reset();
+        entry.rendered = false;
+
+        return nullptr;
     }
 
     entry.rendered = true;

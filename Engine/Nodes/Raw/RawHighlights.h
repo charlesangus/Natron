@@ -60,12 +60,24 @@
 #define kRawHighlightsParamIterations "iterations"
 #define kRawHighlightsParamScales "scales"
 #define kRawHighlightsParamSolidColor "solidColor"
+#define kRawHighlightsParamMaskView "maskView"
 
 // What RawNodeSupport::noteFrameComputed() names this node's whole-frame computations.
 #define kRawHighlightsFrameOpposedChroma "RawHighlights.opposedChroma"
 #define kRawHighlightsFrameReconstructColor "RawHighlights.reconstructColor"
 #define kRawHighlightsFrameSegments "RawHighlights.segments"
 #define kRawHighlightsFrameLaplacian "RawHighlights.laplacian"
+
+// The overlay image planes of the Clipped, Combine and Candidating views, by the colours a pixel has
+// marked, and of the Strength view.
+#define kRawHighlightsMaskPlaneRed "maskRed"
+#define kRawHighlightsMaskPlaneGreen "maskGreen"
+#define kRawHighlightsMaskPlaneBlue "maskBlue"
+#define kRawHighlightsMaskPlaneYellow "maskYellow"
+#define kRawHighlightsMaskPlaneMagenta "maskMagenta"
+#define kRawHighlightsMaskPlaneCyan "maskCyan"
+#define kRawHighlightsMaskPlaneWhite "maskWhite"
+#define kRawHighlightsMaskPlaneStrength "maskStrength"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,6 +89,17 @@ enum RawHighlightsModeEnum {
     eRawHighlightsModeInpaint,
     eRawHighlightsModeSegments,
     eRawHighlightsModeLaplacian
+};
+
+/**
+ * @brief What the Mask View knob overlays, one view at a time as darktable's mask buttons.
+ **/
+enum RawHighlightsMaskViewEnum {
+    eRawHighlightsMaskViewOff = 0,
+    eRawHighlightsMaskViewClipped,
+    eRawHighlightsMaskViewCombine,
+    eRawHighlightsMaskViewCandidating,
+    eRawHighlightsMaskViewStrength
 };
 
 /**
@@ -173,6 +196,8 @@ private:
 
     void refreshModeKnobsVisibility();
 
+    virtual bool isOverlayImageViewOn() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -225,6 +250,7 @@ private:
     KnobIntWPtr _iterations;
     KnobChoiceWPtr _scales;
     KnobDoubleWPtr _solidColor;
+    KnobChoiceWPtr _maskView;
     RawNodeSupport::OwnedMessage _message;
 
     // The chrominance of Inpaint Opposed, for the source and settings its key names.
@@ -239,6 +265,10 @@ private:
     bool _frameValid;
     U64 _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;
+    // The photosite mask of a segmentation mask view, guarded by _frameMutex.
+    U64 _maskFrameKey;
+    int _maskFrameView;
+    std::shared_ptr<const std::vector<float>> _maskFrame;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -51,8 +51,14 @@ Port of darktable's highlight reconstruction (`src/iop/highlights.c` with
   all-clipped segments, scaled by **Strength**, with Poisson noise at **Noise Level** seeded from
   each segment's position, so renders repeat. Strength and Noise Level show only when Rebuild is
   not off. The whole frame is computed once per `RawNodeSupport::frameKey()` and each render
-  copies its window. It has no GPU path and none of darktable's mask views. Where darktable
+  copies its window. It has no GPU path. Where darktable
   races in the candidate pass, segments are applied in darktable's serial order.
+- **Mask View** draws darktable's mask views over the viewer's image as overlay images, never into
+  the render, while the panel is open: Clipped in any method but Unclipped, Combine, Candidating
+  and Strength in Segmentation Based, Strength only while Rebuild is not off. The first three are
+  one exclusive plane per colour mix, from a 3x3 per-colour mean like `demosaic_box3()`. darktable's
+  dimmed backdrop is left out, the viewer's image takes its place. The knob is one choice instead
+  of darktable's four buttons, is not saved, and turns off when Method changes.
 - **Guided Laplacians** (`laplacian.c`, Aurélien Pierre's, `RawKernels::laplacianReconstruct()` and
   `laplacianRemosaic()`) builds a bilinear RGB image and its norm from the mosaic, divided by the
   `raw/wb_applied` multipliers, with a mask of the colours that read a photosite above 0.995 x the

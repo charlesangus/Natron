@@ -50,13 +50,13 @@ USD API use (`usdviewq/appController.py:4298-4314,4441-4509,4604-4607`).
 
 ## Phase 333.2: Node contribution
 
-- [ ] M333.P2.T1 — Changed Here marker and filter
+- [x] M333.P2.T1 — Changed Here marker and filter
   - files: `Gui/SceneGraphModel.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Tests/gui/scene_changed_here.py`
   - approach: read the viewed node's own layer specs (`SdfLayer::Traverse`) on a worker into a path set; rows on it or with a descendant on it get a marker. A Changed Here toggle filters the tree to those. Reads a layer only, so scene size doesn't matter.
   - verify: GUI script — viewing a USDEditTransform marks its target and ancestors only; viewing a node that authors nothing shows none; the toggle filters and restores.
   - size: M
 
-- [ ] M333.P2.T2 — Layer text view
+- [x] M333.P2.T2 — Layer text view
   - files: `Gui/ScenePrimInspector.cpp`, `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Tests/gui/scene_prim_inspector.py`
   - approach: a read-only text tab with two modes: the viewed node's contribution (its layer as USDA), and the selected prim's composed definition, flattened into an anonymous layer and exported as USDA without its descendants. Built on a worker, only while the tab is showing, with no size cap.
   - verify: GUI script — the node contribution contains the authored `over`, and switching the prim updates the composed mode.

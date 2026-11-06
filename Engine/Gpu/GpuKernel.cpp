@@ -449,27 +449,63 @@ GpuKernel::createPipeline(VkPipelineCache pipelineCache)
             return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkCmdPushDescriptorSetKHR unavailable");
         }
     } else if (!bindings_.empty()) {
-        std::vector<VkDescriptorPoolSize> sizes;
         for (const GpuKernelBinding& b : bindings_) {
-            auto it = std::find_if(sizes.begin(), sizes.end(),
+            auto it = std::find_if(poolSizes_.begin(), poolSizes_.end(),
                                    [&](const VkDescriptorPoolSize& p) { return p.type == b.type; });
-            if (it == sizes.end()) {
-                sizes.push_back({ b.type, kDescriptorPoolSets });
+            if (it == poolSizes_.end()) {
+                poolSizes_.push_back({ b.type, kDescriptorPoolSets });
             } else {
                 it->descriptorCount += kDescriptorPoolSets;
             }
         }
-        VkDescriptorPoolCreateInfo dpi { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        dpi.maxSets = kDescriptorPoolSets;
-        dpi.poolSizeCount = static_cast<uint32_t>(sizes.size());
-        dpi.pPoolSizes = sizes.data();
-        s = device_.check(vkCreateDescriptorPool(dev, &dpi, nullptr, &pool_),
-                          "vkCreateDescriptorPool");
+        std::lock_guard<std::mutex> lock(poolMutex_);
+        s = addDescriptorPool();
         if (!s) {
             return s;
         }
     }
     return {};
+}
+
+GpuStatus
+GpuKernel::addDescriptorPool()
+{
+    VkDescriptorPoolCreateInfo dpi { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    dpi.maxSets = kDescriptorPoolSets;
+    dpi.poolSizeCount = static_cast<uint32_t>(poolSizes_.size());
+    dpi.pPoolSizes = poolSizes_.data();
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (GpuStatus s = device_.check(vkCreateDescriptorPool(device_.device(), &dpi, nullptr, &pool),
+                                    "vkCreateDescriptorPool");
+        !s) {
+        return s;
+    }
+    pools_.push_back(pool);
+    return {};
+}
+
+GpuStatus
+GpuKernel::allocateDescriptorSet(VkDescriptorSet& out)
+{
+    for (bool advanced = false;; advanced = true) {
+        VkDescriptorSetAllocateInfo ai { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        ai.descriptorPool = pools_[activePool_];
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &setLayout_;
+        const VkResult r = vkAllocateDescriptorSets(device_.device(), &ai, &out);
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
+            return device_.check(r, "vkAllocateDescriptorSets");
+        }
+        if (advanced) {
+            return fail(r, "GpuKernel::record: an empty descriptor pool cannot hold one set");
+        }
+        if (activePool_ + 1 == pools_.size()) {
+            if (GpuStatus s = addDescriptorPool(); !s) {
+                return s;
+            }
+        }
+        ++activePool_;
+    }
 }
 
 const GpuKernelBinding*
@@ -490,8 +526,8 @@ GpuKernel::~GpuKernel()
         return;
     }
     const VkDevice dev = device_.device();
-    if (pool_) {
-        vkDestroyDescriptorPool(dev, pool_, nullptr);
+    for (VkDescriptorPool pool : pools_) {
+        vkDestroyDescriptorPool(dev, pool, nullptr);
     }
     if (pipeline_) {
         vkDestroyPipeline(dev, pipeline_, nullptr);
@@ -649,19 +685,11 @@ GpuKernel::bindAndDispatch(VkCommandBuffer cmd, std::span<VkWriteDescriptorSet> 
             pushDescriptorFn_(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_, 0,
                               static_cast<uint32_t>(writes.size()), writes.data());
         }
-    } else if (pool_) {
+    } else if (!pools_.empty()) {
         VkDescriptorSet set = VK_NULL_HANDLE;
         {
             std::lock_guard<std::mutex> lock(poolMutex_);
-            VkDescriptorSetAllocateInfo ai { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-            ai.descriptorPool = pool_;
-            ai.descriptorSetCount = 1;
-            ai.pSetLayouts = &setLayout_;
-            const VkResult r = vkAllocateDescriptorSets(device_.device(), &ai, &set);
-            if (r == VK_ERROR_OUT_OF_POOL_MEMORY || r == VK_ERROR_FRAGMENTED_POOL) {
-                return fail(r, "GpuKernel::record: descriptor pool exhausted after " + std::to_string(kDescriptorPoolSets) + " dispatches; call releaseDescriptors() once recorded work completes");
-            }
-            if (GpuStatus s = device_.check(r, "vkAllocateDescriptorSets"); !s) {
+            if (GpuStatus s = allocateDescriptorSet(set); !s) {
                 return s;
             }
         }
@@ -686,9 +714,13 @@ GpuKernel::releaseDescriptors()
 {
     std::lock_guard<std::mutex> lock(poolMutex_);
     // Resetting frees the sets that work which never finished may still read, so the pool is kept as it is.
-    if (pool_ && !device_.hasAbandonedWork()) {
-        vkResetDescriptorPool(device_.device(), pool_, 0);
+    if (device_.hasAbandonedWork()) {
+        return;
     }
+    for (VkDescriptorPool pool : pools_) {
+        vkResetDescriptorPool(device_.device(), pool, 0);
+    }
+    activePool_ = 0;
 }
 
 GpuStatus

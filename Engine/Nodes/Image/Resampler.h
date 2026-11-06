@@ -61,7 +61,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The resampling core of the native spatial nodes (Transform, TransformMasked, Reformat):
+ * @brief The resampling core of the native spatial nodes (Transform, Reformat):
  * a port of openfx-misc's ofxsFilter.h filters and supersampling, the Transform3x3 processor's
  * per-pixel loop (including motion blur) and its region helpers, with the same formulas,
  * evaluation order and precision (double maths, float accumulation where OFX accumulates in

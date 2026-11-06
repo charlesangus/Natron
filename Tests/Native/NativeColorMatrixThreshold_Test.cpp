@@ -59,15 +59,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
-const char* const kOfxColorMatrixID = "net.sf.openfx.ColorMatrixPlugin";
-const int kOfxColorMatrixMajor = 2;
-const char* const kOfxThresholdID = "net.sf.openfx.Threshold";
-const int kOfxThresholdMajor = 1;
-
-// The OpenFX ColorMatrix's per-row knobs, which the native node's single matrix knob replaces.
-const char* const kOfxOutputKnobs[4] = {
-    "outputRed", "outputGreen", "outputBlue", "outputAlpha"
-};
 
 // The node sums single-precision products of single-precision coefficients, so against a double
 // expectation the error scales with the sum of the terms' magnitudes rather than with the result,
@@ -397,58 +388,6 @@ TEST_F(NativeColorMatrixThresholdTest, ThresholdIdentityOnlyAtMixZero)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, std::vector<double>(1, 0.)));
     EXPECT_TRUE(identityAt(node, window, &inputNb));
     EXPECT_EQ(0, inputNb);
-}
-
-// While the OpenFX plug-ins are still loadable, the native nodes match them with the same knob
-// values. ColorMatrix's Clamp Black is set on both, its defaults differing; Threshold has a
-// non-zero softness, the OpenFX one giving 0 at the level when softness is 0.
-TEST_F(NativeColorMatrixThresholdTest, MatchesTheOpenFXPlugins)
-{
-    struct Case {
-        const char* nativeID;
-        int nativeMajor;
-        const char* ofxID;
-        int ofxMajor;
-    };
-    const Case cases[2] = {
-        { PLUGINID_NATRON_COLORMATRIX, PLUGIN_MAJOR_NATRON_COLORMATRIX, kOfxColorMatrixID, kOfxColorMatrixMajor },
-        { PLUGINID_NATRON_THRESHOLD, PLUGIN_MAJOR_NATRON_THRESHOLD, kOfxThresholdID, kOfxThresholdMajor },
-    };
-    for (int i = 0; i < 2; ++i) {
-        const Case& c = cases[i];
-        if (!isPluginMajorRegistered(c.ofxID, c.ofxMajor)) {
-            std::cout << "[ skipped ] " << c.ofxID << " " << c.ofxMajor << " is not loaded" << std::endl;
-            continue;
-        }
-        ParityPair pair;
-        pair.id = c.nativeID;
-        pair.ofxMajor = c.ofxMajor;
-        pair.nativeMajor = c.nativeMajor;
-        pair.app = getApp();
-        pair.source = makeSource();
-        pair.native = makeNode(c.nativeID, c.nativeMajor, pair.source);
-        pair.ofx = createNodeAtMajor(getApp(), c.ofxID, c.ofxMajor);
-        ASSERT_TRUE(bool(pair.source) && bool(pair.native) && bool(pair.ofx));
-        connectNodes(pair.source, pair.ofx, 0, true);
-        std::string caseName;
-        if (i == 0) {
-            ASSERT_TRUE(setKnobOnBoth(pair, kColorMatrixParamClampBlack, { 0. }));
-            ASSERT_TRUE(setMatrix(pair.native, kHdrMatrix));
-            for (int r = 0; r < 4; ++r) {
-                ASSERT_TRUE(setKnobValues(pair.ofx, kOfxOutputKnobs[r], { kHdrMatrix[r][0], kHdrMatrix[r][1], kHdrMatrix[r][2], kHdrMatrix[r][3] }));
-            }
-            caseName = "hdr-matrix";
-        } else {
-            ASSERT_TRUE(setKnobOnBoth(pair, kThresholdParamLevel, { 0.5, 0.25, 1.2, 0.5 }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kThresholdParamSoftness, { 0.25, 0.5, 0.4, 0.1 }));
-            caseName = "ramp";
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, (i == 0) ? kMatrixTolerance : ParityTolerance::arithmetic(), true);
-            EXPECT_TRUE(r.ok) << c.nativeID << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_GE(r.planesCompared, 1) << c.nativeID;
-        }
-    }
 }
 
 TEST_F(NativeColorMatrixThresholdTest, BothSchedulerModesAgreeWithNoUnplannedPull)

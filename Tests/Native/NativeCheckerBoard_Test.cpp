@@ -60,7 +60,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kCheckerBoardID = PLUGINID_NATRON_CHECKERBOARD;
-const int kOfxCheckerBoardMajor = 1;
 const int kNativeCheckerBoardMajor = PLUGIN_MAJOR_NATRON_CHECKERBOARD;
 const double kTime = 1.;
 
@@ -160,23 +159,18 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, 64, 48, "nativeCheckerBoardPar" + std::to_string(par), par));
     }
 
-    // Both versions with nothing connected. The parity source is only there because
+    // The node with nothing connected. The parity source is only there because
     // compareParity() requires one; every case passes its own window.
     ParityPair makePair()
     {
         ParityPair pair;
 
         pair.id = kCheckerBoardID;
-        pair.ofxMajor = kOfxCheckerBoardMajor;
         pair.nativeMajor = kNativeCheckerBoardMajor;
         pair.app = getApp();
         pair.source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-        if (isPluginMajorRegistered(kCheckerBoardID, kOfxCheckerBoardMajor)) {
-            pair.ofx = createNodeAtMajor(getApp(), kCheckerBoardID, kOfxCheckerBoardMajor);
-        }
         pair.native = createNodeAtMajor(getApp(), kCheckerBoardID, kNativeCheckerBoardMajor);
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX CheckerBoard is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -196,7 +190,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 2; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel, par), mipmapLevel, kCheckerBoardTolerance, record, options);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] CheckerBoard " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

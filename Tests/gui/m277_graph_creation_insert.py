@@ -26,10 +26,10 @@ BESIDE_PIPE = 5.0
 POSITION_TOLERANCE = 3.0
 BACKGROUND_TOLERANCE = 40
 
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-BLUR_ID = "net.sf.cimg.CImgBlur"
+CONSTANT_ID = "Constant"
+BLUR_ID = "Blur"
 MERGE_ID = "Merge"
-VIEWER_ID = "fr.inria.built-in.Viewer"
+VIEWER_ID = "Viewer"
 USD_READ_ID = "USDRead"
 VARIADIC_IDS = ("USDMerge", "USDXformPrim")
 

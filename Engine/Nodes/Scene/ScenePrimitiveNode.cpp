@@ -138,7 +138,7 @@ ScenePrimitiveNode::onScriptNameChanged(const std::string& /*fullyQualifiedName*
 
 bool
 ScenePrimitiveNode::authorLayer(const SceneLayerEdit& edit,
-                                const std::string& materialPath,
+                                const SceneMaterialGraft& graft,
                                 std::string* errorMessage) const
 {
     PXR_NS::SdfPath path;
@@ -206,15 +206,22 @@ ScenePrimitiveNode::authorLayer(const SceneLayerEdit& edit,
 
     const PXR_NS::UsdGeomXformOp op = mesh.AddTransformOp();
     const bool animated = SceneNodeAuthoring::isTransformAnimated(_transform, pivot);
-    if (!op || !SceneNodeAuthoring::authorValue(op.GetAttr(), edit, animated, [this, &pivot](double frame) {
-            return SceneNodeAuthoring::getTransformMatrixAt(_transform, pivot, frame);
-        })) {
+    const auto transformAt = [this, &pivot](double frame) {
+        return SceneNodeAuthoring::getTransformMatrixAt(_transform, pivot, frame);
+    };
+    if (!op || !SceneNodeAuthoring::authorValue(op.GetAttr(), edit, animated, transformAt)) {
         *errorMessage = tr("USD could not author the transform of %1.").arg(pathString).toStdString();
 
         return false;
     }
+    // The mesh's ancestors are typeless, so its transform op is its local to world transform.
+    if (!SceneNodeAuthoring::authorProjectionGeometryFrame(stage, edit, graft, animated, transformAt)) {
+        *errorMessage = tr("USD could not author the projection's geometry frame for %1.").arg(pathString).toStdString();
 
-    return SceneNodeAuthoring::authorMaterialBinding(mesh.GetPrim(), materialPath, errorMessage);
+        return false;
+    }
+
+    return SceneNodeAuthoring::authorMaterialBinding(mesh.GetPrim(), graft.materialPath, errorMessage);
 } // ScenePrimitiveNode::authorLayer
 
 StatusEnum
@@ -240,8 +247,13 @@ ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = graft.factsDigest;
     reads.frameRange = isShapeAnimated() || SceneNodeAuthoring::isTransformAnimated(_transform, _pivot.lock());
-    const std::string materialPath = graft.materialPath;
-    if (!emitSceneLayer(graft.payload, reads, [this, materialPath](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, materialPath, error); }, outputScene, errorMessage)) {
+    // What the layer reads of the graft, without the payload it is stacked on.
+    SceneMaterialGraft binding;
+    binding.materialPath = graft.materialPath;
+    binding.geometryProjectionShader = graft.geometryProjectionShader;
+    binding.projectionHeld = graft.projectionHeld;
+    binding.projectionHoldFrame = graft.projectionHoldFrame;
+    if (!emitSceneLayer(graft.payload, reads, [this, binding](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, binding, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

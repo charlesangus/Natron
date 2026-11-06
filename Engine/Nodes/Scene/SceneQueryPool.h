@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -73,6 +74,9 @@ public:
 
         // The stage, composing the borrowed payload. Null for an invalid lease.
         PXR_NS::UsdStageRefPtr getStage() const;
+
+        // The borrowed payload's projections whose camera the stage lacks.
+        std::vector<SceneProjectionCameras::Unresolved> getUnresolvedProjections() const;
 
         // Gives the stage back now.
         void release();

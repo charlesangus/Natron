@@ -748,7 +748,7 @@ HSVTool::initializeKnobs()
 
     NodePtr node = getNode();
     if (node) {
-        node->addRectangleInteract(op().bottomLeft.lock(), op().size.lock(), KnobBoolPtr(), op().enableRectangle.lock());
+        node->addRectangleInteract(op().bottomLeft.lock(), op().size.lock(), op().enableRectangle.lock());
     }
 }
 

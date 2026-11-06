@@ -315,7 +315,7 @@ protected:
     NodePtr createLargeSource(int width,
                               int height)
     {
-        NodePtr source = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+        NodePtr source = createNode(QString::fromUtf8("CheckerBoard"));
 
         EXPECT_TRUE(bool(source));
         if (!source) {

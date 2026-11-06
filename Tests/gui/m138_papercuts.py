@@ -482,15 +482,15 @@ try:
     def picker_defaults_section():
         gt.section("picker-defaults")
         require(make_fixtures(), "write the PNG fixtures", "no oiiotool or OpenImageIO")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 2400)
         gt.close_all_panels()
 
-        c25 = create("net.sf.openfx.ConstantPlugin", 8000, -300)
+        c25 = create("Constant", 8000, -300)
         set_rgba(c25.getParam("color"), (0.25, 0.25, 0.25, 1.0))
         gt.close_all_panels()
-        g2 = create("net.sf.openfx.GradePlugin", 8000, 0)
+        g2 = create("Grade", 8000, 0)
         set_all(g2.getParam("multiply"), 2.0)
         require(g2.connectInput(0, c25), "connect the Grade to the Constant")
         view(viewer, g2)
@@ -574,8 +574,8 @@ try:
 
     # ---- section: deep-read ---------------------------------------------------------------
 
-    READ_ID = "fr.inria.built-in.Read"
-    DEEPREAD_ID = "fr.natron.DeepRead"
+    READ_ID = "Read"
+    DEEPREAD_ID = "DeepRead"
 
     def drop_files(paths):
         gui = next(iter(gt.widgets_of("Gui")), None)
@@ -602,7 +602,7 @@ try:
         require(make_fixtures(), "write the EXR fixtures", "no oiiotool or OpenImageIO")
         deep_path = os.path.join(FILES_DIR, "m138-deep-red-tiled.exr")
         flat_path = os.path.join(FILES_DIR, "m138-green-scanline.exr")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer exists")
 
         def shows(node, channel, label):

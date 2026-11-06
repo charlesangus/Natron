@@ -47,7 +47,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
@@ -62,11 +64,7 @@ const char* const kGamma22Space = "Gamma 2.2 Encoded Rec.709";
 const char* const kLinearRec709Space = "Linear Rec.709 (sRGB)";
 const char* const kWorkingSpace = "ACEScg";
 
-const char* const kInputSpaceKnob = "ocioInputSpace";
-const char* const kInputSpaceChoiceKnob = "ocioInputSpaceIndex";
-const char* const kOutputSpaceKnob = "ocioOutputSpace";
 const char* const kWorkingSpaceKnob = "ocioWorkingSpace";
-const char* const kInputSpaceSetKnob = "ocioInputSpaceSet";
 const char* const kFileRuleSpace = "ACES2065-1";
 
 ProjectPtr
@@ -196,11 +194,39 @@ stringValue(const NodePtr& node,
     return knob ? knob->getValue() : std::string();
 }
 
-KnobBoolPtr
-boolKnob(const NodePtr& node,
-         const char* name)
+// The colourspace a Read reads or a Write writes in: the chosen one, or the one Project default
+// resolves to.
+std::string
+fileSpace(const NodePtr& node)
 {
-    return node ? std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name)) : KnobBoolPtr();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (NativeRead* read = dynamic_cast<NativeRead*>(effect.get())) {
+        return read->colorspace();
+    }
+    if (NativeWrite* write = dynamic_cast<NativeWrite*>(effect.get())) {
+        return write->colorspace();
+    }
+    ADD_FAILURE() << "not a native Read or Write";
+
+    return std::string();
+}
+
+KnobChoicePtr
+colorspaceMenu(const NodePtr& node)
+{
+    return node ? std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("colorspace")) : KnobChoicePtr();
+}
+
+// The entry stored in the colorspace menu: projectDefault unless a colourspace was picked.
+std::string
+chosenEntry(const NodePtr& node)
+{
+    KnobChoicePtr menu = colorspaceMenu(node);
+
+    EXPECT_TRUE(bool(menu));
+
+    return menu ? menu->getActiveEntry().id : std::string();
 }
 
 void
@@ -227,7 +253,7 @@ void
 userPicksInputSpace(const NodePtr& reader,
                     const char* space)
 {
-    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(reader->getKnobByName(kInputSpaceChoiceKnob));
+    KnobChoicePtr menu = colorspaceMenu(reader);
 
     ASSERT_TRUE(bool(menu));
     const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
@@ -243,7 +269,7 @@ userPicksInputSpace(const NodePtr& reader,
     }
     ASSERT_GE(index, 0) << space;
     menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-    ASSERT_EQ(std::string(space), stringValue(reader, kInputSpaceKnob));
+    ASSERT_EQ(std::string(space), fileSpace(reader));
 }
 
 void
@@ -400,10 +426,10 @@ TEST_F(ProjectOCIODefaultsTest, ReadsClassifyByFileRuleTagAndTypeAndTakeTheWorki
     ASSERT_TRUE(bool(png16));
     ASSERT_TRUE(bool(exr));
 
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), stringValue(eight, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(eight, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(stringValue(png16, kInputSpaceKnob)));
-    EXPECT_EQ(std::string(kFileRuleSpace), stringValue(exr, kInputSpaceKnob));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), fileSpace(eight));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(eight));
+    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(fileSpace(png16)));
+    EXPECT_EQ(std::string(kFileRuleSpace), fileSpace(exr));
 
     const std::string working = project()->getWorkingColorSpace();
     EXPECT_EQ(std::string(kWorkingSpace), working);
@@ -423,8 +449,8 @@ TEST_F(ProjectOCIODefaultsTest, SixteenBitFileTakesTheSixteenBitDefaultNotTheEig
 
     ASSERT_TRUE(bool(eight));
     ASSERT_TRUE(bool(sixteen));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(eight, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(sixteen, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(eight));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(sixteen));
 }
 
 TEST_F(ProjectOCIODefaultsTest, NativeReadKeepsTheFilesOwnValidColorspaceOverTheProjectDefault)
@@ -436,31 +462,38 @@ TEST_F(ProjectOCIODefaultsTest, NativeReadKeepsTheFilesOwnValidColorspaceOverThe
     NodePtr png16 = createReader(fixture("png-16bit.png"));
 
     ASSERT_TRUE(bool(png16));
-    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(stringValue(png16, kInputSpaceKnob)));
+    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(fileSpace(png16)));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(png16, kWorkingSpaceKnob));
 }
 
-TEST_F(ProjectOCIODefaultsTest, ChangingAFileDefaultAffectsOnlyNewReads)
+TEST_F(ProjectOCIODefaultsTest, ChangingAFileDefaultMovesReadsOnProjectDefaultButNotPickedOnes)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const std::string file = writeEightBit(tmp);
 
     NodePtr existing = createReader(file);
+    NodePtr picked = createReader(file);
 
     ASSERT_TRUE(bool(existing));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(existing, kInputSpaceKnob));
+    ASSERT_TRUE(bool(picked));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(existing));
+    userPicksInputSpace(picked, kSRGBSpace);
+    const U64 hashBefore = existing->getEffectInstance()->getHash();
 
     setProjectFileSpace("colorSpace8Bit", kGamma22Space);
 
     NodePtr created = createReader(file);
 
     ASSERT_TRUE(bool(created));
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(created, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(existing, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(created));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(existing));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(existing));
+    EXPECT_NE(hashBefore, existing->getEffectInstance()->getHash());
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(picked));
 }
 
-TEST_F(ProjectOCIODefaultsTest, HostDrivenDefaultsDoNotMarkTheInputSpaceAsUserSet)
+TEST_F(ProjectOCIODefaultsTest, HostDrivenDefaultsLeaveTheMenuOnProjectDefault)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -468,12 +501,10 @@ TEST_F(ProjectOCIODefaultsTest, HostDrivenDefaultsDoNotMarkTheInputSpaceAsUserSe
     NodePtr reader = createReader(writeEightBit(tmp));
 
     ASSERT_TRUE(bool(reader));
-    KnobBoolPtr userSet = boolKnob(reader, kInputSpaceSetKnob);
-    ASSERT_TRUE(bool(userSet));
-    EXPECT_FALSE(userSet->getValue());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(reader));
 
     userPicksInputSpace(reader, kGamma22Space);
-    EXPECT_TRUE(userSet->getValue());
+    EXPECT_EQ(std::string(kGamma22Space), chosenEntry(reader));
 }
 
 TEST_F(ProjectOCIODefaultsTest, AUserSetInputSpaceSurvivesAFilenameChange)
@@ -490,16 +521,14 @@ TEST_F(ProjectOCIODefaultsTest, AUserSetInputSpaceSurvivesAFilenameChange)
     userPicksInputSpace(reader, kGamma22Space);
 
     changeReaderFile(reader, sixteen);
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(reader));
 
     changeReaderFile(reader, eight);
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(reader, kInputSpaceKnob));
-    KnobBoolPtr userSet = boolKnob(reader, kInputSpaceSetKnob);
-    ASSERT_TRUE(bool(userSet));
-    EXPECT_TRUE(userSet->getValue());
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(reader));
+    EXPECT_EQ(std::string(kGamma22Space), chosenEntry(reader));
 }
 
-TEST_F(ProjectOCIODefaultsTest, AFilenameEditReGuessesWhenTheInputSpaceIsNotUserSet)
+TEST_F(ProjectOCIODefaultsTest, AFilenameEditReGuessesOnProjectDefault)
 {
     setProjectFileSpace("colorSpace16Bit", kGamma22Space);
     QTemporaryDir tmp;
@@ -508,11 +537,11 @@ TEST_F(ProjectOCIODefaultsTest, AFilenameEditReGuessesWhenTheInputSpaceIsNotUser
     NodePtr reader = createReader(writeEightBit(tmp));
 
     ASSERT_TRUE(bool(reader));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(reader, kInputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(reader));
 
     changeReaderFile(reader, writeSixteenBit(tmp));
 
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(reader));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kWorkingSpaceKnob));
 }
 
@@ -527,11 +556,9 @@ TEST_F(ProjectOCIODefaultsTest, AnEmptyReadGivenAnEightBitFileTakesTheProjectDef
 
     changeReaderFile(reader, writeEightBit(tmp));
 
-    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(stringValue(reader, kInputSpaceKnob)));
+    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(fileSpace(reader)));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kWorkingSpaceKnob));
-    KnobBoolPtr userSet = boolKnob(reader, kInputSpaceSetKnob);
-    ASSERT_TRUE(bool(userSet));
-    EXPECT_FALSE(userSet->getValue());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(reader));
 }
 
 TEST_F(ProjectOCIODefaultsTest, AReadWhoseFilenameIsClearedAndSetAgainTakesTheDefaultOfTheNewFile)
@@ -543,43 +570,50 @@ TEST_F(ProjectOCIODefaultsTest, AReadWhoseFilenameIsClearedAndSetAgainTakesTheDe
     NodePtr reader = createReader(writeEightBit(tmp));
 
     ASSERT_TRUE(bool(reader));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(reader, kInputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(reader));
 
     changeReaderFile(reader, std::string());
     changeReaderFile(reader, writeFloat(tmp));
 
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), stringValue(reader, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), fileSpace(reader));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(reader));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kWorkingSpaceKnob));
 
     // The config's file rule for .exr outranks the float default.
     changeReaderFile(reader, fixture("flat-rgb-only.exr"));
-    EXPECT_EQ(std::string(kFileRuleSpace), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kFileRuleSpace), fileSpace(reader));
 }
 
-TEST_F(ProjectOCIODefaultsTest, AReloadedReadKeepsTheSpacesItGuessed)
+TEST_F(ProjectOCIODefaultsTest, AReloadedReadKeepsProjectDefaultOrItsPick)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
+    const std::string file = writeEightBit(tmp);
 
     NodePtr reader = createEmptyRead();
+    NodePtr picked = createReader(file);
 
     ASSERT_TRUE(bool(reader));
-    changeReaderFile(reader, writeEightBit(tmp));
-    const std::string inputSpace = stringValue(reader, kInputSpaceKnob);
-    ASSERT_EQ(std::string(kSRGBSpace), canonicalSpace(inputSpace));
+    ASSERT_TRUE(bool(picked));
+    changeReaderFile(reader, file);
+    ASSERT_EQ(std::string(kSRGBSpace), canonicalSpace(fileSpace(reader)));
     ASSERT_EQ(std::string(kWorkingSpace), stringValue(reader, kWorkingSpaceKnob));
+    userPicksInputSpace(picked, kSRGBSpace);
     const std::string name = reader->getScriptName_mt_safe();
+    const std::string pickedName = picked->getScriptName_mt_safe();
 
-    // A restored read that guessed again would take this new 8-bit default.
     setProjectFileSpace("colorSpace8Bit", kGamma22Space);
 
     saveResetAndLoad(tmp, "guessed-read.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     reader = project()->getNodeByName(name);
+    picked = project()->getNodeByName(pickedName);
     ASSERT_TRUE(bool(reader));
-    EXPECT_EQ(inputSpace, stringValue(reader, kInputSpaceKnob));
+    ASSERT_TRUE(bool(picked));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(reader));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(reader));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(picked));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kWorkingSpaceKnob));
 }
 
@@ -591,8 +625,8 @@ TEST_F(ProjectOCIODefaultsTest, WritePngOutputsTheEightBitDefaultFromTheWorkingS
     NodePtr png = createWriter((tmp.path() + QLatin1String("/out.png")).toStdString());
 
     ASSERT_TRUE(bool(png));
-    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), stringValue(png, kOutputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(png, kOutputSpaceKnob));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), fileSpace(png));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(png));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(png, kWorkingSpaceKnob));
 }
 
@@ -604,11 +638,11 @@ TEST_F(ProjectOCIODefaultsTest, WriteExrOutputsTheFileRuleSpace)
     NodePtr exr = createWriter((tmp.path() + QLatin1String("/out.exr")).toStdString());
 
     ASSERT_TRUE(bool(exr));
-    EXPECT_EQ(std::string(kFileRuleSpace), stringValue(exr, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kFileRuleSpace), fileSpace(exr));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(exr, kWorkingSpaceKnob));
 }
 
-TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefaultChangeAndReload)
+TEST_F(ProjectOCIODefaultsTest, AWriteOnProjectDefaultFollowsADefaultChangeAcrossReload)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -616,19 +650,38 @@ TEST_F(ProjectOCIODefaultsTest, AnExistingWriteKeepsItsOutputSpaceAcrossADefault
     NodePtr writer = createWriter((tmp.path() + QLatin1String("/out.png")).toStdString());
 
     ASSERT_TRUE(bool(writer));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(writer));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(writer));
     const std::string name = writer->getScriptName_mt_safe();
 
     setProjectFileSpace("colorSpace8Bit", kGamma22Space);
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(writer));
 
     saveResetAndLoad(tmp, "defaults.ntpz");
 
     ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
     writer = project()->getNodeByName(name);
     ASSERT_TRUE(bool(writer));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), chosenEntry(writer));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(writer));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(writer, kWorkingSpaceKnob));
+}
+
+TEST_F(ProjectOCIODefaultsTest, AWritePickKeepsItsOutputSpaceAcrossADefaultChange)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr writer = createWriter((tmp.path() + QLatin1String("/out.png")).toStdString());
+
+    ASSERT_TRUE(bool(writer));
+    KnobChoicePtr menu = colorspaceMenu(writer);
+    ASSERT_TRUE(bool(menu));
+    menu->setValueFromID(kSRGBSpace, 0);
+    ASSERT_EQ(std::string(kSRGBSpace), chosenEntry(writer));
+
+    setProjectFileSpace("colorSpace8Bit", kGamma22Space);
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(writer));
 }
 
 // ACEScg 0.18 is mid-gray: linear 0.18 encodes to 0.4614 under the sRGB curve, i.e. code 118.
@@ -638,7 +691,7 @@ TEST_F(ProjectOCIODefaultsTest, ProbeOfMidGrayWrittenToAnEightBitPngEncodesToCod
     ASSERT_TRUE(tmp.isValid());
     const std::string path = (tmp.path() + QLatin1String("/probe.png")).toStdString();
 
-    CreateNodeArgs constantArgs(std::string("net.sf.openfx.ConstantPlugin"), project());
+    CreateNodeArgs constantArgs(std::string("Constant"), project());
     NodePtr constant = appPTR->getTopLevelInstance()->createNode(constantArgs);
     ASSERT_TRUE(bool(constant));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
@@ -647,7 +700,7 @@ TEST_F(ProjectOCIODefaultsTest, ProbeOfMidGrayWrittenToAnEightBitPngEncodesToCod
 
     NodePtr writer = createWriter(path);
     ASSERT_TRUE(bool(writer));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(writer, kOutputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(writer));
     ASSERT_TRUE(project()->connectNodes(0, constant, writer));
 
     OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());

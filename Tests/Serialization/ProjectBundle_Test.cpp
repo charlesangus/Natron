@@ -114,7 +114,7 @@ makeRotoNode()
     Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
     node->scriptName = "RotoPaint1";
     node->label = "RotoPaint1";
-    node->pluginID = "fr.inria.built-in.RotoPaint";
+    node->pluginID = "RotoPaint";
     node->pluginMajorVersion = 1;
     node->pluginMinorVersion = 0;
     node->hasRotoContext = true;
@@ -151,7 +151,7 @@ makeTrackerNode()
     Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
     node->scriptName = "Tracker1";
     node->label = "Tracker1";
-    node->pluginID = "fr.inria.built-in.Tracker";
+    node->pluginID = "Tracker";
     node->pluginMajorVersion = 1;
     node->pluginMinorVersion = 0;
     node->inputs["Source"] = "RotoPaint1";

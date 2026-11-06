@@ -79,7 +79,21 @@ public:
                                              const std::vector<AiModelTask>& tasks,
                                              ModelDownloader* downloader = nullptr);
 
+    /**
+     * @brief As create(), for a tool that may never be used: the menu lists the task's models by
+     * name only, and no model file is looked at and no download followed until activate().
+     **/
+    static std::unique_ptr<ModelKnob> createDeferred(EffectInstance* effect,
+                                                     const KnobPagePtr& page,
+                                                     AiModelTask task);
+
     ~ModelKnob();
+
+    /**
+     * @brief For a helper made by createDeferred(): marks the models that are not installed and
+     * follows downloads and removals from now on. Does nothing after the first call. Main thread.
+     **/
+    void activate();
 
     /**
      * @brief The model the user made the default for task in Preferences, when the registry
@@ -106,6 +120,12 @@ public:
      * returns nothing; a later successful call takes that error back. Any thread.
      **/
     std::optional<Resolved> resolve();
+
+    /**
+     * @brief As resolve(), but hands the reason back in *error instead of posting it, and leaves
+     * the node's messages alone: for tools whose node renders fine without the model.
+     **/
+    std::optional<Resolved> resolve(std::string* error);
 
     /**
      * @brief The model the knob defaults to for tasks: the registry default of the first task
@@ -137,11 +157,23 @@ public:
      **/
     bool knobChanged(KnobI* k);
 
+    /**
+     * @brief For a tool whose node renders the same whatever model is picked: the knobs stay out
+     * of the node's render hash, and neither picking a model nor installing or removing one
+     * re-renders the node. Call once, right after create().
+     **/
+    void setFeedsRender(bool feeds);
+
 private:
     ModelKnob(EffectInstance* effect, const std::vector<AiModelTask>& tasks, ModelDownloader* downloader);
 
     bool listsTask(AiModelTask task) const;
 
+    static std::unique_ptr<ModelKnob> make(EffectInstance* effect, const KnobPagePtr& page,
+                                           const std::vector<AiModelTask>& tasks, ModelDownloader* downloader,
+                                           bool deferred);
+    void connectDownloader();
+    void listEntriesByName();
     void refreshEntries();
     void onModelsChanged(const std::string& id);
     void postError(const std::string& message);
@@ -153,6 +185,8 @@ private:
     std::unique_ptr<QObject> _context;
     KnobChoiceWPtr _model;
     KnobButtonWPtr _download;
+    bool _feedsRender = true;
+    bool _activated = false;
 
     mutable QMutex _mutex;
     std::optional<Resolved> _resolved;

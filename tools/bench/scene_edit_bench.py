@@ -93,21 +93,21 @@ try:
         for i in range(n):
             op = app.createNode(op_id)
             if op is None:
-                op_id = "fr.inria.built-in.Dot"
+                op_id = "Dot"
                 op = app.createNode(op_id)
             require(op is not None, "create chain node %d" % i)
             op.connectInput(0, previous)
             if i == 0:
                 head = op
             previous = op
-        knob_name = os.environ.get("BENCH_KNOB", "translate" if op_id != "fr.inria.built-in.Dot" else "frameOffset")
+        knob_name = os.environ.get("BENCH_KNOB", "translate" if op_id != "Dot" else "frameOffset")
         edited = head if head.getParam(knob_name) is not None else usd
         tail = previous
     else:
         tail = usd
     knob = edited.getParam(knob_name)
     require(knob is not None, "%s has a %s parameter" % (edited.getScriptName(), knob_name))
-    viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
 
     def view():

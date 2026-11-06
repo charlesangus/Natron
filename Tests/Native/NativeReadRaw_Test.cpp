@@ -194,8 +194,8 @@ TEST_F(NativeReadRawTest, ColourKnobsAreHiddenAndProxyDisabledForARawFile)
 {
     NodePtr read = createRead(std::string(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png"));
     ASSERT_TRUE(bool(read));
-    EXPECT_FALSE(isSecret(read, kNatronReadNodeOCIOParamInputSpace "Index"));
-    EXPECT_FALSE(isSecret(read, "Context"));
+    EXPECT_FALSE(isSecret(read, kNatronReadParamColorspace));
+    EXPECT_FALSE(isSecret(read, kNatronOcioParamContext));
     KnobIPtr proxy = read->getKnobByName(kOfxImageEffectProxyParamName);
     ASSERT_TRUE(bool(proxy));
     EXPECT_TRUE(proxy->isEnabled(0));
@@ -203,14 +203,13 @@ TEST_F(NativeReadRawTest, ColourKnobsAreHiddenAndProxyDisabledForARawFile)
     KnobFile* file = dynamic_cast<KnobFile*>(read->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(file != NULL);
     file->setValue(bayerFixture().path());
-    EXPECT_TRUE(isSecret(read, kNatronReadNodeOCIOParamInputSpace "Index"));
-    EXPECT_TRUE(isSecret(read, kNatronReadNodeOCIOParamInputSpace));
-    EXPECT_TRUE(isSecret(read, "Context"));
+    EXPECT_TRUE(isSecret(read, kNatronReadParamColorspace));
+    EXPECT_TRUE(isSecret(read, kNatronOcioParamContext));
     EXPECT_FALSE(proxy->isEnabled(0));
     EXPECT_NE(std::string::npos, proxy->getHintToolTip().find("raw"));
 
     file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png"));
-    EXPECT_FALSE(isSecret(read, kNatronReadNodeOCIOParamInputSpace "Index"));
+    EXPECT_FALSE(isSecret(read, kNatronReadParamColorspace));
     EXPECT_TRUE(proxy->isEnabled(0));
 }
 

@@ -424,6 +424,101 @@ namespace YamlDetail {
             }
         }
 
+        // Points that follow a track, by index into the control or feather points: the track's
+        // tracker and name, the offsets of the point and its tangents from the track's centre, and
+        // the centre used while the track cannot be resolved.
+        void
+        emitTrackLinks(YAML::Emitter& em,
+                       const std::vector<const BezierCPSerialization*>& points,
+                       const std::vector<const BezierCPSerialization*>& feathers)
+        {
+            bool any = false;
+            for (int set = 0; set < 2; ++set) {
+                for (const BezierCPSerialization* point : (set == 0) ? points : feathers) {
+                    any = any || point->hasTrackLink;
+                }
+            }
+            if (!any) {
+                return;
+            }
+            emitKey(em, "trackLinks");
+            em << YAML::Value << YAML::BeginSeq;
+            for (int set = 0; set < 2; ++set) {
+                const std::vector<const BezierCPSerialization*>& list = (set == 0) ? points : feathers;
+                for (std::size_t i = 0; i < list.size(); ++i) {
+                    const BezierCPSerialization& point = *list[i];
+                    if (!point.hasTrackLink) {
+                        continue;
+                    }
+                    em << YAML::BeginMap;
+                    emitKey(em, "index");
+                    em << YAML::Value;
+                    emitInt(em, static_cast<long long>(i));
+                    if (set == 1) {
+                        emitKey(em, "feather");
+                        em << YAML::Value;
+                        emitBool(em, true);
+                    }
+                    emitKey(em, "tracker");
+                    em << YAML::Value;
+                    emitString(em, point.trackLinkTracker);
+                    emitKey(em, "track");
+                    em << YAML::Value;
+                    emitString(em, point.trackLinkTrack);
+                    emitKey(em, "offsets");
+                    em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+                    const double offsets[6] = { point.trackOffsetX, point.trackOffsetY, point.trackOffsetLeftX, point.trackOffsetLeftY, point.trackOffsetRightX, point.trackOffsetRightY };
+                    for (double v : offsets) {
+                        emitDouble(em, v);
+                    }
+                    em << YAML::EndSeq;
+                    emitDoublePair(em, "frozen", point.trackFrozenX, point.trackFrozenY);
+                    em << YAML::EndMap;
+                }
+            }
+            em << YAML::EndSeq;
+        }
+
+        void
+        readTrackLinks(const YAML::Node& node,
+                       std::vector<BezierCPSerialization>* points,
+                       std::vector<BezierCPSerialization>* feathers,
+                       const std::string& context,
+                       YamlWarnings* warnings)
+        {
+            if (!node.IsSequence()) {
+                fail(node, context, "expected a sequence");
+            }
+            for (std::size_t i = 0; i < node.size(); ++i) {
+                const std::string entryContext = context + "[" + std::to_string(i) + "]";
+                MapReader reader(node[i], entryContext, warnings);
+                const int index = readInt(reader.get("index"), entryContext + ".index");
+                bool feather = false;
+                if (YAML::Node featherNode = reader.get("feather")) {
+                    feather = readBool(featherNode, entryContext + ".feather");
+                }
+                std::vector<BezierCPSerialization>* list = feather ? feathers : points;
+                if ((index < 0) || (static_cast<std::size_t>(index) >= list->size())) {
+                    fail(node[i], entryContext, "point index out of range");
+                }
+                BezierCPSerialization& point = (*list)[index];
+                point.hasTrackLink = true;
+                point.trackLinkTracker = readString(reader.get("tracker"), entryContext + ".tracker");
+                point.trackLinkTrack = readString(reader.get("track"), entryContext + ".track");
+                const std::vector<double> offsets = readDoubleVector(reader.get("offsets"), entryContext + ".offsets", 6);
+                point.trackOffsetX = offsets[0];
+                point.trackOffsetY = offsets[1];
+                point.trackOffsetLeftX = offsets[2];
+                point.trackOffsetLeftY = offsets[3];
+                point.trackOffsetRightX = offsets[4];
+                point.trackOffsetRightY = offsets[5];
+                const std::vector<double> frozen = readDoubleVector(reader.get("frozen"), entryContext + ".frozen", 2);
+                point.trackFrozenX = frozen[0];
+                point.trackFrozenY = frozen[1];
+                reader.finish();
+            }
+        }
+
         void
         emitBezier(YAML::Emitter& em,
                    const BezierSerialization& bezier,
@@ -487,6 +582,7 @@ namespace YamlDetail {
                     }
                 }
             }
+            emitTrackLinks(em, points, feathers);
             em << YAML::EndMap;
         }
 
@@ -526,6 +622,9 @@ namespace YamlDetail {
             }
             if (YAML::Node featherCurves = reader.get("featherCurves")) {
                 readPointCurves(featherCurves, &feathers, context + ".featherCurves", warnings);
+            }
+            if (YAML::Node trackLinks = reader.get("trackLinks")) {
+                readTrackLinks(trackLinks, &points, &feathers, context + ".trackLinks", warnings);
             }
             reader.finish();
             bezier->controlPoints.assign(points.begin(), points.end());
@@ -807,6 +906,257 @@ namespace YamlDetail {
             reader.finish();
         }
 
+        void
+        emitSplineWarpValue(YAML::Emitter& em,
+                            const SplineWarpAnimatedValueSerialization& value)
+        {
+            em << YAML::BeginMap;
+            emitKey(em, "value");
+            em << YAML::Value;
+            emitDouble(em, value.value);
+            if (!value.curve.keyframes.empty()) {
+                emitKey(em, "curve");
+                em << YAML::Value;
+                emitCurve(em, value.curve);
+            }
+            em << YAML::EndMap;
+        }
+
+        SplineWarpAnimatedValueSerialization
+        readSplineWarpValue(const YAML::Node& node,
+                            const std::string& context,
+                            YamlWarnings* warnings)
+        {
+            SplineWarpAnimatedValueSerialization value;
+            MapReader reader(node, context, warnings);
+            value.value = readDouble(reader.get("value"), context + ".value");
+            if (YAML::Node curve = reader.get("curve")) {
+                value.curve = readCurve(curve, context + ".curve");
+            }
+            reader.finish();
+
+            return value;
+        }
+
+        void
+        emitSplineWarp(YAML::Emitter& em,
+                       const SplineWarpSerialization& warp)
+        {
+            em << YAML::BeginMap;
+            if (!warp.boundaries.empty()) {
+                emitKey(em, "boundaries");
+                em << YAML::Value;
+                emitStringList(em, warp.boundaries);
+            }
+            if (!warp.cookieCutters.empty()) {
+                emitKey(em, "cookieCutters");
+                em << YAML::Value;
+                emitStringList(em, warp.cookieCutters);
+            }
+            if (!warp.layerAmounts.empty()) {
+                emitKey(em, "layerAmounts");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLayerAmountSerialization& layer : warp.layerAmounts) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "layer");
+                    em << YAML::Value;
+                    emitString(em, layer.layer);
+                    emitKey(em, "amount");
+                    em << YAML::Value;
+                    emitSplineWarpValue(em, layer.amount);
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            if (!warp.links.empty()) {
+                emitKey(em, "links");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLinkSerialization& link : warp.links) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "source");
+                    em << YAML::Value;
+                    emitString(em, link.source);
+                    emitKey(em, "destination");
+                    em << YAML::Value;
+                    emitString(em, link.destination);
+                    emitKey(em, "startOffset");
+                    em << YAML::Value;
+                    emitDouble(em, link.startOffset);
+                    emitKey(em, "reversed");
+                    em << YAML::Value;
+                    emitBool(em, link.reversed);
+                    emitKey(em, "amount");
+                    em << YAML::Value;
+                    emitSplineWarpValue(em, link.amount);
+                    if (!link.correspondences.empty()) {
+                        emitKey(em, "correspondences");
+                        em << YAML::Value << YAML::BeginSeq;
+                        for (const SplineWarpCorrespondenceSerialization& c : link.correspondences) {
+                            em << YAML::BeginMap;
+                            emitKey(em, "source");
+                            em << YAML::Value;
+                            emitSplineWarpValue(em, c.source);
+                            emitKey(em, "destination");
+                            em << YAML::Value;
+                            emitSplineWarpValue(em, c.destination);
+                            em << YAML::EndMap;
+                        }
+                        em << YAML::EndSeq;
+                    }
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            if (!warp.layerTransforms.empty()) {
+                emitKey(em, "layerTransforms");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLayerTransformSerialization& layer : warp.layerTransforms) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "layer");
+                    em << YAML::Value;
+                    emitString(em, layer.layer);
+                    emitKey(em, "values");
+                    em << YAML::Value << YAML::BeginSeq;
+                    for (const SplineWarpTransformValueSerialization& v : layer.values) {
+                        em << YAML::BeginMap;
+                        emitKey(em, "knob");
+                        em << YAML::Value;
+                        emitString(em, v.knob);
+                        emitKey(em, "dimension");
+                        em << YAML::Value;
+                        emitInt(em, v.dimension);
+                        emitKey(em, "value");
+                        em << YAML::Value;
+                        emitSplineWarpValue(em, v.value);
+                        em << YAML::EndMap;
+                    }
+                    em << YAML::EndSeq;
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            if (!warp.transformLinks.empty()) {
+                emitKey(em, "transformLinks");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpTransformLinkSerialization& link : warp.transformLinks) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "item");
+                    em << YAML::Value;
+                    emitString(em, link.item);
+                    emitKey(em, "target");
+                    em << YAML::Value;
+                    emitString(em, link.target);
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            em << YAML::EndMap;
+        }
+
+        SplineWarpSerialization
+        readSplineWarp(const YAML::Node& node,
+                       const std::string& context,
+                       YamlWarnings* warnings)
+        {
+            SplineWarpSerialization warp;
+            MapReader reader(node, context, warnings);
+            if (YAML::Node boundaries = reader.get("boundaries")) {
+                warp.boundaries = readStringList(boundaries, context + ".boundaries");
+            }
+            if (YAML::Node cookieCutters = reader.get("cookieCutters")) {
+                warp.cookieCutters = readStringList(cookieCutters, context + ".cookieCutters");
+            }
+            if (YAML::Node layerAmounts = reader.get("layerAmounts")) {
+                if (!layerAmounts.IsSequence()) {
+                    fail(layerAmounts, context + ".layerAmounts", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < layerAmounts.size(); ++i) {
+                    const std::string layerContext = context + ".layerAmounts[" + std::to_string(i) + "]";
+                    SplineWarpLayerAmountSerialization layer;
+                    MapReader layerReader(layerAmounts[i], layerContext, warnings);
+                    layer.layer = readString(layerReader.get("layer"), layerContext + ".layer");
+                    layer.amount = readSplineWarpValue(layerReader.get("amount"), layerContext + ".amount", warnings);
+                    layerReader.finish();
+                    warp.layerAmounts.push_back(layer);
+                }
+            }
+            if (YAML::Node links = reader.get("links")) {
+                if (!links.IsSequence()) {
+                    fail(links, context + ".links", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < links.size(); ++i) {
+                    const std::string linkContext = context + ".links[" + std::to_string(i) + "]";
+                    SplineWarpLinkSerialization link;
+                    MapReader linkReader(links[i], linkContext, warnings);
+                    link.source = readString(linkReader.get("source"), linkContext + ".source");
+                    link.destination = readString(linkReader.get("destination"), linkContext + ".destination");
+                    link.startOffset = readDouble(linkReader.get("startOffset"), linkContext + ".startOffset");
+                    link.reversed = readBool(linkReader.get("reversed"), linkContext + ".reversed");
+                    link.amount = readSplineWarpValue(linkReader.get("amount"), linkContext + ".amount", warnings);
+                    if (YAML::Node correspondences = linkReader.get("correspondences")) {
+                        if (!correspondences.IsSequence()) {
+                            fail(correspondences, linkContext + ".correspondences", "expected a sequence");
+                        }
+                        for (std::size_t c = 0; c < correspondences.size(); ++c) {
+                            const std::string cContext = linkContext + ".correspondences[" + std::to_string(c) + "]";
+                            SplineWarpCorrespondenceSerialization correspondence;
+                            MapReader cReader(correspondences[c], cContext, warnings);
+                            correspondence.source = readSplineWarpValue(cReader.get("source"), cContext + ".source", warnings);
+                            correspondence.destination = readSplineWarpValue(cReader.get("destination"), cContext + ".destination", warnings);
+                            cReader.finish();
+                            link.correspondences.push_back(correspondence);
+                        }
+                    }
+                    linkReader.finish();
+                    warp.links.push_back(link);
+                }
+            }
+            if (YAML::Node layerTransforms = reader.get("layerTransforms")) {
+                if (!layerTransforms.IsSequence()) {
+                    fail(layerTransforms, context + ".layerTransforms", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < layerTransforms.size(); ++i) {
+                    const std::string layerContext = context + ".layerTransforms[" + std::to_string(i) + "]";
+                    SplineWarpLayerTransformSerialization layer;
+                    MapReader layerReader(layerTransforms[i], layerContext, warnings);
+                    layer.layer = readString(layerReader.get("layer"), layerContext + ".layer");
+                    YAML::Node values = layerReader.get("values");
+                    if (!values || !values.IsSequence()) {
+                        fail(values, layerContext + ".values", "expected a sequence");
+                    }
+                    for (std::size_t v = 0; v < values.size(); ++v) {
+                        const std::string vContext = layerContext + ".values[" + std::to_string(v) + "]";
+                        SplineWarpTransformValueSerialization value;
+                        MapReader vReader(values[v], vContext, warnings);
+                        value.knob = readString(vReader.get("knob"), vContext + ".knob");
+                        value.dimension = readInt(vReader.get("dimension"), vContext + ".dimension");
+                        value.value = readSplineWarpValue(vReader.get("value"), vContext + ".value", warnings);
+                        vReader.finish();
+                        layer.values.push_back(value);
+                    }
+                    layerReader.finish();
+                    warp.layerTransforms.push_back(layer);
+                }
+            }
+            if (YAML::Node transformLinks = reader.get("transformLinks")) {
+                if (!transformLinks.IsSequence()) {
+                    fail(transformLinks, context + ".transformLinks", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < transformLinks.size(); ++i) {
+                    const std::string linkContext = context + ".transformLinks[" + std::to_string(i) + "]";
+                    SplineWarpTransformLinkSerialization link;
+                    MapReader linkReader(transformLinks[i], linkContext, warnings);
+                    link.item = readString(linkReader.get("item"), linkContext + ".item");
+                    link.target = readString(linkReader.get("target"), linkContext + ".target");
+                    linkReader.finish();
+                    warp.transformLinks.push_back(link);
+                }
+            }
+            reader.finish();
+
+            return warp;
+        }
+
     } // namespace
 
     void
@@ -832,6 +1182,11 @@ namespace YamlDetail {
         emitKey(em, "layer");
         em << YAML::Value;
         emitLayer(em, roto.baseLayer, std::string(), blobs);
+        if (roto.hasSplineWarp) {
+            emitKey(em, "splineWarp");
+            em << YAML::Value;
+            emitSplineWarp(em, roto.splineWarp);
+        }
         em << YAML::EndMap;
     }
 
@@ -851,6 +1206,10 @@ namespace YamlDetail {
         }
         if (YAML::Node layer = reader.get("layer")) {
             readLayer(layer, &roto.baseLayer, std::string(), source, context + ".layer", warnings);
+        }
+        if (YAML::Node warp = reader.get("splineWarp")) {
+            roto.hasSplineWarp = true;
+            roto.splineWarp = readSplineWarp(warp, context + ".splineWarp", warnings);
         }
         reader.finish();
 

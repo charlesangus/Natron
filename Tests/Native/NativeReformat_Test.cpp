@@ -66,7 +66,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kReformatID = PLUGINID_NATRON_REFORMAT;
-const int kOfxReformatMajor = 2;
 const int kNativeReformatMajor = PLUGIN_MAJOR_NATRON_REFORMAT;
 const double kTime = 1.;
 
@@ -156,11 +155,10 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), kReformatID, kOfxReformatMajor, kNativeReformatMajor);
+        ParityPair pair = makeParityPair(getApp(), kReformatID, kNativeReformatMajor);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Reformat is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -191,7 +189,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(pair, mipmapLevel), mipmapLevel, kReformatTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Reformat " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

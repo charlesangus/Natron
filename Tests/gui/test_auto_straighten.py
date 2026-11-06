@@ -33,9 +33,9 @@ GEOMETRY_STABLE_POLLS = 5
 GEOMETRY_TIMEOUT_S = 15.0
 ALL_SECTIONS = ("panel", "lines", "rectangle", "drag")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
-PLUGIN_TRANSFORM = "net.sf.openfx.TransformPlugin"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_VIEWER = "Viewer"
+PLUGIN_TRANSFORM = "Transform"
 PLUGIN_STRAIGHTEN = "AutoStraighten"
 PLUGIN_CORNERPIN = "CornerPin"
 

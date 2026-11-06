@@ -65,31 +65,23 @@ ModelColourspaceKnobs::create(KnobHolder* holder,
     _modelSpace = modelSpace;
 
     OcioSpaceKnobs::Description description;
-    description.prefix = kModelColourspaceParam;
+    description.name = kModelColourspaceParam;
     description.label = QCoreApplication::translate("ModelColourspaceKnobs", "Model Colourspace");
-    description.spaceHint = QCoreApplication::translate("ModelColourspaceKnobs", "The OpenColorIO colourspace the model is given its input in and returns its output in. "
-                                                                                 "Empty is the working space.");
-    description.menuHint = QCoreApplication::translate("ModelColourspaceKnobs", "The OpenColorIO colourspace the model runs in: the image is converted from the working "
-                                                                                "space into it, the model runs, and its output is converted back. Pick the space the model "
-                                                                                "was trained in: sRGB Encoded Rec.709 for the sRGB models, Linear Rec.2020 for the linear "
-                                                                                "ones. Until a space is picked, it follows the selected model. Nothing else is done to "
-                                                                                "the values, so keeping them in the range the model expects is up to you.");
-    description.setLabel = QCoreApplication::translate("ModelColourspaceKnobs", "Model Colourspace Set");
+    description.hint = QCoreApplication::translate("ModelColourspaceKnobs", "The OpenColorIO colourspace the model runs in: the image is converted from the working "
+                                                                            "space into it, the model runs, and its output is converted back. Pick the space the model "
+                                                                            "was trained in: sRGB Encoded Rec.709 for the sRGB models, Linear Rec.2020 for the linear "
+                                                                            "ones. Project default follows the selected model; its label shows the colourspace it "
+                                                                            "currently stands for. Nothing else is done to the values, so keeping them in the range "
+                                                                            "the model expects is up to you.");
+    description.defaultHint = QCoreApplication::translate("ModelColourspaceKnobs", "The colourspace the selected model was trained in, following the model as it changes.");
     _ocio.addSpace(holder, page, description, [this]() { return automaticSpace(); });
-
-    KnobStringPtr spaceKnob = std::dynamic_pointer_cast<KnobString>(holder->getKnobByName(kModelColourspaceParam));
-    if (spaceKnob) {
-        spaceKnob->setDefaultValue(kDefaultSpace);
-    }
 }
 
 void
 ModelColourspaceKnobs::watchConfig()
 {
-    _ocio.watchConfig([this]() {
-        _ocio.refreshMenus();
-        _ocio.sourceChanged();
-    });
+    _ocio.refreshProjectDefaults();
+    _ocio.watchConfig([this]() { _ocio.refreshMenus(); });
 }
 
 void
@@ -115,6 +107,12 @@ ModelColourspaceKnobs::knobChanged(KnobI* k,
                                    ValueChangedReasonEnum reason)
 {
     return _ocio.knobChanged(k, reason);
+}
+
+void
+ModelColourspaceKnobs::appendHash(ContentHasher& h) const
+{
+    _ocio.appendHash(h);
 }
 
 std::string

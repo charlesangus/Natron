@@ -32,6 +32,7 @@
 #include <memory>
 
 #include <QtCore/QAbstractItemModel>
+#include <QtCore/QSet>
 #include <QtCore/QStringList>
 
 #include "Global/GlobalDefines.h"
@@ -129,6 +130,8 @@ public:
     enum RoleEnum {
         // The prim's path, a QString.
         ePrimPathRole = Qt::UserRole + 1,
+        // Whether the prim has a spec in the viewed node's own layers or has a descendant that does, a bool.
+        eChangedHereRole,
     };
 
     // How many children one fetchMore() adds.
@@ -156,6 +159,18 @@ public:
     QModelIndex indexOfPath(const QString& path, bool populate);
 
     QString pathOf(const QModelIndex& index) const;
+
+    /**
+     * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
+     * are marked too, so the set stays small however large the stage is.
+     **/
+    void setChangedHere(const QSet<QString>& paths);
+
+    bool isChangedHere(const QString& path) const;
+
+    int getChangedHereCount() const;
+
+    QStringList getChangedHerePaths() const;
 
     // How many items have been read, the root's children and down.
     int getItemCount() const;

@@ -970,6 +970,36 @@ getLayerOwner(const PXR_NS::SdfLayerHandle& layer)
     return found->second.owner.lock();
 }
 
+std::vector<std::string>
+getAuthoredPrimPaths(const ScenePayload& payload,
+                     const NodePtr& owner)
+{
+    std::set<PXR_NS::SdfPath> paths;
+
+    if (!owner) {
+        return std::vector<std::string>();
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        if (!entry.layer || (getLayerOwner(entry.layer) != owner)) {
+            continue;
+        }
+        entry.layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&paths](const PXR_NS::SdfPath& path) {
+            const PXR_NS::SdfPath primPath = path.GetPrimPath().StripAllVariantSelections();
+            if (!primPath.IsEmpty() && (primPath != PXR_NS::SdfPath::AbsoluteRootPath())) {
+                paths.insert(primPath);
+            }
+        });
+    }
+    std::vector<std::string> result;
+
+    result.reserve(paths.size());
+    for (const PXR_NS::SdfPath& path : paths) {
+        result.push_back(path.GetString());
+    }
+
+    return result;
+}
+
 NodePtr
 authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
                 PXR_NS::UsdTimeCode time,

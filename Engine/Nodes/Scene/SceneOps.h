@@ -412,6 +412,14 @@ void setLayerOwner(const ScenePayload& payload,
 NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
 
 /**
+ * @brief The prims owner's own layers in payload hold specs for, sorted and without repeats: a
+ * property's spec counts for its prim. Reads the layers, not any stage, so the cost follows what
+ * the node authored. Empty when no layer of payload is recorded as owner's.
+ **/
+std::vector<std::string> getAuthoredPrimPaths(const ScenePayload& payload,
+                                              const NodePtr& owner);
+
+/**
  * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
  * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
  * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty

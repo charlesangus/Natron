@@ -37,6 +37,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QMimeData>
 #include <QtCore/QSet>
+#include <QtGui/QFont>
 #include <QtGui/QIcon>
 
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -274,6 +275,7 @@ struct SceneGraphModel::Implementation {
     U64 lastEditCount = 0;
     int itemCount = 0;
     int resetCount = 0;
+    QSet<QString> changedHere;
     // Set while the model changes rows: a slot connected to the change signals must not fetch,
     // since children are not yet a prefix of childNames and a nested insert would land inside
     // the change in flight.
@@ -299,6 +301,18 @@ struct SceneGraphModel::Implementation {
     {
         root.path = SdfPath::AbsoluteRootPath();
         root.pathString = QString::fromUtf8("/");
+    }
+
+    void emitChangedHere(Item* item)
+    {
+        if (item->children.empty()) {
+            return;
+        }
+        Q_EMIT model->dataChanged(model->createIndex(0, 0, item->children.front().get()),
+                                  model->createIndex((int)item->children.size() - 1, eColumnCount - 1, item->children.back().get()));
+        for (const std::unique_ptr<Item>& child : item->children) {
+            emitChangedHere(child.get());
+        }
     }
 
     Item* itemOf(const QModelIndex& index) const
@@ -629,6 +643,7 @@ SceneGraphModel::setSource(const SceneGraphStageSourcePtr& source)
         _imp->source->readStage([this](const SceneStage*) { _imp->stopListening(); });
     }
     _imp->source = source;
+    _imp->changedHere.clear();
     _imp->resetTo(false, PrimData());
     refresh();
 }
@@ -788,6 +803,34 @@ SceneGraphModel::pathOf(const QModelIndex& index) const
     return index.isValid() ? _imp->itemOf(index)->pathString : QString();
 }
 
+void
+SceneGraphModel::setChangedHere(const QSet<QString>& paths)
+{
+    if (paths == _imp->changedHere) {
+        return;
+    }
+    _imp->changedHere = paths;
+    _imp->emitChangedHere(&_imp->root);
+}
+
+bool
+SceneGraphModel::isChangedHere(const QString& path) const
+{
+    return _imp->changedHere.contains(path);
+}
+
+int
+SceneGraphModel::getChangedHereCount() const
+{
+    return _imp->changedHere.size();
+}
+
+QStringList
+SceneGraphModel::getChangedHerePaths() const
+{
+    return _imp->changedHere.values();
+}
+
 int
 SceneGraphModel::getItemCount() const
 {
@@ -880,7 +923,7 @@ SceneGraphModel::data(const QModelIndex& index,
             return QVariant();
         }
     case Qt::ToolTipRole:
-        return item->pathString;
+        return _imp->changedHere.contains(item->pathString) ? tr("%1\nChanged here").arg(item->pathString) : item->pathString;
     case Qt::DecorationRole:
         if (index.column() == eColumnName) {
             const QIcon icon = iconForType(item->data.type);
@@ -892,6 +935,17 @@ SceneGraphModel::data(const QModelIndex& index,
         return QVariant();
     case ePrimPathRole:
         return item->pathString;
+    case eChangedHereRole:
+        return _imp->changedHere.contains(item->pathString);
+    case Qt::FontRole:
+        if ((index.column() == eColumnName) && _imp->changedHere.contains(item->pathString)) {
+            QFont font;
+            font.setBold(true);
+
+            return font;
+        }
+
+        return QVariant();
     default:
         return QVariant();
     }

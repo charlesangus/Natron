@@ -52,7 +52,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 
 ## Phase 276.2: Independent fix and baseline
 
-- [ ] M276.P2.T1 — Placement probes the key the render will use
+- [x] M276.P2.T1 — Placement probes the key the render will use
   - files: `Engine/GpuPlacement.cpp` (`isCached` lambda ~:1023-1062), `Tests/Native/ViewerRootOnDevice_Test.cpp`
   - approach: the placement `isCached` lambda probes only the non-draft key, while `renderRoI` (`EffectInstanceRenderRoI.cpp:902-914, 973`) probes the draft key first. Capture the frame's draft mode in the lambda and probe the draft key first when `node->isDraftModeUsed()`, so it matches the lookup `renderRoI` will make.
   - verify: an app-plus-cache test (`GpuPlacement_Test` uses fake inputs, so it can't show this) with a cached draft image keeps the node on the CPU. It fails before the fix and passes after.

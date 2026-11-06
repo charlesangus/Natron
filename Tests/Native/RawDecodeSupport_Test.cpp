@@ -319,15 +319,19 @@ TEST_F(RawDecodeSupportTest, DngWindowFollowsTheDefaultCropWithinTheActiveArea)
         const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(path, &error);
         ASSERT_TRUE(bool(header)) << error;
 
+        Reference ref;
+        ASSERT_TRUE(referenceDecode(path, &ref, &error)) << error;
+        const rawspeed::iPoint2D uncropped = (**ref.image).getUncroppedDim();
+
         DngCrop crop;
-        ASSERT_TRUE(readDngCrop(path, rawspeed::iPoint2D(header->format.width(), header->format.height()), &crop, &error)) << error;
+        ASSERT_TRUE(readDngCrop(path, uncropped, &crop, &error)) << error;
         const int width = crop.hasDefaultCrop ? crop.size.x : crop.activeArea.dim.x;
         const int height = crop.hasDefaultCrop ? crop.size.y : crop.activeArea.dim.y;
         const int left = crop.activeArea.pos.x + (crop.hasDefaultCrop ? crop.origin.x : 0);
         const int top = crop.activeArea.pos.y + (crop.hasDefaultCrop ? crop.origin.y : 0);
 
-        EXPECT_EQ(RectI(0, 0, header->format.width(), header->format.height()), header->format);
-        EXPECT_EQ(RectI(left, header->format.height() - top - height, left + width, header->format.height() - top), header->window);
+        EXPECT_EQ(RectI(0, 0, uncropped.x, uncropped.y), header->format);
+        EXPECT_EQ(RectI(left, uncropped.y - top - height, left + width, uncropped.y - top), header->window);
         EXPECT_EQ(crop.activeArea.dim.x, width);
         EXPECT_EQ(crop.activeArea.dim.y, height);
     }

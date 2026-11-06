@@ -223,7 +223,6 @@ TEST_F(NativeReadRawTest, RawPrepareFormatIsTheWindowSizeAtTheOrigin)
         EXPECT_TRUE(kept == outputFormat(prepare));
         EXPECT_TRUE(kept == regionOfDefinition(prepare));
 
-        // Margins are taken from the window, and the format follows them.
         EffectInstancePtr effect = prepare->getEffectInstance();
         effect->getKnobByNameAndType<KnobBool>(kRawPrepareParamCropOverride)->setValue(true);
         effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropLeft)->setValue(3);

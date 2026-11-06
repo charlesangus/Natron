@@ -587,7 +587,7 @@ RawPrepare::getPreferredMetadataAt(double time,
 
     // The output is at the origin, so a format left at the input's would show the kept area
     // in a corner of the full sensor.
-    if ((status != eStatusFailed) && settings && !settings->passThrough) {
+    if (settings && !settings->passThrough) {
         metadata.setOutputFormat(RectI(0, 0, settings->kept.width(), settings->kept.height()));
     }
 

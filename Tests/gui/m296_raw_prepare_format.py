@@ -2,6 +2,8 @@
 RawPrepare, RawDemosaic and a Viewer, and then:
   - RawPrepare, RawDemosaic and the Viewer have a format that starts at (0, 0) and is as wide and
     as high as the Read's crop (its region of definition);
+  - changing RawPrepare's crop margins with the Viewer on the demosaic, and the frame left alone,
+    moves the format the viewer's info bar shows to the trimmed size;
   - the demosaiced picture reaches every edge of that format: samples along the top, bottom, left
     and right edges of the image as drawn in the viewer are not black, and the drawn image has the
     crop's aspect ratio.
@@ -13,6 +15,7 @@ Shots, under $NATRON_GUI_TEST_OUT: m296-read.png (the Read alone) and m296-demos
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m296_raw_prepare_format.py
 """
 import os
+import re
 import sys
 import traceback
 
@@ -22,6 +25,8 @@ STARTUP_TIMEOUT_S = 60.0
 RENDER_TIMEOUT_S = 180.0
 SETTLE_POLLS = 3
 EDGE_SAMPLES = 32
+MARGINS = {"cropLeft": 6, "cropBottom": 4, "cropRight": 10, "cropTop": 8}
+FORMAT_TIMEOUT_S = 30.0
 EDGE_INSET_PX = 2
 BLACK_MAX_CHANNEL = 2
 LIT_FRACTION = 0.9
@@ -32,7 +37,7 @@ FRAME_FRACTION = 0.2
 try:
     from PySide6.QtCore import QMetaObject
     from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel
 
     import guitest as gt
     from guitest import check, report, require
@@ -146,6 +151,19 @@ try:
         check((fmt.width(), fmt.height()) == size,
               "%s's format is the %dx%d crop (%dx%d)" % (label, size[0], size[1], fmt.width(), fmt.height()))
 
+    def info_bar_sizes():
+        """The (width, height) of every format the visible info bars show."""
+        sizes = []
+        for bar in gt.widgets_of("InfoViewerWidget"):
+            if not bar.isVisible():
+                continue
+            for label in bar.findChildren(QLabel):
+                text = re.sub(r"<[^>]*>", "", label.text() or "").replace("&nbsp;", " ").strip()
+                found = re.fullmatch(r"(?:\S+ )?(\d+)x(\d+)(?::[\d.]+)?", text)
+                if found and label.isVisible():
+                    sizes.append((int(found.group(1)), int(found.group(2))))
+        return sizes
+
     def steps():
         # A viewer widget only exists once a Viewer node does.
         app.getNode("Viewer1") or app.createNode("Viewer")
@@ -214,6 +232,16 @@ try:
             fraction = lit_count / float(len(points))
             check(fraction >= LIT_FRACTION,
                   "no black border along the %s edge (%d of %d samples lit)" % (edge, lit_count, len(points)))
+
+        trimmed = (size[0] - MARGINS["cropLeft"] - MARGINS["cropRight"],
+                   size[1] - MARGINS["cropTop"] - MARGINS["cropBottom"])
+        check(size in info_bar_sizes(), "the info bar shows the crop %dx%d (%r)" % (size + (info_bar_sizes(),)))
+        prepare.getParam("cropOverride").setValue(True)
+        for name, margin in MARGINS.items():
+            prepare.getParam(name).setValue(margin)
+        ok = yield ("until", lambda: trimmed in info_bar_sizes(), FORMAT_TIMEOUT_S)
+        check(ok, "the info bar follows the margins to %dx%d (%r)" % (trimmed + (info_bar_sizes(),)))
+        check_format(prepare, "RawPrepare with margins", trimmed)
 
     gt.run(steps())
 except Exception:

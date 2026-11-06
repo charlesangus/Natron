@@ -326,6 +326,8 @@ TEST_F(NativeRawPrepareTest, PreparedDataPassesThroughWithAWarning)
         }
     }
     EXPECT_EQ(metadata, outputMetadata(node));
+    EXPECT_TRUE(outputFormat(source) == outputFormat(node));
+    EXPECT_TRUE(outputFormat(source) == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
     ASSERT_TRUE(node->hasPersistentMessage());
     QString message;
     int type = 0;
@@ -373,6 +375,53 @@ TEST_F(NativeRawPrepareTest, TheOutputFormatFollowsTheCropOverride)
     EXPECT_TRUE(RectI(0, 0, kWidth - 5, kHeight - 5) == outputFormat(node));
     setCropMargins(node, 1, 0, 0, 2);
     EXPECT_TRUE(RectI(0, 0, kWidth - 1, kHeight - 2) == outputFormat(node));
+}
+
+TEST_F(NativeRawPrepareTest, APreparedSourceKeepsItsFormatEvenWithCropMargins)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("BGGR", 0, 0, eRawStagePrepared));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    setCropMargins(node, 2, 1, 3, 4);
+    const RectI inputFormat = outputFormat(source);
+    EXPECT_TRUE(inputFormat == outputFormat(node));
+    EXPECT_TRUE(inputFormat == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, ADisabledNodeKeepsItsInputsFormat)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    setCropMargins(node, 2, 1, 3, 4);
+    node->getDisabledKnob()->setValue(true);
+    EXPECT_TRUE(outputFormat(source) == outputFormat(node));
+    EXPECT_TRUE(outputFormat(source) == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, UnresolvedSettingsLeaveTheFormatAlone)
+{
+    NodePtr node = createPrepare(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    const RectI before = outputFormat(node);
+    setCropMargins(node, 2, 1, 3, 4);
+    EXPECT_TRUE(before == outputFormat(node));
+    EXPECT_TRUE(before == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, TheFormatStaysInPixelsWhateverTheSourcePixelAspectRatio)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setPixelAspectRatio(2.);
+    setCropMargins(node, 2, 1, 3, 4);
+    EXPECT_TRUE(RectI(0, 0, kWidth - 5, kHeight - 5) == outputFormat(node));
+    EXPECT_EQ(2., node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getPixelAspectRatio(-1));
 }
 
 TEST_F(NativeRawPrepareTest, ADemosaicAfterThePrepareReportsThePreparedFormat)

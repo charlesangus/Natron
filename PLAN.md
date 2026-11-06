@@ -380,7 +380,7 @@ future core work has solid ground to build on.
 | M293 | ZDefocus Debug Outputs | todo | M131, M133 |  | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
-| M296 | Raw Prepare Output Format | doing | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
+| M296 | Raw Prepare Output Format | doing | M80 | misty-marten | E3 | | uat | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 | M297 | Viewer Node Knobs Follow-ups | todo | M164 |  | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | todo | M177 |  | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
 | M299 | Roto Render Performance | todo | M224, M276, M300 |  | E6 | | | [M299-roto-render-performance.md](PLAN/MILESTONES/M299-roto-render-performance.md) |

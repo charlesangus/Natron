@@ -99,7 +99,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
   - approach: Add `Curated::groups` (`GroupSpec{name, parent, open, tooltip}`) and `CuratedSetting::group`. Create groups lazily in table order, labels from `labelFromScriptName(name, prefix)`. Reject depth above 2. A group name equal to a setting's natural script name fails a test rather than using the fallback at `:1029-1034`. A setting with no group goes to the existing curated group, so Cycles and MoonRay are unchanged until T3 and T4.
   - verify: with a test table via `setDescriptorsForTests`, parents and order match, empty groups are absent, open states match; namespace digests are equal for the same values under two layouts; toggling a group leaves the digest and `values()` unchanged.
   - size: M
-- [ ] M253.P4.T2 — Classify generated settings into groups and apply it to Storm
+- [x] M253.P4.T2 — Classify generated settings into groups and apply it to Storm
   - files: `Engine/Nodes/Scene/RenderSettingsKnobs.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`, `Tests/Scene/USDRenderSettings_Test.cpp`
   - approach: Add the classifier above for keys without a curated entry, with the 20-knob open rule. Unmatched keys go to `<prefix>OtherSettings`.
   - verify: a table test covers each rule, the rule-order cases and leftovers; `:325` keeps an unmatched key in its fixture; `audit` still reports every key with a knob; Storm's real keys land as laid out (its key names are unconfirmed, check them).

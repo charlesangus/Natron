@@ -34,7 +34,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 
 ## Phase 302.1: Viewer stale state
 
-- [ ] M302.P1.T1 — Track stale vs current per viewer
+- [x] M302.P1.T1 — Track stale vs current per viewer
   - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Engine/ViewerInstancePrivate.h`, `Tests/ViewerStaleState_Test.cpp` (new)
   - approach: Don't add a request age: derive stale from `renderAge[2]` against `displayAge[2]` (`ViewerInstancePrivate.h:157-164`), using `isLatestRender` and `checkAndUpdateDisplayAge`, per input for A/B and after abort coalescing. Emit `staleChanged(bool)` on transitions. Viewer-cache playback frames count as current.
   - verify: A test requests renders, aborts one, and checks the stale/current transitions and the A/B rule.

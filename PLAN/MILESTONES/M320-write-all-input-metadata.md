@@ -60,7 +60,7 @@ new attribute names back.
 
 ## Phase 320.2: Knob And Read-Back
 
-- [ ] M320.P2.T1 — Replace the `writeMetadata` bool with a `metadata` choice knob
+- [x] M320.P2.T1 — Replace the `writeMetadata` bool with a `metadata` choice knob
   - files: Engine/Nodes/IO/NativeWrite.h, Engine/Nodes/IO/NativeWrite.cpp, Engine/Nodes/IO/docs/NativeWrite.md, Engine/Nodes/README.md, Tests/Native/NativeWriteMetadata_Test.cpp
   - approach: Replace `kNatronWriteParamWriteMetadata`/`KnobBool` (NativeWrite.cpp ~:1022-1028, member at NativeWrite.h ~:335) with a `KnobChoice` script name `metadata`, label "Metadata", options No Metadata / Default Metadata / All Metadata Except Input / All Metadata, default All Metadata Except Input, animation off; tooltip says what each option writes and that formats without custom attributes (TIFF, JPEG, DPX) take only their standard tags. At ~:2213 skip `applyMetadata` for No Metadata, else pass the mapped mode. Grep `.local/docs` (Nuke Write `metadata`) for option wording. Update NativeWrite.md and the README metadata routing section (~:273). Rewrite `SwitchedOffWritesNoneOfTheCustomAttributes` and `WriteMetadataDefaultsOn` for the new knob; grep Tests/ and Tests/gui for other `writeMetadata` users and update them.
   - verify: NativeWriteMetadata tests pass with the new knob; `git grep writeMetadata` finds no stale users.

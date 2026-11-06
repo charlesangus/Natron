@@ -165,7 +165,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Phase 270.4: Goldens, docs and sign-off
 
-- [ ] M270.P3.T3 — Re-record goldens and add node tests
+- [x] M270.P3.T3 — Re-record goldens and add node tests
   - files: `Tests/Native/NativeGolden_Test.cpp`, `Tests/Native/NativeReformat_Test.cpp`, `Tests/fixtures/native-golden/` (Transform, ITransform, ICornerPin, Reformat, STMapMap, IDistortMap, SplineWarp), `Tests/fixtures/native-parity/{Transform,Reformat}/` (rotate30-scale05-cubic, skew-yx, mask-mix05, project, format-par, box-fit; `NATRON_PARITY_RECORD_DIR`), `Tests/Native/NativeTransform_Test.cpp` and `NativeReformat_Test.cpp` tolerance comments
   - approach: Re-record only goldens whose output changed; rounding-only diffs are re-recorded without reopening the design, and the commit records the cause per directory. Add one Reformat downscale golden for Lanczos 3, one Transform golden for Sinc at Lobes 3 and one STMap minifying golden for Lanczos 3, as ≤256 px half-float compressed crops. Add a test that a 1/4 Lanczos 3 Reformat has lower alias energy than Impulse.
   - verify: `ctest -R "NativeTransform|NativeReformat|NativeGolden"` passes at the phase build; `du -sh Tests/fixtures/native-golden` grows by under 1 MB.

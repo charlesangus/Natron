@@ -1020,9 +1020,9 @@ NativeWrite::initializeKnobs()
         options.push_back(ChoiceOption(kNatronWriteMetadataDefault, tr("Default Metadata").toStdString(),
                                        tr("Write only the keys that map to the file format's own attributes and standard tags, such as the timecode, EXIF fields, creator and comment.").toStdString()));
         options.push_back(ChoiceOption(kNatronWriteMetadataAllExceptInput, tr("All Metadata Except Input").toStdString(),
-                                       tr("Write every key, including custom ones, under its full key name. The keys that identify the input file (path, frame, size and modification time) are left out.").toStdString()));
+                                       tr("Write every key, including custom ones, under its full key name. The keys that describe the input file are left out: its path, frame, size and modification time, and its pixel aspect, width, height, bit depth, sample type and view names.").toStdString()));
         options.push_back(ChoiceOption(kNatronWriteMetadataAll, tr("All Metadata").toStdString(),
-                                       tr("Write every key, including the keys that identify the input file.").toStdString()));
+                                       tr("Write every key, including the keys that describe the input file. Its pixel aspect, width, height, bit depth, sample type and view names can contradict the file being written if the image has been changed since it was read.").toStdString()));
         metadata->populateChoices(options);
     }
     metadata->setDefaultValue(2);

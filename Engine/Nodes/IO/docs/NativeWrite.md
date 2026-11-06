@@ -57,8 +57,8 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `OiioReadSupport::attributeMetadata()`: No Metadata skips the call, Default
   Metadata writes the keys with a native attribute, All Metadata Except Input
   (the default) also writes the rest under their full key names, and All
-  Metadata adds the file-identity keys. The routing rules are in the Metadata
-  section above.
+  Metadata adds the keys that describe the input file. The routing rules are in
+  the Metadata section of `Engine/Nodes/README.md`.
 - **When the file is written.** Only a frame of the Write's own render to
   disk encodes: the panel's Render button, Render Selected, `app.render` and
   the `-w` command-line render all run through `startWritersRendering()` and

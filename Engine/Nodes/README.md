@@ -276,15 +276,30 @@ routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
   `dpx/` and `cin/` go to TIFF, DPX and Cineon files respectively; `oiio/` goes
   to every format.
 - `ofx/timecode` and `ofx/edgecode` are written as `smpte:TimeCode` and
-  `smpte:KeyCode`.
-- The Write's `metadata` choice selects the mode. Default Metadata stops at the
-  rules above: other `ofx/` keys, `quicktime/` keys and user keys are not
-  written. All Metadata Except Input (the default) also writes those under
-  their full key name (PNG takes text only; formats without custom attributes
-  keep their standard tags), and All Metadata adds the file-identity keys
-  `ofx/filepath`, `ofx/frame`, `ofx/filesize` and `ofx/mtime`. No Metadata
-  writes none. Keys that describe the source file's layout and a few excluded
-  `oiio/`, `tiff/` and `dpx/` names are never written.
+  `smpte:KeyCode`, except on PNG, which has no binary time code.
+- `ofx/creator`, `ofx/copyright` and `ofx/comment` are written as `Software`,
+  `Copyright` and `ImageDescription`, `ofx/framerate` as `FramesPerSecond`, and
+  `ofx/focallength`, `ofx/fnumber` and `ofx/exposuretime` as the EXIF
+  `FocalLength`, `FNumber` and `ExposureTime` (under `Exif:` on OpenEXR). A
+  format-native key for the same tag wins, whichever spelling it is under.
+- The Write's `metadata` choice selects the mode. Default Metadata writes
+  everything above: the remaining `ofx/` keys, `quicktime/` keys and user keys
+  are not written. All Metadata Except Input (the default) also writes those
+  under their full key name, along with the `ofx/` keys above, `oiio/` keys on
+  OpenEXR and PNG (whose writers keep no `oiio:` attribute), and a time code the
+  format cannot hold as one. PNG takes text only, and formats without custom
+  attributes keep their standard tags. All Metadata adds the keys that describe
+  the input file: the file-identity keys `ofx/filepath`, `ofx/frame`,
+  `ofx/filesize` and `ofx/mtime`, and the source-layout keys `ofx/pixelaspect`,
+  `ofx/width`, `ofx/height`, `ofx/bitdepth`, `ofx/sampletype` and
+  `ofx/viewnames`, which can go stale after a Reformat. No Metadata writes none.
+- On OpenEXR a number is written as a float when a float holds it exactly, so a
+  float read from a file stays one, and otherwise as a double; a double array
+  whose length has no OpenEXR double type narrows to float, and names OIIO or
+  OpenEXR type as float are always float.
+- Keys that describe the source file's layout, names that instruct OIIO's
+  writers (`openexr:*`, `oiio:*`, `textureformat`) and a few excluded `oiio/`,
+  `tiff/` and `dpx/` names are never written, matched without regard to case.
 - A key the target format does not take is dropped, with a debug log line.
 
 `Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata: `ModifyMetadata`,

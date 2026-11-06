@@ -224,6 +224,7 @@ struct ViewerGL::Implementation
     double _screenPixelRatio;
     std::unique_ptr<QFont> _textFont;
     bool overlay; /*!< True if the user enabled overlay display*/
+    bool staleBorder; /*!< True while the border marking a stale image is drawn*/
     bool updatingTexture;
     QColor clearColor;
     QMenu* menu;

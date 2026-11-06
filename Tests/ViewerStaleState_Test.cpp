@@ -154,3 +154,17 @@ TEST_F(ViewerStaleStateTest, RenderThreadTransitionIsDeliveredOnTheMainThread)
     EXPECT_EQ(std::this_thread::get_id(), receiver);
     ASSERT_EQ(2u, transitions.size());
 }
+
+TEST_F(ViewerStaleStateTest, PausedViewerStaysStaleUntilARefreshLands)
+{
+    viewer->setViewerPaused(true, true);
+    // A paused viewer still takes the request but never uploads its image, so no display age follows.
+    const U64 pausedRequest = viewer->requestRenderForTests(0, true, false);
+    (void)pausedRequest;
+    EXPECT_TRUE(viewer->isStale());
+    viewer->setViewerPaused(false, true);
+    EXPECT_TRUE(viewer->isStale());
+    const U64 refresh = viewer->requestRenderForTests(0, true, false);
+    viewer->renderShownForTests(0, refresh);
+    EXPECT_FALSE(viewer->isStale());
+}

@@ -336,8 +336,42 @@ ViewerTab::abortRendering()
 }
 
 void
+ViewerTab::onViewerStaleChanged(bool stale)
+{
+    _imp->viewerStale = stale;
+    refreshStaleBorder();
+}
+
+void
+ViewerTab::onStaleBorderTimeout()
+{
+    if (_imp->viewerStale && !_imp->playbackRunning) {
+        _imp->viewer->setStaleBorderVisible(true);
+    }
+}
+
+// Playback flips the viewer stale and current once per frame, and a frame slower than the delay
+// would flash the border, so playback keeps it hidden whatever the delay is.
+void
+ViewerTab::refreshStaleBorder()
+{
+    if (!_imp->viewerStale || _imp->playbackRunning) {
+        _imp->staleBorderTimer.stop();
+        _imp->viewer->setStaleBorderVisible(false);
+
+        return;
+    }
+    if (!_imp->staleBorderTimer.isActive() && !_imp->viewer->isStaleBorderVisible()) {
+        _imp->staleBorderTimer.start(appPTR->getCurrentSettings()->getViewerStaleBorderDelayMs());
+    }
+}
+
+void
 ViewerTab::onEngineStarted(bool forward)
 {
+    _imp->playbackRunning = true;
+    refreshStaleBorder();
+
     Gui* gui = getGui();
     if (!gui) {
         return;
@@ -382,6 +416,9 @@ ViewerTab::onSetDownPlaybackButtonsTimeout()
 void
 ViewerTab::onEngineStopped()
 {
+    _imp->playbackRunning = false;
+    refreshStaleBorder();
+
     if ( !getGui() ) {
         return;
     }

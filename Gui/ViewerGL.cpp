@@ -529,9 +529,51 @@ ViewerGL::paintGL()
         if (_imp->ms == eMouseStateSelecting) {
             _imp->drawSelectionRectangle();
         }
+        if (_imp->staleBorder) {
+            const double bx = 2. * _imp->glShadow.x();
+            const double by = 2. * _imp->glShadow.y();
+            GLProtectAttrib a(GL_ENABLE_BIT | GL_CURRENT_BIT);
+            glDisable(GL_TEXTURE_2D);
+            glDisable(GL_BLEND);
+            glColor4d(1., 0.7, 0., 1.);
+            glBegin(GL_QUADS);
+            glVertex2d(zoomLeft, zoomBottom);
+            glVertex2d(zoomRight, zoomBottom);
+            glVertex2d(zoomRight, zoomBottom + by);
+            glVertex2d(zoomLeft, zoomBottom + by);
+            glVertex2d(zoomLeft, zoomTop - by);
+            glVertex2d(zoomRight, zoomTop - by);
+            glVertex2d(zoomRight, zoomTop);
+            glVertex2d(zoomLeft, zoomTop);
+            glVertex2d(zoomLeft, zoomBottom + by);
+            glVertex2d(zoomLeft + bx, zoomBottom + by);
+            glVertex2d(zoomLeft + bx, zoomTop - by);
+            glVertex2d(zoomLeft, zoomTop - by);
+            glVertex2d(zoomRight - bx, zoomBottom + by);
+            glVertex2d(zoomRight, zoomBottom + by);
+            glVertex2d(zoomRight, zoomTop - by);
+            glVertex2d(zoomRight - bx, zoomTop - by);
+            glEnd();
+        }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
 } // paintGL
+
+void
+ViewerGL::setStaleBorderVisible(bool visible)
+{
+    if (_imp->staleBorder == visible) {
+        return;
+    }
+    _imp->staleBorder = visible;
+    update();
+}
+
+bool
+ViewerGL::isStaleBorderVisible() const
+{
+    return _imp->staleBorder;
+}
 
 void
 ViewerGL::clearColorBuffer(double r,

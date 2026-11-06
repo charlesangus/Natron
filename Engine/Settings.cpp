@@ -1261,6 +1261,12 @@ Settings::initializeKnobsViewers()
     _checkerboardTileSize->setHintToolTip( tr("The size (in screen pixels) of one tile of the checkerboard.") );
     _viewersTab->addKnob(_checkerboardTileSize);
 
+    _viewerStaleBorderDelayMs = AppManager::createKnob<KnobInt>(this, tr("Stale border delay (ms)"));
+    _viewerStaleBorderDelayMs->setName("viewerStaleBorderDelayMs");
+    _viewerStaleBorderDelayMs->setMinimum(0);
+    _viewerStaleBorderDelayMs->setHintToolTip(tr("How long the viewer image must be out of date before an amber border is drawn around it. The border clears as soon as the image is current, and is not drawn during playback."));
+    _viewersTab->addKnob(_viewerStaleBorderDelayMs);
+
     _checkerboardColor1 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 1"), 4);
     _checkerboardColor1->setName("checkerboardColor1");
     _checkerboardColor1->setHintToolTip( tr("The first color used by the checkerboard.") );
@@ -1808,6 +1814,7 @@ Settings::setDefaultValues()
     _texturesMode->setDefaultValue(0, 0);
     _powerOf2Tiling->setDefaultValue(8, 0);
     _checkerboardTileSize->setDefaultValue(5);
+    _viewerStaleBorderDelayMs->setDefaultValue(150);
     _checkerboardColor1->setDefaultValue(0.5, 0);
     _checkerboardColor1->setDefaultValue(0.5, 1);
     _checkerboardColor1->setDefaultValue(0.5, 2);
@@ -2633,6 +2640,12 @@ int
 Settings::getCheckerboardTileSize() const
 {
     return _checkerboardTileSize->getValue();
+}
+
+int
+Settings::getViewerStaleBorderDelayMs() const
+{
+    return _viewerStaleBorderDelayMs->getValue();
 }
 
 void

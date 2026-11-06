@@ -404,6 +404,45 @@ TEST_F(NativeIWarpGpuTest, CornerPinMatchesTheCpu)
     expectParity(std::vector<NodePtr>({ node }), node, "no black outside");
 }
 
+// One test per filter, as the wider kernels make the whole sweep slow on a loaded runner.
+class NativeIWarpGpuFilterTest
+    : public NativeIWarpGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeIWarpGpuFilterTest, MatchesTheCpu)
+{
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    const std::string id = filters[f].id;
+    const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
+
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr itransform = makeITransform(source, map);
+    NodePtr icornerpin = makeICornerPin(source, map);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(itransform) && bool(icornerpin));
+    ASSERT_TRUE(setKnobValue(itransform, kResamplerParamFilterType, id));
+    ASSERT_TRUE(setKnobValue(icornerpin, kCornerPinNodeParamFilter, id));
+
+    for (bool clamp : { false, true }) {
+        if (clamp && !honoursClamp) {
+            continue;
+        }
+        const std::string suffix = id + (clamp ? " clamp" : "");
+        ASSERT_TRUE(setKnobValues(itransform, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamScale, { 0.7, 1.3 }));
+        expectParity(std::vector<NodePtr>({ itransform }), itransform, "itransform " + suffix);
+        ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamScale, { 0.25, 0.25 }));
+        expectParity(std::vector<NodePtr>({ itransform }), itransform, "itransform minified " + suffix);
+        ASSERT_TRUE(setKnobValues(icornerpin, kCornerPinNodeParamClamp, { clamp ? 1. : 0. }));
+        expectParity(std::vector<NodePtr>({ icornerpin }), icornerpin, "icornerpin " + suffix);
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeIWarpGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
+
 // Masked and mixed, the mask another parity source.
 TEST_F(NativeIWarpGpuTest, MaskedMatchesTheCpu)
 {

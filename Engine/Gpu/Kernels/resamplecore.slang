@@ -30,17 +30,6 @@ struct FilterSpec
     float C;
 };
 
-// Resampler::FilterSpec's defaults for `filter`.
-FilterSpec defaultFilterSpec(uint filter)
-{
-    FilterSpec s;
-    s.filter = filter;
-    s.lobes = 4;
-    s.B = 1.0 / 3.0;
-    s.C = 1.0 / 3.0;
-    return s;
-}
-
 // kFlagClamp is only set for the filters Resampler::filterHonoursClamp names.
 static const uint kFlagClamp = 1;
 static const uint kFlagBlackOutside = 2;

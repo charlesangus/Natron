@@ -1157,11 +1157,15 @@ struct LensDistortionGpuParams {
     float sourceHeight[2] = { 1.f, 0.f };
     uint32_t pad[2] = { 0, 0 };
     LensModelGpu model;
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
-// lensdistortion.slang's kLensDistortionModelBase.
+// lensdistortion.slang's kLensDistortionModelBase and kLensDistortionLobesWord.
 static_assert(offsetof(LensDistortionGpuParams, model) == 20 * 4, "lensdistortion.slang reads the model from word 20");
-static_assert(sizeof(LensDistortionGpuParams) == 120 * 4, "lensdistortion.slang reads 120 words");
+static_assert(offsetof(LensDistortionGpuParams, lobes) == 120 * 4, "lensdistortion.slang reads lobes, B and C from word 120");
+static_assert(sizeof(LensDistortionGpuParams) == 123 * 4, "lensdistortion.slang reads 123 words");
 
 const uint32_t kLensDistortionGpuClamp = 1;
 const uint32_t kLensDistortionGpuBlackOutside = 2;
@@ -1231,8 +1235,12 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     const LensModels::Model model = buildModel(query.time, query.view, geometry);
 
     LensDistortionGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
     if (model.valid) {
         if (!settings.stmap) {
             params.flags |= kLensDistortionGpuSample;

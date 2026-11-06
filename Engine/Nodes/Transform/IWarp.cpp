@@ -63,7 +63,7 @@ namespace {
 const int kMinTimeCurveSegments = 32;
 
 // The words of iwarp.slang's parameter block before the matrix curve.
-const std::size_t kGpuHeaderWords = 12;
+const std::size_t kGpuHeaderWords = 15;
 
 const uint32_t kIWarpGpuClamp = 1;
 const uint32_t kIWarpGpuBlackOutside = 2;
@@ -1119,7 +1119,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
 
     // The header, word for word as iwarp.slang loads it, then the curve.
     uint32_t header[kGpuHeaderWords] = {};
-    uint32_t flags = (settings.clamp ? kIWarpGpuClamp : 0u) | (settings.blackOutside ? kIWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
+    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kIWarpGpuClamp : 0u) | (settings.blackOutside ? kIWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;
@@ -1138,11 +1138,17 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
             }
         }
     }
-    header[0] = (uint32_t)settings.filter;
+    const Resampler::FilterSpec spec(settings.filter);
+    const float bicubicB = (float)spec.B;
+    const float bicubicC = (float)spec.C;
+    header[0] = (uint32_t)spec.filter;
     header[1] = flags;
     header[9] = (uint32_t)mapComponent;
     std::memcpy(&header[10], &mapParams.exponent, sizeof(float));
     header[11] = (uint32_t)curve.segments();
+    header[12] = (uint32_t)spec.lobes;
+    std::memcpy(&header[13], &bicubicB, sizeof(float));
+    std::memcpy(&header[14], &bicubicC, sizeof(float));
 
     std::vector<float> lut;
     curve.pack(&lut);

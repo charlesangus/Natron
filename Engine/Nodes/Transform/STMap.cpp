@@ -910,8 +910,12 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     const bool hasDomain = getSourceDomain(query.time, query.view, query.mappedScale, &domain);
 
     WarpGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
     params.wrapU = (uint32_t)settings.wrapU;
     params.wrapV = (uint32_t)settings.wrapV;
     if (hasDomain) {

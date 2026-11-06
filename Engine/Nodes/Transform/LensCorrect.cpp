@@ -1362,12 +1362,16 @@ struct LensCorrectGpuParams {
     float vignettingTerms[4] = {};
     // Per coordinate step: the op, then its five terms.
     uint32_t coord[LensCorrectProfile::kMaxCoordSteps * 6] = {};
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
 static_assert(offsetof(LensCorrectGpuParams, tcaTerms) == 20 * 4, "lenscorrect.slang reads the TCA terms from word 20");
 static_assert(offsetof(LensCorrectGpuParams, vignettingTerms) == 32 * 4, "lenscorrect.slang reads the vignetting terms from word 32");
 static_assert(offsetof(LensCorrectGpuParams, coord) == 36 * 4, "lenscorrect.slang reads the steps from word 36");
-static_assert(sizeof(LensCorrectGpuParams) == 60 * 4, "lenscorrect.slang reads 60 words");
+static_assert(offsetof(LensCorrectGpuParams, lobes) == 60 * 4, "lenscorrect.slang reads lobes, B and C from word 60");
+static_assert(sizeof(LensCorrectGpuParams) == 63 * 4, "lenscorrect.slang reads 63 words");
 
 const uint32_t kLensCorrectGpuClamp = 1;
 const uint32_t kLensCorrectGpuBlackOutside = 2;
@@ -1443,8 +1447,12 @@ LensCorrect::renderOpGpu(const GpuRenderArgs& args)
     const LensCorrectProfile::Profile& profile = model.profile;
 
     LensCorrectGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kLensCorrectGpuClamp : 0u) | (settings.blackOutside ? kLensCorrectGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kLensCorrectGpuClamp : 0u) | (settings.blackOutside ? kLensCorrectGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
     if (!model.format.isNull()) {
         params.flags |= kLensCorrectGpuSample;
     }

@@ -2180,7 +2180,11 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     const double par = getOutputPixelAspectRatio(query.time, query.view);
 
     SplineWarpGpuParams params;
-    params.filter = (uint32_t)settings.filter;
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
     params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
         | ((settings.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
 

@@ -249,6 +249,37 @@ TEST_F(NativeLensCorrectGpuTest, SettingsMatchTheCpu)
     expectParity(source, node, "manual vignette only");
 }
 
+// One test per filter, as the wider kernels make the whole sweep slow on a loaded runner. The first
+// setup splits the channels and the second changes the projection.
+class NativeLensCorrectGpuFilterTest
+    : public NativeLensCorrectGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeLensCorrectGpuFilterTest, MatchesTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    for (const LensSetup* setup : { &kSetups[0], &kSetups[4] }) {
+        NodePtr node = makeLensCorrect(source, *setup);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
+        for (bool clamp : { false, true }) {
+            if (clamp && !Resampler::filterHonoursClamp((Resampler::FilterEnum)f)) {
+                continue;
+            }
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+            expectParity(source, node, std::string(setup->what) + " " + filters[f].id + (clamp ? " clamp" : ""));
+        }
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeLensCorrectGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
+
 TEST_F(NativeLensCorrectGpuTest, ScaledRendersMatchTheCpu)
 {
     resetProject();

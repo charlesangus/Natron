@@ -25,6 +25,6 @@ void coordmap_test_main(uint3 tid : SV_DispatchThreadID)
     const uint wrapV = (rp.states >> 2) & 3u;
     const bool hasJacobian = (rp.states & 16u) != 0;
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
-    storePixel(tid, sampleAt(paramsSource(), coordBuf[base], coordBuf[base + 1], J, hasJacobian, rp.filter, clampOn, wrapU, wrapV,
+    storePixel(tid, sampleAt(paramsSource(), coordBuf[base], coordBuf[base + 1], J, hasJacobian, paramsFilter(), clampOn, wrapU, wrapV,
                              domain));
 }

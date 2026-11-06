@@ -80,6 +80,17 @@ bool wrapCoord(float s, int lo, int hi, uint mode, out FF result, out bool moved
     return true;
 }
 
+// A parameter block's Resampler::FilterSpec: the filter's word, and lobes, B and C from word `lobesWord`.
+FilterSpec loadFilterSpec(StructuredBuffer<uint> params, uint filterWord, uint lobesWord)
+{
+    FilterSpec s;
+    s.filter = params[filterWord];
+    s.lobes = int(params[lobesWord]);
+    s.B = asfloat(params[lobesWord + 1]);
+    s.C = asfloat(params[lobesWord + 2]);
+    return s;
+}
+
 float finiteOrZero(float v)
 {
     return isFiniteF(v) ? v : 0.0;
@@ -130,10 +141,4 @@ float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobi
         Jyy = 0.0;
     }
     return interpolateSuper(src, spec, clampOn, fx, fy, ffMake(Jxx, 0.0), ffMake(Jxy, 0.0), ffMake(Jyx, 0.0), ffMake(Jyy, 0.0));
-}
-
-float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobian, uint filter, bool clampOn, uint wrapU, uint wrapV,
-                int4 domain)
-{
-    return sampleAt(src, sx, sy, J, hasJacobian, defaultFilterSpec(filter), clampOn, wrapU, wrapV, domain);
 }

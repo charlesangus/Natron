@@ -91,6 +91,12 @@ const int kFarY = 32;
 const float kNearDistance = 9.f;
 const float kFarDistance = 10.5f;
 
+// A card lit by a distant light, bound to a UsdPreviewSurface whose normal is a bump texture
+// authored with scale (2, 2, 2, 1) and bias (-1, -1, -1, 0).
+const char* const kNormalMapFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-normalmap.usda";
+const char* const kNormalMapGoldenCase = "CyclesNormalMapReference";
+const float kNormalMapContrast = 0.02f;
+
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "CyclesReference";
 
@@ -593,30 +599,12 @@ TEST_F(USDRenderCyclesTest, LaterEngineFollowsASmallerThreadBudget)
     EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
 }
 
-// The fixture's rgba against the reference, within the tolerances above, and a second render on
-// this host bit for bit equal to the first.
-TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
+// Records rgba as the golden case when NATRON_GOLDEN_RECORD_DIR is set, otherwise compares it to the
+// recorded one within the tolerances above.
+static void
+matchGolden(const RenderedPlane& rgba,
+            const char* goldenCase)
 {
-    if (!cyclesOrSkip()) {
-        return;
-    }
-    NodePtr node = createGraph();
-    ASSERT_TRUE(bool(node));
-    std::vector<RenderedPlane> planes;
-    ASSERT_TRUE(renderAll(node, &planes));
-    const RenderedPlane& rgba = planes[0];
-
-    // An engine made again renders the same samples.
-    HydraRender::releaseAllCpuEngines();
-    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
-    std::vector<RenderedPlane> again;
-    ASSERT_TRUE(renderAll(node, &again));
-    std::size_t repeatDiffers = 0;
-    for (std::size_t i = 0; i < rgba.pixels.size(); ++i) {
-        repeatDiffers += (bitsOf(rgba.pixels[i]) != bitsOf(again[0].pixels[i])) ? 1 : 0;
-    }
-    EXPECT_EQ(0u, repeatDiffers) << "values differ between two renders on this host";
-
     const ImageLayerDesc layer = ImageLayerDesc::getRGBAComponents();
     const std::string recordDir = goldenRecordDir();
     if (!recordDir.empty()) {
@@ -625,7 +613,7 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
         image.height = rgba.window.height();
         image.nComps = (int)rgba.channels.size();
         image.pixels = rgba.pixels;
-        const std::string path = parityReferencePath(recordDir, kGoldenGroup, kGoldenCase, 0, layer);
+        const std::string path = parityReferencePath(recordDir, kGoldenGroup, goldenCase, 0, layer);
         std::string error;
         EXPECT_TRUE(writeParityF32(path, image, &error)) << "cannot record: " << error;
         std::cout << "[ golden ] recorded " << path << std::endl;
@@ -633,7 +621,7 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
         return;
     }
     const std::string refDir = goldenReferenceDir();
-    const std::string path = parityReferencePath(refDir, kGoldenGroup, kGoldenCase, 0, layer);
+    const std::string path = parityReferencePath(refDir, kGoldenGroup, goldenCase, 0, layer);
     ParityF32Image reference;
     std::string error;
     if (!readParityF32(path, &reference, &error)) {
@@ -665,4 +653,60 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
     const double mean = sum / (double)reference.pixels.size();
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from " << path << "; worst " << worst;
     EXPECT_LE(mean, kMeanTolerance) << "mean difference from " << path << "; worst " << worst;
+}
+
+// The fixture's rgba against the reference, within the tolerances above, and a second render on
+// this host bit for bit equal to the first.
+TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    // An engine made again renders the same samples.
+    HydraRender::releaseAllCpuEngines();
+    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
+    std::vector<RenderedPlane> again;
+    ASSERT_TRUE(renderAll(node, &again));
+    std::size_t repeatDiffers = 0;
+    for (std::size_t i = 0; i < rgba.pixels.size(); ++i) {
+        repeatDiffers += (bitsOf(rgba.pixels[i]) != bitsOf(again[0].pixels[i])) ? 1 : 0;
+    }
+    EXPECT_EQ(0u, repeatDiffers) << "values differ between two renders on this host";
+
+    matchGolden(rgba, kGoldenCase);
+}
+
+// A normal map on UsdPreviewSurface.normal, stored 0..1 and decoded by the texture's scale and bias,
+// shades the card the way the recorded render does, and the card is not flat.
+TEST_F(USDRenderCyclesTest, NormalMapMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kNormalMapFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    // The bump leans its normals both ways across the card; an undecoded map (0..1 read as a
+    // vector) or an ignored one gives a card as even as a flat one.
+    float lowest = 1e30f;
+    float highest = -1e30f;
+    for (int y = kSize / 4; y < kSize - kSize / 4; ++y) {
+        for (int x = kSize / 4; x < kSize - kSize / 4; ++x) {
+            const float v = rgba.pixels[pixelIndex(x, y) * 4];
+            lowest = std::min(lowest, v);
+            highest = std::max(highest, v);
+        }
+    }
+    EXPECT_GT(highest - lowest, kNormalMapContrast);
+
+    matchGolden(rgba, kNormalMapGoldenCase);
 }

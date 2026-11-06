@@ -120,43 +120,43 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Phase 270.3: Knobs and node wiring
 
-- [ ] M270.P3.T1 — Add the shared filter knob helper and move Transform and ITransform to it
+- [x] M270.P3.T1 — Add the shared filter knob helper and move Transform and ITransform to it
   - files: `Engine/Nodes/Image/FilterKnobs.h` (new), `Engine/Nodes/Image/FilterKnobs.cpp` (new), `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Transform/ITransform.cpp`
   - approach: A helper creates `lobes`, `bicubicB` and `bicubicC` beside Filter and Clamp on a page, with names, labels and hints in `Resampler.h`; updates enabled state (replacing `updateClampEnabled`'s body); and reads a `FilterSpec` at time and view. Transform's `TransformOp` uses it (`Transform.cpp:192,511`), so ITransform gets it through `_op` (`ITransform.cpp:145`). Fit the default panel at 1920x1080.
   - verify: `ctest -R "NativeTransform|NativeIWarp"` passes at the phase build; an Xvfb check shows the knobs enable with the Filter choice, including after project load.
   - size: M
 
-- [ ] M270.P3.T2 — Wire Transform and Reformat through the staged path
+- [x] M270.P3.T2 — Wire Transform and Reformat through the staged path
   - files: `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Transform/Transform.h`, `Engine/Nodes/Transform/Reformat.cpp`, `Engine/Nodes/Transform/Reformat.h`, `Engine/Nodes/Image/ResampleExecutor.cpp`
   - approach: Params structs hold `FilterSpec`; `ResampleSettings` carries it into `makeResampleParams` and the GPU record, including a concatenated chain (the last node's spec wins, as its filter does today). Reformat's knobs use the helper (`Reformat.cpp:432,523`). Draft quality still forces Impulse.
   - verify: `ctest -R "NativeTransform|NativeReformat|StagedResample"` passes at the phase build, including a test that changing Lobes changes a Sinc render on CPU and GPU.
   - size: M
 
-- [ ] M270.P3.T5 — Wire CornerPin, ICornerPin and AutoStraighten
+- [x] M270.P3.T5 — Wire CornerPin, ICornerPin and AutoStraighten
   - files: `Engine/Nodes/Transform/CornerPin.cpp`, `Engine/Nodes/Transform/CornerPin.h`, `Engine/Nodes/Transform/ICornerPin.cpp`, `Engine/Nodes/Transform/AutoStraighten.cpp`, `Engine/Nodes/Transform/AutoStraighten.h`
   - approach: Use the helper at `CornerPin.cpp:285,761`, `ICornerPin.cpp:130` and `AutoStraighten.cpp:854,921`; params and settings hold `FilterSpec` (`AutoStraighten.h:105`). CornerPin's projective matrix relies on P2.T1's per-pixel Jacobian.
   - verify: `ctest -R "NativeCornerPin|NativeIWarp|NativeAutoStraighten"` passes at the phase build with a Lobes-changes-the-render case per node.
   - size: M
 
-- [ ] M270.P3.T6 — Wire STMap and IDistort
+- [x] M270.P3.T6 — Wire STMap and IDistort
   - files: `Engine/Nodes/Transform/STMap.cpp`, `Engine/Nodes/Transform/STMap.h`, `Engine/Nodes/Transform/IDistort.cpp`, `Engine/Nodes/Transform/IDistort.h`, `Engine/Nodes/Transform/WarpGpu.h`
   - approach: Use the helper (`STMap.cpp:245`, `IDistort.cpp:168`); `Settings` holds `FilterSpec` for the CPU `resampleRowFromCoords` calls and the GPU words (`STMap.cpp:913`, `IDistort.cpp:871`). Replace the `eFilterNotch` range check at `IDistort.cpp:258` with the last enum value. Both already read the whole Source, so their regions don't change.
   - verify: `ctest -R "NativeSTMap|NativeIDistort|CoordMapGpu"` passes at the phase build, including a test that IDistort honours a new filter (it would fall back to the default under the old range check).
   - size: M
 
-- [ ] M270.P3.T7 — Wire LensDistortion and LensCorrect
+- [x] M270.P3.T7 — Wire LensDistortion and LensCorrect
   - files: `Engine/Nodes/Transform/LensDistortion.cpp`, `Engine/Nodes/Transform/LensDistortion.h`, `Engine/Nodes/Transform/LensCorrect.cpp`, `Engine/Nodes/Transform/LensCorrect.h`
   - approach: Use the helper (`LensDistortion.cpp:391`, `LensCorrect.cpp:452`); `Settings` holds `FilterSpec` for `resampleRowFromCoords` (`LensDistortion.cpp:1116`, `LensCorrect.cpp:1266,1272`) and the GPU words. Regions are unchanged: both read the whole Source. Enable the new knobs wherever the Filter knob is enabled.
   - verify: `ctest -R "NativeLensDistortion|NativeLensCorrect"` passes at the phase build with a new-filter render case per node.
   - size: M
 
-- [ ] M270.P3.T8 — Wire SplineWarp
+- [x] M270.P3.T8 — Wire SplineWarp
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarp.h`, `Tests/Native/SplineWarpKnobs_Test.cpp`
   - approach: Use the helper (`SplineWarp.cpp:482,640`); `Settings` holds `FilterSpec` for the CPU calls at `SplineWarp.cpp:1994,2060` and the GPU words at `:2183`. Replace the range check at `:1212`. Add the three knobs to the knob test.
   - verify: `ctest -R "SplineWarpKnobs|NativeSplineWarp"` passes at the phase build.
   - size: M
 
-- [ ] M270.P3.T9 — Make the variable-warp and SplineWarp regions cover the footprint
+- [x] M270.P3.T9 — Make the variable-warp and SplineWarp regions cover the footprint
   - files: `Engine/Nodes/Transform/IWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpField.h`, `Engine/Nodes/Transform/SplineWarp/SplineWarpField.cpp`, `Tests/Native/NativeIWarp_Test.cpp`
   - approach: Output must not depend on the render window. IWarp with no Map expands by the full transform's scale (P1.T3). With a Map connected the gradient bounds nothing, so read the whole Source, as IDistort does (`IDistort.cpp:345`) and as its GPU path already does (`IWarp.cpp:1074`). SplineWarp grows `getSourceBounds()` by radius·(largest field scale) − 0.5 at `SplineWarp.cpp:1744`, or reads the whole Source if the field can't report it.
   - verify: at the phase build, a test renders Lanczos 3 under a steep Map and a strong SplineWarp minification in two tiles and whole, and the results match exactly.
@@ -176,7 +176,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: `git grep -c "Lanczos 3" -- Engine/Nodes/Transform/docs` shows both pages.
   - size: M
 
-- [ ] M270.P3.T10 — Point the other node pages at the filter list
+- [x] M270.P3.T10 — Point the other node pages at the filter list
   - files: `Engine/Nodes/Transform/docs/` (AutoStraighten, CornerPin, ICornerPin, IDistort, ITransform, LensCorrect, LensDistortion, STMap, SplineWarp)
   - approach: One sentence per page that the node shares the Filter list and the three knobs, linking `Transform.md`. Replace supersampling wording (for example `STMap.md:16-18`) and check the parity tables still state what the tests do (`STMap.md:47-50`).
   - verify: `git grep -il supersampl -- Engine/Nodes/Transform/docs` returns nothing.

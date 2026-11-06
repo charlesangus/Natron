@@ -578,7 +578,7 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
     const std::size_t f = (std::size_t)GetParam();
     const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     int nCompared = 0;
@@ -608,7 +608,7 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
-INSTANTIATE_TEST_CASE_P(Filters, NativeCornerPinGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
+INSTANTIATE_TEST_CASE_P(Filters, NativeCornerPinGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 // The homography with the mask enabled at mix 0.5 and 1, inverted, and mix 0.5 without a mask.
 TEST_F(NativeCornerPinGpuTest, MaskedMatchesTheCpuRender)

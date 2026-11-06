@@ -420,7 +420,7 @@ TEST_P(NativeAutoStraightenGpuFilterTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
     const std::size_t f = (std::size_t)GetParam();
     const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     const StraightenCase* const cases[] = { &kCases[1], &kCases[4] };
@@ -450,6 +450,6 @@ TEST_P(NativeAutoStraightenGpuFilterTest, ResamplingMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
-INSTANTIATE_TEST_CASE_P(Filters, NativeAutoStraightenGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
+INSTANTIATE_TEST_CASE_P(Filters, NativeAutoStraightenGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 #endif // NATRON_HAVE_GPU

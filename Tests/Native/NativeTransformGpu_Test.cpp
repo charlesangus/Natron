@@ -33,7 +33,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -43,6 +45,7 @@
 #include <QByteArray>
 #include <QFile>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
@@ -51,6 +54,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/GpuRegionStrips.h"
@@ -58,14 +62,22 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/Op.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/TransformMath.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -581,7 +593,7 @@ TEST_P(NativeTransformGpuFilterTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
     const std::size_t f = (std::size_t)GetParam();
     const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     int nCompared = 0;
@@ -612,7 +624,7 @@ TEST_P(NativeTransformGpuFilterTest, ResamplingMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
-INSTANTIATE_TEST_CASE_P(Filters, NativeTransformGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
+INSTANTIATE_TEST_CASE_P(Filters, NativeTransformGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 namespace {
 
@@ -1089,4 +1101,326 @@ TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
     ASSERT_EQ(result.cpu.size(), result.gpu.size());
     const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::exact());
     EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex;
+}
+
+#define kFilterSpecOpPluginID "test.natron.built-in.GpuFilterSpecResampleOp"
+#define kFilterSpecOpParamTranslate "translate"
+#define kFilterSpecOpParamScale "scale"
+#define kFilterSpecOpParamPerspective "perspective"
+#define kFilterSpecOpParamSalt "salt"
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// What the test op samples with. No knob carries the Sinc lobes or the Bicubic (B, C) pair yet, so
+// they can only reach the render through ResampleSettings.
+ResampleSettings gFilterSpecSettings;
+
+constexpr InputSpec kFilterSpecInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+// A matrix-form Resample op on the GPU: scale about the origin, then translate, with an optional
+// perspective row, sampling with whatever gFilterSpecSettings says. At blend amount a the
+// translation is scaled by a and the scale moves from 1 towards its value, so a directional blur
+// averages matrices along that path.
+struct FilterSpecResampleOp {
+    struct Params {
+        double translateX;
+        double translateY;
+        double scaleX;
+        double scaleY;
+        double perspectiveX;
+        double perspectiveY;
+        double salt;
+    };
+
+    static constexpr bool kResamplesOnGpu = true;
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kFilterSpecOpPluginID,
+        .label = "Test GPU Filter Spec Resample Op",
+        .grouping = "Other/Test",
+        .inputs = kFilterSpecInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = {},
+        .layers = LayerPolicy::all(),
+        .op = OpKind::Resample,
+    };
+
+    KnobDoubleWPtr translate;
+    KnobDoubleWPtr scale;
+    KnobDoubleWPtr perspective;
+    KnobDoubleWPtr salt;
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page)
+    {
+        const struct {
+            const char* name;
+            int dimensions;
+            double fallback;
+            KnobDoubleWPtr FilterSpecResampleOp::* member;
+        } knobs[] = {
+            { kFilterSpecOpParamTranslate, 2, 0., &FilterSpecResampleOp::translate },
+            { kFilterSpecOpParamScale, 2, 1., &FilterSpecResampleOp::scale },
+            { kFilterSpecOpParamPerspective, 2, 0., &FilterSpecResampleOp::perspective },
+            { kFilterSpecOpParamSalt, 1, 0., &FilterSpecResampleOp::salt },
+        };
+        for (const auto& k : knobs) {
+            KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, std::string(k.name), k.dimensions);
+            knob->setName(k.name);
+            for (int d = 0; d < k.dimensions; ++d) {
+                knob->setDefaultValue(k.fallback, d);
+            }
+            page->addKnob(knob);
+            this->*(k.member) = knob;
+        }
+    }
+
+    Params bake(const KnobReader& reader) const
+    {
+        Params p;
+
+        p.translateX = reader.valueOr(translate, 0., 0);
+        p.translateY = reader.valueOr(translate, 0., 1);
+        p.scaleX = reader.valueOr(scale, 1., 0);
+        p.scaleY = reader.valueOr(scale, 1., 1);
+        p.perspectiveX = reader.valueOr(perspective, 0., 0);
+        p.perspectiveY = reader.valueOr(perspective, 0., 1);
+        p.salt = reader.valueOr(salt, 0., 0);
+
+        return p;
+    }
+
+    bool isIdentity(const Params& /*params*/,
+                    const PassContext& /*context*/) const
+    {
+        return false;
+    }
+
+    ResampleSettings settings(const Params& /*params*/,
+                              const PassContext& /*context*/) const
+    {
+        return gFilterSpecSettings;
+    }
+
+    bool transform(const Params& params,
+                   const PassContext& /*context*/,
+                   double amount,
+                   bool invert,
+                   TransformMath::Mat3* matrix) const
+    {
+        const double sx = 1. + (params.scaleX - 1.) * amount;
+        const double sy = 1. + (params.scaleY - 1.) * amount;
+        TransformMath::Mat3 inverse = TransformMath::inverseTransformCanonical(params.translateX * amount, params.translateY * amount, sx, sy, 0., 0., false, 0., 0., 0.);
+        inverse.m[6] = params.perspectiveX;
+        inverse.m[7] = params.perspectiveY;
+        if (!invert) {
+            *matrix = inverse;
+
+            return true;
+        }
+
+        return inverse.inverse(matrix);
+    }
+};
+
+static_assert(GpuMatrixResampleOp<FilterSpecResampleOp>);
+
+typedef ImageNode<FilterSpecResampleOp> FilterSpecResampleNode;
+
+void
+registerFilterSpecOpOnce()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        EffectInstancePtr node(FilterSpecResampleNode::BuildEffect(NodePtr()));
+        std::map<std::string, void (*)()> functions;
+
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&FilterSpecResampleNode::BuildEffect));
+        LibraryBinary* binary = new LibraryBinary(functions);
+
+        std::list<std::string> grouping;
+        node->getPluginGrouping(&grouping);
+        QStringList qgrouping;
+        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+            qgrouping.push_back(QString::fromUtf8(it->c_str()));
+        }
+
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+        // Registered after AppManager::load(), so the label-without-suffix the script name is made
+        // from was never assigned.
+        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+    });
+}
+
+} // namespace
+
+NATRON_NAMESPACE_EXIT
+
+namespace {
+
+struct FilterSpecCase {
+    const char* name;
+    Resampler::FilterSpec spec;
+};
+
+// The seven new filters at their default parameters, Sinc at its two extreme lobe counts and
+// Bicubic at two (B, C) pairs besides the default.
+const FilterSpecCase kNewFilterSpecs[] = {
+    { "lanczos2", Resampler::eFilterLanczos2 },
+    { "lanczos3", Resampler::eFilterLanczos3 },
+    { "lanczos4", Resampler::eFilterLanczos4 },
+    { "sinc", Resampler::eFilterSinc },
+    { "blackman-harris", Resampler::eFilterBlackmanHarris },
+    { "gaussian", Resampler::eFilterGaussian },
+    { "bicubic", Resampler::eFilterBicubic },
+    { "sinc-lobes2", Resampler::FilterSpec(Resampler::eFilterSinc, 2) },
+    { "sinc-lobes8", Resampler::FilterSpec(Resampler::eFilterSinc, 8) },
+    { "bicubic-b0-c05", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.5) },
+    { "bicubic-b1-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 1., 0.) },
+};
+
+struct FilterScaleCase {
+    const char* name;
+    double translateX;
+    double translateY;
+    double scaleX;
+    double scaleY;
+    double perspectiveX;
+    double perspectiveY;
+};
+
+// 1:1, 2x and 3x up, 4x and 64x down, each on an exact scale and on one that is not; 3x up and
+// just above it put the taps on and next to the kernel's zeros. The last is projective: a
+// minification whose third row moves the kernel scale across the image, with z staying above 0.9
+// over the format.
+const FilterScaleCase kFilterScales[] = {
+    { "1to1-exact", 2., -3., 1., 1., 0., 0. },
+    { "1to1-inexact", 0.3172, -0.2139, 1., 1., 0., 0. },
+    { "up2-exact", 0., 0., 2., 2., 0., 0. },
+    { "up2-inexact", 0.2713, 0.1371, 2.13, 1.9, 0., 0. },
+    { "up3-exact", 0., 0., 3., 3., 0., 0. },
+    { "up3-near-boundary", 0.5, 0.25, 3.0004, 2.9996, 0., 0. },
+    { "down4-exact", 0., 0., 0.25, 0.25, 0., 0. },
+    { "down4-inexact", 0.3172, -0.2139, 0.27, 0.23, 0., 0. },
+    { "down64-exact", 0., 0., 1. / 64., 1. / 64., 0., 0. },
+    { "down64-inexact", 1.5172, 0.1371, 0.0161, 0.0173, 0., 0. },
+    { "projective", 1.25, 0.75, 0.45, 0.4, 0.0008, -0.0006 },
+};
+
+} // namespace
+
+class NativeFilterSpecGpuTest
+    : public NativeTransformGpuTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        registerFilterSpecOpOnce();
+        NativeTransformGpuTest::SetUp();
+    }
+
+    void TearDown() OVERRIDE
+    {
+        gFilterSpecSettings = ResampleSettings();
+        NativeTransformGpuTest::TearDown();
+    }
+
+    // A fresh node per setting, as the filter sweeps above do. Its salt differs from every other
+    // node's, so no cache keyed on the knob values can serve a render made under another filter.
+    NodePtr makeSpecNode(const NodePtr& source,
+                         const FilterScaleCase& s)
+    {
+        static double salt = 0.;
+        NodePtr node = createNode(QString::fromUtf8(kFilterSpecOpPluginID));
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        connectNodes(source, node, 0, true);
+        salt += 1.;
+        EXPECT_TRUE(setKnobValues(node, kFilterSpecOpParamTranslate, { s.translateX, s.translateY }));
+        EXPECT_TRUE(setKnobValues(node, kFilterSpecOpParamScale, { s.scaleX, s.scaleY }));
+        EXPECT_TRUE(setKnobValues(node, kFilterSpecOpParamPerspective, { s.perspectiveX, s.perspectiveY }));
+        EXPECT_TRUE(setKnobValues(node, kFilterSpecOpParamSalt, { salt }));
+
+        return node;
+    }
+};
+
+// Each new filter, through the FilterSpec the op reports, with and without Clamp and black outside,
+// on every scale above, against the CPU render over the same windows and mipmap levels as the
+// Transform sweep.
+TEST_F(NativeFilterSpecGpuTest, NewFiltersMatchTheCpuRenderAtEveryScale)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 3, 5);
+
+    int nCompared = 0;
+    for (const FilterSpecCase& f : kNewFilterSpecs) {
+        const bool honoursClamp = Resampler::filterHonoursClamp(f.spec.filter);
+        for (const FilterScaleCase& s : kFilterScales) {
+            for (bool clamp : { false, true }) {
+                if (clamp && !honoursClamp) {
+                    continue;
+                }
+                gFilterSpecSettings = ResampleSettings();
+                gFilterSpecSettings.filter = f.spec;
+                gFilterSpecSettings.clamp = clamp;
+                gFilterSpecSettings.blackOutside = true;
+                NodePtr node = makeSpecNode(source, s);
+                ASSERT_TRUE(bool(node));
+                expectGpuMatchesCpu(*runtime, source, NodePtr(), node, std::string(f.name) + " " + s.name + (clamp ? " clamp" : ""), &nCompared);
+                if (HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
+    }
+    EXPECT_GT(nCompared, 0);
+}
+
+// A directional blur of the Sinc at 8 lobes, averaging up to the matrices of a 0.6x minification,
+// under the IIR bound and the sampler-stop exceptions of MotionBlurMatchesTheCpuRender.
+TEST_F(NativeFilterSpecGpuTest, MotionBlurMatchesTheCpuRenderWithAFilterSpec)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 3, 5);
+
+    const FilterScaleCase blurred = { "directional-blur", 6., -4., 0.6, 0.55, 0., 0. };
+    gFilterSpecSettings = ResampleSettings();
+    gFilterSpecSettings.filter = Resampler::FilterSpec(Resampler::eFilterSinc, 8);
+    gFilterSpecSettings.blackOutside = true;
+    gFilterSpecSettings.blur.motionBlur = 1.;
+    gFilterSpecSettings.blur.directionalBlur = true;
+    gFilterSpecSettings.blur.shutter = 1.;
+    NodePtr node = makeSpecNode(source, blurred);
+    ASSERT_TRUE(bool(node));
+
+    ToleranceExceptions exceptions;
+    exceptions.absolute = Resampler::motionBlurMaxError(1.);
+    exceptions.pixelsPer = 250;
+    exceptions.minPixels = 2;
+    int nCompared = 0;
+    expectGpuMatchesCpu(*runtime, source, NodePtr(), node, "sinc-lobes8 directional-blur", &nCompared, ParityTolerance::iir(), &exceptions);
+    EXPECT_GT(nCompared, 0);
 }

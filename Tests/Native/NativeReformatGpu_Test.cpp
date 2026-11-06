@@ -429,7 +429,7 @@ TEST_P(NativeReformatGpuFilterTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
     const std::size_t f = (std::size_t)GetParam();
     const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     const ReformatCase* const cases[] = { &kCases[5], &kCases[12], &kCases[14] };
@@ -459,6 +459,6 @@ TEST_P(NativeReformatGpuFilterTest, ResamplingMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
-INSTANTIATE_TEST_CASE_P(Filters, NativeReformatGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
+INSTANTIATE_TEST_CASE_P(Filters, NativeReformatGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 #endif // NATRON_HAVE_GPU

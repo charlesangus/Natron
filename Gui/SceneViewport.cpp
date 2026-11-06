@@ -579,6 +579,7 @@ struct SceneViewportRenderer::Implementation {
     // The delegate the next engine is made with, and why it could not be, if it could not.
     std::string rendererId = kRenderDelegateStormId;
     std::string rendererError;
+    std::string renderError;
 
     // The guide prims of the stage as of an edit count, and their guides as of a time: both need
     // stageMutex.
@@ -968,6 +969,15 @@ struct SceneViewportRenderer::Implementation {
         } else {
             engine->SetSelected(paths);
         }
+    }
+
+    // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
+    // them. Hydra's state after an exception is unknown, so the engine goes and the next render
+    // makes another.
+    void discardFailedEngine(const std::string& what)
+    {
+        engine.reset();
+        renderError = "The " + rendererId + " render failed: " + what;
     }
 
     // Needs the GL context current and stageMutex. False if there is nothing to draw. The engine
@@ -2529,7 +2539,24 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
-        _imp->engine->Render(stage->GetPseudoRoot(), params);
+        std::string what;
+        bool failed = false;
+        try {
+            RenderDelegates::runRenderFaultHook();
+            _imp->engine->Render(stage->GetPseudoRoot(), params);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return true;
+        }
         converged = _imp->engine->IsConverged();
     }
 
@@ -2695,6 +2722,17 @@ const std::string&
 SceneViewportRenderer::getRendererId() const
 {
     return _imp->rendererId;
+}
+
+std::string
+SceneViewportRenderer::takeRenderError()
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    std::string error;
+
+    error.swap(_imp->renderError);
+
+    return error;
 }
 
 const std::string&
@@ -4331,6 +4369,11 @@ SceneViewport::paintGL()
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    const QString renderError = QString::fromStdString(_imp->renderer.takeRenderError());
+    if (!renderError.isEmpty()) {
+        _imp->error = renderError;
+        publishState();
+    }
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
     // Whether the stage's own lights lit this paint, and the guides it drew: path, kind and a

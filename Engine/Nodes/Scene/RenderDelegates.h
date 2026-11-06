@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,16 @@ std::string unavailableMessage(const std::string& id);
  * USD's plug-in registry. Only plug-ins registered before the first list() are seen.
  **/
 void registerPluginDirectory(const std::string& path);
+
+/**
+ * @brief Tests only. The hook runs just before every Hydra render call of the viewport and of
+ * USDRender, on the calling thread, so that a test can make the engine throw. Pass an empty
+ * function to remove it.
+ **/
+void setRenderFaultHook(std::function<void()> hook);
+
+// Runs the hook if one is set.
+void runRenderFaultHook();
 } // namespace RenderDelegates
 
 NATRON_NAMESPACE_EXIT

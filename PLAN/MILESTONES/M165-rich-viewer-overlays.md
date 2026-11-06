@@ -45,7 +45,7 @@ Filed 2026-10-23 at the user's request.
 
 ## Phase 165.2: Overlay images (waits on Q1)
 
-- [ ] M165.P2.T1 — Overlay planes in the engine
+- [x] M165.P2.T1 — Overlay planes in the engine
   - files: Engine/EffectInstance.{h,cpp}, Engine/ViewerInstance.cpp, Engine/Node.{h,cpp}
   - approach: per Q1; recommended (a) overlay-only planes hidden from downstream, requested by the viewer through the normal render/cache path at its RoI and scale.
   - verify: gtest: with an overlay active, the main render's hashes and cache entries are unchanged.
@@ -94,6 +94,8 @@ Filed 2026-10-23 at the user's request.
 - Q5 When does an overlay show? Recommendation: while the node's panel is open and its view knob is on.
 
 ## Decisions
+
+- 2026-11-06 — M165.P2.T1: the side buffer of the user's Q1 answer is filled by a dedicated pass in the viewer's render job, not the main render action, because a main-render buffer stays empty on any cache hit at the node, downstream or in the viewer texture. Costs one extra render of that node on a cached state. No overlay images during playback or paint strokes; two viewers with different viewports replace each other's frame. Q2, Q4 and Q5 follow their recommendations.
 
 - 2026-11-02 — Audit: Phase 1 (P1.T1–T4) landed in 087840e1b, d79325cdb and bcccb3119, and the remote build 40673074289 at the tip passed. Deviation: the overlay test node lives in Engine/Nodes/Test/ and is registered under NATRON_GUI_TEST_NODES=1, not in Tests/Native/. Pushed, no uncommitted work, no PR. Phases 2–3 still wait on Q1, which the user has not answered. The branch is 23 commits behind main.
 - 2026-10-28: elaborated (consultant); Phase 1 can start now; phases 2–3 wait on Q1.

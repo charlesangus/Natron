@@ -75,7 +75,7 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
                    "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_EDGEBLUR,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
     .inputs = kEdgeBlurInputs,
 };
 
@@ -697,6 +697,8 @@ EdgeBlur::readsGpuInput(int inputNb,
 
 RectI
 EdgeBlur::opPassesInputRoI(int inputNb,
+                           double time,
+                           ViewIdx view,
                            const RectI& outputRect,
                            const RenderScale& scale) const
 {
@@ -704,7 +706,7 @@ EdgeBlur::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return matteRoIOf(getParams(getCurrentTime(), getCurrentView()), getPassContext(getCurrentTime(), getCurrentView(), scale), outputRect);
+    return matteRoIOf(getParams(time, view), getPassContext(time, view, scale), outputRect);
 }
 
 bool

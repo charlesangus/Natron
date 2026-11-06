@@ -95,7 +95,7 @@ OCIOCDLTransformOp::createKnobs(KnobHolder* holder,
     ocio.addKnob(page, directionKnob);
     direction = directionKnob;
 
-    KnobBoolPtr readFromFileKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Read from File").toStdString());
+    KnobBoolPtr readFromFileKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Read From File").toStdString());
     readFromFileKnob->setName(kOCIOCDLTransformParamReadFromFile);
     readFromFileKnob->setHintToolTip(EffectInstance::tr("Applies the CDL of the file instead of the knobs, which then show its "
                                                         "values.")
@@ -108,7 +108,7 @@ OCIOCDLTransformOp::createKnobs(KnobHolder* holder,
     files.create(holder, page, ocio, EffectInstance::tr("The ASC CDL file to apply: a .cc, or a .ccc or .cdl with the CCC Id "
                                                         "of the correction to apply."));
 
-    KnobOutputFilePtr exportKnob = AppManager::createKnob<KnobOutputFile>(holder, EffectInstance::tr("Export .cc").toStdString());
+    KnobOutputFilePtr exportKnob = AppManager::createKnob<KnobOutputFile>(holder, EffectInstance::tr("Export CC").toStdString());
     exportKnob->setName(kOCIOCDLTransformParamExport);
     exportKnob->setHintToolTip(EffectInstance::tr("Writes the CDL of the knobs, at the current time, to a new ColorCorrection "
                                                   "file (.cc), which OCIOFileTransform or an OpenColorIO config can load. The "

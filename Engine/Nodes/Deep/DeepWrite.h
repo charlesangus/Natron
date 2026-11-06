@@ -33,7 +33,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPWRITE "fr.natron.DeepWrite"
+#define PLUGINID_NATRON_DEEPWRITE "DeepWrite"
 
 NATRON_NAMESPACE_ENTER
 

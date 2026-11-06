@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_SWITCH "fr.natron.Switch"
+#define PLUGINID_NATRON_SWITCH "Switch"
 #define PLUGIN_MAJOR_NATRON_SWITCH 1
 
 #define kSwitchParamWhich "which"
@@ -64,7 +64,7 @@ struct SwitchOp {
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_SWITCH,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Switch.png",
         .inputs = kSwitchInputs,
     };
 

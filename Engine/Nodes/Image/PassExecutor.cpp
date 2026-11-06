@@ -1094,9 +1094,9 @@ runPassesCpu(EffectInstance& effect,
     //                  writes every element of both, and combineWorker() reads only after that;
     //   slot 3:        suppressionWorker() writes every pixel of every plane, border included;
     // IBlur's and EdgeBlur's, whose box passes alternate between slots 0 and 1, each writing
-    // every pixel of every plane of the slot the next one reads; and IErode's and IDilate's, whose
-    // filterWorker() writes every pixel of every plane of slot 1, copying slot 0 outside the render
-    // window.
+    // every pixel of every plane of the slot the next one reads; and IErodeDilate's, whose stages
+    // each write every pixel of every plane of slot 1 or 2, copying the slot they read outside
+    // their window.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.

@@ -31,6 +31,7 @@
 #include <exception>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/FloatingPointExceptions.h"
 
@@ -278,6 +279,7 @@ OcioNodeKnobs::gpu(const OcioProcessor& processor,
 OcioNodeKnobs::OcioNodeKnobs()
     : _holder(nullptr)
     , _spaces()
+    , _contextOnly()
     , _menuRefreshers()
     , _watched()
     , _watchId(-1)
@@ -313,6 +315,31 @@ OcioNodeKnobs::addSpace(KnobHolder* holder,
     _spaces.push_back(std::move(knobs));
 }
 
+void
+OcioNodeKnobs::addContext(KnobHolder* holder,
+                          const KnobPagePtr& page)
+{
+    _holder = holder;
+    _contextOnly.reset(new OcioSpaceKnobs());
+    _contextOnly->createContextOnly(holder, page);
+}
+
+void
+OcioNodeKnobs::addWorkingSpace(KnobHolder* holder,
+                               const KnobPagePtr& page,
+                               const std::string& name,
+                               const QString& label,
+                               const QString& hint,
+                               const OcioSpaceKnobs::ChoiceMade& choiceMade)
+{
+    OcioSpaceKnobs::Description description;
+    description.name = name;
+    description.label = label;
+    description.hint = hint;
+    description.defaultHint = tr("The project's working colorspace, following it as it changes.");
+    addSpace(holder, page, description, [this]() { return std::optional<std::string>(workingSpace()); }, choiceMade);
+}
+
 std::size_t
 OcioNodeKnobs::spaceCount() const
 {
@@ -337,7 +364,12 @@ void
 OcioNodeKnobs::addKnob(const KnobPagePtr& page,
                        const KnobIPtr& knob)
 {
-    KnobGroupPtr context = _spaces.empty() ? KnobGroupPtr() : _spaces.front()->contextGroup();
+    KnobGroupPtr context;
+    if (!_spaces.empty()) {
+        context = _spaces.front()->contextGroup();
+    } else if (_contextOnly) {
+        context = _contextOnly->contextGroup();
+    }
     if (context) {
         const std::vector<KnobIPtr> children = page->getChildren();
         for (std::size_t i = 0; i < children.size(); ++i) {
@@ -365,7 +397,11 @@ OcioNodeKnobs::workingSpace() const
 std::vector<std::pair<std::string, std::string>>
 OcioNodeKnobs::contextVariables(double time) const
 {
-    return _spaces.empty() ? std::vector<std::pair<std::string, std::string>>() : _spaces.front()->contextVariables(time);
+    if (!_spaces.empty()) {
+        return _spaces.front()->contextVariables(time);
+    }
+
+    return _contextOnly ? _contextOnly->contextVariables(time) : std::vector<std::pair<std::string, std::string>>();
 }
 
 bool
@@ -390,8 +426,25 @@ OcioNodeKnobs::refreshMenus()
     for (std::size_t i = 0; i < _spaces.size(); ++i) {
         _spaces[i]->refreshMenu();
     }
+    refreshProjectDefaults();
     for (std::size_t i = 0; i < _menuRefreshers.size(); ++i) {
         _menuRefreshers[i]();
+    }
+}
+
+void
+OcioNodeKnobs::refreshProjectDefaults()
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->refreshProjectDefault();
+    }
+}
+
+void
+OcioNodeKnobs::appendHash(ContentHasher& h) const
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->appendHash(h);
     }
 }
 

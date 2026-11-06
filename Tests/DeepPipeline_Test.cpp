@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -371,7 +372,7 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
     NodePtr readA = createDeepRead(fixturePath("deep-scanline.exr"));
     NodePtr readB = createDeepRead(fixturePath("deep-interleaved.exr"));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPMERGE));
-    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
     NodePtr toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
     NodePtr writer = createNativeWriter();

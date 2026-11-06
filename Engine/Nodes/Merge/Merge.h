@@ -184,7 +184,6 @@ struct NativeMergeOp {
     KnobLayerSelectWPtr aAlphaLayer;
     KnobLayerSelectWPtr bAlphaLayer;
     KnobChannelSetWPtr layers;
-    KnobStringWPtr subLabel;
 };
 
 static_assert(FailingCompositeOp<NativeMergeOp>);
@@ -274,7 +273,7 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    // Shows the operator's name next to the node's label.
+    // Shows the operator's name next to the node's label; NodeGui draws the operator icon from it.
     void refreshSubLabel();
 
     // Shows each side's universal channel or alpha layer as its alpha source uses them.

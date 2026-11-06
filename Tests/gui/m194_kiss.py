@@ -208,8 +208,8 @@ try:
 
         # ---- input kiss, with the preview, a kiss that the rest of the drag keeps, and one undo step.
         gt.section("input-kiss")
-        src = create("net.sf.openfx.ConstantPlugin", 0, 0)
-        mover = create("net.sf.cimg.CImgBlur", 300, 300)
+        src = create("Constant", 0, 0)
+        mover = create("Blur", 300, 300)
         fresh(graph, [src, mover])
         yield ("sleep", SETTLE_MS)
         pre = mover.getPosition()
@@ -246,8 +246,8 @@ try:
 
         # ---- output kiss: the dragged node's output feeds the target's first free input.
         gt.section("output-kiss")
-        target = create("net.sf.cimg.CImgBlur", 1000, 300)
-        mover = create("net.sf.openfx.ConstantPlugin", 1300, 0)
+        target = create("Blur", 1000, 300)
+        mover = create("Constant", 1300, 0)
         fresh(graph, [target, mover])
         yield ("sleep", SETTLE_MS)
         start = press(graph, mover)
@@ -262,8 +262,8 @@ try:
 
         # ---- two kisses in one drag: the second goes to the input the first left free.
         gt.section("two-kisses")
-        c1 = create("net.sf.openfx.ConstantPlugin", 2000, 0)
-        c2 = create("net.sf.openfx.ConstantPlugin", 2400, 0)
+        c1 = create("Constant", 2000, 0)
+        c2 = create("Constant", 2400, 0)
         merge = create("Merge", 2200, 400)
         fresh(graph, [c1, c2, merge])
         yield ("sleep", SETTLE_MS)
@@ -290,9 +290,9 @@ try:
 
         # ---- only unconnected inputs kiss: a connected input is never rewired.
         gt.section("only-unconnected")
-        x = create("net.sf.openfx.ConstantPlugin", 3000, 0)
-        y = create("net.sf.openfx.ConstantPlugin", 3400, 0)
-        mover = create("net.sf.cimg.CImgBlur", 3000, 300)
+        x = create("Constant", 3000, 0)
+        y = create("Constant", 3400, 0)
+        mover = create("Blur", 3000, 300)
         check(mover.connectInput(0, x), "only-unconnected: connect the Blur's input 0")
         fresh(graph, [x, y, mover])
         yield ("sleep", SETTLE_MS)
@@ -306,8 +306,8 @@ try:
 
         # ---- no Ctrl, no kiss; and with Ctrl, nothing out of reach.
         gt.section("no-ctrl-or-out-of-reach")
-        src = create("net.sf.openfx.ConstantPlugin", 4000, 0)
-        mover = create("net.sf.cimg.CImgBlur", 4300, 300)
+        src = create("Constant", 4000, 0)
+        mover = create("Blur", 4300, 300)
         fresh(graph, [src, mover])
         yield ("sleep", SETTLE_MS)
         start = press(graph, mover)
@@ -324,8 +324,8 @@ try:
 
         # ---- Alt at release: back to the pickup position, with the new pipe.
         gt.section("alt-snap-back")
-        src = create("net.sf.openfx.ConstantPlugin", 5000, 0)
-        mover = create("net.sf.cimg.CImgBlur", 5300, 300)
+        src = create("Constant", 5000, 0)
+        mover = create("Blur", 5300, 300)
         fresh(graph, [src, mover])
         yield ("sleep", SETTLE_MS)
         pre = mover.getPosition()
@@ -345,9 +345,9 @@ try:
 
         # ---- Escape cancels the whole drag: its kisses and its moves, leaving nothing to undo.
         gt.section("escape")
-        src = create("net.sf.openfx.ConstantPlugin", 6000, 0)
-        other = create("net.sf.openfx.ConstantPlugin", 6700, 0)
-        mover = create("net.sf.cimg.CImgBlur", 6300, 300)
+        src = create("Constant", 6000, 0)
+        other = create("Constant", 6700, 0)
+        mover = create("Blur", 6300, 300)
         fresh(graph, [src, other, mover])
         yield ("sleep", SETTLE_MS)
         other_pre = other.getPosition()
@@ -384,11 +384,11 @@ try:
 
         # ---- A backdrop's contents move only while Ctrl is up; undo puts every node back where it was.
         gt.section("backdrop-ctrl")
-        bd = create("fr.inria.built-in.BackDrop", 7000, 0)
+        bd = create("Backdrop", 7000, 0)
         bd.setSize(300, 200)
-        inside = create("net.sf.openfx.ConstantPlugin", 7080, 80)
-        mover = create("net.sf.cimg.CImgBlur", 7450, 100)
-        src = create("net.sf.openfx.ConstantPlugin", 7900, -500)
+        inside = create("Constant", 7080, 80)
+        mover = create("Blur", 7450, 100)
+        src = create("Constant", 7900, -500)
         fresh(graph, [bd, inside, mover, src])
         app.selectNode(bd, True)
         app.selectNode(mover, False)

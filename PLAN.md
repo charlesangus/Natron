@@ -197,12 +197,12 @@ future core work has solid ground to build on.
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | | | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | | | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | done | M20 |  | E9 | | | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
-| M249 | Bundle Cycles Delegate | doing | M19, M248 | misty-marten | E9 | F3 | uat | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
-| M250 | Bundle MoonRay Delegate | doing | M19 | misty-marten | E9 | F3 | uat | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
-| M251 | Cycles Rendering | doing | M248, M249 | misty-marten | E9 | F3 | uat | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
-| M252 | MoonRay Rendering | doing | M248, M250 | misty-marten | E9 | F3 | uat | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
-| M253 | Delegate Render Settings | doing | M251, M252 | misty-marten | E9 | F3 | uat | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
-| M254 | Progressive Viewer Render | doing | M248, M251 | misty-marten | E9 | F3 | uat | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
+| M249 | Bundle Cycles Delegate | doing | M19, M248 | misty-marten | E9 | F3 | | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
+| M250 | Bundle MoonRay Delegate | doing | M19 | misty-marten | E9 | F3 | | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
+| M251 | Cycles Rendering | doing | M248, M249 | misty-marten | E9 | F3 | | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
+| M252 | MoonRay Rendering | doing | M248, M250 | misty-marten | E9 | F3 | | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
+| M253 | Delegate Render Settings | doing | M251, M252 | misty-marten | E9 | F3 | | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
+| M254 | Progressive Viewer Render | doing | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | blocked | M251, M252 | bosley-native-nodes | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
@@ -472,6 +472,7 @@ future core work has solid ground to build on.
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 
 # Open questions
+- **M254 - Progressive Viewer Render, display transform (PM, 2026-11-05):** progressive frames are 8-bit sRGB from `srgbTable()`, so the viewer's OCIO view, gain and gamma don't apply to them, and neither does the viewer's lighting mode. Fixing it needs a design choice; raise with the F3 - Cycles And MoonRay Delegates UAT unless the user answers sooner.
 - **M251 - Cycles Rendering, camera exposure (inbox, 2026-11-05):** Lobby cameras author `exposure = -10`, no renderer path in Natron reads it, and the Cycles frame averages about 8,000, so it reads as blown out. Should USDRender and the viewer apply it? Raise at UAT.
 - **M130 - Native Edge-Preserving And Directional Filters:** does the DirBlur and GodRays hot-pixel artifact happen with Preferences > GPU compute set to Off, or only on Auto? Tests at low mips pass on CPU and software GPU, so the cause isn't reproduced (PM, 2026-11-05).
 - **Start nothing new (user, 2026-11-02):** finish the in-flight milestones before starting new work (M53 Phase 53.4, new stubs). Exception: M322 - NVIDIA Exit Deadlock Fix may start now (user, 2026-11-03). The scene graph redesign is also exempt (user, 2026-11-04): M327 - Heavy Scene Spike through M336 - Heavy Scene Acceptance may start once M231 - Scene Graph Panel and M232 - Scene Selection To Nodes are merged.

@@ -78,12 +78,12 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
   - approach: Build the snapshot from both placements plus the fallbacks, under its own lock, in `submitViewerFrameToRenderScheduler` (:1301-1309), only while the overlay is on. Merge the split-rect graphs (submitted at ~2558) and the A/B calls into one snapshot, tagging disagreement "mixed". Ignore the Write path at `OutputSchedulerThread.cpp:2594`.
   - verify: with the overlay off, no shadow plan and no snapshot; split rects that disagree produce "mixed".
   - size: L
-- [ ] M116.P2.T2 — Dry-run planner
+- [x] M116.P2.T2 — Dry-run planner
   - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Tests/Native/ViewerRootOnDevice_Test.cpp`
   - approach: Re-plan after every graph change using ParallelRenderArgsSetter, `computeRequestPass`, `FrameRenderContext::createFromSetter`, `buildGraph` and `placeRenderGraph`. Do not copy `getRenderViewerArgsAndCheckCache_public` (:1729): it calls `createNewRenderRequest`, which bumps `renderAge` and aborts real renders, and M302 - Viewer Render State Cues reads `renderAge`.
   - verify: a dry run leaves `renderAge[2]`/`displayAge[2]` untouched and aborts no render in flight.
   - size: L
-- [ ] M116.P2.T3 — Queued signal to the GUI
+- [x] M116.P2.T3 — Queued signal to the GUI
   - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`
   - approach: Emit a signal when the snapshot changes. Freeze it during playback.
   - verify: a signal-spy test sees one emission per change and none during playback.

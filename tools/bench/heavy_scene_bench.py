@@ -94,7 +94,7 @@ try:
     from PySide6.QtWidgets import QApplication
     import NatronEngine
 
-    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, widgets_of
+    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, shot, widgets_of
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
@@ -154,7 +154,7 @@ try:
         return node
 
     usd = create("USDRead", 0, 0)
-    viewer = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 0, 150)
+    viewer = app.getNode("Viewer1") or create("Viewer", 0, 150)
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
@@ -272,7 +272,10 @@ try:
         require(v is not None, "%s: a scene view is visible" % command)
         target = spike_stats().get("done", 0) + 1
         v.setProperty("natronHydraSpikeCommand", command)
-        ok = yield ("until", lambda: spike_stats().get("done", 0) >= target, TIMEOUT_S)
+        # A cancel with nothing to cancel changes nothing, so no frame ever reports it done.
+        ok = yield ("until", lambda: spike_stats().get("done", 0) >= target, 10 if command == "cancel" else TIMEOUT_S)
+        if command == "cancel":
+            return spike_stats()
         check(ok, "%s: rendered" % command)
         return spike_stats()
 
@@ -289,8 +292,9 @@ try:
 
     def populate(m):
         yield from action_open(m)
+        yield ("until", lambda: session or spike_stats().get("filterBound"), 10)
         stats = spike_stats()
-        check(session or stats.get("filterBound"), "populate: the filter was appended to this viewer's engine (%r)" % (stats.get("renderInstanceId"),))
+        check(session or stats.get("filterBound"), "populate: the filter was appended to this viewer's engine (%r; renderer error %r)" % (stats.get("renderInstanceId"), prop("natronSceneRendererError")))
         m.values["render_instance_id"] = stats.get("renderInstanceId")
         m.values["first_render_ms"] = round(stats.get("firstRenderMs", -1), 1)
         m.values["stage_scene_index_population_ms"] = None if session else round(stats.get("populateMs", -1), 1)
@@ -370,6 +374,19 @@ try:
         m.values["boxes_build_ms"] = round(stats["boxesBuildMs"], 1)
         heartbeat.start()
         yield from action_orbit(m)
+
+    def action_boxes_shot(m):
+        """orbit10k's setup without the orbit, then a screenshot to look at."""
+        if session:
+            yield from clear_pruned(root_prim)
+        else:
+            yield from prepare_pruned(root_prim)
+        yield from spike("boxes %d %d" % (box_depth, box_count))
+        ok = yield ("until", lambda: not spike_stats().get("boxesBuilding", True) and spike_stats().get("boxesDrawn", 0) > 0, TIMEOUT_S)
+        check(ok, "boxes_shot: boxes were drawn")
+        yield ("sleep", 500)
+        m.values["boxes_drawn"] = spike_stats().get("boxesDrawn")
+        m.values["screenshot"] = shot("boxes_%s_%s.png" % (mechanism, fixture))
 
     def action_sibling_state(m):
         yield from clear_pruned(sibling_row)
@@ -583,6 +600,7 @@ try:
         "reveal": action_reveal,
         "reveal_cancel": action_reveal_cancel,
         "orbit10k": action_orbit10k,
+        "boxes_shot": action_boxes_shot,
         "sibling_state": action_sibling_state,
         "noedit": action_noedit,
         "load_building_preopen": load_action(load_building, "preopen"),

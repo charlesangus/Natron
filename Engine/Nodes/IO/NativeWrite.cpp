@@ -2241,7 +2241,8 @@ NativeWrite::render(const RenderActionArgs& args)
 
         const KnobBoolPtr writeMetadata = _writeMetadata.lock();
         if (!writeMetadata || writeMetadata->getValue()) {
-            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
+            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName,
+                                            OiioWriteSupport::WriteMetadataMode::AllExceptInput);
         }
         if (formatName == "openexr") {
             spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(outputHash));

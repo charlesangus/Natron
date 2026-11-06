@@ -395,7 +395,7 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     metadata.setString("ofx/edgecode", "1:2:3:4:5:6:7");
 
     OIIO::ImageSpec exr;
-    OiioWriteSupport::applyMetadata(exr, metadata, "openexr");
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("a", exr.get_string_attribute("custom"));
     EXPECT_EQ("cam", exr.get_string_attribute("Exif:Make"));
     EXPECT_FLOAT_EQ(35.f, exr.get_float_attribute("Exif:FocalLength", -1.f));
@@ -413,7 +413,7 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     }
 
     OIIO::ImageSpec tiff;
-    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff");
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("t", tiff.get_string_attribute("tiff:Foo"));
     EXPECT_EQ("cam", tiff.get_string_attribute("Make"));
     EXPECT_TRUE(tiff.find_attribute("custom") == NULL);
@@ -422,10 +422,44 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     EXPECT_FLOAT_EQ(35.f, tiff.get_float_attribute("Exif:FocalLength", -1.f));
 
     OIIO::ImageSpec dpx;
-    OiioWriteSupport::applyMetadata(dpx, metadata, "dpx");
+    OiioWriteSupport::applyMetadata(dpx, metadata, "dpx", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("d", dpx.get_string_attribute("dpx:Creator"));
     EXPECT_TRUE(dpx.find_attribute("dpx:Packing") == NULL);
     EXPECT_TRUE(dpx.find_attribute("tiff:Foo") == NULL);
+}
+
+TEST(OiioWriteMetadata, StandardOfxKeysMapToTheirTagsAndNativeKeysWin)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("ofx/creator", "tool");
+    metadata.setString("ofx/copyright", "me");
+    metadata.setString("ofx/comment", "note");
+    metadata.setDouble("ofx/framerate", 24.);
+    metadata.setDouble("ofx/focallength", 50.);
+    metadata.setDouble("ofx/fnumber", 2.8);
+    metadata.setDouble("ofx/exposuretime", 0.5);
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("tool", tiff.get_string_attribute("Software"));
+    EXPECT_EQ("me", tiff.get_string_attribute("Copyright"));
+    EXPECT_EQ("note", tiff.get_string_attribute("ImageDescription"));
+    EXPECT_TRUE(tiff.find_attribute("FramesPerSecond") != NULL);
+    EXPECT_FLOAT_EQ(50.f, tiff.get_float_attribute("Exif:FocalLength", -1.f));
+    EXPECT_FLOAT_EQ(2.8f, tiff.get_float_attribute("FNumber", -1.f));
+    EXPECT_FLOAT_EQ(0.5f, tiff.get_float_attribute("ExposureTime", -1.f));
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("tool", exr.get_string_attribute("Exif:Software"));
+    EXPECT_FLOAT_EQ(2.8f, exr.get_float_attribute("Exif:FNumber", -1.f));
+    EXPECT_TRUE(exr.find_attribute("Software") == NULL);
+
+    metadata.setString("exif/Software", "native");
+    OIIO::ImageSpec both;
+    OiioWriteSupport::applyMetadata(both, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("native", both.get_string_attribute("Software"));
 }
 
 TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
@@ -436,7 +470,7 @@ TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
     metadata.setString("ofx/edgecode", "12:34:056789:1234:05:4:64");
 
     OIIO::ImageSpec spec;
-    OiioWriteSupport::applyMetadata(spec, metadata, "openexr");
+    OiioWriteSupport::applyMetadata(spec, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
 
     const OIIO::ParamValue* timecode = spec.find_attribute("smpte:TimeCode");
     ASSERT_TRUE(timecode != NULL);

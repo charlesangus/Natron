@@ -938,7 +938,8 @@ namespace {
 void
 applyMetadata(OIIO::ImageSpec& spec,
               const ImageMetadata& metadata,
-              const std::string& formatName)
+              const std::string& formatName,
+              WriteMetadataMode /*mode*/)
 {
     const bool openExr = formatName == "openexr";
     std::string dropped;
@@ -993,6 +994,32 @@ applyMetadata(OIIO::ImageSpec& spec,
             continue;
         }
         setValue(spec, name, it->second);
+    }
+    // Run after the loop so a format-native key for the same tag, which the loop has already
+    // written, takes precedence.
+    struct OfxTag {
+        const char* key;
+        const char* tag;
+    };
+    static const OfxTag ofxTags[] = {
+        { kOfxMetadataKeyCreator, "Software" },
+        { kOfxMetadataKeyCopyright, "Copyright" },
+        { kOfxMetadataKeyComment, "ImageDescription" },
+        { kOfxMetadataKeyFrameRate, "FramesPerSecond" },
+        { kOfxMetadataKeyFocalLength, "FocalLength" },
+        { kOfxMetadataKeyFNumber, "FNumber" },
+        { kOfxMetadataKeyExposureTime, "ExposureTime" },
+    };
+    for (const OfxTag& tag : ofxTags) {
+        const ImageMetadata::Value* value = metadata.find(tag.key);
+        if (!value) {
+            continue;
+        }
+        const std::string tagName = tag.tag;
+        const std::string name = (tagName == "FramesPerSecond" || (!openExr && isUnprefixedExifTag(tagName))) ? tagName : "Exif:" + tagName;
+        if (spec.find_attribute(name) == NULL) {
+            setValue(spec, name, *value);
+        }
     }
     if (!dropped.empty()) {
         qDebug() << "Metadata not written to" << formatName.c_str() << "file:" << dropped.c_str();

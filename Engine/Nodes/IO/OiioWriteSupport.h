@@ -189,22 +189,31 @@ struct WritePart {
     OIIO::ImageSpec spec;
 };
 
+enum class WriteMetadataMode {
+    Default,
+    AllExceptInput,
+    All
+};
+
 /**
  * @brief Adds to `spec` the attributes that carry `metadata` into a file of format `formatName`:
  * the inverse of OiioReadSupport::attributeMetadata(). exr/ keys go to OpenEXR only; exif/ keys
  * to every format, under the unprefixed name OIIO files the standard main-IFD tags under and
  * "Exif:" otherwise ("Exif:" always for OpenEXR, so a re-read lands on the same key); tiff/,
  * dpx/ and cin/ keys only to their own format; oiio/ keys to every format; ofx/timecode and
- * ofx/edgecode as smpte:TimeCode and smpte:KeyCode.
+ * ofx/edgecode as smpte:TimeCode and smpte:KeyCode. ofx/creator, copyright, comment, framerate,
+ * focallength, fnumber and exposuretime go to the matching standard tag (Software, Copyright,
+ * ImageDescription, FramesPerSecond, FocalLength, FNumber, ExposureTime) unless a format-native
+ * key already set it.
  *
- * Never written: the file-identity keys (ofx/filepath, ofx/frame, ofx/framerate, ofx/filesize,
- * ofx/mtime), oiio/ColorSpace, whose owner is the colour handling, every other ofx/ and
- * quicktime/ key, and the keys that describe the layout of the file the metadata came from
+ * Never written: the file-identity keys (ofx/filepath, ofx/frame, ofx/filesize, ofx/mtime),
+ * oiio/ColorSpace, whose owner is the colour handling, every other ofx/ and quicktime/ key, and the keys that describe the layout of the file the metadata came from
  * (compression, tiling, packing, sub-image naming, line order, pixel aspect), which the writer
  * decides itself. A key that the format cannot hold is left for OIIO to drop; the others
  * dropped here are logged.
  **/
-void applyMetadata(OIIO::ImageSpec& spec, const ImageMetadata& metadata, const std::string& formatName);
+void applyMetadata(OIIO::ImageSpec& spec, const ImageMetadata& metadata, const std::string& formatName,
+                   WriteMetadataMode mode);
 
 /**
  * @brief Fills `band` with the rows [rowBegin, rowEnd) of part `part`, counted from the top row of

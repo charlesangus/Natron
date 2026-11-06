@@ -1011,10 +1011,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
         "cycles:integrator:use_sample_subset",
         "cycles:integrator:sample_subset_offset",
         "cycles:integrator:sample_subset_length",
-        // With pixel jitter on, Integrator::device_update() reads two elements of the custom
-        // sample, which is empty here.
-        "cycles:integrator:use_custom_pixel_jitter_sample",
-        // A text knob, which the nudge does not move.
+        // A text knob, which the nudge does not move. The empty sample with both jitter switches
+        // nudged on is the case Cycles must survive.
         "cycles:integrator:custom_pixel_jitter_sample",
         // Its default is FLT_MAX, which adding 0.5 does not change, so it would never be sent.
         "cycles:integrator:ao_distance",

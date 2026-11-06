@@ -2,9 +2,11 @@
 and the view is on, and leaves the render alone. A Canon EOS 5D Mark III CR2 goes through Read and
 RawPrepare, and the node under test is made with its panel open and fed to a Viewer. For each view:
   - the Viewer settles with the view off, and shows no error;
-  - turning the view on changes at least MIN_CHANGED_PX viewer pixels, and the node's content hash
-    is the one it had before;
+  - turning the view on changes at least MIN_CHANGED_PX viewer pixels, a view with a limit covers no
+    more of the picture than that (a sparse mask must not flood its tile), and the node's content
+    hash is the one it had before;
   - turning it off brings the picture back to the one before, and the hash is still the same.
+Switching RawHighlights directly from one view to another replaces the first view's mask.
 The views are RawHighlights' Clipped, Combine, Candidating and Strength, RawDemosaic's Dual, Sharpened
 Areas and Radius, RawHotPixels' Mark Fixed and RawColorCalibration's Show Patches.
 Without the fixture (a checkout without Git LFS has a pointer file) the script ends after
@@ -24,24 +26,46 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STARTUP_TIMEOUT_S = 60.0
-RENDER_TIMEOUT_S = 180.0
-SETTLE_POLLS = 3
+RENDER_TIMEOUT_S = 120.0
+POLL_S = 0.5
 WATCHDOG_S = 880
 CHANNEL_DELTA = 8
 MIN_CHANGED_PX = 200
+MIN_SWITCH_PX = 50
 MAX_RESIDUAL_PX = 50
+MAX_SPARSE_SHARE = 0.5
 
-# (node id, upstream chain before it, knob, option or bool, other knobs to set first, shot name)
-VIEWS = [
-    ("RawHighlights", ["RawTemperature"], "maskView", "clipped", {"mode": "segments", "recovery": "generic"}, "highlights-clipped"),
-    ("RawHighlights", ["RawTemperature"], "maskView", "combine", {"mode": "segments", "recovery": "generic"}, "highlights-combine"),
-    ("RawHighlights", ["RawTemperature"], "maskView", "candidating", {"mode": "segments", "recovery": "generic"}, "highlights-candidating"),
-    ("RawHighlights", ["RawTemperature"], "maskView", "strength", {"mode": "segments", "recovery": "generic"}, "highlights-strength"),
-    ("RawDemosaic", ["RawTemperature", "RawHighlights"], "maskView", "dual", {"method": "rcdDual"}, "demosaic-dual"),
-    ("RawDemosaic", ["RawTemperature", "RawHighlights"], "maskView", "sharpenedAreas", {"captureSharpen": True}, "demosaic-sharpened-areas"),
-    ("RawDemosaic", ["RawTemperature", "RawHighlights"], "maskView", "radius", {"captureSharpen": True}, "demosaic-radius"),
-    ("RawHotPixels", [], "markFixed", True, {"strength": 1.0, "threshold": 0.01}, "hotpixels-mark-fixed"),
-    ("RawColorCalibration", ["RawTemperature", "RawHighlights", "RawDemosaic", "RawInputColor"], "checkerShowPatches", True, {}, "colorcalibration-show-patches"),
+# The fixture is dim: at its own clipping threshold only a few photosites clip, with no candidates and
+# no segment clipped in all channels, so those views would rightly stay empty.
+HIGHLIGHTS_SETUP = {"mode": "segments", "recovery": "generic", "strength": 1.0, "clipOverride": True, "clip": 0.2}
+
+# The viewer keeps its last picture while a render runs, so a chain's picture has settled only after
+# holding for longer than that chain takes to render.
+#
+# (node id, upstream chain before it, other knobs, seconds to hold,
+#  [(knob, option or bool, shot name, largest share of the picture the view may cover)])
+CHAINS = [
+    ("RawHighlights", ["RawTemperature"], HIGHLIGHTS_SETUP, 30.0, [
+        ("maskView", "clipped", "highlights-clipped", MAX_SPARSE_SHARE),
+        ("maskView", "combine", "highlights-combine", MAX_SPARSE_SHARE),
+        ("maskView", "candidating", "highlights-candidating", MAX_SPARSE_SHARE),
+        ("maskView", "strength", "highlights-strength", MAX_SPARSE_SHARE),
+    ]),
+    ("RawDemosaic", ["RawTemperature", "RawHighlights"], {"method": "rcdDual"}, 100.0, [
+        ("maskView", "dual", "demosaic-dual", MAX_SPARSE_SHARE),
+    ]),
+    # Zoomed out, these two cover the whole picture: every pixel has a value, and the largest of each
+    # block is what shows.
+    ("RawDemosaic", ["RawTemperature", "RawHighlights"], {"captureSharpen": True}, 100.0, [
+        ("maskView", "sharpenedAreas", "demosaic-sharpened-areas", None),
+        ("maskView", "radius", "demosaic-radius", None),
+    ]),
+    ("RawHotPixels", [], {"strength": 1.0, "threshold": 0.01}, 20.0, [
+        ("markFixed", True, "hotpixels-mark-fixed", MAX_SPARSE_SHARE),
+    ]),
+    ("RawColorCalibration", ["RawTemperature", "RawHighlights", "RawDemosaic", "RawInputColor"], {}, 100.0, [
+        ("checkerShowPatches", True, "colorcalibration-show-patches", None),
+    ]),
 ]
 
 try:
@@ -104,24 +128,31 @@ try:
                 count += 1
         return count
 
-    def settle():
-        """Waits until the viewer holds the same picture for several polls in a row, and that picture
-        is not just its background. Returns that picture, or None on a timeout."""
+    def picture_pixels(image):
+        """How many pixels differ from the viewer's background."""
+        from PySide6.QtGui import QImage
+        data = bytes(image.convertToFormat(QImage.Format_RGB32).constBits())
+        background = data[8:12]
+        return sum(1 for i in range(0, len(data), 4) if data[i:i + 4] != background)
+
+    def settle(hold_s):
+        """Waits until the viewer has held the same picture for hold_s, and that picture is not just its
+        background. Returns that picture, or None on a timeout."""
         previous = None
-        same = 0
+        held = 0.0
         waited = 0.0
-        while waited < RENDER_TIMEOUT_S:
-            yield ("sleep", 500)
-            waited += 0.5
+        while waited < RENDER_TIMEOUT_S + hold_s:
+            yield ("sleep", int(POLL_S * 1000))
+            waited += POLL_S
             image = viewer_crop()
             if image is None:
                 continue
             background = image.pixelColor(2, 2)
             varied = any(image.pixelColor(x, y) != background
                          for x in range(0, image.width(), 16) for y in range(0, image.height(), 16))
-            same = same + 1 if (varied and previous is not None and image == previous) else 0
+            held = held + POLL_S if (varied and previous is not None and image == previous) else 0.0
             previous = image
-            if same >= SETTLE_POLLS:
+            if held >= hold_s:
                 return image
         return None
 
@@ -179,28 +210,44 @@ try:
         viewer.setPosition(400, 300)
         state.update(read=read, prepare=prepare)
 
-        for node_id, upstream, knob, value, setup, shot_name in VIEWS:
-            gt.section("%s %s" % (node_id, shot_name))
+        for node_id, upstream, setup, hold_s, views in CHAINS:
+            gt.section("%s %s" % (node_id, views[0][2]))
             gt.close_all_panels()
             node = build(node_id, upstream, setup)
             fit_viewer()
-            before = yield from settle()
-            require(before is not None, "%s: the Viewer settles with the view off" % shot_name)
+            before = yield from settle(hold_s)
+            require(before is not None, "%s: the Viewer settles with the views off" % node_id)
             messages = gt.viewer_messages()
-            check(not messages, "%s: the Viewer shows no error (%r)" % (shot_name, messages))
+            check(not messages, "%s: the Viewer shows no error (%r)" % (node_id, messages))
             hash_before = node.getContentHash()
 
-            set_knob(node, knob, value)
-            ok = yield ("until", lambda: changed_pixels(viewer_crop(), before) >= MIN_CHANGED_PX, RENDER_TIMEOUT_S)
-            yield ("sleep", 500)
-            gt.shot("m165-raw-aids-%s.png" % shot_name)
-            check(ok, "%s: turning the view on changes the picture (%d pixels)" % (shot_name, changed_pixels(viewer_crop(), before)))
-            check(node.getContentHash() == hash_before, "%s: the view leaves the node's render hash alone" % shot_name)
+            for knob, value, shot_name, max_share in views:
+                set_knob(node, knob, value)
+                ok = yield ("until", lambda: changed_pixels(viewer_crop(), before) >= MIN_CHANGED_PX, RENDER_TIMEOUT_S)
+                yield ("sleep", 500)
+                gt.shot("m165-raw-aids-%s.png" % shot_name)
+                changed = changed_pixels(viewer_crop(), before)
+                check(ok, "%s: turning the view on changes the picture (%d pixels)" % (shot_name, changed))
+                if max_share is not None:
+                    limit = int(max_share * picture_pixels(before))
+                    check(changed <= limit, "%s: the view covers at most %d pixels (%d)" % (shot_name, limit, changed))
+                check(node.getContentHash() == hash_before, "%s: the view leaves the node's render hash alone" % shot_name)
 
-            set_knob(node, knob, "off" if isinstance(value, str) else False)
-            ok = yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), before) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
-            check(ok, "%s: turning the view off restores the picture (%d pixels differ)" % (shot_name, changed_pixels(viewer_crop(), before)))
-            check(node.getContentHash() == hash_before, "%s: the hash is unchanged after the view is off" % shot_name)
+                set_knob(node, knob, "off" if isinstance(value, str) else False)
+                ok = yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), before) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
+                check(ok, "%s: turning the view off restores the picture (%d pixels differ)" % (shot_name, changed_pixels(viewer_crop(), before)))
+                check(node.getContentHash() == hash_before, "%s: the hash is unchanged after the view is off" % shot_name)
+
+            if node_id == "RawHighlights":
+                set_knob(node, "maskView", "clipped")
+                yield ("until", lambda: changed_pixels(viewer_crop(), before) >= MIN_CHANGED_PX, RENDER_TIMEOUT_S)
+                yield ("sleep", 500)
+                first = viewer_crop()
+                set_knob(node, "maskView", "candidating")
+                ok = yield ("until", lambda: changed_pixels(viewer_crop(), first) >= MIN_SWITCH_PX, RENDER_TIMEOUT_S)
+                check(ok, "switching directly between views replaces the mask (%d pixels)" % changed_pixels(viewer_crop(), first))
+                set_knob(node, "maskView", "off")
+                yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), before) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
 
         faulthandler.cancel_dump_traceback_later()
 

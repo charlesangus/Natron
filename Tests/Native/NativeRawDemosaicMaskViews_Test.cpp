@@ -226,6 +226,8 @@ TEST_F(NativeRawDemosaicMaskViewsTest, SharpenedAreasFollowTheDetail)
     ASSERT_TRUE(busy && flat);
 
     const OverlayImageFrameConstPtr busyFrame = showView(busy, eRawDemosaicMaskViewSharpenedAreas);
+    // The two sources hash alike, so the flat chain would otherwise read the busy chain's cached images.
+    appPTR->clearAllCaches();
     const OverlayImageFrameConstPtr flatFrame = showView(flat, eRawDemosaicMaskViewSharpenedAreas);
     ASSERT_TRUE(busyFrame && flatFrame);
     const RectI window(120, 20, 180, 140);

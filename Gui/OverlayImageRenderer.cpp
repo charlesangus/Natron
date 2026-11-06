@@ -56,21 +56,19 @@ OverlayImageRenderer::buildMipChain(const std::vector<unsigned char>& base,
 
     chain.push_back(base);
     while (width > 1 || height > 1) {
-        const int w = std::max(1, (width + 1) / 2);
-        const int h = std::max(1, (height + 1) / 2);
+        // GL wants each level at floor(size / 2). A rounded-up odd size leaves the texture incomplete,
+        // and an incomplete texture samples as alpha 1: the whole tile floods with its tint. So the
+        // last row and column of an odd level fold into the texels before them.
+        const int w = std::max(1, width / 2);
+        const int h = std::max(1, height / 2);
         const std::vector<unsigned char>& src = chain.back();
         std::vector<unsigned char> dst((std::size_t)w * h, 0);
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                unsigned char m = 0;
-                for (int dy = 0; dy < 2; ++dy) {
-                    for (int dx = 0; dx < 2; ++dx) {
-                        const int sx = std::min(2 * x + dx, width - 1);
-                        const int sy = std::min(2 * y + dy, height - 1);
-                        m = std::max(m, src[(std::size_t)sy * width + sx]);
-                    }
-                }
-                dst[(std::size_t)y * w + x] = m;
+        for (int y = 0; y < height; ++y) {
+            const int dy = std::min(y / 2, h - 1);
+            for (int x = 0; x < width; ++x) {
+                const int dx = std::min(x / 2, w - 1);
+                unsigned char& texel = dst[(std::size_t)dy * w + dx];
+                texel = std::max(texel, src[(std::size_t)y * width + x]);
             }
         }
         chain.push_back(std::move(dst));
@@ -149,8 +147,8 @@ OverlayImageRenderer::texturesFor(const std::shared_ptr<const OverlayImageTile>&
             int lh = ch;
             for (std::size_t level = 0; level < chain.size(); ++level) {
                 glTexImage2D(GL_TEXTURE_2D, (GLint)level, GL_ALPHA8, lw, lh, 0, GL_ALPHA, GL_UNSIGNED_BYTE, chain[level].data());
-                lw = std::max(1, (lw + 1) / 2);
-                lh = std::max(1, (lh + 1) / 2);
+                lw = std::max(1, lw / 2);
+                lh = std::max(1, lh / 2);
             }
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)chain.size() - 1);

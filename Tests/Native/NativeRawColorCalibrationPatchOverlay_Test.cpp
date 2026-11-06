@@ -232,7 +232,8 @@ TEST(RawColorCalibrationPatchOverlay, AnotherChartsDeltaEIsIgnored)
     OverlayDrawList list;
 
     Checker::buildPatchOverlay(placement(), &deltaE, &list);
-    EXPECT_EQ(0u, countOfType(list, OverlayDrawList::ePrimitiveTypeLines));
+    // The chart's two axes are lines too; no patch adds a crossing.
+    EXPECT_EQ(2u, countOfType(list, OverlayDrawList::ePrimitiveTypeLines));
 }
 
 class NativeRawColorCalibrationPatchOverlayTest

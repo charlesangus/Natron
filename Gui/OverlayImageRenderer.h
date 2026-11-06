@@ -61,8 +61,8 @@ public:
     void releaseGLResources();
 
     /**
-     * @brief The mip chain of a coverage image, level 0 first, each level the maximum of the 2x2
-     * texels it replaces, down to one texel. Exposed for tests.
+     * @brief The mip chain of a coverage image, level 0 first, each level the maximum of the texels
+     * it replaces, at the size OpenGL requires (floor of half), down to one texel. Exposed for tests.
      **/
     static std::vector<std::vector<unsigned char>> buildMipChain(const std::vector<unsigned char>& base, int width, int height);
 

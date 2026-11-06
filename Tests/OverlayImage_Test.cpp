@@ -52,6 +52,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
+#include "Gui/OverlayImageRenderer.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -327,4 +328,21 @@ TEST_F(OverlayImageTest, ClosedPanelHidesTheFrame)
 
     node->getEffectInstance()->refreshOverlayImages();
     EXPECT_EQ(OverlayImageFrameConstPtr(), node->getOverlayImageFrame());
+}
+
+TEST(OverlayImageRendererMipChain, OddSizesHalveDownwardsAndKeepEveryTexel)
+{
+    const int width = 5;
+    const int height = 3;
+    std::vector<unsigned char> base((std::size_t)width * height, 0);
+    base[(std::size_t)(height - 1) * width + (width - 1)] = 200;
+
+    const std::vector<std::vector<unsigned char>> chain = OverlayImageRenderer::buildMipChain(base, width, height);
+
+    ASSERT_EQ(3u, chain.size());
+    ASSERT_EQ(2u * 1u, chain[1].size());
+    EXPECT_EQ(0, chain[1][0]);
+    EXPECT_EQ(200, chain[1][1]);
+    ASSERT_EQ(1u, chain[2].size());
+    EXPECT_EQ(200, chain[2][0]);
 }

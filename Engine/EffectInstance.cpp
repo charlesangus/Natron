@@ -4265,9 +4265,13 @@ EffectInstance::refreshOverlayImages()
     if (!app) {
         return;
     }
+    // View knobs stay out of the hash, so the frame of the view before this one would still pass for
+    // current and the pass would never run.
+    const bool hadFrame = getNode()->clearOverlayImageFrame();
+
     if (isOverlayImageRequested()) {
         app->renderAllViewers(true /*canAbort*/);
-    } else if (getNode()->clearOverlayImageFrame()) {
+    } else if (hadFrame) {
         app->redrawAllViewers();
     }
 }

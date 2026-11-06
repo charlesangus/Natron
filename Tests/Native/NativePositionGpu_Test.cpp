@@ -413,6 +413,21 @@ unshiftedOnly(const RectI& roi,
     return count;
 }
 
+// Whether the shift at this level moves an edge of the source more than the pixel unshiftedOnly
+// grows the shifted rectangle by, so a strip of the source is left outside it.
+bool
+shiftLeavesStrip(unsigned mipmapLevel, const TranslateCase& c)
+{
+    const double scale = 1. / (double)(1u << mipmapLevel);
+    for (double d : { c.x * scale, c.y * scale }) {
+        if (std::floor(d) > 1. || std::ceil(d) < -1.) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // namespace
 
 // Every translation over the whole region of definition and a window inside it, at both mipmap
@@ -510,7 +525,7 @@ TEST_F(NativePositionGpuTest, UnprocessedChannelsReadTheUnshiftedSource)
                 }
                 for (const RectI& roi : testWindows(rod)) {
                     expectShiftMatches(*runtime, source, node, mipmapLevel, roi, level + " " + describeRoI(roi));
-                    if (roi == rod) {
+                    if (roi == rod && (mipmapLevel == 0 || shiftLeavesStrip(mipmapLevel, c))) {
                         EXPECT_GT(unshiftedOnly(roi, sourceRod, mipmapLevel, c), 0u) << level << ": no pixel of the region of definition lies in the source but outside the shifted source";
                     }
                     if (HasFatalFailure()) {

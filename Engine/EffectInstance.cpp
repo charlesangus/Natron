@@ -537,6 +537,14 @@ EffectInstance::getParallelRenderArgsTLS() const
 }
 
 bool
+EffectInstance::isRenderingTLS() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && !args->isInstanceChangedAction;
+}
+
+bool
 EffectInstance::isRenderingOwnSequence() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
@@ -638,10 +646,12 @@ EffectInstance::getInputActionContext(int inputNb,
         return false;
     }
     std::vector<RenderContextPtr> inputContexts;
-    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || (inputContexts.size() != 1)) {
+    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || inputContexts.empty()) {
         return false;
     }
-    *context = inputContexts.front();
+    // Of several, the last pulled: the input is read under variables it renders under, as it is
+    // where a scheduler splitting the pulls into steps asks the last step's.
+    *context = inputContexts.back();
 
     return true;
 }
@@ -1625,10 +1635,18 @@ EffectInstance::getImage(int inputNb,
         inputImages.insert(std::make_pair(renderedComps, storedImages.front()));
     } else {
         // Store images in another depth or storage go through renderRoI(), which finds them by key and converts them.
-        EffectInstance::InputImagesMap seededInputImages;
+        // Only this input's images: identical inputs share an image key, and the image pre-rendered for
+        // another one covers that input's region, not this one's.
+        EffectInstance::InputImagesMap thisInputImages;
+        if (!inputImagesThreadLocal.empty()) {
+            ImageList& images = thisInputImages[inputNb];
+            EffectInstance::InputImagesMap::const_iterator preRendered = inputImagesThreadLocal.find(inputNb);
+            if (preRendered != inputImagesThreadLocal.end()) {
+                images = preRendered->second;
+            }
+        }
         if (fromStore) {
-            seededInputImages = inputImagesThreadLocal;
-            ImageList& seeded = seededInputImages[inputNb];
+            ImageList& seeded = thisInputImages[inputNb];
             seeded.insert(seeded.end(), storedImages.begin(), storedImages.end());
         }
         RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
@@ -1644,7 +1662,7 @@ EffectInstance::getImage(int inputNb,
                                                                         this,
                                                                         returnStorage,
                                                                         thisEffectRenderTime,
-                                                                        fromStore ? seededInputImages : inputImagesThreadLocal),
+                                                                        thisInputImages),
                                                           &inputImages);
 
         if (retCode != eRenderRoIRetCodeOk) {
@@ -3726,10 +3744,10 @@ EffectInstance::onSignificantEvaluateAboutToBeCalled(KnobI* knob)
 
     bool isMT = QThread::currentThread() == qApp->thread();
 
-    if ( isMT && ( !knob || knob->getEvaluateOnChange() ) ) {
+    // A non-persistent knob is not saved, so changing it leaves the project as it was.
+    if (isMT && (!knob || (knob->getEvaluateOnChange() && knob->getIsPersistent()))) {
         getApp()->triggerAutoSave();
     }
-
 
     if (isMT) {
         node->refreshIdentityState();
@@ -6113,6 +6131,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                                                                 RenderStatsPtr(),
                                                                 false); // setUpstreamArgs
 #endif
+            const std::map<NodePtr, ParallelRenderArgsPtr>& installed = setter->getInstalledArgs();
+            const std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator own = installed.find(node);
+            if ((own != installed.end()) && own->second) {
+                own->second->isInstanceChangedAction = true;
+            }
         }
         {
             RECURSIVE_ACTION();
@@ -6673,6 +6696,12 @@ EffectInstance::getCurveContextKind() const
     }
 
     return eCurveContextKindNone;
+}
+
+RotoCurveContextPtr
+EffectInstance::createGeometryCurveContext(const NodePtr& node) const
+{
+    return RotoCurveContext::create(node);
 }
 
 namespace {

@@ -42,6 +42,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -173,7 +174,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
 
         {
             QString transformName = fixedNamePrefix + QLatin1String("Transform");
-            CreateNodeArgs args(PLUGINID_OFX_TRANSFORM, isTrackerNode);
+            CreateNodeArgs args(PLUGINID_NATRON_TRANSFORM, isTrackerNode);
             args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
             args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
             args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, transformName.toStdString());
@@ -550,9 +551,6 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
         scaleKnob->setAddNewLine(false);
         scaleKnob->setSecret(true);
         scale = scaleKnob;
-        KnobBoolPtr scaleUniKnob = createDuplicateKnob<KnobBool>(kTransformParamUniform, tNode, effect, transformPage);
-        scaleUniKnob->setSecret(true);
-        scaleUniform = scaleUniKnob;
         KnobDoublePtr skewXKnob = createDuplicateKnob<KnobDouble>(kTransformParamSkewX, tNode, effect, transformPage);
         skewXKnob->setSecret(true);
         skewX = skewXKnob;
@@ -649,11 +647,11 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
         customShutterOffsetKnob->setSecret(true);
         customShutterOffset = customShutterOffsetKnob;
 
-        node->addTransformInteract(translate.lock(), scale.lock(), scaleUniform.lock(), rotate.lock(), skewX.lock(), skewY.lock(), skewOrder.lock(), center.lock(), invertTransform.lock(), KnobBoolPtr() /*interactive*/);
+        node->addTransformInteract(translate.lock(), scale.lock(), KnobBoolPtr(), rotate.lock(), skewX.lock(), skewY.lock(), skewOrder.lock(), center.lock(), invertTransform.lock());
 
         node->addCornerPinInteract(fromPoints[0].lock(), fromPoints[1].lock(), fromPoints[2].lock(), fromPoints[3].lock(),
                                    toPoints[0].lock(), toPoints[1].lock(), toPoints[2].lock(), toPoints[3].lock(),
-                                   enableToPoint[0].lock(), enableToPoint[1].lock(), enableToPoint[2].lock(), enableToPoint[3].lock(), cornerPinOverlayPoints.lock(), invertTransform.lock(), KnobBoolPtr() /*interactive*/);
+                                   enableToPoint[0].lock(), enableToPoint[1].lock(), enableToPoint[2].lock(), enableToPoint[3].lock(), cornerPinOverlayPoints.lock(), invertTransform.lock());
     }
 
     KnobSeparatorPtr exportDataSepKnob = AppManager::createKnob<KnobSeparator>(effect.get(), tr(kTrackerParamExportDataSeparatorLabel), 1, false);
@@ -1425,7 +1423,6 @@ TrackerContextPrivate::refreshVisibilityFromTransformTypeInternal(TrackerTransfo
 
     translate.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     scale.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
-    scaleUniform.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     rotate.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     center.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     skewX.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);

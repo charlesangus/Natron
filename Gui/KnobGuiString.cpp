@@ -43,13 +43,18 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QScrollArea>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
+#include <QDropEvent>
 #include <QKeyEvent>
+#include <QMimeData>
+#include <QPointer>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QDebug>
 #include <QFontComboBox>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
@@ -75,8 +80,12 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NewLayerDialog.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneGraphModel.h"
+#include "Gui/ScenePrimPickerPopup.h"
+#include "Gui/SceneSelectionActions.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
+#include "Gui/ThemedIcon.h"
 
 #include <ofxNatron.h>
 
@@ -262,8 +271,17 @@ KnobLineEdit::KnobLineEdit(const KnobGuiPtr& knob,
                            int dimension,
                            QWidget* parent)
     : LineEdit(parent)
-    , _dnd( KnobWidgetDnD::create(knob, dimension, this) )
+    , _knobGui(knob)
+    , _dnd(KnobWidgetDnD::create(knob, dimension, this))
 {}
+
+bool
+KnobLineEdit::acceptsPrimPaths(const QMimeData* mime) const
+{
+    KnobGuiString* knobGui = dynamic_cast<KnobGuiString*>(_knobGui.lock().get());
+
+    return mime && mime->hasFormat(SceneGraphModel::primPathsMimeType()) && knobGui && isEnabled() && !isReadOnly() && knobGui->acceptsPrimPaths();
+}
 
 KnobLineEdit::~KnobLineEdit()
 {
@@ -323,6 +341,11 @@ KnobLineEdit::mouseReleaseEvent(QMouseEvent* e)
 void
 KnobLineEdit::dragEnterEvent(QDragEnterEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->dragEnter(e) ) {
         LineEdit::dragEnterEvent(e);
     }
@@ -331,6 +354,11 @@ KnobLineEdit::dragEnterEvent(QDragEnterEvent* e)
 void
 KnobLineEdit::dragMoveEvent(QDragMoveEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->dragMove(e) ) {
         LineEdit::dragMoveEvent(e);
     }
@@ -339,6 +367,17 @@ KnobLineEdit::dragMoveEvent(QDragMoveEvent* e)
 void
 KnobLineEdit::dropEvent(QDropEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        const QString text = QString::fromUtf8(e->mimeData()->data(SceneGraphModel::primPathsMimeType()));
+        const QStringList paths = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        KnobGuiString* knobGui = dynamic_cast<KnobGuiString*>(_knobGui.lock().get());
+        if (knobGui && !paths.isEmpty()) {
+            knobGui->dropPrimPaths(paths);
+        }
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->drop(e) ) {
         LineEdit::dropEvent(e);
     }
@@ -359,9 +398,10 @@ KnobLineEdit::focusOutEvent(QFocusEvent* e)
 }
 
 KnobGuiString::KnobGuiString(KnobIPtr knob,
-                             KnobGuiContainerI *container)
+                             KnobGuiContainerI* container)
     : KnobGui(knob, container)
     , _lineEdit(0)
+    , _pickPrimsButton(0)
     , _label(0)
     , _container(0)
     , _mainLayout(0)
@@ -498,6 +538,18 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
             _lineEdit->setReadOnly_NoFocusRect(true);
         }
 
+        if (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) {
+            _pickPrimsButton = new Button(layout->parentWidget());
+            _pickPrimsButton->setObjectName(QString::fromUtf8("knobPrimPicker"));
+            _pickPrimsButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
+            _pickPrimsButton->setIconSize(QSize(TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE)));
+            _pickPrimsButton->setIcon(ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/square-mouse-pointer.svg"), TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE)));
+            _pickPrimsButton->setToolTip((knob->getPrimPathHint() == KnobString::ePrimPathHintPath) ? tr("Picks the prim from the scene of the node's input, or takes the one selected in the 3D view.") : tr("Picks the prims from the scene of the node's input, or takes those selected in the 3D view."));
+            _pickPrimsButton->setFocusPolicy(Qt::NoFocus); // exclude from tab focus
+            QObject::connect(_pickPrimsButton, SIGNAL(clicked()), this, SLOT(onPickPrimsClicked()));
+            layout->addWidget(_pickPrimsButton);
+        }
+
         ///set the copy/link actions in the right click menu
         enableRightClickMenu(_lineEdit, 0);
     }
@@ -522,6 +574,9 @@ KnobGuiString::removeSpecificGui()
     if (_lineEdit) {
         _lineEdit->deleteLater();
     }
+    if (_pickPrimsButton) {
+        _pickPrimsButton->deleteLater();
+    }
     if (_container) {
         _container->deleteLater();
     }
@@ -538,6 +593,56 @@ KnobGuiString::getDescriptionLabel() const
     } else {
         return k->getLabel();
     }
+}
+
+bool
+KnobGuiString::acceptsPrimPaths() const
+{
+    KnobStringPtr knob = _knob.lock();
+
+    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0);
+}
+
+void
+KnobGuiString::dropPrimPaths(const QStringList& paths)
+{
+    KnobStringPtr knob = _knob.lock();
+
+    if (!knob || paths.isEmpty() || !acceptsPrimPaths()) {
+        return;
+    }
+    const std::string oldText = knob->getValue(0);
+    const std::string newText = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
+    if (oldText != newText) {
+        pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldText, newText));
+    }
+}
+
+void
+KnobGuiString::onPickPrimsClicked()
+{
+    KnobStringPtr knob = _knob.lock();
+    Gui* gui = getGui();
+
+    if (!knob || !gui || !acceptsPrimPaths()) {
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    NodePtr input = node ? node->getInput(0) : NodePtr();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
+    const double time = timeline ? timeline->currentFrame() : 0.;
+    const QStringList current = QString::fromStdString(knob->getValue(0)).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const bool multiple = (knob->getPrimPathHint() == KnobString::ePrimPathHintPattern);
+    ScenePrimPickerPopup* popup = new ScenePrimPickerPopup(gui, input, multiple, current, time, _pickPrimsButton->window());
+    QPointer<KnobGuiString> self(this);
+    QObject::connect(popup, &ScenePrimPickerPopup::primsPicked, this, [self](const QStringList& paths) {
+        if (self) {
+            self->dropPrimPaths(paths);
+        }
+    });
+    popup->show();
 }
 
 void
@@ -1232,6 +1337,9 @@ KnobGuiString::_hide()
     } else {
         assert(_lineEdit);
         _lineEdit->hide();
+        if (_pickPrimsButton) {
+            _pickPrimsButton->hide();
+        }
     }
 }
 
@@ -1250,6 +1358,9 @@ KnobGuiString::_show()
     } else {
         assert(_lineEdit);
         _lineEdit->show();
+        if (_pickPrimsButton) {
+            _pickPrimsButton->show();
+        }
     }
 }
 
@@ -1275,6 +1386,9 @@ KnobGuiString::setEnabled()
         //_lineEdit->setEnabled(b);
         if ( !knob->isCustomKnob() ) {
             _lineEdit->setReadOnly_NoFocusRect(!b);
+        }
+        if (_pickPrimsButton) {
+            _pickPrimsButton->setEnabled(b && !knob->isSlave(0));
         }
     }
 }

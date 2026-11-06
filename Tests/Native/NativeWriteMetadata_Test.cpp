@@ -194,12 +194,7 @@ protected:
     void configureWrite(const std::string& output)
     {
         // The file is compared with what went in, so no colour conversion may sit between them.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_write->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_write->getKnobByName("ocioOutputSpaceSet").get());
-        if (outputSpace && outputSpaceSet) {
-            outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-            outputSpaceSet->setValue(true);
-        }
+        fileInWorkingSpace(_write);
 
         KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_write->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(file != NULL);

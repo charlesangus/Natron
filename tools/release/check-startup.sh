@@ -261,8 +261,8 @@ if not plugin_ids:
     fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
 
 expected_plugins = {
-    "reader": "fr.inria.built-in.Read",
-    "writer": "fr.inria.built-in.Write",
+    "reader": "Read",
+    "writer": "Write",
     "Merge": "Merge",
     "USDRead": "USDRead",
 }
@@ -300,6 +300,12 @@ if outside:
 for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAbc"):
     if not Plug.Registry().GetPluginWithName(plugin_name):
         fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
+# Natron registers the natron:// live-texture resolver and image reader itself at startup.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture"):
+    fail("OpenUSD has no natronLiveTexture plug-in registered; Resources/usd/natronLiveTexture is missing")
+# USDProject3D's Storm surface ships beside that plug-in's plugInfo.json.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture").FindPluginResource("natronProject3D.glslfx", True):
+    fail("Resources/usd/natronLiveTexture/natronProject3D.glslfx is missing")
 for extension in ("usda", "usdc", "abc"):
     if not Sdf.FileFormat.FindByExtension(extension):
         fail("OpenUSD has no file format for .%s" % extension)

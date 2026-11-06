@@ -42,8 +42,8 @@
 #define kOCIOCDLTransformParamPower "power"
 #define kOCIOCDLTransformParamSaturation "saturation"
 #define kOCIOCDLTransformParamDirection "direction"
-#define kOCIOCDLTransformParamReadFromFile "read_from_file"
-#define kOCIOCDLTransformParamExport "export_cc"
+#define kOCIOCDLTransformParamReadFromFile "readFromFile"
+#define kOCIOCDLTransformParamExport "exportCC"
 
 NATRON_NAMESPACE_ENTER
 
@@ -54,8 +54,8 @@ inline constexpr InputSpec kOCIOCDLTransformInputs[] = {
 
 /**
  * @brief OCIOCDLTransform: applies an ASC CDL to RGB, forward or inverse: the slope, offset, power
- * and saturation knobs, or, with read_from_file, the CDL of a .cc, .ccc or .cdl file, whose values
- * the knobs then show. The default values are an identity. export_cc writes the CDL as a .cc.
+ * and saturation knobs, or, with readFromFile, the CDL of a .cc, .ccc or .cdl file, whose values
+ * the knobs then show. The default values are an identity. exportCC writes the CDL as a .cc.
  **/
 struct OCIOCDLTransformOp
     : public OcioOp<OCIOCDLTransformOp> {
@@ -81,7 +81,7 @@ struct OCIOCDLTransformOp
     OCIO_NAMESPACE::CDLTransformRcPtr knobCDL(double time) const;
 
     /**
-     * @brief Shows the file's values on the knobs, which it disables, while read_from_file is on;
+     * @brief Shows the file's values on the knobs, which it disables, while readFromFile is on;
      * enables them otherwise. A file that cannot be read leaves the values.
      **/
     void refreshFromFile();

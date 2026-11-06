@@ -43,7 +43,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kGradePluginID = "Grade";
 const int kNumNodes = 500;
 
 } // namespace

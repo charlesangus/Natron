@@ -75,6 +75,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/PropertiesBinWrapper.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/RegisteredTabs.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/Splitter.h"
 #include "Gui/ViewerTab.h"
@@ -445,7 +446,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Properties bin here"), this, SLOT(movePropertiesBinHere()) );
     menu.addAction( tr("Script editor here"), this, SLOT(moveScriptEditorHere()) );
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
-
+    menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> userPanels = _imp->gui->getPythonPanels();
     if ( !userPanels.empty() ) {
@@ -878,6 +879,12 @@ void
 TabWidget::moveProgressPanelHere()
 {
     moveTab(_imp->gui->getProgressPanel(), _imp->gui->getProgressPanel(), this);
+}
+
+void
+TabWidget::moveSceneGraphHere()
+{
+    moveTab(_imp->gui->getSceneGraphPanel(), _imp->gui->getSceneGraphPanel(), this);
 }
 
 TabWidget*

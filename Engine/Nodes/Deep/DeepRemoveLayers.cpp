@@ -80,7 +80,6 @@ DeepRemoveLayers::DeepRemoveLayers(NodePtr node)
     : NativeEffectBase(node)
     , _operation()
     , _channels()
-    , _subLabel()
 {
 }
 
@@ -121,15 +120,6 @@ DeepRemoveLayers::initializeKnobs()
                                 "spec. A layer the input does not have is ignored. A is always kept."));
     page->addKnob(channels);
     _channels = channels;
-
-    // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
-    // this knob's value in parentheses and shows it next to the node's label on its own.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    page->addKnob(sublabel);
-    _subLabel = sublabel;
 
     NodePtr node = getNode();
     if (node) {
@@ -338,11 +328,7 @@ DeepRemoveLayers::buildSubLabel()
 void
 DeepRemoveLayers::refreshSubLabel()
 {
-    KnobStringPtr sublabel = _subLabel.lock();
-
-    if (sublabel) {
-        sublabel->setValue(buildSubLabel());
-    }
+    setSublabel(buildSubLabel());
 }
 
 bool

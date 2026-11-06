@@ -35,8 +35,8 @@
 #include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
-#define PLUGIN_MAJOR_NATRON_COLORCORRECT 3
+#define PLUGINID_NATRON_COLORCORRECT "ColorCorrect"
+#define PLUGIN_MAJOR_NATRON_COLORCORRECT 1
 
 #define kColorCorrectGroupMaster "Master"
 #define kColorCorrectGroupShadows "Shadows"
@@ -118,7 +118,7 @@ struct ColorCorrectOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORCORRECT,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorCorrectPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/ColorCorrect.png",
         .inputs = kColorCorrectInputs,
     };
 

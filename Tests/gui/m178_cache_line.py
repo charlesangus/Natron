@@ -27,7 +27,7 @@ WATCHDOG_S = 280
 SETTLE_MS = 1500
 FIRST, LAST = 1, 6
 ALL_FRAMES = list(range(FIRST, LAST + 1))
-BLUR = "net.sf.cimg.CImgBlur"
+BLUR = "Blur"
 # The default "Cached frame" colour of the Appearance settings, 0.56 0.79 0.4.
 CACHED_RGB = (143, 201, 102)
 COLOUR_TOLERANCE = 16
@@ -135,8 +135,8 @@ try:
 
         gt.section("setup")
         app.getProjectParam("frameRange").set(FIRST, LAST)
-        constant = app.createNode("net.sf.openfx.ConstantPlugin")
-        require(constant is not None, "create a Constant", gt.plugin_problem("net.sf.openfx.ConstantPlugin"))
+        constant = app.createNode("Constant")
+        require(constant is not None, "create a Constant", gt.plugin_problem("Constant"))
         constant.getParam("color").set(0.25, 0.5, 0.75, 1.0)
         blur = app.createNode(BLUR)
         require(blur is not None, "create a Blur", gt.plugin_problem(BLUR))
@@ -144,7 +144,7 @@ try:
         size = blur.getParam("size")
         require(size is not None, "the Blur has a size parameter")
         size.set(3.0, 3.0)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer exists")
         require(viewer.connectInput(0, blur), "the Viewer shows the Blur")
         gt.close_all_panels()

@@ -198,6 +198,7 @@ public:
     virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual std::string getSublabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The node's static description, which every query above answers from. A node
@@ -303,7 +304,10 @@ public:
     /**
      * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
      * view; the region engine hands that input over in it. False when the GPU path cannot read
-     * the input at all, which keeps the node on the CPU, as the default does.
+     * the input at all, which keeps the node on the CPU, as the default does. Asked with
+     * FrameViewRequest::TaskEdge::kContextRequestInputNb, as are readsGpuInput() and
+     * getGpuInputRoI(), for the outputs a node requests under a context, which it reads from
+     * GpuRenderArgs::contextInputs.
      **/
     virtual bool getGpuInputLayer(int /*inputNb*/,
                                   const ImageLayerDesc& /*plane*/,
@@ -434,6 +438,11 @@ protected:
      * of an earlier state again.
      **/
     void invalidateOutputMetadata();
+
+    /**
+     * @brief Sets the text getSublabel() returns and shows it in the node graph.
+     **/
+    void setSublabel(const std::string& sublabel);
 
     /**
      * @brief The metadata of the effect connected to inputNb, or empty if nothing is. For a node
@@ -666,6 +675,9 @@ private:
     U64 _metadataCacheHash; //< the node hash (before the context key is mixed in) every entry was derived under
 
     SceneLayerMemo _sceneLayerMemo;
+
+    mutable std::mutex _sublabelMutex;
+    std::string _sublabel;
 
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 

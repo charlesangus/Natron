@@ -61,7 +61,23 @@ BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) c
     _imp->curveRightBezierX->toSerialization(&serialization->rightXCurve);
     _imp->curveRightBezierY->toSerialization(&serialization->rightYCurve);
 
+    const std::string trackerName = getTrackLinkTrackerName();
+    const std::string trackName = getTrackLinkTrackName();
+
     QMutexLocker k(&_imp->staticPositionMutex);
+    serialization->hasTrackLink = bool(_imp->trackLink);
+    if (_imp->trackLink) {
+        serialization->trackLinkTracker = trackerName;
+        serialization->trackLinkTrack = trackName;
+        serialization->trackOffsetX = _imp->trackOffsets.x;
+        serialization->trackOffsetY = _imp->trackOffsets.y;
+        serialization->trackOffsetLeftX = _imp->trackOffsets.leftX;
+        serialization->trackOffsetLeftY = _imp->trackOffsets.leftY;
+        serialization->trackOffsetRightX = _imp->trackOffsets.rightX;
+        serialization->trackOffsetRightY = _imp->trackOffsets.rightY;
+        serialization->trackFrozenX = _imp->trackLink->frozenX;
+        serialization->trackFrozenY = _imp->trackLink->frozenY;
+    }
     serialization->x = _imp->x;
     serialization->y = _imp->y;
     serialization->leftX = _imp->leftX;
@@ -113,6 +129,26 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
     _imp->guiRightY = serialization.rightY;
 
     _imp->broken = serialization.broken;
+
+    // The track is resolved by name once every node exists (see
+    // RotoCurveContext::resolveTrackLinks()).
+    if (serialization.hasTrackLink) {
+        std::shared_ptr<BezierCPTrackLink> link = std::make_shared<BezierCPTrackLink>();
+        link->trackerName = serialization.trackLinkTracker;
+        link->trackName = serialization.trackLinkTrack;
+        link->frozenX = serialization.trackFrozenX;
+        link->frozenY = serialization.trackFrozenY;
+        _imp->trackLink = link;
+        _imp->trackOffsets.x = serialization.trackOffsetX;
+        _imp->trackOffsets.y = serialization.trackOffsetY;
+        _imp->trackOffsets.leftX = serialization.trackOffsetLeftX;
+        _imp->trackOffsets.leftY = serialization.trackOffsetLeftY;
+        _imp->trackOffsets.rightX = serialization.trackOffsetRightX;
+        _imp->trackOffsets.rightY = serialization.trackOffsetRightY;
+        _imp->guiTrackOffsets = _imp->trackOffsets;
+    } else {
+        _imp->trackLink.reset();
+    }
 }
 
 void

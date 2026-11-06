@@ -40,7 +40,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
   - verify: A test requests renders, aborts one, and checks the stale/current transitions and the A/B rule.
   - size: M
 
-- [ ] M302.P1.T2 — Draw the stale border
+- [x] M302.P1.T2 — Draw the stale border
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerTab40.cpp`, `Engine/Settings.cpp`, `Engine/Settings.h`
   - approach: On `staleChanged(true)` start a timer for the preference `viewerStaleBorderDelayMs` (default 150, under Viewer preferences). When it fires, draw a 2-px amber border inside the GL viewport. `staleChanged(false)` cancels the timer and clears the border at once.
   - verify: A GUI script under Xvfb holds a slow render and finds the border pixels amber after the delay and clear after completion; screenshots go to the user.

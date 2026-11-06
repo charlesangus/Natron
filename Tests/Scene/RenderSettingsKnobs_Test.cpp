@@ -27,7 +27,9 @@
 
 #include "Global/Macros.h"
 
+#include <cctype>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -210,6 +212,85 @@ setKnob(const NodePtr& node,
         s->setValue(RenderSettingsKnobs::valueText(value));
     }
 }
+
+RenderSettingsKnobs::CuratedSetting
+curatedSetting(const char* key,
+               const char* name,
+               const char* group)
+{
+    RenderSettingsKnobs::CuratedSetting c;
+
+    c.key = key;
+    c.name = name;
+    c.tooltip = std::string("The ") + name + " setting";
+    c.defaultValue = VtValue(0);
+    c.group = group;
+
+    return c;
+}
+
+RenderSettingsKnobs::GroupSpec
+groupSpec(const char* name,
+          const char* parent,
+          bool open)
+{
+    RenderSettingsKnobs::GroupSpec g;
+
+    g.name = name;
+    g.parent = parent;
+    g.open = open;
+    g.tooltip = std::string("The ") + name + " group";
+
+    return g;
+}
+
+// Alpha holds Beta, Gamma is beside it and Unused has no setting.
+RenderSettingsKnobs::Curated
+groupedTable()
+{
+    RenderSettingsKnobs::Curated t;
+
+    t.tooltip = "The loose settings";
+    t.groups = { groupSpec("alpha", "", true), groupSpec("beta", "alpha", false), groupSpec("gamma", "", false), groupSpec("unused", "", true) };
+    t.settings = { curatedSetting("test:a1", "a1", "alpha"),
+                   curatedSetting("test:b1", "b1", "beta"),
+                   curatedSetting("test:a2", "a2", "alpha"),
+                   curatedSetting("test:g1", "g1", "gamma"),
+                   curatedSetting("test:loose", "loose", "") };
+
+    return t;
+}
+
+RenderSettingsKnobs::Curated
+flatTable()
+{
+    RenderSettingsKnobs::Curated t = groupedTable();
+
+    t.groups.clear();
+    for (RenderSettingsKnobs::CuratedSetting& c : t.settings) {
+        c.group.clear();
+    }
+
+    return t;
+}
+
+std::vector<std::string>
+childNames(const KnobIPtr& parent)
+{
+    std::vector<std::string> names;
+    std::vector<KnobIPtr> children;
+
+    if (KnobPage* page = dynamic_cast<KnobPage*>(parent.get())) {
+        children = page->getChildren();
+    } else if (KnobGroup* group = dynamic_cast<KnobGroup*>(parent.get())) {
+        children = group->getChildren();
+    }
+    for (const KnobIPtr& k : children) {
+        names.push_back(k->getName());
+    }
+
+    return names;
+}
 } // anon namespace
 
 class RenderSettingsKnobsTest
@@ -221,6 +302,7 @@ protected:
         SceneQueryPool::instance().releaseIdle();
         RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList());
         RenderSettingsKnobs::setDescriptorsForTests(kOtherRenderer, RenderSettingsKnobs::DescriptorList());
+        RenderSettingsKnobs::setCuratedForTests(kRenderer, nullptr);
         BaseTest::TearDown();
     }
 
@@ -422,6 +504,135 @@ TEST_F(RenderSettingsKnobsTest, ValuesAreAuthoredInEachRenderersNamespace)
     ASSERT_EQ(1u, otherValues.size());
     EXPECT_EQ(VtValue(0.25f), otherValues.at("test:gain"));
     EXPECT_FALSE(prim.HasAttribute(TfToken("natronTestOtherSettingsRenderer:test:count")));
+}
+
+TEST_F(RenderSettingsKnobsTest, GroupTablesAreChecked)
+{
+    std::string error;
+
+    EXPECT_TRUE(RenderSettingsKnobs::validateGroups(groupedTable(), &error)) << error;
+
+    RenderSettingsKnobs::Curated deep = groupedTable();
+    deep.groups.push_back(groupSpec("inner", "beta", true));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(deep, &error));
+
+    RenderSettingsKnobs::Curated orphan = groupedTable();
+    orphan.groups.push_back(groupSpec("lost", "missing", true));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(orphan, &error));
+
+    RenderSettingsKnobs::Curated duplicate = groupedTable();
+    duplicate.groups.push_back(groupSpec("alpha", "", true));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(duplicate, &error));
+
+    // A group named like a setting would push that setting onto the fallback script name.
+    RenderSettingsKnobs::Curated clash = groupedTable();
+    clash.groups.push_back(groupSpec("loose", "", true));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(clash, &error));
+
+    RenderSettingsKnobs::Curated reserved = groupedTable();
+    reserved.groups.push_back(groupSpec("otherSettings", "", true));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(reserved, &error));
+
+    RenderSettingsKnobs::Curated unknown = groupedTable();
+    unknown.settings.push_back(curatedSetting("test:x", "x", "nowhere"));
+    EXPECT_FALSE(RenderSettingsKnobs::validateGroups(unknown, &error));
+
+    EXPECT_EQ(std::string("GI Bounces"), RenderSettingsKnobs::labelFromScriptName("cyclesGiBounces", "cycles"));
+}
+
+// Groups are made in the order settings first need them, nest under their parent, start in
+// their declared state, are absent when empty, and every setting keeps its natural script name.
+TEST_F(RenderSettingsKnobsTest, CuratedGroupsNestInTableOrder)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    const RenderSettingsKnobs::Curated table = groupedTable();
+    RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList(1, descriptor("test:other", VtValue(1))));
+    NodePtr node = createSettings();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = settingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobPagePtr page = settings->page(kRenderer);
+    ASSERT_TRUE(bool(page));
+
+    EXPECT_EQ((std::vector<std::string> { prefix + "Alpha", prefix + "Gamma", prefix + "Settings", prefix + "OtherSettings" }), childNames(page));
+    KnobIPtr alpha = node->getKnobByName(prefix + "Alpha");
+    KnobIPtr beta = node->getKnobByName(prefix + "Beta");
+    KnobIPtr gamma = node->getKnobByName(prefix + "Gamma");
+    ASSERT_TRUE(bool(alpha) && bool(beta) && bool(gamma));
+    EXPECT_FALSE(bool(node->getKnobByName(prefix + "Unused")));
+    EXPECT_EQ((std::vector<std::string> { prefix + "A1", prefix + "Beta", prefix + "A2" }), childNames(alpha));
+    EXPECT_EQ((std::vector<std::string> { prefix + "B1" }), childNames(beta));
+    EXPECT_EQ((std::vector<std::string> { prefix + "G1" }), childNames(gamma));
+    EXPECT_EQ((std::vector<std::string> { prefix + "Loose" }), childNames(node->getKnobByName(prefix + "Settings")));
+    EXPECT_EQ(alpha, beta->getParentKnob());
+    EXPECT_EQ(page, alpha->getParentKnob());
+    EXPECT_EQ(std::string("Alpha"), alpha->getLabel());
+    EXPECT_EQ(std::string("Beta"), beta->getLabel());
+
+    KnobGroup* alphaGroup = dynamic_cast<KnobGroup*>(alpha.get());
+    KnobGroup* betaGroup = dynamic_cast<KnobGroup*>(beta.get());
+    KnobGroup* gammaGroup = dynamic_cast<KnobGroup*>(gamma.get());
+    ASSERT_TRUE(alphaGroup && betaGroup && gammaGroup);
+    EXPECT_TRUE(alphaGroup->getValue());
+    EXPECT_FALSE(betaGroup->getValue());
+    EXPECT_FALSE(gammaGroup->getValue());
+    EXPECT_EQ(std::string("The beta group"), beta->getHintToolTip());
+
+    for (const RenderSettingsKnobs::CuratedSetting& c : table.settings) {
+        KnobIPtr k = settings->knob(kRenderer, c.key);
+        ASSERT_TRUE(bool(k)) << c.key;
+        EXPECT_EQ(prefix + std::string(1, (char)std::toupper((unsigned char)c.name[0])) + c.name.substr(1), k->getName());
+    }
+}
+
+// A table whose groups are invalid is ignored: every setting lands in the curated group.
+TEST_F(RenderSettingsKnobsTest, InvalidGroupTableFallsBackToTheCuratedGroup)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    RenderSettingsKnobs::Curated table = groupedTable();
+    table.groups.push_back(groupSpec("inner", "beta", true));
+    RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    NodePtr node = createSettings();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = settingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+
+    EXPECT_FALSE(bool(node->getKnobByName(prefix + "Alpha")));
+    EXPECT_EQ(table.settings.size(), childNames(node->getKnobByName(prefix + "Settings")).size());
+}
+
+// Where knobs sit changes neither the namespace digests nor values(), and opening or closing a
+// group changes neither.
+TEST_F(RenderSettingsKnobsTest, GroupsDoNotMoveTheDigestOrTheValues)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    std::map<std::string, U64> digests[2];
+    RenderSettingsKnobs::Values values[2];
+
+    for (int layout = 0; layout < 2; ++layout) {
+        const RenderSettingsKnobs::Curated table = layout ? flatTable() : groupedTable();
+        RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+        NodePtr node = createSettings();
+        ASSERT_TRUE(bool(node));
+        setKnob(node, prefix + "A1", VtValue(5));
+        setKnob(node, prefix + "B1", VtValue(6));
+        setKnob(node, prefix + "Loose", VtValue(7));
+        digests[layout] = node->getKnobsNamespaceDigests();
+        values[layout] = settingsOf(node)->values(kRenderer);
+        if (layout == 0) {
+            KnobGroup* alpha = dynamic_cast<KnobGroup*>(node->getKnobByName(prefix + "Alpha").get());
+            ASSERT_TRUE(alpha != nullptr);
+            alpha->setValue(!alpha->getValue());
+            EXPECT_EQ(digests[0], node->getKnobsNamespaceDigests());
+            EXPECT_EQ(values[0], settingsOf(node)->values(kRenderer));
+        }
+        getApp()->getProject()->reset(false, true);
+    }
+    EXPECT_FALSE(digests[0].empty());
+    EXPECT_EQ(digests[0], digests[1]);
+    EXPECT_EQ(3u, values[0].size());
+    EXPECT_EQ(values[0], values[1]);
 }
 
 // Prints every installed delegate's declared settings: the list the curated groups are built from.

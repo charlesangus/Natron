@@ -353,6 +353,7 @@ struct Declared {
 std::mutex gDescriptorsMutex;
 std::map<std::string, Declared> gDescriptors;
 std::map<std::string, RenderSettingsKnobs::DescriptorList> gTestDescriptors;
+std::map<std::string, RenderSettingsKnobs::Curated> gTestCurated;
 
 Declared
 declaredBy(const std::string& rendererId)
@@ -431,6 +432,13 @@ RenderSettingsKnobs::descriptors(const std::string& rendererId)
 const RenderSettingsKnobs::Curated*
 RenderSettingsKnobs::curatedFor(const std::string& rendererId)
 {
+    {
+        std::lock_guard<std::mutex> l(gDescriptorsMutex);
+        std::map<std::string, Curated>::const_iterator test = gTestCurated.find(rendererId);
+        if (test != gTestCurated.end()) {
+            return &test->second;
+        }
+    }
     if (CyclesAovs::isCycles(rendererId)) {
         return &CyclesSettings::curated();
     } else if (MoonRayAovs::isMoonRay(rendererId)) {
@@ -450,6 +458,70 @@ RenderSettingsKnobs::declaredNamespaces(const std::string& rendererId)
     }
 
     return cachedDeclared(rendererId).namespaces;
+}
+
+void
+RenderSettingsKnobs::setCuratedForTests(const std::string& rendererId,
+                                        const Curated* curated)
+{
+    std::lock_guard<std::mutex> l(gDescriptorsMutex);
+
+    if (curated) {
+        gTestCurated[rendererId] = *curated;
+    } else {
+        gTestCurated.erase(rendererId);
+    }
+}
+
+bool
+RenderSettingsKnobs::validateGroups(const Curated& curated,
+                                    std::string* errorMessage)
+{
+    const auto fail = [&](const std::string& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+
+        return false;
+    };
+    std::set<std::string> taken;
+
+    taken.insert("Settings");
+    taken.insert("OtherSettings");
+    for (const CuratedSetting& c : curated.settings) {
+        taken.insert(capitalized(c.name));
+    }
+    std::map<std::string, std::string> parents;
+    for (const GroupSpec& g : curated.groups) {
+        if (g.name.empty()) {
+            return fail("a group has no name");
+        }
+        const std::string scriptName = capitalized(g.name);
+        if (taken.count(scriptName)) {
+            return fail("group " + g.name + " has the script name of a setting or of a reserved group");
+        }
+        taken.insert(scriptName);
+        parents[g.name] = g.parent;
+    }
+    for (const GroupSpec& g : curated.groups) {
+        if (g.parent.empty()) {
+            continue;
+        }
+        std::map<std::string, std::string>::const_iterator parent = parents.find(g.parent);
+        if (parent == parents.end()) {
+            return fail("group " + g.name + " is inside " + g.parent + ", which is not a group");
+        }
+        if (!parent->second.empty()) {
+            return fail("group " + g.name + " is nested deeper than two levels");
+        }
+    }
+    for (const CuratedSetting& c : curated.settings) {
+        if (!c.group.empty() && !parents.count(c.group)) {
+            return fail("setting " + c.name + " is in " + c.group + ", which is not a group");
+        }
+    }
+
+    return true;
 }
 
 void
@@ -594,7 +666,7 @@ RenderSettingsKnobs::labelFromScriptName(const std::string& scriptName,
         }
         words.back() += c;
     }
-    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GPU", "ID", "MIS", "OIDN", "RDL" };
+    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL" };
     std::string label;
     for (const std::string& w : words) {
         std::string word = capitalized(w);
@@ -1082,12 +1154,53 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
     };
 
     if (curated) {
-        const std::string groupName = prefix + "Settings";
-        KnobGroupPtr group = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(groupName, std::string()));
-        group->setName(groupName);
-        group->setHintToolTip(curated->tooltip);
-        group->setDefaultValue(true);
-        page->addKnob(group);
+        const std::string defaultGroupName = prefix + "Settings";
+        std::map<std::string, KnobGroupPtr> made;
+        KnobGroupPtr defaultGroup;
+        std::string groupsError;
+        const bool useGroups = validateGroups(*curated, &groupsError);
+        std::map<std::string, const GroupSpec*> specs;
+        if (useGroups) {
+            for (const GroupSpec& g : curated->groups) {
+                specs[g.name] = &g;
+                names.insert(prefix + capitalized(g.name));
+            }
+        } else if (!groupsError.empty()) {
+            std::fprintf(stderr, "Render settings of %s: %s; its groups are ignored\n", rendererId.c_str(), groupsError.c_str());
+        }
+
+        const std::function<KnobGroupPtr(const std::string&)> groupFor = [&](const std::string& name) -> KnobGroupPtr {
+            if (name.empty() || !specs.count(name)) {
+                if (!defaultGroup) {
+                    defaultGroup = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(defaultGroupName, std::string()));
+                    defaultGroup->setName(defaultGroupName);
+                    defaultGroup->setHintToolTip(curated->tooltip);
+                    defaultGroup->setDefaultValue(true);
+                    page->addKnob(defaultGroup);
+                }
+
+                return defaultGroup;
+            }
+            std::map<std::string, KnobGroupPtr>::const_iterator found = made.find(name);
+            if (found != made.end()) {
+                return found->second;
+            }
+            const GroupSpec& spec = *specs[name];
+            const std::string scriptName = prefix + capitalized(spec.name);
+            KnobGroupPtr group = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(scriptName, prefix));
+            group->setName(scriptName);
+            group->setHintToolTip(spec.tooltip);
+            group->setDefaultValue(spec.open);
+            if (spec.parent.empty()) {
+                page->addKnob(group);
+            } else {
+                groupFor(spec.parent)->addKnob(group);
+            }
+            made[name] = group;
+
+            return group;
+        };
+
         for (const CuratedSetting& c : curated->settings) {
             VtValue delegateDefault = c.defaultValue;
             for (const Descriptor& d : declared) {
@@ -1101,7 +1214,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             if (leader && (kindOf(leader->knobDefault) == kindOf(knobDefault))) {
                 knobDefault = leader->knobDefault;
             }
-            addSetting(group, c.key, prefix + capitalized(c.name), c.tooltip, knobDefault, delegateDefault,
+            addSetting(groupFor(c.group), c.key, prefix + capitalized(c.name), c.tooltip, knobDefault, delegateDefault,
                        c.choices, c.follows, c.disabledReason, &c);
             handled.insert(c.key);
         }

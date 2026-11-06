@@ -87,12 +87,28 @@ public:
         double minimum = 0.;
         double displayMaximum = 0.;
         bool hasRange = false;
+        // The name of the GroupSpec the knob goes in; empty for the curated group.
+        std::string group;
+    };
+
+    // A named section of the renderer's page. Its script name is the renderer's prefix followed by name.
+    struct GroupSpec {
+        std::string name;
+        // The name of the group this one is inside, empty for one directly on the page. A parent
+        // cannot itself have a parent.
+        std::string parent;
+        // Whether the group starts expanded.
+        bool open = true;
+        std::string tooltip;
     };
 
     struct Curated {
         // The group's tooltip.
         std::string tooltip;
         std::vector<CuratedSetting> settings;
+        // The sections settings name in CuratedSetting::group. One is made when its first setting
+        // (or a setting of a group inside it) is added, so the order of settings sets the order of groups.
+        std::vector<GroupSpec> groups;
         // Declared keys Natron sets itself, given no knob.
         std::vector<std::string> excludedKeys;
         // Declared keys of the "Other Settings" group whose knob is shown disabled, with the reason.
@@ -111,11 +127,23 @@ public:
     // The curated group of the renderer: Cycles' or MoonRay's, null for any other.
     static const Curated* curatedFor(const std::string& rendererId);
 
+    /**
+     * @brief Whether curated's groups can be made: names are non-empty and unique, none is
+     * "Settings" or "OtherSettings" or a curated setting's name, each parent is a group of
+     * the table without a parent of its own, and each setting's group is in the table. Otherwise
+     * false with *errorMessage set; addRenderer() then ignores the groups and the settings
+     * all go in the curated group.
+     **/
+    static bool validateGroups(const Curated& curated, std::string* errorMessage);
+
     // Every available delegate's declared settings, one per line: renderer, key, type, default, name.
     static std::string dump();
 
     // The ids of the renderers that get knobs: the available delegates and those of setDescriptorsForTests().
     static std::vector<std::string> rendererIds();
+
+    // Makes curatedFor(rendererId) return curated, null for no override.
+    static void setCuratedForTests(const std::string& rendererId, const Curated* curated);
 
     // Makes descriptors(rendererId) return list, and rendererIds() name it; an empty list undoes it.
     static void setDescriptorsForTests(const std::string& rendererId, const DescriptorList& list);

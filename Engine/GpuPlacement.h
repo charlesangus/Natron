@@ -236,9 +236,10 @@ PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
  * otherwise. Returns whether it placed. A render starts here, so a GPU runtime lost by an earlier one is recreated
  * first when nothing holds it any more. While the GPU context is still initializing, it first waits for it when the
  * weight rule sends some region of the graph to the GPU, so that the first frame of a process is placed as a later one
- * would be. Same thread requirement as makeRenderPlacementInputs().
+ * would be. Same thread requirement as makeRenderPlacementInputs(). When given, shadow receives what
+ * placeGraphWithShadow() returns, and is left untouched when this returns false.
  **/
-bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context);
+bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context, ShadowPlacement* shadow = nullptr);
 
 NATRON_NAMESPACE_EXIT
 

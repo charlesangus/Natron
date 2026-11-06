@@ -54,6 +54,7 @@
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
+#include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -310,6 +311,30 @@ anyTileHoldsRam(const UpdateViewerParams& params)
     }
 
     return false;
+}
+
+// Leaves the process as the test found it, whatever it asserted on the way.
+struct PlacementOverlayScope {
+    GpuPlacementAvailableFunc savedAvailable;
+
+    PlacementOverlayScope(bool overlayEnabled,
+                          GpuPlacementAvailableFunc available)
+        : savedAvailable(setGpuPlacementAvailableFunc(available))
+    {
+        ViewerInstance::setGpuPlacementOverlayEnabled(overlayEnabled);
+    }
+
+    ~PlacementOverlayScope()
+    {
+        ViewerInstance::setGpuPlacementOverlayEnabled(false);
+        setGpuPlacementAvailableFunc(savedAvailable);
+    }
+};
+
+bool
+placementAlwaysAvailable()
+{
+    return true;
 }
 
 const char* const kTexturesBitDepthKnob = "texturesBitDepth";
@@ -643,6 +668,59 @@ TEST_P(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
 
     outcome = RenderOutcome();
     record->delivered.reset();
+}
+
+TEST_P(ViewerDeviceRoot, WithTheOverlayOffARenderPlacesNoShadowAndPublishesNothing)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const PlacementOverlayScope scope(false, &placementAlwaysAvailable);
+    const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
+
+    const RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
+
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
+    EXPECT_EQ(shadowsBefore, ViewerInstance::getGpuShadowPlacementCountForTests());
+    EXPECT_FALSE(bool(_viewer->getGpuPlacementSnapshot()));
+
+    ViewerInstance::setGpuPlacementOverlayEnabled(true);
+    EXPECT_FALSE(bool(_viewer->getGpuPlacementSnapshot()));
+}
+
+TEST_P(ViewerDeviceRoot, WithTheOverlayOnARenderPublishesASnapshot)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
+    const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
+
+    const RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
+
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
+    EXPECT_EQ(shadowsBefore + 1, ViewerInstance::getGpuShadowPlacementCountForTests());
+    EXPECT_TRUE(bool(_viewer->getGpuPlacementSnapshot()));
+
+    ViewerInstance::setGpuPlacementOverlayEnabled(false);
+    EXPECT_FALSE(bool(_viewer->getGpuPlacementSnapshot()));
+}
+
+TEST_P(ViewerDeviceRoot, WithNoPlacementAvailableTheOverlayHasNothingToDraw)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const PlacementOverlayScope scope(true, nullptr);
+    const int shadowsBefore = ViewerInstance::getGpuShadowPlacementCountForTests();
+
+    const RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
+
+    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
+    EXPECT_EQ(shadowsBefore, ViewerInstance::getGpuShadowPlacementCountForTests());
+    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
+    ASSERT_TRUE(bool(snapshot));
+    EXPECT_TRUE(snapshot->regions.empty());
 }
 
 INSTANTIATE_TEST_CASE_P(TexturesBitDepth, ViewerDeviceRoot, ::testing::Values(std::string("8u"), std::string("32f")));

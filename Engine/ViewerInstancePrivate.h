@@ -274,6 +274,19 @@ public:
         Q_EMIT mustRedrawViewer();
     }
 
+    void publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder)
+    {
+        if (!ViewerInstance::isGpuPlacementOverlayEnabled()) {
+            return;
+        }
+        GpuPlacementSnapshotPtr snapshot = builder.build();
+        if (!snapshot) {
+            return;
+        }
+        std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+        gpuPlacementSnapshot = std::move(snapshot);
+    }
+
 public:
 
     virtual void lock(const FrameEntryPtr& entry) OVERRIDE FINAL
@@ -465,6 +478,9 @@ public:
     std::string viewerParamsAlphaID;
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
+
+    std::mutex gpuPlacementSnapshotMutex;
+    GpuPlacementSnapshotPtr gpuPlacementSnapshot;
 
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.

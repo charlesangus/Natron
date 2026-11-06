@@ -1114,7 +1114,8 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
 bool
 placeRenderGraph(FrameGraph& graph,
-                 const FrameRenderContextPtr& context)
+                 const FrameRenderContextPtr& context,
+                 ShadowPlacement* shadow)
 {
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu) {
@@ -1124,7 +1125,11 @@ placeRenderGraph(FrameGraph& graph,
     if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
         return false;
     }
-    placeGraph(graph, makeRenderPlacementInputs(context));
+    if (shadow) {
+        *shadow = placeGraphWithShadow(graph, makeRenderPlacementInputs(context));
+    } else {
+        placeGraph(graph, makeRenderPlacementInputs(context));
+    }
 
     return true;
 }

@@ -27,6 +27,7 @@
 #include "ViewerInstancePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstring> // for std::memcpy
@@ -1109,6 +1110,9 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 std::mutex gSchedulerResultHookMutex;
 ViewerInstance::SchedulerResultHook gSchedulerResultHook;
 
+std::atomic<bool> gGpuPlacementOverlayEnabled(false);
+std::atomic<int> gGpuShadowPlacementCount(0);
+
 ViewerInstance::SchedulerResultHook
 schedulerResultHook()
 {
@@ -1271,6 +1275,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    ImageBitDepthEnum bitdepth,
                                    const RenderStatsPtr& stats,
                                    OpenGLViewerI* uiContext,
+                                   GpuPlacementSnapshotBuilder* placementBuilder,
                                    FrameRenderContextPtr* contextOut)
 {
     const NodePtr inputNode = inArgs.activeInputToRender->getNode();
@@ -1306,7 +1311,17 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             root.roi = roi;
             root.components = components;
             root.bitdepth = bitdepth;
-            placeRenderGraph(graph, context);
+            if (placementBuilder) {
+                ShadowPlacement shadow;
+                if (placeRenderGraph(graph, context, &shadow)) {
+                    gGpuShadowPlacementCount.fetch_add(1, std::memory_order_relaxed);
+                    placementBuilder->addGraph(graph, shadow);
+                } else {
+                    placementBuilder->addUnplacedGraph();
+                }
+            } else {
+                placeRenderGraph(graph, context);
+            }
             if (contextOut) {
                 *contextOut = context;
             }
@@ -1329,6 +1344,295 @@ ViewerInstance::setSchedulerResultHookForTests(const SchedulerResultHook& hook)
     std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
 
     gSchedulerResultHook = hook;
+}
+
+void
+GpuPlacementSnapshotBuilder::addGraph(const FrameGraph& real,
+                                      const ShadowPlacement& shadow)
+{
+    GraphPlan plan;
+    const std::vector<FrameGraph::Task>& tasks = shadow.graph.tasks;
+
+    plan.regionCount = (int)shadow.graph.regions.size();
+    plan.tasks.reserve(tasks.size());
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        const FrameGraph::Task& task = tasks[i];
+        TaskPlan taskPlan;
+        taskPlan.node = task.key.node;
+        taskPlan.region = task.regionId;
+        taskPlan.realRegion = real.tasks[i].regionId;
+        taskPlan.cached = shadow.servedFromCache[i];
+        taskPlan.reason = task.placementReason;
+        taskPlan.detail = task.placementDetail;
+        plan.tasks.push_back(std::move(taskPlan));
+        for (std::size_t e = 0; e < task.dependencies.size(); ++e) {
+            // A negative input number is a read no pipe of the node graph stands for, so there is nothing to mark.
+            if (task.dependencyInputNbs[e] >= 0) {
+                EdgePlan edge;
+                edge.source = task.dependencies[e];
+                edge.dest = (int)i;
+                edge.inputNb = task.dependencyInputNbs[e];
+                plan.edges.push_back(edge);
+            }
+        }
+    }
+    _graphs.push_back(std::move(plan));
+}
+
+void
+GpuPlacementSnapshotBuilder::addUnplacedGraph()
+{
+    _graphs.emplace_back();
+}
+
+void
+GpuPlacementSnapshotBuilder::finishGraph(EffectInstance::RenderRoIRetCode retCode,
+                                         const std::vector<RegionFallback>& fallbacks)
+{
+    if (retCode == EffectInstance::eRenderRoIRetCodeAborted) {
+        _aborted = true;
+    }
+    if (!_graphs.empty()) {
+        _graphs.back().fallbacks = fallbacks;
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+typedef std::owner_less<NodeWPtr> NodeOwnerLess;
+
+struct PipeLess {
+    bool operator()(const GpuPlacementSnapshot::Pipe& a,
+                    const GpuPlacementSnapshot::Pipe& b) const
+    {
+        if (NodeOwnerLess()(a.destNode, b.destNode)) {
+            return true;
+        }
+        if (NodeOwnerLess()(b.destNode, a.destNode)) {
+            return false;
+        }
+
+        return a.inputNb < b.inputNb;
+    }
+};
+
+struct NodeTally {
+    int gpuTasks = 0;
+    int cpuTasks = 0;
+    int cachedTasks = 0;
+};
+
+struct PipeTally {
+    int exits = 0;
+    int others = 0;
+    FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+    std::string detail;
+    bool reasonsDiffer = false;
+
+    // The snapshot regions already listing this pipe.
+    std::set<int> listedIn;
+};
+
+int
+findRegionGroup(std::vector<int>& parents,
+                int region)
+{
+    while (parents[region] != region) {
+        parents[region] = parents[parents[region]];
+        region = parents[region];
+    }
+
+    return region;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+GpuPlacementSnapshotPtr
+GpuPlacementSnapshotBuilder::build() const
+{
+    if (_aborted || _graphs.empty()) {
+        return GpuPlacementSnapshotPtr();
+    }
+
+    std::vector<int> regionOffsets;
+    int regionCount = 0;
+    for (const GraphPlan& graph : _graphs) {
+        regionOffsets.push_back(regionCount);
+        regionCount += graph.regionCount;
+    }
+
+    std::vector<int> parents(regionCount);
+    for (int r = 0; r < regionCount; ++r) {
+        parents[r] = r;
+    }
+    std::map<NodeWPtr, int, NodeOwnerLess> regionOfNode;
+    std::map<NodeWPtr, NodeTally, NodeOwnerLess> nodeTallies;
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        for (const TaskPlan& task : _graphs[g].tasks) {
+            NodeTally& tally = nodeTallies[task.node];
+            if (task.region < 0) {
+                ++tally.cpuTasks;
+                continue;
+            }
+            ++tally.gpuTasks;
+            if (task.cached) {
+                ++tally.cachedTasks;
+            }
+            const int region = regionOffsets[g] + task.region;
+            const std::pair<std::map<NodeWPtr, int, NodeOwnerLess>::iterator, bool> added = regionOfNode.insert(std::make_pair(task.node, region));
+            if (!added.second) {
+                parents[findRegionGroup(parents, region)] = findRegionGroup(parents, added.first->second);
+            }
+        }
+    }
+
+    std::shared_ptr<GpuPlacementSnapshot> snapshot = std::make_shared<GpuPlacementSnapshot>();
+
+    // Snapshot regions and their members come in the order the graphs first name them, so that a merge is stable.
+    std::vector<int> snapshotRegionOfGroup(regionCount, -1);
+    const auto snapshotRegionOf = [&parents, &snapshotRegionOfGroup](int region) {
+        return snapshotRegionOfGroup[findRegionGroup(parents, region)];
+    };
+    std::set<NodeWPtr, NodeOwnerLess> listedMembers;
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        for (const TaskPlan& task : _graphs[g].tasks) {
+            if (task.region < 0) {
+                continue;
+            }
+            const int group = findRegionGroup(parents, regionOffsets[g] + task.region);
+            if (snapshotRegionOfGroup[group] < 0) {
+                snapshotRegionOfGroup[group] = (int)snapshot->regions.size();
+                snapshot->regions.emplace_back();
+            }
+            if (listedMembers.insert(task.node).second) {
+                const NodeTally& tally = nodeTallies[task.node];
+                GpuPlacementSnapshot::Member member;
+                member.node = task.node;
+                member.cached = tally.cachedTasks == tally.gpuTasks;
+                member.mixed = tally.cpuTasks > 0;
+                snapshot->regions[snapshotRegionOfGroup[group]].members.push_back(std::move(member));
+            }
+        }
+    }
+
+    std::map<GpuPlacementSnapshot::Pipe, PipeTally, PipeLess> pipeTallies;
+    const auto pipeOf = [](const TaskPlan& dest, const EdgePlan& edge) {
+        GpuPlacementSnapshot::Pipe pipe;
+        pipe.destNode = dest.node;
+        pipe.inputNb = edge.inputNb;
+
+        return pipe;
+    };
+    for (const GraphPlan& graph : _graphs) {
+        for (const EdgePlan& edge : graph.edges) {
+            const TaskPlan& source = graph.tasks[edge.source];
+            const TaskPlan& dest = graph.tasks[edge.dest];
+            PipeTally& tally = pipeTallies[pipeOf(dest, edge)];
+            if ((source.region < 0) || (source.region == dest.region)) {
+                ++tally.others;
+                continue;
+            }
+            if (tally.exits == 0) {
+                tally.reason = dest.reason;
+                tally.detail = dest.detail;
+            } else if ((tally.reason != dest.reason) || (tally.detail != dest.detail)) {
+                tally.reasonsDiffer = true;
+            }
+            ++tally.exits;
+        }
+    }
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        const GraphPlan& graph = _graphs[g];
+        for (const EdgePlan& edge : graph.edges) {
+            const TaskPlan& source = graph.tasks[edge.source];
+            const TaskPlan& dest = graph.tasks[edge.dest];
+            const GpuPlacementSnapshot::Pipe pipe = pipeOf(dest, edge);
+            PipeTally& tally = pipeTallies[pipe];
+            if ((source.region >= 0) && (source.region != dest.region)) {
+                const int region = snapshotRegionOf(regionOffsets[g] + source.region);
+                if (tally.listedIn.insert(region).second) {
+                    GpuPlacementSnapshot::Exit regionExit;
+                    regionExit.pipe = pipe;
+                    regionExit.reason = tally.reason;
+                    regionExit.detail = tally.detail;
+                    regionExit.mixed = tally.reasonsDiffer || (tally.others > 0);
+                    snapshot->regions[region].exits.push_back(std::move(regionExit));
+                }
+            } else if ((source.region < 0) && (dest.region >= 0) && (tally.exits == 0)) {
+                const int region = snapshotRegionOf(regionOffsets[g] + dest.region);
+
+                // A source on the GPU in another graph is drawn inside this region, where a tick would mean nothing.
+                const std::map<NodeWPtr, int, NodeOwnerLess>::const_iterator sourceRegion = regionOfNode.find(source.node);
+                const bool insideRegion = (sourceRegion != regionOfNode.end()) && (snapshotRegionOf(sourceRegion->second) == region);
+                if (!insideRegion && tally.listedIn.insert(region).second) {
+                    snapshot->regions[region].entries.push_back(pipe);
+                }
+            }
+        }
+    }
+
+    std::vector<bool> fellBack(regionCount, false);
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        const GraphPlan& graph = _graphs[g];
+        for (const RegionFallback& fallback : graph.fallbacks) {
+            std::set<int> planned;
+            for (const TaskPlan& task : graph.tasks) {
+                // A lost device sends the whole frame back to the CPU, not just the region that met it.
+                if ((task.region >= 0) && (fallback.deviceLost || (task.realRegion == fallback.region))) {
+                    planned.insert(regionOffsets[g] + task.region);
+                }
+            }
+            for (int region : planned) {
+                GpuPlacementSnapshot::Region& out = snapshot->regions[snapshotRegionOf(region)];
+                if (!out.fellBack) {
+                    out.fellBack = true;
+                    out.fallbackReason = fallback.reason;
+                } else if (out.fallbackReason != fallback.reason) {
+                    out.fallbackMixed = true;
+                }
+                out.deviceLost = out.deviceLost || fallback.deviceLost;
+                out.retries = std::max(out.retries, fallback.retries);
+                fellBack[region] = true;
+            }
+        }
+    }
+    for (int region = 0; region < regionCount; ++region) {
+        GpuPlacementSnapshot::Region& out = snapshot->regions[snapshotRegionOf(region)];
+        if (out.fellBack && !fellBack[region]) {
+            out.fallbackMixed = true;
+        }
+    }
+
+    return snapshot;
+} // GpuPlacementSnapshotBuilder::build
+
+void
+ViewerInstance::setGpuPlacementOverlayEnabled(bool enabled)
+{
+    gGpuPlacementOverlayEnabled.store(enabled);
+}
+
+bool
+ViewerInstance::isGpuPlacementOverlayEnabled()
+{
+    return gGpuPlacementOverlayEnabled.load();
+}
+
+int
+ViewerInstance::getGpuShadowPlacementCountForTests()
+{
+    return gGpuShadowPlacementCount.load();
+}
+
+GpuPlacementSnapshotPtr
+ViewerInstance::getGpuPlacementSnapshot() const
+{
+    if (!isGpuPlacementOverlayEnabled()) {
+        return GpuPlacementSnapshotPtr();
+    }
+    std::lock_guard<std::mutex> k(_imp->gpuPlacementSnapshotMutex);
+
+    return _imp->gpuPlacementSnapshot;
 }
 
 ViewerInstance::ViewerRenderRetCode
@@ -1355,6 +1659,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
     };
     NodePtr thisNode = getNode();
     ViewerArgsPtr args[2];
+    std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
+    if (isGpuPlacementOverlayEnabled()) {
+        placementBuilder.emplace();
+    }
     for (int i = 0; i < 2; ++i) {
         args[i] = std::make_shared<ViewerArgs>();
         if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -1491,9 +1799,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                                   viewerHash,
                                                   canAbort,
                                                   rotoPaintNode,
-                                                  false, //useTLS
+                                                  false, // useTLS
                                                   ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
                                                   stats,
+                                                  placementBuilder ? &*placementBuilder : nullptr,
                                                   *args[i]);
                 args[i]->isRenderingFlag.reset();
             }
@@ -1510,6 +1819,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
         }
+    }
+
+    if (placementBuilder) {
+        _imp->publishGpuPlacement(*placementBuilder);
     }
 
     if ( (status[0] == eViewerRenderRetCodeFail) && (status[1] == eViewerRenderRetCodeFail) ) {
@@ -1547,6 +1860,10 @@ ViewerInstance::renderViewer(ViewIdx view,
     ViewerInstance::ViewerRenderRetCode ret[2] = {
         eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw
     };
+    std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
+    if (isGpuPlacementOverlayEnabled()) {
+        placementBuilder.emplace();
+    }
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
             if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -1569,6 +1886,7 @@ ViewerInstance::renderViewer(ViewIdx view,
             if (args[i]) {
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
+                                               placementBuilder ? &*placementBuilder : nullptr,
                                                *args[i]);
 
                 // Reset the rednering flag
@@ -1612,6 +1930,9 @@ ViewerInstance::renderViewer(ViewIdx view,
         }
     }
 
+    if (placementBuilder) {
+        _imp->publishGpuPlacement(*placementBuilder);
+    }
 
     if ( (ret[0] == eViewerRenderRetCodeFail) || (ret[1] == eViewerRenderRetCodeFail) ) {
         return eViewerRenderRetCodeFail;
@@ -2282,6 +2603,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       bool useTLS,
                                       const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                       const RenderStatsPtr& stats,
+                                      GpuPlacementSnapshotBuilder* placementBuilder,
                                       ViewerArgs& inArgs)
 {
     if (inArgs.sceneUpstream) {
@@ -2555,10 +2877,13 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 FrameFuturePtr future;
                 FrameRenderContextPtr frameContext;
                 if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, &frameContext);
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
                 }
                 if (future) {
                     retCode = future->wait();
+                    if (placementBuilder) {
+                        placementBuilder->finishGraph(retCode, future->getRegionFallbacks());
+                    }
                     layers = future->getRootPlanes();
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);

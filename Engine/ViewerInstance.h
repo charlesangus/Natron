@@ -33,11 +33,13 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 
@@ -83,6 +85,110 @@ class ScenePayload;
 class CleanHashSnapshot; // Node.h
 
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
+
+struct ShadowPlacement;
+
+/**
+ * @brief The GPU regions of one viewer render, as the cache-ignoring shadow plan placed them, for the GUI thread to read
+ * after the render is over. Nodes are held weakly because they may be gone by then, and a node with several tasks, or in
+ * several merged graphs, appears once. No regions at all means there is nothing to draw.
+ **/
+struct GpuPlacementSnapshot {
+    // An input of a node, which is how the node graph finds a pipe.
+    struct Pipe {
+        NodeWPtr destNode;
+        int inputNb = -1;
+    };
+
+    struct Member {
+        NodeWPtr node;
+
+        // Every task of the node in the shadow plan's regions was served from the cache in the real render.
+        bool cached = false;
+
+        // Some task of the node stayed out of every region in the shadow plan.
+        bool mixed = false;
+    };
+
+    // A pipe that ends a region. A region feeding the viewer has none for it: the viewer is not a task of the graph.
+    struct Exit {
+        Pipe pipe;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+
+        // The tasks reading this pipe differ on the reason, or on whether the pipe ends a region at all.
+        bool mixed = false;
+    };
+
+    struct Region {
+        std::vector<Member> members;
+        std::vector<Exit> exits;
+
+        // Pipes bringing an image in from the CPU. A pipe from another region is one of that region's exits instead.
+        std::vector<Pipe> entries;
+
+        // The real plan's region on these members did not run on the GPU, which only a real render can know.
+        bool fellBack = false;
+        std::string fallbackReason;
+        bool deviceLost = false;
+        int retries = 0;
+
+        // The merged graphs differ on whether or why this region fell back.
+        bool fallbackMixed = false;
+    };
+
+    std::vector<Region> regions;
+};
+
+typedef std::shared_ptr<const GpuPlacementSnapshot> GpuPlacementSnapshotPtr;
+
+/**
+ * @brief Gathers the graphs one viewer render builds, one per split RoI rect and one per A/B input, on its render thread,
+ * and merges them. Regions of different graphs that share a node become one region.
+ **/
+class GpuPlacementSnapshotBuilder {
+public:
+    // shadow must come from placing real.
+    void addGraph(const FrameGraph& real, const ShadowPlacement& shadow);
+
+    // For a graph placement left alone because there is no GPU, which contributes no region.
+    void addUnplacedGraph();
+
+    // Called once the most recently added graph has rendered.
+    void finishGraph(EffectInstance::RenderRoIRetCode retCode, const std::vector<RegionFallback>& fallbacks);
+
+    /**
+     * @brief The merged snapshot. Null when no graph was added, or one was aborted: a newer render has then been asked
+     * for, which may already have published, so this one must not overwrite it.
+     **/
+    GpuPlacementSnapshotPtr build() const;
+
+private:
+    struct TaskPlan {
+        NodeWPtr node;
+        int region = -1;
+        int realRegion = -1;
+        bool cached = false;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+    };
+
+    struct EdgePlan {
+        int source = -1;
+        int dest = -1;
+        int inputNb = -1;
+    };
+
+    struct GraphPlan {
+        std::vector<TaskPlan> tasks;
+        std::vector<EdgePlan> edges;
+        int regionCount = 0;
+        std::vector<RegionFallback> fallbacks;
+    };
+
+    std::vector<GraphPlan> _graphs;
+    bool _aborted = false;
+};
 
 class ViewerArgs
 {
@@ -198,6 +304,24 @@ public:
      * empty hook removes it.
      **/
     static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
+
+    /**
+     * @brief Whether viewer renders place a shadow plan and publish a snapshot. Off by default, for every viewer, and a
+     * snapshot published before it was turned off stays until the next render of that viewer replaces it.
+     **/
+    static void setGpuPlacementOverlayEnabled(bool enabled);
+    static bool isGpuPlacementOverlayEnabled();
+
+    /**
+     * @brief How many shadow plans viewer renders have placed in this process.
+     **/
+    static int getGpuShadowPlacementCountForTests();
+
+    /**
+     * @brief The placement of the last viewer render that reached the RenderScheduler, null while the overlay is off or
+     * before any such render. May be called from any thread.
+     **/
+    GpuPlacementSnapshotPtr getGpuPlacementSnapshot() const;
 
 private:
     /**
@@ -619,6 +743,7 @@ private:
                                               bool useTLS,
                                               const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                               const RenderStatsPtr& stats,
+                                              GpuPlacementSnapshotBuilder* placementBuilder,
                                               ViewerArgs& inArgs) WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,

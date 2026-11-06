@@ -42,6 +42,9 @@
 #include <QTemporaryDir>
 
 #include "RawSpeed-API.h"
+#include "tiff/TiffEntry.h"
+#include "tiff/TiffIFD.h"
+#include "tiff/TiffTag.h"
 
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
@@ -80,6 +83,57 @@ referenceDecode(const std::string& path,
         ref->decoder->decodeMetaData(cameras);
         ref->image = ref->decoder->mRaw;
         ref->decoder.reset();
+    } catch (const std::exception& e) {
+        *error = e.what();
+
+        return false;
+    }
+
+    return true;
+}
+
+// The crop a DNG file declares in its tags, in the file's top-down rows. The default crop is
+// relative to the active area.
+struct DngCrop {
+    rawspeed::iRectangle2D activeArea;
+    bool hasDefaultCrop = false;
+    rawspeed::iPoint2D origin;
+    rawspeed::iPoint2D size;
+};
+
+bool
+readDngCrop(const std::string& path,
+            const rawspeed::iPoint2D& uncropped,
+            DngCrop* crop,
+            std::string* error)
+{
+    const rawspeed::CameraMetaData* cameras = RawspeedRuntime::cameraMetaData(error);
+
+    if (!cameras) {
+        return false;
+    }
+    try {
+        auto [storage, buffer] = rawspeed::FileReader(path.c_str()).readFile();
+        rawspeed::RawParser parser(buffer);
+        const std::unique_ptr<rawspeed::RawDecoder> decoder = parser.getDecoder(cameras);
+        const rawspeed::TiffIFD* root = decoder->getRootIFD();
+        crop->activeArea = rawspeed::iRectangle2D(0, 0, uncropped.x, uncropped.y);
+        if (const rawspeed::TiffEntry* area = root->getEntryRecursive(rawspeed::TiffTag::ACTIVEAREA)) {
+            const std::vector<uint32_t> v = area->getU32Array(4);
+            crop->activeArea = rawspeed::iRectangle2D((int)v[1], (int)v[0], (int)(v[3] - v[1]), (int)(v[2] - v[0]));
+        }
+        const rawspeed::TiffEntry* origin = root->getEntryRecursive(rawspeed::TiffTag::DEFAULTCROPORIGIN);
+        const rawspeed::TiffEntry* size = root->getEntryRecursive(rawspeed::TiffTag::DEFAULTCROPSIZE);
+        crop->hasDefaultCrop = origin && size;
+        if (crop->hasDefaultCrop) {
+            const auto value = [](const rawspeed::TiffEntry* entry, uint32_t i) {
+                const rawspeed::NotARational<uint32_t> r = entry->getRational(i);
+
+                return r.den ? (int)(r.num / r.den) : 0;
+            };
+            crop->origin = rawspeed::iPoint2D(value(origin, 0), value(origin, 1));
+            crop->size = rawspeed::iPoint2D(value(size, 0), value(size, 1));
+        }
     } catch (const std::exception& e) {
         *error = e.what();
 
@@ -241,6 +295,41 @@ TEST_F(RawDecodeSupportTest, HeaderMatchesRawspeedForEachFixture)
                 }
             }
         }
+    }
+}
+
+// The Read's window is rawspeed's crop, so it must honour the DNG DefaultCrop as well as the
+// ActiveArea. The DNG fixtures carry no DefaultCrop smaller than their ActiveArea, so this
+// compares the window against the tags and does not by itself tell the two crops apart.
+TEST_F(RawDecodeSupportTest, DngWindowFollowsTheDefaultCropWithinTheActiveArea)
+{
+    const std::string reference = std::string(NATRON_TESTS_FIXTURES_DIR "/raw/reference/");
+    const std::vector<std::string> paths = {
+        linearFixture().path(),
+        reference + "gainmap-bayer.dng",
+        reference + "highlights-bayer.dng",
+        reference + "highlights-xtrans.dng",
+        reference + "hotpixels-bayer.dng",
+        reference + "linear-response-limit-bayer.dng",
+    };
+
+    for (const std::string& path : paths) {
+        SCOPED_TRACE(path);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(path, &error);
+        ASSERT_TRUE(bool(header)) << error;
+
+        DngCrop crop;
+        ASSERT_TRUE(readDngCrop(path, rawspeed::iPoint2D(header->format.width(), header->format.height()), &crop, &error)) << error;
+        const int width = crop.hasDefaultCrop ? crop.size.x : crop.activeArea.dim.x;
+        const int height = crop.hasDefaultCrop ? crop.size.y : crop.activeArea.dim.y;
+        const int left = crop.activeArea.pos.x + (crop.hasDefaultCrop ? crop.origin.x : 0);
+        const int top = crop.activeArea.pos.y + (crop.hasDefaultCrop ? crop.origin.y : 0);
+
+        EXPECT_EQ(RectI(0, 0, header->format.width(), header->format.height()), header->format);
+        EXPECT_EQ(RectI(left, header->format.height() - top - height, left + width, header->format.height() - top), header->window);
+        EXPECT_EQ(crop.activeArea.dim.x, width);
+        EXPECT_EQ(crop.activeArea.dim.y, height);
     }
 }
 

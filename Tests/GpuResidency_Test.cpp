@@ -954,6 +954,23 @@ protected:
         for (const std::string& record : records) {
             const std::size_t at = record.find("\"fallback\":");
             if ((record.compare(0, key.size(), key) == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos)) {
+                const std::size_t end = record.find(",\"executed\":", at);
+                return record.substr(at, end - at);
+            }
+        }
+
+        return std::string();
+    }
+
+    // The "executed" field of region's record, or an empty string when it has none.
+    static std::string regionExecutedOf(const std::vector<std::string>& records,
+                                        int region)
+    {
+        const std::string key = "{\"kind\":\"region\",";
+        const std::string id = "\"regionId\":" + std::to_string(region) + ",";
+        for (const std::string& record : records) {
+            const std::size_t at = record.find("\"executed\":");
+            if ((record.compare(0, key.size(), key) == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos)) {
                 return record.substr(at, record.size() - at - 1);
             }
         }
@@ -1635,6 +1652,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     const std::vector<std::string> records = readProfileRecords(profileFile);
     EXPECT_EQ("\"fallback\":\"\",\"retries\":0", regionOutcomeOf(records, 0));
     EXPECT_EQ("\"fallback\":\"out of device memory\",\"retries\":1", regionOutcomeOf(records, 1));
+    EXPECT_EQ("\"executed\":[" + std::to_string(grade2Task) + "]", regionExecutedOf(records, 1));
     EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, grade1Task));
     EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, blurTask));
     EXPECT_EQ("\"device\":\"cpu\",\"regionId\":1", taskPlacementOf(records, grade2Task));

@@ -50,7 +50,7 @@ Filed 2026-10-23 at the user's request.
   - approach: per Q1; recommended (a) overlay-only planes hidden from downstream, requested by the viewer through the normal render/cache path at its RoI and scale.
   - verify: gtest: with an overlay active, the main render's hashes and cache entries are unchanged.
   - size: L
-- [ ] M165.P2.T2 — Composite overlay images in the viewer
+- [x] M165.P2.T2 — Composite overlay images in the viewer
   - files: Gui/ViewerGL.cpp, Gui/NodeOverlayRenderer.cpp
   - approach: after the display transform, with tint and opacity; nearest filtering and max-downsampling.
   - verify: Xvfb screenshots at 100% and 25% zoom.

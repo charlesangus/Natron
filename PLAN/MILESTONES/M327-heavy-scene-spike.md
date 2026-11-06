@@ -50,16 +50,16 @@ the numbers that settle how draw states reach Hydra. Design:
   - size: L
 
 - [ ] M327.P2.T2 — Prototype session-layer draw mode
-  - files: spike branch: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Gui/SceneViewport.cpp`
-  - approach: from the existing session-layer code, with payloads unloaded. Author `GeomModelAPI`, `applyDrawMode`, `drawMode=bounds` and `extentsHint` on rows. Measure the same actions as the filter, including a state change on a row with many siblings.
+  - files: spike branch: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Engine/Nodes/Scene/SceneOps.cpp`, `Gui/SceneViewport.cpp`
+  - approach: no session layer or LoadNone code exists yet: `SceneOps::openStage` (`SceneOps.cpp:469-480`) passes a null session layer and uses `LoadAll`, so the prototype adds both (`SceneStage.cpp:34-50`, `SceneOps.cpp:479`); M328 - Deferred Viewer Stage owns the real implementation. With payloads unloaded, Author `GeomModelAPI`, `applyDrawMode`, `drawMode=bounds` and `extentsHint` on rows. Measure the same actions as the filter, including a state change on a row with many siblings.
   - verify: harness numbers from the same scenarios as M327.P2.T1, in the same table.
   - size: M
 
 ## Phase 327.3: Engine costs
 
 - [ ] M327.P3.T1 — Measure off-lock payload loading
-  - files: spike branch: `Engine/Nodes/Scene/SceneStage.cpp`, `Gui/SceneViewport.cpp`
-  - approach: on a worker, open the payload's layers with `SdfLayer::FindOrOpen` and hold references, then take the stage lock for `LoadAndUnload`. Compare lock hold time against loading without pre-opening. Find whether Storm can keep drawing while a load holds the stage, given `SceneViewport`'s paint try-lock, and what orbit does during a load.
+  - files: spike branch: `Engine/Nodes/Scene/SceneStage.cpp`, `Engine/Nodes/Scene/SceneOps.cpp`, `Gui/SceneViewport.cpp`
+  - approach: building on the prototype's LoadNone stage from M327.P2.T2, on a worker, open the payload's layers with `SdfLayer::FindOrOpen` and hold references, then take the stage lock for `LoadAndUnload`. Compare lock hold time against loading without pre-opening. Find whether Storm can keep drawing while a load holds the stage, given `SceneViewport`'s paint try-lock, and what orbit does during a load.
   - verify: numbers for one building and for one block, and a stated answer on whether navigation continues during a load, with file and line evidence.
   - size: L
 

@@ -27,6 +27,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 ## Decisions
 
 - 2026-11-01 — **Broadened from "Cache Responsiveness Audit" (user):** the RAW → Grade report and the GPU-caching question fold in here. The fixes move to M300 - Unified Tiered Cache and M301 - GPU Cache Tier, so this milestone measures and baselines, and fixes only the independent placement-key bug.
+- 2026-11-05 — Freshness check: M276.P2.T1 rebriefed; the lambda's location moved and the test needs a real app and cache.
 - 2026-11-01 — **The benchmark uses existing raw fixtures (user):** no new camera raws (LFS quota). The latency gate is judged on the user's host with a release AppImage.
 
 ## Phase 276.1: Instrument and reproduce
@@ -52,9 +53,9 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 ## Phase 276.2: Independent fix and baseline
 
 - [ ] M276.P2.T1 — Placement probes the key the render will use
-  - files: `Engine/GpuPlacement.cpp` (`isCached` ~:925-962), `Tests/GpuPlacement_Test.cpp`
-  - approach: `isCached` builds its `ImageKey` with the task's actual draft flag and mip level, matching the lookup `renderRoI` will make, instead of the non-draft key.
-  - verify: A new `GpuPlacement_Test` case with a cached draft image keeps the node on the CPU. It fails before the fix and passes after.
+  - files: `Engine/GpuPlacement.cpp` (`isCached` lambda ~:1023-1062), `Tests/Native/ViewerRootOnDevice_Test.cpp`
+  - approach: the placement `isCached` lambda probes only the non-draft key, while `renderRoI` (`EffectInstanceRenderRoI.cpp:902-914, 973`) probes the draft key first. Capture the frame's draft mode in the lambda and probe the draft key first when `node->isDraftModeUsed()`, so it matches the lookup `renderRoI` will make.
+  - verify: an app-plus-cache test (`GpuPlacement_Test` uses fake inputs, so it can't show this) with a cached draft image keeps the node on the CPU. It fails before the fix and passes after.
   - size: M
 
 - [ ] M276.P2.T2 — Record the edit-latency baseline

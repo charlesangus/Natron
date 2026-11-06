@@ -552,6 +552,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             inputKey.contextKey = it->contextKey;
             const int inputIndex = taskFor(inputKey);
             graph.tasks[index].dependencies.push_back(inputIndex);
+            graph.tasks[index].dependencyInputNbs.push_back(it->inputNb);
             graph.tasks[inputIndex].consumerTasks.push_back(index);
         }
     }
@@ -706,9 +707,11 @@ RenderScheduler::appendRegionTasks(Frame* frame)
         }
         for (int m : region.members) {
             const FrameGraph::Task& member = graph.tasks[m];
-            for (int d : member.dependencies) {
+            for (std::size_t e = 0; e < member.dependencies.size(); ++e) {
+                const int d = member.dependencies[e];
                 if (graph.tasks[d].regionId != r) {
                     unit.dependencies.push_back(d);
+                    unit.dependencyInputNbs.push_back(member.dependencyInputNbs[e]);
                 }
             }
             for (int c : member.consumerTasks) {

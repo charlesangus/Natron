@@ -110,6 +110,11 @@ struct FrameGraph {
         std::vector<int> dependencies;
         std::vector<int> consumerTasks;
 
+        // The input of this task that each entry of dependencies feeds, as TaskEdge::inputNb gives it (negative for
+        // an edge that is not an input read); the same length and order as dependencies. For a task standing for a
+        // region, the input number is the one on the member that owns the edge.
+        std::vector<int> dependencyInputNbs;
+
         // How many times the store entry of this task is released; 0 for the root, whose planes go to the future.
         int consumers = 0;
         int dfsPostOrder = -1;

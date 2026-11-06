@@ -197,19 +197,19 @@ future core work has solid ground to build on.
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | | | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | | | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | done | M20 |  | E9 | | | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
-| M249 | Bundle Cycles Delegate | doing | M19, M248 | bosley-native-nodes | E9 | F3 | uat | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
-| M250 | Bundle MoonRay Delegate | doing | M19 | bosley-native-nodes | E9 | F3 | uat | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
-| M251 | Cycles Rendering | doing | M248, M249 | bosley-native-nodes | E9 | F3 | uat | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
-| M252 | MoonRay Rendering | doing | M248, M250 | bosley-native-nodes | E9 | F3 | uat | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
-| M253 | Delegate Render Settings | doing | M251, M252 | bosley-native-nodes | E9 | F3 | uat | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
-| M254 | Progressive Viewer Render | doing | M248, M251 | bosley-native-nodes | E9 | F3 | uat | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
+| M249 | Bundle Cycles Delegate | doing | M19, M248 | misty-marten | E9 | F3 | uat | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
+| M250 | Bundle MoonRay Delegate | doing | M19 | misty-marten | E9 | F3 | uat | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
+| M251 | Cycles Rendering | doing | M248, M249 | misty-marten | E9 | F3 | uat | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
+| M252 | MoonRay Rendering | doing | M248, M250 | misty-marten | E9 | F3 | uat | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
+| M253 | Delegate Render Settings | doing | M251, M252 | misty-marten | E9 | F3 | uat | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
+| M254 | Progressive Viewer Render | doing | M248, M251 | misty-marten | E9 | F3 | uat | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | blocked | M251, M252 | bosley-native-nodes | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
 | M259 | GPU Placement Under Render Contexts | done | M180, M181, M182 | bosley-native-nodes | E15 | | | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | done | M226 | bosley-native-nodes | E9 | | | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
-| M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | F11 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
+| M53 | Projected Texture Painting | doing | M52, M233, M311 | misty-marten | E9 | F11 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M227 |  | E9 | | | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
@@ -243,12 +243,12 @@ future core work has solid ground to build on.
 | M127 | Native OCIO Nodes | done | M120, M126, M107 |  | E3 | | | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
 | M128 | Native Shape Generators | done | M120 | bosley-native-nodes | E3 | | | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | | | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
-| M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | | response | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
+| M130 | Native Edge-Preserving And Directional Filters | doing | M120 | misty-marten | E3 | | response | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
 | M131 | Native Defocus Family | done | M120 |  | E3 | | | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | | | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
 | M133 | ZDefocus Lens Aberrations | done | M131 | bosley-native-nodes | E3 | | | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
-| M117 | GUI Perf Harness And Baseline | doing | - | bosley-native-nodes | E10 | | | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
-| M118 | Large Graph GUI Responsiveness | doing | M117, M56 | bosley-native-nodes | E10 | | | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
+| M117 | GUI Perf Harness And Baseline | doing | - | misty-marten | E10 | | | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
+| M118 | Large Graph GUI Responsiveness | doing | M117, M56 | misty-marten | E10 | | | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
 | M119 | Trackball Panel Layout | done | M56, M69 | bosley-native-nodes | E10 | | | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | done | - | bosley-native-nodes | E10 | | | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Flaky Test Fixes | done | - | bosley-native-nodes | E2 | | | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
@@ -256,7 +256,7 @@ future core work has solid ground to build on.
 | M137 | Native Base Class Flexibility | done | - | bosley-native-nodes | E3 | | | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | done | - | bosley-native-nodes | E10 | | | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | | | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
-| M140 | Native Metadata Utilities | doing | M77, M120 | bosley-native-nodes | E3 | | | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
+| M140 | Native Metadata Utilities | doing | M77, M120 | misty-marten | E3 | | | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
 | M141 | Complete Local Build Environment | done | - | bosley-native-nodes | E2 | | | [M141-complete-local-build-environment.md](PLAN/MILESTONES/M141-complete-local-build-environment.md) |
 | M142 | Atomic Project Save | done | - | bosley-native-nodes | E7 | | | [M142-atomic-project-save.md](PLAN/MILESTONES/M142-atomic-project-save.md) |
 | M143 | Bundled Plugin Bug Fixes | done | M100 | bosley-native-nodes | E3 | | | [M143-bundled-plugin-bug-fixes.md](PLAN/MILESTONES/M143-bundled-plugin-bug-fixes.md) |
@@ -281,13 +281,13 @@ future core work has solid ground to build on.
 | M171 | GPU Correctness Fixes | done | - | gpu | E5 | | | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
 | M163 | Incremental Bezier Edits | done | - | bosley-native-nodes | E6 | | | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 | M164 | Viewer Node Knobs | done | M16, M107 | bosley-native-nodes | E3 | | | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
-| M165 | Rich Viewer Overlays | doing | M80 | bosley-native-nodes | E3 | | | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
+| M165 | Rich Viewer Overlays | doing | M80 | misty-marten | E3 | | | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
 | M166 | Non-Float Plane Model | todo | - |  | E14 | | | [M166-non-float-plane-model.md](PLAN/MILESTONES/M166-non-float-plane-model.md) |
 | M172 | GL Widget Context Loss | done | - | bosley-native-nodes | E10 | | | [M172-gl-widget-context-loss.md](PLAN/MILESTONES/M172-gl-widget-context-loss.md) |
 | M167 | Per-Frame Node Metadata | done | M100 |  | E14 | | | [M167-per-frame-node-metadata.md](PLAN/MILESTONES/M167-per-frame-node-metadata.md) |
 | M168 | NVIDIA Viewer Hand-off Validation | done | M107, M91 | bosley-faux | E5 | | | [M168-nvidia-viewer-hand-off-validation.md](PLAN/MILESTONES/M168-nvidia-viewer-hand-off-validation.md) |
 | M169 | Pipelined Strip Member Timing | done | M107, M91 | bosley-faux | E5 | | | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
-| M173 | Global Mode For Value Knobs | doing | M119 | bosley-native-nodes | E10 | | | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
+| M173 | Global Mode For Value Knobs | doing | M119 | misty-marten | E10 | | | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | | | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 | M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | | | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 | M176 | Splice-Vertical Regression | done | - |  | E10 | | | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
@@ -320,7 +320,7 @@ future core work has solid ground to build on.
 | M203 | ONNX Inference Backend | done | - |  | E16 | | | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
 | M204 | AI Model Manager | done | M203 | bosley-native-nodes | E16 | | | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
 | M205 | Object Mask To Roto | done | M203, M204, M146 | bosley-native-nodes | E16 | | | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
-| M206 | Neural Raw Denoise | doing | M203, M204 | bosley-native-nodes | E16 | | uat | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
+| M206 | Neural Raw Denoise | doing | M203, M204 | misty-marten | E16 | | uat | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | done | M203, M204 | bosley-native-nodes | E16 | | | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | done | M203, M204, M207 | bosley-native-nodes | E16 | | | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | | | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
@@ -338,11 +338,11 @@ future core work has solid ground to build on.
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | F8 | | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | | | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 | M223 | Read And Write Knob Cleanup | done | M167 | bosley-native-nodes | E3 | | | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
-| M224 | Fluid Roto And RotoPaint Interaction | doing | M146, M117 | bosley-native-nodes | E6 | | uat | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
+| M224 | Fluid Roto And RotoPaint Interaction | doing | M146, M117 | misty-marten | E6 | | uat | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | | | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
 | M260 | Cache Invalidation Follow-ups | done | M242 | bosley-native-nodes | E14 | | | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | done | M163 | bosley-native-nodes | E6 | | | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
-| M268 | Edge-Aware Region Independence | doing | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | | uat | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
+| M268 | Edge-Aware Region Independence | doing | M209, M210, M211, M212, M213, M215 | misty-marten | E17 | | uat | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
 | M269 | Remote GUI Checks | done |  | bosley-native-nodes |  | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
 | M262 | Expression Benchmark For Large Graphs | todo | - |  | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
 | M263 | Expression Interpreter Overhead | todo | M262, M266 |  | E14 | F12 | | [M263-expression-interpreter-overhead.md](PLAN/MILESTONES/M263-expression-interpreter-overhead.md) |
@@ -350,7 +350,7 @@ future core work has solid ground to build on.
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | F12 | | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
 | M266 | Expression Namespace Spike | todo | M262 |  | E14 | F12 | | [M266-expression-namespace-spike.md](PLAN/MILESTONES/M266-expression-namespace-spike.md) |
 | M267 | RFVSwitch Match Choice Button | done | M72 | bosley-native-nodes | E13 | | | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
-| M270 | Lanczos Sinc Resampling Filters | doing | - | bosley-native-nodes | E3 | | | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
+| M270 | Lanczos Sinc Resampling Filters | doing | - | misty-marten | E3 | | | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | done | - | bosley-native-nodes | E14 | | | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | | | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
@@ -402,7 +402,7 @@ future core work has solid ground to build on.
 | M319 | Group Node Direct Render | todo | - |  | E14 | | | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
 | M320 | Write All Input Metadata | todo | - |  | E3 | | | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
 | M321 | Render Thread Count Race | done | - | bosley-native-nodes | E2 | | | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |
-| M322 | NVIDIA Exit Deadlock Fix | doing | - | bosley-native-nodes | E14 | | uat | [M322-nvidia-exit-deadlock-fix.md](PLAN/MILESTONES/M322-nvidia-exit-deadlock-fix.md) |
+| M322 | NVIDIA Exit Deadlock Fix | doing | - | misty-marten | E14 | | uat | [M322-nvidia-exit-deadlock-fix.md](PLAN/MILESTONES/M322-nvidia-exit-deadlock-fix.md) |
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | | | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |
 | M324 | SplineWarp STMap And IDistort Outputs | todo | M274 |  | E3 | | | [M324-splinewarp-stmap-idistort-outputs.md](PLAN/MILESTONES/M324-splinewarp-stmap-idistort-outputs.md) |
 | M325 | MoonRay Fork | todo | M252 |  | E9 | | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |

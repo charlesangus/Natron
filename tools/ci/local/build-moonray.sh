@@ -95,6 +95,24 @@ drop_subdirectory "${src}/moonray/CMakeLists.txt" moonray_dcc_plugins
 drop_subdirectory "${src}/moonray/CMakeLists.txt" moonshine_usd
 drop_subdirectory "${src}/moonray/CMakeLists.txt" render_profile_viewer
 
+# createLocal announces every local session to DreamWorks' coordinator through a SessionNotification,
+# whose constructor starts a thread that deletes the object, then assigns and detaches that thread
+# into a member of it. With LOGNAME unset the thread has nothing to send and can finish first, so the
+# constructor or the destructor meets a joinable std::thread and the whole process dies with
+# "terminate called without an active exception". No coordinator exists outside DreamWorks, so the
+# call goes rather than being made safe; a missing anchor fails the build.
+client_cc="${src}/arras/arras4_core/arras4_client/lib/client/api/Client.cc"
+if [ "$(grep -cF 'new SessionNotification(aDefinition.getObject(),sessionOptions,' "$client_cc")" != 1 ] ||
+    [ "$(grep -cF 'sessionId, mUserAgent);' "$client_cc")" != 1 ]; then
+    echo "build-moonray: SessionNotification call not found exactly once in ${client_cc}" >&2
+    exit 1
+fi
+sed -i '/new SessionNotification(aDefinition.getObject(),sessionOptions,$/,/sessionId, mUserAgent);$/d' "$client_cc"
+if grep -q 'new SessionNotification' "$client_cc"; then
+    echo "build-moonray: SessionNotification patch did not apply to ${client_cc}" >&2
+    exit 1
+fi
+
 # OpenUSD 26.08 removed Ndr, which the shader discovery plug-ins (moonray_sdr_plugins) are written
 # against. hdMoonray does not use them; they only describe MoonRay shaders to USD's Sdr registry.
 if [ ! -d "${usd_prefix}/include/pxr/usd/ndr" ]; then

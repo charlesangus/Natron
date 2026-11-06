@@ -31,6 +31,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -107,6 +109,25 @@ TEST(MoonRayDelegate, StartupPointsSearchPathsAtInstall)
     EXPECT_TRUE(envStartsWith("RDL2_DSO_PATH", prefix + "/rdl2dso"));
     EXPECT_TRUE(envStartsWith("ARRAS_SESSION_PATH", prefix + "/sessions"));
     EXPECT_TRUE(envStartsWith("PATH", prefix + "/bin"));
+}
+
+// The abort this guards against needs a thread to win a race of a few instructions, so no run of a
+// session shows it reliably. The library's dynamic symbols show whether the racing call is there.
+TEST(MoonRayDelegate, ArrasClientStartsNoSessionNotificationThread)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const std::string prefix = MoonRayRuntime::setUp(std::string());
+    ASSERT_FALSE(prefix.empty());
+
+    const std::string library = prefix + "/lib64/libclient_api.so";
+    std::ifstream file(library, std::ios::binary);
+    ASSERT_TRUE(file.good()) << library;
+    const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(bytes.empty()) << library;
+    EXPECT_EQ(std::string::npos, bytes.find("SessionNotification"))
+        << library << " still calls SessionNotification, whose thread can abort the process as a session starts";
 }
 
 TEST(MoonRayDelegate, RegistryListsMoonRay)

@@ -38,6 +38,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-11-06 — Edge band measured (4x Lanczos 3 of a 64 px source): one-pixel stripes with Black Outside off go 0.57 then 1.0 at the first pixel past the source, the ramp 0.98 then 1.0; with it on, 0.51 then 0.02. No band wider than one output pixel, and past the edge the clamped kernel reads a constant anyway, so the zeroed-row rule stands and needs no question to the user.
 - 2026-11-06 — P1.T1 and T2: CPU clamp range counts black out-of-source reads, otherwise a fading edge clamps back up, and skips zero-weight taps; spread taps count their interpolated read. The support is an open interval, so a tap on its edge is dropped. Spread taps sit at `(k + 0.5) * 2R / 81 - R`. Lobes clamp to 2-8. Phase 270.2 mirrors all of these. Keeping the zeroed-row rule means a pixel centred past the source uses the plain kernel, so the kernel narrows at the edge under minification: P1.T4 checks for a visible band, and the user hears about it if it shows.
 - 2026-11-06 — Re-elaborated for "Same filters everywhere": added AutoStraighten, LensCorrect and SplineWarp's kernel; dropped TransformMasked (M111 - Native Node Identity Cleanup landed).
 - 2026-11-06 — Row-norm kernel scale replaces column norms: column norms mis-scale a 90° anisotropic transform and blur pure rotations.
@@ -85,13 +86,13 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Phase 270.2: GPU kernel parity
 
-- [ ] M270.P2.T1 — Mirror the kernels in the shared core and the matrix path
+- [x] M270.P2.T1 — Mirror the kernels in the shared core and the matrix path
   - files: `Engine/Gpu/Kernels/resamplecore.slang`, `Engine/Gpu/Kernels/resample.slang`, `Engine/Gpu/GpuResample.h`, `Engine/Gpu/GpuResample.cpp`, `Engine/Nodes/Image/ResampleExecutor.cpp`
   - approach: Add the seven IDs, same numbering as `FilterEnum`; `kGpuResampleFilterCount` becomes 17. Add a `FilterSpec` struct in the core and the P1.T2 loop computed in float with FF positions. Remove `interpolateSuperAt`, level states, `kGpuResampleMaxLevel`, `GpuResampleJacobian`'s level fields and finally `Resampler::supersampleLevels`; `states` keeps only Box's zero bit. Add lobes, B, C and padding to `GpuResampleParams` and the blur entries, updating the `static_assert`. Extend `exactPositions` to every clamped filter so exact entries decide tap ranges as the CPU's doubles do; affine radius·scale arrives as double bits, projective stays two-float. Keep a `uint filter` overload of `sampleAt` so coord-map kernels build until T3 and T4.
   - verify: `ctest -R "NativeTransformGpu|StagedResample"` on lavapipe passes at the phase build with the T2 cases.
   - size: L
 
-- [ ] M270.P2.T2 — Test matrix-path CPU and GPU parity for the new filters
+- [x] M270.P2.T2 — Test matrix-path CPU and GPU parity for the new filters
   - files: `Tests/Native/NativeTransformGpu_Test.cpp`, `Tests/Native/NativeReformatGpu_Test.cpp`, `Tests/Native/NativeCornerPinGpu_Test.cpp`, `Tests/Native/NativeAutoStraightenGpu_Test.cpp`, `Tests/Native/StagedResample_Test.cpp`
   - approach: Using `NativeGpuParity.h` and the neighbouring tolerance, cover each new filter at 1:1, 2x up, 4x and 64x down, with and without Clamp, on exact and inexact scales (3x up lands near tap boundaries); Sinc at Lobes 2 and 8; Bicubic at two (B, C) pairs; one motion-blur case; one projective case. The filter loops at `NativeTransformGpu_Test.cpp:583`, `NativeReformatGpu_Test.cpp:431`, `NativeCornerPinGpu_Test.cpp:580` and `NativeAutoStraightenGpu_Test.cpp:422` assert `eFilterNotch + 1 == filters.size()` and instantiate up to it: raise them, and `CoordMapGpu_Test.cpp:519` in P2.T5. Small synthetic fixtures only.
   - verify: `ctest -R "NativeTransformGpu|NativeReformatGpu|NativeCornerPinGpu|NativeAutoStraightenGpu|StagedResample"` passes on lavapipe at the phase build.

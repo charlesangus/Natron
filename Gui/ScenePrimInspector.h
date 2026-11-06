@@ -35,6 +35,7 @@
 #include <QWidget>
 #include <QtCore/QString>
 
+#include "Engine/EngineFwd.h"
 #include "Global/GlobalDefines.h"
 #include "Gui/SceneGraphModel.h"
 
@@ -49,12 +50,16 @@ class ScenePrimInspectorRead {
 public:
     ScenePrimInspectorRead(const SceneGraphStageSourcePtr& source,
                            const QString& path,
+                           const QString& property,
                            double frame,
                            double framesPerSecond,
                            const std::atomic<U64>& latestGeneration,
                            U64 generation);
 
     const QString& getPath() const;
+
+    // The attribute or relationship selected on the prim, or empty.
+    const QString& getProperty() const;
 
     double getFrame() const;
 
@@ -70,6 +75,7 @@ public:
 private:
     const SceneGraphStageSourcePtr& _source;
     const QString& _path;
+    const QString& _property;
     double _frame;
     double _framesPerSecond;
     const std::atomic<U64>& _latestGeneration;
@@ -102,13 +108,14 @@ public:
 };
 
 /**
- * @brief The selected prim's tabs: Attributes, Relationships, Metadata and Composition at the given frame, each
- * row naming the node or file that authored it. Reads run on a worker; a new prim cancels the read
+ * @brief The selected prim's tabs: Attributes, Relationships, Metadata, Composition and Opinions at the given frame, each
+ * row naming the node or file that authored it. The Opinions tab lists the specs behind the prim
+ * and behind the attribute or relationship last selected on it, strongest first. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. Nothing is read while the inspector is hidden.
  *
  * Scripts find its widgets by object name: sceneGraphInspector, sceneGraphInspectorTabs,
- * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata and sceneGraphComposition.
+ * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition and sceneGraphOpinions.
  * It mirrors its state into the natronSceneGraphInspectorPath (the prim of the rows shown),
  * natronSceneGraphInspectorBusy, natronSceneGraphInspectorStale,
  * natronSceneGraphInspectorReadsStarted, natronSceneGraphInspectorReadsFinished and
@@ -126,6 +133,9 @@ public:
     ~ScenePrimInspector() override;
 
     void addTab(std::unique_ptr<ScenePrimInspectorTab> tab);
+
+    // Called on the main thread when a row naming a node is double-clicked.
+    void setNodeOpener(const std::function<void(const NodePtr& node)>& openNode);
 
     // An empty path or a null source clears the tabs.
     void setPrim(const SceneGraphStageSourcePtr& source,

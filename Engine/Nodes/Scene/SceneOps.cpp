@@ -1100,6 +1100,93 @@ getPrimComposition(const PXR_NS::UsdPrim& prim)
 }
 
 namespace {
+    SceneOpinion
+    opinionOf(const PXR_NS::SdfLayerHandle& layer,
+              const PXR_NS::SdfLayerOffset& offset)
+    {
+        SceneOpinion opinion;
+
+        opinion.owner = getLayerOwner(layer);
+        opinion.layerIdentifier = identifierOf(layer);
+        opinion.layerOffset = offset.GetOffset();
+        opinion.layerScale = offset.GetScale();
+
+        return opinion;
+    }
+} // anonymous namespace
+
+std::vector<SceneOpinion>
+getPrimOpinions(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<SceneOpinion> opinions;
+
+    if (!prim) {
+        return opinions;
+    }
+    for (const auto& entry : prim.GetPrimStackWithLayerOffsets()) {
+        const PXR_NS::SdfPrimSpecHandle& spec = entry.first;
+        if (!spec) {
+            continue;
+        }
+        SceneOpinion opinion = opinionOf(spec->GetLayer(), entry.second);
+        switch (spec->GetSpecifier()) {
+        case PXR_NS::SdfSpecifierDef:
+            opinion.primDescription = "def";
+            break;
+        case PXR_NS::SdfSpecifierOver:
+            opinion.primDescription = "over";
+            break;
+        default:
+            opinion.primDescription = "class";
+            break;
+        }
+        if (!spec->GetTypeName().IsEmpty()) {
+            opinion.primDescription += " " + spec->GetTypeName().GetString();
+        }
+        opinions.push_back(std::move(opinion));
+    }
+
+    return opinions;
+}
+
+std::vector<SceneOpinion>
+getPropertyOpinions(const PXR_NS::UsdPrim& prim,
+                    const PXR_NS::TfToken& name,
+                    PXR_NS::UsdTimeCode time)
+{
+    std::vector<SceneOpinion> opinions;
+
+    if (!prim) {
+        return opinions;
+    }
+    const PXR_NS::UsdProperty property = prim.GetProperty(name);
+    if (!property) {
+        return opinions;
+    }
+    for (const auto& entry : property.GetPropertyStackWithLayerOffsets(time)) {
+        const PXR_NS::SdfPropertySpecHandle& spec = entry.first;
+        if (!spec) {
+            continue;
+        }
+        const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+        SceneOpinion opinion = opinionOf(layer, entry.second);
+        if (spec->HasDefaultValue()) {
+            opinion.value = spec->GetDefaultValue();
+        } else if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
+            opinion.value = spec->GetField(PXR_NS::SdfFieldKeys->TargetPaths);
+        }
+        if (layer) {
+            opinion.numTimeSamples = layer->GetNumTimeSamplesForPath(spec->GetPath());
+        }
+        const PXR_NS::SdfAttributeSpecHandle attributeSpec = PXR_NS::TfDynamic_cast<PXR_NS::SdfAttributeSpecHandle>(spec);
+        opinion.hasSpline = attributeSpec && attributeSpec->HasSpline();
+        opinions.push_back(std::move(opinion));
+    }
+
+    return opinions;
+}
+
+namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under
     // them its link index lists whose composed targets leave their root. Pure overs define nothing
     // to graft, and classes stay where the input's inherits expect them.

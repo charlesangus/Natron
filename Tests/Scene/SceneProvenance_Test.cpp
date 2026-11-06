@@ -45,11 +45,16 @@
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
+
+using SceneOps::SceneOpinion;
+using SceneOps::ScenePrimArc;
+using SceneOps::ScenePrimComposition;
 
 namespace {
 void
@@ -338,4 +343,88 @@ TEST_F(SceneProvenanceTest, ACompositionMapsLayersToNodesAndHandlesPrototypes)
     EXPECT_TRUE(viaProxy.isInstanceProxy);
     EXPECT_EQ(proxy.GetPrimInPrototype().GetPath().GetString(), viaProxy.prototypePath);
     EXPECT_TRUE(viaProxy.arcs.empty());
+}
+
+TEST_F(SceneProvenanceTest, OpinionsListEveryNodeStrongestFirstWithTheirValues)
+{
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    NodePtr setter = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+    ASSERT_TRUE(camera && transform && setter);
+    const std::string cameraPath = getString(camera, kSceneParamPrimPath);
+    ASSERT_FALSE(cameraPath.empty());
+    setString(transform, kUSDEditTransformParamPrimPattern, cameraPath);
+    setString(setter, kUSDSetAttributeParamPrimPattern, cameraPath);
+    setString(setter, kUSDSetAttributeParamAttributeName, "focalLength");
+    KnobDouble* value = dynamic_cast<KnobDouble*>(setter->getKnobByName(kUSDSetAttributeParamValue).get());
+    ASSERT_TRUE(value != NULL);
+    value->setValue(99.);
+    ASSERT_TRUE(transform->connectInput(camera, 0));
+    ASSERT_TRUE(setter->connectInput(transform, 0));
+
+    PXR_NS::UsdStageRefPtr stage = compose(setter);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(cameraPath));
+    ASSERT_TRUE(bool(prim));
+
+    // The prim is defined by the camera, then overridden by the edit and the setter, which is
+    // downstream and so strongest.
+    std::vector<NodePtr> primOwners;
+    for (const SceneOpinion& opinion : SceneOps::getPrimOpinions(prim)) {
+        if (opinion.owner) {
+            primOwners.push_back(opinion.owner);
+        }
+    }
+    ASSERT_EQ(3u, primOwners.size());
+    EXPECT_EQ(setter, primOwners[0]);
+    EXPECT_EQ(transform, primOwners[1]);
+    EXPECT_EQ(camera, primOwners[2]);
+
+    std::vector<SceneOpinion> focal;
+    for (const SceneOpinion& opinion : SceneOps::getPropertyOpinions(prim, PXR_NS::TfToken("focalLength"), PXR_NS::UsdTimeCode(1.))) {
+        if (opinion.owner) {
+            focal.push_back(opinion);
+        }
+    }
+    ASSERT_EQ(2u, focal.size());
+    EXPECT_EQ(setter, focal[0].owner);
+    ASSERT_TRUE(focal[0].value.IsHolding<float>());
+    EXPECT_FLOAT_EQ(99.f, focal[0].value.UncheckedGet<float>());
+    EXPECT_EQ(camera, focal[1].owner);
+    EXPECT_FALSE(focal[1].value.IsEmpty());
+    EXPECT_FALSE(focal[0].layerIdentifier.empty());
+    EXPECT_DOUBLE_EQ(1., focal[0].layerScale);
+
+    EXPECT_TRUE(SceneOps::getPropertyOpinions(prim, PXR_NS::TfToken("noSuchProperty"), PXR_NS::UsdTimeCode(1.)).empty());
+    EXPECT_TRUE(SceneOps::getPrimOpinions(PXR_NS::UsdPrim()).empty());
+}
+
+TEST_F(SceneProvenanceTest, OpinionsCarryLayerOffsetsAndTimeSamples)
+{
+    const PXR_NS::SdfLayerRefPtr referenced = PXR_NS::SdfLayer::CreateAnonymous("referenced.usda");
+    ASSERT_TRUE(referenced->ImportFromString("#usda 1.0\n"
+                                             "def Xform \"Ref\" { double animated.timeSamples = { 1: 5, 2: 6 } }\n"));
+    const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("root.usda");
+    ASSERT_TRUE(root->ImportFromString("#usda 1.0\n"
+                                       "def Xform \"Prim\" (\n"
+                                       "    references = @"
+                                       + referenced->GetIdentifier() + "@</Ref> (offset = 10; scale = 2)\n"
+                                                                       ") { }\n"));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Prim"));
+    ASSERT_TRUE(bool(prim));
+
+    const std::vector<SceneOpinion> specs = SceneOps::getPrimOpinions(prim);
+    ASSERT_EQ(2u, specs.size());
+    EXPECT_EQ("def Xform", specs[0].primDescription);
+    EXPECT_DOUBLE_EQ(0., specs[0].layerOffset);
+    EXPECT_EQ(referenced->GetIdentifier(), specs[1].layerIdentifier);
+    EXPECT_DOUBLE_EQ(10., specs[1].layerOffset);
+    EXPECT_DOUBLE_EQ(2., specs[1].layerScale);
+
+    const std::vector<SceneOpinion> animated = SceneOps::getPropertyOpinions(prim, PXR_NS::TfToken("animated"), PXR_NS::UsdTimeCode(12.));
+    ASSERT_EQ(1u, animated.size());
+    EXPECT_EQ(2u, animated[0].numTimeSamples);
+    EXPECT_TRUE(animated[0].value.IsEmpty());
 }

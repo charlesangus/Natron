@@ -36,6 +36,7 @@
 #include <QAbstractTableModel>
 #include <QColor>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QPalette>
 #include <QStringList>
@@ -55,6 +56,10 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
+using SceneOps::SceneOpinion;
+using SceneOps::ScenePrimArc;
+using SceneOps::ScenePrimComposition;
+
 const int kMaxCellLength = 200;
 
 // A plain-text tooltip never wraps by itself, so a long value would run off a 1920 pixel screen.
@@ -66,6 +71,8 @@ const int kGreyAfterMs = 100;
 struct InspectorCell {
     QString text;
     QString tip;
+    // The node a double-click opens the settings of.
+    NodeWPtr node;
 };
 
 typedef std::vector<InspectorCell> InspectorRow;
@@ -153,6 +160,7 @@ authorCell(const NodePtr& node,
         cell.text = QString::fromStdString(SdfLayer::SplitIdentifier(layerIdentifier).first);
     }
     cell.tip = QString::fromStdString(layerIdentifier);
+    cell.node = node;
 
     return cell;
 }
@@ -362,6 +370,68 @@ readMetadata(const ScenePrimInspectorRead& read,
 }
 
 QString
+layerOffsetText(const SceneOpinion& opinion)
+{
+    if ((opinion.layerOffset == 0.) && (opinion.layerScale == 1.)) {
+        return QString();
+    }
+
+    return ScenePrimInspector::tr("Offset %1, Scale %2").arg(opinion.layerOffset).arg(opinion.layerScale);
+}
+
+InspectorRow
+opinionRow(const QString& scope,
+           const SceneOpinion& opinion)
+{
+    QString value;
+
+    if (!opinion.primDescription.empty()) {
+        value = QString::fromStdString(opinion.primDescription);
+    } else if (opinion.numTimeSamples > 0) {
+        value = ScenePrimInspector::tr("%n time sample(s)", nullptr, (int)opinion.numTimeSamples);
+    } else if (opinion.hasSpline) {
+        value = ScenePrimInspector::tr("Spline");
+    } else {
+        value = valueText(opinion.value);
+    }
+
+    return { cellOf(scope),
+             authorCell(opinion.owner, opinion.layerIdentifier, false),
+             cellOf(QString::fromStdString(opinion.layerIdentifier)),
+             cellOf(value),
+             cellOf(layerOffsetText(opinion)) };
+}
+
+bool
+readOpinions(const ScenePrimInspectorRead& read,
+             std::vector<InspectorRow>* rows)
+{
+    std::vector<SceneOpinion> primOpinions;
+    std::vector<SceneOpinion> propertyOpinions;
+    const std::string property = read.getProperty().toStdString();
+
+    if (!readPrim(read, [&](const SceneStage& stage, const UsdPrim& prim) {
+            primOpinions = SceneOps::getPrimOpinions(prim);
+            if (!property.empty()) {
+                const UsdTimeCode time(SceneOps::frameToTimeCode(stage.getPayload(), read.getFrame(), read.getFramesPerSecond()));
+                propertyOpinions = SceneOps::getPropertyOpinions(prim, TfToken(property), time);
+            }
+        })) {
+        return false;
+    }
+    rows->reserve(propertyOpinions.size() + primOpinions.size());
+    const QString propertyScope = ScenePrimInspector::tr("Property %1").arg(QString::fromStdString(property));
+    for (const SceneOpinion& opinion : propertyOpinions) {
+        rows->push_back(opinionRow(propertyScope, opinion));
+    }
+    for (const SceneOpinion& opinion : primOpinions) {
+        rows->push_back(opinionRow(ScenePrimInspector::tr("Prim"), opinion));
+    }
+
+    return true;
+}
+
+QString
 arcLabel(ScenePrimArc::Type type)
 {
     switch (type) {
@@ -471,6 +541,25 @@ public:
         return QAbstractTableModel::headerData(section, orientation, role);
     }
 
+    // The node of the cell at index, else of the first cell of its row that has one.
+    NodePtr getNode(const QModelIndex& index) const
+    {
+        if (!index.isValid() || (index.row() >= (int)_rows.size())) {
+            return NodePtr();
+        }
+        const InspectorRow& row = _rows[index.row()];
+        if ((index.column() < (int)row.size()) && row[index.column()].node.lock()) {
+            return row[index.column()].node.lock();
+        }
+        for (const InspectorCell& cell : row) {
+            if (NodePtr node = cell.node.lock()) {
+                return node;
+            }
+        }
+
+        return NodePtr();
+    }
+
     // The same rows at another frame or after a sync keep the view's scroll position and selection.
     void setRows(std::vector<InspectorRow> rows)
     {
@@ -533,6 +622,30 @@ public:
         _view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         _view->setSelectionBehavior(QAbstractItemView::SelectRows);
         _view->header()->setSectionResizeMode(QHeaderView::Interactive);
+        QObject::connect(_view, &QTreeView::doubleClicked, _view, [this](const QModelIndex& index) {
+            const NodePtr node = _model->getNode(index);
+            if (node && _openNode) {
+                _openNode(node);
+            }
+        });
+        QObject::connect(_view->selectionModel(), &QItemSelectionModel::selectionChanged, _view, [this]() {
+            if (!_rowSelected) {
+                return;
+            }
+            const QModelIndexList selected = _view->selectionModel()->selectedRows();
+            _rowSelected(selected.isEmpty() ? QString() : _model->data(selected.front(), Qt::DisplayRole).toString());
+        });
+    }
+
+    void setOpenNode(const std::function<void(const NodePtr&)>& openNode)
+    {
+        _openNode = openNode;
+    }
+
+    // Called with the first column of the selected row, or empty when none is.
+    void setRowSelected(const std::function<void(const QString&)>& rowSelected)
+    {
+        _rowSelected = rowSelected;
     }
 
     QString getTitle() const override
@@ -574,18 +687,22 @@ private:
     ReadRowsFunc _readRows;
     QTreeView* _view;
     InspectorTableModel* _model;
+    std::function<void(const NodePtr&)> _openNode;
+    std::function<void(const QString&)> _rowSelected;
 };
 
 } // anon namespace
 
 ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& source,
                                                const QString& path,
+                                               const QString& property,
                                                double frame,
                                                double framesPerSecond,
                                                const std::atomic<U64>& latestGeneration,
                                                U64 generation)
     : _source(source)
     , _path(path)
+    , _property(property)
     , _frame(frame)
     , _framesPerSecond(framesPerSecond)
     , _latestGeneration(latestGeneration)
@@ -597,6 +714,12 @@ const QString&
 ScenePrimInspectorRead::getPath() const
 {
     return _path;
+}
+
+const QString&
+ScenePrimInspectorRead::getProperty() const
+{
+    return _property;
 }
 
 double
@@ -638,6 +761,7 @@ struct ScenePrimInspector::Implementation {
     struct Request {
         SceneGraphStageSourcePtr source;
         QString path;
+        QString property;
         double frame = 0.;
         double framesPerSecond = 24.;
         ScenePrimInspectorTab* tab = nullptr;
@@ -652,6 +776,9 @@ struct ScenePrimInspector::Implementation {
 
     SceneGraphStageSourcePtr source;
     QString path;
+    // The property the Opinions tab lists the specs of, besides the prim's.
+    QString property;
+    std::function<void(const NodePtr&)> openNode;
     double frame = 0.;
     double framesPerSecond = 24.;
     // A read is owed for when the inspector is shown again.
@@ -745,6 +872,7 @@ struct ScenePrimInspector::Implementation {
             std::lock_guard<std::mutex> lock(queueMutex);
             request.source = source;
             request.path = path;
+            request.property = property;
             request.frame = frame;
             request.framesPerSecond = framesPerSecond;
             request.tab = tabs[current].get();
@@ -789,7 +917,7 @@ struct ScenePrimInspector::Implementation {
             }
             std::function<void()> show;
             {
-                const ScenePrimInspectorRead read(next.source, next.path, next.frame, next.framesPerSecond, generation, next.generation);
+                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation);
                 show = next.tab->read(read);
             }
             next.source.reset();
@@ -829,18 +957,32 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
     });
     QObject::connect(_imp->tabWidget, &QTabWidget::currentChanged, this, [this]() { _imp->startRead(); });
 
-    addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Attributes"), QString::fromUtf8("sceneGraphAttributes"),
-                                                                        QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Source") << tr("Authored By"),
-                                                                        readAttributes)));
-    addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Relationships"), QString::fromUtf8("sceneGraphRelationships"),
-                                                                        QStringList() << tr("Relationship") << tr("Targets") << tr("Authored By"),
-                                                                        readRelationships)));
-    addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Metadata"), QString::fromUtf8("sceneGraphMetadata"),
-                                                                        QStringList() << tr("Field") << tr("Value") << tr("Authored By"),
-                                                                        readMetadata)));
-    addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Composition"), QString::fromUtf8("sceneGraphComposition"),
-                                                                        QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"),
-                                                                        readComposition)));
+    const auto addTableTab = [this](const QString& title,
+                                    const char* objectName,
+                                    const QStringList& headers,
+                                    const InspectorTableTab::ReadRowsFunc& readRows,
+                                    bool selectsProperty) {
+        InspectorTableTab* tab = new InspectorTableTab(title, QString::fromUtf8(objectName), headers, readRows);
+        tab->setOpenNode([this](const NodePtr& node) {
+            if (_imp->openNode) {
+                _imp->openNode(node);
+            }
+        });
+        if (selectsProperty) {
+            tab->setRowSelected([this](const QString& name) { _imp->property = name; });
+        }
+        addTab(std::unique_ptr<ScenePrimInspectorTab>(tab));
+    };
+    addTableTab(tr("Attributes"), "sceneGraphAttributes",
+                QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Source") << tr("Authored By"), readAttributes, true);
+    addTableTab(tr("Relationships"), "sceneGraphRelationships",
+                QStringList() << tr("Relationship") << tr("Targets") << tr("Authored By"), readRelationships, true);
+    addTableTab(tr("Metadata"), "sceneGraphMetadata",
+                QStringList() << tr("Field") << tr("Value") << tr("Authored By"), readMetadata, false);
+    addTableTab(tr("Composition"), "sceneGraphComposition",
+                QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), readComposition, false);
+    addTableTab(tr("Opinions"), "sceneGraphOpinions",
+                QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false);
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }
@@ -865,6 +1007,12 @@ ScenePrimInspector::stop()
 }
 
 void
+ScenePrimInspector::setNodeOpener(const std::function<void(const NodePtr& node)>& openNode)
+{
+    _imp->openNode = openNode;
+}
+
+void
 ScenePrimInspector::addTab(std::unique_ptr<ScenePrimInspectorTab> tab)
 {
     ScenePrimInspectorTab* added = tab.get();
@@ -881,6 +1029,9 @@ ScenePrimInspector::setPrim(const SceneGraphStageSourcePtr& source,
                             double framesPerSecond)
 {
     _imp->source = source;
+    if (path != _imp->path) {
+        _imp->property.clear();
+    }
     _imp->path = path;
     _imp->frame = frame;
     _imp->framesPerSecond = framesPerSecond;

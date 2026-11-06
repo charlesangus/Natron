@@ -466,6 +466,39 @@ struct ScenePrimComposition {
  * time, so call it for the selected prim only. Caller holds the stage lock.
  **/
 ScenePrimComposition getPrimComposition(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief One spec contributing an opinion to a prim or to one of its properties.
+ **/
+struct SceneOpinion {
+    // The node that authored the spec's layer, or null for a file or an unrecorded layer.
+    NodePtr owner;
+    std::string layerIdentifier;
+    // "def Xform" for a prim spec, empty for a property spec.
+    std::string primDescription;
+    // The default value of an attribute spec, or the target paths of a relationship spec; empty
+    // when the spec holds neither.
+    PXR_NS::VtValue value;
+    std::size_t numTimeSamples = 0;
+    bool hasSpline = false;
+    // Maps the layer's time to the stage's.
+    double layerOffset = 0.;
+    double layerScale = 1.;
+};
+
+/**
+ * @brief The specs composing prim, strongest first, each with the node that authored its layer.
+ * Caller holds the stage lock.
+ **/
+std::vector<SceneOpinion> getPrimOpinions(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief The specs composing the property of prim named name, strongest first, as of time. Empty
+ * when the prim has no such property. Caller holds the stage lock.
+ **/
+std::vector<SceneOpinion> getPropertyOpinions(const PXR_NS::UsdPrim& prim,
+                                              const PXR_NS::TfToken& name,
+                                              PXR_NS::UsdTimeCode time);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

@@ -14,6 +14,9 @@ Checks:
   - the Relationships tab lists targets, and the Metadata tab lists fields and authors;
   - a long value is cut in the table with all of it in the tooltip;
   - an instance shows its prototype;
+  - the Composition tab lists the camera's root arc;
+  - the Opinions tab lists the specs behind the camera prim and the selected focal length, strongest
+    first, and double-clicking a row naming the USDEditTransform opens that node's settings panel;
   - selecting a prim keeps a heartbeat on the main thread within HEARTBEAT_BUDGET_MS, while a slow
     read shows the last result greyed, and a new selection cancels the read under way.
 
@@ -49,6 +52,10 @@ INSTANCE = ROOT + "/Inst"
 ATTRIBUTES = "sceneGraphAttributes"
 RELATIONSHIPS = "sceneGraphRelationships"
 METADATA = "sceneGraphMetadata"
+COMPOSITION = "sceneGraphComposition"
+OPINIONS = "sceneGraphOpinions"
+COMPOSITION_TAB = 3
+OPINIONS_TAB = 4
 
 LONG_VALUE = "".join(chr(ord("a") + n % 26) for n in range(LONG_VALUE_LENGTH))
 
@@ -81,9 +88,9 @@ def write_scene(path):
 try:
     import NatronEngine
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
-    from PySide6.QtWidgets import QTabWidget, QToolButton, QTreeView, QWidget
+    from PySide6.QtWidgets import QLineEdit, QTabWidget, QToolButton, QTreeView, QWidget
 
-    from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import OUT, check, close_all_panels, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
 
@@ -201,6 +208,25 @@ try:
             result[str(cells[0])] = ["" if c is None else str(c) for c in cells]
         return result
 
+    def table_rows(name):
+        """The tab's rows in order, each the list of every column's text."""
+        v = child(QTreeView, name)
+        m = v.model() if v is not None else None
+        if m is None:
+            return []
+        return [["" if m.index(r, c).data() is None else str(m.index(r, c).data()) for c in range(m.columnCount())]
+                for r in range(m.rowCount())]
+
+    def open_panel_labels():
+        labels = []
+        for p in widgets_of("NodeSettingsPanel"):
+            try:
+                if p.isVisible():
+                    labels.extend(le.text() for le in p.findChildren(QLineEdit) if le.metaObject().className().split("::")[-1] == "LineEdit")
+            except RuntimeError:
+                continue
+        return labels
+
     def tooltip(name, key, column):
         v = child(QTreeView, name)
         m = v.model()
@@ -287,6 +313,53 @@ try:
         if "specifier" in metadata:
             check(metadata["specifier"][2] == camera.getScriptName(),
                   "the specifier names the node that defined the prim, not an edit's over (got %r)" % (metadata["specifier"][2],))
+        show_tab(0)
+
+    def composition_section():
+        show_tab(COMPOSITION_TAB)
+        ok = yield ("until", lambda: any(k.strip() == "Root" for k in table(COMPOSITION)) and settled_on(camera_prim), POLL_TIMEOUT_S)
+        arcs = table_rows(COMPOSITION)
+        check(ok, "the composition tab lists the camera's root arc (got %r)" % (arcs,))
+        root = [row for row in arcs if row[0].strip() == "Root"]
+        check(bool(root) and root[0][1] == camera_prim, "the root arc targets the camera prim (got %r)" % (root,))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-composition.png")
+        show_tab(0)
+
+    def opinions_section():
+        show_tab(0)
+        attributes_view = child(QTreeView, ATTRIBUTES)
+        attributes_model = attributes_view.model()
+        focal = [r for r in range(attributes_model.rowCount()) if str(attributes_model.index(r, 0).data()) == "focalLength"]
+        require(bool(focal), "the attributes tab lists focalLength")
+        attributes_view.selectionModel().select(attributes_model.index(focal[0], 0), QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        show_tab(OPINIONS_TAB)
+        ok = yield ("until", lambda: any(r[0] == "Property focalLength" for r in table_rows(OPINIONS)) and settled_on(camera_prim), POLL_TIMEOUT_S)
+        opinions = table_rows(OPINIONS)
+        check(ok, "the opinions tab lists the selected focal length (got %r)" % (opinions,))
+        property_authors = [r[1] for r in opinions if r[0] == "Property focalLength"]
+        check(property_authors == [camera.getScriptName()],
+              "focalLength's only opinion is the USDCamera's (got %r)" % (property_authors,))
+        prim_authors = [r[1] for r in opinions if r[0] == "Prim" and r[1]]
+        check(prim_authors == [edit.getScriptName(), camera.getScriptName()],
+              "the prim's opinions run strongest first, USDEditTransform then USDCamera (got %r)" % (prim_authors,))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-opinions.png")
+
+        close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        edit_label = edit.getLabel()
+        camera_label = camera.getLabel()
+        check(edit_label not in open_panel_labels(), "no panel for the USDEditTransform is open before the double-click")
+        opinions_view = child(QTreeView, OPINIONS)
+        opinions_model = opinions_view.model()
+        edit_row = [r for r in range(opinions_model.rowCount())
+                    if str(opinions_model.index(r, 0).data()) == "Prim" and str(opinions_model.index(r, 1).data()) == edit.getScriptName()]
+        require(bool(edit_row), "the opinions tab has a row naming the USDEditTransform")
+        opinions_view.doubleClicked.emit(opinions_model.index(edit_row[0], 1))
+        ok = yield ("until", lambda: edit_label in open_panel_labels(), POLL_TIMEOUT_S)
+        check(ok, "double-clicking a row opens the USDEditTransform's settings panel (open: %r)" % (open_panel_labels(),))
+        check(camera_label not in open_panel_labels(), "the USDCamera's panel stays closed")
         show_tab(0)
 
     def file_section(py_viewer):
@@ -429,6 +502,8 @@ try:
         require(inspector() is not None, "the panel has its inspector")
 
         yield from camera_section()
+        yield from composition_section()
+        yield from opinions_section()
 
         py_viewer = hold(app.getViewer(viewer.getScriptName()))
         require(view_input(usd), "switch the Viewer to the USDRead")

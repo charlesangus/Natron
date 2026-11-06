@@ -71,6 +71,7 @@
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
@@ -865,6 +866,26 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->stack->setCurrentWidget(_imp->noScene);
 
     _imp->inspector = new ScenePrimInspector(splitter);
+    if (gui) {
+        _imp->inspector->setNodeOpener([gui](const NodePtr& node) {
+            const NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+            if (!nodeGui) {
+                return;
+            }
+            nodeGui->ensurePanelCreated();
+            if (!nodeGui->getSettingPanel() || !nodeGui->isVisible()) {
+                return;
+            }
+            if (!nodeGui->isSettingsPanelVisible()) {
+                nodeGui->setVisibleSettingsPanel(true);
+            }
+            if (!nodeGui->wasBeginEditCalled()) {
+                nodeGui->beginEditKnobs();
+            }
+            gui->putSettingsPanelFirst(nodeGui->getSettingPanel());
+            gui->getApp()->redrawAllViewers();
+        });
+    }
     splitter->addWidget(_imp->stack);
     splitter->addWidget(_imp->inspector);
     splitter->setStretchFactor(0, 3);

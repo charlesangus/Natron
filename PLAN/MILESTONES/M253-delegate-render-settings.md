@@ -130,7 +130,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
   - verify: `tools/ci/remote/build.sh release --from-run <id> --gui "Tests/gui/m253_render_settings_layout.py"` passes; the Cycles and MoonRay default states show no scrollbar; expanding and collapsing nested groups keeps row order; the user approves the screenshots.
   - size: M
 
-- [ ] M253.P4.T8 — Custom pixel jitter with no sample can't crash
+- [x] M253.P4.T8 — Custom pixel jitter with no sample can't crash
   - files: charlesangus/cycles natron/deep-5.2 `src/scene/integrator.cpp`, `tools/ci/local/Dockerfile` (pin)
   - approach: `Integrator::device_update` reads elements 0 and 1 of the custom pixel jitter array when both bools are on. Treat an array with fewer than two values as off.
   - verify: a Cycles render with both bools on and an empty array doesn't crash, covered by the nudge test turning them both on.

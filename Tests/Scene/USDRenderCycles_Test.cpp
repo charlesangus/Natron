@@ -97,6 +97,23 @@ const char* const kNormalMapFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-n
 const char* const kNormalMapGoldenCase = "CyclesNormalMapReference";
 const float kNormalMapContrast = 0.02f;
 
+// A black card whose only light is its emissiveColor (2, 0.5, 0), in a scene without lights.
+const char* const kEmissionFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-emission.usda";
+const char* const kEmissionGoldenCase = "CyclesEmissionReference";
+// Two cards of opacity 0.3 (left, centred on pixel 16) and 0.7 (right, on 48) under an
+// opacityThreshold of 0.5.
+const char* const kCutoutFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-cutout.usda";
+const char* const kCutoutGoldenCase = "CyclesCutoutReference";
+const int kCutoutLeftX = 16;
+const int kCutoutRightX = 48;
+// Two black spheres, at pixels 16 and 48 on the middle row, the right one with a clearcoat.
+const char* const kClearcoatFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-clearcoat.usda";
+const char* const kClearcoatGoldenCase = "CyclesClearcoatReference";
+const int kClearcoatPlainX = 16;
+const int kClearcoatCoatedX = 48;
+const int kClearcoatHalfWidth = 8;
+const float kClearcoatGain = 0.005f;
+
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "CyclesReference";
 
@@ -709,4 +726,72 @@ TEST_F(USDRenderCyclesTest, NormalMapMatchesReferenceRender)
     EXPECT_GT(highest - lowest, kNormalMapContrast);
 
     matchGolden(rgba, kNormalMapGoldenCase);
+}
+
+// The emissiveColor of a black card is what it renders: red well above green, both near the
+// authored (2, 0.5), which only the emission can supply.
+TEST_F(USDRenderCyclesTest, EmissionMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kEmissionFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    const std::size_t centre = pixelIndex(kNearX, kNearY) * 4;
+    EXPECT_NEAR(2.f, rgba.pixels[centre], 0.2f);
+    EXPECT_NEAR(0.5f, rgba.pixels[centre + 1], 0.1f);
+
+    matchGolden(rgba, kEmissionGoldenCase);
+}
+
+// An opacity under the opacityThreshold leaves nothing of the card, one over it is solid.
+TEST_F(USDRenderCyclesTest, OpacityThresholdCutsOut)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kCutoutFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    EXPECT_NEAR(0.f, rgba.pixels[pixelIndex(kCutoutLeftX, kNearY) * 4 + 3], 1e-3f);
+    EXPECT_NEAR(1.f, rgba.pixels[pixelIndex(kCutoutRightX, kNearY) * 4 + 3], 1e-3f);
+
+    matchGolden(rgba, kCutoutGoldenCase);
+}
+
+// The coated sphere reflects the environment in a second layer, so it is brighter than the same
+// sphere without a clearcoat.
+TEST_F(USDRenderCyclesTest, ClearcoatMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kClearcoatFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    const auto mean = [&rgba](int centreX) {
+        double sum = 0.;
+        int count = 0;
+        for (int y = kNearY - kClearcoatHalfWidth; y <= kNearY + kClearcoatHalfWidth; ++y) {
+            for (int x = centreX - kClearcoatHalfWidth; x <= centreX + kClearcoatHalfWidth; ++x) {
+                sum += rgba.pixels[pixelIndex(x, y) * 4];
+                ++count;
+            }
+        }
+
+        return (float)(sum / count);
+    };
+    EXPECT_GT(mean(kClearcoatCoatedX), mean(kClearcoatPlainX) + kClearcoatGain);
+
+    matchGolden(rgba, kClearcoatGoldenCase);
 }

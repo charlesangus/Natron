@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 
 NATRON_NAMESPACE_ENTER
 
@@ -48,6 +50,13 @@ filterOptions()
         { "Mitchell", "Some smoothing, plus blurring to hide pixelation (*)(+).", "mitchell" },
         { "Parzen", "(cubic B-spline) Greatest smoothing of all filters (+).", "parzen" },
         { "Notch", "Flat smoothing (which tends to hide moire' patterns) (+).", "notch" },
+        { "Lanczos 2", "(windowed sinc, 2 lobes) Sharp, with little ringing (*).", "lanczos2" },
+        { "Lanczos 3", "(windowed sinc, 3 lobes) Sharper, with moderate ringing (*).", "lanczos3" },
+        { "Lanczos 4", "(windowed sinc, 4 lobes) Sharpest of the Lanczos filters, with the most ringing (*).", "lanczos4" },
+        { "Sinc", "(Hann-windowed sinc) Sharpness and ringing grow with the Lobes control (*).", "sinc" },
+        { "Blackman Harris", "(4-term Blackman-Harris window) Soft, with very little aliasing (+).", "blackmanHarris" },
+        { "Gaussian", "(sigma of 0.5 pixels) Soft, without overshoot (+).", "gaussian" },
+        { "Bicubic", "(Mitchell-Netravali) A cubic shaped by the Bicubic B and Bicubic C controls (*)(+).", "bicubic" },
     };
 
     return options;
@@ -66,25 +75,153 @@ shutterOffsetOptions()
     return options;
 }
 
-int
-filterTaps(FilterEnum filter)
+namespace {
+    inline double
+    sincPi(double x)
+    {
+        if (x == 0.) {
+            return 1.;
+        }
+        // sin(pi * n) is not exactly 0 in doubles, and a 1:1 render must reproduce its source.
+        if (x == std::floor(x)) {
+            return 0.;
+        }
+        const double px = M_PI * x;
+        return std::sin(px) / px;
+    }
+
+    inline double
+    blackmanHarrisWindow(double t)
+    {
+        return 0.35875 + 0.48829 * std::cos(M_PI * t) + 0.14128 * std::cos(2. * M_PI * t) + 0.01168 * std::cos(3. * M_PI * t);
+    }
+
+    inline double
+    gaussianBell(double x)
+    {
+        return std::exp(-2. * x * x);
+    }
+
+    // Lowers a bell peaking at 1 so it reaches 0 at its support edge: a tap entering the
+    // footprint then starts from no weight, without a jump.
+    inline double
+    taperedToEdge(double value,
+                  double edge)
+    {
+        return (value - edge) / (1. - edge);
+    }
+
+    inline double
+    mitchellNetravali(double a,
+                      double B,
+                      double C)
+    {
+        const double a2 = a * a;
+        const double a3 = a2 * a;
+
+        if (a < 1.) {
+            return ((12. - 9. * B - 6. * C) * a3 + (-18. + 12. * B + 6. * C) * a2 + (6. - 2. * B)) / 6.;
+        }
+        return ((-B - 6. * C) * a3 + (6. * B + 30. * C) * a2 + (-12. * B - 48. * C) * a + (8. * B + 24. * C)) / 6.;
+    }
+
+    inline int
+    usableLobes(int lobes)
+    {
+        return (std::max)(2, (std::min)(lobes, 8));
+    }
+} // anon namespace
+
+double
+FilterSpec::radius() const
 {
     switch (filter) {
     case eFilterImpulse:
     case eFilterBox:
-        return 1;
+        return 0.5;
     case eFilterBilinear:
     case eFilterCubic:
-        return 2;
-    default:
-        return 4;
+        return 1.;
+    case eFilterGaussian:
+        return 1.5;
+    case eFilterKeys:
+    case eFilterSimon:
+    case eFilterRifman:
+    case eFilterMitchell:
+    case eFilterParzen:
+    case eFilterNotch:
+    case eFilterLanczos2:
+    case eFilterBlackmanHarris:
+    case eFilterBicubic:
+        return 2.;
+    case eFilterLanczos3:
+        return 3.;
+    case eFilterLanczos4:
+        return 4.;
+    case eFilterSinc:
+        return (double)usableLobes(lobes);
     }
+
+    return 2.;
+}
+
+double
+FilterSpec::weight(double x) const
+{
+    const double a = std::fabs(x);
+
+    if (!(a < radius())) {
+        return 0.;
+    }
+    switch (filter) {
+    case eFilterLanczos2:
+        return sincPi(a) * sincPi(a / 2.);
+    case eFilterLanczos3:
+        return sincPi(a) * sincPi(a / 3.);
+    case eFilterLanczos4:
+        return sincPi(a) * sincPi(a / 4.);
+    case eFilterSinc:
+        return sincPi(a) * (0.5 + 0.5 * std::cos(M_PI * a / usableLobes(lobes)));
+    case eFilterBlackmanHarris:
+        return taperedToEdge(blackmanHarrisWindow(a / 2.), blackmanHarrisWindow(1.));
+    case eFilterGaussian:
+        return taperedToEdge(gaussianBell(a), gaussianBell(1.5));
+    case eFilterBicubic:
+        return mitchellNetravali(a, B, C);
+    default:
+        break;
+    }
+    // Ic is the sample at distance d, Ip the one at distance d + 1. One filter1D() call, rather
+    // than filterWeights()'s four, keeps this cheap at one call per tap per pixel.
+    if (a < 1.) {
+        return filter1D(filter, 0., 1., 0., 0., a, false);
+    }
+    return filter1D(filter, 1., 0., 0., 0., a - 1., false);
+}
+
+int
+filterTaps(const FilterSpec& filter)
+{
+    return (int)std::ceil(2. * filter.radius());
 }
 
 bool
 filterHonoursClamp(FilterEnum filter)
 {
-    return filter == eFilterKeys || filter == eFilterSimon || filter == eFilterRifman || filter == eFilterMitchell;
+    switch (filter) {
+    case eFilterKeys:
+    case eFilterSimon:
+    case eFilterRifman:
+    case eFilterMitchell:
+    case eFilterLanczos2:
+    case eFilterLanczos3:
+    case eFilterLanczos4:
+    case eFilterSinc:
+    case eFilterBicubic:
+        return true;
+    default:
+        return false;
+    }
 }
 
 double
@@ -132,6 +269,21 @@ filter1D(FilterEnum filter,
         return filterParzen(Ip, Ic, In, Ia, d);
     case eFilterNotch:
         return filterNotch(Ip, Ic, In, Ia, d);
+    case eFilterLanczos2:
+    case eFilterLanczos3:
+    case eFilterLanczos4:
+    case eFilterSinc:
+    case eFilterBlackmanHarris:
+    case eFilterGaussian:
+    case eFilterBicubic: {
+        const FilterSpec spec(filter);
+        const double wp = spec.weight(d + 1.);
+        const double wc = spec.weight(d);
+        const double wn = spec.weight(1. - d);
+        const double wa = spec.weight(2. - d);
+        const double I = (wp * Ip + wc * Ic + wn * In + wa * Ia) / (wp + wc + wn + wa);
+        return clamp ? clampValue(I, Ic, In) : I;
+    }
     }
 
     return Ic;
@@ -150,51 +302,7 @@ filterWeights(FilterEnum filter,
 }
 
 namespace {
-    template <FilterEnum filter, bool clamp>
-    inline double
-    cubic2D(double Ipp,
-            double Icp,
-            double Inp,
-            double Iap,
-            double Ipc,
-            double Icc,
-            double Inc,
-            double Iac,
-            double Ipn,
-            double Icn,
-            double Inn,
-            double Ian,
-            double Ipa,
-            double Ica,
-            double Ina,
-            double Iaa,
-            double dx,
-            double dy)
-    {
-        switch (filter) {
-        case eFilterKeys:
-            return filterKeys(filterKeys(Ipp, Icp, Inp, Iap, dx, clamp), filterKeys(Ipc, Icc, Inc, Iac, dx, clamp), filterKeys(Ipn, Icn, Inn, Ian, dx, clamp), filterKeys(Ipa, Ica, Ina, Iaa, dx, clamp), dy, clamp);
-        case eFilterSimon:
-            return filterSimon(filterSimon(Ipp, Icp, Inp, Iap, dx, clamp), filterSimon(Ipc, Icc, Inc, Iac, dx, clamp), filterSimon(Ipn, Icn, Inn, Ian, dx, clamp), filterSimon(Ipa, Ica, Ina, Iaa, dx, clamp), dy, clamp);
-        case eFilterRifman:
-            return filterRifman(filterRifman(Ipp, Icp, Inp, Iap, dx, clamp), filterRifman(Ipc, Icc, Inc, Iac, dx, clamp), filterRifman(Ipn, Icn, Inn, Ian, dx, clamp), filterRifman(Ipa, Ica, Ina, Iaa, dx, clamp), dy, clamp);
-        case eFilterMitchell:
-            return filterMitchell(filterMitchell(Ipp, Icp, Inp, Iap, dx, clamp), filterMitchell(Ipc, Icc, Inc, Iac, dx, clamp), filterMitchell(Ipn, Icn, Inn, Ian, dx, clamp), filterMitchell(Ipa, Ica, Ina, Iaa, dx, clamp), dy, clamp);
-        case eFilterParzen:
-            return filterParzen(filterParzen(Ipp, Icp, Inp, Iap, dx), filterParzen(Ipc, Icc, Inc, Iac, dx), filterParzen(Ipn, Icn, Inn, Ian, dx), filterParzen(Ipa, Ica, Ina, Iaa, dx), dy);
-        case eFilterNotch:
-            return filterNotch(filterNotch(Ipp, Icp, Inp, Iap, dx), filterNotch(Ipc, Icc, Inc, Iac, dx), filterNotch(Ipn, Icn, Inn, Ian, dx), filterNotch(Ipa, Ica, Ina, Iaa, dx), dy);
-        default:
-            return 0.;
-        }
-    }
-
-    inline double
-    comp(const float* p,
-         int c)
-    {
-        return p ? (double)p[c] : 0.;
-    }
+    const double kCoordLimit = 1073741824.;
 
     inline int
     clampCoord(int v,
@@ -211,12 +319,11 @@ namespace {
     inline int
     floorToInt(double v)
     {
-        const double limit = 1073741824.;
-        if (v > limit) {
-            return (int)limit;
+        if (v > kCoordLimit) {
+            return (int)kCoordLimit;
         }
-        if (!(v >= -limit)) {
-            return -(int)limit;
+        if (!(v >= -kCoordLimit)) {
+            return -(int)kCoordLimit;
         }
         return (int)std::floor(v);
     }
@@ -231,146 +338,255 @@ namespace {
         return (q >= 0. && q < 2147483648.) ? (int)q : 0;
     }
 
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
+    inline void
+    zeroPixel(float* out)
+    {
+        for (int c = 0; c < N; ++c) {
+            out[c] = 0.f;
+        }
+    }
+
+    struct AxisTaps {
+        int count;
+        int lo[kFilterMaxTapsPerAxis];
+        // Share of pixel lo + 1 in a bilinear read; 0 reads pixel lo alone.
+        float frac[kFilterMaxTapsPerAxis];
+        float weight[kFilterMaxTapsPerAxis];
+    };
+
+    void
+    buildAxisTaps(const FilterSpec& filter,
+                  double coord,
+                  double scale,
+                  AxisTaps* taps)
+    {
+        const double centre = (coord > kCoordLimit ? kCoordLimit : (coord >= -kCoordLimit ? coord : -kCoordLimit)) - 0.5;
+        const double reach = filter.radius() * scale;
+        // An open interval: every kernel is 0 on its support edge, so a tap exactly there adds a
+        // read that contributes nothing.
+        const double first = std::floor(centre - reach) + 1.;
+        const double exactCount = std::ceil(centre + reach) - first;
+        double weights[kFilterMaxTapsPerAxis];
+        double sum = 0.;
+
+        if (exactCount <= kFilterMaxTapsPerAxis) {
+            taps->count = (int)exactCount;
+            for (int i = 0; i < taps->count; ++i) {
+                const double pixel = first + i;
+                taps->lo[i] = (int)pixel;
+                taps->frac[i] = 0.f;
+                weights[i] = filter.weight((pixel - centre) / scale);
+                sum += weights[i];
+            }
+        } else {
+            taps->count = kFilterMaxTapsPerAxis;
+            const double step = 2. * reach / kFilterMaxTapsPerAxis;
+            for (int i = 0; i < taps->count; ++i) {
+                const double offset = (i + 0.5) * step - reach;
+                const double position = centre + offset;
+                taps->lo[i] = floorToInt(position);
+                taps->frac[i] = (float)(position - std::floor(position));
+                weights[i] = filter.weight(offset / scale);
+                sum += weights[i];
+            }
+        }
+        for (int i = 0; i < taps->count; ++i) {
+            taps->weight[i] = (sum != 0.) ? (float)(weights[i] / sum) : 0.f;
+        }
+    }
+
+    // The offset of one read from the start of the source along an axis, or -1 for black.
+    inline std::ptrdiff_t
+    readOffset(int v,
+               int lo,
+               int hiExclusive,
+               bool blackOutside,
+               std::ptrdiff_t unit)
+    {
+        if ((v < lo) || (v >= hiExclusive)) {
+            if (blackOutside) {
+                return -1;
+            }
+            v = clampCoord(v, lo, hiExclusive);
+        }
+        return (std::ptrdiff_t)(v - lo) * unit;
+    }
+
+    // Returns whether any read lands on a source pixel.
     bool
-    interpolateT(double fx,
+    resolveReads(const AxisTaps& taps,
+                 int lo,
+                 int hiExclusive,
+                 bool blackOutside,
+                 std::ptrdiff_t unit,
+                 std::ptrdiff_t* nearReads,
+                 std::ptrdiff_t* farReads)
+    {
+        bool any = false;
+
+        for (int i = 0; i < taps.count; ++i) {
+            nearReads[i] = readOffset(taps.lo[i], lo, hiExclusive, blackOutside, unit);
+            farReads[i] = (taps.frac[i] != 0.f) ? readOffset(taps.lo[i] + 1, lo, hiExclusive, blackOutside, unit) : -1;
+            any = any || (nearReads[i] >= 0) || (farReads[i] >= 0);
+        }
+        return any;
+    }
+
+    template <int N>
+    inline void
+    readAlongRow(const float* row,
+                 std::ptrdiff_t nearRead,
+                 std::ptrdiff_t farRead,
+                 float frac,
+                 float* v)
+    {
+        const float* a = (row && (nearRead >= 0)) ? row + nearRead : 0;
+
+        if (frac == 0.f) {
+            for (int c = 0; c < N; ++c) {
+                v[c] = a ? a[c] : 0.f;
+            }
+            return;
+        }
+        const float* b = (row && (farRead >= 0)) ? row + farRead : 0;
+        for (int c = 0; c < N; ++c) {
+            v[c] = (a ? a[c] : 0.f) * (1.f - frac) + (b ? b[c] : 0.f) * frac;
+        }
+    }
+
+    /*
+     * The weighted footprint at (fx, fy), widened per axis by scaleX and scaleY. Black reads
+     * count towards the clamp range: leaving them out would clamp a fading edge back up to the
+     * source's values. Zero-weight taps do not count, so a 1:1 render stays exact.
+     */
+    template <int N>
+    bool
+    kernelSampleT(const FilterSpec& filter,
+                  bool clamp,
+                  double fx,
+                  double fy,
+                  double scaleX,
+                  double scaleY,
+                  const SourceImage& src,
+                  bool blackOutside,
+                  float* out)
+    {
+        AxisTaps tx;
+        AxisTaps ty;
+        std::ptrdiff_t xNear[kFilterMaxTapsPerAxis];
+        std::ptrdiff_t xFar[kFilterMaxTapsPerAxis];
+        std::ptrdiff_t yNear[kFilterMaxTapsPerAxis];
+        std::ptrdiff_t yFar[kFilterMaxTapsPerAxis];
+        const RectI& b = src.bounds;
+
+        buildAxisTaps(filter, fx, scaleX, &tx);
+        buildAxisTaps(filter, fy, scaleY, &ty);
+        const bool anyX = resolveReads(tx, b.x1, b.x2, blackOutside, (std::ptrdiff_t)src.nComps, xNear, xFar);
+        const bool anyY = resolveReads(ty, b.y1, b.y2, blackOutside, (std::ptrdiff_t)src.rowStride, yNear, yFar);
+        if (!anyX || !anyY) {
+            zeroPixel<N>(out);
+            return false;
+        }
+
+        const bool useRange = clamp && filterHonoursClamp(filter.filter);
+        float acc[N];
+        float lowest[N];
+        float highest[N];
+        for (int c = 0; c < N; ++c) {
+            acc[c] = 0.f;
+            lowest[c] = std::numeric_limits<float>::infinity();
+            highest[c] = -std::numeric_limits<float>::infinity();
+        }
+        for (int j = 0; j < ty.count; ++j) {
+            const float wy = ty.weight[j];
+            if (wy == 0.f) {
+                continue;
+            }
+            const float* rowNear = (yNear[j] >= 0) ? src.data + yNear[j] : 0;
+            const float* rowFar = (yFar[j] >= 0) ? src.data + yFar[j] : 0;
+            const float fracY = ty.frac[j];
+            float rowAcc[N];
+            zeroPixel<N>(rowAcc);
+            for (int i = 0; i < tx.count; ++i) {
+                const float wx = tx.weight[i];
+                if (wx == 0.f) {
+                    continue;
+                }
+                float v[N];
+                readAlongRow<N>(rowNear, xNear[i], xFar[i], tx.frac[i], v);
+                if (fracY != 0.f) {
+                    float above[N];
+                    readAlongRow<N>(rowFar, xNear[i], xFar[i], tx.frac[i], above);
+                    for (int c = 0; c < N; ++c) {
+                        v[c] = v[c] * (1.f - fracY) + above[c] * fracY;
+                    }
+                }
+                for (int c = 0; c < N; ++c) {
+                    rowAcc[c] += wx * v[c];
+                }
+                if (useRange) {
+                    for (int c = 0; c < N; ++c) {
+                        lowest[c] = (std::min)(lowest[c], v[c]);
+                        highest[c] = (std::max)(highest[c], v[c]);
+                    }
+                }
+            }
+            for (int c = 0; c < N; ++c) {
+                acc[c] += wy * rowAcc[c];
+            }
+        }
+        for (int c = 0; c < N; ++c) {
+            out[c] = (useRange && (lowest[c] <= highest[c])) ? (std::max)(lowest[c], (std::min)(acc[c], highest[c])) : acc[c];
+        }
+        return true;
+    }
+
+    template <int N>
+    bool
+    nearestT(double fx,
+             double fy,
+             const SourceImage& src,
+             bool blackOutside,
+             float* tmpPix)
+    {
+        const RectI& b = src.bounds;
+        int mx = floorToInt(fx);
+        int my = floorToInt(fy);
+
+        if (!blackOutside) {
+            mx = clampCoord(mx, b.x1, b.x2);
+            my = clampCoord(my, b.y1, b.y2);
+        }
+        const float* p = src.pixel(mx, my);
+        if (!p) {
+            zeroPixel<N>(tmpPix);
+            return false;
+        }
+        for (int c = 0; c < N; ++c) {
+            tmpPix[c] = p[c];
+        }
+        return true;
+    }
+
+    template <int N>
+    bool
+    interpolateT(const FilterSpec& filter,
+                 bool clamp,
+                 double fx,
                  double fy,
                  const SourceImage& src,
                  bool blackOutside,
                  float* tmpPix)
     {
         if (!src.isValid()) {
-            for (int c = 0; c < N; ++c) {
-                tmpPix[c] = 0;
-            }
+            zeroPixel<N>(tmpPix);
             return false;
         }
-        const RectI& b = src.bounds;
-        bool inside = true;
-
-        switch (filter) {
-        case eFilterImpulse:
-        case eFilterBox: {
-            int mx = floorToInt(fx);
-            int my = floorToInt(fy);
-            if (!blackOutside) {
-                mx = clampCoord(mx, b.x1, b.x2);
-                my = clampCoord(my, b.y1, b.y2);
-            }
-            const float* Pmm = src.pixel(mx, my);
-            if (Pmm) {
-                for (int c = 0; c < N; ++c) {
-                    tmpPix[c] = Pmm[c];
-                }
-            } else {
-                for (int c = 0; c < N; ++c) {
-                    tmpPix[c] = 0;
-                }
-                inside = false;
-            }
-            break;
+        if ((filter.filter == eFilterImpulse) || (filter.filter == eFilterBox)) {
+            return nearestT<N>(fx, fy, src, blackOutside, tmpPix);
         }
-        case eFilterBilinear:
-        case eFilterCubic: {
-            int cx = floorToInt(fx - 0.5);
-            int cy = floorToInt(fy - 0.5);
-            int nx = cx + 1;
-            int ny = cy + 1;
-            if (!blackOutside) {
-                cx = clampCoord(cx, b.x1, b.x2);
-                cy = clampCoord(cy, b.y1, b.y2);
-                nx = clampCoord(nx, b.x1, b.x2);
-                ny = clampCoord(ny, b.y1, b.y2);
-            }
-            const double dx = (std::max)(0., (std::min)(fx - 0.5 - cx, 1.));
-            const double dy = (std::max)(0., (std::min)(fy - 0.5 - cy, 1.));
-
-            const float* Pcc = src.pixel(cx, cy);
-            const float* Pnc = src.pixel(nx, cy);
-            const float* Pcn = src.pixel(cx, ny);
-            const float* Pnn = src.pixel(nx, ny);
-            if (Pcc || Pnc || Pcn || Pnn) {
-                for (int c = 0; c < N; ++c) {
-                    const double Icc = comp(Pcc, c);
-                    const double Inc = comp(Pnc, c);
-                    const double Icn = comp(Pcn, c);
-                    const double Inn = comp(Pnn, c);
-                    if (filter == eFilterBilinear) {
-                        double Ic = filterLinear(Icc, Inc, dx);
-                        double In = filterLinear(Icn, Inn, dx);
-                        tmpPix[c] = (float)filterLinear(Ic, In, dy);
-                    } else {
-                        double Ic = filterCubic(Icc, Inc, dx, clamp);
-                        double In = filterCubic(Icn, Inn, dx, clamp);
-                        tmpPix[c] = (float)filterCubic(Ic, In, dy, clamp);
-                    }
-                }
-            } else {
-                for (int c = 0; c < N; ++c) {
-                    tmpPix[c] = 0;
-                }
-                inside = false;
-            }
-            break;
-        }
-        default: {
-            int cx = floorToInt(fx - 0.5);
-            int cy = floorToInt(fy - 0.5);
-            int px = cx - 1;
-            int py = cy - 1;
-            int nx = cx + 1;
-            int ny = cy + 1;
-            int ax = cx + 2;
-            int ay = cy + 2;
-            if (!blackOutside) {
-                cx = clampCoord(cx, b.x1, b.x2);
-                cy = clampCoord(cy, b.y1, b.y2);
-                px = clampCoord(px, b.x1, b.x2);
-                py = clampCoord(py, b.y1, b.y2);
-                nx = clampCoord(nx, b.x1, b.x2);
-                ny = clampCoord(ny, b.y1, b.y2);
-                ax = clampCoord(ax, b.x1, b.x2);
-                ay = clampCoord(ay, b.y1, b.y2);
-            }
-            const double dx = (std::max)(0., (std::min)(fx - 0.5 - cx, 1.));
-            const double dy = (std::max)(0., (std::min)(fy - 0.5 - cy, 1.));
-
-            const float* Ppp = src.pixel(px, py);
-            const float* Pcp = src.pixel(cx, py);
-            const float* Pnp = src.pixel(nx, py);
-            const float* Pap = src.pixel(ax, py);
-            const float* Ppc = src.pixel(px, cy);
-            const float* Pcc = src.pixel(cx, cy);
-            const float* Pnc = src.pixel(nx, cy);
-            const float* Pac = src.pixel(ax, cy);
-            const float* Ppn = src.pixel(px, ny);
-            const float* Pcn = src.pixel(cx, ny);
-            const float* Pnn = src.pixel(nx, ny);
-            const float* Pan = src.pixel(ax, ny);
-            const float* Ppa = src.pixel(px, ay);
-            const float* Pca = src.pixel(cx, ay);
-            const float* Pna = src.pixel(nx, ay);
-            const float* Paa = src.pixel(ax, ay);
-            if (Ppp || Pcp || Pnp || Pap || Ppc || Pcc || Pnc || Pac || Ppn || Pcn || Pnn || Pan || Ppa || Pca || Pna || Paa) {
-                for (int c = 0; c < N; ++c) {
-                    double I = cubic2D<filter, clamp>(comp(Ppp, c), comp(Pcp, c), comp(Pnp, c), comp(Pap, c),
-                                                      comp(Ppc, c), comp(Pcc, c), comp(Pnc, c), comp(Pac, c),
-                                                      comp(Ppn, c), comp(Pcn, c), comp(Pnn, c), comp(Pan, c),
-                                                      comp(Ppa, c), comp(Pca, c), comp(Pna, c), comp(Paa, c),
-                                                      dx, dy);
-                    tmpPix[c] = (float)I;
-                }
-            } else {
-                for (int c = 0; c < N; ++c) {
-                    tmpPix[c] = 0;
-                }
-                inside = false;
-            }
-            break;
-        }
-        }
-
-        return inside;
+        return kernelSampleT<N>(filter, clamp, fx, fy, 1., 1., src, blackOutside, tmpPix);
     }
 
     /*
@@ -517,75 +733,11 @@ namespace {
         }
     }
 
-    inline bool
-    outsideBounds(double x,
-                  double y,
-                  const RectI& bounds)
-    {
-        return x < bounds.x1 || bounds.x2 <= x || y < bounds.y1 || bounds.y2 <= y;
-    }
-
-    inline int
-    pow3(int exp)
-    {
-        int base = 3;
-        int result = 1;
-
-        while (exp) {
-            if (exp & 1) {
-                result *= base;
-            }
-            exp >>= 1;
-            base *= base;
-        }
-
-        return result;
-    }
-
-    /*
-     * Averages 3^isx x 3^isy bilinear supersamples spread over the back-transformed pixel; tmpPix
-     * holds the centre sample on entry, which counts as one of them.
-     */
     template <int N>
     void
-    supersample(double fx,
-                double fy,
-                double Jxx,
-                double Jxy,
-                double Jyx,
-                double Jyy,
-                int isx,
-                int isy,
-                const SourceImage& src,
-                bool blackOutside,
-                float* tmpPix)
-    {
-        const int nisx = pow3(isx);
-        const int nisy = pow3(isy);
-
-        for (int y = -nisy / 2; y <= nisy / 2; ++y) {
-            for (int x = -nisx / 2; x <= nisx / 2; ++x) {
-                if ((x != 0) || (y != 0)) {
-                    double sfx = fx + (Jxx * x) / nisx + (Jxy * y) / nisy;
-                    double sfy = fy + (Jyx * x) / nisx + (Jyy * y) / nisy;
-                    float tmp[N];
-                    interpolateT<N, eFilterBilinear, false>(sfx, sfy, src, blackOutside, tmp);
-                    for (int c = 0; c < N; ++c) {
-                        tmpPix[c] += tmp[c];
-                    }
-                }
-            }
-        }
-
-        const int insamples = nisx * nisy;
-        for (int c = 0; c < N; ++c) {
-            tmpPix[c] /= insamples;
-        }
-    }
-
-    template <int N, FilterEnum filter, bool clamp>
-    void
-    interpolateSuperT(double fx,
+    interpolateSuperT(const FilterSpec& filter,
+                      bool clamp,
+                      double fx,
                       double fy,
                       double Jxx,
                       double Jxy,
@@ -596,19 +748,15 @@ namespace {
                       float* tmpPix)
     {
         if (!src.isValid()) {
-            for (int c = 0; c < N; ++c) {
-                tmpPix[c] = 0.;
-            }
+            zeroPixel<N>(tmpPix);
             return;
         }
-        if ((Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.)) {
-            interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+        if ((filter.filter == eFilterImpulse) || ((Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.))) {
+            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
             return;
         }
-        if (filter == eFilterBox) {
-            for (int c = 0; c < N; ++c) {
-                tmpPix[c] = 0.;
-            }
+        if (filter.filter == eFilterBox) {
+            zeroPixel<N>(tmpPix);
             double x, y;
             double x1, x2, y1, y2;
             x1 = x2 = fx - Jxx * 0.5 - Jxy * 0.5;
@@ -633,7 +781,7 @@ namespace {
             y2 = (std::max)(y2, y);
             // NaN corners fall back to the centre too, before integrate2d floors them.
             if (!(x1 < x2) || !(y1 < y2)) {
-                interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+                interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
                 return;
             }
 
@@ -654,30 +802,18 @@ namespace {
             }
             return;
         }
-
-        bool inside = interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
-        if (!inside) {
-            // A black centre is only kept when the whole back-transformed pixel is outside.
-            const RectI& bounds = src.bounds;
-            if (outsideBounds(fx - Jxx * 0.5 - Jxy * 0.5, fy - Jyx * 0.5 - Jyy * 0.5, bounds) && outsideBounds(fx + Jxx * 0.5 - Jxy * 0.5, fy + Jyx * 0.5 - Jyy * 0.5, bounds) && outsideBounds(fx - Jxx * 0.5 + Jxy * 0.5, fy - Jyx * 0.5 + Jyy * 0.5, bounds) && outsideBounds(fx + Jxx * 0.5 + Jxy * 0.5, fy + Jyx * 0.5 + Jyy * 0.5, bounds)) {
-                return;
-            }
-        }
-
-        int isx, isy;
-        if (!supersampleLevels(Jxx, Jxy, Jyx, Jyy, &isx, &isy)) {
-            return;
-        }
-        supersample<N>(fx, fy, Jxx, Jxy, Jyx, Jyy, isx, isy, src, blackOutside, tmpPix);
+        kernelSampleT<N>(filter, clamp, fx, fy, kernelScale(Jxx, Jxy), kernelScale(Jyx, Jyy), src, blackOutside, tmpPix);
     }
 
     /*
      * One sample of the destination pixel (x, y) through the inverse pixel matrix H: the
      * Transform3x3 processor's per-sample body.
      */
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     inline void
-    samplePixel(const Mat3& H,
+    samplePixel(const FilterSpec& filter,
+                bool clamp,
+                const Mat3& H,
                 int x,
                 int y,
                 const SourceImage& src,
@@ -696,8 +832,8 @@ namespace {
         }
         double fx = transformed.z != 0 ? transformed.x / transformed.z : transformed.x;
         double fy = transformed.z != 0 ? transformed.y / transformed.z : transformed.y;
-        if (filter == eFilterImpulse) {
-            interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+        if (filter.filter == eFilterImpulse) {
+            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
             return;
         }
         const int x1 = src.bounds.x1;
@@ -714,7 +850,7 @@ namespace {
         double Jxy = xinside ? (H(0, 1) * transformed.z - transformed.x * H(2, 1)) / z2 : 0.;
         double Jyx = yinside ? (H(1, 0) * transformed.z - transformed.y * H(2, 0)) / z2 : 0.;
         double Jyy = yinside ? (H(1, 1) * transformed.z - transformed.y * H(2, 1)) / z2 : 0.;
-        interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
     }
 
     /*
@@ -723,9 +859,11 @@ namespace {
      * the column products that vary along the row are recomputed per pixel. rowX and rowY are
      * H(0, 1) * py and H(1, 1) * py for the row's pixel-centre ordinate py.
      */
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     inline void
-    sampleAffinePixel(const Mat3& H,
+    sampleAffinePixel(const FilterSpec& filter,
+                      bool clamp,
+                      const Mat3& H,
                       double rowX,
                       double rowY,
                       int x,
@@ -736,8 +874,8 @@ namespace {
         const double px = (double)x + 0.5;
         const double fx = H(0, 0) * px + rowX + H(0, 2);
         const double fy = H(1, 0) * px + rowY + H(1, 2);
-        if (filter == eFilterImpulse) {
-            interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+        if (filter.filter == eFilterImpulse) {
+            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
             return;
         }
         bool xinside = (src.bounds.x1 <= fx + 0.5 && fx - 0.5 < src.bounds.x2);
@@ -749,7 +887,7 @@ namespace {
         const double Jxy = xinside ? H(0, 1) : 0.;
         const double Jyx = yinside ? H(1, 0) : 0.;
         const double Jyy = yinside ? H(1, 1) : 0.;
-        interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
     }
 
     inline bool
@@ -766,7 +904,7 @@ namespace {
         return true;
     }
 
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     void
     motionBlurPixelT(const ResampleParams& params,
                      const SourceImage& src,
@@ -805,7 +943,7 @@ namespace {
                 } else {
                     t = (int)(vanDerCorput2(seed) * count);
                 }
-                samplePixel<N, filter, clamp>(params.invTransforms[t], x, y, src, srcValid, params.blackOutside, tmpPix);
+                samplePixel<N>(params.filter, params.clamp, params.invTransforms[t], x, y, src, srcValid, params.blackOutside, tmpPix);
                 if (!params.alphas) {
                     for (int c = 0; c < N; ++c) {
                         accPix[c] += tmpPix[c];
@@ -853,7 +991,7 @@ namespace {
         }
     }
 
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     void
     resampleRowT(const ResampleParams& params,
                  const SourceImage& src,
@@ -871,21 +1009,19 @@ namespace {
                 const double rowX = H(0, 1) * py;
                 const double rowY = H(1, 1) * py;
                 for (int x = x1; x < x2; ++x, dst += N) {
-                    sampleAffinePixel<N, filter, clamp>(H, rowX, rowY, x, src, params.blackOutside, dst);
+                    sampleAffinePixel<N>(params.filter, params.clamp, H, rowX, rowY, x, src, params.blackOutside, dst);
                 }
                 return;
             }
             for (int x = x1; x < x2; ++x, dst += N) {
-                samplePixel<N, filter, clamp>(H, x, y, src, srcValid, params.blackOutside, dst);
+                samplePixel<N>(params.filter, params.clamp, H, x, y, src, srcValid, params.blackOutside, dst);
             }
         } else {
             for (int x = x1; x < x2; ++x, dst += N) {
-                motionBlurPixelT<N, filter, clamp>(params, src, x, y, dst, 0);
+                motionBlurPixelT<N>(params, src, x, y, dst, 0);
             }
         }
     }
-
-    const double kCoordLimit = 1073741824.;
 
     /*
      * Wraps one coordinate into [lo, hi) per WrapMode, setting *moved when eWrapClamp changed
@@ -950,9 +1086,11 @@ namespace {
         return std::isfinite(f) ? f : 0.f;
     }
 
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     void
-    resampleCoordsT(const SourceImage& src,
+    resampleCoordsT(const FilterSpec& filter,
+                    bool clamp,
+                    const SourceImage& src,
                     const float* sx,
                     const float* sy,
                     const float* jacobian,
@@ -978,8 +1116,8 @@ namespace {
                 }
                 continue;
             }
-            if ((filter == eFilterImpulse) || !jacobian) {
-                interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+            if ((filter.filter == eFilterImpulse) || !jacobian) {
+                interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
             } else {
                 const float* J = jacobian + (std::size_t)i * 4;
                 double Jxx = finiteOrZero(J[0]);
@@ -997,7 +1135,7 @@ namespace {
                 if (!yinside || movedY) {
                     Jyx = Jyy = 0.;
                 }
-                interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+                interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
             }
             const int nc = (std::min)(N, nComps);
             for (int c = 0; c < nc; ++c) {
@@ -1009,11 +1147,11 @@ namespace {
         }
     }
 
-    typedef bool (*InterpolateFn)(double, double, const SourceImage&, bool, float*);
-    typedef void (*InterpolateSuperFn)(double, double, double, double, double, double, const SourceImage&, bool, float*);
+    typedef bool (*InterpolateFn)(const FilterSpec&, bool, double, double, const SourceImage&, bool, float*);
+    typedef void (*InterpolateSuperFn)(const FilterSpec&, bool, double, double, double, double, double, double, const SourceImage&, bool, float*);
     typedef void (*RowFn)(const ResampleParams&, const SourceImage&, int, int, int, float*);
     typedef void (*MotionBlurPixelFn)(const ResampleParams&, const SourceImage&, int, int, float*, int*);
-    typedef void (*CoordsFn)(const SourceImage&, const float*, const float*, const float*, int, bool, WrapMode, WrapMode, const RectI&, float*, int);
+    typedef void (*CoordsFn)(const FilterSpec&, bool, const SourceImage&, const float*, const float*, const float*, int, bool, WrapMode, WrapMode, const RectI&, float*, int);
 
     struct KernelTable {
         InterpolateFn interpolate;
@@ -1023,66 +1161,33 @@ namespace {
         CoordsFn coords;
     };
 
-    template <int N, FilterEnum filter, bool clamp>
+    template <int N>
     KernelTable
     makeTable()
     {
         KernelTable t;
 
-        t.interpolate = &interpolateT<N, filter, clamp>;
-        t.interpolateSuper = &interpolateSuperT<N, filter, clamp>;
-        t.row = &resampleRowT<N, filter, clamp>;
-        t.motionBlurPixel = &motionBlurPixelT<N, filter, clamp>;
-        t.coords = &resampleCoordsT<N, filter, clamp>;
+        t.interpolate = &interpolateT<N>;
+        t.interpolateSuper = &interpolateSuperT<N>;
+        t.row = &resampleRowT<N>;
+        t.motionBlurPixel = &motionBlurPixelT<N>;
+        t.coords = &resampleCoordsT<N>;
 
         return t;
     }
 
-    template <int N>
     KernelTable
-    tableForFilter(FilterEnum filter,
-                   bool clamp)
-    {
-        switch (filter) {
-        case eFilterImpulse:
-            return makeTable<N, eFilterImpulse, false>();
-        case eFilterBox:
-            return makeTable<N, eFilterBox, false>();
-        case eFilterBilinear:
-            return makeTable<N, eFilterBilinear, false>();
-        case eFilterCubic:
-            return makeTable<N, eFilterCubic, false>();
-        case eFilterKeys:
-            return clamp ? makeTable<N, eFilterKeys, true>() : makeTable<N, eFilterKeys, false>();
-        case eFilterSimon:
-            return clamp ? makeTable<N, eFilterSimon, true>() : makeTable<N, eFilterSimon, false>();
-        case eFilterRifman:
-            return clamp ? makeTable<N, eFilterRifman, true>() : makeTable<N, eFilterRifman, false>();
-        case eFilterMitchell:
-            return clamp ? makeTable<N, eFilterMitchell, true>() : makeTable<N, eFilterMitchell, false>();
-        case eFilterParzen:
-            return makeTable<N, eFilterParzen, false>();
-        case eFilterNotch:
-            return makeTable<N, eFilterNotch, false>();
-        }
-
-        return makeTable<N, eFilterCubic, false>();
-    }
-
-    KernelTable
-    selectKernels(int nComps,
-                  FilterEnum filter,
-                  bool clamp)
+    selectKernels(int nComps)
     {
         switch (nComps) {
         case 1:
-            return tableForFilter<1>(filter, clamp);
+            return makeTable<1>();
         case 2:
-            return tableForFilter<2>(filter, clamp);
+            return makeTable<2>();
         case 3:
-            return tableForFilter<3>(filter, clamp);
+            return makeTable<3>();
         default:
-            return tableForFilter<4>(filter, clamp);
+            return makeTable<4>();
         }
     }
 
@@ -1096,8 +1201,22 @@ namespace {
     }
 } // anon namespace
 
+double
+kernelScale(double a,
+            double b)
+{
+    const double norm = std::hypot(a, b);
+
+    if (!(norm > 1.) || !std::isfinite(norm)) {
+        return 1.;
+    }
+    // Coordinates saturate at this limit, so a wider footprint reaches nothing further, and the
+    // bound keeps radius * scale from overflowing.
+    return (std::min)(norm, kCoordLimit);
+}
+
 bool
-interpolate(FilterEnum filter,
+interpolate(const FilterSpec& filter,
             bool clamp,
             double fx,
             double fy,
@@ -1109,7 +1228,7 @@ interpolate(FilterEnum filter,
         zeroPixels(out, src.nComps);
         return false;
     }
-    return selectKernels(src.nComps, filter, clamp).interpolate(fx, fy, src, blackOutside, out);
+    return selectKernels(src.nComps).interpolate(filter, clamp, fx, fy, src, blackOutside, out);
 }
 
 bool
@@ -1139,7 +1258,7 @@ supersampleLevels(double Jxx,
 }
 
 void
-interpolateSuper(FilterEnum filter,
+interpolateSuper(const FilterSpec& filter,
                  bool clamp,
                  double fx,
                  double fy,
@@ -1155,7 +1274,7 @@ interpolateSuper(FilterEnum filter,
         zeroPixels(out, src.nComps);
         return;
     }
-    selectKernels(src.nComps, filter, clamp).interpolateSuper(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, out);
+    selectKernels(src.nComps).interpolateSuper(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, out);
 }
 
 double
@@ -1322,7 +1441,7 @@ concatenateInputTransform(const Mat3& inputTransformPixel,
 
 ResampleParams
 makeResampleParams(const SamplingTransforms& transforms,
-                   FilterEnum filter,
+                   const FilterSpec& filter,
                    bool clamp,
                    bool blackOutside)
 {
@@ -1357,7 +1476,7 @@ resampleRow(const ResampleParams& params,
         zeroPixels(dst, (x2 - x1) * src.nComps);
         return;
     }
-    selectKernels(src.nComps, params.filter, params.clamp).row(params, src, y, x1, x2, dst);
+    selectKernels(src.nComps).row(params, src, y, x1, x2, dst);
 }
 
 void
@@ -1366,7 +1485,7 @@ resampleRowFromCoords(const SourceImage& src,
                       const float* sy,
                       const float* jacobian,
                       int n,
-                      FilterEnum filter,
+                      const FilterSpec& filter,
                       bool clamp,
                       bool blackOutside,
                       WrapMode wrapU,
@@ -1383,7 +1502,7 @@ resampleRowFromCoords(const SourceImage& src,
         return;
     }
     const RectI& domain = (wrapDomain && (wrapDomain->x2 > wrapDomain->x1) && (wrapDomain->y2 > wrapDomain->y1)) ? *wrapDomain : src.bounds;
-    selectKernels(src.nComps, filter, clamp).coords(src, sx, sy, jacobian, n, blackOutside, wrapU, wrapV, domain, out, nComps);
+    selectKernels(src.nComps).coords(filter, clamp, src, sx, sy, jacobian, n, blackOutside, wrapU, wrapV, domain, out, nComps);
 }
 
 namespace {
@@ -1530,7 +1649,7 @@ motionBlurPixel(const ResampleParams& params,
         }
         return;
     }
-    selectKernels(src.nComps, params.filter, params.clamp).motionBlurPixel(params, src, x, y, out, samplesTaken);
+    selectKernels(src.nComps).motionBlurPixel(params, src, x, y, out, samplesTaken);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

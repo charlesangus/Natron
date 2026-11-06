@@ -60,7 +60,7 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
   - approach: `buildGraph` (~494-555) drops `TaskEdge::inputNb` (`ParallelRenderArgs.h:314`). Add a parallel `dependencyInputNbs` vector kept in sync with `dependencies` and `consumerTasks`, including the second copy at ~711-716, the region unit graph.
   - verify: a diamond graph and a graph with duplicate edges keep their input numbers.
   - size: M
-- [ ] M116.P1.T3 — Shadow plan with `isCached` forced false
+- [x] M116.P1.T3 — Shadow plan with `isCached` forced false
   - files: `Engine/GpuPlacement.cpp`, `Engine/GpuPlacement.h`, `Tests/GpuPlacement_Test.cpp`
   - approach: Run `placeGraph` a second time on a copy of the inputs with `isCached` false, returning both placements and marking which members the real plan serves from cache. M276 - Upstream Reuse On Edits changes the key that lambda probes, so override it from outside rather than editing it.
   - verify: a cached member is CPU in the real plan and GPU in the shadow plan.

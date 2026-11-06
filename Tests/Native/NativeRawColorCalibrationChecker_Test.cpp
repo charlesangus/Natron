@@ -384,6 +384,7 @@ TEST(NativeRawColorCalibrationChecker, RecoversChannelMixOfEveryChart)
         const std::optional<Checker::Profile> profile = Checker::extractColorChecker(picture.image(), placement(checker), Checker::Optimization::None,
                                                                                      Cal::Adaptation::Xyz, kRec709ToXyz, inverse(kRec709ToXyz));
         ASSERT_TRUE(profile.has_value());
+        EXPECT_EQ(checker.patches, profile->outputPerPatch.size());
         EXPECT_NEAR(profile->illuminant.x, kD50.x, 1e-3);
         EXPECT_NEAR(profile->illuminant.y, kD50.y, 1e-3);
         // The mix undoes the rotation: its transpose.

@@ -11,8 +11,14 @@ darktable `release-5.6.2`): the chromatic adaptation, the R, G and B mix, gamut 
 colorfulness, brightness and gray. The pixel maths are in `RawColorCalibrationMath`
 (`makeKernel()` for `commit_params()`, `processPixel()` for `_loop_switch()`), plain data a GPU
 kernel can take as it is. The area color mapping and the built-in presets are in
-`RawColorCalibrationSpot.cpp`. Its colour checker and its white balance detection (AI) modes are
-not ported.
+`RawColorCalibrationSpot.cpp`. Its white balance detection (AI) mode is not ported.
+
+Show Patches (`checkerShowPatches`) draws darktable's chart overlay on the viewer through the overlay
+draw list, over the corner-pin interact that drags the chart's corners: the chart's axes, the
+sampled area of each patch, and a disc of its reference colour, from `buildPatchOverlay()` in
+`RawColorCalibrationChecker.cpp`. After Calibrate or Validate a patch with a delta E above 2.3 is
+crossed once and above 4.6 twice, as in darktable. The disc is encoded to sRGB from the patch's
+Lab reference, where darktable hands cairo its work-profile values unencoded.
 
 - Image in, image out, a Point op on the RGB channels. Alpha passes through.
 - Works on the project's working space. Working RGB goes to XYZ through the project's matrix to XYZ

@@ -43,6 +43,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
 #include "Engine/Nodes/Raw/RawColorCheckerData.h"
 
@@ -118,6 +119,12 @@ std::optional<Homography> getHomography(const Quad& source,
 
 Point applyHomography(const Point& p,
                       const Homography& h);
+
+/**
+ * @brief apply_homography_scaling(): how h scales area at p.
+ **/
+float applyHomographyScaling(const Point& p,
+                             const Homography& h);
 
 /**
  * @brief Working RGB over a rectangle of pixels: x1, y1 is the bottom left pixel, rgb holds
@@ -200,6 +207,8 @@ struct Profile {
     float whiteBalancedMaximum = 0.f;
     float outputAverage = 0.f;
     float outputMaximum = 0.f;
+    // The delta E of each patch after the fit, in chart order.
+    std::vector<float> outputPerPatch;
     float exposure = 1.f;
     float black = 0.f;
 };
@@ -219,6 +228,7 @@ std::optional<Profile> extractColorChecker(const RgbImage& image,
 struct Validation {
     float average = 0.f;
     float maximum = 0.f;
+    std::vector<float> perPatch;
     float exposure = 1.f;
     float black = 0.f;
 };
@@ -235,6 +245,15 @@ std::optional<Validation> validateColorChecker(const RgbImage& image,
 /**
  * @brief The verdict on an average delta E: very good, good, passable or bad.
  **/
+/**
+ * @brief gui_post_expose() over the chart: the chart's axes of symmetry and, for each patch, its
+ * sampled area and a disc of its reference colour. A patch with a delta E above 2.3 is crossed
+ * once and above 4.6 twice. deltaE, in chart order, is ignored unless it has one value per patch.
+ **/
+void buildPatchOverlay(const ChartPlacement& placement,
+                       const std::vector<float>* deltaE,
+                       OverlayDrawList* list);
+
 const char* qualityDiagnostic(float averageDeltaE);
 
 /**

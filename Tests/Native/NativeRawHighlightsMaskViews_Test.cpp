@@ -123,7 +123,7 @@ planeValue(const OverlayImageFrame& frame,
         for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
             const RectI& b = tile->bounds;
             if ((x >= b.x1) && (x < b.x2) && (y >= b.y1) && (y < b.y2)) {
-                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)];
+                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)] / 255.f;
             }
         }
     }
@@ -254,7 +254,7 @@ TEST_F(NativeRawHighlightsMaskViewsTest, ClippedMarksEachColourOverThreeByThreeP
                 }
             }
             for (int i = 1; i < 8; ++i) {
-                ASSERT_FLOAT_EQ((i == marked) ? coverage : 0.f, planeValue(*frame, kPlanes[i], x, y)) << kPlanes[i] << " at " << x << "," << y;
+                ASSERT_FLOAT_EQ((i == marked) ? overlayImageCoverageByte(coverage) / 255.f : 0.f, planeValue(*frame, kPlanes[i], x, y)) << kPlanes[i] << " at " << x << "," << y;
             }
         }
     }
@@ -466,14 +466,67 @@ TEST_F(NativeRawHighlightsMaskViewsTest, TheViewLeavesTheRenderAlone)
         ASSERT_TRUE(renderRawTestPlane(node, kRod, &before, &error)) << error;
         const U64 hash = node->getHashValue();
 
+        // Otherwise the render below reads the image from before the view went on.
+        appPTR->clearAllCaches();
         const OverlayImageFrameConstPtr frame = showView(node, eRawHighlightsMaskViewClipped);
         ASSERT_TRUE(bool(frame));
         EXPECT_FALSE(frame->planes.empty());
         EXPECT_EQ(hash, node->getHashValue());
 
-        RenderedPlane after;
-        ASSERT_TRUE(renderRawTestPlane(node, kRod, &after, &error, false /*byPassCache*/)) << error;
-        EXPECT_EQ(before.pixels, after.pixels);
+        RenderedPlane afterPass;
+        ASSERT_TRUE(renderRawTestPlane(node, kRod, &afterPass, &error, false /*byPassCache*/)) << error;
+        EXPECT_EQ(before.pixels, afterPass.pixels);
+
+        RenderedPlane rendered;
+        ASSERT_TRUE(renderRawTestPlane(node, kRod, &rendered, &error, true /*byPassCache*/)) << error;
+        EXPECT_EQ(before.pixels, rendered.pixels);
+    }
+}
+
+TEST_F(NativeRawHighlightsMaskViewsTest, TheMaskGoesWithTheView)
+{
+    NodePtr node = createChain(eRawHighlightsModeSegments);
+    ASSERT_TRUE(bool(node));
+    FrameComputedCounter counter;
+
+    ASSERT_TRUE(bool(showView(node, eRawHighlightsMaskViewCandidating)));
+    const int computed = counter.count(kRawHighlightsFrameSegments);
+    ASSERT_GT(computed, 0);
+    ASSERT_TRUE(bool(pass(node)));
+    EXPECT_EQ(computed, counter.count(kRawHighlightsFrameSegments));
+
+    choice(node, kRawHighlightsParamMaskView)->setValue((int)eRawHighlightsMaskViewOff);
+    node->getEffectInstance()->refreshOverlayImages();
+
+    ASSERT_TRUE(bool(showView(node, eRawHighlightsMaskViewCandidating)));
+    EXPECT_EQ(computed + 1, counter.count(kRawHighlightsFrameSegments));
+}
+
+// A display aid must not change what a main render asks of its source.
+TEST_F(NativeRawHighlightsMaskViewsTest, TheClippedViewLeavesTheMainRenderRoIAlone)
+{
+    NodePtr node = createChain(eRawHighlightsModeClip);
+    ASSERT_TRUE(bool(node));
+    const EffectInstancePtr effect = node->getEffectInstance();
+    const RectD window(10., 10., 20., 20.);
+    const auto regionOfInput = [&]() {
+        RoIMap regions;
+        effect->getRegionsOfInterest_public(1., RenderScale::identity, RectD(kRod.x1, kRod.y1, kRod.x2, kRod.y2), window, ViewIdx(0), &regions);
+
+        return regions;
+    };
+
+    const RoIMap off = regionOfInput();
+    choice(node, kRawHighlightsParamMaskView)->setValue((int)eRawHighlightsMaskViewClipped);
+    const RoIMap on = regionOfInput();
+    EXPECT_EQ(off.size(), on.size());
+    for (const auto& [input, region] : off) {
+        const RoIMap::const_iterator found = on.find(input);
+        ASSERT_TRUE(found != on.end());
+        EXPECT_EQ(region.x1, found->second.x1);
+        EXPECT_EQ(region.x2, found->second.x2);
+        EXPECT_EQ(region.y1, found->second.y1);
+        EXPECT_EQ(region.y2, found->second.y2);
     }
 }
 

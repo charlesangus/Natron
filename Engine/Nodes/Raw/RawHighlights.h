@@ -170,6 +170,7 @@ public:
      * and memory pressure ask; the next render computes them again.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void releaseOverlayImageResources() OVERRIDE FINAL;
 
 private:
     struct Settings;

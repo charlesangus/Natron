@@ -490,7 +490,7 @@ RawHotPixels::fixedPixelCount(const OverlayImageFrame& frame)
             continue;
         }
         for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
-            count += (std::size_t)std::count_if(tile->values.begin(), tile->values.end(), [](float v) { return v > 0.f; });
+            count += tile->coveredPixels;
         }
     }
 
@@ -555,7 +555,7 @@ RawHotPixels::buildOverlay(double time,
     if (!frame) {
         return;
     }
-    if (frame != _countedFrame) {
+    if (frame != _countedFrame.lock()) {
         _countedFrame = frame;
         _fixedCount = fixedPixelCount(*frame);
     }
@@ -585,39 +585,42 @@ RawHotPixels::renderOp(const RenderActionArgs& args,
     const StatusEnum status = ImageNode<RawHotPixelsOp>::renderOp(args, plan);
 
     if ((status == eStatusOK) && isOverlayImageRender() && isOverlayImageViewOn()) {
-        publishMarks(args, plan);
+        return publishMarks(args, plan);
     }
 
     return status;
 }
 
-void
+StatusEnum
 RawHotPixels::publishMarks(const RenderActionArgs& args,
                            const StagePlan& plan)
 {
     if (args.outputLayers.empty() || !args.outputLayers.front().second) {
-        return;
+        return eStatusFailed;
     }
     RectD rodCanonical;
     bool isProjectFormat = false;
     if (getRegionOfDefinition_public(getRenderHash(), args.time, args.mappedScale, args.view, &rodCanonical, &isProjectFormat) == eStatusFailed) {
-        return;
+        return eStatusFailed;
     }
     const RectI rod = PassExec::toPixelEnclosing(rodCanonical, args.mappedScale, getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
     RectI window;
     if (!PassExec::intersectRects(args.roi, rod, &window)) {
-        return;
+        return eStatusOK;
     }
 
     RawNodeSupport::LockedSource source;
     ImageLayerDesc sourceLayer;
-    if ((plan.sourceInput < 0) || !getInput(plan.sourceInput) || !resolveInputPlaneForRender(plan.sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-        return;
+    if ((plan.sourceInput < 0) || !getInput(plan.sourceInput)) {
+        return eStatusOK;
+    }
+    if (!resolveInputPlaneForRender(plan.sourceInput, args.time, args.view, &sourceLayer, NULL)) {
+        return eStatusFailed;
     }
     RectI sourceRoI;
     source.image = getImage(plan.sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
     if (!source.image || !PassExec::isFloatImage(source.image)) {
-        return;
+        return eStatusFailed;
     }
     source.lock();
 
@@ -638,32 +641,32 @@ RawHotPixels::publishMarks(const RenderActionArgs& args,
                            std::min(window.x2 + kMarkReach, rod.x2 - border),
                            rod.y2 - border);
     if ((candidates.x1 >= candidates.x2) || (candidates.y1 >= candidates.y2)) {
-        return;
+        return eStatusOK;
     }
 
     RenderCancellation cancel(this);
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
     const std::vector<std::vector<int>> rows = fixedColumnsPerRow(params, source, channels, candidates, window, parallel);
     if (cancel.check()) {
-        return;
+        return eStatusFailed;
     }
 
     const std::size_t width = (std::size_t)window.width();
     const std::size_t pixelCount = width * (std::size_t)window.height();
-    std::vector<float> fixed;
-    std::vector<float> arms;
+    std::vector<unsigned char> fixed;
+    std::vector<unsigned char> arms;
     for (std::size_t r = 0; r < rows.size(); ++r) {
         const int y = window.y1 + (int)r;
         for (const int x : rows[r]) {
             if ((x >= window.x1) && (x < window.x2)) {
-                fixed.resize(pixelCount, 0.f);
-                fixed[r * width + (std::size_t)(x - window.x1)] = 1.f;
+                fixed.resize(pixelCount, 0);
+                fixed[r * width + (std::size_t)(x - window.x1)] = 255;
             }
             for (int offset = -kMarkReach; offset <= kMarkReach; ++offset) {
                 const int markX = x + offset;
                 if ((offset != 0) && (markX >= window.x1) && (markX < window.x2) && isMarkOffset(params.layout, x, y, offset)) {
-                    arms.resize(pixelCount, 0.f);
-                    arms[r * width + (std::size_t)(markX - window.x1)] = 1.f;
+                    arms.resize(pixelCount, 0);
+                    arms[r * width + (std::size_t)(markX - window.x1)] = 255;
                 }
             }
         }
@@ -677,6 +680,8 @@ RawHotPixels::publishMarks(const RenderActionArgs& args,
     if (!arms.empty()) {
         addOverlayImageTile(kRawHotPixelsMarkPlaneArms, yellow, window, mipmapLevel, std::move(arms));
     }
+
+    return eStatusOK;
 } // RawHotPixels::publishMarks
 
 NATRON_NAMESPACE_EXIT

@@ -112,6 +112,8 @@ public:
     std::shared_ptr<const CleanHashSnapshot> cleanHash;
     // Nodes upstream whose overlay images this render has to bring up to date first.
     std::vector<EffectInstancePtr> staleOverlayImageEffects;
+    // Keep those nodes' last images on screen for as long as this render is alive to replace them.
+    std::vector<std::shared_ptr<void>> overlayImagePassesPending;
     OverlayImageRequest overlayImageRequest;
 };
 

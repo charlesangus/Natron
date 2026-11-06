@@ -50,8 +50,8 @@ public:
 
     /**
      * @brief Draws the overlay images of each node of nodes, the last of them on top. The context
-     * must be current. A node whose images are being recomputed keeps showing its previous ones,
-     * as long as they are of the same time and view.
+     * must be current. A node with a pass pending keeps showing its previous images, as long as
+     * they are of the same time and view.
      **/
     void draw(const NodesList& nodes, double time, ViewIdx view);
 
@@ -65,11 +65,6 @@ public:
      * it replaces, at the size OpenGL requires (floor of half), down to one texel. Exposed for tests.
      **/
     static std::vector<std::vector<unsigned char>> buildMipChain(const std::vector<unsigned char>& base, int width, int height);
-
-    /**
-     * @brief Quantises coverage to bytes so that any value above zero stays visible.
-     **/
-    static unsigned char quantise(float coverage);
 
 private:
     struct Chunk {

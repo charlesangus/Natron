@@ -35,12 +35,10 @@
 
 #include "BaseTest.h"
 
-#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/OverlayDrawList.h"
-#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -217,52 +215,7 @@ protected:
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
     }
-
-    ParallelRenderArgsPtr makeFrameArgs(const NodePtr& treeRoot,
-                                        bool userInteraction)
-    {
-        ParallelRenderArgsPtr args = std::make_shared<ParallelRenderArgs>();
-
-        args->time = 1.;
-        args->view = ViewIdx(0);
-        args->abortInfo = AbortableRenderInfo::create(false, 0);
-        args->treeRoot = treeRoot;
-        args->timeline = getApp()->getTimeLine().get();
-        args->isRenderResponseToUserInteraction = userInteraction;
-
-        return args;
-    }
 };
-
-TEST_F(OverlayViewerRenderFlag, FollowsTheTreeRoot)
-{
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    ASSERT_TRUE(bool(node));
-    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
-    ASSERT_TRUE(bool(viewer));
-    EffectInstancePtr effect = node->getEffectInstance();
-    ASSERT_TRUE(bool(effect));
-
-    EXPECT_FALSE(effect->isViewerRender());
-
-    // Interactive and playback renders of a viewer tree both count.
-    effect->setParallelRenderArgsTLS(makeFrameArgs(viewer, true));
-    EXPECT_TRUE(effect->isViewerRender());
-    effect->invalidateParallelRenderArgsTLS();
-    EXPECT_FALSE(effect->isViewerRender());
-
-    effect->setParallelRenderArgsTLS(makeFrameArgs(viewer, false));
-    EXPECT_TRUE(effect->isViewerRender());
-    effect->invalidateParallelRenderArgsTLS();
-
-    effect->setParallelRenderArgsTLS(makeFrameArgs(node, true));
-    EXPECT_FALSE(effect->isViewerRender());
-    effect->invalidateParallelRenderArgsTLS();
-
-    effect->setParallelRenderArgsTLS(makeFrameArgs(node, false));
-    EXPECT_FALSE(effect->isViewerRender());
-    effect->invalidateParallelRenderArgsTLS();
-}
 
 TEST_F(OverlayViewerRenderFlag, PlainNodesHaveNoDrawList)
 {

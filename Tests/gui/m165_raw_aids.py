@@ -6,7 +6,8 @@ RawPrepare, and the node under test is made with its panel open and fed to a Vie
     more of the picture than that (a sparse mask must not flood its tile), and the node's content
     hash is the one it had before;
   - turning it off brings the picture back to the one before, and the hash is still the same.
-Switching RawHighlights directly from one view to another replaces the first view's mask.
+Switching RawHighlights from one view to another without waiting for the first to settle ends on the
+second view's mask, whichever of their passes finishes last.
 The views are RawHighlights' Clipped, Combine, Candidating and Strength, RawDemosaic's Dual, Sharpened
 Areas and Radius, RawHotPixels' Mark Fixed and RawColorCalibration's Show Patches.
 Without the fixture (a checkout without Git LFS has a pointer file) the script ends after
@@ -239,11 +240,13 @@ try:
             check(not messages, "%s: the Viewer shows no error (%r)" % (node_id, messages))
             hash_before = node.getContentHash()
 
+            settled_views = {}
             for knob, value, shot_name, max_share in views:
                 set_knob(node, knob, value)
                 ok = yield ("until", lambda: changed_pixels(viewer_crop(), before) >= MIN_CHANGED_PX, RENDER_TIMEOUT_S)
                 yield ("sleep", 500)
                 gt.shot("m165-raw-aids-%s.png" % shot_name)
+                settled_views[value] = viewer_crop()
                 changed = changed_pixels(viewer_crop(), before)
                 check(ok, "%s: turning the view on changes the picture (%d pixels)" % (shot_name, changed))
                 if max_share is not None:
@@ -258,13 +261,19 @@ try:
                 check(node.getContentHash() == hash_before, "%s: the hash is unchanged after the view is off" % shot_name)
 
             if node_id == "RawHighlights":
+                clipped = settled_views["clipped"]
+                candidating = settled_views["candidating"]
+                check(changed_pixels(candidating, clipped) >= MIN_SWITCH_PX, "the two views draw different masks (%d pixels)" % changed_pixels(candidating, clipped))
                 set_knob(node, "maskView", "clipped")
-                yield ("until", lambda: changed_pixels(viewer_crop(), before) >= MIN_CHANGED_PX, RENDER_TIMEOUT_S)
-                yield ("sleep", 500)
-                first = viewer_crop()
+                # Short of the first pass finishing: the second switch has to land during it.
+                yield ("sleep", 100)
                 set_knob(node, "maskView", "candidating")
-                ok = yield ("until", lambda: changed_pixels(viewer_crop(), first) >= MIN_SWITCH_PX, RENDER_TIMEOUT_S)
-                check(ok, "switching directly between views replaces the mask (%d pixels)" % changed_pixels(viewer_crop(), first))
+                ok = yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), candidating) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
+                check(ok, "switching without waiting ends on the second view (%d pixels differ)" % changed_pixels(viewer_crop(), candidating))
+                # A late first pass would publish over the second only after the picture first matched.
+                settled = yield from settle(hold_s)
+                check(settled is not None and 0 <= changed_pixels(settled, candidating) <= MAX_RESIDUAL_PX,
+                      "the second view stays once everything has finished (%d pixels differ)" % changed_pixels(viewer_crop(), candidating))
                 set_knob(node, "maskView", "off")
                 yield ("until", lambda: 0 <= changed_pixels(viewer_crop(), before) <= MAX_RESIDUAL_PX, RENDER_TIMEOUT_S)
 

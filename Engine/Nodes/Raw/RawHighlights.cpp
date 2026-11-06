@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Nodes/Raw/RawSegmentation.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -794,6 +795,14 @@ RawHighlights::purgeCaches()
     _maskFrame.reset();
 }
 
+void
+RawHighlights::releaseOverlayImageResources()
+{
+    std::lock_guard<std::mutex> lock(_frameMutex);
+
+    _maskFrame.reset();
+}
+
 const NodeSpec*
 RawHighlights::nodeSpec() const
 {
@@ -1186,7 +1195,7 @@ RawHighlights::getRegionsOfInterest(double time,
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
     const KnobChoicePtr maskView = _maskView.lock();
-    const bool clippedView = settings->layout.hasCfa() && maskView && (maskView->getValue() == (int)eRawHighlightsMaskViewClipped);
+    const bool clippedView = isOverlayImageRender() && settings->layout.hasCfa() && maskView && (maskView->getValue() == (int)eRawHighlightsMaskViewClipped);
     RectI need;
     if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || (settings->mode == eRawHighlightsModeLaplacian) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
         need = settings->sourceRoD;
@@ -1381,7 +1390,9 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                     masked = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
                 }
                 RawKernels::segmentsHighlights(whole->pixel(0, 0), whole->rowStride, whole->nComps, opposed, width, height, filters, xtrans, params, parallel, segmentsMask, masked ? masked->data() : nullptr);
-                if (masked && !cancel.check()) {
+                // refreshOverlayImages() moves the generation before it releases the mask, so under
+                // this lock either the release comes after this store or the check below sees it.
+                if (masked && !cancel.check() && !isOverlayImagePassSuperseded()) {
                     _maskFrame = std::move(masked);
                     _maskFrameKey = key;
                     _maskFrameView = (int)segmentsMask;
@@ -1515,14 +1526,14 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const std::size_t tileWidth = (std::size_t)maskTile.width();
         const std::size_t tileSize = tileWidth * (std::size_t)maskTile.height();
         if ((maskView == (int)eRawHighlightsMaskViewStrength) && photositeMask) {
-            std::vector<float> values(tileSize, 0.f);
+            std::vector<unsigned char> values(tileSize, 0);
             bool any = false;
             for (int y = maskTile.y1; y < maskTile.y2; ++y) {
                 const std::size_t row = (std::size_t)(rod.y2 - 1 - y);
                 for (int x = maskTile.x1; x < maskTile.x2; ++x) {
-                    const float value = std::clamp((*photositeMask)[row * (std::size_t)rod.width() + (std::size_t)(x - rod.x1)], 0.f, 1.f);
+                    const unsigned char value = overlayImageCoverageByte((*photositeMask)[row * (std::size_t)rod.width() + (std::size_t)(x - rod.x1)]);
                     values[(std::size_t)(y - maskTile.y1) * tileWidth + (std::size_t)(x - maskTile.x1)] = value;
-                    any = any || (value > 0.f);
+                    any = any || (value > 0);
                 }
             }
             if (any) {
@@ -1544,7 +1555,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                 return (in.pixel(row, col)[0] >= viewClips[cfa.at(row, col)]) ? 1.f : 0.f;
             };
             std::vector<unsigned char> colours(tileSize, 0);
-            std::vector<float> coverage(tileSize, 0.f);
+            std::vector<unsigned char> coverage(tileSize, 0);
             parallel(maskTile.height(), [&](int r) {
                 const int y = maskTile.y1 + r;
                 const int row = rod.y2 - 1 - y;
@@ -1557,7 +1568,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                             for (int c = 0; c < 3; ++c) {
                                 if (pixel[(nComps >= 3) ? c : 0] >= viewClips[c]) {
                                     colours[index] |= (unsigned char)(1 << c);
-                                    coverage[index] = 1.f;
+                                    coverage[index] = 255;
                                 }
                             }
                         }
@@ -1577,7 +1588,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                     for (int c = 0; c < 3; ++c) {
                         if (sum[c] > 0.f) {
                             colours[index] |= (unsigned char)(1 << c);
-                            coverage[index] = std::max(coverage[index], sum[c] / (float)count[c]);
+                            coverage[index] = std::max(coverage[index], overlayImageCoverageByte(sum[c] / (float)count[c]));
                         }
                     }
                 }
@@ -1586,7 +1597,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                 if (std::find(colours.begin(), colours.end(), (unsigned char)colour.colours) == colours.end()) {
                     continue;
                 }
-                std::vector<float> values(tileSize, 0.f);
+                std::vector<unsigned char> values(tileSize, 0);
                 for (std::size_t i = 0; i < tileSize; ++i) {
                     if (colours[i] == (unsigned char)colour.colours) {
                         values[i] = coverage[i];

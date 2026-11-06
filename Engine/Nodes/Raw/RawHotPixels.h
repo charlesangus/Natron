@@ -36,6 +36,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -172,11 +173,12 @@ protected:
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    void publishMarks(const RenderActionArgs& args,
-                      const StagePlan& plan);
+    StatusEnum publishMarks(const RenderActionArgs& args,
+                            const StagePlan& plan) WARN_UNUSED_RETURN;
 
-    // Only touched from buildOverlay(), on the main thread.
-    OverlayImageFrameConstPtr _countedFrame;
+    // Only touched from buildOverlay(), on the main thread. Weak so that the frame's tiles go with
+    // the view.
+    std::weak_ptr<const OverlayImageFrame> _countedFrame;
     std::size_t _fixedCount = 0;
 };
 

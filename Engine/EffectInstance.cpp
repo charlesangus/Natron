@@ -4113,14 +4113,6 @@ EffectInstance::getOverlayDrawState() const
 }
 
 bool
-EffectInstance::isViewerRender() const
-{
-    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
-
-    return args && (args->overlayImagePass || (args->treeRoot && args->treeRoot->isEffectViewer()));
-}
-
-bool
 EffectInstance::isOverlayImageRequested() const
 {
     return isOverlayImageViewOn() && getNode()->isSettingsPanelVisible();
@@ -4134,12 +4126,20 @@ EffectInstance::isOverlayImageRender() const
     return args && args->overlayImagePass;
 }
 
+bool
+EffectInstance::isOverlayImagePassSuperseded() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->overlayImagePass && (args->overlayImagePass->generation() != getNode()->getOverlayImageGeneration());
+}
+
 void
 EffectInstance::addOverlayImageTile(const std::string& plane,
                                     const OverlayColor& tint,
                                     const RectI& bounds,
                                     unsigned int mipmapLevel,
-                                    std::vector<float>&& values)
+                                    std::vector<unsigned char>&& values)
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
 
@@ -4177,20 +4177,35 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                                        false /*isAnalysis*/,
                                        request.draftMode,
                                        RenderStatsPtr());
-    const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>();
+    const std::uint64_t generation = node->getOverlayImageGeneration();
+    const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
 
     getParallelRenderArgsTLS()->overlayImagePass = pass;
 
+    U64 hash = 0;
+    double par = 1.;
+    const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
+        std::shared_ptr<OverlayImageFrame> frame = std::make_shared<OverlayImageFrame>();
+        frame->nodeHash = hash;
+        frame->request = request;
+        frame->pixelAspectRatio = par;
+        frame->planes = std::move(planes);
+
+        return node->setOverlayImageFrame(frame, generation);
+    };
+
     // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
     try {
-        const U64 hash = getRenderHash();
+        hash = getRenderHash();
         const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
         RectD rod;
         bool isProjectFormat;
         if (getRegionOfDefinition_public(hash, request.time, scale, request.view, &rod, &isProjectFormat) == eStatusFailed) {
+            publish({});
+
             return false;
         }
-        const double par = getRenderMetadata(request.time, request.view)->getPixelAspectRatio(-1);
+        par = getRenderMetadata(request.time, request.view)->getPixelAspectRatio(-1);
         const RectD visible(request.visibleCanonical.x1, request.visibleCanonical.y1, request.visibleCanonical.x2, request.visibleCanonical.y2);
         const RectD canonicalRoI = rod.intersect(visible);
         const RectI roi = canonicalRoI.toPixelEnclosing(request.mipmapLevel, par);
@@ -4198,6 +4213,8 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
         if (!roi.isNull()) {
             std::shared_ptr<FrameRequestMap> requestPass = std::make_shared<FrameRequestMap>();
             if (computeRequestPass(request.time, request.view, request.mipmapLevel, canonicalRoI, node, *requestPass) == eStatusFailed) {
+                publish({});
+
                 return false;
             }
             frameArgs.updateNodesRequest(*requestPass);
@@ -4221,24 +4238,24 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
             args.allowGPURendering = false;
 
             std::map<ImageLayerDesc, ImagePtr> planes;
-            if ((renderRoI(args, &planes) != eRenderRoIRetCodeOk) || aborted()) {
+            const RenderRoIRetCode ret = renderRoI(args, &planes);
+            if ((ret == eRenderRoIRetCodeAborted) || aborted()) {
+                return false;
+            }
+            if (ret != eRenderRoIRetCodeOk) {
+                publish({});
+
                 return false;
             }
         }
 
-        std::shared_ptr<OverlayImageFrame> frame = std::make_shared<OverlayImageFrame>();
-        frame->nodeHash = hash;
-        frame->request = request;
-        frame->pixelAspectRatio = par;
-        frame->planes = pass->takePlanes();
-        node->setOverlayImageFrame(frame);
+        return publish(pass->takePlanes());
     } catch (const std::exception& e) {
         qDebug() << "Overlay image render failed:" << e.what();
-
-        return false;
     }
+    publish({});
 
-    return true;
+    return false;
 }
 
 OverlayImageFrameConstPtr
@@ -4271,8 +4288,11 @@ EffectInstance::refreshOverlayImages()
 
     if (isOverlayImageRequested()) {
         app->renderAllViewers(true /*canAbort*/);
-    } else if (hadFrame) {
-        app->redrawAllViewers();
+    } else {
+        releaseOverlayImageResources();
+        if (hadFrame) {
+            app->redrawAllViewers();
+        }
     }
 }
 

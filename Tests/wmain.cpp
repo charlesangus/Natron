@@ -145,7 +145,7 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
-    // Registered because no shipped node publishes overlay images yet.
+    // Registered to count, hold and fail an overlay image pass, which no shipped node can be made to do.
     registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();

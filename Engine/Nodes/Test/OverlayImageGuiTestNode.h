@@ -165,17 +165,17 @@ private:
             const unsigned int level = args.mappedScale.toMipmapLevel();
             const size_t w = (size_t)args.roi.width();
             const size_t h = (size_t)args.roi.height();
-            std::vector<float> line(w * h, 0.f);
-            std::vector<float> block(w * h, 0.f);
+            std::vector<unsigned char> line(w * h, 0);
+            std::vector<unsigned char> block(w * h, 0);
             for (size_t y = 0; y < h; ++y) {
                 const int py = args.roi.y1 + (int)y;
                 for (size_t x = 0; x < w; ++x) {
                     const int px = args.roi.x1 + (int)x;
                     if (covers(px, level, kLineX, kLineX + 1)) {
-                        line[y * w + x] = 1.f;
+                        line[y * w + x] = 255;
                     }
                     if (covers(px, level, kBlockX1, kBlockX2) && covers(py, level, kBlockY1, kBlockY2)) {
-                        block[y * w + x] = 1.f;
+                        block[y * w + x] = 255;
                     }
                 }
             }

@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Raw/RawColorCheckerData.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/OverlayDrawList.h"
 
 NATRON_NAMESPACE_USING
 
@@ -497,6 +498,47 @@ protected:
         return node;
     }
 };
+
+// The chart's axes are two line primitives and each crossing of a patch adds to them.
+TEST_F(NativeRawColorCalibrationCheckerTest, TheOverlaysDeltaEFollowsItsMeasurementsAndTheChart)
+{
+    const ColorChecker& checker = RawColorCheckerData::colorChecker(ColorCheckerTarget::Xrite24_2000);
+    const ChartPicture picture(checker, patchColors(checker, rotationAboutGrey(checker, 0.15f), 1.f));
+    NodePtr node = createChain(picture);
+    ASSERT_TRUE(bool(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+    KnobButtonPtr calibrate = effect->getKnobByNameAndType<KnobButton>(kRawColorCalibrationParamCalibrate);
+    KnobButtonPtr validate = effect->getKnobByNameAndType<KnobButton>(kRawColorCalibrationParamValidate);
+    KnobChoicePtr chart = effect->getKnobByNameAndType<KnobChoice>(kRawColorCalibrationParamCheckerChart);
+    KnobBoolPtr show = effect->getKnobByNameAndType<KnobBool>(kRawColorCalibrationParamCheckerShowPatches);
+    ASSERT_TRUE(calibrate && validate && chart && show);
+    show->setValue(true);
+
+    const auto linePrimitives = [&effect]() {
+        std::size_t lines = 0;
+        for (const OverlayDrawList::Primitive& primitive : effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0)).primitives()) {
+            lines += (primitive.type == OverlayDrawList::ePrimitiveTypeLines) ? 1 : 0;
+        }
+
+        return lines;
+    };
+
+    EXPECT_EQ(2u, linePrimitives());
+
+    validate->trigger();
+    EXPECT_GT(linePrimitives(), 2u);
+
+    calibrate->trigger();
+    EXPECT_EQ(2u, linePrimitives());
+
+    effect->getKnobByNameAndType<KnobDouble>(rawColorCalibrationRowKnobName((RawColorCalibrationRowEnum)0, 0))->setValue(0.5);
+    validate->trigger();
+    ASSERT_GT(linePrimitives(), 2u);
+
+    // The next chart has as many patches, so only clearing the values can remove the crossings.
+    chart->setValue((int)ColorCheckerTarget::Xrite24_2014);
+    EXPECT_EQ(2u, linePrimitives());
+}
 
 TEST_F(NativeRawColorCalibrationCheckerTest, CalibrateSetsTheChartsProfileAndValidateReportsIt)
 {

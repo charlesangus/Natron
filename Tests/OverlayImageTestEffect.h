@@ -28,7 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <list>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 
 #define kTestPluginIDOverlayImage "test.natron.built-in.OverlayImage"
 
@@ -121,7 +126,61 @@ public:
         return knob && knob->getValue();
     }
 
+    virtual void releaseOverlayImageResources() OVERRIDE FINAL
+    {
+        ++_resourceReleases;
+    }
+
+    int overlayImageResourceReleases() const
+    {
+        return _resourceReleases;
+    }
+
+    /**
+     * @brief Makes the next overlay image render wait, after reading its mask value and before
+     * adding its tile, until releaseHold().
+     **/
+    void armHold()
+    {
+        std::lock_guard<std::mutex> lock(_holdMutex);
+        _holdArmed = true;
+        _holding = false;
+        _holdReleased = false;
+    }
+
+    /**
+     * @brief Waits for the armed render to reach the hold. Returns false if it does not in time.
+     **/
+    bool waitUntilHeld()
+    {
+        std::unique_lock<std::mutex> lock(_holdMutex);
+
+        return _holdChanged.wait_for(lock, std::chrono::seconds(60), [this] { return _holding; });
+    }
+
+    void releaseHold()
+    {
+        std::lock_guard<std::mutex> lock(_holdMutex);
+        _holdArmed = false;
+        _holdReleased = true;
+        _holdChanged.notify_all();
+    }
+
 private:
+    // One-shot, so that a newer pass run while this one waits goes straight through.
+    void holdIfArmed()
+    {
+        std::unique_lock<std::mutex> lock(_holdMutex);
+
+        if (!_holdArmed) {
+            return;
+        }
+        _holdArmed = false;
+        _holding = true;
+        _holdChanged.notify_all();
+        _holdChanged.wait(lock, [this] { return _holdReleased; });
+    }
+
     virtual void initializeKnobs() OVERRIDE FINAL
     {
         KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
@@ -141,6 +200,15 @@ private:
         showMask->setHashExempt(true);
         page->addKnob(showMask);
         _showMask = showMask;
+
+        KnobDoublePtr maskValue = createKnob<KnobDouble>(std::string("Mask Value"));
+        maskValue->setName("maskValue");
+        maskValue->setAnimationEnabled(false);
+        maskValue->setDefaultValue(kOverlayImageTestMaskValue);
+        maskValue->setEvaluateOnChange(false);
+        maskValue->setHashExempt(true);
+        page->addKnob(maskValue);
+        _maskValue = maskValue;
 
         KnobBoolPtr fail = createKnob<KnobBool>(std::string("Fail"));
         fail->setName("fail");
@@ -167,14 +235,18 @@ private:
 
         if (isOverlayImageRender()) {
             const size_t nPixels = (size_t)args.roi.width() * (size_t)args.roi.height();
+            // Read before the hold: a held pass stands for one that read the view before the switch.
+            KnobDoublePtr maskValueKnob = _maskValue.lock();
+            const unsigned char maskByte = overlayImageCoverageByte(maskValueKnob ? (float)maskValueKnob->getValue() : kOverlayImageTestMaskValue);
+            holdIfArmed();
             addOverlayImageTile("mask",
                                 OverlayColor::fromRGBA(1.f, 0.f, 0.f, 0.5f),
                                 args.roi,
                                 args.mappedScale.toMipmapLevel(),
-                                std::vector<float>(nPixels, kOverlayImageTestMaskValue));
+                                std::vector<unsigned char>(nPixels, maskByte));
         } else {
             // Without a pass this must do nothing, which the test reads off the node having no frame.
-            addOverlayImageTile("mask", OverlayColor::fromNode(), args.roi, 0, std::vector<float>(1, 1.f));
+            addOverlayImageTile("mask", OverlayColor::fromNode(), args.roi, 0, std::vector<unsigned char>(1, 255));
         }
 
         return eStatusOK;
@@ -193,7 +265,14 @@ private:
 
     KnobDoubleWPtr _value;
     KnobBoolWPtr _showMask;
+    KnobDoubleWPtr _maskValue;
     KnobBoolWPtr _fail;
+    std::atomic<int> _resourceReleases { 0 };
+    std::mutex _holdMutex;
+    std::condition_variable _holdChanged;
+    bool _holdArmed = false;
+    bool _holding = false;
+    bool _holdReleased = false;
 };
 
 NATRON_NAMESPACE_EXIT

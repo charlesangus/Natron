@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,18 +43,25 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief One render window of an overlay image: a value per pixel of bounds, row by row from y1.
- * bounds is in pixels at mipmapLevel.
+ * @brief Coverage in [0, 1] as a tile byte. Any value above zero stays visible.
+ **/
+unsigned char overlayImageCoverageByte(float coverage);
+
+/**
+ * @brief An overlay image over bounds: a coverage byte per pixel, row by row from y1. bounds is in
+ * pixels at mipmapLevel. coveredPixels counts the pixels with coverage as the node rendered them,
+ * before any reduction to the pass's level.
  **/
 struct OverlayImageTile {
     RectI bounds;
     unsigned int mipmapLevel = 0;
-    std::vector<float> values;
+    std::vector<unsigned char> values;
+    std::size_t coveredPixels = 0;
 };
 
 /**
  * @brief A named per-pixel mask the viewer composites over its image, with tint's colour and
- * values * tint.a as coverage.
+ * values / 255 * tint.a as coverage.
  **/
 struct OverlayImagePlane {
     std::string name;
@@ -89,15 +98,34 @@ struct OverlayImageFrame {
 };
 
 /**
- * @brief Collects the tiles of a pass. Render threads add to it concurrently.
+ * @brief Collects the tiles of a pass. Render threads add to it concurrently. A tile finer than
+ * the pass's mipmap level, as from a node that renders at full scale whatever the viewer's zoom, is
+ * max-reduced to that level, which is never coarser than a screen pixel: a one-pixel mask survives
+ * and what is kept is bounded by the viewer's size, not the image's.
  **/
 class OverlayImagePass {
 public:
-    void addTile(const std::string& plane, const OverlayColor& tint, const RectI& bounds, unsigned int mipmapLevel, std::vector<float>&& values);
+    /**
+     * @param generation The node's overlay image generation when the pass started.
+     **/
+    explicit OverlayImagePass(unsigned int mipmapLevel = 0, std::uint64_t generation = 0);
 
+    std::uint64_t generation() const
+    {
+        return _generation;
+    }
+
+    void addTile(const std::string& plane, const OverlayColor& tint, const RectI& bounds, unsigned int mipmapLevel, std::vector<unsigned char>&& values);
+
+    /**
+     * @brief The planes so far, each with one tile per mipmap level. Reduced render windows can
+     * share a texel, which as separate tiles would blend twice.
+     **/
     std::vector<OverlayImagePlane> takePlanes();
 
 private:
+    const unsigned int _mipmapLevel;
+    const std::uint64_t _generation;
     std::mutex _mutex;
     std::vector<OverlayImagePlane> _planes;
 };

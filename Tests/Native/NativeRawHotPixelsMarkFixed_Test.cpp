@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
@@ -96,7 +97,7 @@ planeValue(const OverlayImageFrame& frame,
         for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
             const RectI& b = tile->bounds;
             if ((x >= b.x1) && (x < b.x2) && (y >= b.y1) && (y < b.y2)) {
-                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)];
+                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)] / 255.f;
             }
         }
     }
@@ -315,14 +316,51 @@ TEST_F(NativeRawHotPixelsMarkFixedTest, TheViewLeavesTheRenderAlone)
     ASSERT_TRUE(renderRawTestPlane(node, kRod, &before, &error)) << error;
     const U64 hash = node->getHashValue();
 
+    // Otherwise the render below reads the image from before the view went on.
+    appPTR->clearAllCaches();
     const OverlayImageFrameConstPtr frame = show(node);
     ASSERT_TRUE(bool(frame));
     EXPECT_FALSE(frame->planes.empty());
     EXPECT_EQ(hash, node->getHashValue());
 
-    RenderedPlane after;
-    ASSERT_TRUE(renderRawTestPlane(node, kRod, &after, &error, false /*byPassCache*/)) << error;
-    EXPECT_EQ(before.pixels, after.pixels);
+    RenderedPlane afterPass;
+    ASSERT_TRUE(renderRawTestPlane(node, kRod, &afterPass, &error, false /*byPassCache*/)) << error;
+    EXPECT_EQ(before.pixels, afterPass.pixels);
+
+    RenderedPlane rendered;
+    ASSERT_TRUE(renderRawTestPlane(node, kRod, &rendered, &error, true /*byPassCache*/)) << error;
+    EXPECT_EQ(before.pixels, rendered.pixels);
+}
+
+// A node rendering at full scale must lose neither a one-pixel mark nor its count to a zoomed-out
+// viewer's level.
+TEST_F(NativeRawHotPixelsMarkFixedTest, AReducedPassKeepsTheMarkAndTheCount)
+{
+    NodePtr node = createChain(oneHot(kHotX, kHotY), rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
+    ASSERT_TRUE(bool(node));
+    node->getEffectInstance()->getKnobByNameAndType<KnobBool>(kRawHotPixelsParamMarkFixed)->setValue(true);
+
+    OverlayImageRequest request;
+    request.time = 1.;
+    request.view = ViewIdx(0);
+    request.mipmapLevel = 2;
+    request.visibleCanonical = kRod;
+    ASSERT_TRUE(node->getEffectInstance()->renderOverlayImages(request, AbortableRenderInfo::create(false, 0)));
+
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(bool(frame));
+    EXPECT_EQ(1u, RawHotPixels::fixedPixelCount(*frame));
+    bool marked = false;
+    for (const OverlayImagePlane& plane : frame->planes) {
+        if (plane.name != kRawHotPixelsMarkPlaneFixed) {
+            continue;
+        }
+        ASSERT_EQ(1u, plane.tiles.size());
+        EXPECT_EQ(2u, plane.tiles.front()->mipmapLevel);
+        EXPECT_LE(plane.tiles.front()->values.size(), (std::size_t)((kRod.width() / 4) * (kRod.height() / 4)));
+        marked = std::find(plane.tiles.front()->values.begin(), plane.tiles.front()->values.end(), (unsigned char)255) != plane.tiles.front()->values.end();
+    }
+    EXPECT_TRUE(marked);
 }
 
 TEST_F(NativeRawHotPixelsMarkFixedTest, TheLabelCountsLikeDarktable)

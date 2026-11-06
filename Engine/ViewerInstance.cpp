@@ -2261,6 +2261,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     // Playback gets no overlay images: they serve a node being edited, and a pass per played frame
     // would render every such node twice.
     outArgs->staleOverlayImageEffects.clear();
+    outArgs->overlayImagePassesPending.clear();
     if (!isSequential && !rotoPaintNode) {
         const int maxCoord = std::numeric_limits<int>::max() / 2;
         OverlayImageRequest& request = outArgs->overlayImageRequest;
@@ -2272,6 +2273,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
         for (const EffectInstancePtr& effect : effectsRequestingOverlayImagesUpstream(getNode(), outArgs->activeInputIndex)) {
             if (effect->overlayImagesStale(request)) {
                 outArgs->staleOverlayImageEffects.push_back(effect);
+                outArgs->overlayImagePassesPending.push_back(effect->getNode()->markOverlayImagePassPending());
             }
         }
     }

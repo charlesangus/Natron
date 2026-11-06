@@ -243,9 +243,6 @@ std::optional<Validation> validateColorChecker(const RgbImage& image,
                                                const RawColorCalibrationMath::Mat3& xyzToCam);
 
 /**
- * @brief The verdict on an average delta E: very good, good, passable or bad.
- **/
-/**
  * @brief gui_post_expose() over the chart: the chart's axes of symmetry and, for each patch, its
  * sampled area and a disc of its reference colour. A patch with a delta E above 2.3 is crossed
  * once and above 4.6 twice. deltaE, in chart order, is ignored unless it has one value per patch.
@@ -254,6 +251,9 @@ void buildPatchOverlay(const ChartPlacement& placement,
                        const std::vector<float>* deltaE,
                        OverlayDrawList* list);
 
+/**
+ * @brief The verdict on an average delta E: very good, good, passable or bad.
+ **/
 const char* qualityDiagnostic(float averageDeltaE);
 
 /**

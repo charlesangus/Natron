@@ -2623,15 +2623,22 @@ public:
     bool isOverlayImageRender() const;
 
     /**
-     * @brief Publishes values, one per pixel of bounds and row by row from y1, as part of the named
-     * overlay plane. bounds is in pixels at mipmapLevel. Render threads may call it concurrently.
-     * The tint of the first tile added to a plane is the plane's.
+     * @brief True while the render running on this thread is an overlay image pass that
+     * refreshOverlayImages() has overtaken: nothing it adds will be published.
+     **/
+    bool isOverlayImagePassSuperseded() const;
+
+    /**
+     * @brief Publishes values, a byte of coverage per pixel of bounds (see
+     * overlayImageCoverageByte()) and row by row from y1, as part of the named overlay plane. bounds
+     * is in pixels at mipmapLevel. Render threads may call it concurrently. The tint of the first
+     * tile added to a plane is the plane's.
      **/
     void addOverlayImageTile(const std::string& plane,
                              const OverlayColor& tint,
                              const RectI& bounds,
                              unsigned int mipmapLevel,
-                             std::vector<float>&& values);
+                             std::vector<unsigned char>&& values);
 
     /**
      * @brief True if a pass is needed for the viewer to have what request asks for.
@@ -2640,8 +2647,12 @@ public:
 
     /**
      * @brief Runs the node's render action over the part of request.visibleCanonical in its region
-     * of definition and publishes the tiles it adds, all at once, on success. An aborted or failed
-     * pass publishes nothing. Must not be called under another render's frame args.
+     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
+     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * retried until the state changes. An aborted pass publishes nothing, nor does one that
+     * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
+     * whether the pass published what it rendered. Must not be called under another render's frame
+     * args.
      **/
     bool renderOverlayImages(const OverlayImageRequest& request, const AbortableRenderInfoPtr& abortInfo);
 
@@ -2656,13 +2667,6 @@ public:
      * the node's hash, so nothing else would. Main thread only.
      **/
     void refreshOverlayImages();
-
-    /**
-     * @brief True when the tree of the render running on this thread is rooted at a viewer,
-     * current-frame renders and playback alike. Writer and analysis renders are not viewer
-     * renders. Outside a render it is false.
-     **/
-    bool isViewerRender() const;
 
     /**
      * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
@@ -2707,6 +2711,15 @@ public:
     virtual bool isOverlayImageViewOn() const
     {
         return false;
+    }
+
+    /**
+     * @brief Called by refreshOverlayImages() when the viewer no longer wants the node's overlay
+     * images, to free what the node keeps only to produce them. A pass already running can still be
+     * computing: check isOverlayImagePassSuperseded() before keeping anything.
+     **/
+    virtual void releaseOverlayImageResources()
+    {
     }
 
     /**

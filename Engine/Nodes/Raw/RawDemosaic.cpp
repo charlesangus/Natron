@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Raw/RawAmazeGpu.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -1232,14 +1233,14 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
     const RectI maskTile = maskValues.empty() ? RectI() : roi.intersect(maskRect);
     if (!maskTile.isNull() && !cancel.check()) {
         const std::size_t tileWidth = (std::size_t)maskTile.width();
-        std::vector<float> values(tileWidth * (std::size_t)maskTile.height(), 0.f);
+        std::vector<unsigned char> values(tileWidth * (std::size_t)maskTile.height(), 0);
         bool any = false;
         for (int y = maskTile.y1; y < maskTile.y2; ++y) {
             const std::size_t row = (std::size_t)(maskRect.y2 - 1 - y);
             for (int x = maskTile.x1; x < maskTile.x2; ++x) {
-                const float value = std::max(0.f, std::min(1.f, maskValues[row * (std::size_t)maskRect.width() + (std::size_t)(x - maskRect.x1)]));
+                const unsigned char value = overlayImageCoverageByte(maskValues[row * (std::size_t)maskRect.width() + (std::size_t)(x - maskRect.x1)]);
                 values[(std::size_t)(y - maskTile.y1) * tileWidth + (std::size_t)(x - maskTile.x1)] = value;
-                any = any || (value > 0.f);
+                any = any || (value > 0);
             }
         }
         if (any) {

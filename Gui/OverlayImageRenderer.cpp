@@ -26,7 +26,9 @@
 #include "OverlayImageRenderer.h"
 
 #include <algorithm>
-#include <cmath>
+#include <cstddef>
+
+#include <QDebug>
 
 #include "Global/GLIncludes.h"
 
@@ -36,15 +38,9 @@
 
 NATRON_NAMESPACE_ENTER
 
-unsigned char
-OverlayImageRenderer::quantise(float coverage)
-{
-    if (!(coverage > 0.f)) {
-        return 0;
-    }
-    const float scaled = std::ceil(std::min(coverage, 1.f) * 255.f);
-
-    return (unsigned char)std::max(1.f, scaled);
+namespace {
+// glGetError() returns GL_INVALID_OPERATION forever without a current context.
+constexpr int kMaxGLErrorsDrained = 16;
 }
 
 std::vector<std::vector<unsigned char>>
@@ -134,11 +130,13 @@ OverlayImageRenderer::texturesFor(const std::shared_ptr<const OverlayImageTile>&
             const int ch = std::min<int>(maxSize, height - y0);
             std::vector<unsigned char> bytes((std::size_t)cw * ch);
             for (int y = 0; y < ch; ++y) {
-                for (int x = 0; x < cw; ++x) {
-                    bytes[(std::size_t)y * cw + x] = quantise(tile->values[(std::size_t)(y0 + y) * width + (x0 + x)]);
-                }
+                const unsigned char* row = tile->values.data() + (std::size_t)(y0 + y) * width + x0;
+                std::copy(row, row + cw, bytes.begin() + (std::ptrdiff_t)y * cw);
             }
             const std::vector<std::vector<unsigned char>> chain = buildMipChain(bytes, cw, ch);
+
+            for (int i = 0; (i < kMaxGLErrorsDrained) && (glGetError() != GL_NO_ERROR); ++i) {
+            }
 
             GLuint id = 0;
             glGenTextures(1, &id);
@@ -149,6 +147,14 @@ OverlayImageRenderer::texturesFor(const std::shared_ptr<const OverlayImageTile>&
                 glTexImage2D(GL_TEXTURE_2D, (GLint)level, GL_ALPHA8, lw, lh, 0, GL_ALPHA, GL_UNSIGNED_BYTE, chain[level].data());
                 lw = std::max(1, lw / 2);
                 lh = std::max(1, lh / 2);
+            }
+            // A texture without storage samples as alpha 1 and floods the tile with its tint. The
+            // chunk stays missing rather than retrying the allocation on every paint.
+            const GLenum uploadError = glGetError();
+            if (uploadError != GL_NO_ERROR) {
+                qDebug() << "Overlay image texture upload failed, GL error" << uploadError;
+                glDeleteTextures(1, &id);
+                continue;
             }
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)chain.size() - 1);
@@ -247,7 +253,7 @@ OverlayImageRenderer::draw(const NodesList& nodes,
         OverlayImageFrameConstPtr frame = effect->getOverlayImages(time, view);
         if (frame) {
             entry.held = frame;
-        } else if (entry.held && entry.held->request.time == time && entry.held->request.view == view) {
+        } else if (entry.held && node->isOverlayImagePassPending() && entry.held->request.time == time && entry.held->request.view == view) {
             frame = entry.held;
         }
         if (frame) {

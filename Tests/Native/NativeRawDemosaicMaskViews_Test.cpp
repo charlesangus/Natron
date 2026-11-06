@@ -88,7 +88,7 @@ planeValue(const OverlayImageFrame& frame,
         for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
             const RectI& b = tile->bounds;
             if ((x >= b.x1) && (x < b.x2) && (y >= b.y1) && (y < b.y2)) {
-                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)];
+                return tile->values[(std::size_t)(y - b.y1) * (std::size_t)b.width() + (std::size_t)(x - b.x1)] / 255.f;
             }
         }
     }
@@ -232,14 +232,6 @@ TEST_F(NativeRawDemosaicMaskViewsTest, SharpenedAreasFollowTheDetail)
     ASSERT_TRUE(busyFrame && flatFrame);
     const RectI window(120, 20, 180, 140);
     EXPECT_GT(meanOver(*busyFrame, kRawDemosaicMaskPlaneSharpenedAreas, window), meanOver(*flatFrame, kRawDemosaicMaskPlaneSharpenedAreas, window));
-    for (const OverlayImagePlane& plane : busyFrame->planes) {
-        for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
-            for (const float value : tile->values) {
-                ASSERT_GE(value, 0.f);
-                ASSERT_LE(value, 1.f);
-            }
-        }
-    }
 }
 
 // The radius fades to the frame's edge, and Corner Boost raises it away from the centre.
@@ -290,7 +282,8 @@ TEST_F(NativeRawDemosaicMaskViewsTest, TilesMatchTheFullFrame)
             const RectI inside = window.intersect(kRod);
             for (int y = inside.y1; y < inside.y2; ++y) {
                 for (int x = inside.x1; x < inside.x2; ++x) {
-                    ASSERT_NEAR(planeValue(*full, view.plane, x, y), planeValue(*tile, view.plane, x, y), 1e-5) << view.plane << " at " << x << "," << y;
+                    // Tiny float differences can round to neighbouring bytes.
+                    ASSERT_NEAR(planeValue(*full, view.plane, x, y), planeValue(*tile, view.plane, x, y), 1.f / 255.f + 1e-5f) << view.plane << " at " << x << "," << y;
                 }
             }
         }
@@ -330,13 +323,19 @@ TEST_F(NativeRawDemosaicMaskViewsTest, TheViewLeavesTheRenderAlone)
     const U64 hash = node->getHashValue();
 
     for (const RawDemosaicMaskViewEnum view : { eRawDemosaicMaskViewDual, eRawDemosaicMaskViewSharpenedAreas, eRawDemosaicMaskViewRadius }) {
+        // Otherwise the render below reads the image from before the view went on.
+        appPTR->clearAllCaches();
         const OverlayImageFrameConstPtr frame = showView(node, view);
         ASSERT_TRUE(bool(frame));
         EXPECT_FALSE(frame->planes.empty());
         EXPECT_EQ(hash, node->getHashValue());
 
-        RenderedPlane after;
-        ASSERT_TRUE(renderRawTestPlane(node, kRod, &after, &error, false /*byPassCache*/)) << error;
-        EXPECT_EQ(before.pixels, after.pixels);
+        RenderedPlane afterPass;
+        ASSERT_TRUE(renderRawTestPlane(node, kRod, &afterPass, &error, false /*byPassCache*/)) << error;
+        EXPECT_EQ(before.pixels, afterPass.pixels);
+
+        RenderedPlane rendered;
+        ASSERT_TRUE(renderRawTestPlane(node, kRod, &rendered, &error, true /*byPassCache*/)) << error;
+        EXPECT_EQ(before.pixels, rendered.pixels);
     }
 }

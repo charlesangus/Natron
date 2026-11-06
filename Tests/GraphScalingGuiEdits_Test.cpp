@@ -37,6 +37,7 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
@@ -45,6 +46,7 @@
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -210,6 +212,41 @@ TEST_F(GraphScalingGuiEdits, InvalidExpressionTextIsNotRun)
     std::string errorAfterRead;
     EXPECT_FALSE(offset->isExpressionValid(0, &errorAfterRead));
     EXPECT_EQ(validationError, errorAfterRead);
+}
+
+TEST_F(GraphScalingGuiEdits, ExpressionNamingARemovedNodeIsInvalid)
+{
+    {
+        NodePtr target = createNamedNode(getApp(), kGradePluginID, "Target");
+        NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+        ASSERT_TRUE(target && reader);
+        ASSERT_NO_THROW(reader->getKnobByName("offset")->setExpression(0, "Target.mix.get()", false, true));
+    }
+    getApp()->getProject()->reset(false, true);
+
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(grade));
+    KnobIPtr offset = grade->getKnobByName("offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Target.mix.get()", false, false));
+    EXPECT_FALSE(offset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, DeadParamWrapperRegistersNoDependency)
+{
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    {
+        NodePtr target = createNamedNode(getApp(), kGradePluginID, "Target");
+        ASSERT_TRUE(bool(target));
+        ASSERT_TRUE(interpretPythonScript("deadParamWrapper = " + appID + ".Target.mix\n", &error, 0)) << error;
+    }
+    getApp()->getProject()->reset(false, true);
+
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(grade));
+    const std::string offsetPath = appID + "." + grade->getScriptName_mt_safe() + ".offset";
+    EXPECT_TRUE(interpretPythonScript("deadParamWrapper.addAsDependencyOf(0, " + offsetPath + ", 0)\ndel deadParamWrapper\n", &error, 0)) << error;
 }
 
 TEST_F(GraphScalingGuiEdits, InputEditBatchRechecksOnceAtItsEnd)

@@ -3318,14 +3318,26 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension,
 
         return;
     }
-    std::stringstream ss;
-    ss << "frame=0\n";
-    ss << "view=0\n";
-    ss << declarations << '\n';
+    std::stringstream body;
+    body << "frame=0\n";
+    body << "view=0\n";
+    body << declarations << '\n';
     if (!readOnly) {
-        ss << expressionCopy << '\n';
+        body << expressionCopy << '\n';
     }
-    ss << script;
+    body << script;
+
+    // Run in a function, as the evaluation is: at module scope the node names would stay in
+    // __main__, and an expression naming a removed node would then find its dead wrapper there
+    // and validate, instead of failing with a NameError.
+    static const char* const kFunctionName = "NatronRegisterExpressionListeners";
+    std::stringstream ss;
+    ss << "def " << kFunctionName << "():\n";
+    std::string line;
+    while (std::getline(body, line)) {
+        ss << "    " << line << '\n';
+    }
+    ss << kFunctionName << "()\n";
     script = ss.str();
     ///This will register the listeners
     std::string error;
@@ -4467,6 +4479,20 @@ KnobHelper::expressionChanged(int dimension)
     pushStateToLinkGroups(dimension, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
 }
 
+static std::string
+describePythonException(PyObject* type,
+                        PyObject* value)
+{
+    PyObject* text = value ? PyObject_Str(value) : NULL;
+    PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
+    PyErr_Clear();
+    const std::string what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
+    Py_XDECREF(typeName);
+    Py_XDECREF(text);
+
+    return what;
+}
+
 static bool
 catchErrors(PyObject* mainModule,
             std::string* error)
@@ -4474,6 +4500,15 @@ catchErrors(PyObject* mainModule,
     PythonGILLocker pgl;
 
     if ( PyErr_Occurred() ) {
+        PyObject* type = NULL;
+        PyObject* value = NULL;
+        PyObject* traceback = NULL;
+        PyErr_Fetch(&type, &value, &traceback);
+        PyErr_NormalizeException(&type, &value, &traceback);
+        // An empty error means a valid expression, and PyErr_Print() leaves no text to read when
+        // stderr is not catchErr: always in background mode, or if a script replaced sys.stderr.
+        *error = describePythonException(type, value);
+        PyErr_Restore(type, value, traceback);
         PyErr_Print();
         ///Gui session, do stdout, stderr redirection
         if ( PyObject_HasAttrString(mainModule, "catchErr") ) {
@@ -4482,7 +4517,10 @@ catchErrors(PyObject* mainModule,
             if (errCatcher) {
                 errorObj = PyObject_GetAttrString(errCatcher, "value"); //get the  stderr from our catchErr object, new ref
                 assert(errorObj);
-                *error = NATRON_PYTHON_NAMESPACE::PyStringToStdString(errorObj);
+                const std::string caught = NATRON_PYTHON_NAMESPACE::PyStringToStdString(errorObj);
+                if (!caught.empty()) {
+                    *error = caught;
+                }
                 PyObject* unicode = PyUnicode_FromString("");
                 PyObject_SetAttrString(errCatcher, "value", unicode);
                 Py_DECREF(errorObj);
@@ -4648,12 +4686,7 @@ fetchPythonError()
         PyObject* traceback = NULL;
         PyErr_Fetch(&type, &value, &traceback);
         PyErr_NormalizeException(&type, &value, &traceback);
-        PyObject* text = value ? PyObject_Str(value) : NULL;
-        PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
-        PyErr_Clear();
-        what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
-        Py_XDECREF(typeName);
-        Py_XDECREF(text);
+        what = describePythonException(type, value);
         Py_XDECREF(type);
         Py_XDECREF(value);
         Py_XDECREF(traceback);

@@ -350,6 +350,11 @@ public:
 
     void setInfoBarAndViewerResolution(const RectI& rect, const RectD& canonicalRect, double par, int texIndex);
 
+Q_SIGNALS:
+
+    // The tab switched between the scene view and the 2D viewer.
+    void sceneViewChanged();
+
 public Q_SLOTS:
 
     // Shows the scene view or the 2D viewer, whichever the active input's data kind needs, and
@@ -538,6 +543,9 @@ private:
 
     // The input index whose menu entry reads text, -1 for none.
     int inputIndexForMenuText(const QString& text) const;
+
+    // Gives the scene viewport the menus' display and view, as the GL viewer has them.
+    void refreshSceneDisplayTransform();
 
     void editFrameRange(const QString& text, int first, int last, quint64 gestureKey);
 

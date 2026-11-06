@@ -45,11 +45,19 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+
+#include <pxr/usd/usd/primRange.h>
+
+#include <OpenImageIO/imageio.h>
 
 NATRON_NAMESPACE_ENTER
 
@@ -535,7 +543,7 @@ clipTimeSamples(const PXR_NS::SdfLayerRefPtr& layer,
     std::vector<Bound> bounds;
     {
         // The layer composed on its own interpolates its samples as a stage reading the file will.
-        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::UsdStage::LoadNone);
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
         for (const PXR_NS::SdfPath& path : animated) {
             const std::set<double> times = layer->ListTimeSamplesForPath(path);
             const PXR_NS::UsdAttribute attribute = stage ? stage->GetAttributeAtPath(path) : PXR_NS::UsdAttribute();
@@ -594,6 +602,408 @@ authorStageMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     layer->SetStartTimeCode(startTime);
     layer->SetEndTimeCode(endTime);
 }
+
+// A live texture the written file refers to, and the file it is exported to.
+struct LiveTextureExport {
+    LiveTextureSource source;
+    // A frame whose URI it is.
+    double frame = 0.;
+    QString path;
+    bool needed = false;
+};
+
+// Letters, digits, '_', '-' and '.' kept, anything else '_': a node's name as a file name.
+QString
+fileNameOf(const std::string& name)
+{
+    QString result = QString::fromStdString(name);
+
+    for (QChar& c : result) {
+        if (!c.isLetterOrNumber() && (c != QLatin1Char('_')) && (c != QLatin1Char('-')) && (c != QLatin1Char('.'))) {
+            c = QLatin1Char('_');
+        }
+    }
+
+    return result;
+}
+
+/**
+ * @brief Every URI sources author over their frames, keyed to the file in directory it is
+ * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
+ * the frame padded to 4 digits.
+ **/
+std::map<std::string, LiveTextureExport>
+planLiveTextureExports(const LiveTextureSourceList& sources,
+                       const QString& directory)
+{
+    std::map<std::string, LiveTextureExport> exports;
+
+    for (const LiveTextureSource& source : sources) {
+        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer));
+        const double first = std::ceil(source.firstFrame);
+        const double last = source.varying ? std::max(first, std::floor(source.lastFrame)) : first;
+        for (double frame = first; frame <= last; frame += 1.) {
+            LiveTextureExport e;
+            e.source = source;
+            e.frame = frame;
+            e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(stem).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : stem + QString::fromUtf8(".exr");
+            exports.insert(std::make_pair(source.getUri(frame), e));
+        }
+    }
+
+    return exports;
+}
+
+// Writes buffer to path as half-float RGBA OpenEXR, top row first.
+bool
+writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
+                     const QString& path,
+                     std::string* error)
+{
+    const std::string file = path.toStdString();
+    std::unique_ptr<OIIO::ImageOutput> out = OIIO::ImageOutput::create(file);
+
+    if (!out) {
+        *error = OIIO::geterror();
+
+        return false;
+    }
+    OIIO::ImageSpec spec(buffer->getWidth(), buffer->getHeight(), 4, OIIO::TypeDesc::HALF);
+    spec.attribute("compression", "zip");
+    if (!out->open(file, spec)) {
+        *error = out->geterror();
+
+        return false;
+    }
+    bool ok = true;
+    for (int y = 0; ok && (y < buffer->getHeight()); ++y) {
+        ok = out->write_scanline(y, 0, OIIO::TypeDesc::FLOAT, buffer->getRow(buffer->getHeight() - 1 - y));
+    }
+    ok = out->close() && ok;
+    if (!ok) {
+        *error = out->geterror();
+    }
+
+    return ok;
+}
+
+bool
+meshMightVary(const PXR_NS::UsdGeomMesh& mesh)
+{
+    return mesh.GetPointsAttr().ValueMightBeTimeVarying() || mesh.GetFaceVertexIndicesAttr().ValueMightBeTimeVarying() || SceneProjectionCameras::transformMightVary(mesh.GetPrim());
+}
+
+// A projection material left with its Storm shader, and why.
+struct UnbakedProjection {
+    enum ReasonEnum {
+        eReasonNotBound,
+        eReasonNotAMesh,
+        eReasonInstanced
+    };
+
+    std::string material;
+    ReasonEnum reason;
+    // The prim that stopped the bake; empty when the material is bound to nothing.
+    std::string prim;
+};
+
+/**
+ * @brief Copies a deferred camera's matrix and origin from the composed scene onto shader's prim in
+ * out. A layered export writes the scene's own layers, which name the camera but hold no values
+ * for it: compose() resolves those into a layer that is not exported.
+ **/
+bool
+authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
+                        const PXR_NS::UsdStageRefPtr& out)
+{
+    const PXR_NS::UsdAttribute camera = shader.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera));
+    std::string cameraPath;
+    if (!camera || !camera.Get(&cameraPath) || cameraPath.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdPrim over = out->OverridePrim(shader.GetPath());
+    if (!over) {
+        return false;
+    }
+    for (const char* name : { kUSDProject3DInputWorldToProjector, kUSDProject3DInputProjectorOrigin }) {
+        const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+        if (!input) {
+            continue;
+        }
+        const PXR_NS::UsdAttribute source = input.GetAttr();
+        PXR_NS::UsdAttribute target = over.GetAttribute(source.GetName());
+        // Over the layer's own values, whose time samples would win over a default.
+        if (target) {
+            target.Clear();
+        }
+        target = over.CreateAttribute(source.GetName(), source.GetTypeName());
+        if (!target) {
+            return false;
+        }
+        std::vector<double> times;
+        source.GetTimeSamples(&times);
+        PXR_NS::VtValue value;
+        if (times.empty()) {
+            if (source.Get(&value) && !target.Set(value)) {
+                return false;
+            }
+        }
+        for (const double time : times) {
+            if (source.Get(&value, time) && !target.Set(value, time)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+struct ProjectionBake {
+    std::vector<UnbakedProjection> unbaked;
+    std::set<std::string> behind;
+    // Materials whose cropped projection shows the plate's data beyond its format once baked.
+    std::set<std::string> overscan;
+    // Materials setting controls baked UVs cannot honour, and those controls.
+    std::map<std::string, QStringList> ignoredControls;
+    // The prim whose authoring failed, if one did.
+    std::string failed;
+};
+
+/**
+ * @brief Bakes the USDProject3D materials of scene for renderers other than Storm, as overs in
+ * output: each mesh bound to one gets its projection as faceVarying st (sampled at times when the
+ * camera or the mesh moves) and the material's surface becomes an unlit UsdPreviewSurface reading
+ * the plate's texture through st. A material bound to nothing, inside an instance, or also bound to
+ * a gprim that is not a mesh or lies inside an instance keeps its Storm shader, with a deferred
+ * camera's values written out for it: overs cannot reach below an instance.
+ **/
+void
+bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
+                const PXR_NS::SdfLayerRefPtr& output,
+                const std::vector<double>& times,
+                ProjectionBake* result)
+{
+    if (!scene || !output || times.empty()) {
+        return;
+    }
+    const auto everyPrim = PXR_NS::UsdTraverseInstanceProxies();
+    std::map<PXR_NS::SdfPath, PXR_NS::UsdShadeShader> projections;
+    for (const PXR_NS::UsdPrim& prim : scene->Traverse(everyPrim)) {
+        if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+            const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
+            if (SceneNodeAuthoring::isProjectionShader(surface)) {
+                projections[prim.GetPath()] = surface;
+            }
+        }
+    }
+    if (projections.empty()) {
+        return;
+    }
+    std::map<PXR_NS::SdfPath, std::vector<PXR_NS::UsdPrim>> bound;
+    for (const PXR_NS::UsdPrim& prim : scene->Traverse(everyPrim)) {
+        if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
+            continue;
+        }
+        // A material can be bound for one purpose only, and a mesh baked under any of them keeps
+        // its projection in the export.
+        const PXR_NS::UsdShadeMaterialBindingAPI binding(prim);
+        for (const PXR_NS::TfToken& purpose : { PXR_NS::UsdShadeTokens->allPurpose, PXR_NS::UsdShadeTokens->full, PXR_NS::UsdShadeTokens->preview }) {
+            const PXR_NS::UsdShadeMaterial material = binding.ComputeBoundMaterial(purpose);
+            if (material && projections.count(material.GetPath())) {
+                bound[material.GetPath()].push_back(prim);
+                break;
+            }
+        }
+    }
+
+    const PXR_NS::UsdStageRefPtr out = PXR_NS::UsdStage::Open(output, PXR_NS::UsdStage::LoadNone);
+    if (!out) {
+        result->failed = output->GetIdentifier();
+
+        return;
+    }
+    const PXR_NS::TfToken st("st");
+    for (const std::pair<const PXR_NS::SdfPath, PXR_NS::UsdShadeShader>& entry : projections) {
+        const PXR_NS::SdfPath& materialPath = entry.first;
+        const PXR_NS::UsdShadeShader& shader = entry.second;
+        const std::vector<PXR_NS::UsdPrim>& gprims = bound[materialPath];
+        const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
+            return prim.IsInstanceProxy();
+        });
+        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
+            return !prim.IsA<PXR_NS::UsdGeomMesh>();
+        });
+        const bool materialInstanced = shader.GetPrim().IsInstanceProxy();
+        if (materialInstanced || gprims.empty() || (instanced != gprims.end()) || (other != gprims.end())) {
+            if (materialInstanced) {
+                result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonInstanced, materialPath.GetString() });
+            } else if (gprims.empty()) {
+                result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonNotBound, std::string() });
+            } else if (instanced != gprims.end()) {
+                result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonInstanced, instanced->GetPath().GetString() });
+            } else {
+                result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonNotAMesh, other->GetPath().GetString() });
+            }
+            if (!materialInstanced && !authorResolvedProjector(shader, out)) {
+                result->failed = materialPath.GetString();
+
+                return;
+            }
+            continue;
+        }
+
+        QStringList ignored;
+        const auto differs = [&shader](const char* name, int defaultValue) {
+            const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+            int value = defaultValue;
+
+            return input && input.Get(&value) && (value != defaultValue);
+        };
+        if (differs("projectOn", (int)USDProject3D::eProjectOnBoth)) {
+            ignored.push_back(QString::fromUtf8("Project On"));
+        }
+        if (differs("clip", 0)) {
+            ignored.push_back(QString::fromUtf8("Clip Near Far"));
+        }
+        if (differs("outside", (int)USDProject3D::eOutsideBlack)) {
+            ignored.push_back(QString::fromUtf8("Outside"));
+        }
+        if (!ignored.isEmpty()) {
+            result->ignoredControls[materialPath.GetString()] = ignored;
+        }
+
+        const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector));
+        const PXR_NS::UsdShadeInput geometryInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+        const PXR_NS::UsdShadeInput windowInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform));
+        const PXR_NS::UsdShadeInput spaceInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
+        int space = (int)USDProject3D::eProjectionSpaceWorld;
+        if (spaceInput) {
+            spaceInput.Get(&space);
+        }
+        const bool geometrySpace = (space == (int)USDProject3D::eProjectionSpaceGeometry);
+        int crop = 0;
+        const PXR_NS::UsdShadeInput cropInput = shader.GetInput(PXR_NS::TfToken("crop"));
+        if (cropInput) {
+            cropInput.Get(&crop);
+        }
+        const auto mightVary = [](const PXR_NS::UsdShadeInput& input) {
+            return input && input.GetAttr().ValueMightBeTimeVarying();
+        };
+        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput) || (geometrySpace && mightVary(geometryInput));
+        for (const PXR_NS::UsdPrim& prim : gprims) {
+            const PXR_NS::UsdGeomMesh mesh(prim);
+            const bool varies = cameraVaries || meshMightVary(mesh);
+            const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
+            if (!over) {
+                result->failed = prim.GetPath().GetString();
+
+                return;
+            }
+            // Over any st the layer already holds, whose time samples would win over a default.
+            for (const char* name : { "primvars:st", "primvars:st:indices" }) {
+                const PXR_NS::UsdAttribute attribute = over.GetAttribute(PXR_NS::TfToken(name));
+                if (attribute) {
+                    attribute.Clear();
+                }
+            }
+            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, PXR_NS::UsdGeomTokens->faceVarying);
+            if (!primvar) {
+                result->failed = prim.GetPath().GetString();
+
+                return;
+            }
+            const std::size_t sampleCount = varies ? times.size() : 1;
+            for (std::size_t i = 0; i < sampleCount; ++i) {
+                const PXR_NS::UsdTimeCode time(times[i]);
+                const PXR_NS::UsdTimeCode authored = varies ? time : PXR_NS::UsdTimeCode::Default();
+                PXR_NS::GfMatrix4d worldToProjector(1.);
+                PXR_NS::GfMatrix4d geometryFrame(1.);
+                PXR_NS::GfVec4f window(1.f, 1.f, 0.f, 0.f);
+                PXR_NS::VtVec3fArray points;
+                PXR_NS::VtIntArray counts;
+                PXR_NS::VtIntArray indices;
+                if (matrixInput) {
+                    matrixInput.Get(&worldToProjector, time);
+                }
+                if (geometrySpace && geometryInput) {
+                    geometryInput.Get(&geometryFrame, time);
+                }
+                if (windowInput) {
+                    windowInput.Get(&window, time);
+                }
+                if (crop && ((window[0] < 1.f) || (window[1] < 1.f))) {
+                    result->overscan.insert(materialPath.GetString());
+                }
+                mesh.GetPointsAttr().Get(&points, time);
+                mesh.GetFaceVertexCountsAttr().Get(&counts, time);
+                mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                // In Geometry space the projection was set up on the geometry as its own node placed
+                // it, wherever it has been moved since.
+                const PXR_NS::GfMatrix4d toReference = geometrySpace ? geometryFrame : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
+                const PXR_NS::GfMatrix4d toProjector = toReference * worldToProjector;
+
+                PXR_NS::VtVec2fArray uvs(points.size());
+                std::vector<double> depths(points.size());
+                for (std::size_t p = 0; p < points.size(); ++p) {
+                    const PXR_NS::GfVec4d c = PXR_NS::GfVec4d(points[p][0], points[p][1], points[p][2], 1.) * toProjector;
+                    // Behind the camera the frame is mirrored through it: the UV is where the
+                    // point would be in front, the face it is on wrong either way.
+                    const double w = std::max(std::abs(c[3]), 1e-12);
+                    depths[p] = c[3];
+                    // The camera's frame is the plate's format; the texture spans its data window.
+                    uvs[p] = PXR_NS::GfVec2f((float)(c[0] / w * window[0] + window[2]), (float)(c[1] / w * window[1] + window[3]));
+                }
+                std::size_t offset = 0;
+                for (const int count : counts) {
+                    double nearest = HUGE_VAL;
+                    for (int v = 0; (v < count) && (offset + v < indices.size()); ++v) {
+                        const int index = indices[offset + v];
+                        if ((index >= 0) && ((std::size_t)index < depths.size())) {
+                            nearest = std::min(nearest, depths[index]);
+                        }
+                    }
+                    offset += (std::size_t)std::max(count, 0);
+                    if ((nearest <= 0.) && (nearest != HUGE_VAL)) {
+                        result->behind.insert(prim.GetPath().GetString());
+                    }
+                }
+                if (!primvar.Set(uvs, authored) || !primvar.SetIndices(indices, authored)) {
+                    result->failed = prim.GetPath().GetString();
+
+                    return;
+                }
+            }
+        }
+
+        // The plate's texture, already reading st, feeds an unlit preview surface in place of the
+        // projection shader. The plate holds straight colour, which the presence opacity mode
+        // multiplies by the plate's alpha as the live projection does.
+        const PXR_NS::UsdShadeMaterial material(out->OverridePrim(materialPath));
+        PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(out, materialPath.AppendChild(PXR_NS::TfToken("BakedSurface")));
+        PXR_NS::UsdShadeInput emissive;
+        bool ok = material && surface && surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")))
+            && SceneNodeAuthoring::authorUnlitSurfaceInputs(surface, &emissive);
+        PXR_NS::UsdShadeConnectableAPI plateSource;
+        PXR_NS::TfToken plateOutput;
+        PXR_NS::UsdShadeAttributeType plateType;
+        const PXR_NS::UsdShadeInput plate = shader.GetInput(PXR_NS::TfToken("plate"));
+        if (ok && plate && plate.GetConnectedSource(&plateSource, &plateOutput, &plateType)) {
+            PXR_NS::UsdShadeShader texture(out->OverridePrim(plateSource.GetPath()));
+            const PXR_NS::UsdShadeOutput rgb = texture ? texture.CreateOutput(PXR_NS::TfToken("rgb"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeOutput();
+            ok = rgb && emissive.ConnectToSource(rgb) && SceneNodeAuthoring::connectOpacityToAlpha(surface, texture);
+        } else if (ok) {
+            ok = emissive.Set(PXR_NS::GfVec3f(0.f));
+        }
+        const PXR_NS::UsdShadeOutput surfaceOutput = ok ? surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeOutput();
+        ok = surfaceOutput && material.CreateSurfaceOutput().ConnectToSource(surfaceOutput);
+        const PXR_NS::UsdPrim projection = ok ? out->OverridePrim(shader.GetPath()) : PXR_NS::UsdPrim();
+        if (!projection || !projection.SetActive(false)) {
+            result->failed = materialPath.GetString();
+
+            return;
+        }
+    }
+} // bakeProjections
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -669,6 +1079,17 @@ USDWrite::initializeKnobs()
     pathMode->setAnimationEnabled(false);
     page->addKnob(pathMode);
     _pathMode = pathMode;
+
+    KnobBoolPtr exportLiveTextures = createKnob<KnobBool>(tr("Export Live Textures"));
+    exportLiveTextures->setName(kUSDWriteParamExportLiveTextures);
+    exportLiveTextures->setHintToolTip(tr("Renders the images a USDMaterial's image inputs feed the scene to OpenEXR files in "
+                                          "<file name>_textures beside the file, one per frame for an image that changes over "
+                                          "time, and points the materials at them. Off, the file names the images as only this "
+                                          "Natron session can read them."));
+    exportLiveTextures->setDefaultValue(true);
+    exportLiveTextures->setAnimationEnabled(false);
+    page->addKnob(exportLiveTextures);
+    _exportLiveTextures = exportLiveTextures;
 
     KnobChoicePtr frameRange = createKnob<KnobChoice>(tr("Frame Range"));
     frameRange->setName(kUSDWriteParamFrameRange);
@@ -839,6 +1260,15 @@ USDWrite::writeFrameRange(int firstFrame,
     const double startTime = SceneOps::frameToTimeCode(scene, firstFrame, fps);
     const double endTime = SceneOps::frameToTimeCode(scene, lastFrame, fps);
 
+    KnobBoolPtr exportLiveTexturesKnob = _exportLiveTextures.lock();
+    const bool exportLiveTextures = exportLiveTexturesKnob && exportLiveTexturesKnob->getValue();
+    const QString texturesDir = QDir(outputDir).filePath(outputInfo.completeBaseName() + QString::fromUtf8("_textures"));
+    std::map<std::string, LiveTextureExport> liveTextures = planLiveTextureExports(SceneOps::getLiveTextures(scene), texturesDir);
+    // natron:// URIs written as they are, which only this session resolves.
+    std::set<std::string> unexportedLiveTextures;
+    // natron:// URIs no live texture of the scene authors, such as those of a file written earlier.
+    std::set<std::string> staleLiveTextures;
+
     PXR_NS::TfErrorMark mark;
     // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
     // runs of anonymous layers below a file the scene reads, and the stacks of the anonymous layers
@@ -848,7 +1278,9 @@ USDWrite::writeFrameRange(int firstFrame,
         PXR_NS::SdfLayerRefPtr layer;
     };
     std::vector<Written> written;
-    QStringList removedSidecars;
+    ProjectionBake projectionBake;
+    // The files the write produces or references, which a removal of stale sidecars spares.
+    std::set<QString> keep;
     {
         // The scene's layers are read while they are flattened: no write may edit them meanwhile.
         SceneWriteBarrier::ReadScope read;
@@ -872,8 +1304,6 @@ USDWrite::writeFrameRange(int firstFrame,
 
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         };
-        // The files the write produces or references, which a removal of stale sidecars spares.
-        std::set<QString> keep;
         if (exportMode == eExportModeFlattened) {
             PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
             stacks[0].layout.output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
@@ -944,6 +1374,20 @@ USDWrite::writeFrameRange(int firstFrame,
             propagateRanges(arcs, &stacks);
         }
 
+        // Before the asset paths are rewritten: the baked surfaces read the plates' live textures.
+        {
+            std::vector<double> times;
+            for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+                times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
+            }
+            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, &projectionBake);
+            if (!projectionBake.failed.empty()) {
+                const std::string errors = takeUsdErrors(mark);
+
+                return fail(tr("The projection on %1 could not be baked for export%2").arg(QString::fromStdString(projectionBake.failed)).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+            }
+        }
+
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
             if (stack.hasRange) {
                 clipTimeSamples(layer, stack.startTime, stack.endTime);
@@ -952,6 +1396,22 @@ USDWrite::writeFrameRange(int firstFrame,
                 const std::map<std::string, std::size_t>::const_iterator sidecar = stackOfLayer.find(assetPath);
                 if (sidecar != stackOfLayer.end()) {
                     return rewriteAssetPath(stacks[sidecar->second].path.toStdString(), outputDir, pathMode);
+                }
+                if (assetPath.compare(0, std::string(kLiveTextureScheme "://").size(), kLiveTextureScheme "://") == 0) {
+                    const std::map<std::string, LiveTextureExport>::iterator live = liveTextures.find(assetPath);
+                    if (live == liveTextures.end()) {
+                        staleLiveTextures.insert(assetPath);
+
+                        return assetPath;
+                    }
+                    if (!exportLiveTextures) {
+                        unexportedLiveTextures.insert(assetPath);
+
+                        return assetPath;
+                    }
+                    live->second.needed = true;
+
+                    return rewriteAssetPath(live->second.path.toStdString(), outputDir, pathMode);
                 }
                 const QString referenced = referencedFilePath(assetPath);
                 if (!referenced.isEmpty()) {
@@ -1021,38 +1481,134 @@ USDWrite::writeFrameRange(int firstFrame,
                 }
             }
         }
-
-        // The weakest first, so that a reader of the written file never finds a sublayer missing.
-        for (std::vector<Written>::const_reverse_iterator it = written.rbegin(); it != written.rend(); ++it) {
-            if (!it->layer->Export(it->path.toStdString())) {
-                const std::string errors = takeUsdErrors(mark);
-
-                return fail(tr("Cannot write %1%2").arg(it->path).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
-            }
+    }
+    // Before the files that name them, so that a failure leaves the earlier files whole, and after
+    // the scene's layers are let go: a render may need to write to a scene of its own.
+    for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
+        if (!live.second.needed) {
+            continue;
         }
-        // Only once every file is written, so that a failed write leaves the earlier set whole.
-        for (const Written& w : written) {
-            keep.insert(QDir::cleanPath(w.path));
+        if (!QDir().mkpath(texturesDir)) {
+            return fail(tr("Cannot create the directory %1.").arg(texturesDir));
         }
-        removedSidecars = removeStaleSidecars(outputInfo, keep);
+        LiveTextureStore& store = LiveTextureStore::instance();
+        LiveTextureBufferConstPtr buffer = store.find(live.first);
+        if (!buffer) {
+            store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame);
+            buffer = store.find(live.first);
+        }
+        if (!buffer) {
+            const std::string failure = store.getFailure(live.first);
+
+            return fail(tr("The live texture %1 could not be rendered%2").arg(QString::fromStdString(live.first)).arg(failure.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(failure)));
+        }
+        std::string writeError;
+        if (!writeLiveTextureFile(buffer, live.second.path, &writeError)) {
+            return fail(tr("Cannot write %1: %2").arg(live.second.path).arg(QString::fromStdString(writeError)));
+        }
     }
     // Layers already open on the files, such as a USDRead's of them, would go on showing what
     // they held before: they are reloaded in place, through the barrier, so every stage composing
     // them sees the new content.
-    std::vector<PXR_NS::SdfLayerRefPtr> open;
-    for (const Written& w : written) {
-        const PXR_NS::SdfLayerHandle layer = PXR_NS::SdfLayer::Find(w.path.toStdString());
-        if (layer) {
-            open.push_back(PXR_NS::SdfLayerRefPtr(layer));
+    const auto reloadOpenLayers = [](const QStringList& paths, std::string* error) {
+        std::vector<PXR_NS::SdfLayerRefPtr> open;
+        for (const QString& path : paths) {
+            const PXR_NS::SdfLayerHandle layer = PXR_NS::SdfLayer::Find(path.toStdString());
+            if (layer) {
+                open.push_back(PXR_NS::SdfLayerRefPtr(layer));
+            }
         }
+
+        return open.empty() || SceneOps::reloadFileLayers(open, error);
+    };
+    QStringList replaced;
+    // The weakest first, so that a reader of the written file never finds a sublayer missing.
+    for (std::vector<Written>::const_reverse_iterator it = written.rbegin(); it != written.rend(); ++it) {
+        if (!it->layer->Export(it->path.toStdString())) {
+            const std::string errors = takeUsdErrors(mark);
+            QString message = tr("Cannot write %1%2").arg(it->path).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors));
+            std::string reloadError;
+            if (!reloadOpenLayers(replaced, &reloadError)) {
+                message += QLatin1Char('\n') + tr("The scene could not read the files already written again: %1").arg(QString::fromStdString(reloadError));
+            }
+            mark.Clear();
+
+            return fail(message);
+        }
+        replaced.push_back(it->path);
     }
+    // Only once every file is written, so that a failed write leaves the earlier set whole.
+    for (const Written& w : written) {
+        keep.insert(QDir::cleanPath(w.path));
+    }
+    const QStringList removedSidecars = removeStaleSidecars(outputInfo, keep);
     std::string reloadError;
-    if (!open.empty() && !SceneOps::reloadFileLayers(open, &reloadError)) {
+    if (!reloadOpenLayers(replaced, &reloadError)) {
         return fail(tr("%1 was written, but the scene could not read it again: %2").arg(outputPath).arg(QString::fromStdString(reloadError)));
     }
     mark.Clear();
 
     clearPersistentMessage(false);
+    QStringList warnings;
+    if (!unexportedLiveTextures.empty()) {
+        warnings.push_back(tr("%1 names %2 live textures, such as %3, which only this Natron session can read: "
+                              "turn on Export Live Textures to write them beside it.")
+                               .arg(outputInfo.fileName())
+                               .arg((int)unexportedLiveTextures.size())
+                               .arg(QString::fromStdString(*unexportedLiveTextures.begin())));
+    }
+    if (!staleLiveTextures.empty()) {
+        warnings.push_back(tr("%1 names %2 live textures, such as %3, whose source is no longer available: "
+                              "they cannot be exported, and show the renderer's fallback.")
+                               .arg(outputInfo.fileName())
+                               .arg((int)staleLiveTextures.size())
+                               .arg(QString::fromStdString(*staleLiveTextures.begin())));
+    }
+    for (const UnbakedProjection& unbaked : projectionBake.unbaked) {
+        const QString material = QString::fromStdString(unbaked.material);
+        const QString prim = QString::fromStdString(unbaked.prim);
+        switch (unbaked.reason) {
+        case UnbakedProjection::eReasonNotBound:
+            warnings.push_back(tr("The projection material %1 is written for Storm only, which other renderers do not draw: "
+                                  "it is bound to no geometry here, which its projection could be baked onto as UVs.")
+                                   .arg(material));
+            break;
+        case UnbakedProjection::eReasonNotAMesh:
+            warnings.push_back(tr("The projection material %1 is written for Storm only, which other renderers do not draw: "
+                                  "%2, bound to it, is not a mesh, which its projection could be baked onto as UVs.")
+                                   .arg(material)
+                                   .arg(prim));
+            break;
+        case UnbakedProjection::eReasonInstanced:
+            warnings.push_back(tr("The projection material %1 is written for Storm only, which other renderers do not draw: "
+                                  "%2 lies inside an instance, which an export cannot author baked UVs or surfaces into.")
+                                   .arg(material)
+                                   .arg(prim));
+            break;
+        }
+    }
+    const auto joinPaths = [](const std::set<std::string>& paths) {
+        QStringList names;
+        for (const std::string& path : paths) {
+            names.push_back(QString::fromStdString(path));
+        }
+
+        return names.join(QString::fromUtf8(", "));
+    };
+    if (!projectionBake.behind.empty()) {
+        warnings.push_back(tr("Faces of %1 reach behind the projecting camera, where their baked UVs are wrong.")
+                               .arg(joinPaths(projectionBake.behind)));
+    }
+    if (!projectionBake.overscan.empty()) {
+        warnings.push_back(tr("The projections %1 crop their image to its format, which baked UVs cannot: the export shows "
+                              "the image's data beyond its format there.")
+                               .arg(joinPaths(projectionBake.overscan)));
+    }
+    for (const std::pair<const std::string, QStringList>& ignored : projectionBake.ignoredControls) {
+        warnings.push_back(tr("The projection %1 sets %2, which baked UVs cannot honour: the export ignores them.")
+                               .arg(QString::fromStdString(ignored.first))
+                               .arg(ignored.second.join(QString::fromUtf8(", "))));
+    }
     // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
     // may not know the export mode made, so it says which.
     if ((exportMode == eExportModeFlattened) && !removedSidecars.isEmpty()) {
@@ -1060,12 +1616,14 @@ USDWrite::writeFrameRange(int firstFrame,
         const QString what = (removedSidecars.size() <= kMaxNamed)
             ? removedSidecars.join(QString::fromUtf8(", "))
             : tr("%1 files named %2_layerN.%3").arg(removedSidecars.size()).arg(outputInfo.completeBaseName()).arg(outputInfo.suffix());
-        setPersistentMessage(eMessageTypeWarning, tr("Removed %1 from %2: sidecar files of a layered write to %3, which the "
-                                                     "flattened file does not use.")
-                                                      .arg(what)
-                                                      .arg(outputDir)
-                                                      .arg(outputInfo.fileName())
-                                                      .toStdString());
+        warnings.push_back(tr("Removed %1 from %2: sidecar files of a layered write to %3, which the "
+                              "flattened file does not use.")
+                               .arg(what)
+                               .arg(outputDir)
+                               .arg(outputInfo.fileName()));
+    }
+    if (!warnings.isEmpty()) {
+        setPersistentMessage(eMessageTypeWarning, warnings.join(QString::fromUtf8("\n")).toStdString());
     }
     ++_writeCount;
 

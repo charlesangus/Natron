@@ -168,7 +168,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_NEURALUPSCALE, -1, PLUGIN_MAJOR_NATRON_NEURALUPSCALE);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_NEURALUPSCALE, PLUGIN_MAJOR_NATRON_NEURALUPSCALE);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && effectOf(pair.native));
@@ -357,7 +357,7 @@ TEST_F(NativeNeuralUpscaleTest, KnobsListBothFactorsAndLabelsMatchScriptNames)
     const std::pair<const char*, const char*> labels[] = {
         { kNeuralUpscaleParamScale, "Scale" },
         { "model", "Model" },
-        { kModelColourspaceParam "Index", "Model Colourspace" },
+        { kModelColourspaceParam, "Model Colourspace" },
         { kNeuralUpscaleParamAlphaFilter, "Alpha Filter" },
         { kNeuralUpscaleParamTileSize, "Tile Size" },
     };
@@ -367,7 +367,10 @@ TEST_F(NativeNeuralUpscaleTest, KnobsListBothFactorsAndLabelsMatchScriptNames)
         EXPECT_EQ(std::string(expected.second), knob->getLabel()) << expected.first;
     }
     // The upscale models were trained on sRGB.
-    EXPECT_EQ(std::string(kSRGB), stringValue(pair.native, kModelColourspaceParam));
+    NeuralUpscale* effect = effectOf(pair.native);
+    ASSERT_TRUE(effect != nullptr);
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), choiceID(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(std::string(kSRGB), effect->colourspaceKnobs().space());
 }
 
 TEST_F(NativeNeuralUpscaleTest, ScaleAndModelFollowEachOther)

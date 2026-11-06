@@ -702,6 +702,11 @@ public Q_SLOTS:
     /*Use NULL for src to disconnect.*/
     bool connectEdge(int edgeNumber);
 
+    /**
+     * @brief Recomputes the loop blocks once connections queued behind a render take effect.
+     **/
+    void onConnectionsCommitted();
+
     void setVisibleSettingsPanel(bool b, bool minimized = false, bool hideUnmodified = false);
 
     void refreshRenderingIndicator();

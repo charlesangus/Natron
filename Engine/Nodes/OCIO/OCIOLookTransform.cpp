@@ -40,24 +40,8 @@ void
 OCIOLookTransformOp::createKnobs(KnobHolder* holder,
                                  const KnobPagePtr& page)
 {
-    // The working space until the user picks one, and again on a reset.
-    const OcioSpaceKnobs::AutomaticSpace working = []() { return std::optional<std::string>(std::string()); };
-
-    OcioSpaceKnobs::Description in;
-    in.prefix = kOCIOLookTransformParamInputSpace;
-    in.label = EffectInstance::tr("Input Colorspace");
-    in.spaceHint = EffectInstance::tr("The OpenColorIO colourspace the input is in. Empty is the working space.");
-    in.menuHint = EffectInstance::tr("The OpenColorIO colourspace the input is in.");
-    in.setLabel = EffectInstance::tr("Input Colorspace Set");
-    ocio.addSpace(holder, page, in, working);
-
-    OcioSpaceKnobs::Description out;
-    out.prefix = kOCIOLookTransformParamOutputSpace;
-    out.label = EffectInstance::tr("Output Colorspace");
-    out.spaceHint = EffectInstance::tr("The OpenColorIO colourspace to convert to. Empty is the working space.");
-    out.menuHint = EffectInstance::tr("The OpenColorIO colourspace to convert to.");
-    out.setLabel = EffectInstance::tr("Output Colorspace Set");
-    ocio.addSpace(holder, page, out, working);
+    ocio.addWorkingSpace(holder, page, kOCIOLookTransformParamInputSpace, EffectInstance::tr("Input Colorspace"), EffectInstance::tr("The OpenColorIO colourspace the input is in."));
+    ocio.addWorkingSpace(holder, page, kOCIOLookTransformParamOutputSpace, EffectInstance::tr("Output Colorspace"), EffectInstance::tr("The OpenColorIO colourspace to convert to."));
 
     KnobChoicePtr lookKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Look").toStdString());
     lookKnob->setName(kOCIOLookTransformParamLook);

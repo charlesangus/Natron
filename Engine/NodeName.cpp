@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Project.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -375,6 +376,8 @@ Node::setNameInternal(const std::string& name,
             _imp->label = newName;
         }
     }
+    // A loop lists its LoopBegins by script name.
+    LoopEnd::onGraphChanged();
     std::string fullySpecifiedName = getFullyQualifiedName();
 
     if (collection) {
@@ -441,6 +444,7 @@ Node::setNameInternal(const std::string& name,
         } catch (const std::exception& e) {
             qDebug() << e.what();
         }
+        LoopEnd::onLoopBeginRenamed(shared_from_this(), oldName);
     }
 
     QString qnewName = QString::fromUtf8( newName.c_str() );

@@ -56,6 +56,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/PrecompNode.h"
@@ -294,11 +295,11 @@ TEST_F(NativeWritePrecompTest, ThePrecompOutputIsTheFramesTheWriteRendered)
     ASSERT_TRUE(writeChoice != NULL);
     NodePtr subWriter = precompEffect()->getPrecompApp()->getProject()->getNodeByFullySpecifiedName(writeChoice->getActiveEntry().id);
     ASSERT_TRUE(bool(subWriter));
-    KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(subWriter->getKnobByName("ocioOutputSpace").get());
-    KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(reader->getKnobByName("ocioInputSpace").get());
-    ASSERT_TRUE(outputSpace != NULL && inputSpace != NULL);
-    EXPECT_EQ(outputSpace->getValue(), inputSpace->getValue());
-    EXPECT_FALSE(inputSpace->getValue().empty());
+    NativeWrite* write = dynamic_cast<NativeWrite*>(subWriter->getEffectInstance().get());
+    NativeRead* read = dynamic_cast<NativeRead*>(reader->getEffectInstance().get());
+    ASSERT_TRUE(write != NULL && read != NULL);
+    EXPECT_EQ(write->colorspace(), read->colorspace());
+    EXPECT_FALSE(read->colorspace().empty());
 
     for (int frame = kFirst; frame <= kLast; ++frame) {
         std::vector<float> pixels;

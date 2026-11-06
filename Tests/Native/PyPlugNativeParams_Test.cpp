@@ -48,6 +48,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Clamp.h"
@@ -66,6 +67,7 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
@@ -76,11 +78,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Every ID a native node has taken over from an OpenFX plug-in. NativePluginList_Test owns the
-// authoritative list of what resolves to a native version; this one only decides which
-// createNode() blocks of a PyPlug are audited.
+// The native nodes whose createNode() blocks in a PyPlug are audited.
 const std::set<std::string>&
-retiredIds()
+auditedIds()
 {
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
@@ -94,18 +94,15 @@ retiredIds()
         PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_CONSTANT,
-        PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
         PLUGINID_NATRON_TRANSFORM,
-        PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_CROP,
         PLUGINID_NATRON_POSITION,
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_BLUR,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
-        PLUGINID_NATRON_ERODE,
-        PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_ERODEDILATE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_COLORLOOKUP,
     };
@@ -236,7 +233,7 @@ isPluginLoaded(const char* pluginID)
 }
 
 // fr.inria.SplitAndJoin is left out for the reason PyPlugInstantiate_Test gives; it creates no
-// retired node anyway.
+// audited node anyway.
 const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
@@ -297,7 +294,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         for (const auto& entry : audit.idOfNode) {
             const std::string& scriptName = entry.first;
             const std::string& expectedId = entry.second;
-            if (retiredIds().find(expectedId) == retiredIds().end()) {
+            if (auditedIds().find(expectedId) == auditedIds().end()) {
                 continue;
             }
             const std::map<std::string, NodePtr>::const_iterator nodeIt = innerByName.find(scriptName);
@@ -323,7 +320,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         }
     }
 
-    EXPECT_GT(nChecked, 0) << "no parameter of a retired node was audited";
+    EXPECT_GT(nChecked, 0) << "no parameter of a native node was audited";
     EXPECT_EQ(0, nMissing) << "Params the bundled PyPlugs set on a native node that the node lacks:\n"
                            << findings.str();
 }
@@ -447,8 +444,65 @@ TEST_F(PyPlugNativeParamsTest, FilterInnerNodesSavedUnPremultipliedFilterAsStore
             }
         }
         ASSERT_TRUE(bool(inner)) << pyPlug << "/" << scriptName;
-        EXPECT_EQ(std::string(PLUGINID_NATRON_DILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
+        EXPECT_EQ(std::string(PLUGINID_NATRON_ERODEDILATE), inner->getPluginID()) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getUnPremultBySelector())) << pyPlug << "/" << scriptName;
         EXPECT_FALSE(bool(inner->getKnobByName(kUnPremultByKnobName))) << pyPlug << "/" << scriptName;
+    }
+}
+
+// LightWrap's toggles drive its inner Switches through `which` expressions: each Switch must
+// follow its toggle and be registered as an expression listener of it, so that a toggle edit
+// re-renders.
+TEST_F(PyPlugNativeParamsTest, LightWrapTogglesDriveTheirInnerSwitches)
+{
+    const char* const pyPlug = "LightWrap";
+    const std::string pluginID = std::string("fr.inria.") + pyPlug;
+    if (!isPluginLoaded(pluginID.c_str())) {
+        std::cerr << "Skipping: PyPlugs under " NATRON_TESTS_PYPLUGS_DIR " were not registered as plugins." << std::endl;
+        return;
+    }
+    struct Expected {
+        const char* toggle;
+        const char* switchName;
+    };
+    const Expected expected[] = {
+        { "useConstant", "ConstantColor" },
+        { "disableLuma", "DisableLuma" },
+        { "disableLuma", "DisableLuma1" },
+    };
+
+    NodePtr group = createNode(QString::fromStdString(pluginID));
+    ASSERT_TRUE(bool(group)) << pyPlug;
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(collection)) << pyPlug;
+
+    for (const Expected& want : expected) {
+        KnobBoolPtr toggle = group->getEffectInstance()->getKnobByNameAndType<KnobBool>(want.toggle);
+        ASSERT_TRUE(bool(toggle)) << want.toggle;
+        NodePtr inner = collection->getNodeByName(want.switchName);
+        ASSERT_TRUE(bool(inner)) << want.switchName;
+        EXPECT_EQ(std::string(PLUGINID_NATRON_SWITCH), inner->getPluginID()) << want.switchName;
+        KnobIntPtr which = inner->getEffectInstance()->getKnobByNameAndType<KnobInt>(kSwitchParamWhich);
+        ASSERT_TRUE(bool(which)) << want.switchName;
+        EXPECT_FALSE(which->getExpression(0).empty()) << want.switchName;
+
+        KnobI::ListenerDimsMap listeners;
+        toggle->getListeners(listeners);
+        bool listening = false;
+        for (const auto& entry : listeners) {
+            if (entry.first.lock() == which) {
+                for (const KnobI::ListenerDim& dim : entry.second) {
+                    listening = listening || dim.isExpr;
+                }
+            }
+        }
+        EXPECT_TRUE(listening) << want.switchName << ".which does not listen to " << want.toggle;
+
+        toggle->setValue(false);
+        EXPECT_EQ(0, which->getValue()) << want.switchName << " with " << want.toggle << " off";
+        toggle->setValue(true);
+        EXPECT_EQ(1, which->getValue()) << want.switchName << " with " << want.toggle << " on";
+        toggle->setValue(false);
+        EXPECT_EQ(0, which->getValue()) << want.switchName << " with " << want.toggle << " off again";
     }
 }

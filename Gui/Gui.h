@@ -349,6 +349,8 @@ public:
     DopeSheetEditor * getDopeSheetEditor() const;
     ScriptEditor* getScriptEditor() const;
     ProgressPanel* getProgressPanel() const;
+
+    SceneGraphPanel* getSceneGraphPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -637,6 +639,10 @@ public Q_SLOTS:
     void renderSelectedNode();
 
     void onEnableRenderStatsActionTriggered();
+
+    void onToggleInteractiveActionTriggered();
+
+    void syncInteractiveActionWithSettings();
 
     void onMaxVisibleDockablePanelChanged(int maxPanels);
 

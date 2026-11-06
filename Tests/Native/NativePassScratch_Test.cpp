@@ -206,13 +206,13 @@ TEST_F(NativePassScratchTest, ErodeDilateScratchIsFullyWrittenBeforeRead)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    for (const char* id : { PLUGINID_NATRON_ERODE, PLUGINID_NATRON_DILATE }) {
-        const int major = (std::string(id) == PLUGINID_NATRON_ERODE) ? PLUGIN_MAJOR_NATRON_ERODE : PLUGIN_MAJOR_NATRON_DILATE;
-        NodePtr node = createNode(QString::fromUtf8(id), major);
-        ASSERT_TRUE(bool(node)) << id;
+    for (double sign : { 1., -1. }) {
+        const char* name = (sign > 0.) ? "erode" : "dilate";
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
+        ASSERT_TRUE(bool(node)) << name;
         connectNodes(source, node, 0, true);
-        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 5., 3. }));
-        expectScratchIsFullyWritten(node, 1, id);
+        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { sign * 5., sign * 3. }));
+        expectScratchIsFullyWritten(node, 1, name);
     }
 }
 

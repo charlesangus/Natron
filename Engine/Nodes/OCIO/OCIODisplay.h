@@ -36,12 +36,12 @@
 #define PLUGINID_NATRON_OCIODISPLAY "OCIODisplay"
 #define PLUGIN_MAJOR_NATRON_OCIODISPLAY 1
 
-#define kOCIODisplayParamInputSpace "in_colorspace"
+#define kOCIODisplayParamInputSpace "inputColorspace"
 #define kOCIODisplayParamDisplay "display"
 #define kOCIODisplayParamView "view"
 #define kOCIODisplayParamGain "gain"
 #define kOCIODisplayParamGamma "gamma"
-#define kOCIODisplayParamChannel "channel_selector"
+#define kOCIODisplayParamChannel "channelSelector"
 
 NATRON_NAMESPACE_ENTER
 
@@ -53,7 +53,7 @@ inline constexpr InputSpec kOCIODisplayInputs[] = {
 /**
  * @brief OCIODisplay: renders RGB as a display of the project's config shows it, the way the
  * viewer does: gain on the input, the channel view, the display and view transform from the input
- * space with the Context variables, then gamma. Alpha is left as it is.
+ * space with the context variables, then gamma. Alpha is left as it is.
  **/
 struct OCIODisplayOp {
     enum ChannelEnum {
@@ -107,19 +107,29 @@ struct OCIODisplayOp {
                                        const PassContext& context) const;
 
     /**
-     * @brief Fills the display menu, and the view menu with the views of the chosen display, and
-     * makes the config's default display and view the knobs' defaults. When the menus were filled
-     * from another config, a display or view the new config lacks, or one still at the old
-     * config's default, moves to the new config's default without a warning.
+     * @brief Fills the display menu, and the view menu with the views of the chosen display, each
+     * after a Project default entry labelled with the config's default it stands for. When the
+     * menus were filled from another config, a display or view the new config lacks moves to
+     * Project default without a warning.
      **/
     void refreshDisplayMenus();
 
     /**
-     * @brief The display changed: fills the view menu again, taking the display's default view
-     * when the chosen view is not one of its views.
+     * @brief Fills the view menu with the views of the chosen display after its Project default
+     * entry; with \p dropMissing, a view the display lacks moves to Project default.
+     **/
+    void refreshViewMenu(bool dropMissing);
+
+    /**
+     * @brief The display changed: fills the view menu again, taking Project default when the
+     * chosen view is not one of the display's views.
      **/
     void displayChanged();
 
+    /**
+     * @brief The display and view rendered: the ones chosen, or the config's defaults they stand
+     * for while Project default is chosen.
+     **/
     std::string chosenDisplay() const;
     std::string chosenView() const;
 
@@ -153,6 +163,16 @@ public:
      **/
     OCIODisplayOp::Params bakeDisplay(double time,
                                       ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The display the node renders, Project default resolved.
+     **/
+    std::string renderedDisplay() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The view the node renders, Project default resolved.
+     **/
+    std::string renderedView() const WARN_UNUSED_RETURN;
 
 private:
     virtual bool knobChanged(KnobI* k,

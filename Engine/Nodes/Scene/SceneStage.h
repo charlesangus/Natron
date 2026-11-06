@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
@@ -84,6 +85,9 @@ public:
     // How many sync() calls edited the stage.
     U64 getEditCount() const;
 
+    // The projections of the payload whose camera the stage lacks, as last synced.
+    const std::vector<SceneProjectionCameras::Unresolved>& getUnresolvedProjections() const;
+
     /**
      * @brief Draws each prim of deltas moved in the world by its matrix (a Gf matrix, so the
      * prim's world transform W becomes W * delta), until clearPreviewTransforms(): an op on the
@@ -100,6 +104,8 @@ public:
     bool hasPreviewTransforms() const;
 
 private:
+    void syncProjections();
+
     struct PreviewPrim {
         PXR_NS::SdfPath path;
         PXR_NS::GfMatrix4d parentToWorld;
@@ -109,6 +115,9 @@ private:
     };
 
     PXR_NS::SdfLayerRefPtr _root;
+    // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
+    PXR_NS::SdfLayerRefPtr _projections;
+    std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
     std::vector<std::string> _subLayerPaths;

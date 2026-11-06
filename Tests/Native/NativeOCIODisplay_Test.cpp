@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/OCIO/OCIODisplay.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -88,7 +89,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIODISPLAY, -1, PLUGIN_MAJOR_NATRON_OCIODISPLAY);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIODISPLAY, PLUGIN_MAJOR_NATRON_OCIODISPLAY);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<OCIODisplay*>(pair.native->getEffectInstance().get()));
@@ -127,10 +128,18 @@ TEST_F(NativeOCIODisplayTest, DefaultsToTheConfigsDefaultDisplayAndView)
     KnobChoicePtr viewKnob = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIODisplayParamView));
     ASSERT_TRUE(bool(displayKnob));
     ASSERT_TRUE(bool(viewKnob));
-    EXPECT_EQ(display, displayKnob->getActiveEntry().id);
-    EXPECT_EQ(cm->getDefaultView(display), viewKnob->getActiveEntry().id);
-    EXPECT_EQ(cm->getDisplays().size(), (std::size_t)displayKnob->getNumEntries());
-    EXPECT_EQ(cm->getViews(display).size(), (std::size_t)viewKnob->getNumEntries());
+    const std::string view = cm->getDefaultView(display);
+    ASSERT_FALSE(view.empty());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), displayKnob->getActiveEntry().id);
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), viewKnob->getActiveEntry().id);
+    EXPECT_EQ("Project default (" + display + ")", displayKnob->getEntry(0).label);
+    EXPECT_EQ("Project default (" + view + ")", viewKnob->getEntry(0).label);
+    EXPECT_EQ(cm->getDisplays().size() + 1, (std::size_t)displayKnob->getNumEntries());
+    EXPECT_EQ(cm->getViews(display).size() + 1, (std::size_t)viewKnob->getNumEntries());
+    OCIODisplay* effect = dynamic_cast<OCIODisplay*>(pair.native->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_EQ(display, effect->renderedDisplay());
+    EXPECT_EQ(view, effect->renderedView());
 
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = defaultDisplayProcessor();
     ASSERT_TRUE(bool(cpu));
@@ -200,8 +209,37 @@ TEST_F(NativeOCIODisplayTest, ChangingTheDisplayTakesItsDefaultView)
     KnobChoicePtr viewKnob = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIODisplayParamView));
     ASSERT_TRUE(bool(viewKnob));
     const std::vector<std::string> views = cm->getViews(other);
-    EXPECT_EQ(views.size(), (std::size_t)viewKnob->getNumEntries());
-    EXPECT_TRUE(std::find(views.begin(), views.end(), viewKnob->getActiveEntry().id) != views.end()) << viewKnob->getActiveEntry().id;
+    EXPECT_EQ(views.size() + 1, (std::size_t)viewKnob->getNumEntries());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), viewKnob->getActiveEntry().id);
+    EXPECT_EQ("Project default (" + cm->getDefaultView(other) + ")", viewKnob->getEntry(0).label);
+    OCIODisplay* effect = dynamic_cast<OCIODisplay*>(pair.native->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_EQ(other, effect->renderedDisplay());
+    EXPECT_EQ(cm->getDefaultView(other), effect->renderedView());
+
+    // A view the next display lacks returns to Project default.
+    std::string pickedView;
+    std::string nextDisplay;
+    for (std::size_t i = 0; (i < displays.size()) && pickedView.empty(); ++i) {
+        if (displays[i] == other) {
+            continue;
+        }
+        const std::vector<std::string> nextViews = cm->getViews(displays[i]);
+        for (std::size_t v = 0; v < views.size(); ++v) {
+            if (std::find(nextViews.begin(), nextViews.end(), views[v]) == nextViews.end()) {
+                pickedView = views[v];
+                nextDisplay = displays[i];
+                break;
+            }
+        }
+    }
+    if (pickedView.empty()) {
+        return;
+    }
+    ASSERT_TRUE(setKnobValue(pair.native, kOCIODisplayParamView, pickedView));
+    ASSERT_TRUE(setKnobValue(pair.native, kOCIODisplayParamDisplay, nextDisplay));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), viewKnob->getActiveEntry().id);
+    EXPECT_EQ(cm->getDefaultView(nextDisplay), effect->renderedView());
 }
 
 namespace {
@@ -243,10 +281,19 @@ defaultID(const NodePtr& node,
 }
 } // namespace
 
-// A display or view the new config lacks, or one still at the old config's default, moves to the new config's
-// default without an error; a view the user picked that the new config also has stays.
+std::string
+renderedView(const NodePtr& node)
+{
+    OCIODisplay* effect = dynamic_cast<OCIODisplay*>(node->getEffectInstance().get());
+
+    return effect ? effect->renderedView() : std::string("<missing>");
+}
+
+// Project default follows the new config's defaults and relabels; a display or view the new config lacks returns to
+// Project default without an error; a view the user picked that the new config also has stays.
 TEST_F(NativeOCIODisplayTest, SwitchingConfigMovesTheDisplayAndViewToTheNewDefaults)
 {
+    const std::string projectDefault = OcioSpaceKnobs::projectDefaultID();
     ProjectColorManagementPtr cm = colorManagement();
     ASSERT_EQ(kDefaultDisplay, cm->getDefaultDisplay());
     const std::string studioDefaultView = cm->getDefaultView(kDefaultDisplay);
@@ -255,7 +302,8 @@ TEST_F(NativeOCIODisplayTest, SwitchingConfigMovesTheDisplayAndViewToTheNewDefau
     ParityPair studioOnly = makePair();
     ParityPair pickedView = makePair();
     ASSERT_TRUE(atDefaults.native && studioOnly.native && pickedView.native);
-    ASSERT_EQ(studioDefaultView, activeID(atDefaults.native, kOCIODisplayParamView));
+    ASSERT_EQ(projectDefault, activeID(atDefaults.native, kOCIODisplayParamView));
+    ASSERT_EQ(studioDefaultView, renderedView(atDefaults.native));
     ASSERT_TRUE(setKnobValue(studioOnly.native, kOCIODisplayParamDisplay, kStudioOnlyDisplay));
     ASSERT_TRUE(setKnobValue(pickedView.native, kOCIODisplayParamView, kSharedView));
 
@@ -266,14 +314,17 @@ TEST_F(NativeOCIODisplayTest, SwitchingConfigMovesTheDisplayAndViewToTheNewDefau
     ASSERT_TRUE(std::find(displays.begin(), displays.end(), kStudioOnlyDisplay) == displays.end());
 
     for (const NodePtr& node : { atDefaults.native, studioOnly.native }) {
-        EXPECT_EQ(kDefaultDisplay, activeID(node, kOCIODisplayParamDisplay));
-        EXPECT_EQ(kCG13DefaultView, activeID(node, kOCIODisplayParamView));
+        EXPECT_EQ(projectDefault, activeID(node, kOCIODisplayParamDisplay));
+        EXPECT_EQ(projectDefault, activeID(node, kOCIODisplayParamView));
+        EXPECT_EQ(kCG13DefaultView, renderedView(node));
     }
-    EXPECT_EQ(kDefaultDisplay, activeID(pickedView.native, kOCIODisplayParamDisplay));
+    EXPECT_EQ(projectDefault, activeID(pickedView.native, kOCIODisplayParamDisplay));
     EXPECT_EQ(kSharedView, activeID(pickedView.native, kOCIODisplayParamView));
     for (const NodePtr& node : { atDefaults.native, studioOnly.native, pickedView.native }) {
-        EXPECT_EQ(kDefaultDisplay, defaultID(node, kOCIODisplayParamDisplay));
-        EXPECT_EQ(kCG13DefaultView, defaultID(node, kOCIODisplayParamView));
+        EXPECT_EQ(projectDefault, defaultID(node, kOCIODisplayParamDisplay));
+        EXPECT_EQ(projectDefault, defaultID(node, kOCIODisplayParamView));
+        EXPECT_EQ("Project default (" + std::string(kDefaultDisplay) + ")", choice(node, kOCIODisplayParamDisplay)->getEntry(0).label);
+        EXPECT_EQ("Project default (" + std::string(kCG13DefaultView) + ")", choice(node, kOCIODisplayParamView)->getEntry(0).label);
         EXPECT_TRUE(persistentMessage(node).isEmpty()) << persistentMessage(node).toStdString();
     }
 }

@@ -41,7 +41,7 @@ try:
     require(reload is not None, "USDRead has a reload parameter")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     usd.setPosition(0, 0)
     viewer.setPosition(0, 150)

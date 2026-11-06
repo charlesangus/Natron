@@ -631,6 +631,8 @@ NodeGraph::deleteNodePermanantly(const NodeGuiPtr& n)
     if (_imp->_selection.remove(n.get())) {
         n->setUserSelected(false);
     }
+    // A node destroyed outright never passes through moveToTrash, so its loop block goes here.
+    scheduleLoopBlockRefresh(true);
 } // deleteNodePermanantly
 
 void

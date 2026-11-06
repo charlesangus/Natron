@@ -109,14 +109,17 @@ float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
-    // time, camera and size, and no barrier write since, reuses that render, so the planes of a
-    // frame asked for one by one cost one Storm render.
+    // time, camera, size and headlight, and no barrier write since, reuses that render, so the
+    // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
     ScenePayload scene;
     PXR_NS::UsdTimeCode time;
     PXR_NS::GfFrustum frustum;
     int width = 0;
     int height = 0;
+    // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
+    // do, and a scene with none renders its lit surfaces black.
+    bool headlight = false;
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;

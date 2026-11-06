@@ -60,7 +60,6 @@
 // One 9-dimension double knob, the row-major 3x3 matrix composed with the pin.
 #define kCornerPinNodeParamExtraMatrix "extraMatrix"
 #define kCornerPinNodeParamInvert "invert"
-#define kCornerPinNodeParamInteractive "interactive"
 
 #define kCornerPinNodeParamFilter "filter"
 #define kCornerPinNodeParamClamp "clamp"

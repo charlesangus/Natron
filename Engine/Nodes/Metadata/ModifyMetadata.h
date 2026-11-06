@@ -33,7 +33,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_MODIFYMETADATA "fr.natron.ModifyMetadata"
+#define PLUGINID_NATRON_MODIFYMETADATA "ModifyMetadata"
 
 #define kModifyMetadataSlotCount 8
 

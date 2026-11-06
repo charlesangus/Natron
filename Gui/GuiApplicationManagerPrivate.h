@@ -72,6 +72,7 @@ struct GuiApplicationManagerPrivate
     QPointer<QMenu> nodesMenuPopup;
     bool nodesMenuPopupShown;
     quint64 nodesMenuTargetGeneration;
+    GuiApplicationManager::NodesMenuArgsDecorator nodesMenuArgsDecorator;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
     QCursor _colorPickerCursor, _linkToCursor, _linkMultCursor;

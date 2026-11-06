@@ -69,6 +69,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _nodeCreationShortcutEnabled(false)
     , _root(NULL)
     , _nodeRoot(NULL)
+    , _loopBlocks(NULL)
     , _cacheSizeText(NULL)
     , cacheSizeHidden(true)
     , _refreshCacheTextTimer()

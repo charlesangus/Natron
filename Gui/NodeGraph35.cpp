@@ -93,6 +93,7 @@ NodeGraph::moveToTrash(NodeGui* node)
         }
     }
     invalidateNavigatorContent();
+    scheduleLoopBlockRefresh(true);
 }
 
 void
@@ -107,6 +108,7 @@ NodeGraph::restoreFromTrash(NodeGui* node)
         }
     }
     invalidateNavigatorContent();
+    scheduleLoopBlockRefresh(true);
 }
 
 // grabbed from QDirModelPrivate::size() in qtbase/src/widgets/itemviews/qdirmodel.cpp

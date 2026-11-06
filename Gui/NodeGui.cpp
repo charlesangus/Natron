@@ -440,6 +440,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(deactivated(bool)), this, SLOT(deactivate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
+    QObject::connect(internalNode.get(), SIGNAL(connectionsCommitted()), this, SLOT(onConnectionsCommitted()));
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
     // Emitted from render threads; the indicators are refreshed in batches on the graph's timer.
     QObject::connect(internalNode.get(), SIGNAL(renderingStarted()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
@@ -504,12 +505,7 @@ NodeGui::initialize(NodeGraph* dag,
 
     //Refresh the merge operator icon
     if (internalNode->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE) {
-        KnobIPtr knob = internalNode->getKnobByName(kNatronOfxParamStringSublabelName);
-        assert(knob);
-        KnobString* strKnob = dynamic_cast<KnobString*>( knob.get() );
-        if (strKnob) {
-            refreshNodeText( QString::fromUtf8( strKnob->getValue().c_str() ) );
-        }
+        refreshNodeText(QString::fromUtf8(internalNode->getSublabel().c_str()));
     }
 
     if ( internalNode->makePreviewByDefault() ) {
@@ -1345,6 +1341,9 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);
@@ -1414,8 +1413,11 @@ NodeGui::refreshPositionEnd(double x,
     setPos(x, y);
     // A resize leaves the position, and so itemChange(), untouched.
     invalidateGraphNavigator();
-    if (_graph && !_graph->deferNodeStacking(this)) {
-        _graph->stackNodesAboveOverlapping(std::vector<NodeGui*>(1, this));
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+        if (!_graph->deferNodeStacking(this)) {
+            _graph->stackNodesAboveOverlapping(std::vector<NodeGui*>(1, this));
+        }
     }
     // A project load refreshes every edge once its nodes are restored.
     refreshAttachedEdgesAndLinks(!_graph || !_graph->isLoadingProjectNodes());
@@ -2321,6 +2323,9 @@ NodeGui::setUserSelected(bool b)
         QMutexLocker l(&_selectedMutex);
         _selected = b;
     }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2356,12 +2361,23 @@ NodeGui::findConnectedEdge(NodeGui* parent)
     return NULL;
 }
 
+void
+NodeGui::onConnectionsCommitted()
+{
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
+    }
+}
+
 bool
 NodeGui::connectEdge(int edgeNumber)
 {
     NodePtr node = getNode();
     if (!node) {
         return false;
+    }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
     }
     const std::vector<NodeWPtr> & inputs = node->getGuiInputs();
 
@@ -5365,6 +5381,8 @@ NodeGui::onRightClickMenuKnobPopulated()
             action->setCheckable(true);
             action->setChecked( button->getValue() );
         }
+        // A plug-in greys out an entry that would refuse the current selection.
+        action->setEnabled(button->isEnabled(0));
         QObject::connect( action, SIGNAL(triggered()), this, SLOT(onRightClickActionTriggered()) );
         m.addAction(action);
     }

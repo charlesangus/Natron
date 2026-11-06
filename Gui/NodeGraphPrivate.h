@@ -233,6 +233,7 @@ public:
     }
 };
 
+class LoopBlockOverlay;
 
 class NodeGraphPrivate
 {
@@ -258,6 +259,7 @@ public:
     bool _nodeCreationShortcutEnabled;
     QGraphicsItem* _root; ///< this is the parent of all items in the graph
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
+    LoopBlockOverlay* _loopBlocks;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;

@@ -93,7 +93,7 @@ def main():
     rows = []
     last_edits = []
     for r, keys in enumerate(KEYS):
-        node = app.createNode("fr.inria.built-in.Roto")
+        node = app.createNode("Roto")
         ctx = node.getRotoContext()
         if ctx is None:
             raise RuntimeError("Roto node has no Python roto context")

@@ -171,11 +171,7 @@ protected:
         EXPECT_TRUE(node && dynamic_cast<NativeRead*>(node->getEffectInstance().get()));
         if (node) {
             // These tests compare with the raw pixels, so the file is read without conversion.
-            KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-            EXPECT_TRUE(inputSpace != NULL);
-            if (inputSpace) {
-                inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-            }
+            fileInWorkingSpace(node);
         }
 
         return node;

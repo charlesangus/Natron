@@ -265,7 +265,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
 #define kTransformParamScale "scale"
-#define kTransformParamUniform "uniform"
 #define kTransformParamSkewX "skewX"
 #define kTransformParamSkewY "skewY"
 #define kTransformParamSkewOrder "skewOrder"
@@ -363,7 +362,6 @@ public:
     KnobDoubleWPtr translate;
     KnobDoubleWPtr rotate;
     KnobDoubleWPtr scale;
-    KnobBoolWPtr scaleUniform;
     KnobDoubleWPtr skewX;
     KnobDoubleWPtr skewY;
     KnobChoiceWPtr skewOrder;

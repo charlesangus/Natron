@@ -1,10 +1,10 @@
 """GUI check that the viewer draws an amber border while its image is stale and clears it when current.
 
-Graph: CheckerBoard -> Blur (large, so a render takes seconds) -> Viewer. After the first image
-settles the border must be absent. Editing the Blur starts a slow render: the border must turn amber
-once the viewer has been stale for the delay (preference viewerStaleBorderDelayMs), still be there
-while the render runs, and be gone after the new image lands. Pixels are read from a screen grab of
-the GL viewer's four edges; a screenshot is saved for each check.
+Graph: CheckerBoard -> IDefocus (white Map) -> Viewer. After the first image settles the border must
+be absent. Raising the IDefocus size starts a slow render: the border must turn amber once the viewer
+has been stale for the delay (preference viewerStaleBorderDelayMs), still be there while the render
+runs, and be gone after the new image lands. Pixels are read from a screen grab of the GL viewer's
+four edges; a screenshot is saved for each check.
 
 Run through Tests/gui/run-gui-test.sh at 1920x1080. Screenshots (m302-stale-border-*.png) and
 results.txt go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every
@@ -21,7 +21,10 @@ RENDER_TIMEOUT_S = 120.0
 BORDER_APPEARS_S = 5.0
 WATCHDOG_S = 280
 DELAY_MS = 150
-BLUR_SIZE = 400.0
+# The render must outlast the delay plus two screen grabs, and a grab takes about 300 ms while the
+# render holds every core. A Blur of size 400 is stale for about 250 ms; this IDefocus for seconds.
+SLOW_DEFOCUS_SIZE = 500.0
+INPUT_MAP = 3
 BORDER_PX = 2
 
 try:
@@ -82,16 +85,21 @@ try:
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)}
         checker = app.createNode("CheckerBoard", -1, None, props)
         require(checker is not None, "create CheckerBoard", gt.plugin_problem("CheckerBoard"))
-        blur = app.createNode("Blur", -1, None, props)
-        require(blur is not None, "create Blur", gt.plugin_problem("Blur"))
-        blur.setPosition(0, 200)
-        require(blur.connectInput(0, checker), "the CheckerBoard feeds the Blur")
-        size = blur.getParam("size")
-        require(size is not None, "the Blur has a size parameter")
-        size.set(1.0, 1.0)
+        white = app.createNode("Constant", -1, None, props)
+        require(white is not None, "create Constant", gt.plugin_problem("Constant"))
+        white.setPosition(200, 0)
+        white.getParam("color").set(1.0, 1.0, 1.0, 1.0)
+        defocus = app.createNode("IDefocus", -1, None, props)
+        require(defocus is not None, "create IDefocus", gt.plugin_problem("IDefocus"))
+        defocus.setPosition(0, 200)
+        require(defocus.connectInput(0, checker), "the CheckerBoard feeds the IDefocus")
+        require(defocus.connectInput(INPUT_MAP, white), "the Constant is the IDefocus Map")
+        size = defocus.getParam("size")
+        require(size is not None, "the IDefocus has a size parameter")
+        size.set(1.0)
         viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer exists")
-        require(viewer.connectInput(0, blur), "the Viewer shows the Blur")
+        require(viewer.connectInput(0, defocus), "the Viewer shows the IDefocus")
         gt.close_all_panels()
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is visible")
@@ -102,7 +110,7 @@ try:
         check(ok, "no border while the viewer image is current")
         gt.shot("m302-stale-border-idle.png")
 
-        size.set(BLUR_SIZE, BLUR_SIZE)
+        size.set(SLOW_DEFOCUS_SIZE)
         ok = yield ("until", border_amber, BORDER_APPEARS_S)
         check(ok, "the border is amber once the image has been stale for the delay")
         gt.shot("m302-stale-border-stale.png")

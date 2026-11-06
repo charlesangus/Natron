@@ -114,14 +114,24 @@ FrameFuture::getRootPlanes() const
     return _rootPlanes;
 }
 
+std::vector<RegionFallback>
+FrameFuture::getRegionFallbacks() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _fallbacks;
+}
+
 void
 FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
-                    std::map<ImageLayerDesc, ImagePtr> rootPlanes)
+                    std::map<ImageLayerDesc, ImagePtr> rootPlanes,
+                    std::vector<RegionFallback> fallbacks)
 {
     QMutexLocker k(&_mutex);
 
     _retCode = retCode;
     _rootPlanes = std::move(rootPlanes);
+    _fallbacks = std::move(fallbacks);
     _finished = true;
     _finishedCond.wakeAll();
 }
@@ -148,6 +158,7 @@ struct RenderScheduler::Frame {
     bool restartOnCpu = false;
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
     std::map<ImageLayerDesc, ImagePtr> rootPlanes;
+    std::vector<RegionFallback> fallbacks;
 
     // Released only once the store holds no device image any more.
     std::shared_ptr<void> gpuLease;
@@ -1343,6 +1354,15 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if (deviceLost || !report.cpuFallback.empty()) {
+            RegionFallback fallback;
+            fallback.region = region;
+            fallback.reason = report.cpuFallback;
+            fallback.deviceLost = deviceLost;
+            fallback.retries = report.retries;
+            QMutexLocker k(&_mutex);
+            frame->fallbacks.push_back(std::move(fallback));
+        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
@@ -1879,9 +1899,9 @@ RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
         frame->context->getStore().clear();
         frame->gpuLease.reset();
         if (frame->dead) {
-            frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>());
+            frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>(), std::move(frame->fallbacks));
         } else {
-            frame->future->finish(EffectInstance::eRenderRoIRetCodeOk, std::move(frame->rootPlanes));
+            frame->future->finish(EffectInstance::eRenderRoIRetCodeOk, std::move(frame->rootPlanes), std::move(frame->fallbacks));
         }
     }
 }

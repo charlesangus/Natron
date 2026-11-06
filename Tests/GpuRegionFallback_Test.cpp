@@ -615,3 +615,102 @@ TEST_F(GpuRegionFallbackTest, KeyerWithMaskOfEmptyRoIMatchesCpu)
 
     expectRegionMatchesCpu(keyer, { keyer });
 }
+
+// A body that reports a fallback stands in for runGpuRegion, whose causes are file-local strings it sets on the report.
+TEST_F(GpuRegionFallbackTest, EachFallbackCauseSurfacesOnTheFrameResult)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const char* const causes[] = { "out of device memory", "GPU refused", "GPU error", "no GPU", "too large for the GPU" };
+    for (const char* cause : causes) {
+        _scheduler->setRegionBody([cause](const FrameRenderContextPtr&,
+                                          const FrameGraph&,
+                                          int,
+                                          const RenderScheduler::CpuFallbackLease&,
+                                          std::map<ImageLayerDesc, ImagePtr>*,
+                                          RenderScheduler::RegionReport* report) {
+            report->cpuFallback = cause;
+            report->retries = 2;
+
+            return EffectInstance::eRenderRoIRetCodeOk;
+        });
+        NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        NodePtr grade = makeGrade(1.5, 0.1);
+        ASSERT_TRUE(source && grade);
+        connectNodes(source, grade, 0, true);
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+        placeOnGpu(&run, { grade });
+        ASSERT_EQ(1u, run.graph.regions.size());
+        ASSERT_TRUE(render(&run)) << cause;
+
+        const std::vector<RegionFallback> fallbacks = run.future->getRegionFallbacks();
+        ASSERT_EQ(1u, fallbacks.size()) << cause;
+        EXPECT_EQ(0, fallbacks[0].region);
+        EXPECT_EQ(std::string(cause), fallbacks[0].reason);
+        EXPECT_EQ(2, fallbacks[0].retries);
+        EXPECT_FALSE(fallbacks[0].deviceLost);
+    }
+}
+
+TEST_F(GpuRegionFallbackTest, RegionWithoutFallbackReportsNone)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    _scheduler->setRegionBody([](const FrameRenderContextPtr&,
+                                 const FrameGraph&,
+                                 int,
+                                 const RenderScheduler::CpuFallbackLease&,
+                                 std::map<ImageLayerDesc, ImagePtr>*,
+                                 RenderScheduler::RegionReport*) {
+        return EffectInstance::eRenderRoIRetCodeOk;
+    });
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && grade);
+    connectNodes(source, grade, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    placeOnGpu(&run, { grade });
+    ASSERT_TRUE(render(&run));
+    EXPECT_TRUE(run.future->getRegionFallbacks().empty());
+}
+
+TEST_F(GpuRegionFallbackTest, DeviceLossSurfacesOnTheFrameResult)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    _scheduler->setRegionBody([](const FrameRenderContextPtr&,
+                                 const FrameGraph&,
+                                 int,
+                                 const RenderScheduler::CpuFallbackLease&,
+                                 std::map<ImageLayerDesc, ImagePtr>*,
+                                 RenderScheduler::RegionReport* report) {
+        report->deviceLost = true;
+
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    });
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && grade);
+    connectNodes(source, grade, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+    placeOnGpu(&run, { grade });
+    ASSERT_TRUE(render(&run));
+
+    const std::vector<RegionFallback> fallbacks = run.future->getRegionFallbacks();
+    ASSERT_EQ(1u, fallbacks.size());
+    EXPECT_EQ(0, fallbacks[0].region);
+    EXPECT_TRUE(fallbacks[0].deviceLost);
+    EXPECT_TRUE(fallbacks[0].reason.empty());
+}

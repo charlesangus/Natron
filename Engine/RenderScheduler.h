@@ -203,6 +203,17 @@ struct FrameGraph {
 };
 
 /**
+ * @brief A GPU region that did not run on the GPU. reason is the cause GpuRegionTask names, empty when the device was
+ * lost, in which case the whole frame is rendered again on the CPU.
+ **/
+struct RegionFallback {
+    int region = -1;
+    std::string reason;
+    bool deviceLost = false;
+    int retries = 0;
+};
+
+/**
  * @brief The outcome of a frame submitted to the RenderScheduler.
  **/
 class FrameFuture {
@@ -227,16 +238,24 @@ public:
      **/
     std::map<ImageLayerDesc, ImagePtr> getRootPlanes() const;
 
+    /**
+     * @brief The regions that fell back to the CPU, in the order they ended; empty until the frame finished.
+     **/
+    std::vector<RegionFallback> getRegionFallbacks() const;
+
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode, std::map<ImageLayerDesc, ImagePtr> rootPlanes);
+    void finish(EffectInstance::RenderRoIRetCode retCode,
+                std::map<ImageLayerDesc, ImagePtr> rootPlanes,
+                std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 
     mutable QMutex _mutex;
     QWaitCondition _finishedCond;
     bool _finished;
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
+    std::vector<RegionFallback> _fallbacks;
 };
 
 /**

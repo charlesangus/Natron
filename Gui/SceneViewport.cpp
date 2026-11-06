@@ -113,8 +113,11 @@
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/stagePopulationMask.h>
+#include <pxr/usd/usd/tokens.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/modelAPI.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
@@ -546,12 +549,275 @@ namespace {
 class SpikeStageListener
     : public TfWeakBase {
 public:
-    void onObjectsChanged(const UsdNotice::ObjectsChanged&)
+    void onObjectsChanged(const UsdNotice::ObjectsChanged& notice)
     {
         ++count;
+        resyncedPaths += notice.GetResyncedPaths().size();
+        infoOnlyPaths += notice.GetChangedInfoOnlyPaths().size();
     }
 
     std::atomic<U64> count { 0 };
+    std::atomic<U64> resyncedPaths { 0 };
+    std::atomic<U64> infoOnlyPaths { 0 };
+};
+
+// The default predicate less UsdPrimIsLoaded: an unloaded payload prim is a row like any other.
+const Usd_PrimFlagsConjunction kSessionRowPredicate = UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract;
+
+// Draw states as draw mode opinions on the stage's session layer, with the commands of
+// SceneHydraFilter. The caller holds the viewer lock, as any stage edit needs.
+//
+// A reveal's unit is a direct child of the revealed prim, since a draw mode opinion cannot release
+// part of a subtree: a frame reveals whole children until it has covered its prims.
+//
+// Authored through Sdf because UsdGeomModelAPI::Apply and attribute creation read composed state,
+// which is not valid inside the SdfChangeBlock that makes a batch one recomposition.
+class SpikeSessionDrawMode {
+public:
+    SpikeSessionDrawMode(const UsdStageRefPtr& stage,
+                         const SdfLayerRefPtr& layer)
+        : _stage(stage)
+        , _layer(layer)
+        , _keepSpecs(TfGetenv("NATRON_DRAW_STATE_RESTORE") == "value")
+    {
+    }
+
+    void prune(const SdfPath& path,
+               UsdTimeCode time)
+    {
+        cancelReveal();
+        const Row row = makeRow(path, time);
+        SdfChangeBlock block;
+        authorBounds(row);
+        _pruned.insert(path);
+    }
+
+    void restore(const SdfPath& path)
+    {
+        cancelReveal();
+        if (_masked) {
+            _stage->SetPopulationMask(UsdStagePopulationMask::All());
+            _masked = false;
+        }
+        for (std::set<SdfPath>::iterator it = _pruned.lower_bound(path); (it != _pruned.end()) && it->HasPrefix(path);) {
+            it = _pruned.erase(it);
+        }
+        SdfChangeBlock block;
+        const SdfPrimSpecHandle spec = _layer->GetPrimAtPath(path);
+        if (spec && _keepSpecs && spec->GetNameChildren().empty()) {
+            setAttribute(spec, UsdGeomTokens->modelDrawMode, SdfValueTypeNames->Token, UsdGeomTokens->default_);
+        } else {
+            removeSpec(path);
+        }
+    }
+
+    bool beginReveal(const SdfPath& path,
+                     UsdTimeCode time)
+    {
+        cancelReveal();
+        const UsdPrim prim = _stage->GetPrimAtPath(path);
+        if (!prim || (_pruned.count(path) == 0)) {
+            return false;
+        }
+        std::vector<Row> rows;
+        UsdGeomBBoxCache bounds(time, { UsdGeomTokens->default_ }, true);
+        for (const UsdPrim& child : prim.GetFilteredChildren(kSessionRowPredicate)) {
+            rows.push_back(makeRow(child, bounds));
+            rows.back().prims = countPrims(child);
+        }
+        SdfChangeBlock block;
+        for (const Row& row : rows) {
+            authorBounds(row);
+        }
+        setAttribute(_layer->GetPrimAtPath(path), UsdGeomTokens->modelDrawMode, SdfValueTypeNames->Token, UsdGeomTokens->default_);
+        _revealRoot = path;
+        _revealRows.swap(rows);
+
+        return true;
+    }
+
+    std::size_t stepReveal(std::size_t maxPrims)
+    {
+        std::size_t revealed = 0;
+        SdfChangeBlock block;
+        while (!_revealRows.empty() && (revealed < maxPrims)) {
+            revealed += _revealRows.back().prims;
+            removeSpec(_revealRows.back().path);
+            _revealRows.pop_back();
+        }
+        if (_revealRows.empty()) {
+            removeSpec(_revealRoot);
+            _pruned.erase(_revealRoot);
+            _revealRoot = SdfPath();
+        }
+
+        return revealed;
+    }
+
+    void cancelReveal()
+    {
+        if (!isRevealing()) {
+            return;
+        }
+        SdfChangeBlock block;
+        for (const Row& row : _revealRows) {
+            removeSpec(row.path);
+        }
+        setAttribute(_layer->GetPrimAtPath(_revealRoot), UsdGeomTokens->modelDrawMode, SdfValueTypeNames->Token, UsdGeomTokens->bounds);
+        _revealRoot = SdfPath();
+        _revealRows.clear();
+    }
+
+    bool isRevealing() const
+    {
+        return !_revealRoot.IsEmpty();
+    }
+
+    // Only these rows stay populated, the counterpart of the filter pruning everything but its
+    // overlay; the population mask is the one way to hold the rest out of Hydra at this scale.
+    // Returns how many rows have bounds to draw.
+    int setBoxes(const std::vector<UsdPrim>& prims,
+                 UsdTimeCode time)
+    {
+        std::vector<Row> rows;
+        UsdGeomBBoxCache bounds(time, { UsdGeomTokens->default_ }, true);
+        UsdStagePopulationMask mask;
+        for (const UsdPrim& prim : prims) {
+            const int unknownBefore = _rowsWithoutExtent;
+            Row row = makeRow(prim, bounds);
+            if (_rowsWithoutExtent == unknownBefore) {
+                mask.Add(row.path);
+                rows.push_back(std::move(row));
+            }
+        }
+        {
+            SdfChangeBlock block;
+            for (const SdfPath& path : _boxRows) {
+                removeSpec(path);
+            }
+            _boxRows.clear();
+            for (const Row& row : rows) {
+                authorBounds(row);
+                _boxRows.push_back(row.path);
+            }
+        }
+        _stage->SetPopulationMask(mask);
+        _masked = true;
+
+        return int(rows.size());
+    }
+
+    std::size_t countPrims(const SdfPath& path) const
+    {
+        const UsdPrim prim = _stage->GetPrimAtPath(path);
+
+        return prim ? countPrims(prim) : 0;
+    }
+
+    const std::set<SdfPath>& getPruned() const { return _pruned; }
+    int getRowsWithoutExtent() const { return _rowsWithoutExtent; }
+    const char* getRestoreMode() const { return _keepSpecs ? "value" : "remove"; }
+
+private:
+    struct Row {
+        SdfPath path;
+        // Empty when the prim already composes one, or has no bounds that can be known.
+        VtVec3fArray extentsHint;
+        std::size_t prims = 0;
+    };
+
+    std::size_t countPrims(const UsdPrim& prim) const
+    {
+        const UsdPrimRange range(prim, kSessionRowPredicate);
+
+        return std::distance(range.begin(), range.end());
+    }
+
+    Row makeRow(const SdfPath& path,
+                UsdTimeCode time)
+    {
+        const UsdPrim prim = _stage->GetPrimAtPath(path);
+        if (!prim) {
+            Row row;
+            row.path = path;
+            ++_rowsWithoutExtent;
+
+            return row;
+        }
+        UsdGeomBBoxCache bounds(time, { UsdGeomTokens->default_ }, true);
+
+        return makeRow(prim, bounds);
+    }
+
+    Row makeRow(const UsdPrim& prim,
+                UsdGeomBBoxCache& bounds)
+    {
+        Row row;
+        row.path = prim.GetPath();
+        VtVec3fArray authored;
+        if (UsdGeomModelAPI(prim).GetExtentsHint(&authored)) {
+            return row;
+        }
+        const GfRange3d range = bounds.ComputeUntransformedBound(prim).ComputeAlignedRange();
+        if (range.IsEmpty()) {
+            ++_rowsWithoutExtent;
+
+            return row;
+        }
+        // Only the default purpose's pair: ComputeExtentsHint would walk the subtree per purpose.
+        row.extentsHint = { GfVec3f(range.GetMin()), GfVec3f(range.GetMax()) };
+
+        return row;
+    }
+
+    template <typename T>
+    void setAttribute(const SdfPrimSpecHandle& spec,
+                      const TfToken& name,
+                      const SdfValueTypeName& type,
+                      const T& value)
+    {
+        SdfAttributeSpecHandle attribute = _layer->GetAttributeAtPath(spec->GetPath().AppendProperty(name));
+        if (!attribute) {
+            attribute = SdfAttributeSpec::New(spec, name.GetString(), type, SdfVariabilityUniform);
+        }
+        attribute->SetDefaultValue(VtValue(value));
+    }
+
+    void authorBounds(const Row& row)
+    {
+        const SdfPrimSpecHandle spec = SdfCreatePrimInLayer(_layer, row.path);
+        if (!spec->HasInfo(UsdTokens->apiSchemas)) {
+            SdfTokenListOp schemas;
+            schemas.SetPrependedItems({ TfToken("GeomModelAPI") });
+            spec->SetInfo(UsdTokens->apiSchemas, VtValue(schemas));
+        }
+        setAttribute(spec, UsdGeomTokens->modelApplyDrawMode, SdfValueTypeNames->Bool, true);
+        setAttribute(spec, UsdGeomTokens->modelDrawMode, SdfValueTypeNames->Token, UsdGeomTokens->bounds);
+        if (!row.extentsHint.empty()) {
+            setAttribute(spec, UsdGeomTokens->extentsHint, SdfValueTypeNames->Float3Array, row.extentsHint);
+        }
+    }
+
+    // And the ancestors it leaves holding nothing, so the layer only ever has what is set.
+    void removeSpec(const SdfPath& path)
+    {
+        SdfPrimSpecHandle spec = _layer->GetPrimAtPath(path);
+        while (spec && !spec->GetPath().IsAbsoluteRootPath()) {
+            const SdfPrimSpecHandle parent = spec->GetRealNameParent();
+            parent->RemoveNameChild(spec);
+            spec = parent->IsInert() ? parent : SdfPrimSpecHandle();
+        }
+    }
+
+    UsdStageRefPtr _stage;
+    SdfLayerRefPtr _layer;
+    bool _keepSpecs;
+    std::set<SdfPath> _pruned;
+    SdfPath _revealRoot;
+    std::vector<Row> _revealRows;
+    std::vector<SdfPath> _boxRows;
+    bool _masked = false;
+    int _rowsWithoutExtent = 0;
 };
 
 double
@@ -640,6 +906,9 @@ struct SceneViewportRenderer::Implementation {
 
     // The filter belongs to the engine's render index, so its pruned set goes with the engine.
     SceneHydraFilter::WeakPtr spikeFilter;
+    // Opinions on a layer the stage owns, which outlives any engine.
+    std::unique_ptr<SpikeSessionDrawMode> spikeSession;
+    U64 spikeCounted = 0;
     std::string spikeInstanceId;
     std::unique_ptr<SpikeStageListener> spikeListener;
     const UsdImagingGLEngine* spikeRenderedEngine = nullptr;
@@ -1065,12 +1334,17 @@ struct SceneViewportRenderer::Implementation {
         if (!rendererError.empty()) {
             return false;
         }
-        SceneHydraFilter::registerForAllRenderers();
+        if (!SceneOps::drawStateUsesSessionLayer()) {
+            SceneHydraFilter::registerForAllRenderers();
+        }
         (void)SceneHydraFilter::takeAppendedInstanceId();
         // Named even for Storm: with no id the engine takes the first delegate by priority that
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        // Without it the stage scene index leaves unloaded prims out of Hydra altogether, so no draw
+        // mode opinion on an unloaded row could ever draw.
+        parameters.displayUnloadedPrimsWithBounds = SceneOps::drawStateUsesSessionLayer();
         {
             TfErrorMark mark;
             engine.reset(new UsdImagingGLEngine(parameters));
@@ -1096,7 +1370,12 @@ struct SceneViewportRenderer::Implementation {
         }
         // Applied before the first render, so that the first population meets the prefix already.
         const std::string initialPrune = TfGetenv("NATRON_HYDRA_SPIKE_PRUNE");
-        if (spikeFilter && !initialPrune.empty()) {
+        if (!spikeSession && sceneStage->getDrawStateLayer()) {
+            spikeSession.reset(new SpikeSessionDrawMode(currentStage(), sceneStage->getDrawStateLayer()));
+        }
+        if (spikeSession && !initialPrune.empty()) {
+            spikeSession->prune(SdfPath(initialPrune), UsdTimeCode(timeCode()));
+        } else if (spikeFilter && !initialPrune.empty()) {
             spikeFilter->prune(SdfPath(initialPrune));
         }
         // Without a render output Storm draws straight into the bound framebuffer and the colour
@@ -1570,7 +1849,7 @@ struct SceneViewportRenderer::Implementation {
             std::lock_guard<std::mutex> lock(stageMutex);
             const SceneHydraFilter::Clock::time_point start = SceneHydraFilter::Clock::now();
             std::vector<UsdPrim> prims;
-            UsdPrimRange range = stage->Traverse();
+            UsdPrimRange range = UsdPrimRange::Stage(stage, kSessionRowPredicate);
             for (UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
                 if (int(it->GetPath().GetPathElementCount()) == depth) {
                     prims.push_back(*it);
@@ -1578,6 +1857,17 @@ struct SceneViewportRenderer::Implementation {
                 }
             }
             const std::size_t step = std::max<std::size_t>(1, prims.size() / std::size_t(std::max(1, maxBoxes)));
+            if (spikeSession) {
+                std::vector<UsdPrim> rows;
+                for (std::size_t i = 0; (i < prims.size()) && (int(rows.size()) < maxBoxes); i += step) {
+                    rows.push_back(prims[i]);
+                }
+                boxesReady = spikeSession->setBoxes(rows, time);
+                boxesBuildMs = elapsedMs(start, SceneHydraFilter::Clock::now());
+                boxesBuilding = false;
+
+                return;
+            }
             UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
             std::vector<GLfloat> data;
             for (std::size_t i = 0; (i < prims.size()) && (int(data.size() / 6) < maxBoxes); i += step) {
@@ -1601,13 +1891,36 @@ struct SceneViewportRenderer::Implementation {
         });
     } // startBoxes
 
+    bool spikeRevealing() const
+    {
+        const SceneHydraFilter* const filter = get_pointer(spikeFilter);
+
+        return (filter && filter->isRevealing()) || (spikeSession && spikeSession->isRevealing());
+    }
+
+    void startRevealStats(int primsPerFrame,
+                          SceneHydraFilter::Clock::time_point start)
+    {
+        spikeRevealBatch = std::size_t(std::max(1, primsPerFrame));
+        spikeRevealStart = start;
+        spikeRevealFrames = 0;
+        spikeRevealPrims = 0;
+        spikeRevealMs = 0.;
+        spikeRevealWorstFrameMs = 0.;
+    }
+
     // Commands run between renders, on the thread and under the lock that render on, because they
     // make the filter send notices straight into the render index.
     void beginSpikeFrame()
     {
         SceneHydraFilter* const filter = get_pointer(spikeFilter);
+        SpikeSessionDrawMode* const session = spikeSession.get();
+        const UsdTimeCode time(timeCode());
         const SceneHydraFilter::Clock::time_point start = SceneHydraFilter::Clock::now();
 
+        if (session) {
+            boxesDrawn = boxesReady;
+        }
         spikeRanCommand = !spikeCommands.empty();
         spikeAddedSentBefore = filter ? filter->getAddedSentCount() : 0;
         for (const std::string& command : spikeCommands) {
@@ -1618,6 +1931,20 @@ struct SceneViewportRenderer::Implementation {
             if (verb == "boxes") {
                 words >> first >> second;
                 startBoxes(first, second);
+            } else if (session) {
+                words >> argument >> first;
+                const SdfPath path = argument.empty() ? SdfPath() : SdfPath(argument);
+                if (verb == "cancel") {
+                    session->cancelReveal();
+                } else if (verb == "count") {
+                    spikeCounted = session->countPrims(path);
+                } else if (verb == "prune") {
+                    session->prune(path, time);
+                } else if (verb == "restore") {
+                    session->restore(path);
+                } else if ((verb == "reveal") && session->beginReveal(path, time)) {
+                    startRevealStats(first, start);
+                }
             } else if (filter && (verb == "cancel")) {
                 filter->cancelReveal();
             } else if (filter) {
@@ -1628,21 +1955,16 @@ struct SceneViewportRenderer::Implementation {
                 } else if (verb == "restore") {
                     filter->restore(path);
                 } else if ((verb == "reveal") && filter->beginReveal(path)) {
-                    spikeRevealBatch = std::size_t(std::max(1, first));
-                    spikeRevealStart = start;
-                    spikeRevealFrames = 0;
-                    spikeRevealPrims = 0;
-                    spikeRevealMs = 0.;
-                    spikeRevealWorstFrameMs = 0.;
+                    startRevealStats(first, start);
                 }
             }
             ++spikeDone;
         }
         spikeCommands.clear();
         spikeApplyMs = elapsedMs(start, SceneHydraFilter::Clock::now());
-        spikeRevealStepped = filter && filter->isRevealing();
+        spikeRevealStepped = spikeRevealing();
         if (spikeRevealStepped) {
-            spikeRevealPrims += filter->stepReveal(spikeRevealBatch);
+            spikeRevealPrims += session ? session->stepReveal(spikeRevealBatch) : filter->stepReveal(spikeRevealBatch);
         }
     } // beginSpikeFrame
 
@@ -1723,6 +2045,9 @@ struct SceneViewportRenderer::Implementation {
     // guides. Needs stageMutex.
     void drawBoxes(const GfFrustum& frustum)
     {
+        if (spikeSession) {
+            return;
+        }
         boxesDrawn = 0;
         if (boxData.empty() || !ensureBoxProgram()) {
             return;
@@ -1818,7 +2143,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     SceneWriteBarrier::ReadScope read;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     if (!_imp->sceneStage) {
-        _imp->sceneStage.reset(new SceneStage);
+        _imp->sceneStage.reset(new SceneStage(true));
     }
     if (!_imp->sceneStage->isValid()) {
         _imp->shown = false;
@@ -2994,9 +3319,7 @@ SceneViewportRenderer::queueSpikeCommand(const std::string& command)
 bool
 SceneViewportRenderer::spikeNeedsFrame() const
 {
-    const SceneHydraFilter* const filter = get_pointer(_imp->spikeFilter);
-
-    return !_imp->spikeCommands.empty() || _imp->boxesBuilding || (_imp->boxesReady != _imp->boxesDrawn) || (filter && filter->isRevealing());
+    return !_imp->spikeCommands.empty() || _imp->boxesBuilding || (_imp->boxesReady != _imp->boxesDrawn) || _imp->spikeRevealing();
 }
 
 int
@@ -3011,6 +3334,8 @@ SceneViewportRenderer::getSpikeStats() const
     const SceneHydraFilter* const filter = get_pointer(_imp->spikeFilter);
     QJsonObject stats;
 
+    stats[QStringLiteral("mechanism")] = QLatin1String(SceneOps::drawStateUsesSessionLayer() ? "session" : "filter");
+    stats[QStringLiteral("loadNone")] = SceneOps::drawStateLoadNone();
     stats[QStringLiteral("filterBound")] = (filter != nullptr);
     stats[QStringLiteral("renderInstanceId")] = QString::fromStdString(_imp->spikeInstanceId);
     stats[QStringLiteral("done")] = double(_imp->spikeDone);
@@ -3020,7 +3345,7 @@ SceneViewportRenderer::getSpikeStats() const
     stats[QStringLiteral("addedSent")] = double(_imp->spikeAddedSent);
     stats[QStringLiteral("firstRenderMs")] = _imp->spikeFirstRenderMs;
     stats[QStringLiteral("populateMs")] = _imp->spikePopulateMs;
-    stats[QStringLiteral("revealActive")] = filter && filter->isRevealing();
+    stats[QStringLiteral("revealActive")] = _imp->spikeRevealing();
     stats[QStringLiteral("revealFrames")] = double(_imp->spikeRevealFrames);
     stats[QStringLiteral("revealPrims")] = double(_imp->spikeRevealPrims);
     stats[QStringLiteral("revealMs")] = _imp->spikeRevealMs;
@@ -3030,7 +3355,19 @@ SceneViewportRenderer::getSpikeStats() const
     stats[QStringLiteral("boxesBuildMs")] = double(_imp->boxesBuildMs);
     stats[QStringLiteral("boxesDrawn")] = _imp->boxesDrawn;
     stats[QStringLiteral("stageNotices")] = _imp->spikeListener ? double(_imp->spikeListener->count) : 0.;
+    stats[QStringLiteral("resyncedPaths")] = _imp->spikeListener ? double(_imp->spikeListener->resyncedPaths) : 0.;
+    stats[QStringLiteral("infoOnlyPaths")] = _imp->spikeListener ? double(_imp->spikeListener->infoOnlyPaths) : 0.;
     stats[QStringLiteral("stageEdits")] = double(_imp->stageEditCount);
+    if (const SpikeSessionDrawMode* const session = _imp->spikeSession.get()) {
+        stats[QStringLiteral("counted")] = double(_imp->spikeCounted);
+        stats[QStringLiteral("rowsWithoutExtent")] = session->getRowsWithoutExtent();
+        stats[QStringLiteral("restoreMode")] = QLatin1String(session->getRestoreMode());
+        QJsonArray pruned;
+        for (const SdfPath& path : session->getPruned()) {
+            pruned.append(QString::fromStdString(path.GetString()));
+        }
+        stats[QStringLiteral("pruned")] = pruned;
+    }
     if (filter) {
         stats[QStringLiteral("inputAdded")] = double(filter->getInputAddedCount());
         stats[QStringLiteral("inputRemoved")] = double(filter->getInputRemovedCount());

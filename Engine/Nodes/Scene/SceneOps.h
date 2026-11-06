@@ -290,10 +290,24 @@ void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
                        const SceneMetadata* applied);
 
 /**
- * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
- * composes is opened here, so getStageOpenCount() counts them all.
+ * @brief Opens a stage on root with the given session layer, none by default, and every payload
+ * loaded unless drawStateLoadNone(). Every stage Natron composes is opened here, so
+ * getStageOpenCount() counts them all.
  **/
-PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root,
+                                 const PXR_NS::SdfLayerHandle& sessionLayer = PXR_NS::SdfLayerHandle());
+
+/**
+ * @brief NATRON_DRAW_STATE_MECHANISM=session: viewer draw states are draw mode opinions on a
+ * session layer rather than a Hydra filter with a box overlay.
+ **/
+bool drawStateUsesSessionLayer();
+
+/**
+ * @brief NATRON_DRAW_STATE_LOAD_NONE=1 or 0; unset means on with the session mechanism and off with
+ * the filter. Applies to every stage, renders included.
+ **/
+bool drawStateLoadNone();
 
 /**
  * @brief How many stages openStage() has opened in this process.

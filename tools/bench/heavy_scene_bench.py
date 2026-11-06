@@ -10,13 +10,21 @@
                          heavy_city_payloads)
         BENCH_GPU        1 when the display is a real GPU; otherwise frame-dependent budgets are
                          reported as not valid (llvmpipe and GitHub runners do not count)
+        NATRON_DRAW_STATE_MECHANISM  filter (default) or session: read by Natron and recorded here
+        NATRON_DRAW_STATE_LOAD_NONE  1 or 0: open stages with payloads unloaded (default session on,
+                         filter off)
+        NATRON_DRAW_STATE_RESTORE  session only: remove (default) drops a restored row's spec, value
+                         keeps it and sets model:drawMode=default, which recomposes nothing
+        BENCH_SIBLING_ROW  prim path sibling_state acts on (default city /World/Block0/B1, flat
+                         /World/c5)
         BENCH_BRANCH     prim path prune_restore, noedit and reveal_cancel act on (default city
                          /World/Block0, flat /World)
         BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
         BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
         BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
         BENCH_BOXES      boxes orbit10k draws (default 10000)
-        BENCH_BOX_DEPTH  path depth of the prims that get a box (default city 4, flat 2)
+        BENCH_BOX_DEPTH  path depth of the prims that get a box (default flat 2, city 4, or 3 with
+                         payloads unloaded)
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_RESULT     JSON-lines file the results are appended to
@@ -31,6 +39,12 @@ own (twirl, reveal, draw state) by adding an entry.
 The Hydra filter actions need a binary with SceneHydraFilter. populate_pruned and populate_full open
 the file themselves, so one of them comes first in place of open, once per process. An action
 restarts the heartbeat after its setup, so stall_ms covers only what it measures.
+
+The session mechanism takes the same commands: prune authors bounds on a row, restore clears them,
+reveal releases direct children per frame, and boxes authors bounds on the rows with a population
+mask holding out the rest, which a later restore lifts at the cost of recomposing the whole stage;
+run orbit10k last. It has no filter to time the stage scene index, so first_render_ms is the upper
+bound on population, and stage_edits is reported rather than judged since it edits by design.
 
 Budgets: main-thread stall under 100 ms; first boxes under 2 s on the payload city; no payload file
 opened that the action did not request; orbit at or above 30 fps.
@@ -201,7 +215,12 @@ try:
     reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
     reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
     box_count = int(os.environ.get("BENCH_BOXES", "10000"))
-    box_depth = int(os.environ.get("BENCH_BOX_DEPTH", {"city": "4", "flat": "2"}[fixture]))
+    mechanism = os.environ.get("NATRON_DRAW_STATE_MECHANISM", "filter")
+    require(mechanism in ("filter", "session"), "NATRON_DRAW_STATE_MECHANISM is filter or session, not %r" % mechanism)
+    session = mechanism == "session"
+    load_none = os.environ.get("NATRON_DRAW_STATE_LOAD_NONE", "1" if session else "0") == "1"
+    box_depth = int(os.environ.get("BENCH_BOX_DEPTH", {"city": "3" if load_none else "4", "flat": "2"}[fixture]))
+    sibling_row = os.environ.get("BENCH_SIBLING_ROW", {"city": "/World/Block0/B1", "flat": "/World/c5"}[fixture])
 
     def spike_stats():
         text = prop("natronHydraSpikeStats")
@@ -231,11 +250,12 @@ try:
     def populate(m):
         yield from action_open(m)
         stats = spike_stats()
-        check(stats.get("filterBound"), "populate: the filter was appended to this viewer's engine (%r)" % (stats.get("renderInstanceId"),))
+        check(session or stats.get("filterBound"), "populate: the filter was appended to this viewer's engine (%r)" % (stats.get("renderInstanceId"),))
         m.values["render_instance_id"] = stats.get("renderInstanceId")
         m.values["first_render_ms"] = round(stats.get("firstRenderMs", -1), 1)
-        m.values["stage_scene_index_population_ms"] = round(stats.get("populateMs", -1), 1)
+        m.values["stage_scene_index_population_ms"] = None if session else round(stats.get("populateMs", -1), 1)
         m.values["prims_added_upstream"] = stats.get("inputAdded")
+        m.values["rows_without_extent"] = stats.get("rowsWithoutExtent")
 
     def action_populate_pruned(m):
         # The first render must already find the prefix, and no scene view exists to send it to.
@@ -250,11 +270,13 @@ try:
 
     def action_prune_restore(m):
         yield from clear_pruned(branch)
+        # Counted ahead of the heartbeat: the filter gets this for free, and session has to walk.
+        counted = (yield from spike("count " + branch)) if session else None
         heartbeat.start()
         pruned = yield from spike("prune " + branch)
         restored = yield from spike("restore " + branch)
         m.values["branch"] = branch
-        m.values["branch_prims"] = restored.get("addedSent")
+        m.values["branch_prims"] = counted["counted"] if session else restored.get("addedSent")
         for name, stats in (("prune", pruned), ("restore", restored)):
             m.values[name + "_apply_ms"] = round(stats["applyMs"], 2)
             m.values[name + "_frame_ms"] = round(stats["frameMs"], 2)
@@ -294,8 +316,12 @@ try:
         m.values["reveal_first_frame_ms"] = round(started["frameMs"], 2)
 
     def action_orbit10k(m):
-        # Pruning first leaves only boxes for the frame rate to pay for.
-        yield from prepare_pruned(root_prim)
+        # Only boxes are left for the frame rate to pay for: the filter prunes everything, and
+        # session's boxes command masks out everything but its rows.
+        if session:
+            yield from clear_pruned(root_prim)
+        else:
+            yield from prepare_pruned(root_prim)
         yield from spike("boxes %d %d" % (box_depth, box_count))
         ok = yield ("until", lambda: not spike_stats().get("boxesBuilding", True) and spike_stats().get("boxesDrawn", 0) == spike_stats().get("boxesReady", -1), TIMEOUT_S)
         check(ok, "orbit10k: the boxes were built and drawn")
@@ -304,6 +330,23 @@ try:
         m.values["boxes_build_ms"] = round(stats["boxesBuildMs"], 1)
         heartbeat.start()
         yield from action_orbit(m)
+
+    def action_sibling_state(m):
+        yield from clear_pruned(sibling_row)
+        before = spike_stats()
+        heartbeat.start()
+        for pass_name in ("first", "second"):
+            pruned = yield from spike("prune " + sibling_row)
+            restored = yield from spike("restore " + sibling_row)
+            for name, stats in (("set", pruned), ("clear", restored)):
+                m.values["sibling_%s_%s_apply_ms" % (pass_name, name)] = round(stats["applyMs"], 2)
+                m.values["sibling_%s_%s_frame_ms" % (pass_name, name)] = round(stats["frameMs"], 2)
+                m.values["sibling_%s_%s_total_ms" % (pass_name, name)] = round(stats["totalMs"], 2)
+        after = spike_stats()
+        m.values["sibling_row"] = sibling_row
+        m.values["restore_mode"] = after.get("restoreMode")
+        m.values["sibling_resynced_paths"] = after["resyncedPaths"] - before["resyncedPaths"]
+        m.values["sibling_info_only_paths"] = after["infoOnlyPaths"] - before["infoOnlyPaths"]
 
     def action_noedit(m):
         def edits():
@@ -335,6 +378,7 @@ try:
         "reveal": action_reveal,
         "reveal_cancel": action_reveal_cancel,
         "orbit10k": action_orbit10k,
+        "sibling_state": action_sibling_state,
         "noedit": action_noedit,
     }
 
@@ -361,7 +405,7 @@ try:
             budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "stage_edits" in m.values:
-            budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
+            budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True, applicable=not session)
         if "orbit_fps" in m.values:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
         return budgets
@@ -384,6 +428,8 @@ try:
                 "label": label,
                 "scenario": name,
                 "fixture": fixture,
+                "mechanism": mechanism,
+                "load_none": load_none,
                 "file": os.path.basename(path),
                 "gpu": bool(gpu),
                 "frame_rate": "valid" if gpu else "not valid on llvmpipe",

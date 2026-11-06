@@ -57,8 +57,9 @@ NATRON_NAMESPACE_ENTER
  **/
 class SceneStage {
 public:
-    // Opens the stage on an empty root. isValid() is false when OpenUSD is unusable.
-    SceneStage();
+    // Opens the stage on an empty root. isValid() is false when OpenUSD is unusable. A viewer's
+    // stage has a session layer when SceneOps::drawStateUsesSessionLayer().
+    explicit SceneStage(bool forViewer = false);
 
     ~SceneStage();
 
@@ -66,6 +67,9 @@ public:
 
     // The stage, the same object for the SceneStage's whole life.
     const PXR_NS::UsdStageRefPtr& getStage() const;
+
+    // Null when the stage has none.
+    const PXR_NS::SdfLayerRefPtr& getDrawStateLayer() const;
 
     // The payload last synced, the empty one before any sync.
     const ScenePayload& getPayload() const;
@@ -115,6 +119,7 @@ private:
     };
 
     PXR_NS::SdfLayerRefPtr _root;
+    PXR_NS::SdfLayerRefPtr _drawStates;
     // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
     PXR_NS::SdfLayerRefPtr _projections;
     std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;

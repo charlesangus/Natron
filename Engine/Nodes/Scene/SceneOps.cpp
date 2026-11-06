@@ -465,18 +465,35 @@ namespace {
     std::atomic<U64> stageOpenCount(0);
 }
 
+bool
+drawStateUsesSessionLayer()
+{
+    static const bool session = (PXR_NS::TfGetenv("NATRON_DRAW_STATE_MECHANISM") == "session");
+
+    return session;
+}
+
+bool
+drawStateLoadNone()
+{
+    static const bool loadNone = PXR_NS::TfGetenvBool("NATRON_DRAW_STATE_LOAD_NONE", drawStateUsesSessionLayer());
+
+    return loadNone;
+}
+
 PXR_NS::UsdStageRefPtr
-openStage(const PXR_NS::SdfLayerRefPtr& root)
+openStage(const PXR_NS::SdfLayerRefPtr& root,
+          const PXR_NS::SdfLayerHandle& sessionLayer)
 {
     if (!root) {
         return PXR_NS::UsdStageRefPtr();
     }
     ++stageOpenCount;
 
-    // The session layer is passed explicitly as null: the Open overload without one creates an
-    // anonymous session layer (stage.h). Nothing edits these stages but their owner, through the
-    // root layer.
-    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+    // The session layer is always passed, null for most stages: the Open overload without one
+    // creates an anonymous session layer (stage.h). Nothing edits those stages but their owner,
+    // through the root layer.
+    return PXR_NS::UsdStage::Open(root, sessionLayer, drawStateLoadNone() ? PXR_NS::UsdStage::LoadNone : PXR_NS::UsdStage::LoadAll);
 }
 
 U64
@@ -517,6 +534,22 @@ compose(const ScenePayload& payload)
     return openStage(resolved);
 }
 
+namespace {
+    // Opening a layer is what a deferred payload has to avoid, and GetCompositionAssetDependencies
+    // does not say which arc an asset came from, so the payload arcs are read off the specs.
+    void
+    collectPayloadAssets(const PXR_NS::SdfPrimSpecHandle& spec,
+                         std::set<std::string>* assets)
+    {
+        for (const PXR_NS::SdfPrimSpecHandle& child : spec->GetNameChildren()) {
+            for (const PXR_NS::SdfPayload& payload : child->GetFieldAs<PXR_NS::SdfPayloadListOp>(PXR_NS::SdfFieldKeys->Payload).GetAppliedItems()) {
+                assets->insert(payload.GetAssetPath());
+            }
+            collectPayloadAssets(child, assets);
+        }
+    }
+}
+
 std::vector<PXR_NS::SdfLayerRefPtr>
 getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
                     std::vector<std::string>* missingPaths)
@@ -542,8 +575,13 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
         if (!current->IsAnonymous()) {
             closure.push_back(current);
         }
-        for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
-            if (assetPath.empty()) {
+        const std::set<std::string> dependencies = current->GetCompositionAssetDependencies();
+        std::set<std::string> payloadAssets;
+        if (drawStateLoadNone() && !dependencies.empty()) {
+            collectPayloadAssets(current->GetPseudoRoot(), &payloadAssets);
+        }
+        for (const std::string& assetPath : dependencies) {
+            if (assetPath.empty() || (payloadAssets.count(assetPath) != 0)) {
                 continue;
             }
             // Resolves assetPath against current's location; FindOrOpenRelativeToLayer needs a

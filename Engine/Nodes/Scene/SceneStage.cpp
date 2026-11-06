@@ -29,7 +29,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-SceneStage::SceneStage()
+SceneStage::SceneStage(bool forViewer)
 {
     if (!SceneOps::checkUsdRuntime(nullptr)) {
         return;
@@ -43,7 +43,10 @@ SceneStage::SceneStage()
     // The root carries every metadata field from the start, so later syncs only rewrite the
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
-    _stage = SceneOps::openStage(_root);
+    if (forViewer && SceneOps::drawStateUsesSessionLayer()) {
+        _drawStates = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-draw-states");
+    }
+    _stage = SceneOps::openStage(_root, _drawStates);
 }
 
 SceneStage::~SceneStage()
@@ -60,6 +63,12 @@ const PXR_NS::UsdStageRefPtr&
 SceneStage::getStage() const
 {
     return _stage;
+}
+
+const PXR_NS::SdfLayerRefPtr&
+SceneStage::getDrawStateLayer() const
+{
+    return _drawStates;
 }
 
 const ScenePayload&

@@ -55,6 +55,7 @@
 #include <pxr/base/plug/plugin.h>
 #include <pxr/base/plug/registry.h>
 #include <pxr/base/tf/errorMark.h>
+#include <pxr/base/tf/getenv.h>
 #include <pxr/base/tf/notice.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
@@ -70,6 +71,7 @@
 #include <pxr/usd/sdf/fileFormat.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/layerUtils.h>
+#include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/pathExpression.h>
 #include <pxr/usd/sdf/payload.h>

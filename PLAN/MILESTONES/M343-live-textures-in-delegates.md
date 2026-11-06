@@ -12,7 +12,7 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 **Out:**
 - MaterialX `image` nodes: none, MaterialX is set aside (user, 2026-11-05).
-- Native shader nodes' texture inputs: the native shader work (not filed yet), which reuses this route.
+- Native shader nodes' texture inputs: M353 - Cycles Native Shaders and M354 - MoonRay Native Shaders, which reuse this route.
 - USDProject3D in Cycles and MoonRay: M344 - Camera Projection In Delegates.
 - `<UDIM>` live textures in delegates: M311 - UDIM Live Textures extends this once both have landed.
 - Natron Utility: M281 - Utility Materials And Lights reads `natron://` through `HioImage`.

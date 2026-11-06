@@ -416,6 +416,14 @@ future core work has solid ground to build on.
 | M346 | USDVolume Node | todo | M227, M345 |  | E9 | F1 | | [M346-usdvolume-node.md](PLAN/MILESTONES/M346-usdvolume-node.md) |
 | M347 | Volume Material Node | todo | M236, M345, M346 |  | E9 | F1 | | [M347-volume-material-node.md](PLAN/MILESTONES/M347-volume-material-node.md) |
 | M348 | Volume Viewer Support | todo | M229, M231, M232, M253, M333, M345, M346 |  | E9 | F1 | | [M348-volume-viewer-support.md](PLAN/MILESTONES/M348-volume-viewer-support.md) |
+| M349 | Shader Node Spike | todo | - |  | E9 | F2 | | [M349-shader-node-spike.md](PLAN/MILESTONES/M349-shader-node-spike.md) |
+| M350 | Shader Manifest And Nodes | todo | M349, M253 |  | E9 | F2 | | [M350-shader-manifest-and-nodes.md](PLAN/MILESTONES/M350-shader-manifest-and-nodes.md) |
+| M351 | Shader Graph Presentation | todo | M350 |  | E9 | F2 | | [M351-shader-graph-presentation.md](PLAN/MILESTONES/M351-shader-graph-presentation.md) |
+| M352 | USDMaterialBuilder Node | todo | M350, M351 |  | E9 | F2 | | [M352-usdmaterialbuilder-node.md](PLAN/MILESTONES/M352-usdmaterialbuilder-node.md) |
+| M353 | Cycles Native Shaders | todo | M352, M343 |  | E9 | F2 | | [M353-cycles-native-shaders.md](PLAN/MILESTONES/M353-cycles-native-shaders.md) |
+| M354 | MoonRay Native Shaders | todo | M352, M325, M343 |  | E9 | F2 | | [M354-moonray-native-shaders.md](PLAN/MILESTONES/M354-moonray-native-shaders.md) |
+| M355 | Shader Tweak Node | todo | M343, M353, M354 |  | E9 | F2 | | [M355-shader-tweak-node.md](PLAN/MILESTONES/M355-shader-tweak-node.md) |
+| M356 | Automatic Preview Shader | todo | M352 |  | E9 | F2 | | [M356-automatic-preview-shader.md](PLAN/MILESTONES/M356-automatic-preview-shader.md) |
 
 # Epics
 
@@ -446,6 +454,7 @@ future core work has solid ground to build on.
 | ID | Name | Status | Owner | Needs | Branch | Goal |
 |----|------|--------|-------|-------|--------|------|
 | F1 | VDB Volumes | open |  |  | feature/f1-vdb-volumes | Bring a VDB into the scene, shade it with one material across Storm, Cycles and MoonRay, and inspect it in the viewer. |
+| F2 | Native Shader Networks | open |  |  | feature/f2-native-shader-networks | Build, tweak and render each renderer's native shading networks from one builder node, with full or nearly full coverage of Cycles and MoonRay. |
 
 # Open questions
 - **M251 - Cycles Rendering, camera exposure (inbox, 2026-11-05):** Lobby cameras author `exposure = -10`, no renderer path in Natron reads it, and the Cycles frame averages about 8,000, so it reads as blown out. Should USDRender and the viewer apply it? Raise at UAT.

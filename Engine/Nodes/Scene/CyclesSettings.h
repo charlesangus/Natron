@@ -33,9 +33,9 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The Cycles group of USDRenderSettings' Cycles page: the controls a Cycles user reaches for first,
- * bound to the keys Cycles' Hydra delegate declares. Cycles declares no pixel filter: its filter
- * belongs to the film, which the delegate does not expose.
+ * @brief The layout of USDRenderSettings' Cycles page: every key Cycles' Hydra delegate declares,
+ * in named groups. Cycles declares no pixel filter: its filter belongs to the film, which the
+ * delegate does not expose.
  **/
 namespace CyclesSettings {
 const RenderSettingsKnobs::Curated& curated();

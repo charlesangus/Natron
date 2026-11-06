@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -701,12 +702,14 @@ cyclesReported(const NodePtr& node,
     return value;
 }
 
-// Moves an enabled int, float or bool knob off its default.
+// Moves an enabled int, float, bool or menu knob off its default.
 bool
 nudgeCyclesKnob(KnobI* k)
 {
     if (KnobBool* b = dynamic_cast<KnobBool*>(k)) {
         b->setValue(!b->getDefaultValue(0));
+    } else if (KnobChoice* c = dynamic_cast<KnobChoice*>(k)) {
+        c->setValue((c->getDefaultValue(0) + 1) % c->getNumEntries());
     } else if (KnobInt* i = dynamic_cast<KnobInt*>(k)) {
         i->setValue(i->getDefaultValue(0) + 1);
     } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k)) {
@@ -717,7 +720,245 @@ nudgeCyclesKnob(KnobI* k)
 
     return true;
 }
+
+// The script name of each declared key's knob. Saved projects and scripts name these knobs, so a
+// layout must not rename one.
+const std::map<std::string, std::string>&
+cyclesScriptNames()
+{
+    static const std::map<std::string, std::string> names = {
+        { "cycles:integrator:aa_samples", "cyclesAaSamples" },
+        { "cycles:integrator:adaptive_min_samples", "cyclesAdaptiveMinSamples" },
+        { "cycles:integrator:adaptive_threshold", "cyclesAdaptiveThreshold" },
+        { "cycles:integrator:ao_additive_factor", "cyclesAoAdditiveFactor" },
+        { "cycles:integrator:ao_bounces", "cyclesAoBounces" },
+        { "cycles:integrator:ao_distance", "cyclesAoDistance" },
+        { "cycles:integrator:ao_factor", "cyclesAoFactor" },
+        { "cycles:integrator:caustics_reflective", "cyclesCausticsReflective" },
+        { "cycles:integrator:caustics_refractive", "cyclesCausticsRefractive" },
+        { "cycles:integrator:custom_pixel_jitter_sample", "cyclesCustomPixelJitterSample" },
+        { "cycles:integrator:denoise_start_sample", "cyclesDenoiseStartSample" },
+        { "cycles:integrator:denoise_use_gpu", "cyclesDenoiseUseGpu" },
+        { "cycles:integrator:denoiser_passes", "cyclesDenoiserPasses" },
+        { "cycles:integrator:denoiser_prefilter", "cyclesDenoiserPrefilter" },
+        { "cycles:integrator:denoiser_quality", "cyclesDenoiserQuality" },
+        { "cycles:integrator:denoiser_type", "cyclesDenoiserType" },
+        { "cycles:integrator:denoiser_upscale_factor", "cyclesDenoiserUpscaleFactor" },
+        { "cycles:integrator:deterministic_guiding", "cyclesDeterministicGuiding" },
+        { "cycles:integrator:filter_glossy", "cyclesFilterGlossy" },
+        { "cycles:integrator:guiding_directional_sampling_type", "cyclesGuidingDirectionalSamplingType" },
+        { "cycles:integrator:guiding_distribution_type", "cyclesGuidingDistributionType" },
+        { "cycles:integrator:guiding_roughness_threshold", "cyclesGuidingRoughnessThreshold" },
+        { "cycles:integrator:guiding_training_samples", "cyclesGuidingTrainingSamples" },
+        { "cycles:integrator:light_sampling_threshold", "cyclesLightSamplingThreshold" },
+        { "cycles:integrator:max_bounce", "cyclesMaxBounce" },
+        { "cycles:integrator:max_diffuse_bounce", "cyclesMaxDiffuseBounce" },
+        { "cycles:integrator:max_glossy_bounce", "cyclesMaxGlossyBounce" },
+        { "cycles:integrator:max_transmission_bounce", "cyclesMaxTransmissionBounce" },
+        { "cycles:integrator:max_volume_bounce", "cyclesMaxVolumeBounce" },
+        { "cycles:integrator:min_bounce", "cyclesMinBounce" },
+        { "cycles:integrator:motion_blur", "cyclesMotionBlur" },
+        { "cycles:integrator:sample_clamp_direct", "cyclesSampleClampDirect" },
+        { "cycles:integrator:sample_clamp_indirect", "cyclesSampleClampIndirect" },
+        { "cycles:integrator:sample_subset_length", "cyclesSampleSubsetLength" },
+        { "cycles:integrator:sample_subset_offset", "cyclesSampleSubsetOffset" },
+        { "cycles:integrator:sampling_pattern", "cyclesSamplingPattern" },
+        { "cycles:integrator:scrambling_distance", "cyclesScramblingDistance" },
+        { "cycles:integrator:seed", "cyclesSeed" },
+        { "cycles:integrator:surface_guiding_probability", "cyclesSurfaceGuidingProbability" },
+        { "cycles:integrator:transparent_max_bounce", "cyclesTransparentMaxBounce" },
+        { "cycles:integrator:transparent_min_bounce", "cyclesTransparentMinBounce" },
+        { "cycles:integrator:use_adaptive_sampling", "cyclesUseAdaptiveSampling" },
+        { "cycles:integrator:use_custom_pixel_jitter_sample", "cyclesUseCustomPixelJitterSample" },
+        { "cycles:integrator:use_denoise", "cyclesUseDenoise" },
+        { "cycles:integrator:use_diffuse", "cyclesUseDiffuse" },
+        { "cycles:integrator:use_direct_light", "cyclesUseDirectLight" },
+        { "cycles:integrator:use_emission", "cyclesUseEmission" },
+        { "cycles:integrator:use_glossy", "cyclesUseGlossy" },
+        { "cycles:integrator:use_guiding", "cyclesUseGuiding" },
+        { "cycles:integrator:use_guiding_direct_light", "cyclesUseGuidingDirectLight" },
+        { "cycles:integrator:use_guiding_mis_weights", "cyclesUseGuidingMisWeights" },
+        { "cycles:integrator:use_indirect_light", "cyclesUseIndirectLight" },
+        { "cycles:integrator:use_light_tree", "cyclesUseLightTree" },
+        { "cycles:integrator:use_pixel_jitter", "cyclesUsePixelJitter" },
+        { "cycles:integrator:use_sample_subset", "cyclesUseSampleSubset" },
+        { "cycles:integrator:use_surface_guiding", "cyclesUseSurfaceGuiding" },
+        { "cycles:integrator:use_transmission", "cyclesUseTransmission" },
+        { "cycles:integrator:use_volume_guiding", "cyclesUseVolumeGuiding" },
+        { "cycles:integrator:volume_guiding_probability", "cyclesVolumeGuidingProbability" },
+        { "cycles:integrator:volume_max_steps", "cyclesVolumeMaxSteps" },
+        { "cycles:integrator:volume_ray_marching", "cyclesVolumeRayMarching" },
+        { "cycles:integrator:volume_step_rate", "cyclesVolumeStepRate" },
+        { "cycles:sample_offset", "cyclesSampleOffset" },
+        { "cycles:samples", "cyclesSamples" },
+        { "cycles:time_limit", "cyclesTimeLimit" },
+    };
+
+    return names;
+}
+
+struct CyclesGroupLayout {
+    const char* group;
+    const char* parent;
+    bool open;
+    std::vector<std::string> children;
+};
+
+const std::vector<CyclesGroupLayout>&
+cyclesLayout()
+{
+    static const std::vector<CyclesGroupLayout> layout = {
+        { "cyclesSampling", "cycles", true, { "cyclesSamples", "cyclesUseAdaptiveSampling", "cyclesAdaptiveThreshold", "cyclesAdaptiveMinSamples", "cyclesTimeLimit", "cyclesSeed" } },
+        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu" } },
+        { "cyclesLightPaths", "cycles", true, { "cyclesBounces", "cyclesClamping", "cyclesCaustics", "cyclesFastGi" } },
+        { "cyclesBounces", "cyclesLightPaths", true, { "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce", "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce" } },
+        { "cyclesClamping", "cyclesLightPaths", true, { "cyclesSampleClampDirect", "cyclesSampleClampIndirect" } },
+        { "cyclesCaustics", "cyclesLightPaths", false, { "cyclesCausticsReflective", "cyclesCausticsRefractive", "cyclesFilterGlossy" } },
+        { "cyclesFastGi", "cyclesLightPaths", false, { "cyclesAoBounces", "cyclesAoFactor", "cyclesAoDistance", "cyclesAoAdditiveFactor" } },
+        { "cyclesLights", "cycles", false, { "cyclesUseLightTree", "cyclesLightSamplingThreshold" } },
+        { "cyclesVolumes", "cycles", false, { "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate" } },
+        { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
+        { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
+        { "cyclesAdvanced", "cycles", false, { "cyclesSamplingPattern", "cyclesScramblingDistance", "cyclesAaSamples", "cyclesMinBounce", "cyclesTransparentMinBounce", "cyclesMotionBlur", "cyclesUsePixelJitter", "cyclesUseCustomPixelJitterSample", "cyclesCustomPixelJitterSample", "cyclesSampleSubset" } },
+        { "cyclesSampleSubset", "cyclesAdvanced", false, { "cyclesSampleOffset", "cyclesUseSampleSubset", "cyclesSampleSubsetOffset", "cyclesSampleSubsetLength" } },
+    };
+
+    return layout;
+}
+
+std::vector<std::string>
+knobNames(const std::vector<KnobIPtr>& knobs)
+{
+    std::vector<std::string> names;
+
+    for (const KnobIPtr& k : knobs) {
+        names.push_back(k->getName());
+    }
+
+    return names;
+}
+
+void
+collectGroups(const std::vector<KnobIPtr>& knobs,
+              std::map<std::string, KnobIPtr>* groups)
+{
+    for (const KnobIPtr& k : knobs) {
+        if (KnobGroup* group = dynamic_cast<KnobGroup*>(k.get())) {
+            (*groups)[k->getName()] = k;
+            collectGroups(group->getChildren(), groups);
+        }
+    }
+}
 } // anon namespace
+
+// The script names survive the table: no key is lost, gained or renamed, and the groups are valid.
+TEST_F(USDRenderCyclesTest, TableKeepsEveryScriptName)
+{
+    const RenderSettingsKnobs::Curated& curated = CyclesSettings::curated();
+    std::string error;
+
+    EXPECT_TRUE(RenderSettingsKnobs::validateGroups(curated, &error)) << error;
+    std::map<std::string, std::string> names;
+    for (const RenderSettingsKnobs::CuratedSetting& c : curated.settings) {
+        names[c.key] = "cycles" + std::string(1, (char)std::toupper((unsigned char)c.name[0])) + c.name.substr(1);
+        EXPECT_FALSE(c.group.empty()) << c.key;
+    }
+    EXPECT_EQ(curated.settings.size(), names.size());
+    EXPECT_EQ(cyclesScriptNames(), names);
+}
+
+// Every knob sits in its group, in order, and each group has its parent, open state and label.
+TEST_F(USDRenderCyclesTest, KnobsAreLaidOutInGroups)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobPagePtr page = settings->page(kRenderDelegateCyclesId);
+    ASSERT_TRUE(bool(page));
+
+    std::vector<std::string> topLevel;
+    for (const CyclesGroupLayout& expected : cyclesLayout()) {
+        if (std::string(expected.parent) == page->getName()) {
+            topLevel.push_back(expected.group);
+        }
+    }
+    EXPECT_EQ(topLevel, knobNames(page->getChildren()));
+
+    std::map<std::string, KnobIPtr> groups;
+    collectGroups(page->getChildren(), &groups);
+    EXPECT_EQ(cyclesLayout().size(), groups.size());
+    for (const CyclesGroupLayout& expected : cyclesLayout()) {
+        ASSERT_EQ(1u, groups.count(expected.group)) << expected.group;
+        KnobIPtr k = groups[expected.group];
+        KnobGroup* group = dynamic_cast<KnobGroup*>(k.get());
+        ASSERT_TRUE(group != nullptr) << expected.group;
+        ASSERT_TRUE(bool(k->getParentKnob())) << expected.group;
+        EXPECT_EQ(std::string(expected.parent), k->getParentKnob()->getName()) << expected.group;
+        EXPECT_EQ(expected.open, group->getValue()) << expected.group;
+        EXPECT_EQ(expected.children, knobNames(group->getChildren())) << expected.group;
+    }
+    EXPECT_EQ(std::string("Fast GI"), groups["cyclesFastGi"]->getLabel());
+}
+
+// The table's types and defaults are the delegate's, and each menu sends Cycles' own enum values
+// and starts on the entry of the declared default.
+TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    std::map<std::string, PXR_NS::VtValue> declared;
+    for (const RenderSettingsKnobs::Descriptor& d : RenderSettingsKnobs::descriptors(kRenderDelegateCyclesId)) {
+        declared[d.key] = d.defaultValue;
+    }
+    const std::map<std::string, std::vector<int>> menus = {
+        { "cycles:integrator:denoiser_quality", { 1, 2, 3 } },
+        { "cycles:integrator:denoiser_prefilter", { 1, 2, 3 } },
+        { "cycles:integrator:sampling_pattern", { 0, 1, 2, 4, 3 } },
+        { "cycles:integrator:guiding_distribution_type", { 0, 1, 2 } },
+        { "cycles:integrator:guiding_directional_sampling_type", { 0, 1, 2 } },
+    };
+
+    for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
+        ASSERT_EQ(1u, declared.count(c.key)) << c.key;
+        const PXR_NS::VtValue& declaredDefault = declared[c.key];
+        EXPECT_EQ(declaredDefault.GetTypeName(), c.defaultValue.GetTypeName()) << c.key;
+        KnobIPtr k = settings->knob(kRenderDelegateCyclesId, c.key);
+        ASSERT_TRUE(bool(k)) << c.key;
+        if (c.choices.empty()) {
+            EXPECT_EQ(declaredDefault, c.defaultValue) << c.key;
+            EXPECT_EQ(0u, menus.count(c.key)) << c.key;
+            continue;
+        }
+        KnobChoice* choice = dynamic_cast<KnobChoice*>(k.get());
+        ASSERT_TRUE(choice != nullptr) << c.key;
+        ASSERT_EQ((int)c.choices.size(), choice->getNumEntries()) << c.key;
+        const int index = choice->getDefaultValue(0);
+        ASSERT_TRUE((index >= 0) && (index < (int)c.choices.size())) << c.key;
+        EXPECT_EQ(index, choice->getValue()) << c.key;
+        const PXR_NS::VtValue& entry = c.choices[index].value;
+        EXPECT_EQ(declaredDefault, entry.IsEmpty() ? declaredDefault : entry) << c.key;
+        const std::map<std::string, std::vector<int>>::const_iterator values = menus.find(c.key);
+        if (values == menus.end()) {
+            EXPECT_FALSE(c.disabledReason.empty()) << c.key << " is a menu the test does not list";
+            continue;
+        }
+        std::vector<int> sent;
+        for (const RenderSettingsKnobs::Choice& e : c.choices) {
+            EXPECT_FALSE(e.label.empty()) << c.key;
+            sent.push_back(e.value.Get<int>());
+        }
+        EXPECT_EQ(values->second, sent) << c.key;
+    }
+}
 
 // Cycles' samples knob changes the node's hash, and the next render is made with the new count,
 // as Cycles' engine reports it.
@@ -748,7 +989,7 @@ TEST_F(USDRenderCyclesTest, SamplesKnobChangesTheHashAndTheRender)
     EXPECT_EQ(PXR_NS::VtValue(5), cyclesReported(node, CyclesSettings::samplesKey()));
 }
 
-// Each knob of the Cycles group sends its setting, which Cycles' engine reports back.
+// Each knob of the Cycles page sends its setting, which Cycles' engine reports back.
 TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
 {
     if (!cyclesOrSkip()) {
@@ -760,17 +1001,36 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
     const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
     ASSERT_TRUE(settings != nullptr);
     const std::string denoise = "cycles:integrator:use_denoise";
+    const std::set<std::string> notNudged = {
+        // Denoising is checked on its own: it needs OpenImageDenoise in Cycles' build.
+        denoise,
+        CyclesSettings::samplesKey(),
+        // Session::update_scene() overwrites these from the session's own parameters, so the
+        // engine never reports what was sent.
+        "cycles:integrator:aa_samples",
+        "cycles:integrator:use_sample_subset",
+        "cycles:integrator:sample_subset_offset",
+        "cycles:integrator:sample_subset_length",
+        // With pixel jitter on, Integrator::device_update() reads two elements of the custom
+        // sample, which is empty here.
+        "cycles:integrator:use_custom_pixel_jitter_sample",
+        // A text knob, which the nudge does not move.
+        "cycles:integrator:custom_pixel_jitter_sample",
+        // Its default is FLT_MAX, which adding 0.5 does not change, so it would never be sent.
+        "cycles:integrator:ao_distance",
+        // The denoising render below needs passes and a resolution it can run with.
+        "cycles:integrator:denoiser_passes",
+        "cycles:integrator:denoiser_upscale_factor",
+    };
     std::vector<std::string> nudged;
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
         KnobIPtr k = settings->knob(kRenderDelegateCyclesId, c.key);
         ASSERT_TRUE(bool(k)) << c.key;
-        EXPECT_EQ(std::string("cyclesSettings"), k->getParentKnob() ? k->getParentKnob()->getName() : std::string()) << c.key;
         if (!c.disabledReason.empty()) {
             EXPECT_FALSE(k->isEnabled(0)) << c.key;
             continue;
         }
-        // Denoising is checked on its own: it needs OpenImageDenoise in Cycles' build.
-        if ((c.key == denoise) || (c.key == CyclesSettings::samplesKey())) {
+        if (notNudged.count(c.key)) {
             continue;
         }
         ASSERT_TRUE(nudgeCyclesKnob(k.get())) << c.key;
@@ -799,8 +1059,7 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
     EXPECT_EQ(PXR_NS::VtValue(true), cyclesReported(node, denoise)) << error;
 }
 
-// Every setting Cycles declares is reached by a knob of the Cycles group or of Other Settings,
-// and none by both.
+// Every setting Cycles declares is reached by a knob of its script name, and none by two.
 TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
 {
     if (!cyclesOrSkip()) {
@@ -813,11 +1072,14 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     const std::vector<std::pair<std::string, std::string>> audit = settings->audit(kRenderDelegateCyclesId);
     EXPECT_FALSE(audit.empty());
     std::set<std::string> names;
+    std::map<std::string, std::string> reached;
     for (const std::pair<std::string, std::string>& reach : audit) {
         std::printf("[  AUDIT   ] Cycles %s -> %s\n", reach.first.c_str(), reach.second.empty() ? "UNREACHABLE" : reach.second.c_str());
         EXPECT_FALSE(reach.second.empty()) << reach.first;
         if (reach.second != "(set by Natron)") {
             EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
         }
+        reached[reach.first] = reach.second;
     }
+    EXPECT_EQ(cyclesScriptNames(), reached);
 }

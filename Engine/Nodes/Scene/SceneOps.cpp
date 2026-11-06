@@ -1168,6 +1168,23 @@ namespace {
     {
         return layer ? layer->GetIdentifier() : std::string();
     }
+
+    // The query's target layer is the root of the target's layer stack. In a node graph that root
+    // is the stage's composed root or a graft's wrapper, which only sublayer the nodes' layers and
+    // belong to no node, so the layer to name is the strongest that holds the target's spec.
+    PXR_NS::SdfLayerHandle
+    targetSpecLayerOf(const PXR_NS::UsdPrimCompositionQueryArc& arc)
+    {
+        const PXR_NS::PcpNodeRef node = arc.GetTargetNode();
+
+        for (const PXR_NS::SdfLayerRefPtr& layer : node.GetLayerStack()->GetLayers()) {
+            if (layer->HasSpec(node.GetPath())) {
+                return layer;
+            }
+        }
+
+        return arc.GetTargetLayer();
+    }
 } // anonymous namespace
 
 ScenePrimComposition
@@ -1199,7 +1216,7 @@ getPrimComposition(const PXR_NS::UsdPrim& prim)
         arc.ancestral = queried.IsAncestral();
         arc.implicit = queried.IsImplicit();
         arc.targetPath = queried.GetTargetPrimPath().GetString();
-        const PXR_NS::SdfLayerHandle target = queried.GetTargetLayer();
+        const PXR_NS::SdfLayerHandle target = targetSpecLayerOf(queried);
         arc.targetLayer = identifierOf(target);
         arc.targetOwner = getLayerOwner(target);
         if (arc.type != ScenePrimArc::eRoot) {

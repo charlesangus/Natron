@@ -319,7 +319,9 @@ TEST_F(SceneProvenanceTest, ACompositionMapsLayersToNodesAndHandlesPrototypes)
 
     const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("instances.usda");
     ASSERT_TRUE(root->ImportFromString("#usda 1.0\n"
-                                       "def Xform \"Source\" { def Xform \"Child\" { } }\n"
+                                       "def Xform \"Source\" {\n"
+                                       "    def Xform \"Child\" { }\n"
+                                       "}\n"
                                        "def Xform \"Instance\" (\n"
                                        "    instanceable = true\n"
                                        "    references = </Source>\n"
@@ -403,7 +405,9 @@ TEST_F(SceneProvenanceTest, OpinionsCarryLayerOffsetsAndTimeSamples)
 {
     const PXR_NS::SdfLayerRefPtr referenced = PXR_NS::SdfLayer::CreateAnonymous("referenced.usda");
     ASSERT_TRUE(referenced->ImportFromString("#usda 1.0\n"
-                                             "def Xform \"Ref\" { double animated.timeSamples = { 1: 5, 2: 6 } }\n"));
+                                             "def Xform \"Ref\" {\n"
+                                             "    double animated.timeSamples = { 1: 5, 2: 6 }\n"
+                                             "}\n"));
     const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("root.usda");
     ASSERT_TRUE(root->ImportFromString("#usda 1.0\n"
                                        "def Xform \"Prim\" (\n"

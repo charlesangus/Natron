@@ -20,7 +20,8 @@ Checks:
   - the Layer tab shows the viewed USDEditTransform's layer as USDA with its authored over, and
     switching it to the composed mode shows the selected prim's definition, which follows the
     selection;
-  - selecting a prim keeps a heartbeat on the main thread within HEARTBEAT_BUDGET_MS, while a slow
+  - selecting a prim keeps the main thread's heartbeat within HEARTBEAT_BUDGET_MS of CPU and
+    HEARTBEAT_BLOCKED_BUDGET_MS with blocking, while a slow
     read shows the last result greyed, and a new selection cancels the read under way.
 
 Screenshots go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off. Run through
@@ -39,6 +40,9 @@ LOAD_TIMEOUT_S = 120.0
 SETTLE_MS = 400
 HEARTBEAT_MS = 10
 HEARTBEAT_BUDGET_MS = 100.0
+# Software GL holds the main thread 75-170 ms on any repaint, with no read at all, waiting for the
+# rasteriser to flush. Waiting on a lock a read holds lasts as long as the read, which is seconds.
+HEARTBEAT_BLOCKED_BUDGET_MS = 400.0
 FLAT_PRIMS = 50000
 HEAVY_ATTRIBUTES = 200
 HEAVY_ELEMENTS = 10000
@@ -138,16 +142,28 @@ try:
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
         return hold(views[0]) if views else None
 
+    # Looking a widget up wraps every widget in the application, which takes the main thread far
+    # longer than the heartbeat budget. The polls run there too, so they must not repeat the walk.
+    _found = {}
+
     def panel():
-        panels = widgets_of("SceneGraphPanel")
-        return hold(panels[0]) if panels else None
+        if "panel" not in _found:
+            panels = widgets_of("SceneGraphPanel")
+            if panels:
+                _found["panel"] = hold(panels[0])
+        return _found.get("panel")
 
     def child(cls, name):
-        p = panel()
-        try:
-            return hold(p.findChild(cls, name)) if p is not None else None
-        except RuntimeError:
-            return None
+        if name not in _found:
+            p = panel()
+            try:
+                c = hold(p.findChild(cls, name)) if p is not None else None
+            except RuntimeError:
+                return None
+            if c is None:
+                return None
+            _found[name] = c
+        return _found[name]
 
     def tree():
         return child(QTreeView, "sceneGraphTree")
@@ -265,8 +281,19 @@ try:
         viewer.disconnectInput(0)
         return viewer.connectInput(0, node)
 
+    def main_thread_times_ms():
+        """The calling thread's total time on a CPU, and total time ready to run without one."""
+        with open("/proc/thread-self/schedstat") as f:
+            fields = f.read().split()
+        return int(fields[0]) / 1000000.0, int(fields[1]) / 1000000.0
+
     class Heartbeat:
-        """The longest the main thread's event loop has gone without running a short timer."""
+        """The longest the main thread's event loop has gone without running a short timer.
+
+        worst_cpu_ms is the most CPU one gap used, which is where a read on the main thread shows.
+        worst_ms leaves out the time the thread was ready to run but had no CPU, of which a busy host
+        adds hundreds of ms, so what it adds to worst_cpu_ms is time spent blocked.
+        """
 
         def __init__(self):
             self.timer = QTimer()
@@ -276,12 +303,21 @@ try:
 
         def reset(self):
             self.last = time.monotonic()
+            self.cpu, self.waited = main_thread_times_ms()
+            self.worst_cpu_ms = 0.0
             self.worst_ms = 0.0
+            self.worst_wall_ms = 0.0
 
         def beat(self):
             now = time.monotonic()
-            self.worst_ms = max(self.worst_ms, (now - self.last) * 1000.0)
+            cpu, waited = main_thread_times_ms()
+            gap = (now - self.last) * 1000.0
+            self.worst_wall_ms = max(self.worst_wall_ms, gap)
+            self.worst_ms = max(self.worst_ms, gap - (waited - self.waited))
+            self.worst_cpu_ms = max(self.worst_cpu_ms, cpu - self.cpu)
             self.last = now
+            self.cpu = cpu
+            self.waited = waited
 
         def start(self):
             self.reset()
@@ -477,12 +513,21 @@ try:
         beat = Heartbeat()
 
         # One batch only: reading the whole flat Scope here would measure the tree, not the inspector.
+        # Switching the Viewer away made the panel compose the pinned USDRead itself, so the tree is
+        # empty until that load ends.
+        ok = yield ("until", lambda: find(FLAT).isValid(), LOAD_TIMEOUT_S)
+        require(ok, "the tree lists the flat Scope (got %r)" % (top_paths(),))
         flat = find(FLAT)
-        require(flat.isValid(), "the tree lists the flat Scope")
         m = model()
         if m.canFetchMore(flat):
             m.fetchMore(flat)
         require(m.rowCount(flat) > 0, "the flat Scope's first rows are read")
+        # Selecting a row under a collapsed parent expands it, which is the tree's work, not the
+        # inspector's, and a user selects a row they can already see.
+        beat.start()
+        tree().expand(flat)
+        yield ("sleep", SETTLE_MS)
+        report("NOTE worst main-thread gap expanding the flat Scope: %.1f ms" % (beat.stop(),))
         flat_child = m.index(0, 0, flat)
         flat_child_path = path_of(flat_child)
 
@@ -495,14 +540,17 @@ try:
         ok = yield ("until", lambda: settled_on(flat_child_path), POLL_TIMEOUT_S)
         worst = beat.stop()
         check(ok, "the flat Scope's child is read (got %r)" % (state("Path"),))
-        report("NOTE worst main-thread gap selecting in the flat Scope: %.1f ms" % (worst,))
-        check(worst <= HEARTBEAT_BUDGET_MS, "selecting in the flat Scope keeps the main thread free (%.1f ms)" % (worst,))
+        report("NOTE worst main-thread gap selecting in the flat Scope: %.1f ms on a CPU, %.1f ms with blocking, %.1f ms with waiting for a CPU"
+               % (beat.worst_cpu_ms, worst, beat.worst_wall_ms))
+        check(beat.worst_cpu_ms <= HEARTBEAT_BUDGET_MS, "selecting in the flat Scope leaves the main thread idle (%.1f ms)" % (beat.worst_cpu_ms,))
+        check(worst <= HEARTBEAT_BLOCKED_BUDGET_MS, "selecting in the flat Scope does not block the main thread (%.1f ms)" % (worst,))
 
         select(find(SMALL))
         ok = yield ("until", lambda: settled_on(SMALL) and "size" in table(ATTRIBUTES), POLL_TIMEOUT_S)
         require(ok, "the small prim is shown again")
 
-        beat.start()
+        # The grab blocks the main thread for longer than this read lasts, so the screenshot gets a
+        # read of its own, outside the measured one that a new selection has to catch running.
         select(find(HEAVY))
         ok = yield ("until", lambda: bool(state("Stale")), POLL_TIMEOUT_S)
         check(ok, "a slow read greys the last result")
@@ -510,9 +558,23 @@ try:
               "the last result stays up during the read (got %r)" % (state("Path"),))
         check(foreground(ATTRIBUTES) is not None, "the last result's rows are greyed")
         shot("scene-prim-inspector-stale.png")
+        ok = yield ("until", lambda: settled_on(HEAVY), LOAD_TIMEOUT_S)
+        require(ok, "the large arrays are read for the screenshot (got %r)" % (state("Path"),))
+        select(find(SMALL))
+        ok = yield ("until", lambda: settled_on(SMALL) and "size" in table(ATTRIBUTES), POLL_TIMEOUT_S)
+        require(ok, "the small prim is back before the cancelled read")
 
+        heavy_index = find(HEAVY)
+        other_index = find(OTHER)
+        started = int(state("ReadsStarted"))
         cancelled = int(state("ReadsCancelled"))
-        select(find(OTHER))
+        beat.start()
+        select(heavy_index)
+        # Not the grey state, which comes 100 ms in and leaves a short read too little time to catch.
+        ok = yield ("until", lambda: int(state("ReadsStarted")) > started, POLL_TIMEOUT_S)
+        require(ok, "the read to cancel is under way")
+
+        select(other_index)
         ok = yield ("until", lambda: settled_on(OTHER) and "otherValue" in table(ATTRIBUTES), LOAD_TIMEOUT_S)
         check(ok, "a new selection shows its own prim (got %r)" % (state("Path"),))
         ok = yield ("until", lambda: int(state("ReadsCancelled")) > cancelled, LOAD_TIMEOUT_S)
@@ -520,14 +582,19 @@ try:
         check(not any(name.startswith("heavy_") for name in table(ATTRIBUTES)), "nothing of the cancelled read is shown")
         check(not state("Stale") and foreground(ATTRIBUTES) is None, "the rows are no longer greyed")
 
-        select(find(HEAVY))
+        select_time = time.monotonic()
+        select(heavy_index)
         ok = yield ("until", lambda: settled_on(HEAVY), LOAD_TIMEOUT_S)
+        read_ms = (time.monotonic() - select_time) * 1000.0
         worst = beat.stop()
         check(ok, "the large arrays are read (got %r)" % (state("Path"),))
         heavy = table(ATTRIBUTES)
         check(sum(1 for name in heavy if name.startswith("heavy_")) == HEAVY_ATTRIBUTES, "every large array is listed (got %d rows)" % (len(heavy),))
-        report("NOTE worst main-thread gap reading large arrays: %.1f ms" % (worst,))
-        check(worst <= HEARTBEAT_BUDGET_MS, "reading large arrays keeps the main thread free (%.1f ms)" % (worst,))
+        report("NOTE worst main-thread gap reading large arrays: %.1f ms on a CPU, %.1f ms with blocking, %.1f ms with waiting for a CPU"
+               % (beat.worst_cpu_ms, worst, beat.worst_wall_ms))
+        report("NOTE reading the large arrays took %.0f ms" % (read_ms,))
+        check(beat.worst_cpu_ms <= HEARTBEAT_BUDGET_MS, "reading large arrays leaves the main thread idle (%.1f ms)" % (beat.worst_cpu_ms,))
+        check(worst <= HEARTBEAT_BLOCKED_BUDGET_MS, "reading large arrays does not block the main thread (%.1f ms)" % (worst,))
 
     def steps():
         require(viewer.connectInput(0, edit), "connect the Viewer to the USDEditTransform")

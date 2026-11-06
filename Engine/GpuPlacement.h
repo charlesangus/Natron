@@ -132,6 +132,24 @@ const int kMaxRegionShrinkSteps = 16;
 void placeGraph(FrameGraph& graph, const PlacementInputs& inputs);
 
 /**
+ * @brief What placeGraphWithShadow() adds to the placement of the graph it is given.
+ **/
+struct ShadowPlacement {
+    // The graph placed again as if no task were cached. Same tasks in the same order, so it is indexed like the graph.
+    FrameGraph graph;
+
+    // Per task, whether the real placement kept it out of every region because its output is cached.
+    std::vector<bool> servedFromCache;
+};
+
+/**
+ * @brief Places graph as placeGraph() does and returns the placement of a copy of it with inputs.isCached overridden to
+ * false, so that a member served from cache in the real plan can be seen on the GPU in the shadow one. The callbacks of
+ * inputs other than isCached are shared by both runs, and are called on tasks of the copy as well.
+ **/
+ShadowPlacement placeGraphWithShadow(FrameGraph& graph, const PlacementInputs& inputs);
+
+/**
  * @brief Whether a GPU is ready for placement. Null, the default, means there is none.
  **/
 typedef bool (*GpuPlacementAvailableFunc)();

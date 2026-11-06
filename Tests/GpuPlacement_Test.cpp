@@ -355,6 +355,55 @@ TEST(GpuPlacement, CacheHitStaysOnCpu)
     EXPECT_EQ(graph.regions[graph.tasks[0].regionId].externalInputs, std::vector<int>({ 1 }));
 }
 
+// Every task can go to the GPU; the callback must not depend on task addresses, as the shadow graph is a copy.
+PlacementInputs
+allGpuTasks()
+{
+    PlacementInputs inputs;
+
+    inputs.canRenderOnGpu = [](const FrameGraph::Task&, GpuRefusal*) {
+        return true;
+    };
+
+    return inputs;
+}
+
+// root 0 <- 1 (cached) <- 2
+TEST(GpuPlacement, ShadowPlanPlacesACachedMemberOnTheGpu)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = allGpuTasks();
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.estimatedBytes == kBytes * 2;
+    };
+
+    const ShadowPlacement shadow = placeGraphWithShadow(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::Cached);
+    EXPECT_EQ(shadow.servedFromCache, std::vector<bool>({ false, true, false }));
+    ASSERT_EQ(shadow.graph.tasks.size(), 3u);
+    for (const FrameGraph::Task& task : shadow.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Gpu);
+    }
+    EXPECT_EQ(shadow.graph.regions.size(), 1u);
+    EXPECT_EQ(graph.regions.size(), 2u);
+}
+
+TEST(GpuPlacement, ShadowPlanWithNothingCachedMatchesTheRealOne)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    const PlacementInputs inputs = allGpuTasks();
+
+    const ShadowPlacement shadow = placeGraphWithShadow(graph, inputs);
+
+    EXPECT_EQ(shadow.servedFromCache, std::vector<bool>(3, false));
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(shadow.graph.tasks[i].device, graph.tasks[i].device);
+        EXPECT_EQ(shadow.graph.tasks[i].regionId, graph.tasks[i].regionId);
+    }
+}
+
 // root 0 (GPU) <- identity 1 <- 2 (GPU) <- identity 3 <- reader 4 (CPU)
 TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
 {

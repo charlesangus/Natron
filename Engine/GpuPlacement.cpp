@@ -1129,4 +1129,25 @@ placeRenderGraph(FrameGraph& graph,
     return true;
 }
 
+ShadowPlacement
+placeGraphWithShadow(FrameGraph& graph,
+                     const PlacementInputs& inputs)
+{
+    ShadowPlacement result;
+
+    result.graph = graph;
+    placeGraph(graph, inputs);
+
+    result.servedFromCache.resize(graph.tasks.size(), false);
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        result.servedFromCache[i] = graph.tasks[i].placementReason == FrameGraph::PlacementReason::Cached;
+    }
+
+    PlacementInputs shadowInputs = inputs;
+    shadowInputs.isCached = nullptr;
+    placeGraph(result.graph, shadowInputs);
+
+    return result;
+}
+
 NATRON_NAMESPACE_EXIT

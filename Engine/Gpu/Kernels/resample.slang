@@ -1,16 +1,15 @@
-// Resampler::resampleRow for affine and projective inverse matrices: the ten filters of
-// Resampler::filter1D, Resampler::interpolate and Resampler::interpolateSuper (supersampling and the
-// box integration), reading the source from a storage buffer. resample_main samples one matrix;
-// resample_blur_main averages several per pixel as Resampler::motionBlurPixel does. Both carry sample
-// positions in two floats, which the bilinear to notch filters are continuous in, except clamped
-// Mitchell. Impulse and box pick a source pixel, and box a supersampling state, by floors of the CPU's
-// double positions that two floats round to the other side of on exact scales, and clamped Mitchell's
-// clamp range jumps where the floor of its taps changes; their entries, resample_exact_main and
-// resample_blur_exact_main, decide every floor as those doubles do: with two floats where those lie provably clear of the
-// decision, and with the doubles computed bit for bit otherwise. The integer double emulation is
-// kept out of the two-float entries because it is many times slower to run and to compile. It has
-// no division, so projective matrices, whose positions are quotients, always take the two-float
-// entries. The filters, interpolation and supersampling are resamplecore.slang's. GpuResampleParams in
+// Resampler::resampleRow for affine and projective inverse matrices: the filters of
+// Resampler::FilterSpec through resamplecore.slang's tap footprints, and the box integration, reading
+// the source from a storage buffer. resample_main samples one matrix; resample_blur_main averages
+// several per pixel as Resampler::motionBlurPixel does. Both carry sample positions in two floats,
+// which the unclamped kernels are continuous in. Impulse and box pick a source pixel, and box its
+// integration, by floors of the CPU's double positions that two floats round to the other side of
+// on exact scales, and a clamp range jumps where a tap enters the footprint, however small its
+// weight; their entries, resample_exact_main and resample_blur_exact_main, decide every floor as
+// those doubles do: with two floats where those lie provably clear of the decision, and with the
+// doubles computed bit for bit otherwise. The integer double emulation is kept out of the two-float
+// entries because it is many times slower to run and to compile. It has no division, so projective
+// matrices, whose positions are quotients, always take the two-float entries. GpuResampleParams in
 // Engine/Gpu/GpuResample.h mirrors ResampleParams.
 
 import resamplecore;
@@ -24,11 +23,11 @@ StructuredBuffer<uint> blurBuf;
 // The destination's offset addresses the output origin. The source's addresses (srcX1, srcY1).
 // The matrix rows (h00 h01 h02) and (h10 h11 h12) are, for the two-float entries, the six high
 // floats' bits in m0-m5 and the six low floats' in m6-m11, and for the exact entries the doubles'
-// bits, low word first, in m0-m11. `states`
-// holds one byte per Jacobian state (bit 0: x inside, bit 1: y inside): levelX in bits 0-2,
-// levelY in bits 3-5, bit 6 set when that Jacobian is zero. resample_blur_main reads the matrices
-// and their states from blurBuf instead, and so does resample_main under kFlagMatrixInBuffer, which
-// a projective matrix needs: its third row does not fit the push constants.
+// bits, low word first, in m0-m11. Bit s of `states` is set when the Jacobian of state s (bit 0: x
+// inside, bit 1: y inside) is zero; only the exact entries read it, for box. The blurred entries read
+// the matrices and their states from blurBuf instead, and so do resample_main and resample_exact_main
+// under kFlagMatrixInBuffer: a projective matrix's third row and an exact kernel's scales do not fit
+// the push constants.
 struct ResampleParams
 {
     int outX;
@@ -59,10 +58,24 @@ struct ResampleParams
     uint m9;
     uint m10;
     uint m11;
+    int lobes;
+    float B;
+    float C;
+    uint padding;
 };
 [[vk::push_constant]] ConstantBuffer<ResampleParams> rp;
 
 // The source described by `rp` and srcBuf.
+FilterSpec paramsFilter()
+{
+    FilterSpec s;
+    s.filter = rp.filter;
+    s.lobes = rp.lobes;
+    s.B = rp.B;
+    s.C = rp.C;
+    return s;
+}
+
 ResampleSource paramsSource()
 {
     ResampleSource s;
@@ -81,7 +94,7 @@ ResampleSource paramsSource()
 
 ///////////////////////////////////////////////////////////////////////////////
 // IEEE binary64 addition and multiplication, rounded to nearest even in 32-bit integer arithmetic.
-// Impulse and box take floor() of the CPU's double positions, and Reformat's exact scales put
+// The exact kernels take floor() of the CPU's double positions, and Reformat's exact scales put
 // those positions on integers, where two floats (48 bits, and only as exact as the device's fma)
 // round to the other side. Results are assumed normal: subnormals flush to zero and the exponent
 // is not checked for overflow, which no sample position reaches.
@@ -442,8 +455,8 @@ Pos dblToPos(Dbl d)
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// The matrix rows (h00 h01 h02) and (h10 h11 h12), with `states` as in ResampleParams. A projective
-// matrix also has the row (h20 h21 h22), and its Jacobian and states are worked out per pixel.
+// The matrix rows (h00 h01 h02) and (h10 h11 h12). A projective matrix also has the row
+// (h20 h21 h22), and its Jacobian is worked out per pixel.
 struct Matrix
 {
     FF h00;
@@ -452,7 +465,6 @@ struct Matrix
     FF h10;
     FF h11;
     FF h12;
-    uint states;
     bool projective;
     FF h20;
     FF h21;
@@ -469,7 +481,7 @@ float4 samplePixel(Matrix m, int x, int y)
     const ResampleSource src = paramsSource();
     if (!src.valid)
         return float4(0.0, 0.0, 0.0, 0.0);
-    const uint filter = rp.filter;
+    const FilterSpec spec = paramsFilter();
     const bool clampOn = (rp.flags & kFlagClamp) != 0;
     const float px = float(x) + 0.5;
     const float py = float(y) + 0.5;
@@ -489,12 +501,8 @@ float4 samplePixel(Matrix m, int x, int y)
         fy = ffDiv(Y, Z);
     }
 
-    float4 r;
-    if (filter == kFilterImpulse)
-    {
-        interpolate(src, filter, clampOn, fx, fy, r);
-        return r;
-    }
+    if (spec.filter == kFilterImpulse)
+        return interpolateSuper(src, spec, clampOn, fx, fy, zero, zero, zero, zero);
     // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
     bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
     bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
@@ -507,8 +515,6 @@ float4 samplePixel(Matrix m, int x, int y)
     FF Jxy = xinside ? m.h01 : zero;
     FF Jyx = yinside ? m.h10 : zero;
     FF Jyy = yinside ? m.h11 : zero;
-    uint states = m.states;
-    uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
     if (m.projective)
     {
         const FF Z2 = ffMul(Z, Z);
@@ -516,10 +522,8 @@ float4 samplePixel(Matrix m, int x, int y)
         Jxy = xinside ? projectiveJacobian(m.h01, X, m.h21, Z, Z2) : zero;
         Jyx = yinside ? projectiveJacobian(m.h10, Y, m.h20, Z, Z2) : zero;
         Jyy = yinside ? projectiveJacobian(m.h11, Y, m.h21, Z, Z2) : zero;
-        states = jacobianStates(Jxx, Jxy, Jyx, Jyy);
-        state = 0;
     }
-    return interpolateSuper(src, filter, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy, states, state);
+    return interpolateSuper(src, spec, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy);
 }
 
 // The same matrix as the doubles' bits.
@@ -532,32 +536,43 @@ struct MatrixBits
     Dbl h11;
     Dbl h12;
     uint states;
+    // Resampler::kernelScale of the two rows.
+    Dbl scaleX;
+    Dbl scaleY;
 };
 
-// What the exact entries' filters other than impulse and box take from the CPU's double position:
-// that position, the floors of its taps as Pos values of fx - 0.5 and fy - 0.5, and whether it
-// overlaps the source in x and in y.
+// What the exact entries' filters other than impulse and box take from the CPU's doubles.
 struct SmoothTaps
 {
-    FF fx;
-    FF fy;
-    Pos px;
-    Pos py;
-    bool xinside;
-    bool yinside;
+    TapAxis x;
+    TapAxis y;
 };
 
 SmoothTaps noTaps()
 {
+    const FF one = ffMake(1.0, 0.0);
     SmoothTaps t;
-    t.fx = ffMake(0.0, 0.0);
-    t.fy = t.fx;
-    t.px.i = 0;
-    t.px.f = 0.0;
-    t.py = t.px;
-    t.xinside = false;
-    t.yinside = false;
+    t.x = makeTapAxis(one, one, one, 0, 0);
+    t.y = t.x;
     return t;
+}
+
+// An axis's scale: a row zeroed for falling outside the source leaves the plain kernel.
+Dbl axisScale(Dbl scale, bool inside)
+{
+    return inside ? scale : dblMake(0, 0x3ff00000u);
+}
+
+// buildAxisTaps' floors in the CPU's doubles: centre and reach as it computes them, radius * scale
+// being a product by half an integer.
+TapAxis tapAxisExact(FilterSpec spec, Dbl coord, Dbl scale)
+{
+    const Dbl limit = dblFromInt(int(kPosLimit));
+    const Dbl centre = dblSub(dblMin(dblMax(coord, dblNeg(limit)), limit), dblMake(0, 0x3fe00000u));
+    const Dbl reach = dblMulHalfInt(scale, int(2.0 * filterRadius(spec)));
+    const int low = dblFloor(dblSub(centre, reach));
+    const int high = -dblFloor(dblNeg(dblAdd(centre, reach)));
+    return makeTapAxis(dblToFF(centre), dblToFF(reach), dblToFF(scale), low, high);
 }
 
 // Impulse and box at the CPU's double position: the pixel it falls in, or for box with a nonzero
@@ -594,16 +609,12 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     }
     if (rp.filter != kFilterBox)
     {
-        taps.fx = dblToFF(dx);
-        taps.fy = dblToFF(dy);
-        taps.px = dblToPos(bx);
-        taps.py = dblToPos(by);
-        taps.xinside = xinside;
-        taps.yinside = yinside;
+        taps.x = tapAxisExact(paramsFilter(), dx, axisScale(m.scaleX, xinside));
+        taps.y = tapAxisExact(paramsFilter(), dy, axisScale(m.scaleY, yinside));
         return r;
     }
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    if ((((m.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
+    if (((m.states >> state) & 1u) != 0)
     {
         cellPixel(paramsSource(), cell, r);
         return r;
@@ -688,6 +699,22 @@ bool floorGeAmbiguous(Pos p, float e, int n)
     return e > 0.0 && ((p.f <= e && p.i == n) || (p.f >= 1.0 - e && p.i + 1 == n));
 }
 
+// The footprint from a two-float position, false where a floor of its edges may differ from the
+// doubles'. ePos is 0 when the position is exact; a reach that is one float is then exact too, and
+// the sum of two floats is exact in two. Otherwise the reach adds its own rounding to the position's
+// bound e, in the same proportion.
+bool tapAxisClear(FilterSpec spec, FF f, Dbl scaleBits, float ePos, float e, out TapAxis axis)
+{
+    const FF scale = dblToFF(scaleBits);
+    const FF centre = ffAddF(f, -0.5);
+    const FF reach = ffMulF(scale, filterRadius(spec));
+    const float edge = (ePos == 0.0 && reach.lo == 0.0) ? 0.0 : e + reach.hi * pow2f(-42);
+    const Pos low = toPos(ffAdd(centre, ffNeg(reach)));
+    const Pos high = toPos(ffAdd(centre, reach));
+    axis = makeTapAxis(centre, reach, scale, low.i, posCeil(high));
+    return reach.hi < kFastLimit && !nearInteger(low, edge) && !nearInteger(high, edge);
+}
+
 // samplePixelExact from two-float positions, false where one of its floors may differ from the
 // doubles'. Away from the source edges a box corner's floor only moves weight between neighbouring
 // pixels by its distance to the integer, so only the floors that switch a pixel in or out of the
@@ -741,18 +768,11 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     }
     if (rp.filter != kFilterBox)
     {
-        if (nearInteger(bx, exPos) || nearInteger(by, eyPos))
-            return false;
-        taps.fx = fx;
-        taps.fy = fy;
-        taps.px = bx;
-        taps.py = by;
-        taps.xinside = xinside;
-        taps.yinside = yinside;
-        return true;
+        return tapAxisClear(paramsFilter(), fx, axisScale(mb.scaleX, xinside), exPos, ex, taps.x)
+            && tapAxisClear(paramsFilter(), fy, axisScale(mb.scaleY, yinside), eyPos, ey, taps.y);
     }
     const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    if ((((mb.states >> (8 * state)) & 0xffu) & 0x40u) != 0)
+    if (((mb.states >> state) & 1u) != 0)
     {
         if (cellExact)
             cellPixel(paramsSource(), cell, r);
@@ -834,11 +854,8 @@ float4 samplePixelDecided(MatrixBits m, uint exactRows, int x, int y)
         r = samplePixelExact(m, x, y, t);
     if (rp.filter == kFilterImpulse || rp.filter == kFilterBox)
         return r;
-    const FF zero = ffMake(0.0, 0.0);
-    const uint state = (t.xinside ? 1u : 0u) | (t.yinside ? 2u : 0u);
-    return interpolateSuperAt(paramsSource(), rp.filter, (rp.flags & kFlagClamp) != 0, t.fx, t.fy, t.px, t.py, t.xinside ? dblToFF(m.h00) : zero,
-                              t.xinside ? dblToFF(m.h01) : zero, t.yinside ? dblToFF(m.h10) : zero, t.yinside ? dblToFF(m.h11) : zero,
-                              m.states, state);
+    kernelSample(paramsSource(), paramsFilter(), (rp.flags & kFlagClamp) != 0, t.x, t.y, r);
+    return r;
 }
 
 void storePixel(uint3 tid, float4 v)
@@ -867,7 +884,6 @@ void resample_main(uint3 tid : SV_DispatchThreadID)
         m.h10 = ffMake(asfloat(rp.m3), asfloat(rp.m9));
         m.h11 = ffMake(asfloat(rp.m4), asfloat(rp.m10));
         m.h12 = ffMake(asfloat(rp.m5), asfloat(rp.m11));
-        m.states = rp.states;
         m.projective = false;
         m.h20 = ffMake(0.0, 0.0);
         m.h21 = ffMake(0.0, 0.0);
@@ -882,15 +898,25 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= rp.width || tid.y >= rp.height)
         return;
+    uint exactRows = (rp.flags / kFlagExactRowX) & 3u;
     MatrixBits m;
-    m.h00 = dblMake(rp.m0, rp.m1);
-    m.h01 = dblMake(rp.m2, rp.m3);
-    m.h02 = dblMake(rp.m4, rp.m5);
-    m.h10 = dblMake(rp.m6, rp.m7);
-    m.h11 = dblMake(rp.m8, rp.m9);
-    m.h12 = dblMake(rp.m10, rp.m11);
-    m.states = rp.states;
-    const uint exactRows = (rp.flags / kFlagExactRowX) & 3u;
+    if ((rp.flags & kFlagMatrixInBuffer) != 0)
+    {
+        m = blurMatrixBits(0);
+        exactRows = blurBuf[kBlurHeaderWords + 15];
+    }
+    else
+    {
+        m.h00 = dblMake(rp.m0, rp.m1);
+        m.h01 = dblMake(rp.m2, rp.m3);
+        m.h02 = dblMake(rp.m4, rp.m5);
+        m.h10 = dblMake(rp.m6, rp.m7);
+        m.h11 = dblMake(rp.m8, rp.m9);
+        m.h12 = dblMake(rp.m10, rp.m11);
+        m.states = rp.states;
+        m.scaleX = dblMake(0, 0x3ff00000u);
+        m.scaleY = m.scaleX;
+    }
     storePixel(tid, samplePixelDecided(m, exactRows, rp.outX + int(tid.x), rp.outY + int(tid.y)));
 }
 
@@ -903,10 +929,11 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
 // matrices are weighted. A matrix: twelve words holding h00 h01 h02 h10 h11 h12 as the push
 // constants' m0-m11 do for the entry that reads them, its states, its weight as hi and lo float
-// bits, for the exact entry its exact rows as samplePixelFast takes them, and for the two-float
-// entries 1 when it is projective, then hi of h20 h21 h22 and their lo.
+// bits, for the exact entry its exact rows as samplePixelFast takes them, for the two-float
+// entries 1 when it is projective, then hi of h20 h21 h22 and their lo, and for the exact entry the
+// two kernel scales' double bits, low word first.
 static const uint kBlurHeaderWords = 8;
-static const uint kBlurMatrixWords = 23;
+static const uint kBlurMatrixWords = 27;
 
 uint motionBlurHash(uint a)
 {
@@ -935,7 +962,6 @@ Matrix blurMatrix(uint t)
     m.h10 = ffMake(asfloat(blurBuf[base + 3]), asfloat(blurBuf[base + 9]));
     m.h11 = ffMake(asfloat(blurBuf[base + 4]), asfloat(blurBuf[base + 10]));
     m.h12 = ffMake(asfloat(blurBuf[base + 5]), asfloat(blurBuf[base + 11]));
-    m.states = blurBuf[base + 12];
     m.projective = blurBuf[base + 16] != 0;
     m.h20 = ffMake(asfloat(blurBuf[base + 17]), asfloat(blurBuf[base + 20]));
     m.h21 = ffMake(asfloat(blurBuf[base + 18]), asfloat(blurBuf[base + 21]));
@@ -954,6 +980,8 @@ MatrixBits blurMatrixBits(uint t)
     m.h11 = dblMake(blurBuf[base + 8], blurBuf[base + 9]);
     m.h12 = dblMake(blurBuf[base + 10], blurBuf[base + 11]);
     m.states = blurBuf[base + 12];
+    m.scaleX = dblMake(blurBuf[base + 23], blurBuf[base + 24]);
+    m.scaleY = dblMake(blurBuf[base + 25], blurBuf[base + 26]);
     return m;
 }
 

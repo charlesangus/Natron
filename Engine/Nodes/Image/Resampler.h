@@ -369,15 +369,6 @@ struct SourceImage {
 bool interpolate(const FilterSpec& filter, bool clamp, double fx, double fy, const SourceImage& src, bool blackOutside, float* out);
 
 /**
- * @brief Whether the GPU resampler supersamples for a back-transform with Jacobian
- * (Jxx = dfx/dx, Jxy = dfx/dy, Jyx = dfy/dx, Jyy = dfy/dy) and, if so, the number of
- * levels per axis: the samples per axis are 3^level, level in 0..4. Supersampling happens only
- * when the squared norm of a Jacobian column exceeds 1 (minification); a scale factor of
- * sqrt(3) or more starts level 1, and level 4 (81 samples per axis) is the maximum.
- **/
-bool supersampleLevels(double Jxx, double Jxy, double Jyx, double Jyy, int* levelX, int* levelY);
-
-/**
  * @brief Samples src at (fx, fy) for a destination pixel whose back-transform has the given
  * Jacobian. The kernel widens per source axis by kernelScale() of the Jacobian's row, so
  * magnification, 1:1, pure rotation and a zeroed row use the plain kernel. Past

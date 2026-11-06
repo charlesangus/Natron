@@ -21,18 +21,22 @@ namespace {
     constexpr uint32_t kFlagExactRowY = 16;
     constexpr uint32_t kFlagMatrixInBuffer = 32;
 
-    // Mirrors kFilterImpulse, kFilterBox and kFilterMitchell in Kernels/resample.slang.
+    // Mirrors kFilterImpulse and kFilterBox in Kernels/resamplecore.slang.
     constexpr uint32_t kFilterImpulse = 0;
     constexpr uint32_t kFilterBox = 1;
-    constexpr uint32_t kFilterMitchell = 7;
 
     // The filters whose output jumps where a floor of the CPU's double position changes run the
-    // kernels that take those doubles bit for bit: impulse and box, and clamped Mitchell, which
-    // unlike the other clamped filters does not pass through its centre samples, so its clamp
-    // range changes at a tap boundary with the value away from the range's shared end.
+    // kernels that take those doubles bit for bit: impulse and box, and every clamped filter, as a
+    // tap entering the footprint widens the clamp range however small its weight.
     bool exactPositions(uint32_t filter, bool clamp)
     {
-        return filter == kFilterImpulse || filter == kFilterBox || (clamp && filter == kFilterMitchell);
+        return filter == kFilterImpulse || filter == kFilterBox || clamp;
+    }
+
+    // Impulse and box need no kernel scale, so their exact matrix fits the push constants.
+    bool exactReadsScales(uint32_t filter)
+    {
+        return filter != kFilterImpulse && filter != kFilterBox;
     }
 
     GpuStatus invalid(const char* what)
@@ -60,7 +64,7 @@ namespace {
 
     // Mirrors kBlurHeaderWords and kBlurMatrixWords in Kernels/resample.slang.
     constexpr uint32_t kBlurHeaderWords = 8;
-    constexpr uint32_t kBlurMatrixWords = 23;
+    constexpr uint32_t kBlurMatrixWords = 27;
 
     // updateBuffer's limit per call.
     constexpr std::size_t kUpdateChunkBytes = 65536;
@@ -146,9 +150,7 @@ namespace {
     {
         uint32_t states = 0;
         for (uint32_t s = 0; s < 4; ++s) {
-            const GpuResampleJacobian& j = jacobians[s];
-            const uint32_t bits = j.levelX | (j.levelY << 3) | (j.zero ? 0x40u : 0u);
-            states |= bits << (8 * s);
+            states |= (jacobians[s].zero ? 1u : 0u) << s;
         }
         return states;
     }
@@ -168,10 +170,8 @@ namespace {
                 return invalid("the matrix is not finite");
             }
         }
-        for (const GpuResampleJacobian& j : m.jacobians) {
-            if (j.levelX > kGpuResampleMaxLevel || j.levelY > kGpuResampleMaxLevel) {
-                return invalid("supersampling level out of range");
-            }
+        if (!std::isfinite(m.scaleX) || !std::isfinite(m.scaleY)) {
+            return invalid("a kernel scale is not finite");
         }
         if (weighted && !std::isfinite(m.weight)) {
             return invalid("a matrix weight is not finite");
@@ -219,6 +219,8 @@ namespace {
             w[14] = floatBits(lo);
             if (exact) {
                 w[15] = exactRowFlags(m.matrix, r.output) / kFlagExactRowX;
+                doubleBits(m.scaleX, &w[23]);
+                doubleBits(m.scaleY, &w[25]);
             } else {
                 w[16] = m.isProjective() ? 1u : 0u;
                 for (int k = 0; k < 3; ++k) {
@@ -269,6 +271,9 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     }
     p.nComps = r.channels;
     p.filter = r.filter;
+    p.lobes = r.lobes;
+    p.B = static_cast<float>(r.B);
+    p.C = static_cast<float>(r.C);
     p.flags = (r.clamp ? kFlagClamp : 0u) | (r.blackOutside ? kFlagBlackOutside : 0u);
 
     const bool srcValid = r.src.buffer && !r.src.bounds.empty();
@@ -291,7 +296,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     const bool projective
         = std::any_of(r.matrices.begin(), r.matrices.end(), [](const GpuResampleMatrix& m) { return m.isProjective(); });
     const bool exact = exactPositions(r.filter, r.clamp) && !projective;
-    if (!blurred && !projective) {
+    if (!blurred && !projective && !(exact && exactReadsScales(r.filter))) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);
         p.states = packStates(m.jacobians);
@@ -302,15 +307,16 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
                             { p.width, p.height, 1 });
     }
 
-    // A projective matrix's third row does not fit the push constants: one alone is read from the
-    // matrices' buffer too.
+    // A projective matrix's third row and an exact kernel's scales do not fit the push constants:
+    // one matrix alone is read from the matrices' buffer too.
     GpuBuffer* matrices = nullptr;
     if (GpuStatus s = uploadBlurMatrices(ctx, r, exact, matrices); !s) {
         return s;
     }
     if (!blurred) {
         p.flags |= kFlagMatrixInBuffer;
-        return ctx.dispatch(GpuKernelId::resample, { src, r.dst.buffer, matrices }, p, { p.width, p.height, 1 });
+        return ctx.dispatch(exact ? GpuKernelId::resample_exact : GpuKernelId::resample, { src, r.dst.buffer, matrices }, p,
+                            { p.width, p.height, 1 });
     }
     return ctx.dispatch(exact ? GpuKernelId::resample_blur_exact : GpuKernelId::resample_blur, { src, r.dst.buffer, matrices }, p,
                         { p.width, p.height, 1 });

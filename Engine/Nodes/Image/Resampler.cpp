@@ -1227,32 +1227,6 @@ interpolate(const FilterSpec& filter,
     return selectKernels(src.nComps).interpolate(filter, clamp, fx, fy, src, blackOutside, out);
 }
 
-bool
-supersampleLevels(double Jxx,
-                  double Jxy,
-                  double Jyx,
-                  double Jyy,
-                  int* levelX,
-                  int* levelY)
-{
-    *levelX = 0;
-    *levelY = 0;
-    double dx = Jxx * Jxx + Jyx * Jyx;
-    double dy = Jxy * Jxy + Jyy * Jyy;
-    if ((dx <= 1.) && (dy <= 1.)) {
-        return false;
-    }
-    // A NaN norm takes level 0 rather than reaching the int conversion below.
-    double sx = (dx > 1.) ? (std::min)(std::log(dx) / (2 * std::log(3.)), 4.) : 0.;
-    double sy = (dy > 1.) ? (std::min)(std::log(dy) / (2 * std::log(3.)), 4.) : 0.;
-    // Rounding rather than ceil puts the jump to the next level at a scale of sqrt(3), so a
-    // scale just above 1 is not supersampled.
-    *levelX = (int)std::ceil(sx - 0.5);
-    *levelY = (int)std::ceil(sy - 0.5);
-
-    return *levelX > 0 || *levelY > 0;
-}
-
 void
 interpolateSuper(const FilterSpec& filter,
                  bool clamp,

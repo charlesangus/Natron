@@ -345,25 +345,6 @@ TEST(Resampler, BlackOutsideAndEdgeClamp)
     EXPECT_EQ(v, 0.f);
 }
 
-TEST(Resampler, SupersampleLevels)
-{
-    int lx = -1, ly = -1;
-
-    EXPECT_FALSE(supersampleLevels(1., 0., 0., 1., &lx, &ly));
-    EXPECT_FALSE(supersampleLevels(0.5, 0., 0., 0.5, &lx, &ly));
-    // A 1.5x minification is under sqrt(3): rounded down to no supersampling.
-    EXPECT_FALSE(supersampleLevels(1.5, 0., 0., 1.5, &lx, &ly));
-    EXPECT_TRUE(supersampleLevels(2., 0., 0., 1., &lx, &ly));
-    EXPECT_EQ(lx, 1);
-    EXPECT_EQ(ly, 0);
-    EXPECT_TRUE(supersampleLevels(9., 0., 0., 3., &lx, &ly));
-    EXPECT_EQ(lx, 2);
-    EXPECT_EQ(ly, 1);
-    EXPECT_TRUE(supersampleLevels(1000., 0., 0., 1000., &lx, &ly));
-    EXPECT_EQ(lx, 4);
-    EXPECT_EQ(ly, 4);
-}
-
 TEST(Resampler, MinificationWidensTheKernel)
 {
     const RectI bounds(0, 0, 32, 32);

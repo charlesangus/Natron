@@ -1,7 +1,7 @@
-// Resampler's filters, interpolation and supersampling with the source passed in, so that kernels
-// with their own bindings (resample.slang, and coordmap.slang's callers under pixelwrap.slang) share
-// them. Sample positions are carried in two floats, so that the filter taps and the integer cells the
-// CPU picks with its double positions are the same here.
+// Resampler's filter weights, tap footprints and box integration with the source passed in, so that
+// kernels with their own bindings (resample.slang, and coordmap.slang's callers under pixelwrap.slang)
+// share them. Sample positions are carried in two floats, so that the filter taps and the integer
+// cells the CPU picks with its double positions are the same here.
 
 static const uint kFilterImpulse = 0;
 static const uint kFilterBox = 1;
@@ -13,6 +13,33 @@ static const uint kFilterRifman = 6;
 static const uint kFilterMitchell = 7;
 static const uint kFilterParzen = 8;
 static const uint kFilterNotch = 9;
+static const uint kFilterLanczos2 = 10;
+static const uint kFilterLanczos3 = 11;
+static const uint kFilterLanczos4 = 12;
+static const uint kFilterSinc = 13;
+static const uint kFilterBlackmanHarris = 14;
+static const uint kFilterGaussian = 15;
+static const uint kFilterBicubic = 16;
+
+// Resampler::FilterSpec. lobes is only read by sinc, B and C only by bicubic.
+struct FilterSpec
+{
+    uint filter;
+    int lobes;
+    float B;
+    float C;
+};
+
+// Resampler::FilterSpec's defaults for `filter`.
+FilterSpec defaultFilterSpec(uint filter)
+{
+    FilterSpec s;
+    s.filter = filter;
+    s.lobes = 4;
+    s.B = 1.0 / 3.0;
+    s.C = 1.0 / 3.0;
+    return s;
+}
 
 // kFlagClamp is only set for the filters Resampler::filterHonoursClamp names.
 static const uint kFlagClamp = 1;
@@ -251,66 +278,10 @@ int clampCoord(int v, int lo, int hiExclusive)
     return max(lo, min(v, hiExclusive - 1));
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// 1-D filters, as in Resampler.h
-
-float4 clampValue(float4 I, float4 Ic, float4 In)
-{
-    const float4 lo = min(Ic, In);
-    const float4 hi = max(Ic, In);
-    float4 r = I;
-    [ForceUnroll]
-    for (int c = 0; c < 4; ++c)
-    {
-        if (I[c] < lo[c])
-            r[c] = lo[c];
-        else if (I[c] > hi[c])
-            r[c] = hi[c];
-    }
-    return r;
-}
-
-float4 filterLinear(float4 Ic, float4 In, float d)
-{
-    return Ic + d * (In - Ic);
-}
-
-float4 filterCubic(float4 Ic, float4 In, float d)
-{
-    return Ic + d * d * ((-3.0 * Ic + 3.0 * In) + d * (2.0 * Ic - 2.0 * In));
-}
-
-float4 filter4(uint filter, bool clampOn, float4 Ip, float4 Ic, float4 In, float4 Ia, float d)
-{
-    float4 I;
-    switch (filter)
-    {
-    case kFilterKeys:
-        I = Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 5.0 * Ic + 4.0 * In - Ia) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia))) / 2.0;
-        break;
-    case kFilterSimon:
-        I = Ic + d * ((-3.0 * Ip + 3.0 * In) + d * ((6.0 * Ip - 9.0 * Ic + 6.0 * In - 3.0 * Ia) + d * (-3.0 * Ip + 5.0 * Ic - 5.0 * In + 3.0 * Ia))) / 4.0;
-        break;
-    case kFilterRifman:
-        I = Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 2.0 * Ic + In - Ia) + d * (-Ip + Ic - In + Ia)));
-        break;
-    case kFilterMitchell:
-        I = (Ip + 16.0 * Ic + In + d * ((-9.0 * Ip + 9.0 * In) + d * ((15.0 * Ip - 36.0 * Ic + 27.0 * In - 6.0 * Ia) + d * (-7.0 * Ip + 21.0 * Ic - 21.0 * In + 7.0 * Ia)))) / 18.0;
-        break;
-    case kFilterParzen:
-        return (Ip + 4.0 * Ic + In + d * ((-3.0 * Ip + 3.0 * In) + d * ((3.0 * Ip - 6.0 * Ic + 3.0 * In) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia)))) / 6.0;
-    case kFilterNotch:
-        return (Ip + 2.0 * Ic + In + d * ((-2.0 * Ip + 2.0 * In) + d * ((Ip - Ic - In + Ia)))) / 4.0;
-    default:
-        return float4(0.0, 0.0, 0.0, 0.0);
-    }
-    return clampOn ? clampValue(I, Ic, In) : I;
-}
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateT: false (and zero) when every tap is outside the source.
-
-// Impulse and box: the source pixel `cell`, the floor of the position.
+// Impulse and box: the source pixel `cell`, the floor of the position; false (and zero) when it is
+// outside the source.
 bool cellPixel(ResampleSource src, int2 cell, out float4 result)
 {
     result = float4(0.0, 0.0, 0.0, 0.0);
@@ -329,81 +300,6 @@ bool cellPixel(ResampleSource src, int2 cell, out float4 result)
     return true;
 }
 
-// The bilinear to notch filters, at the position (px + 0.5, py + 0.5).
-bool interpolateAt(ResampleSource src, uint filter, bool clampOn, Pos px, Pos py, out float4 result)
-{
-    result = float4(0.0, 0.0, 0.0, 0.0);
-    if (!src.valid)
-        return false;
-    const bool black = src.blackOutside;
-
-    if (filter == kFilterBilinear || filter == kFilterCubic)
-    {
-        int cx = px.i;
-        int cy = py.i;
-        int nx = cx + 1;
-        int ny = cy + 1;
-        if (!black)
-        {
-            cx = clampCoord(cx, src.x1, src.x2);
-            cy = clampCoord(cy, src.y1, src.y2);
-            nx = clampCoord(nx, src.x1, src.x2);
-            ny = clampCoord(ny, src.y1, src.y2);
-        }
-        const float dx = clamp(float(px.i - cx) + px.f, 0.0, 1.0);
-        const float dy = clamp(float(py.i - cy) + py.f, 0.0, 1.0);
-        bool any = false;
-        const float4 Icc = pixel(src, cx, cy, any);
-        const float4 Inc = pixel(src, nx, cy, any);
-        const float4 Icn = pixel(src, cx, ny, any);
-        const float4 Inn = pixel(src, nx, ny, any);
-        if (!any)
-            return false;
-        if (filter == kFilterBilinear)
-            result = filterLinear(filterLinear(Icc, Inc, dx), filterLinear(Icn, Inn, dx), dy);
-        else
-            result = filterCubic(filterCubic(Icc, Inc, dx), filterCubic(Icn, Inn, dx), dy);
-        return true;
-    }
-
-    int xs[4];
-    int ys[4];
-    [ForceUnroll]
-    for (int k = 0; k < 4; ++k)
-    {
-        xs[k] = px.i - 1 + k;
-        ys[k] = py.i - 1 + k;
-        if (!black)
-        {
-            xs[k] = clampCoord(xs[k], src.x1, src.x2);
-            ys[k] = clampCoord(ys[k], src.y1, src.y2);
-        }
-    }
-    const float dx = clamp(float(px.i - xs[1]) + px.f, 0.0, 1.0);
-    const float dy = clamp(float(py.i - ys[1]) + py.f, 0.0, 1.0);
-    bool any = false;
-    float4 rows[4];
-    [ForceUnroll]
-    for (int r = 0; r < 4; ++r)
-    {
-        const float4 Ip = pixel(src, xs[0], ys[r], any);
-        const float4 Ic = pixel(src, xs[1], ys[r], any);
-        const float4 In = pixel(src, xs[2], ys[r], any);
-        const float4 Ia = pixel(src, xs[3], ys[r], any);
-        rows[r] = filter4(filter, clampOn, Ip, Ic, In, Ia, dx);
-    }
-    if (!any)
-        return false;
-    result = filter4(filter, clampOn, rows[0], rows[1], rows[2], rows[3], dy);
-    return true;
-}
-
-bool interpolate(ResampleSource src, uint filter, bool clampOn, FF fx, FF fy, out float4 result)
-{
-    if (filter == kFilterImpulse || filter == kFilterBox)
-        return cellPixel(src, int2(toPos(fx).i, toPos(fy).i), result);
-    return interpolateAt(src, filter, clampOn, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), result);
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 // The box filter's integration, Resampler's integrate1d and integrate2d, with positions relative
@@ -530,12 +426,6 @@ float4 integrate2d(ResampleSource src, Pos x1, Pos y1, Pos x2, Pos y2, bool zero
     return v;
 }
 
-bool outsideBounds(ResampleSource src, FF x, FF y)
-{
-    const int ix = toPos(x).i;
-    const int iy = toPos(y).i;
-    return ix < src.x1 || src.x2 <= ix || iy < src.y1 || src.y2 <= iy;
-}
 
 FF corner(FF f, FF a, FF b, float sa, float sb)
 {
@@ -544,139 +434,427 @@ FF corner(FF f, FF a, FF b, float sa, float sb)
     return ffAdd(ffAdd(f, sa < 0.0 ? ffNeg(ha) : ha), sb < 0.0 ? ffNeg(hb) : hb);
 }
 
-// GpuResample.h's kGpuResampleMaxLevel: at most 3^4 x 3^4 supersamples.
-static const int kMaxLevel = 4;
+///////////////////////////////////////////////////////////////////////////////
+// Resampler::FilterSpec::radius and weight, evaluated in floats on a two-float distance.
 
-int pow3(int e)
+static const float kFilterPi = 3.14159265358979;
+
+int usableLobes(int lobes)
 {
-    int r = 1;
-    for (int k = 0; k < e; ++k)
-        r *= 3;
-    return r;
+    return max(2, min(lobes, 8));
+}
+
+float filterRadius(FilterSpec spec)
+{
+    switch (spec.filter)
+    {
+    case kFilterImpulse:
+    case kFilterBox:
+        return 0.5;
+    case kFilterBilinear:
+    case kFilterCubic:
+        return 1.0;
+    case kFilterGaussian:
+        return 1.5;
+    case kFilterLanczos3:
+        return 3.0;
+    case kFilterLanczos4:
+        return 4.0;
+    case kFilterSinc:
+        return float(usableLobes(spec.lobes));
+    default:
+        return 2.0;
+    }
+}
+
+// Vulkan only bounds sin() and cos() to an absolute 2^-11, which is the size of the outer lobes and
+// would move every weight near a zero crossing. This series keeps the relative accuracy there.
+float sinPi(float d)
+{
+    const float x = kFilterPi * d;
+    const float x2 = x * x;
+    return x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0 + x2 * (-1.0 / 39916800.0 + x2 / 6227020800.0))))));
+}
+
+float cosPi(float t)
+{
+    const float n = floor(t + 0.5);
+    const float s = sinPi(0.5 - abs(t - n));
+    return (int(n) & 1) != 0 ? -s : s;
+}
+
+// sin(pi x) / (pi x) for x >= 0 that is not a nonzero integer. The integer nearest x is taken off in
+// two floats first, as pi x in floats would lose the distance to that zero.
+float sincPi(FF x)
+{
+    if (x.hi == 0.0 && x.lo == 0.0)
+        return 1.0;
+    const float n = floor(x.hi + 0.5);
+    const FF rem = ffAddF(x, -n);
+    const float s = sinPi(rem.hi + rem.lo);
+    return ((int(n) & 1) != 0 ? -s : s) / (kFilterPi * (x.hi + x.lo));
+}
+
+float legacyValue(uint filter, float Ip, float Ic, float In, float Ia, float d)
+{
+    switch (filter)
+    {
+    case kFilterBilinear:
+        return Ic + d * (In - Ic);
+    case kFilterCubic:
+        return Ic + d * d * ((-3.0 * Ic + 3.0 * In) + d * (2.0 * Ic - 2.0 * In));
+    case kFilterKeys:
+        return Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 5.0 * Ic + 4.0 * In - Ia) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia))) / 2.0;
+    case kFilterSimon:
+        return Ic + d * ((-3.0 * Ip + 3.0 * In) + d * ((6.0 * Ip - 9.0 * Ic + 6.0 * In - 3.0 * Ia) + d * (-3.0 * Ip + 5.0 * Ic - 5.0 * In + 3.0 * Ia))) / 4.0;
+    case kFilterRifman:
+        return Ic + d * ((-Ip + In) + d * ((2.0 * Ip - 2.0 * Ic + In - Ia) + d * (-Ip + Ic - In + Ia)));
+    case kFilterMitchell:
+        return (Ip + 16.0 * Ic + In + d * ((-9.0 * Ip + 9.0 * In) + d * ((15.0 * Ip - 36.0 * Ic + 27.0 * In - 6.0 * Ia) + d * (-7.0 * Ip + 21.0 * Ic - 21.0 * In + 7.0 * Ia)))) / 18.0;
+    case kFilterParzen:
+        return (Ip + 4.0 * Ic + In + d * ((-3.0 * Ip + 3.0 * In) + d * ((3.0 * Ip - 6.0 * Ic + 3.0 * In) + d * (-Ip + 3.0 * Ic - 3.0 * In + Ia)))) / 6.0;
+    case kFilterNotch:
+        return (Ip + 2.0 * Ic + In + d * ((-2.0 * Ip + 2.0 * In) + d * ((Ip - Ic - In + Ia)))) / 4.0;
+    default:
+        return 0.0;
+    }
+}
+
+float blackmanHarris(float t)
+{
+    return 0.35875 + 0.48829 * cosPi(t) + 0.14128 * cosPi(2.0 * t) + 0.01168 * cosPi(3.0 * t);
+}
+
+float taperedToEdge(float v, float edge)
+{
+    return (v - edge) / (1.0 - edge);
+}
+
+// The weight at distance a < radius from the centre. onZero says a is a nonzero integer, so that
+// the sinc factor is exactly zero as the CPU's sincPi makes it.
+float filterValue(FilterSpec spec, FF a, bool onZero)
+{
+    const float af = a.hi + a.lo;
+    switch (spec.filter)
+    {
+    case kFilterLanczos2:
+    case kFilterLanczos3:
+    case kFilterLanczos4:
+        return onZero ? 0.0 : sincPi(a) * sincPi(ffDivF(a, filterRadius(spec)));
+    case kFilterSinc:
+    {
+        // 0.5 + 0.5 cos(2 theta) as cos^2(theta), which keeps its accuracy approaching the edge.
+        const float c = cosPi(af / (2.0 * filterRadius(spec)));
+        return onZero ? 0.0 : sincPi(a) * c * c;
+    }
+    case kFilterBlackmanHarris:
+        return taperedToEdge(blackmanHarris(af * 0.5), blackmanHarris(1.0));
+    case kFilterGaussian:
+        return taperedToEdge(exp(-2.0 * af * af), exp(-4.5));
+    case kFilterBicubic:
+    {
+        const float B = spec.B;
+        const float C = spec.C;
+        if (af < 1.0)
+            return (6.0 - 2.0 * B + af * af * ((-18.0 + 12.0 * B + 6.0 * C) + af * (12.0 - 9.0 * B - 6.0 * C))) / 6.0;
+        return (8.0 * B + 24.0 * C + af * ((-12.0 * B - 48.0 * C) + af * ((6.0 * B + 30.0 * C) + af * (-B - 6.0 * C)))) / 6.0;
+    }
+    default:
+    {
+        if (af < 1.0)
+            return legacyValue(spec.filter, 0.0, 1.0, 0.0, 0.0, af);
+        const FF d = ffAddF(a, -1.0);
+        return legacyValue(spec.filter, 1.0, 0.0, 0.0, 0.0, d.hi + d.lo);
+    }
+    }
+}
+
+// A tap inside the support that floats round to zero weight, but the CPU's doubles do not, still
+// counts towards the clamp range; so small a weight moves no result.
+static const float kCountedWeight = 1e-30;
+
+// Resampler::FilterSpec::weight(offset / scale). The support is an open interval.
+float tapWeight(FilterSpec spec, FF offset, FF scale)
+{
+    const FF off = ffLess(offset, ffMake(0.0, 0.0)) ? ffNeg(offset) : offset;
+    const FF a = (scale.hi == 1.0 && scale.lo == 0.0) ? off : ffDiv(off, scale);
+    if (!ffLess(a, ffMake(filterRadius(spec), 0.0)))
+        return 0.0;
+    // The quotient may be noisy on a device whose division is not correctly rounded, so whether it
+    // lies on an integer is read from the product, which is exact.
+    const float n = floor(a.hi + 0.5);
+    const FF rem = ffAddF(a, -n);
+    bool onInteger = false;
+    if (n >= 1.0 && abs(rem.hi) < 9.31322574615479e-10)
+    {
+        const FF diff = ffAdd(off, ffNeg(ffMulF(scale, n)));
+        onInteger = diff.hi == 0.0 && diff.lo == 0.0;
+    }
+    const float w = filterValue(spec, a, onInteger);
+    return (w == 0.0 && !onInteger) ? kCountedWeight : w;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Resampler's interpolateSuperT for the bilinear to notch filters and the Jacobian (Jxx Jxy; Jyx Jyy)
-// of state `state`, with the centre sample's fx - 0.5 and fy - 0.5 as px and py.
+// Resampler's buildAxisTaps, resolveReads and kernelSampleT.
 
-float4 interpolateSuperAt(ResampleSource src, uint filter, bool clampOn, FF fx, FF fy, Pos px, Pos py, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states,
-                          uint state)
+static const int kMaxTapsPerAxis = 81;
+
+// One axis's footprint: the taps are decided by the caller from the floors of centre - reach and
+// centre + reach, as the kernels that take the CPU's doubles need those floors from the doubles.
+struct TapAxis
 {
-    float4 tmp;
-    const uint bits = (states >> (8 * state)) & 0xffu;
-    if ((bits & 0x40u) != 0)
-    {
-        interpolateAt(src, filter, clampOn, px, py, tmp);
-        return tmp;
-    }
+    FF centre;
+    FF reach;
+    FF scale;
+    int first;
+    int count;
+    bool spread;
+};
 
-    const bool inside = interpolateAt(src, filter, clampOn, px, py, tmp);
-    if (!inside)
-    {
-        // A black centre is only kept when the whole back-transformed pixel is outside.
-        if (outsideBounds(src, corner(fx, Jxx, Jxy, -1.0, -1.0), corner(fy, Jyx, Jyy, -1.0, -1.0))
-            && outsideBounds(src, corner(fx, Jxx, Jxy, 1.0, -1.0), corner(fy, Jyx, Jyy, 1.0, -1.0))
-            && outsideBounds(src, corner(fx, Jxx, Jxy, -1.0, 1.0), corner(fy, Jyx, Jyy, -1.0, 1.0))
-            && outsideBounds(src, corner(fx, Jxx, Jxy, 1.0, 1.0), corner(fy, Jyx, Jyy, 1.0, 1.0)))
-            return tmp;
-    }
-    const int isx = min(int(bits & 7u), kMaxLevel);
-    const int isy = min(int((bits >> 3) & 7u), kMaxLevel);
-    if (isx == 0 && isy == 0)
-        return tmp;
+TapAxis makeTapAxis(FF centre, FF reach, FF scale, int floorLow, int ceilHigh)
+{
+    TapAxis a;
+    a.centre = centre;
+    a.reach = reach;
+    a.scale = scale;
+    a.first = floorLow + 1;
+    const int exactCount = ceilHigh - a.first;
+    a.spread = exactCount > kMaxTapsPerAxis;
+    a.count = a.spread ? kMaxTapsPerAxis : max(exactCount, 0);
+    return a;
+}
 
-    const int nisx = pow3(isx);
-    const int nisy = pow3(isy);
-    const float jxx = Jxx.hi + Jxx.lo;
-    const float jxy = Jxy.hi + Jxy.lo;
-    const float jyx = Jyx.hi + Jyx.lo;
-    const float jyy = Jyy.hi + Jyy.lo;
-    for (int sy = -nisy / 2; sy <= nisy / 2; ++sy)
+int posCeil(Pos p)
+{
+    return p.f > 0.0 ? p.i + 1 : p.i;
+}
+
+// The footprint from two-float arithmetic alone.
+TapAxis tapAxis(FilterSpec spec, FF coord, FF scale)
+{
+    const FF centre = ffAddF(ffMin(ffMax(coord, ffMake(-kPosLimit, 0.0)), ffMake(kPosLimit, 0.0)), -0.5);
+    const FF reach = ffMulF(scale, filterRadius(spec));
+    return makeTapAxis(centre, reach, scale, toPos(ffAdd(centre, ffNeg(reach))).i, posCeil(toPos(ffAdd(centre, reach))));
+}
+
+struct AxisTaps
+{
+    int count;
+    bool any;
+    int nearRead[kMaxTapsPerAxis];
+    int farRead[kMaxTapsPerAxis];
+    float frac[kMaxTapsPerAxis];
+    float weight[kMaxTapsPerAxis];
+};
+
+// Relative to `lo`, -1 for a read that is black.
+int readOffset(int v, int lo, int hiExclusive, bool blackOutside)
+{
+    if (v < lo || v >= hiExclusive)
     {
-        for (int sx = -nisx / 2; sx <= nisx / 2; ++sx)
+        if (blackOutside)
+            return -1;
+        v = clampCoord(v, lo, hiExclusive);
+    }
+    return v - lo;
+}
+
+void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, bool blackOutside, out AxisTaps t)
+{
+    t.count = a.count;
+    t.any = false;
+    FF sum = ffMake(0.0, 0.0);
+    // Spread taps need no double positions of their own: bilinear reads are continuous across the
+    // pixel a tap falls in, and the clamp range counts that interpolated read.
+    const FF step = a.spread ? ffDivF(ffMulF(a.reach, 2.0), float(kMaxTapsPerAxis)) : ffMake(0.0, 0.0);
+    [loop]
+    for (int i = 0; i < a.count; ++i)
+    {
+        FF offset;
+        int low;
+        float frac;
+        if (a.spread)
         {
-            if (sx != 0 || sy != 0)
+            offset = ffAdd(ffMulF(step, float(i) + 0.5), ffNeg(a.reach));
+            const Pos p = toPos(ffAdd(a.centre, offset));
+            low = p.i;
+            frac = p.f;
+        }
+        else
+        {
+            low = a.first + i;
+            offset = ffAddF(ffNeg(a.centre), float(low));
+            frac = 0.0;
+        }
+        const float w = tapWeight(spec, offset, a.scale);
+        t.frac[i] = frac;
+        t.weight[i] = w;
+        sum = ffAddF(sum, w);
+        t.nearRead[i] = readOffset(low, lo, hiExclusive, blackOutside);
+        t.farRead[i] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, blackOutside) : -1;
+        t.any = t.any || t.nearRead[i] >= 0 || t.farRead[i] >= 0;
+    }
+    const float total = sum.hi + sum.lo;
+    [loop]
+    for (int i = 0; i < a.count; ++i)
+        t.weight[i] = total != 0.0 ? t.weight[i] / total : 0.0;
+}
+
+float4 readAlongRow(ResampleSource src, int row, int nearRead, int farRead, float frac)
+{
+    const float4 black = float4(0.0, 0.0, 0.0, 0.0);
+    if (row < 0)
+        return black;
+    const float4 a = nearRead >= 0 ? srcRel(src, nearRead, row) : black;
+    if (frac == 0.0)
+        return a;
+    const float4 b = farRead >= 0 ? srcRel(src, farRead, row) : black;
+    return a * (1.0 - frac) + b * frac;
+}
+
+// Black reads count towards the clamp range, zero-weight taps do not. NaN source values are ignored
+// by the range as std::min and std::max ignore them, which min() and max() do not promise.
+bool kernelSample(ResampleSource src, FilterSpec spec, bool clampOn, TapAxis ax, TapAxis ay, out float4 result)
+{
+    result = float4(0.0, 0.0, 0.0, 0.0);
+    if (!src.valid)
+        return false;
+    AxisTaps tx;
+    AxisTaps ty;
+    buildAxisTaps(spec, ax, src.x1, src.x2, src.blackOutside, tx);
+    buildAxisTaps(spec, ay, src.y1, src.y2, src.blackOutside, ty);
+    if (!tx.any || !ty.any)
+        return false;
+
+    const float inf = asfloat(0x7f800000u);
+    float4 acc = float4(0.0, 0.0, 0.0, 0.0);
+    float4 lowest = float4(inf, inf, inf, inf);
+    float4 highest = -lowest;
+    [loop]
+    for (int j = 0; j < ty.count; ++j)
+    {
+        const float wy = ty.weight[j];
+        if (wy == 0.0)
+            continue;
+        const float fracY = ty.frac[j];
+        float4 rowAcc = float4(0.0, 0.0, 0.0, 0.0);
+        [loop]
+        for (int i = 0; i < tx.count; ++i)
+        {
+            const float wx = tx.weight[i];
+            if (wx == 0.0)
+                continue;
+            float4 v = readAlongRow(src, ty.nearRead[j], tx.nearRead[i], tx.farRead[i], tx.frac[i]);
+            if (fracY != 0.0)
+                v = v * (1.0 - fracY) + readAlongRow(src, ty.farRead[j], tx.nearRead[i], tx.farRead[i], tx.frac[i]) * fracY;
+            rowAcc += wx * v;
+            if (clampOn)
             {
-                const float ox = (jxx * float(sx)) / float(nisx) + (jxy * float(sy)) / float(nisy);
-                const float oy = (jyx * float(sx)) / float(nisx) + (jyy * float(sy)) / float(nisy);
-                float4 s;
-                interpolate(src, kFilterBilinear, false, ffAddF(fx, ox), ffAddF(fy, oy), s);
-                tmp += s;
+                [ForceUnroll]
+                for (int c = 0; c < 4; ++c)
+                {
+                    if (v[c] < lowest[c])
+                        lowest[c] = v[c];
+                    if (highest[c] < v[c])
+                        highest[c] = v[c];
+                }
+            }
+        }
+        acc += wy * rowAcc;
+    }
+    result = acc;
+    if (clampOn)
+    {
+        [ForceUnroll]
+        for (int c = 0; c < 4; ++c)
+        {
+            if (lowest[c] <= highest[c])
+            {
+                const float capped = highest[c] < acc[c] ? highest[c] : acc[c];
+                result[c] = lowest[c] < capped ? capped : lowest[c];
             }
         }
     }
-    return tmp / float(nisx * nisy);
+    return true;
 }
 
-// Resampler's interpolateSuperT for every filter but impulse, which the callers sample unsupersampled.
-float4 interpolateSuper(ResampleSource src, uint filter, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy, uint states, uint state)
+///////////////////////////////////////////////////////////////////////////////
+// Resampler::kernelScale and interpolateSuperT.
+
+FF kernelScaleSqrt(FF a)
 {
-    float4 tmp;
-    const uint bits = (states >> (8 * state)) & 0xffu;
-    if ((bits & 0x40u) != 0)
+    const float x = sqrt(a.hi);
+    const FF r = ffMake(x, 0.0);
+    const FF diff = ffAdd(a, ffNeg(ffMulF(r, x)));
+    precise float correction = (diff.hi + diff.lo) * 0.5 / x;
+    return ffQuick(x, correction);
+}
+
+// hypot(a, b), 1 unless it is finite and above 1, and at most 2^30. Anything at the limit stands in
+// for the sum of squares, which floats could overflow.
+FF kernelScale(FF a, FF b)
+{
+    const FF one = ffMake(1.0, 0.0);
+    if (!isFiniteBits(a.hi) || !isFiniteBits(b.hi))
+        return one;
+    if (abs(a.hi) >= kPosLimit || abs(b.hi) >= kPosLimit)
+        return ffMake(kPosLimit, 0.0);
+    const FF norm2 = ffAdd(ffMul(a, a), ffMul(b, b));
+    if (!ffLess(one, norm2))
+        return one;
+    return ffMin(kernelScaleSqrt(norm2), ffMake(kPosLimit, 0.0));
+}
+
+float4 boxIntegrate(ResampleSource src, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy)
+{
+    const FF c0x = corner(fx, Jxx, Jxy, -1.0, -1.0);
+    const FF c0y = corner(fy, Jyx, Jyy, -1.0, -1.0);
+    const FF c1x = corner(fx, Jxx, Jxy, 1.0, -1.0);
+    const FF c1y = corner(fy, Jyx, Jyy, 1.0, -1.0);
+    const FF c2x = corner(fx, Jxx, Jxy, -1.0, 1.0);
+    const FF c2y = corner(fy, Jyx, Jyy, -1.0, 1.0);
+    const FF c3x = corner(fx, Jxx, Jxy, 1.0, 1.0);
+    const FF c3y = corner(fy, Jyx, Jyy, 1.0, 1.0);
+    const FF x1 = ffMin(ffMin(c0x, c1x), ffMin(c2x, c3x));
+    const FF x2 = ffMax(ffMax(c0x, c1x), ffMax(c2x, c3x));
+    const FF y1 = ffMin(ffMin(c0y, c1y), ffMin(c2y, c3y));
+    const FF y2 = ffMax(ffMax(c0y, c1y), ffMax(c2y, c3y));
+    float4 v;
+    if (!ffLess(x1, x2) || !ffLess(y1, y2))
     {
-        interpolate(src, filter, clampOn, fx, fy, tmp);
-        return tmp;
-    }
-    if (filter == kFilterBox)
-    {
-        const FF c0x = corner(fx, Jxx, Jxy, -1.0, -1.0);
-        const FF c0y = corner(fy, Jyx, Jyy, -1.0, -1.0);
-        const FF c1x = corner(fx, Jxx, Jxy, 1.0, -1.0);
-        const FF c1y = corner(fy, Jyx, Jyy, 1.0, -1.0);
-        const FF c2x = corner(fx, Jxx, Jxy, -1.0, 1.0);
-        const FF c2y = corner(fy, Jyx, Jyy, -1.0, 1.0);
-        const FF c3x = corner(fx, Jxx, Jxy, 1.0, 1.0);
-        const FF c3y = corner(fy, Jyx, Jyy, 1.0, 1.0);
-        const FF x1 = ffMin(ffMin(c0x, c1x), ffMin(c2x, c3x));
-        const FF x2 = ffMax(ffMax(c0x, c1x), ffMax(c2x, c3x));
-        const FF y1 = ffMin(ffMin(c0y, c1y), ffMin(c2y, c3y));
-        const FF y2 = ffMax(ffMax(c0y, c1y), ffMax(c2y, c3y));
-        if (!ffLess(x1, x2) || !ffLess(y1, y2))
-        {
-            interpolate(src, filter, clampOn, fx, fy, tmp);
-            return tmp;
-        }
-        const Pos px1 = toPos(ffAddF(x1, -float(src.x1)));
-        const Pos px2 = toPos(ffAddF(x2, -float(src.x1)));
-        const Pos py1 = toPos(ffAddF(y1, -float(src.y1)));
-        const Pos py2 = toPos(ffAddF(y2, -float(src.y1)));
-        float4 v = integrate2d(src, px1, py1, px2, py2, src.blackOutside);
-        const FF wx = ffAdd(x2, ffNeg(x1));
-        const FF wy = ffAdd(y2, ffNeg(y1));
-        precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
-        if (s != 0.0)
-            v /= s;
+        cellPixel(src, int2(toPos(fx).i, toPos(fy).i), v);
         return v;
     }
-
-    return interpolateSuperAt(src, filter, clampOn, fx, fy, toPos(ffAddF(fx, -0.5)), toPos(ffAddF(fy, -0.5)), Jxx, Jxy, Jyx, Jyy, states,
-                              state);
+    const Pos px1 = toPos(ffAddF(x1, -float(src.x1)));
+    const Pos px2 = toPos(ffAddF(x2, -float(src.x1)));
+    const Pos py1 = toPos(ffAddF(y1, -float(src.y1)));
+    const Pos py2 = toPos(ffAddF(y2, -float(src.y1)));
+    v = integrate2d(src, px1, py1, px2, py2, src.blackOutside);
+    const FF wx = ffAdd(x2, ffNeg(x1));
+    const FF wy = ffAdd(y2, ffNeg(y1));
+    precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
+    if (s != 0.0)
+        v /= s;
+    return v;
 }
 
-// The states byte of Jacobian (Jxx Jxy; Jyx Jyy) as Resampler::supersampleLevels decides it: level n
-// along an axis once the squared norm of its column exceeds 3^(2n - 1), up to 4.
-uint jacobianStates(FF Jxx, FF Jxy, FF Jyx, FF Jyy)
+bool ffIsExactZero(FF a)
 {
-    if (Jxx.hi == 0.0 && Jxy.hi == 0.0 && Jyx.hi == 0.0 && Jyy.hi == 0.0)
-        return 0x40u;
-    const FF dx = ffAdd(ffMul(Jxx, Jxx), ffMul(Jyx, Jyx));
-    const FF dy = ffAdd(ffMul(Jxy, Jxy), ffMul(Jyy, Jyy));
-    uint levelX = 0;
-    uint levelY = 0;
-    float threshold = 3.0;
-    [ForceUnroll]
-    for (int n = 0; n < kMaxLevel; ++n)
-    {
-        if (ffLess(ffMake(threshold, 0.0), dx))
-            ++levelX;
-        if (ffLess(ffMake(threshold, 0.0), dy))
-            ++levelY;
-        threshold *= 9.0;
-    }
-    return levelX | (levelY << 3);
+    return a.hi == 0.0 && a.lo == 0.0;
 }
 
-// One entry of the Jacobian of (X / Z, Y / Z), as Resampler's samplePixel computes it: (h Z - P g) / Z^2,
-// with h the matrix entry of that row and column, P the row's X or Y, and g the third row's entry in
-// that column.
+// The sample at (fx, fy) with the Jacobian (Jxx Jxy; Jyx Jyy) in two floats. A zero row gives its
+// axis the plain kernel.
+float4 interpolateSuper(ResampleSource src, FilterSpec spec, bool clampOn, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF Jyy)
+{
+    float4 r = float4(0.0, 0.0, 0.0, 0.0);
+    if (spec.filter == kFilterImpulse || spec.filter == kFilterBox)
+    {
+        if (spec.filter == kFilterBox && !(ffIsExactZero(Jxx) && ffIsExactZero(Jxy) && ffIsExactZero(Jyx) && ffIsExactZero(Jyy)))
+            return src.valid ? boxIntegrate(src, fx, fy, Jxx, Jxy, Jyx, Jyy) : r;
+        cellPixel(src, int2(toPos(fx).i, toPos(fy).i), r);
+        return r;
+    }
+    kernelSample(src, spec, clampOn, tapAxis(spec, fx, kernelScale(Jxx, Jxy)), tapAxis(spec, fy, kernelScale(Jyx, Jyy)), r);
+    return r;
+}

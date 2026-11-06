@@ -383,6 +383,9 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
     }
     resample.channels = (uint32_t)nComps;
     resample.filter = (uint32_t)filter.filter;
+    resample.lobes = filter.lobes;
+    resample.B = filter.B;
+    resample.C = filter.C;
     resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
     resample.blackOutside = settings.blackOutside;
     resample.matrices.resize(transforms.invTransforms.size());
@@ -396,23 +399,16 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         if (!transforms.alphas.empty()) {
             m.weight = transforms.alphas[i];
         }
+        m.scaleX = Resampler::kernelScale(H(0, 0), H(0, 1));
+        m.scaleY = Resampler::kernelScale(H(1, 0), H(1, 1));
         // The Jacobian the CPU samples an affine matrix with, by which axes fall inside the
         // source. The kernel works a projective matrix's out per pixel.
         for (int state = 1; state < 4 && !m.isProjective(); ++state) {
             const bool x = (state & 1) != 0;
             const bool y = (state & 2) != 0;
-            const double Jxx = x ? H(0, 0) : 0.;
-            const double Jxy = x ? H(0, 1) : 0.;
-            const double Jyx = y ? H(1, 0) : 0.;
-            const double Jyy = y ? H(1, 1) : 0.;
-            gpu::GpuResampleJacobian& j = m.jacobians[state];
-            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
-            int levelX = 0;
-            int levelY = 0;
-            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
-                j.levelX = (uint32_t)levelX;
-                j.levelY = (uint32_t)levelY;
-            }
+            const bool zeroX = !x || (H(0, 0) == 0. && H(0, 1) == 0.);
+            const bool zeroY = !y || (H(1, 0) == 0. && H(1, 1) == 0.);
+            m.jacobians[state].zero = zeroX && zeroY;
         }
     }
     if (resample.matrices.size() > 1) {

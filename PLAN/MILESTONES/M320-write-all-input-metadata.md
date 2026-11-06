@@ -47,7 +47,7 @@ new attribute names back.
 
 ## Phase 320.1: Write Modes
 
-- [ ] M320.P1.T1 — Add a write mode to `applyMetadata()` and map the standard `ofx/` keys in Default mode
+- [x] M320.P1.T1 — Add a write mode to `applyMetadata()` and map the standard `ofx/` keys in Default mode
   - files: Engine/Nodes/IO/OiioWriteSupport.h, Engine/Nodes/IO/OiioWriteSupport.cpp, Tests/Native/NativeWriteMetadata_Test.cpp
   - approach: Add `enum class WriteMetadataMode { Default, AllExceptInput, All }` in `OiioWriteSupport.h` and a mode parameter on `applyMetadata()`; update the one caller in `NativeWrite.cpp` (~:2215) to pass `AllExceptInput` for now. In Default mode keep today's routing and add standard-tag mappings for `ofx/` keys (names in `libs/OpenFX/include/ofxMetadata.h`): creator → `Software`, copyright → `Copyright`, comment → `ImageDescription`, framerate → `FramesPerSecond` (RATIONAL, as `setValue` already does), focallength/fnumber/exposuretime → `Exif:FocalLength`/`Exif:FNumber`/`Exif:ExposureTime` (unprefixed names for non-EXR where `isUnprefixedExifTag` says so). A format-native key for the same tag wins. AllExceptInput and All behave as Default in this task. Update the header comment at ~:199-205. Extend `OiioWriteMetadata.MapsEachPrefixToItsAttributeAndFormat` (or add a sibling case) on a bare `ImageSpec`.
   - verify: the extended `OiioWriteMetadata` unit tests pass (build done by the PM); existing NativeWriteMetadata tests still pass.

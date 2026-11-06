@@ -58,12 +58,12 @@ Filed 2026-10-23 at the user's request.
 
 ## Phase 165.3: darktable aids (waits on Q1)
 
-- [ ] M165.P3.T1 — RawHighlights mask views (clipped, candidates, combine, strength)
+- [x] M165.P3.T1 — RawHighlights mask views (clipped, candidates, combine, strength)
   - files: Engine/Nodes/Raw/RawHighlights*.cpp, Tests/Native/
   - approach: darktable release-5.6.2 highlights.c mask display.
   - verify: gtest on the mask planes; Xvfb screenshot.
   - size: M
-- [ ] M165.P3.T2 — Dual-demosaic mask and capture-sharpen sharpened-areas/radius views
+- [x] M165.P3.T2 — Dual-demosaic mask and capture-sharpen sharpened-areas/radius views
   - files: Engine/Nodes/Raw/RawDemosaicDual.cpp, RawDemosaicCapture.cpp, RawDemosaic.cpp, Tests/Native/
   - approach: darktable release-5.6.2.
   - verify: gtest; Xvfb screenshot.
@@ -95,6 +95,7 @@ Filed 2026-10-23 at the user's request.
 
 ## Decisions
 
+- 2026-11-06 — P3.T1, P3.T2: one exclusive Mask View choice per node rather than darktable's separate buttons, drawn over the image with no dimmed backdrop. The 25% screenshot's line is pure (255,0,0), one column wide: it reads grey only when viewed downscaled. Found, not changed: `kClipMagicInpaint` is 1.0 where darktable's inpaint `highlights_clip_magics` entry is 0.987, so Inpaint's clip threshold differs from its Clipped view; changing it alters renders, so it's a user call at the UAT.
 - 2026-11-06 — Phase 165.2 build passes: all tests, and the GUI script shows the mask line in 20 of 20 rows at 25% zoom with the block drawn. In the 25% screenshot the line looks grey rather than red to the eye; P3.T5's parity audit checks its colour.
 - 2026-11-06 — M165.P2.T1: the side buffer of the user's Q1 answer is filled by a dedicated pass in the viewer's render job, not the main render action, because a main-render buffer stays empty on any cache hit at the node, downstream or in the viewer texture. Costs one extra render of that node on a cached state. No overlay images during playback or paint strokes; two viewers with different viewports replace each other's frame. Q2, Q4 and Q5 follow their recommendations.
 

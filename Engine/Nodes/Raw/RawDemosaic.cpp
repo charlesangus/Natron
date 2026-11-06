@@ -52,6 +52,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawAmazeGpu.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
+#include "Engine/OverlayDrawList.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -452,8 +453,34 @@ RawDemosaic::initializeKnobs()
     captureGroup->addKnob(captureCenter);
     _captureCenter = captureCenter;
 
+    std::vector<ChoiceOption> maskViews;
+    maskViews.push_back(ChoiceOption("off", tr("Off").toStdString(), tr("No mask.").toStdString()));
+    maskViews.push_back(ChoiceOption("dual", tr("Dual").toStdString(), tr("A dual method only: where the high-frequency method is kept over VNG, measured before capture sharpening.").toStdString()));
+    maskViews.push_back(ChoiceOption("sharpenedAreas", tr("Sharpened Areas").toStdString(), tr("Capture Sharpen on only: how strongly capture sharpening acts on each pixel.").toStdString()));
+    maskViews.push_back(ChoiceOption("radius", tr("Radius").toStdString(), tr("Capture Sharpen on only: the sharpening radius of each pixel, Corner Boost included.").toStdString()));
+    KnobChoicePtr maskView = createKnob<KnobChoice>(tr("Mask View"));
+    maskView->setName(kRawDemosaicParamMaskView);
+    maskView->setHintToolTip(tr("Draws a mask in yellow over the viewer's image while this panel is open, without changing the image. "
+                                "Changing the method turns it off."));
+    maskView->populateChoices(maskViews);
+    maskView->setDefaultValue((int)eRawDemosaicMaskViewOff);
+    maskView->setAnimationEnabled(false);
+    maskView->setHashExempt(true);
+    maskView->setEvaluateOnChange(false);
+    maskView->setIsPersistent(false);
+    page->addKnob(maskView);
+    _maskView = maskView;
+
     refreshCaptureOverride();
     refreshMethodKnobsVisibility();
+}
+
+bool
+RawDemosaic::isOverlayImageViewOn() const
+{
+    const KnobChoicePtr maskView = _maskView.lock();
+
+    return maskView && (maskView->getValue() != (int)eRawDemosaicMaskViewOff);
 }
 
 void
@@ -655,9 +682,15 @@ RawDemosaic::knobChanged(KnobI* k,
     const KnobBoolPtr captureSharpen = _captureSharpen.lock();
     const KnobDoublePtr captureBoost = _captureBoost.lock();
     const KnobBoolPtr thresholdOverride = _captureThresholdOverride.lock();
+    const KnobChoicePtr maskView = _maskView.lock();
 
     if (!k) {
         return false;
+    }
+    if (maskView && (k == maskView.get())) {
+        refreshOverlayImages();
+
+        return true;
     }
     if (thresholdOverride && (k == thresholdOverride.get())) {
         refreshCaptureOverride();
@@ -671,6 +704,9 @@ RawDemosaic::knobChanged(KnobI* k,
         return false;
     }
     refreshMethodKnobsVisibility();
+    if (((k == bayerMethod.get()) || (k == xtransMethod.get())) && maskView && (maskView->getValue() != (int)eRawDemosaicMaskViewOff)) {
+        maskView->setValue((int)eRawDemosaicMaskViewOff);
+    }
 
     return true;
 }
@@ -1014,6 +1050,19 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         }
     }
 
+    const KnobChoicePtr maskViewKnob = _maskView.lock();
+    const int maskView = (isOverlayImageRender() && maskViewKnob) ? maskViewKnob->getValue() : (int)eRawDemosaicMaskViewOff;
+    std::vector<float> maskValues;
+    RectI maskRect;
+    const auto allocateMask = [&](const RectI& rect) {
+        maskRect = rect;
+        maskValues.assign((std::size_t)rect.width() * (std::size_t)rect.height(), 0.f);
+
+        return maskValues.data();
+    };
+    const bool captureView = s.capture && ((maskView == (int)eRawDemosaicMaskViewSharpenedAreas) || (maskView == (int)eRawDemosaicMaskViewRadius));
+    float* captureMask = NULL;
+
     RawNodeSupport::TopDownBuffer rgb;
     if ((s.algorithm == Algorithm::PassThrough) && s.capture) {
         // darktable's true monochrome: the values themselves are the mosaic.
@@ -1030,7 +1079,12 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
                 q[0] = q[1] = q[2] = q[3] = v;
             }
         });
-        RawKernels::captureSharpen(rgb.data.data(), mono.data.data(), need.width(), need.height(), rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), 0u, NULL, s.wbApplied, capture, parallel);
+        if (captureView) {
+            captureMask = allocateMask(need);
+        }
+        RawKernels::captureSharpen(rgb.data.data(), mono.data.data(), need.width(), need.height(), rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), 0u, NULL, s.wbApplied, capture, parallel,
+                                   (maskView == (int)eRawDemosaicMaskViewSharpenedAreas) ? captureMask : NULL,
+                                   (maskView == (int)eRawDemosaicMaskViewRadius) ? captureMask : NULL);
     } else if (s.algorithm == Algorithm::PassThrough) {
         RawNodeSupport::TopDownBuffer in;
         in.allocate(roi, source.nComps);
@@ -1127,10 +1181,21 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         case Algorithm::PassThrough:
             break;
         }
+        // darktable skips capture sharpening while it shows the dual mask, so the mask describes the
+        // method's own output; here the sharpening still runs, because the pass's pixels can fill
+        // the cache, and the mask is taken before it.
+        if (s.dual && (maskView == (int)eRawDemosaicMaskViewDual)) {
+            RawKernels::dualDetailMask(allocateMask(need), out.data.data(), width, height, s.dualThreshold, s.wb, parallel);
+        }
         // demosaic.c's process(): capture sharpening on the method's output and the green
         // equilibrated mosaic, before the dual blend and colour smoothing.
         if (s.capture) {
-            RawKernels::captureSharpen(out.data.data(), in, width, height, rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), filters, xtrans, s.wbApplied, capture, parallel);
+            if (captureView) {
+                captureMask = allocateMask(need);
+            }
+            RawKernels::captureSharpen(out.data.data(), in, width, height, rod.y2 - need.y2, need.x1 - rod.x1, rod.width(), rod.height(), filters, xtrans, s.wbApplied, capture, parallel,
+                                       (maskView == (int)eRawDemosaicMaskViewSharpenedAreas) ? captureMask : NULL,
+                                       (maskView == (int)eRawDemosaicMaskViewRadius) ? captureMask : NULL);
         }
         if (s.dual) {
             RawKernels::dualDemosaic(out.data.data(), in, width, height, filters, xtrans, s.dualThreshold, s.wb, parallel);
@@ -1162,6 +1227,26 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
                 }
             }
         });
+    }
+
+    const RectI maskTile = maskValues.empty() ? RectI() : roi.intersect(maskRect);
+    if (!maskTile.isNull() && !cancel.check()) {
+        const std::size_t tileWidth = (std::size_t)maskTile.width();
+        std::vector<float> values(tileWidth * (std::size_t)maskTile.height(), 0.f);
+        bool any = false;
+        for (int y = maskTile.y1; y < maskTile.y2; ++y) {
+            const std::size_t row = (std::size_t)(maskRect.y2 - 1 - y);
+            for (int x = maskTile.x1; x < maskTile.x2; ++x) {
+                const float value = std::max(0.f, std::min(1.f, maskValues[row * (std::size_t)maskRect.width() + (std::size_t)(x - maskRect.x1)]));
+                values[(std::size_t)(y - maskTile.y1) * tileWidth + (std::size_t)(x - maskTile.x1)] = value;
+                any = any || (value > 0.f);
+            }
+        }
+        if (any) {
+            const char* const plane = (maskView == (int)eRawDemosaicMaskViewDual) ? kRawDemosaicMaskPlaneDual : ((maskView == (int)eRawDemosaicMaskViewSharpenedAreas) ? kRawDemosaicMaskPlaneSharpenedAreas : kRawDemosaicMaskPlaneRadius);
+            // gamma.c paints darktable's mask display in yellow.
+            addOverlayImageTile(plane, OverlayColor::fromRGBA(1.f, 1.f, 0.f, 1.f), maskTile, args.mappedScale.toMipmapLevel(), std::move(values));
+        }
     }
 
     return cancel.check() ? eStatusFailed : eStatusOK;

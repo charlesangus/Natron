@@ -35,6 +35,12 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   with `1.02 |v|` of Markesteijn, where `1.02 |u|` looks meant, as darktable writes it. Pure FDC is not exact
   on a flat field: its tabulated filters leave the chroma about 5e-4 off a 0.35 grey. Unlike
   Markesteijn it ends without VNG's linear interpolation of the border. No GPU path.
+- **Mask View** draws darktable's mask views in yellow over the viewer's image as overlay images,
+  never into the render, while the panel is open: Dual (a dual method only), Sharpened Areas and
+  Radius (Capture Sharpen on only). As in darktable the dual mask describes the unsharpened method
+  output, Sharpened Areas is capture's blend mask and Radius its per-pixel Gaussian index over 255.
+  The view replaces darktable's greyscale backdrop with the viewer's own image. The knob is one
+  choice instead of darktable's three buttons, is not saved, and turns off when the method changes.
 - **Dual methods** (appended, so saved values keep their meaning): darktable's `dual_demosaic()`
   after the method, on the same green-matched mosaic. A blend mask is built from the method's
   output: the white balance is undone (1 / `raw/wb_applied`, none when absent, as darktable uses

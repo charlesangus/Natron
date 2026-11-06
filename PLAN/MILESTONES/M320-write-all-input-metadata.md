@@ -83,6 +83,7 @@ new attribute names back.
 
 ## Decisions
 
+- 2026-11-06 — Review (PR #200): 13 findings fixed, including float EXR attributes that would have been dropped (`ExposureTime`, `FNumber`, `screenWindowWidth`) and `ofx/` mappings not losing to native `exr/` keys. Run 42172685580: GUI 20 of 20, taskgraph leg clean, legacy leg's only failure a `NativeSplineWarpGpuTest` timeout unrelated to this diff.
 - 2026-11-03 — Write everything the format can hold (user): keys go in under their full key name in EXR and PNG; only file-identity and structural keys stay out by default.
 - 2026-11-03 — Nuke-style `metadata` choice knob replaces the `writeMetadata` bool (user); default All Metadata Except Input (planner, so the reported loss is fixed out of the box).
 - 2026-11-03 — Foreign keys in EXR use the full key as attribute name (user), and the Read maps such names back verbatim.

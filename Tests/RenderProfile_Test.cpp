@@ -77,6 +77,7 @@ struct Record {
     bool pointOp = false;
     std::string device;
     std::string regionId;
+    std::string cache;
 };
 
 // The value after `key` up to the next ',' or '}' or ']'.
@@ -116,6 +117,7 @@ parseRecord(const std::string& line)
     r.pointOp = rawValue(line, "pointOp") == "true";
     r.device = stringValue(line, "device");
     r.regionId = rawValue(line, "regionId");
+    r.cache = stringValue(line, "cache");
     const std::size_t open = line.find("\"deps\":[");
     const std::size_t close = line.find(']', open);
     std::string list = line.substr(open + 8, close - open - 8);
@@ -240,6 +242,34 @@ TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
     ASSERT_GE(blurTask, 0);
     // Stated independently of the graph the profiler read.
     EXPECT_EQ(records[blurTask].deps, std::vector<int>(1, gradeTask));
+}
+
+TEST_F(RenderProfileTest, SecondRenderOfTheSameGraphServesTheSharedSourceFromTheCache)
+{
+    buildScene();
+    RenderScheduler::setProfilePath(_dir + "/profile.jsonl");
+    const std::string file = RenderScheduler::getProfileFilePath();
+    ASSERT_FALSE(file.empty());
+
+    renderScene();
+    renderScene();
+
+    // The source feeds both the Grade and the Merge, so Node::shouldCacheOutput keeps it in the cache.
+    const std::string sourceName = source->getScriptName_mt_safe();
+    std::vector<Record> sourceRecords;
+    std::ifstream in(file.c_str());
+    std::string line;
+    while (std::getline(in, line)) {
+        const Record r = parseRecord(line);
+        EXPECT_FALSE(r.cache.empty()) << line;
+        if (r.node == sourceName) {
+            sourceRecords.push_back(r);
+        }
+    }
+    ASSERT_EQ(sourceRecords.size(), 2u);
+    EXPECT_NE(sourceRecords[0].frame, sourceRecords[1].frame);
+    EXPECT_EQ(sourceRecords[0].cache, "miss");
+    EXPECT_EQ(sourceRecords[1].cache, "hit");
 }
 
 TEST_F(RenderProfileTest, OffWritesNoFile)

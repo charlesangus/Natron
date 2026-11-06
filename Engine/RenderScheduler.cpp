@@ -338,6 +338,23 @@ bitDepthName(ImageBitDepthEnum depth)
     return "none";
 }
 
+const char*
+renderCacheStateName(EffectInstance::RenderCacheStateEnum state)
+{
+    switch (state) {
+    case EffectInstance::eRenderCacheStateHit:
+        return "hit";
+    case EffectInstance::eRenderCacheStatePartial:
+        return "partial";
+    case EffectInstance::eRenderCacheStateMiss:
+        return "miss";
+    case EffectInstance::eRenderCacheStateBypass:
+        break;
+    }
+
+    return "bypass";
+}
+
 std::string
 formatTaskRecord(const FrameGraph::Task& task,
                  const EffectInstancePtr& effect,
@@ -345,7 +362,8 @@ formatTaskRecord(const FrameGraph::Task& task,
                  int taskIndex,
                  long long wallNs,
                  bool ok,
-                 bool ranOnCpu = false)
+                 bool ranOnCpu = false,
+                 EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::eRenderCacheStateBypass)
 {
     const NodePtr& node = task.key.node;
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
@@ -390,7 +408,9 @@ formatTaskRecord(const FrameGraph::Task& task,
                   (!ranOnCpu && (task.device == FrameGraph::Device::Gpu)) ? "gpu" : "cpu", task.regionId);
     line.append(num);
     line.append(ok ? "true" : "false");
-    line.append("}\n");
+    line.append(",\"cache\":\"");
+    line.append(renderCacheStateName(cacheState));
+    line.append("\"}\n");
 
     return line;
 }
@@ -1199,11 +1219,13 @@ RenderScheduler::executeTask(const FramePtr& frame,
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
+        EffectInstance::takeLastRenderCacheState();
         retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
+        const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
         --_tasksRendering;
         if (profiling) {
             const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
-            sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
+            sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk, false, cacheState));
         }
 
         bool glPlanes = false;

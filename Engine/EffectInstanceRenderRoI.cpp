@@ -81,6 +81,44 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+thread_local EffectInstance::RenderCacheStateEnum s_lastRenderCacheState = EffectInstance::eRenderCacheStateBypass;
+
+// Publishes its state when renderRoI returns, so that renders nested in the same call cannot overwrite it.
+class RenderCacheStateRecorder {
+public:
+    RenderCacheStateRecorder()
+        : _state(EffectInstance::eRenderCacheStateBypass)
+    {
+    }
+
+    ~RenderCacheStateRecorder()
+    {
+        s_lastRenderCacheState = _state;
+    }
+
+    void set(EffectInstance::RenderCacheStateEnum state)
+    {
+        _state = state;
+    }
+
+private:
+    EffectInstance::RenderCacheStateEnum _state;
+};
+
+} // namespace
+
+EffectInstance::RenderCacheStateEnum
+EffectInstance::takeLastRenderCacheState()
+{
+    const RenderCacheStateEnum state = s_lastRenderCacheState;
+
+    s_lastRenderCacheState = eRenderCacheStateBypass;
+
+    return state;
+}
+
 /*
  * @brief Moves context one identity hop upstream: to the single context effect requests input
  * inputNb under when it renders under context, setting contextSet; context is left alone when
@@ -396,6 +434,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     if (_imp->mainInstance) {
         return _imp->mainInstance->renderRoI(args, outputLayers);
     }
+
+    RenderCacheStateRecorder cacheStateRecorder;
 
     {
         const AppInstancePtr app = getApp();
@@ -1305,6 +1345,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     bool hasSomethingToRender = !layersToRender->rectsToRender.empty();
+
+    if (byPassCache || !createInCache) {
+        cacheStateRecorder.set(eRenderCacheStateBypass);
+    } else if (!hasSomethingToRender) {
+        cacheStateRecorder.set(eRenderCacheStateHit);
+    } else {
+        // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
+        U64 leftArea = 0;
+        for (std::list<RectI>::const_iterator it = rectsLeftToRender.begin(); it != rectsLeftToRender.end(); ++it) {
+            leftArea += static_cast<U64>(it->area());
+        }
+        cacheStateRecorder.set(leftArea < static_cast<U64>(roi.area()) ? eRenderCacheStatePartial : eRenderCacheStateMiss);
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// End Determine rectangles left to render /////////////////////////////////////////////////

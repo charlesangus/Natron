@@ -44,6 +44,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeOverlayRenderer.h"
+#include "Gui/OverlayImageRenderer.h"
 #include "Gui/TextRenderer.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ZoomContext.h"
@@ -233,6 +234,7 @@ struct ViewerGL::Implementation
     bool displayPersistentMessage;
     TextRenderer textRenderer;
     std::unique_ptr<NodeOverlayRenderer> overlayRenderer;
+    OverlayImageRenderer overlayImageRenderer;
     QPoint lastMousePosition; //< in widget coordinates
     QPointF lastDragStartPos; //< in zoom coordinates
     bool hasMovedSincePress;

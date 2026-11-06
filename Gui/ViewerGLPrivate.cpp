@@ -114,6 +114,7 @@ releaseViewerGLResources(ViewerGLImpl& imp)
         if (imp.overlayRenderer) {
             imp.overlayRenderer->releaseGLResources();
         }
+        imp.overlayImageRenderer.releaseGLResources();
         glCheckError();
     }
 

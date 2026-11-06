@@ -724,7 +724,14 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
             drawWipeControl(screenPixelRatio);
         }
 
-
+        glCheckError();
+        {
+            NodesList overlayNodes;
+            _imp->viewerTab->getGui()->getNodesEntitledForOverlays(overlayNodes);
+            // Reversed like the overlays, so that the first panel's images are on top.
+            overlayNodes.reverse();
+            _imp->overlayImageRenderer.draw(overlayNodes, getCurrentlyDisplayedTime(), getCurrentView());
+        }
         glCheckError();
         glColor4f(1., 1., 1., 1.);
 

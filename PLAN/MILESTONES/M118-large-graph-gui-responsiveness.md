@@ -117,7 +117,7 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
   - approach: when an expression is set, compile the generated function once and keep the code or function object per (dimension, view) on the knob, under the GIL. `executeExpression` then calls it with `(time, view)` through `PyObject_Vectorcall`, with no string building or `PyRun_String`. Drop it on expression change, on rename of a referenced node, and on project close. The existing `_exprRes` per-time cache stays.
   - verify: the existing expression tests are green. A new gtest counts compiles: setting once and evaluating 1000 times compiles once. Xvfb `frame_step` and `knob_change_fanout` improve.
   - size: L
-- [ ] M118.P3.T2 — Two Python runs per setExpression
+- [x] M118.P3.T2 — Two Python runs per setExpression
   - files: `Engine/Knob.cpp`, `Engine/Knob.h`
   - approach: fold `validateExpression`'s define and call into one script run, reusing P3.T1's compiled object. `parseListenersFromExpression` stays a separate run after `setExpressionInternal` stores the expression: `addListener`'s metadata cycle check and `onKnobSlaved` read that stored state, and validating with it cleared stops an expression that reads its own knob recursing.
   - verify: the expression tests are green, including invalid-expression and dependency tests. Xvfb `set_expression` improves.

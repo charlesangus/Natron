@@ -78,7 +78,7 @@ Filed 2026-10-23 at the user's request.
   - approach: draw-list primitives (P1).
   - verify: Xvfb screenshot.
   - size: M
-- [ ] M165.P3.T5 — Parity audit and GUI script
+- [x] M165.P3.T5 — Parity audit and GUI script
   - files: the M80 parity-audit data, Tests/gui/m165_raw_aids.py
   - approach: DEFERRED rows become mapped.
   - verify: parity-audit.py exits 0; remote GUI job passes.

@@ -109,7 +109,7 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
   - approach: Promote every claimed socket to a `CuratedSetting` with today's script name and `group`. Add int-valued menus for Denoiser Prefilter and Quality (`src/device/denoise.h:38-58`), Sampling Pattern (`integrator.cpp:148-153`), Direct Light Sampling Type and both guiding types (`src/kernel/types.h`). Denoiser Passes stays an int bitmask. No new `setMinimum` caps. The `cyclesSettings` group knob goes away; tests at `:767` change.
   - verify: the audit at `USDRenderCycles_Test.cpp:813-822` has no gaps, every knob has the expected parent, each menu's default resolves to an entry, script names match a list captured before the change. Add an explicit skip list if the nudge loop at `:763-775` is unsuitable for a promoted key.
   - size: L
-- [ ] M253.P4.T4 — Lay out the MoonRay tab
+- [x] M253.P4.T4 — Lay out the MoonRay tab
   - files: `Engine/Nodes/Scene/MoonRaySettings.{h,cpp}`, `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Tests/Scene/USDRenderMoonRay_Test.cpp`
   - approach: The same promotion. Move the two `disabledKeys` entries into Remote with their reasons, add the Execution Mode string menu, add `Curated::pageLabel` so the tab reads "MoonRay" rather than "Moonray" (`RenderSettingsKnobs.cpp:1002-1004`). Keep the Enable Denoise leader before Enable OIDN. The `moonraySettings` group knob goes away; tests at `:815` change.
   - verify: the audit at `USDRenderMoonRay_Test.cpp:862-871` shows no gaps and exclusions unchanged; parents and tab label match; `follows` still syncs.

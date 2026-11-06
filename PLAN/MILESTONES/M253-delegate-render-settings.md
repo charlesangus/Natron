@@ -53,6 +53,83 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
   - verify: each curated knob changes the delegate's setting; the params → knob audit passes.
   - size: M
 
+
+## Phase 253.4: Organised Render Settings
+
+The user asked for the render settings panel to be organised and easier to understand (2026-11-05, "surely eg cycles in blender isn't just a flat list"). The flat curated group becomes table-driven named sections, modelled on Blender's Cycles panels: tab, section, at most one subsection. Dependents grey out, raw enum ints become menus, and tooltips state the trade-off. Every setting keeps its script name and nothing is removed.
+
+**Layout.** `[open]`/`[closed]` is the default state, `+` a knob generated today, `~` a knob greyed by the rule in brackets. Knobs are shown without their prefix.
+
+Cycles (`cycles<Group>` script names):
+- Sampling [open]: Samples, +Use Adaptive Sampling, ~+Adaptive Threshold, ~+Adaptive Min Samples [adaptive], +Time Limit, Seed.
+- Denoise [open]: Use Denoise, Denoiser Type (always off), greyed by [Use Denoise]: ~+Denoiser Quality, ~+Denoiser Prefilter, ~+Denoiser Passes, ~+Denoise Start Sample, ~+Denoiser Upscale Factor. +Denoise Use GPU stays always off.
+- Light Paths [open]:
+  - Bounces [open]: Max Bounce, greyed by [Max Bounce > 0]: ~Max Diffuse Bounce, ~Max Glossy Bounce, ~Max Transmission Bounce, ~Max Volume Bounce. Transparent Max Bounce is not greyed.
+  - Clamping [open]: Sample Clamp Direct, Sample Clamp Indirect.
+  - Caustics [closed]: +Caustics Reflective and +Caustics Refractive on one row, +Filter Glossy.
+  - Fast GI [closed]: +AO Bounces, +AO Factor, +AO Distance, +AO Additive Factor.
+- Lights [closed]: Use Light Tree, ~+Light Sampling Threshold [light tree off], +Direct Light Sampling Type (menu).
+- Volumes [closed]: +Volume Ray Marching, ~+Volume Max Steps, ~+Volume Step Rate (T3 confirms the grey polarity from source).
+- Path Guiding [closed]: +Use Guiding, greyed by it: ~+Deterministic Guiding, ~+Use Surface Guiding, ~+Surface Guiding Probability [also surface], ~+Use Volume Guiding, ~+Volume Guiding Probability [also volume], ~+Guiding Training Samples, ~+Use Guiding Direct Light, ~+Use Guiding MIS Weights, ~+Guiding Distribution Type, ~+Guiding Directional Sampling Type, ~+Guiding Roughness Threshold.
+- Light Contributions [closed]: +Use Direct Light, +Use Indirect Light, +Use Diffuse, +Use Glossy, +Use Transmission, +Use Emission.
+- Advanced [closed]: +Sampling Pattern (menu), +Scrambling Distance, +AA Samples, +Min Bounce, +Transparent Min Bounce, +Motion Blur, +Use Pixel Jitter, +Use Custom Pixel Jitter Sample, ~+Custom Pixel Jitter Sample.
+  - Sample Subset [closed]: +Sample Offset, +Use Sample Subset, ~+Sample Subset Offset, ~+Sample Subset Length.
+- Other Settings [closed]: only for keys no table entry claims.
+
+MoonRay (`moonraySampling`, `moonrayDepth`, ...; `moonrayLogging` avoids colliding with the `moonrayDebug` and `moonrayInfo` knobs):
+- Sampling [open]: Pixel Samples, Light Samples, BSDF Samples, BSSRDF Samples.
+- Depth [open]: Max Depth, greyed by [Max Depth > 0]: ~Max Diffuse Depth, ~Max Glossy Depth, ~Max Mirror Depth. Max Volume Depth stays live.
+- Filtering [open]: Pixel Filter, Pixel Filter Width.
+- Denoise [open]: Enable Denoise, Enable OIDN (always off, follows; after its leader), ~Denoise Albedo Guiding and ~Denoise Normal Guiding on one row.
+- Scene Toggles [closed]: +Enable Motion Blur, +Disable Lighting, +Double Sided, +Decode Normals, +Force Polygon.
+  - Prune [closed]: +Prune Willow, +Prune Fur Deform, +Prune Volume, +Prune Wrap Deform, +Prune Curve Deform.
+- Performance [closed]: +Execution Mode (menu auto/vectorized/xpu/scalar, `ArrasSettings.cc:266`), +Max Fps.
+- Remote [closed]: +Use Remote Hosts, +Remote Hosts (both always off, keeping their reason).
+- Logging [closed]: +Log Level, +Debug, +Info, +Rdl Output.
+- Other Settings [closed]: leftovers. `localReservedCores` and `maxConnectRetries` stay excluded (`MoonRaySettings.cpp:129-130`).
+
+Storm and generated renderers, through the classifier: Storm gets Volumes (Volume Raymarching Step Size, Volume Raymarching Step Size Lighting, Volume Max Texture Memory Per Field), Lights (Max Lights), Performance (Enable Tiny Prim Culling), all open. For a generated renderer all groups open when it has 20 or fewer generated knobs, otherwise only the first. Other Settings is always closed and last.
+
+**Classifier.** A renderer's exact key table wins. Otherwise match token prefixes of the key's last segment, split on `_` and camel case, first rule wins: (1) denois, oidn → Denoise; (2) guiding → Path Guiding; (3) volume, raymarch → Volumes; (4) bounce, depth → Bounces; (5) clamp → Clamping; (6) light, shadow → Lights; (7) sample, sampling, seed, adaptive, noise → Sampling; (8) filter → Filtering; (9) motion, shutter, blur → Motion; (10) thread, memory, cache, cull, cores, fps, execution, tile, bucket → Performance; (11) log, debug, verbose → Logging; none → Other Settings. Empty groups are never created.
+
+**Constraints.** Groups are unhashed and the digest walks the flat knob list (`Engine/Node.cpp:980-1058`), and `values()`/`author()` walk `_imp->settings`, so moving knobs under groups changes neither. Grey with knob-level enable: not group disable (`KnobGuiGroup::setEnabled` keeps its own restore list) and not secret. `setAddNewLine(false)` for bool pairs only. Indent is a constant 12 px, so no third level. Add `GI` to the label acronym list. No tooltip mentions Nuke. Layouts fit 1920x1080 scale 1. This phase adds no new controls.
+
+- [ ] M253.P4.T1 — Add table-driven nested groups to the renderer pages
+  - files: `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
+  - approach: Add `Curated::groups` (`GroupSpec{name, parent, open, tooltip}`) and `CuratedSetting::group`. Create groups lazily in table order, labels from `labelFromScriptName(name, prefix)`. Reject depth above 2. A group name equal to a setting's natural script name fails a test rather than using the fallback at `:1029-1034`. A setting with no group goes to the existing curated group, so Cycles and MoonRay are unchanged until T3 and T4.
+  - verify: with a test table via `setDescriptorsForTests`, parents and order match, empty groups are absent, open states match; namespace digests are equal for the same values under two layouts; toggling a group leaves the digest and `values()` unchanged.
+  - size: M
+- [ ] M253.P4.T2 — Classify generated settings into groups and apply it to Storm
+  - files: `Engine/Nodes/Scene/RenderSettingsKnobs.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`, `Tests/Scene/USDRenderSettings_Test.cpp`
+  - approach: Add the classifier above for keys without a curated entry, with the 20-knob open rule. Unmatched keys go to `<prefix>OtherSettings`.
+  - verify: a table test covers each rule, the rule-order cases and leftovers; `:325` keeps an unmatched key in its fixture; `audit` still reports every key with a knob; Storm's real keys land as laid out (its key names are unconfirmed, check them).
+  - size: M
+- [ ] M253.P4.T3 — Lay out the Cycles tab and turn its enums into menus
+  - files: `Engine/Nodes/Scene/CyclesSettings.{h,cpp}`, `Tests/Scene/USDRenderCycles_Test.cpp`
+  - approach: Promote every claimed socket to a `CuratedSetting` with today's script name and `group`. Add int-valued menus for Denoiser Prefilter and Quality (`src/device/denoise.h:38-58`), Sampling Pattern (`integrator.cpp:148-153`), Direct Light Sampling Type and both guiding types (`src/kernel/types.h`). Denoiser Passes stays an int bitmask. No new `setMinimum` caps. The `cyclesSettings` group knob goes away; tests at `:767` change.
+  - verify: the audit at `USDRenderCycles_Test.cpp:813-822` has no gaps, every knob has the expected parent, each menu's default resolves to an entry, script names match a list captured before the change. Add an explicit skip list if the nudge loop at `:763-775` is unsuitable for a promoted key.
+  - size: L
+- [ ] M253.P4.T4 — Lay out the MoonRay tab
+  - files: `Engine/Nodes/Scene/MoonRaySettings.{h,cpp}`, `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Tests/Scene/USDRenderMoonRay_Test.cpp`
+  - approach: The same promotion. Move the two `disabledKeys` entries into Remote with their reasons, add the Execution Mode string menu, add `Curated::pageLabel` so the tab reads "MoonRay" rather than "Moonray" (`RenderSettingsKnobs.cpp:1002-1004`). Keep the Enable Denoise leader before Enable OIDN. The `moonraySettings` group knob goes away; tests at `:815` change.
+  - verify: the audit at `USDRenderMoonRay_Test.cpp:862-871` shows no gaps and exclusions unchanged; parents and tab label match; `follows` still syncs.
+  - size: M
+- [ ] M253.P4.T5 — Grey dependent knobs from their switches
+  - files: `Engine/Nodes/Scene/RenderSettingsKnobs.{h,cpp}`, `Engine/Nodes/Scene/USDRenderSettings.cpp`, `Engine/Nodes/Scene/CyclesSettings.cpp`, `Engine/Nodes/Scene/MoonRaySettings.cpp`, `Tests/Scene/RenderSettingsKnobs_Test.cpp`
+  - approach: Add `enabledBy` rules (key plus inverted flag, all must hold) and `refreshEnabled()`, called from `knobChanged` (`RenderSettingsKnobs.cpp:1144-1155`), after `addRenderer`, and from `onKnobsLoaded`. Saved per-dimension `enabled` state (`Serialization/KnobSerialization.h:96`) must not win over the computed one. `disabledReason` knobs always stay off. An expression driving a switch does not re-grey dependents; accepted, since values still render correctly.
+  - verify: toggling a switch greys and restores dependents; AND rules work; a `disabledReason` knob never turns on; state is correct after save and load; `values()` and the digest are identical with enablement toggled and values fixed.
+  - size: M
+- [ ] M253.P4.T6 — Rewrite tooltips, same-row pairs and docs
+  - files: `Engine/Nodes/Scene/CyclesSettings.cpp`, `Engine/Nodes/Scene/MoonRaySettings.cpp`, `Engine/Nodes/Scene/docs/USDRenderSettings.md`, `Tests/Scene/USDRenderSettings_Test.cpp`
+  - approach: Each curated setting gets its effect, trade-off and sensible values, read from Cycles and scene_rdl2 source rather than memory, keeping the "Authored as ..." suffix. Example: "Limits the brightness of indirect samples. Lower values remove fireflies but lose energy; 10 is a good start, 0 turns it off." Add group tooltips and the same-row bool pairs; rewrite docs `:45-54`.
+  - verify: a test fails on any curated tooltip equal to its descriptor name or containing "Nuke"; the docs group list matches the tables.
+  - size: L
+- [ ] M253.P4.T7 — Check the layout in a remote GUI run
+  - files: `Tests/gui/m253_render_settings_layout.py`, reusing `Tests/gui/m253_render_settings.py` and `Tests/gui/guitest.py:156`
+  - approach: At 1920x1080, capture each of the Controls, Storm, Cycles and MoonRay tabs in default state and with every group expanded, one file per screenshot; if an expanded page exceeds the window, take successive scroll positions as separate files. Assert group order and open state, indents, and grey states after toggling Use Denoise, Use Guiding and Use Light Tree.
+  - verify: `tools/ci/remote/build.sh release --from-run <id> --gui "Tests/gui/m253_render_settings_layout.py"` passes; the Cycles and MoonRay default states show no scrollbar; expanding and collapsing nested groups keeps row order; the user approves the screenshots.
+  - size: M
+
 **Verification gate:** CI green; every setting either delegate declares is reachable through a curated or a generated knob (audit output attached to the PR); settings persist and drive renders; a Xvfb screenshot of both property panels is shared with the user.
 
 ## Phase 253.2: Render settings in the scene (user, 2026-11-03)
@@ -134,6 +211,7 @@ M251 - Cycles Rendering and M252 - MoonRay Rendering.
 
 ## Decisions
 
+- 2026-11-05 — Phase 253.4 added at the user's request; layout from a consultant's survey of Blender's Cycles panels, Karma, MoonRay's SceneVariables and Gaffer. PM's choices, open to the user at the screenshots: Sampling, Denoise and Light Paths (Bounces, Clamping) open by default, everything else closed; if T7 shows a default-state scrollbar on Cycles, close Clamping first. New MoonRay controls (Fireflies Removal, `sample_clamping_value`) are a follow-up, not this phase.
 - 2026-10-28: Implemented (build pending; waits on M250's image). Each renderer gets a curated group plus a closed "Other Settings" group with a knob for every other declared setting; only the chosen renderer's groups show. Values for missing renderers/settings kept in a hidden hash-exempt store, logged once, restored when the renderer returns. Labels drop the renderer prefix, script names keep it. Only non-default values are sent. A settings change rebuilds the engine (Cycles doesn't mark samples/time limit dirty). Storm's settings are read from a Storm delegate made without Hgi. Gaps: Cycles declares no pixel filter; MoonRay has no seed; MoonRay curated sampling uses undeclared scene-variable keys. M254's Max Samples spin box should read/write cycles:samples / moonray:sceneVariable:pixel_samples. Viewer's own copy of the settings not implemented. Open (user): OIDN in our Cycles and MoonRay builds (M249 OIDN +46 MB question)? Should unselected renderers' knobs change the node hash (they do now)?
 - 2026-10-27 — **Curated plus generic fallback (user):** hand-built groups for the two shipped delegates, generated knobs for everything else.
 - 2026-11-02 — Audit: all four tasks at c30a7cd04 (RenderSettingsKnobs, CyclesSettings, MoonRaySettings, audit output in the Cycles and MoonRay tests). Pushed, clean, no PR, 23 behind origin/main; stacked on M251 and M252, so it waits for them. The open user questions in the 2026-10-28 note are unanswered (audit).

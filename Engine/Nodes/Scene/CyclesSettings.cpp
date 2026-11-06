@@ -136,7 +136,8 @@ make()
     add("denoise", setting("cycles:integrator:denoise_start_sample", "denoiseStartSample", "The sample at which progressive updates start to be denoised; earlier updates show the raw noise. Raising it saves time on early updates, and the final image is always denoised. 0 denoises from the start.", VtValue(0)));
     add("denoise", setting("cycles:integrator:denoiser_upscale_factor", "denoiserUpscaleFactor", "Leave this at 1. The denoiser used here ignores it, so it never changes the resolution, and any other value only turns adaptive sampling off while Use Denoise is on.", VtValue(1.f)));
     {
-        RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:denoise_use_gpu", "denoiseUseGpu", "Runs the denoiser on the GPU rather than the CPU, which would be faster.", VtValue(true));
+        RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:denoise_use_gpu", "denoiseUseGpu", "Runs the denoiser on the GPU rather than the CPU, which would be faster.", VtValue(false));
+        s.overrideDefault = true;
         s.disabledReason = "Cycles renders and denoises on the CPU here.";
         add("denoise", s);
     }
@@ -146,7 +147,7 @@ make()
     add("bounces", ranged(setting("cycles:integrator:max_glossy_bounce", "maxGlossyBounce", "The most bounces off shiny surfaces. Higher shows reflections within reflections and takes longer; 2 to 4 suits most shots.", VtValue(7)), 0, 32));
     add("bounces", ranged(setting("cycles:integrator:max_transmission_bounce", "maxTransmissionBounce", "The most times light may pass through glass and other refractive surfaces. Too low turns thick or layered glass black, and higher takes longer; try 8 to 12 with a lot of glass.", VtValue(7)), 0, 32));
     add("bounces", ranged(setting("cycles:integrator:max_volume_bounce", "maxVolumeBounce", "The most times light may scatter inside a volume. Higher makes clouds and thick smoke brighter and softer and takes much longer; 0 scatters once, and 0 to 2 suits most shots.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:transparent_max_bounce", "transparentMaxBounce", "The most transparent surfaces a ray may pass through, such as layers of alpha-mapped leaves. Too low leaves dark patches, and higher takes longer; 8 suits most shots and foliage may need 32 or more.", VtValue(7)), 0, 64));
+    add("bounces", ranged(setting("cycles:integrator:transparent_max_bounce", "transparentMaxBounce", "The most transparent surfaces a ray may pass through, such as layers of alpha-mapped leaves. Too low leaves dark patches, and higher takes longer; 8 suits most shots and foliage may need 32 or more.", VtValue(7)), 0, 32));
 
     add("clamping", ranged(setting("cycles:integrator:sample_clamp_direct", "sampleClampDirect", "Limits the brightness of direct samples. Lower values remove fireflies but lose energy and can dull highlights; leave it at 0, which turns it off, unless direct light causes fireflies, then start around 10.", VtValue(0.f)), 0, 100));
     add("clamping", ranged(setting("cycles:integrator:sample_clamp_indirect", "sampleClampIndirect", "Limits the brightness of indirect samples. Lower values remove fireflies but lose energy; 10 is a good start, 0 turns it off.", VtValue(10.f)), 0, 100));

@@ -457,7 +457,6 @@ try:
             check_grey(["moonrayEnableOIDN"], True, "Enable Denoise on")
             yield from toggle("moonrayEnableDenoise", False)
             check_grey(guiding, True, "Enable Denoise off again")
-            check_grey(["moonrayDisableLighting"], True, "always, it crashes hdMoonray")
 
     run(steps())
 except Exception:

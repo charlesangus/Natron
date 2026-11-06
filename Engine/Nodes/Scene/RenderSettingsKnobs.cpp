@@ -302,6 +302,23 @@ parseValue(const std::string& text,
     }
 }
 
+// The double a float setting is shown as: the shortest decimal that reads back as the same float, so
+// 0.01f is 0.01 and not 0.00999999977648.
+double
+floatToDouble(float v)
+{
+    char text[32];
+
+    for (int digits = 1; digits <= 9; ++digits) {
+        std::snprintf(text, sizeof(text), "%.*g", digits, (double)v);
+        if (std::strtof(text, nullptr) == v) {
+            break;
+        }
+    }
+
+    return std::strtod(text, nullptr);
+}
+
 int
 clampToInt(double v)
 {
@@ -1020,7 +1037,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindDouble: {
             KnobDouble* d = dynamic_cast<KnobDouble*>(k.get());
             if (d) {
-                (void)d->setValue((kind == eKindFloat) ? (double)value.UncheckedGet<float>() : value.UncheckedGet<double>());
+                (void)d->setValue((kind == eKindFloat) ? floatToDouble(value.UncheckedGet<float>()) : value.UncheckedGet<double>());
             }
 
             return d != nullptr;
@@ -1148,7 +1165,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindFloat:
         case eKindDouble: {
             KnobDoublePtr k = AppManager::createKnob<KnobDouble>(holder, label);
-            k->setDefaultValue(prototype.IsHolding<float>() ? (double)prototype.UncheckedGet<float>() : prototype.UncheckedGet<double>());
+            k->setDefaultValue(prototype.IsHolding<float>() ? floatToDouble(prototype.UncheckedGet<float>()) : prototype.UncheckedGet<double>());
 
             return k;
         }

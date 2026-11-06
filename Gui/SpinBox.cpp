@@ -249,6 +249,14 @@ SpinBox::setValue_internal(double d,
     }
     assert( !str.isEmpty() );
 
+    // The field holds about six characters, so a huge value such as FLT_MAX would show as a clipped run of
+    // digits that reads as a small number. Editing is unaffected: unchanged text is never committed.
+    if ((std::abs(d) >= 1e6) && (d == d) && (std::abs(d) <= std::numeric_limits<double>::max())) {
+        str = QString::number(d, 'g', 2);
+        str.replace(QLatin1String("e+0"), QLatin1String("e")).replace(QLatin1String("e+"), QLatin1String("e"));
+        str.replace(QLatin1String("e-0"), QLatin1String("e-"));
+    }
+
     ///Remove trailing 0s by hand...
     int decimalPtPos = str.indexOf( QLatin1Char('.') );
     if (decimalPtPos != -1) {

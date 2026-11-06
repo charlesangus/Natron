@@ -249,6 +249,23 @@ if ! grep -qxF '        pxr::TfErrorMark mark;' "$file" || ! grep -qxF '#include
     exit 1
 fi
 
+# setDisableLighting dirties every registered light through mRenderIndex, which CreateRenderPass sets
+# and the first sync precedes, so a scene with lights and the setting on dereferences null. The
+# store stays unconditional; a null index skips the loop, and CreateRenderPass dirties the lights
+# once the index exists. A missing anchor fails the build.
+file="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/RenderDelegate.cc"
+index_anchor='    mRenderIndex = renderIndex;'
+dirty_anchor='            mRenderIndex->GetChangeTracker().MarkSprimDirty(p->GetId(), pxr::HdLight::DirtyBits::AllDirty);'
+if [ "$(grep -cxF "$index_anchor" "$file")" != 1 ] || [ "$(grep -cxF "$dirty_anchor" "$file")" != 1 ]; then
+    echo "build-moonray: disable-lighting anchors not found exactly once in ${file}" >&2
+    exit 1
+fi
+sed -i 's|^            mRenderIndex->GetChangeTracker().MarkSprimDirty(p->GetId(), pxr::HdLight::DirtyBits::AllDirty);$|            if (mRenderIndex)\n                mRenderIndex->GetChangeTracker().MarkSprimDirty(p->GetId(), pxr::HdLight::DirtyBits::AllDirty);|; s|^    mRenderIndex = renderIndex;$|&\n    if (mDisableLighting) {\n        for (auto\& p : mLights)\n            mRenderIndex->GetChangeTracker().MarkSprimDirty(p->GetId(), pxr::HdLight::DirtyBits::AllDirty);\n    }|' "$file"
+if [ "$(grep -cF 'MarkSprimDirty(p->GetId(), pxr::HdLight::DirtyBits::AllDirty);' "$file")" != 2 ] || ! grep -qxF '            if (mRenderIndex)' "$file"; then
+    echo "build-moonray: disable-lighting patch did not apply to ${file}" >&2
+    exit 1
+fi
+
 # USD sorts render delegates by ascending priority and defaults to the first that loads, so
 # upstream's 99 keeps MoonRay behind Storm (0); it is only used when asked for by id.
 for plugin in hd_moonray hd_moonray_debug; do

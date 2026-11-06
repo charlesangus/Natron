@@ -192,7 +192,6 @@ TEST_F(RenderSettingsPrimTest, SettingsLeaveOutReservedAndDisabledKeys)
                                      "    int moonray:maxConnectRetries = 7\n"
                                      "    bool moonray:useRemoteHosts = true\n"
                                      "    string moonray:remoteHosts = \"farm\"\n"
-                                     "    bool moonray:disableLighting = true\n"
                                      "    int moonray:someSetting = 3\n"
                                      "    bool cycles:integrator:denoise_use_gpu = true\n"
                                      "    int cycles:samples = 16\n"
@@ -202,7 +201,7 @@ TEST_F(RenderSettingsPrimTest, SettingsLeaveOutReservedAndDisabledKeys)
     ASSERT_TRUE(bool(prim));
 
     const RenderSettingsPrim::Values moonRay = RenderSettingsPrim::settings(prim, kMoonRayRendererId, UsdTimeCode::Default());
-    for (const char* key : { "localReservedCores", "maxConnectRetries", "useRemoteHosts", "remoteHosts", "disableLighting" }) {
+    for (const char* key : { "localReservedCores", "maxConnectRetries", "useRemoteHosts", "remoteHosts" }) {
         EXPECT_EQ(0u, moonRay.count(key)) << key;
         EXPECT_EQ(0u, moonRay.count(std::string("moonray:") + key)) << key;
     }

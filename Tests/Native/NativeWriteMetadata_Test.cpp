@@ -52,6 +52,7 @@
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
@@ -160,6 +161,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _write.reset();
+        _modify.reset();
         _dot.reset();
         _read.reset();
         getApp()->getProject()->reset(false, true);
@@ -263,8 +265,68 @@ protected:
         return effect ? effect->getOutputMetadata(1., ViewIdx(0)) : ImageMetadata();
     }
 
+    void setSlot(int slot,
+                 const std::string& key,
+                 const std::string& value)
+    {
+        const std::string suffix = std::to_string(slot);
+        KnobChoice* operation = dynamic_cast<KnobChoice*>(_modify->getKnobByName("operation" + suffix).get());
+        KnobString* keyKnob = dynamic_cast<KnobString*>(_modify->getKnobByName("key" + suffix).get());
+        KnobChoice* type = dynamic_cast<KnobChoice*>(_modify->getKnobByName("type" + suffix).get());
+        KnobString* stringValue = dynamic_cast<KnobString*>(_modify->getKnobByName("stringValue" + suffix).get());
+
+        ASSERT_TRUE(operation && keyKnob && type && stringValue);
+        operation->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+        keyKnob->setValue(key, ViewSpec::all(), 0);
+        type->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+        stringValue->setValue(value, ViewSpec::all(), 0);
+    }
+
+    void setDoubleSlot(int slot,
+                       const std::string& key,
+                       double value)
+    {
+        const std::string suffix = std::to_string(slot);
+        KnobChoice* operation = dynamic_cast<KnobChoice*>(_modify->getKnobByName("operation" + suffix).get());
+        KnobString* keyKnob = dynamic_cast<KnobString*>(_modify->getKnobByName("key" + suffix).get());
+        KnobChoice* type = dynamic_cast<KnobChoice*>(_modify->getKnobByName("type" + suffix).get());
+        KnobDouble* doubleValue = dynamic_cast<KnobDouble*>(_modify->getKnobByName("doubleValue" + suffix).get());
+
+        ASSERT_TRUE(operation && keyKnob && type && doubleValue);
+        operation->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+        keyKnob->setValue(key, ViewSpec::all(), 0);
+        type->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+        doubleValue->setValue(value, ViewSpec::all(), 0);
+    }
+
+    // Read -> ModifyMetadata -> Dot -> Write, the ModifyMetadata setting an unprefixed key, two
+    // standard ofx keys, a double and two structural names, and the Write using metadata mode `mode`.
+    void buildEditedChain(const std::string& output,
+                          int mode)
+    {
+        ASSERT_TRUE(writeSizedExr(pathOf("src.0001.exr"), kSize, kSize, 1.f, "src"));
+        _read = createRead(pathOf("src.####.exr"));
+        _modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+        _dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+        _write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+        ASSERT_TRUE(_read && _modify && _dot && _write);
+
+        connectNodes(_read, _modify, 0, true);
+        connectNodes(_modify, _dot, 0, true);
+        connectNodes(_dot, _write, 0, true);
+        ASSERT_NO_FATAL_FAILURE(setSlot(1, "shot", "sh010"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(2, "ofx/comment", "a note"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(3, "ofx/creator", "test tool"));
+        ASSERT_NO_FATAL_FAILURE(setDoubleSlot(4, "exr/gain", 0.1));
+        ASSERT_NO_FATAL_FAILURE(setSlot(5, "compression", "none"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(6, "name", "structural"));
+        configureWrite(output);
+        setMetadataMode(mode);
+    }
+
     QTemporaryDir _dir;
     NodePtr _read;
+    NodePtr _modify;
     NodePtr _dot;
     NodePtr _write;
 };
@@ -626,4 +688,142 @@ TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
     EXPECT_FLOAT_EQ(2.f, second->get_float_attribute("PixelAspectRatio", 1.f));
     EXPECT_EQ("narrow", first->get_string_attribute("mySource"));
     EXPECT_EQ("wide", second->get_string_attribute("mySource"));
+}
+
+namespace {
+const int kModeNone = 0;
+const int kModeDefault = 1;
+const int kModeAllExceptInput = 2;
+const int kModeAll = 3;
+
+const char* const kIdentityKeys[] = { "ofx/filepath", "ofx/frame", "ofx/filesize", "ofx/mtime" };
+} // namespace
+
+TEST_F(NativeWriteMetadataTest, ExrDefaultModeWritesStandardTagsOnly)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeDefault));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("a note", spec->get_string_attribute("Exif:ImageDescription"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("Exif:Software"));
+    EXPECT_TRUE(spec->find_attribute("shot") == NULL);
+    EXPECT_TRUE(spec->find_attribute("ofx/comment") == NULL);
+    EXPECT_TRUE(spec->find_attribute("ofx/creator") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.exr"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("exif/ImageDescription"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("exif/Software"));
+    EXPECT_FALSE(metadata.getString("exr/shot").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, ExrAllExceptInputRoundTripsEveryKeyWithoutTheInputIdentity)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeAllExceptInput));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_EQ("a note", spec->get_string_attribute("ofx/comment"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("ofx/creator"));
+    const OIIO::ParamValue* gain = spec->find_attribute("gain");
+    ASSERT_TRUE(gain != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::DOUBLE, gain->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, *(const double*)gain->data());
+    for (const char* key : kIdentityKeys) {
+        EXPECT_TRUE(spec->find_attribute(key) == NULL) << key;
+    }
+    EXPECT_NE("none", spec->get_string_attribute("compression"));
+    EXPECT_TRUE(spec->find_attribute("name") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.exr"));
+    EXPECT_EQ(std::optional<std::string>("sh010"), metadata.getString("exr/shot"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("ofx/comment"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("ofx/creator"));
+    EXPECT_EQ(std::optional<double>(0.1), metadata.getDouble("exr/gain"));
+    EXPECT_FALSE(metadata.getString("exr/name").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, ExrAllWritesTheInputIdentityToo)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeAll));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_NE(std::string::npos, spec->get_string_attribute("ofx/filepath").find("src.0001.exr"));
+    EXPECT_TRUE(spec->find_attribute("ofx/frame") != NULL);
+    EXPECT_TRUE(spec->find_attribute("ofx/filesize") != NULL);
+    EXPECT_TRUE(spec->find_attribute("ofx/mtime") != NULL);
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_TRUE(spec->find_attribute("name") == NULL);
+}
+
+TEST_F(NativeWriteMetadataTest, ExrNoMetadataWritesNoneOfTheEditedKeys)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeNone));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    for (const char* name : { "shot", "ofx/comment", "ofx/creator", "gain", "Exif:ImageDescription", "Exif:Software", "ofx/filepath", "name" }) {
+        EXPECT_TRUE(spec->find_attribute(name) == NULL) << name;
+    }
+}
+
+// The PNG checks read the file through OIIO because the PNG writer's handling of attribute names
+// containing a slash is not known to keep them as text chunk keywords.
+TEST_F(NativeWriteMetadataTest, PngDefaultModeWritesStandardTagsOnly)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeDefault));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("a note", spec->get_string_attribute("ImageDescription"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("Software"));
+    EXPECT_TRUE(spec->find_attribute("shot") == NULL);
+    EXPECT_TRUE(spec->find_attribute("ofx/comment") == NULL);
+}
+
+TEST_F(NativeWriteMetadataTest, PngAllExceptInputKeepsEveryKeyAsTextWithoutTheInputIdentity)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeAllExceptInput));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_EQ("a note", spec->get_string_attribute("ofx/comment"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("ofx/creator"));
+    EXPECT_DOUBLE_EQ(0.1, std::stod(spec->get_string_attribute("exr/gain")));
+    for (const char* key : kIdentityKeys) {
+        EXPECT_TRUE(spec->find_attribute(key) == NULL) << key;
+    }
+    EXPECT_TRUE(spec->find_attribute("name") == NULL);
+}
+
+TEST_F(NativeWriteMetadataTest, PngAllWritesTheInputIdentityToo)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeAll));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_NE(std::string::npos, spec->get_string_attribute("ofx/filepath").find("src.0001.exr"));
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+}
+
+TEST_F(NativeWriteMetadataTest, PngNoMetadataWritesNoneOfTheEditedKeys)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeNone));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    for (const char* name : { "shot", "ofx/comment", "ofx/creator", "exr/gain", "ImageDescription", "Software", "ofx/filepath", "name" }) {
+        EXPECT_TRUE(spec->find_attribute(name) == NULL) << name;
+    }
 }

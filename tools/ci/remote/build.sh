@@ -16,8 +16,8 @@
 #                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
-#   --record-goldens  -> implies --tests; also records the native golden renders
-#                        remotely and downloads them, STAMP included, into
+#   --record-goldens  -> implies --tests; also records the native and Cycles golden
+#                        renders remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP).

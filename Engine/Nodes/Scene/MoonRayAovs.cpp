@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -319,8 +320,39 @@ namespace {
         eKindLight = 0,
         eKindMaterial,
         eKindPrim,
+        eKindTexture,
         eKindCount
     };
+
+    // The texture file a notice reports MoonRay could not read, or empty. These are worded by
+    // MoonRay's shaders and texture system and carry no prim path to attribute, or an unrelated one.
+    std::string
+    failedTexture(const std::string& text)
+    {
+        static const char* const quoted[] = {
+            "failed to open texture file \"",
+            "Invalid image file \"",
+            "Failed to locate udim textures for filename: \""
+        };
+
+        for (const char* marker : quoted) {
+            const size_t begin = text.find(marker);
+            if (begin == std::string::npos) {
+                continue;
+            }
+            const size_t start = begin + std::strlen(marker);
+            const size_t end = text.find('"', start);
+            if (end != std::string::npos) {
+                return text.substr(start, end - start);
+            }
+        }
+        const std::string unreadable = "Unable to read texture file ";
+        if (text.compare(0, unreadable.size(), unreadable) == 0) {
+            return text.substr(unreadable.size());
+        }
+
+        return std::string();
+    }
 
     // The path a notice starts with ("/World/Cube.material: ..." names /World/Cube), and the rest.
     bool
@@ -585,6 +617,11 @@ warningText(const UsdStageRefPtr& stage,
             if (notice.level < Notice::eLevelWarning) {
                 continue;
             }
+            const std::string texture = failedTexture(notice.text);
+            if (!texture.empty()) {
+                appendName(&names[eKindTexture], texture);
+                continue;
+            }
             SdfPath path;
             std::string rest;
             if (!leadingPath(notice.text, &path, &rest)) {
@@ -617,7 +654,11 @@ warningText(const UsdStageRefPtr& stage,
         if (!text.empty()) {
             text += '\n';
         }
-        text += "MoonRay could not render these " + kindLabel(kind) + " as authored: " + joinNames(names[kind]);
+        if (kind == eKindTexture) {
+            text += "MoonRay could not read these texture files: " + joinNames(names[kind]);
+        } else {
+            text += "MoonRay could not render these " + kindLabel(kind) + " as authored: " + joinNames(names[kind]);
+        }
     }
 
     return text;
@@ -630,7 +671,7 @@ errorText(const UsdStageRefPtr& stage,
     std::vector<std::string> lines;
 
     for (const Notice& notice : notices) {
-        if (notice.level != Notice::eLevelError) {
+        if ((notice.level != Notice::eLevelError) || !failedTexture(notice.text).empty()) {
             continue;
         }
         SdfPath path;

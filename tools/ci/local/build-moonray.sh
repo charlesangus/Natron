@@ -183,6 +183,54 @@ if [ "$(grep -cF 'ro.setChannelName("hydraDepth");' "$file")" != 1 ]; then
     exit 1
 fi
 
+# A light's Sync reads its lightLink and shadowLink tokens with VtValue::Get<TfToken>(), and the
+# scene delegate answers nothing for a light without links, so each light posts two "Attempted to
+# get value of type 'TfToken' from empty VtValue" coding errors and falls back to the empty token
+# anyway; GetWithDefault<TfToken>() is that fallback without the error. The same Sync dirties every
+# rprim to pick up the categories through the change tracker, which in a render index fed by a
+# scene index (Natron's) posts "Calling method on HdChangeTracker that requires emulation" and then
+# applies the dirty bits all the same (pxr/imaging/hd/changeTracker.cpp, MarkAllRprimsDirty), so
+# the error is the only fault. That call goes through RenderDelegate::markAllRprimsDirty, which
+# takes the error off the thread's stack. A missing anchor fails the build.
+lights="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/Light.cc"
+for link in lightLink shadowLink; do
+    anchor="sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link}).Get<pxr::TfToken>();"
+    if [ "$(grep -cF "$anchor" "$lights")" != 1 ]; then
+        echo "build-moonray: ${link} read not found exactly once in ${lights}" >&2
+        exit 1
+    fi
+    sed -i "s|sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link})\\.Get<pxr::TfToken>();|sceneDelegate->GetLightParamValue(id, pxr::HdTokens->${link}).GetWithDefault<pxr::TfToken>();|" "$lights"
+    if grep -qF "$anchor" "$lights"; then
+        echo "build-moonray: ${link} patch did not apply to ${lights}" >&2
+        exit 1
+    fi
+done
+anchor='sceneDelegate->GetRenderIndex().GetChangeTracker().MarkAllRprimsDirty('
+if [ "$(grep -cF "$anchor" "$lights")" != 1 ]; then
+    echo "build-moonray: MarkAllRprimsDirty call not found exactly once in ${lights}" >&2
+    exit 1
+fi
+sed -i 's|sceneDelegate->GetRenderIndex()\.GetChangeTracker()\.MarkAllRprimsDirty(|renderDelegate.markAllRprimsDirty(|' "$lights"
+if grep -qF "$anchor" "$lights"; then
+    echo "build-moonray: MarkAllRprimsDirty patch did not apply to ${lights}" >&2
+    exit 1
+fi
+file="${src}/moonray/hydra/hdMoonray/lib/hydramoonray/RenderDelegate.cc"
+anchor='    if (mRenderIndex) mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);'
+if [ "$(grep -cxF "$anchor" "$file")" != 1 ]; then
+    echo "build-moonray: markAllRprimsDirty body not found exactly once in ${file}" >&2
+    exit 1
+fi
+if [ "$(grep -cxF '#include <pxr/base/gf/vec2f.h>' "$file")" != 1 ]; then
+    echo "build-moonray: vec2f include not found exactly once in ${file}" >&2
+    exit 1
+fi
+sed -i 's|^    if (mRenderIndex) mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);$|    if (mRenderIndex) {\n        pxr::TfErrorMark mark;\n        mRenderIndex->GetChangeTracker().MarkAllRprimsDirty(bits);\n        mark.Clear();\n    }|; s|^#include <pxr/base/gf/vec2f.h>$|&\n#include <pxr/base/tf/errorMark.h>|' "$file"
+if ! grep -qxF '        pxr::TfErrorMark mark;' "$file" || ! grep -qxF '#include <pxr/base/tf/errorMark.h>' "$file"; then
+    echo "build-moonray: markAllRprimsDirty patch did not apply to ${file}" >&2
+    exit 1
+fi
+
 # USD sorts render delegates by ascending priority and defaults to the first that loads, so
 # upstream's 99 keeps MoonRay behind Storm (0); it is only used when asked for by id.
 for plugin in hd_moonray hd_moonray_debug; do

@@ -167,15 +167,16 @@ const PXR_NS::TfTokenVector& supportedPrimTypes();
 
 /**
  * @brief The node's warning about what MoonRay could not render, one line per kind (lights,
- * materials, other prims) naming the prims; empty when it rendered everything. A warning or error
- * notice is of the prim its leading path names (or the nearest prim above it on stage), and of the
- * kind of that prim.
+ * materials, other prims) naming the prims, and one naming the texture files it could not read;
+ * empty when it rendered everything. A warning or error notice is of the prim its leading path
+ * names (or the nearest prim above it on stage), and of the kind of that prim, unless it reports
+ * a texture file, which it is of whatever prim it is worded around.
  **/
 std::string warningText(const PXR_NS::UsdStageRefPtr& stage,
                         const std::vector<Light>& unsupported,
                         const std::vector<Notice>& notices) WARN_UNUSED_RETURN;
 
-// The error notices that name no prim of stage, one per line; empty if none.
+// The error notices that name no prim of stage and no texture file, one per line; empty if none.
 std::string errorText(const PXR_NS::UsdStageRefPtr& stage,
                       const std::vector<Notice>& notices) WARN_UNUSED_RETURN;
 } // namespace MoonRayAovs

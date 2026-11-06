@@ -39,6 +39,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -53,6 +54,7 @@
 #include <QString>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/base/tf/diagnosticMgr.h>
 
 #include "BaseTest.h"
 #include "Engine/AppManager.h"
@@ -103,6 +105,27 @@ const char* const kTexturedJpg = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textu
 const char* const kTexturedPng = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-png.usda";
 const char* const kTexturedMaketx = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-tx.usda";
 const char* const kCamera = "/World/Cam";
+
+// Keeps the text of every coding error posted while it is attached.
+class CodingErrorCollector : public PXR_NS::TfDiagnosticMgr::Delegate {
+public:
+    CodingErrorCollector() { PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this); }
+    ~CodingErrorCollector() override { PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this); }
+
+    void IssueError(const PXR_NS::TfError& error) override
+    {
+        if (error.GetErrorCode() == PXR_NS::TF_DIAGNOSTIC_CODING_ERROR_TYPE) {
+            std::lock_guard<std::mutex> lock(mutex);
+            messages.push_back(error.GetCommentary());
+        }
+    }
+    void IssueFatalError(const PXR_NS::TfCallContext&, const std::string&) override { }
+    void IssueStatus(const PXR_NS::TfStatus&) override { }
+    void IssueWarning(const PXR_NS::TfWarning&) override { }
+
+    std::mutex mutex;
+    std::vector<std::string> messages;
+};
 const int kSize = 32;
 const int kRow = 16;
 const int kLeftColumn = 10;
@@ -707,4 +730,21 @@ TEST_F(USDRenderMoonRayTest, PlainTexturesMatchTheirMaketxConversion)
         EXPECT_EQ(0u, notFinite) << fixture;
         EXPECT_EQ(0u, differing) << fixture;
     }
+}
+
+// hdMoonray reads the lightLink and shadowLink tokens of every light off a scene delegate that
+// returns nothing for a light without links, and dirties the geometry through a change tracker that
+// refuses it as emulation-only; both posted coding errors on every light.
+TEST_F(USDRenderMoonRayTest, RendersWithoutCodingErrors)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    CodingErrorCollector collector;
+    NodePtr node = createGraph(kTexturedPng);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    std::lock_guard<std::mutex> lock(collector.mutex);
+    EXPECT_TRUE(collector.messages.empty()) << collector.messages.front();
 }

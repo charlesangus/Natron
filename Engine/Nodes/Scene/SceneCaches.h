@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Entry points into the scene caches for code that cannot include pxr headers: the
  * project and AppManager are compiled under Py_LIMITED_API. Implemented beside the caches they
- * reach (SceneQueryPool.cpp, HydraRenderImpl.cpp).
+ * reach (SceneQueryPool.cpp, HydraRenderImpl.cpp, LiveTextureStore.cpp, LiveTextureResolver.cpp).
  **/
 namespace SceneCaches {
 /**
@@ -47,6 +49,26 @@ void releaseIdleQueryStages();
  * hold; the next render of a node makes them again. Does not wait. MT-safe.
  **/
 void releaseRenderEngines();
+
+/**
+ * @brief Drops every USDRender node's stage and engine of a render delegate other than Storm, and
+ * with them the host memory they hold. Free GPU Memory leaves these; the purge of scene memory
+ * drops them. Does not wait. MT-safe.
+ **/
+void releaseCpuRenderEngines();
+
+/**
+ * @brief Drops every rendered live texture; the consumers that need one render it again. MT-safe.
+ **/
+void releaseLiveTextures();
+
+/**
+ * @brief Registers the natron:// asset resolver and image reader with OpenUSD, from the plugInfo.json
+ * in Resources/usd/natronLiveTexture beside the executable. OpenUSD reads which resolvers and image
+ * readers exist once, so this must run before anything asks it for one. Runs once; returns false,
+ * with errorMessage set if not null, when the registration failed. MT-safe.
+ **/
+bool registerLiveTextures(std::string* errorMessage);
 } // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

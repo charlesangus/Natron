@@ -1,0 +1,445 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "LensAberration.h"
+
+#include <bit>
+#include <cmath>
+#include <map>
+#include <tuple>
+#include <utility>
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+double
+finiteOr(double value,
+         double fallback)
+{
+    return std::isfinite(value) ? value : fallback;
+}
+
+// Doubles compared by their bits, an order even NaNs keep.
+uint64_t
+bitsOf(double value)
+{
+    return std::bit_cast<uint64_t>(value);
+}
+} // anonymous namespace
+
+LensAberration::LensAberration(const LensAberrationParams& params,
+                               const RectI& format,
+                               double par,
+                               double scaleX,
+                               double scaleY)
+{
+    _par = (std::isfinite(par) && (par > 0.)) ? par : 1.;
+    _scaleX = (std::isfinite(scaleX) && (scaleX > 0.)) ? scaleX : 1.;
+    _scaleY = (std::isfinite(scaleY) && (scaleY > 0.)) ? scaleY : 1.;
+    _centreX = ((double)format.x1 + (double)format.x2) / 2.;
+    _centreY = ((double)format.y1 + (double)format.y2) / 2.;
+    const double halfDiagonal = std::hypot(std::max(0, format.x2 - format.x1) * _par / 2., std::max(0, format.y2 - format.y1) / 2.);
+    _halfDiagonal = (halfDiagonal > 0.) ? halfDiagonal : 1.;
+    _amount = std::max(0., finiteOr(params.catEye, 0.));
+    // Without a format no position is known, and every cell but the centre would be past the corners.
+    _catEye = (_amount > 0.) && (halfDiagonal > 0.);
+    _orientation = params.catEyeOrientation;
+
+    for (int c = 0; c < 3; ++c) {
+        _scales[c] = params.channelScale(c);
+    }
+    _nGroups = 0;
+    for (int c = 0; c < 3; ++c) {
+        int g = 0;
+        while ((g < _nGroups) && (_groupScales[g] != _scales[c])) {
+            ++g;
+        }
+        if (g == _nGroups) {
+            _groupScales[_nGroups++] = _scales[c];
+        }
+        _groupOfChannel[c] = g;
+    }
+}
+
+double
+LensAberration::channelScale(int c) const
+{
+    return _scales[((c >= 0) && (c < 3)) ? c : 1];
+}
+
+double
+LensAberration::maxScale() const
+{
+    return std::max(_scales[0], std::max(_scales[1], _scales[2]));
+}
+
+int
+LensAberration::groupOf(int c) const
+{
+    return _groupOfChannel[((c >= 0) && (c < 3)) ? c : 1];
+}
+
+unsigned
+LensAberration::groupsOf(const int* channelBits,
+                         int n) const
+{
+    unsigned bits = 0;
+    for (int p = 0; p < n; ++p) {
+        bits |= 1u << groupOf(channelBits[p]);
+    }
+
+    return bits;
+}
+
+double
+LensAberration::groupScale(int group) const
+{
+    return _groupScales[std::clamp(group, 0, _nGroups - 1)];
+}
+
+int
+LensAberration::columnStart(int i) const
+{
+    return (int)std::ceil((_centreX + (i - 0.5) * kCellSize) * _scaleX - 0.5);
+}
+
+int
+LensAberration::rowStart(int j) const
+{
+    return (int)std::ceil((_centreY + (j - 0.5) * kCellSize) * _scaleY - 0.5);
+}
+
+int
+LensAberration::cellColumn(int x) const
+{
+    // The estimate, then exact against columnStart(), which defines the cells.
+    int i = (int)std::floor(((x + 0.5) / _scaleX - _centreX) / kCellSize + 0.5);
+    while (columnStart(i + 1) <= x) {
+        ++i;
+    }
+    while (columnStart(i) > x) {
+        --i;
+    }
+
+    return i;
+}
+
+int
+LensAberration::cellRow(int y) const
+{
+    int j = (int)std::floor(((y + 0.5) / _scaleY - _centreY) / kCellSize + 0.5);
+    while (rowStart(j + 1) <= y) {
+        ++j;
+    }
+    while (rowStart(j) > y) {
+        --j;
+    }
+
+    return j;
+}
+
+LensCells
+LensAberration::cells(const RectI& window) const
+{
+    LensCells cells;
+    if (!_catEye || (window.x1 >= window.x2) || (window.y1 >= window.y2)) {
+        return cells;
+    }
+    cells.i1 = cellColumn(window.x1);
+    cells.j1 = cellRow(window.y1);
+    cells.columns = cellColumn(window.x2 - 1) - cells.i1 + 1;
+    cells.rows = cellRow(window.y2 - 1) - cells.j1 + 1;
+
+    return cells;
+}
+
+std::vector<LensBand>
+LensAberration::bands(const RectI& window,
+                      int minRows) const
+{
+    std::vector<LensBand> list;
+    if ((window.x1 >= window.x2) || (window.y1 >= window.y2)) {
+        return list;
+    }
+    if (!_catEye) {
+        LensBand band;
+        band.y1 = window.y1;
+        band.y2 = window.y2;
+        list.push_back(band);
+
+        return list;
+    }
+    const LensCells all = cells(window);
+    int j = all.j1;
+    while (j < all.j1 + all.rows) {
+        LensBand band;
+        band.j1 = j;
+        band.y1 = std::max(window.y1, rowStart(j));
+        do {
+            ++j;
+        } while ((j < all.j1 + all.rows) && (std::min(window.y2, rowStart(j)) - band.y1 < minRows));
+        band.j2 = j;
+        band.y2 = std::min(window.y2, rowStart(j));
+        list.push_back(band);
+    }
+
+    return list;
+}
+
+void
+LensAberration::cellPosition(int i,
+                             int j,
+                             double* x,
+                             double* y) const
+{
+    // The centre is the format's centre plus whole cells: in canonical units, i cells of
+    // kCellSize full-resolution pixels of aspect par.
+    double px = i * kCellSize * _par / _halfDiagonal;
+    double py = j * kCellSize / _halfDiagonal;
+    const double length = std::hypot(px, py);
+    if (length > 1.) {
+        px /= length;
+        py /= length;
+    }
+    *x = px;
+    *y = py;
+}
+
+BokehClip
+LensAberration::clip(int i,
+                     int j) const
+{
+    BokehClip clip;
+    if (!_catEye || ((i == 0) && (j == 0))) {
+        return clip;
+    }
+    double px = 0.;
+    double py = 0.;
+    cellPosition(i, j, &px, &py);
+    if (_orientation == CatEyeOrientation::Radial) {
+        clip.offsetX = -_amount * px;
+        clip.offsetY = -_amount * py;
+    } else {
+        clip.offsetX = _amount * py;
+        clip.offsetY = -_amount * px;
+    }
+    clip.radius = 1.;
+
+    return clip;
+}
+
+bool
+BokehRunCache::KeyLess::operator()(const Key& a,
+                                   const Key& b) const
+{
+    const auto tie = [](const Key& k) {
+        const BokehShapeParams& s = k.shape;
+
+        return std::make_tuple((int)s.shape, s.blades, bitsOf(s.rotation), bitsOf(s.roundness), bitsOf(s.clip.offsetX), bitsOf(s.clip.offsetY), bitsOf(s.clip.radius),
+                               bitsOf(s.innerSize), bitsOf(s.innerFeather), bitsOf(s.innerBrightness), s.catadioptric, bitsOf(s.catadioptricSize),
+                               bitsOf(s.sphericalAberration), bitsOf(s.filterShape), k.image, k.imageHash, k.imageWidth, k.imageHeight,
+                               bitsOf(k.radiusX), bitsOf(k.radiusY));
+    };
+
+    return tie(a) < tie(b);
+}
+
+std::size_t
+BokehRunCache::entryBytes(const std::vector<BokehRun>& runs)
+{
+    return runs.size() * sizeof(BokehRun) + sizeof(Entry) + sizeof(Key);
+}
+
+BokehRunCache::Runs
+BokehRunCache::lookup(const Key& key,
+                      const std::function<std::vector<BokehRun>()>& build)
+{
+    {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        const auto found = _index.find(key);
+        if (found != _index.end()) {
+            _entries.splice(_entries.begin(), _entries, found->second);
+
+            return found->second->runs;
+        }
+    }
+    const Runs built = std::make_shared<const std::vector<BokehRun>>(build());
+    const std::size_t bytes = entryBytes(*built);
+
+    const std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _index.find(key);
+    if (found != _index.end()) {
+        _entries.splice(_entries.begin(), _entries, found->second);
+
+        return found->second->runs;
+    }
+    if (bytes > _budget) {
+        return built;
+    }
+    while (!_entries.empty() && (_bytes + bytes > _budget)) {
+        _bytes -= _entries.back().bytes;
+        _index.erase(_entries.back().key);
+        _entries.pop_back();
+    }
+    Entry entry;
+    entry.key = key;
+    entry.runs = built;
+    entry.bytes = bytes;
+    _entries.push_front(entry);
+    _index.emplace(key, _entries.begin());
+    _bytes += bytes;
+
+    return built;
+}
+
+BokehRunCache::Runs
+BokehRunCache::runs(const BokehShapeParams& shape,
+                    double radiusX,
+                    double radiusY)
+{
+    Key key;
+    key.shape = shape;
+    key.radiusX = radiusX;
+    key.radiusY = radiusY;
+
+    return lookup(key, [&shape, radiusX, radiusY]() {
+        return BokehKernel::gatherKernel(shape, radiusX, radiusY).runs();
+    });
+}
+
+BokehRunCache::Runs
+BokehRunCache::imageRuns(const float* values,
+                         int width,
+                         int height,
+                         uint64_t hash,
+                         double radiusX,
+                         double radiusY,
+                         const BokehClip& clip)
+{
+    Key key;
+    key.shape.shape = BokehShape::Image;
+    key.shape.clip = clip;
+    key.image = true;
+    key.imageHash = hash;
+    key.imageWidth = width;
+    key.imageHeight = height;
+    key.radiusX = radiusX;
+    key.radiusY = radiusY;
+
+    return lookup(key, [values, width, height, radiusX, radiusY, &clip]() {
+        return BokehKernel::fromImage(values, width, height, radiusX, radiusY, nullptr, clip).runs();
+    });
+}
+
+uint64_t
+BokehRunCache::imageHash(const float* values,
+                         int width,
+                         int height)
+{
+    // FNV-1a over the size and the values' bits.
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](uint32_t word) {
+        for (int b = 0; b < 4; ++b) {
+            hash ^= (word >> (8 * b)) & 0xffu;
+            hash *= 1099511628211ull;
+        }
+    };
+    mix((uint32_t)width);
+    mix((uint32_t)height);
+    const std::size_t count = (std::size_t)std::max(0, width) * (std::size_t)std::max(0, height);
+    for (std::size_t i = 0; i < count; ++i) {
+        mix(std::bit_cast<uint32_t>(values[i]));
+    }
+
+    return hash;
+}
+
+void
+LensRunTally::add(std::size_t table,
+                  const BokehRunCache::Runs& kernel)
+{
+    if (!kernel || kernel->empty()) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(_mutex);
+    if (_stored.emplace(table, kernel.get()).second) {
+        _bytes += (uint64_t)kernel->size() * 4 * sizeof(uint32_t);
+        if (_bytes > _limit) {
+            _over.store(true, std::memory_order_relaxed);
+        }
+    }
+}
+
+void
+appendLensRunTable(const LensBandRuns& runs,
+                   const LensBand& band,
+                   std::vector<uint32_t>* words,
+                   std::size_t* table)
+{
+    const std::size_t n = runs.size(band);
+    *table = words->size();
+    words->resize(*table + 2 * n, 0u);
+    std::map<const std::vector<BokehRun>*, std::pair<uint32_t, uint32_t>> stored;
+    for (std::size_t k = 0; k < n; ++k) {
+        const BokehRunCache::Runs& kernel = runs.runs[k];
+        if (!kernel || kernel->empty()) {
+            continue;
+        }
+        std::map<const std::vector<BokehRun>*, std::pair<uint32_t, uint32_t>>::const_iterator found = stored.find(kernel.get());
+        if (found == stored.end()) {
+            const std::pair<uint32_t, uint32_t> entry((uint32_t)words->size(), (uint32_t)kernel->size());
+            words->reserve(words->size() + 4 * kernel->size());
+            for (const BokehRun& run : *kernel) {
+                words->push_back((uint32_t)run.dy);
+                words->push_back((uint32_t)run.dx0);
+                words->push_back((uint32_t)run.length);
+                words->push_back(std::bit_cast<uint32_t>(run.weight));
+            }
+            found = stored.emplace(kernel.get(), entry).first;
+        }
+        (*words)[*table + 2 * k] = found->second.first;
+        (*words)[*table + 2 * k + 1] = found->second.second;
+    }
+}
+
+void
+appendLensCellMaps(const LensAberration& lens,
+                   const LensCells& cells,
+                   const RectI& output,
+                   std::vector<uint32_t>* words,
+                   std::size_t* columnMap,
+                   std::size_t* rowMap)
+{
+    *columnMap = words->size();
+    lens.forEachSegment(output.x1, output.x2, [&](int xa, int xb, int i) {
+        words->insert(words->end(), (std::size_t)(xb - xa), (uint32_t)(i - cells.i1));
+    });
+    *rowMap = words->size();
+    for (int y = output.y1; y < output.y2; ++y) {
+        words->push_back((uint32_t)(lens.rowOf(y) - cells.j1));
+    }
+}
+
+NATRON_NAMESPACE_EXIT

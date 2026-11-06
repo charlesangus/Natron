@@ -38,10 +38,11 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAction>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QSettings>
 #include <QString>
-#include <QAction>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -58,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutGroupPlayer "Player"
 #define kShortcutGroupNodes "Nodes"
 #define kShortcutGroupScriptEditor "ScriptEditor"
+#define kShortcutGroupViewer3D "3DViewer"
 
 /////////GLOBAL SHORTCUTS
 #define kShortcutIDActionNewProject "newProject"
@@ -131,6 +133,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionEnableRenderStats "enableRenderStats"
 #define kShortcutDescActionEnableRenderStats "Enable Render Statistics"
+
+#define kShortcutIDActionToggleInteractive "toggleInteractive"
+#define kShortcutDescActionToggleInteractive "Interactive Updates"
 
 #define kShortcutIDActionRenderAll "renderAll"
 #define kShortcutDescActionRenderAll "Render All Writers"
@@ -345,6 +350,104 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDMouseRectanglePickAlternate "rectanglePickAlternate"
 #define kShortcutDescMouseRectanglePickAlternate "Rectangle Color Picker on the other source: the viewed node's input (its output while picking a color parameter)"
+
+// The 3D view of a viewer: navigation drags, the wheel, selection clicks and the marquee, and
+// framing keys. The mouse bindings follow the Viewer 3D Navigation preference's preset.
+#define kShortcutIDMouseViewer3DTumble "tumble"
+#define kShortcutDescMouseViewer3DTumble "Tumble"
+
+#define kShortcutIDMouseViewer3DPan "pan"
+#define kShortcutDescMouseViewer3DPan "Pan"
+
+#define kShortcutIDMouseViewer3DDolly "dolly"
+#define kShortcutDescMouseViewer3DDolly "Dolly (Drag)"
+
+#define kShortcutIDMouseViewer3DDollyWheel "dollyWheel"
+#define kShortcutDescMouseViewer3DDollyWheel "Dolly (Wheel)"
+
+#define kShortcutIDMouseViewer3DSelect "select"
+#define kShortcutDescMouseViewer3DSelect "Select"
+
+#define kShortcutIDMouseViewer3DAddToSelection "addToSelection"
+#define kShortcutDescMouseViewer3DAddToSelection "Add to Selection (click or marquee)"
+
+#define kShortcutIDMouseViewer3DToggleSelection "toggleSelection"
+#define kShortcutDescMouseViewer3DToggleSelection "Toggle Selection (click or marquee)"
+
+#define kShortcutIDMouseViewer3DMarquee "marquee"
+#define kShortcutDescMouseViewer3DMarquee "Marquee Select"
+
+#define kShortcutIDActionViewer3DFrameSelection "frameSelection"
+#define kShortcutDescActionViewer3DFrameSelection "Frame Selection"
+
+#define kShortcutIDActionViewer3DFrameAll "frameAll"
+#define kShortcutDescActionViewer3DFrameAll "Frame All"
+
+#define kShortcutIDActionViewer3DPerspective "perspectiveView"
+#define kShortcutDescActionViewer3DPerspective "Perspective View"
+
+#define kShortcutIDActionViewer3DFront "frontView"
+#define kShortcutDescActionViewer3DFront "Front View"
+
+#define kShortcutIDActionViewer3DBack "backView"
+#define kShortcutDescActionViewer3DBack "Back View"
+
+#define kShortcutIDActionViewer3DRight "rightView"
+#define kShortcutDescActionViewer3DRight "Right View"
+
+#define kShortcutIDActionViewer3DLeft "leftView"
+#define kShortcutDescActionViewer3DLeft "Left View"
+
+#define kShortcutIDActionViewer3DTop "topView"
+#define kShortcutDescActionViewer3DTop "Top View"
+
+#define kShortcutIDActionViewer3DBottom "bottomView"
+#define kShortcutDescActionViewer3DBottom "Bottom View"
+
+#define kShortcutIDActionViewer3DLockView "lockView"
+#define kShortcutDescActionViewer3DLockView "Lock View to Camera"
+
+#define kShortcutIDActionViewer3DWireframe "wireframe"
+#define kShortcutDescActionViewer3DWireframe "Wireframe"
+
+#define kShortcutIDActionViewer3DShaded "shaded"
+#define kShortcutDescActionViewer3DShaded "Shaded"
+
+#define kShortcutIDActionViewer3DUnshaded "unshaded"
+#define kShortcutDescActionViewer3DUnshaded "Unshaded"
+
+#define kShortcutIDActionViewer3DShowGrid "showGrid"
+#define kShortcutDescActionViewer3DShowGrid "Show Grid"
+
+#define kShortcutIDActionViewer3DShowGuides "showGuides"
+#define kShortcutDescActionViewer3DShowGuides "Show Guides"
+
+#define kShortcutIDActionViewer3DSelectTool "selectTool"
+#define kShortcutDescActionViewer3DSelectTool "Select Tool"
+
+#define kShortcutIDActionViewer3DTranslateTool "translateTool"
+#define kShortcutDescActionViewer3DTranslateTool "Translate Tool"
+
+#define kShortcutIDActionViewer3DRotateTool "rotateTool"
+#define kShortcutDescActionViewer3DRotateTool "Rotate Tool"
+
+#define kShortcutIDActionViewer3DScaleTool "scaleTool"
+#define kShortcutDescActionViewer3DScaleTool "Scale Tool"
+
+#define kShortcutIDActionViewer3DCycleTool "cycleTransformTool"
+#define kShortcutDescActionViewer3DCycleTool "Cycle Transform Tool"
+
+#define kShortcutIDActionViewer3DToggleSpace "toggleTransformSpace"
+#define kShortcutDescActionViewer3DToggleSpace "Toggle Local/World Space"
+
+#define kShortcutIDActionViewer3DTogglePivot "toggleTransformPivot"
+#define kShortcutDescActionViewer3DTogglePivot "Toggle Selection Centre/Current Prim Pivot"
+
+#define kShortcutIDActionViewer3DSetSelectionOnNode "setSelectionOnCurrentNode"
+#define kShortcutDescActionViewer3DSetSelectionOnNode "Set Selection on Current Node"
+
+#define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
+#define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
@@ -835,24 +938,103 @@ public:
     }
 };
 
+// Space held down, as a modifier of a mouse binding: Qt has no modifier for it, so the 3D view
+// tracks the key and reports it with this bit, which Qt only sets for Mode_switch, a key the
+// bindings never look at.
+#define kShortcutModifierSpace Qt::GroupSwitchModifier
+
+// Which gestures of its button a mouse binding stands for. Two bindings of a group may share a
+// button and modifiers when one is a click and the other a drag.
+enum MouseGestureEnum {
+    eMouseGestureAny = 0, // the press itself
+    eMouseGestureClick, // a press and release without moving
+    eMouseGestureDrag, // a press and a move
+    eMouseGestureWheel // the wheel; the binding's buttons are Qt::NoButton
+};
+
+struct MouseBinding {
+    Qt::KeyboardModifiers modifiers;
+    Qt::MouseButton button;
+};
+
 class MouseAction
     : public BoundAction
 {
 public:
-
-    Qt::MouseButton button; //< the button that must be held down for the action. This cannot be edited!
+    // One button per entry of modifiers, and of defaultModifiers for defaultButtons.
+    std::list<Qt::MouseButton> buttons;
+    std::list<Qt::MouseButton> defaultButtons;
+    MouseGestureEnum gesture;
 
     MouseAction()
         : BoundAction()
-        , button(Qt::NoButton)
+        , buttons()
+        , defaultButtons()
+        , gesture(eMouseGestureAny)
     {
     }
 
     virtual ~MouseAction()
     {
     }
+
+    // Whether one of the bindings is exactly modifiers (Control, Alt, Shift, Meta and
+    // kShortcutModifierSpace) with button; button is ignored for a wheel action.
+    bool matches(Qt::KeyboardModifiers modifiers, Qt::MouseButton button) const;
+
+    std::vector<MouseBinding> getBindings() const;
+
+    void setBindings(const std::vector<MouseBinding>& bindings);
 };
 
+// Whether two mouse actions of one group bound to the same combination would be ambiguous.
+bool mouseGesturesOverlap(MouseGestureEnum a, MouseGestureEnum b);
+
+// The modifiers a mouse binding is matched on: Control, Alt, Shift and Meta of modifiers, plus
+// kShortcutModifierSpace when spaceHeld.
+Qt::KeyboardModifiers mouseBindingModifiers(Qt::KeyboardModifiers modifiers, bool spaceHeld);
+
+// A binding as the shortcut editor shows it, such as "Alt+LeftButton", "Space+MiddleButton" or
+// "Ctrl+Wheel".
+QString mouseBindingToString(const MouseBinding& binding, bool wheel);
+
+/**
+ * @brief The mouse bindings preset (a Settings::Viewer3DNavigationEnum other than Custom) gives
+ * the 3D viewer's action actionID, in order. False if the preset does not cover the action, which
+ * keeps its bindings.
+ **/
+bool getViewer3DNavigationPresetBindings(int preset, const QString& actionID, std::vector<MouseBinding>* bindings);
+
+/**
+ * @brief Gives action the bindings a reset restores: under the preset viewer3DNavigation (a
+ * Settings::Viewer3DNavigationEnum), that preset's for a 3D viewer action it covers, otherwise the
+ * action's registered defaults.
+ **/
+void resetMouseActionBindings(MouseAction* action, int viewer3DNavigation);
+
+// A key action of the 3D viewer and its default binding.
+struct Viewer3DKeyBinding {
+    const char* actionID;
+    const char* description;
+    Qt::KeyboardModifiers modifiers;
+    Qt::Key key;
+    // A second default binding, none when altKey is 0.
+    Qt::KeyboardModifiers altModifiers;
+    Qt::Key altKey;
+};
+
+// The 3D viewer's key actions with their default bindings, in the Shortcut Editor's order.
+const std::vector<Viewer3DKeyBinding>& getViewer3DDefaultKeyBindings();
+
+// Writes an action's bindings into settings, which must be inside the action's group.
+void writeShortcutSettings(QSettings& settings, const QString& actionID, const BoundAction& action);
+
+/**
+ * @brief Reads an action's bindings back from settings, which must be inside the action's group;
+ * an action with nothing saved keeps its bindings, and so does a non-editable mouse action whatever
+ * is saved. Returns whether a key action read a non-empty key.
+ **/
+bool readShortcutSettings(QSettings& settings, const QString& actionID, BoundAction* action);
 
 ///All the shortcuts of a group matched against their
 ///internal id to find and match the action in the event handlers

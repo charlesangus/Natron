@@ -43,14 +43,14 @@
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define kNatronWriteParamFrameStep "frameIncr"
+#define kNatronWriteParamFrameStep "frameIncrement"
 #define kNatronWriteParamFrameStepLabel "Frame Increment"
 #define kNatronWriteParamFrameStepHint "The number of frames the timeline should step before rendering the new frame. " \
                                        "If 1, all frames will be rendered, if 2 only 1 frame out of 2, "                \
                                        "etc. This number cannot be less than 1."
 
 #define kNatronWriteParamReadBack "readBack"
-#define kNatronWriteParamReadBackLabel "Read back file"
+#define kNatronWriteParamReadBackLabel "Read Back"
 #define kNatronWriteParamReadBackHint "When checked, the output of this node comes from reading the written file instead of the input node"
 
 // The EXR header attribute holding the content hash of the Write when the file was written.
@@ -61,7 +61,6 @@
 #define kNatronWriteParamStartRender "startRender"
 
 #define kNatronWriteParamOverwrite "overwrite"
-#define kNatronWriteParamFormatType "formatType"
 #define kNatronWriteParamClipToRoD "clipToRoD"
 #define kNatronWriteParamBitDepth "bitDepth"
 #define kNatronWriteParamCompression "compression"
@@ -72,18 +71,14 @@
 #define kNatronWriteParamFrameRange "frameRange"
 #define kNatronWriteParamPartSplitting "partSplitting"
 #define kNatronWriteParamWriteMetadata "writeMetadata"
-#define kNatronWriteParamViewsSelector "viewsSelector"
+#define kNatronWriteParamViews "views"
 #define kNatronWriteParamFirstFrame "firstFrame"
 #define kNatronWriteParamLastFrame "lastFrame"
-#define kNatronWriteParamOCIOOutputSpace "ocioOutputSpace"
+#define kNatronWriteParamColorspace "colorspace"
 
 #define kNatronWriteFrameRangeUnion "union"
 #define kNatronWriteFrameRangeProject "project"
 #define kNatronWriteFrameRangeManual "manual"
-
-#define kNatronWriteFormatTypeInput "input"
-#define kNatronWriteFormatTypeProject "project"
-#define kNatronWriteFormatTypeFixed "fixed"
 
 #define kNatronWritePartSplittingSingle "single"
 #define kNatronWritePartSplittingViews "views"
@@ -94,19 +89,20 @@
 #define kNatronWriteBitDepthAuto "auto"
 #define kNatronWriteCompressionDefault "default"
 
-#define PLUGIN_MAJOR_NATRON_WRITE 2
+#define PLUGIN_MAJOR_NATRON_WRITE 1
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The native image writer, registered under PLUGINID_NATRON_WRITE at major 2.
+ * @brief The native image writer, registered under PLUGINID_NATRON_WRITE.
  *
- * The planned knobs keep WriteOIIO's script names, because tests, tools and host code look knobs up by name:
- * filename, overwrite, formatType, the host format knobs, clipToRoD, frameRange, firstFrame,
- * lastFrame, frameIncr, bitDepth, compression, quality, dwaCompressionLevel, zipCompressionLevel,
- * tileSize, partSplitting, viewsSelector, ocioOutputSpace, ocioOutputSpaceIndex,
- * ocioOutputSpaceSet, the Context group key1..4 and value1..4, the hidden ocioConfigFile and
- * ocioWorkingSpace, writeMetadata, readBack, reload.
+ * Tests, tools and host code look its knobs up by name: filename, overwrite, clipToRoD,
+ * frameRange, firstFrame, lastFrame, frameIncrement, colorspace, the ocioContext group
+ * contextKey1..4 and contextValue1..4, the hidden ocioConfigFile and ocioWorkingSpace, bitDepth,
+ * compression, quality, dwaCompressionLevel, zipCompressionLevel, tileSize, partSplitting,
+ * views, writeMetadata, readBack, reload.
+ *
+ * The file always takes the input's format; a Reformat upstream changes it.
  **/
 class NativeWrite
     : public NativeEffectBase {
@@ -190,6 +186,12 @@ public:
      **/
     U64 getOutputContentHash() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The colourspace the file is written in: the one chosen, or the one Project default
+     * stands for now.
+     **/
+    std::string colorspace() const WARN_UNUSED_RETURN;
+
 private:
     /**
      * @brief What a frame writes: the data window, and the display window it sits in, both in the
@@ -239,6 +241,8 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
@@ -276,8 +280,8 @@ private:
 
     void refreshViewsMenu();
 
-    // The format window the format type selects, in pixels.
-    void selectedFormat(double time, ViewIdx view, RectI* display, double* par) const;
+    // The input's format in pixels, else its region of definition when the format is empty.
+    void inputFormat(double time, ViewIdx view, RectI* display, double* par) const;
 
     bool clipToRoDActive() const;
 
@@ -314,6 +318,9 @@ private:
     // Menus and visibility follow the format of the file name and the chosen compression.
     void refreshOptions();
 
+    // The node graph shows the file name without its directory.
+    void refreshSublabel();
+
     bool rejectUnsupportedFormat(const std::string& path);
 
     // The range a Manual first or last frame starts from: the input's, or the project's when the
@@ -327,10 +334,6 @@ private:
     OcioSpaceKnobs _outputSpace;
     KnobOutputFileWPtr _filename;
     KnobBoolWPtr _overwrite;
-    KnobChoiceWPtr _formatType;
-    KnobChoiceWPtr _format;
-    KnobIntWPtr _formatSize;
-    KnobDoubleWPtr _formatPar;
     KnobBoolWPtr _clipToRoD;
     KnobChoiceWPtr _bitDepth;
     KnobChoiceWPtr _compression;

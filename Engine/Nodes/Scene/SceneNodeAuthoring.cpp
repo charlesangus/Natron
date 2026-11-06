@@ -30,15 +30,22 @@
 #include <cstdint>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/Project.h"
 
+#include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/tokens.h>
 
 #include <QDir>
 #include <QString>
@@ -152,12 +159,119 @@ createScenePrimPathKnob(KnobHolder* holder,
     KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Prim Path"));
 
     knob->setName(kSceneParamPrimPath);
+    knob->setPrimPathHint(KnobString::ePrimPathHintPath);
     knob->setHintToolTip(toolTip);
     knob->setAnimationEnabled(false);
     knob->setDefaultValue(defaultPath);
     page->addKnob(knob);
 
     return knob;
+}
+
+void
+SceneCameraPathKnobs::create(KnobHolder* holder,
+                             const KnobPagePtr& page,
+                             const char* menuName,
+                             const char* pathName,
+                             const QString& menuToolTip,
+                             const QString& pathToolTip)
+{
+    KnobChoicePtr menuKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Camera"));
+    menuKnob->setName(menuName);
+    menuKnob->setHintToolTip(menuToolTip);
+    menuKnob->setAnimationEnabled(false);
+    menuKnob->setNotifiesOnReselect(true);
+    // Rebuilt from the path, which alone decides the render.
+    menuKnob->setIsPersistent(false);
+    menuKnob->setEvaluateOnChange(false);
+    page->addKnob(menuKnob);
+    menu = menuKnob;
+
+    KnobStringPtr pathKnob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Camera Path"));
+    pathKnob->setName(pathName);
+    pathKnob->setHintToolTip(pathToolTip);
+    pathKnob->setAnimationEnabled(false);
+    page->addKnob(pathKnob);
+    path = pathKnob;
+}
+
+std::string
+SceneCameraPathKnobs::getPath() const
+{
+    KnobStringPtr pathKnob = path.lock();
+
+    return pathKnob ? pathKnob->getValue() : std::string();
+}
+
+void
+SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
+                                  bool readDownstream) const
+{
+    KnobChoicePtr menuKnob = menu.lock();
+    if (!menuKnob) {
+        return;
+    }
+    const std::string chosen = getPath();
+    std::vector<ChoiceOption> options;
+    int chosenIndex = -1;
+    for (const std::string& camera : cameras) {
+        if (camera == chosen) {
+            chosenIndex = (int)options.size();
+        }
+        options.push_back(ChoiceOption(camera, camera, ""));
+    }
+    if (!chosen.empty() && (chosenIndex < 0)) {
+        chosenIndex = (int)options.size();
+        if (readDownstream) {
+            options.push_back(ChoiceOption(chosen, chosen,
+                                           EffectInstance::tr("Read from the scene the projection renders in, which has this camera once it is merged in.").toStdString()));
+        } else {
+            options.push_back(ChoiceOption(chosen,
+                                           EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
+                                           EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
+        }
+    }
+    // Repopulating an unchanged menu would move the node's hash and come back here.
+    const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
+    bool same = current.size() == options.size();
+    for (std::size_t i = 0; same && (i < options.size()); ++i) {
+        same = (current[i].id == options[i].id) && (current[i].label == options[i].label);
+    }
+    if (!same) {
+        menuKnob->populateChoices(options);
+    }
+    if ((chosenIndex >= 0) && (menuKnob->getValue() != chosenIndex)) {
+        menuKnob->setValue(chosenIndex);
+    }
+}
+
+bool
+SceneCameraPathKnobs::knobChanged(KnobI* k,
+                                  ValueChangedReasonEnum reason,
+                                  bool* menuStale) const
+{
+    KnobChoicePtr menuKnob = menu.lock();
+    KnobStringPtr pathKnob = path.lock();
+    *menuStale = false;
+    if (!menuKnob || !pathKnob) {
+        return false;
+    }
+    if (k == menuKnob.get()) {
+        const int index = menuKnob->getValue();
+        if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
+            && (index >= 0) && (index < menuKnob->getNumEntries())) {
+            pathKnob->setValue(menuKnob->getEntry(index).id);
+        }
+
+        return true;
+    }
+    if (k == pathKnob.get()) {
+        *menuStale = true;
+
+        return true;
+    }
+
+    return false;
 }
 
 std::string
@@ -202,6 +316,39 @@ double
 getMetersPerUnit(const SceneLayerEdit& edit)
 {
     return (edit.metersPerUnit > 0.) ? edit.metersPerUnit : SceneMetadata().metersPerUnit;
+}
+
+bool
+liveTextureWindowVaries(const LiveTextureSource& recorded)
+{
+    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
+        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+authorUnlitSurfaceInputs(PXR_NS::UsdShadeShader surface,
+                         PXR_NS::UsdShadeInput* emissive)
+{
+    // No diffuse, and the specular workflow with a black specular colour, which, unlike the
+    // metallic workflow's dielectric, reflects nothing: what is left is the emission alone.
+    const PXR_NS::UsdShadeInput diffuse = surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    const PXR_NS::UsdShadeInput metallic = surface.CreateInput(PXR_NS::TfToken("metallic"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput roughness = surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput specularWorkflow = surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int);
+    const PXR_NS::UsdShadeInput specularColor = surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    *emissive = surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f);
+
+    return diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f))
+        && metallic && metallic.Set(0.f)
+        && roughness && roughness.Set(1.f)
+        && specularWorkflow && specularWorkflow.Set(1)
+        && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f))
+        && *emissive;
 }
 
 void
@@ -361,126 +508,66 @@ authorTransform(const SceneTransformKnobs& knobs,
     return true;
 } // authorTransform
 
-bool
-matchesGlob(const std::string& name,
-            const std::string& glob)
-{
-    // Greedy with backtracking to the last star: linear for patterns with one star, and never
-    // worse than quadratic.
-    std::size_t n = 0;
-    std::size_t g = 0;
-    std::size_t starG = std::string::npos;
-    std::size_t starN = 0;
-
-    while (n < name.size()) {
-        if ((g < glob.size()) && ((glob[g] == '?') || (glob[g] == name[n]))) {
-            ++n;
-            ++g;
-        } else if ((g < glob.size()) && (glob[g] == '*')) {
-            starG = g++;
-            starN = n;
-        } else if (starG != std::string::npos) {
-            g = starG + 1;
-            n = ++starN;
-        } else {
-            return false;
-        }
-    }
-    while ((g < glob.size()) && (glob[g] == '*')) {
-        ++g;
-    }
-
-    return g == glob.size();
-}
-
 namespace {
     bool
-    isMatchablePrim(const PXR_NS::UsdPrim& prim)
+    graftMaterial(const ScenePayload& material,
+                  const SceneReparentArgs& args,
+                  SceneGraftMemo* memo,
+                  SceneMaterialGraft* graft,
+                  std::string* errorMessage)
     {
-        return prim && prim.IsActive() && prim.IsDefined() && !prim.IsAbstract();
-    }
-
-    void
-    collectMatches(const PXR_NS::UsdPrim& parent,
-                   const std::vector<std::string>& names,
-                   std::size_t depth,
-                   std::vector<PXR_NS::SdfPath>* paths)
-    {
-        if (depth == names.size()) {
-            if (isMatchablePrim(parent) && (std::find(paths->begin(), paths->end(), parent.GetPath()) == paths->end())) {
-                paths->push_back(parent.GetPath());
+        *graft = SceneMaterialGraft();
+        if (!material.isEmpty()) {
+            std::vector<SceneRootGraft> grafts;
+            if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
+                return false;
             }
 
-            return;
-        }
-        const std::string& name = names[depth];
-        if (name.find_first_of("*?") == std::string::npos) {
-            const PXR_NS::UsdPrim child = parent.GetChild(PXR_NS::TfToken(name));
-            if (isMatchablePrim(child)) {
-                collectMatches(child, names, depth + 1, paths);
-            }
-
-            return;
-        }
-        for (const PXR_NS::UsdPrim& child : parent.GetChildren()) {
-            if (isMatchablePrim(child) && matchesGlob(child.GetName().GetString(), name)) {
-                collectMatches(child, names, depth + 1, paths);
-            }
-        }
-    }
-} // anonymous namespace
-
-bool
-matchPrims(const PXR_NS::UsdStageRefPtr& stage,
-           const std::string& pattern,
-           std::vector<PXR_NS::SdfPath>* paths,
-           std::string* errorMessage)
-{
-    paths->clear();
-    std::vector<std::vector<std::string>> entries;
-    std::size_t pos = 0;
-    while (pos < pattern.size()) {
-        const std::size_t begin = pattern.find_first_not_of(" \t\r\n", pos);
-        if (begin == std::string::npos) {
-            break;
-        }
-        std::size_t end = pattern.find_first_of(" \t\r\n", begin);
-        if (end == std::string::npos) {
-            end = pattern.size();
-        }
-        const std::string entry = pattern.substr(begin, end - begin);
-        pos = end;
-        if ((entry.size() < 2) || (entry[0] != '/')) {
-            *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Geo or /World/*.").arg(QString::fromStdString(entry)).toStdString();
-
-            return false;
-        }
-        std::vector<std::string> names;
-        std::size_t namePos = 1;
-        while (namePos <= entry.size()) {
-            std::size_t slash = entry.find('/', namePos);
-            if (slash == std::string::npos) {
-                slash = entry.size();
-            }
-            if (slash == namePos) {
-                *errorMessage = EffectInstance::tr("\"%1\" has an empty prim name.").arg(QString::fromStdString(entry)).toStdString();
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+            const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            if (!stage) {
+                if (errorMessage->empty()) {
+                    *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
+                }
 
                 return false;
             }
-            names.push_back(entry.substr(namePos, slash - namePos));
-            namePos = slash + 1;
+            for (const SceneRootGraft& root : grafts) {
+                const PXR_NS::SdfPath sourceRoot(root.sourcePath);
+                const PXR_NS::SdfPath graftedRoot(root.graftedPath);
+                const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(sourceRoot);
+                for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
+                    if (!prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                        continue;
+                    }
+                    graft->materialPath = prim.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
+                    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
+                    const PXR_NS::UsdShadeInput space = isProjectionShader(surface) ? surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace)) : PXR_NS::UsdShadeInput();
+                    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
+                    if (space && space.Get(&spaceValue) && (spaceValue == (int)USDProject3D::eProjectionSpaceGeometry)) {
+                        graft->geometryProjectionShader = surface.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
+                        const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
+                        graft->projectionHeld = hold && hold.Get(&graft->projectionHoldFrame);
+                    }
+                    break;
+                }
+                if (!graft->materialPath.empty()) {
+                    break;
+                }
+            }
         }
-        entries.push_back(names);
-    }
-    if (!stage) {
+
+        ContentHasher facts;
+        appendUpstreamMetadata(graft->payload, &facts);
+        facts.appendString(graft->materialPath);
+        facts.appendString(graft->geometryProjectionShader);
+        facts.appendBool(graft->projectionHeld);
+        facts.appendDouble(graft->projectionHoldFrame);
+        graft->factsDigest = facts.finalize();
+
         return true;
     }
-    for (const std::vector<std::string>& names : entries) {
-        collectMatches(stage->GetPseudoRoot(), names, 0, paths);
-    }
-
-    return true;
-} // matchPrims
+} // anonymous namespace
 
 bool
 graftMaterialInput(const ScenePayload& material,
@@ -490,47 +577,141 @@ graftMaterialInput(const ScenePayload& material,
                    SceneMaterialGraft* graft,
                    std::string* errorMessage)
 {
-    *graft = SceneMaterialGraft();
-    if (!material.isEmpty()) {
-        SceneReparentArgs args;
-        args.inputs.push_back(material);
-        args.destinationPath = primPath;
-        args.layerTag = layerTag;
-        std::vector<SceneRootGraft> grafts;
-        if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
-            return false;
-        }
+    SceneReparentArgs args;
 
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
-            }
+    args.inputs.push_back(material);
+    args.destinationPath = primPath;
+    args.layerTag = layerTag;
 
-            return false;
-        }
-        for (const SceneRootGraft& root : grafts) {
-            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
-            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
-                if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
-                    graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
-                    break;
-                }
-            }
-            if (!graft->materialPath.empty()) {
-                break;
-            }
+    return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+bool
+graftSharedMaterial(const ScenePayload& material,
+                    const std::string& scope,
+                    const std::string& layerTag,
+                    SceneGraftMemo* memo,
+                    SceneMaterialGraft* graft,
+                    std::string* errorMessage)
+{
+    if (scope.empty()) {
+        *graft = SceneMaterialGraft();
+        *errorMessage = EffectInstance::tr("The project's Materials Scope is off, so there is no scope to place the material in.").toStdString();
+
+        return false;
+    }
+    SceneReparentArgs args;
+    args.inputs.push_back(material);
+    args.destinationPath = "/" + scope;
+    args.destinationType = "Scope";
+    args.ancestorType = "Scope";
+    args.passThroughRoot = scope;
+    args.layerTag = layerTag;
+
+    return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+std::vector<PXR_NS::TfToken>
+getCollectionBindingNames(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<PXR_NS::TfToken> names;
+
+    if (!prim) {
+        return names;
+    }
+    for (const PXR_NS::UsdProperty& property : prim.GetAuthoredPropertiesInNamespace(PXR_NS::UsdShadeTokens->materialBindingCollection.GetString())) {
+        if (property.Is<PXR_NS::UsdRelationship>()) {
+            names.push_back(property.GetName());
         }
     }
 
-    ContentHasher facts;
-    appendUpstreamMetadata(graft->payload, &facts);
-    facts.appendString(graft->materialPath);
-    graft->factsDigest = facts.finalize();
+    return names;
+}
+
+bool
+authorCollectionBinding(const PXR_NS::UsdPrim& root,
+                        const SceneCollectionBinding& binding,
+                        std::string* errorMessage)
+{
+    const QString rootPath = QString::fromStdString(root ? root.GetPath().GetString() : std::string());
+
+    if (!PXR_NS::SdfPath::IsValidIdentifier(binding.bindingName)) {
+        *errorMessage = EffectInstance::tr("\"%1\" is not a valid binding name.").arg(QString::fromStdString(binding.bindingName)).toStdString();
+
+        return false;
+    }
+    if (!root || !PXR_NS::SdfPath::IsValidPathString(binding.materialPath) || !PXR_NS::SdfPath(binding.materialPath).IsAbsolutePath()) {
+        *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at \"%2\".").arg(rootPath).arg(QString::fromStdString(binding.materialPath)).toStdString();
+
+        return false;
+    }
+    const PXR_NS::TfToken name(binding.bindingName);
+    const PXR_NS::UsdCollectionAPI collection = PXR_NS::UsdCollectionAPI::Apply(root, name);
+    const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
+    bool authored = collection && bindingAPI
+        && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
+        && collection.CreateIncludesRel().SetTargets(binding.includes);
+    PXR_NS::TfToken relName;
+    if (authored) {
+        relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();
+        const PXR_NS::UsdRelationship rel = root.CreateRelationship(relName, false);
+        authored = rel && rel.SetTargets({ collection.GetCollectionPath(), PXR_NS::SdfPath(binding.materialPath) })
+            && PXR_NS::UsdShadeMaterialBindingAPI::SetMaterialBindingStrength(rel, binding.strength);
+    }
+    if (authored) {
+        PXR_NS::TfTokenVector order(1, relName);
+        for (const PXR_NS::TfToken& existing : binding.existingBindings) {
+            if (existing != relName) {
+                order.push_back(existing);
+            }
+        }
+        root.SetPropertyOrder(order);
+    }
+    if (!authored) {
+        *errorMessage = EffectInstance::tr("USD could not author the material binding %1 on %2.").arg(QString::fromStdString(binding.bindingName)).arg(rootPath).toStdString();
+
+        return false;
+    }
 
     return true;
-} // graftMaterialInput
+} // authorCollectionBinding
+
+bool
+isProjectionShader(const PXR_NS::UsdShadeShader& shader)
+{
+    PXR_NS::SdfAssetPath asset;
+
+    if (!shader || !shader.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx"))) {
+        return false;
+    }
+    const std::string& path = asset.GetAssetPath();
+    const std::string file(kUSDProject3DShaderFile);
+    if ((path.size() < file.size()) || (path.compare(path.size() - file.size(), file.size(), file) != 0)) {
+        return false;
+    }
+
+    return (path.size() == file.size()) || (path[path.size() - file.size() - 1] == '/');
+}
+
+bool
+authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
+                              const SceneLayerEdit& edit,
+                              const SceneMaterialGraft& graft,
+                              bool animated,
+                              const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+{
+    if (graft.geometryProjectionShader.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdPrim shader = stage->OverridePrim(PXR_NS::SdfPath(graft.geometryProjectionShader));
+    const PXR_NS::TfToken name(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
+    const PXR_NS::UsdAttribute attribute = shader ? shader.CreateAttribute(name, PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdAttribute();
+    if (graft.projectionHeld) {
+        return attribute && attribute.Set(frameAt(graft.projectionHoldFrame));
+    }
+
+    return authorValue(attribute, edit, animated, frameAt);
+}
 
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,
@@ -579,6 +760,58 @@ composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
     return rotation;
 }
 
+PXR_NS::GfVec3d
+decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                        SceneRotateOrderEnum rotateOrder,
+                        const PXR_NS::GfVec3d& hint)
+{
+    const int i = getRotateOrderAxis(rotateOrder, 0);
+    const int j = getRotateOrderAxis(rotateOrder, 1);
+    const int k = getRotateOrderAxis(rotateOrder, 2);
+    // In column-vector terms the rotation is Rk Rj Ri, and r(a, b) is its element at row a,
+    // column b: the transpose of Gf's row-vector matrix.
+    const auto r = [&rotation](int a, int b) {
+        return rotation[b][a];
+    };
+    // +1 when the order is a cyclic permutation of XYZ.
+    const double s = ((j - i + 3) % 3 == 1) ? 1. : -1.;
+    const double sinB = std::min(1., std::max(-1., -s * r(k, i)));
+    double a, b, c;
+    b = std::asin(sinB);
+    if (std::abs(r(k, i)) < 1. - 1e-10) {
+        a = std::atan2(s * r(k, j), r(k, k));
+        c = std::atan2(s * r(j, i), r(i, i));
+    } else {
+        // Gimbal lock: only the sum or difference of the outer angles is defined.
+        c = 0.;
+        a = std::atan2(-s * r(j, k), r(j, j));
+    }
+    const double toDegrees = 180. / M_PI;
+    // Two sets of angles give each rotation: (a, b, c) and (a + 180, 180 - b, c + 180).
+    PXR_NS::GfVec3d candidates[2];
+    candidates[0][i] = a * toDegrees;
+    candidates[0][j] = b * toDegrees;
+    candidates[0][k] = c * toDegrees;
+    candidates[1][i] = a * toDegrees + 180.;
+    candidates[1][j] = 180. - b * toDegrees;
+    candidates[1][k] = c * toDegrees + 180.;
+    PXR_NS::GfVec3d best;
+    double bestDistance = -1.;
+    for (PXR_NS::GfVec3d& candidate : candidates) {
+        double distance = 0.;
+        for (int axis = 0; axis < 3; ++axis) {
+            candidate[axis] += 360. * std::round((hint[axis] - candidate[axis]) / 360.);
+            distance += std::abs(candidate[axis] - hint[axis]);
+        }
+        if ((bestDistance < 0.) || (distance < bestDistance)) {
+            best = candidate;
+            bestDistance = distance;
+        }
+    }
+
+    return best;
+} // decomposeRotationMatrix
+
 PXR_NS::GfMatrix4d
 composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                        const PXR_NS::GfVec3d& rotate,
@@ -625,6 +858,129 @@ getTransformMatrixAt(const SceneTransformKnobs& knobs,
                                   PXR_NS::GfVec3d(scale->getValueAtTime(frame, 0) * uniform, scale->getValueAtTime(frame, 1) * uniform, scale->getValueAtTime(frame, 2) * uniform),
                                   PXR_NS::GfVec3d(pivot->getValueAtTime(frame, 0), pivot->getValueAtTime(frame, 1), pivot->getValueAtTime(frame, 2)),
                                   (SceneRotateOrderEnum)rotateOrder->getValue());
+}
+
+bool
+getLiveTextureSource(const EffectInstance& consumer,
+                     int inputNb,
+                     const std::string& layer,
+                     LiveTextureSource* source)
+{
+    const EffectInstancePtr connected = consumer.getInput(inputNb);
+    NodePtr node = connected ? connected->getNode() : NodePtr();
+    const double time = consumer.getCurrentTime();
+    // A disabled node renders as its preferred input, so the texture shows what the render would.
+    while (node && node->isNodeDisabled(time)) {
+        node = node->getPreferredInputNode();
+    }
+    const EffectInstancePtr input = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (!input) {
+        return false;
+    }
+    source->node = node;
+    source->consumer = consumer.getNode();
+    source->nodeName = node->getFullyQualifiedName();
+    source->layer = layer;
+    source->contentHash = input->getHash();
+    source->varying = input->isFrameVaryingOrAnimated_Recursive();
+    const AppInstancePtr app = consumer.getApp();
+    if (app && app->getProject()) {
+        app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
+    }
+
+    return true;
+}
+
+void
+appendLiveTextureSource(const LiveTextureSource& source,
+                        ContentHasher* h)
+{
+    h->appendString(source.nodeName);
+    h->appendString(source.layer);
+    h->appendU64(source.contentHash);
+    h->appendBool(source.varying);
+}
+
+LiveTextureSource
+recordLiveTexture(const SceneLayerEdit& edit,
+                  const LiveTextureSource& source)
+{
+    LiveTextureSource recorded = source;
+
+    recorded.firstFrame = edit.firstFrame;
+    recorded.lastFrame = edit.lastFrame;
+    recorded.windows.clear();
+    const NodePtr node = source.node.lock();
+    const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
+    recorded.windows.reserve(frames.size());
+    for (double frame : frames) {
+        LiveTextureWindow window;
+        if (!node || !getNodeImageWindow(node, frame, ViewIdx(0), &window.format, &window.window)) {
+            window = LiveTextureWindow();
+        }
+        recorded.windows.push_back(window);
+    }
+    if (edit.liveTextures) {
+        edit.liveTextures->push_back(recorded);
+    }
+
+    return recorded;
+}
+
+bool
+connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                              const SceneLayerEdit& edit,
+                              const PXR_NS::SdfPath& transformPath,
+                              const LiveTextureSource& recorded,
+                              const PXR_NS::UsdShadeOutput& coordinates,
+                              const PXR_NS::UsdShadeInput& st)
+{
+    PXR_NS::UsdShadeShader transform = PXR_NS::UsdShadeShader::Define(stage, transformPath);
+
+    if (!transform || !transform.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdTransform2d")))) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput in = transform.CreateInput(PXR_NS::TfToken("in"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput scale = transform.CreateInput(PXR_NS::TfToken("scale"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput translation = transform.CreateInput(PXR_NS::TfToken("translation"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeOutput result = transform.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2);
+    if (!in || !scale || !translation || !result || !coordinates || !st) {
+        return false;
+    }
+
+    const bool windowVaries = liveTextureWindowVaries(recorded);
+    const auto scaleAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)s[0], (float)s[1]);
+    };
+    const auto translationAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)t[0], (float)t[1]);
+    };
+
+    return in.ConnectToSource(coordinates)
+        && authorValue(scale.GetAttr(), edit, windowVaries, scaleAt)
+        && authorValue(translation.GetAttr(), edit, windowVaries, translationAt)
+        && st.ConnectToSource(result);
+} // connectLiveTextureCoordinates
+
+bool
+connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                      PXR_NS::UsdShadeShader texture)
+{
+    const PXR_NS::UsdShadeOutput alpha = texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float);
+    PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
+    const PXR_NS::UsdShadeInput opacityMode = surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token);
+
+    return alpha && opacity && opacityMode
+        && opacity.ConnectToSource(alpha)
+        && opacityMode.Set(PXR_NS::TfToken("presence"));
 }
 
 } // namespace SceneNodeAuthoring

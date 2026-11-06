@@ -43,6 +43,7 @@
 
 #include "RawSpeed-API.h"
 
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/IO/RawspeedRuntime.h"
@@ -279,6 +280,41 @@ TEST_F(RawDecodeSupportTest, CameraNamesAreRawspeedsCanonicalNames)
     EXPECT_FALSE(RawMetadata::getModel(dng->metadata).value_or("").empty());
 }
 
+// The values exiv2 reports for each fixture. None of them records a SubjectDistance.
+TEST_F(RawDecodeSupportTest, LensExifKeysComeFromTheFilesExif)
+{
+    struct Expected {
+        const RawFixture* fixture;
+        const char* make;
+        const char* model;
+        const char* lensModel;
+        double focalLength;
+        double fNumber;
+    };
+    const Expected expected[] = {
+        { &bayerFixture(), "Canon", "Canon EOS 5D Mark III", "EF70-200mm f/2.8L IS II USM", 70., 2.8 },
+        { &xtransFixture(), "FUJIFILM", "X-Pro2", "XF50mmF2 R WR", 50., 2. },
+        { &linearFixture(), "Canon", "Canon EOS 5D Mark III", "EF70-200mm f/2.8L IS II USM", 70., 2.8 },
+    };
+
+    for (const Expected& e : expected) {
+        SCOPED_TRACE(e.fixture->file);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(e.fixture->path(), &error);
+        ASSERT_TRUE(bool(header)) << error;
+        const ImageMetadata& metadata = header->metadata;
+
+        EXPECT_EQ(std::optional<std::string>(e.make), metadata.getString(kExifMetadataMake));
+        EXPECT_EQ(std::optional<std::string>(e.model), metadata.getString(kExifMetadataModel));
+        EXPECT_EQ(std::optional<std::string>(e.lensModel), metadata.getString(kExifMetadataLensModel));
+        ASSERT_TRUE(metadata.getDouble(kExifMetadataFocalLength).has_value());
+        EXPECT_NEAR(e.focalLength, *metadata.getDouble(kExifMetadataFocalLength), 1e-6);
+        ASSERT_TRUE(metadata.getDouble(kExifMetadataFNumber).has_value());
+        EXPECT_NEAR(e.fNumber, *metadata.getDouble(kExifMetadataFNumber), 1e-6);
+        EXPECT_FALSE(metadata.contains(kExifMetadataSubjectDistance));
+    }
+}
+
 TEST_F(RawDecodeSupportTest, CameraFilesHaveNoDngMatrixAndALinearResponseLimitOfOne)
 {
     for (const RawFixture* fixture : { &bayerFixture(), &xtransFixture() }) {
@@ -495,4 +531,42 @@ TEST_F(RawDecodeSupportTest, DecodeCacheIsBoundedButKeepsTheLatestFile)
     RawDecodeSupport::evict({ bayerFixture().path() });
     ASSERT_TRUE(bool(RawDecodeSupport::readHeader(bayerFixture().path(), &error))) << error;
     EXPECT_EQ(5, decodes.load());
+}
+
+TEST_F(RawDecodeSupportTest, ARewrittenFileFailsWithoutADecodeUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = temporaryCopy(dir, "pinned.cr2", readFixtureBytes(bayerFixture().path()));
+    std::atomic<int> decodes(0);
+    RawDecodeSupport::setDecodedHookForTests([&decodes](const std::string&) { ++decodes; });
+
+    std::string error;
+    std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    EXPECT_EQ(1, header->channels);
+    float pixel = 0.f;
+    const RectI first(header->window.x1, header->window.y1, header->window.x1 + 1, header->window.y1 + 1);
+    ASSERT_TRUE(RawDecodeSupport::decode(path, first, &pixel, 1, &error)) << error;
+    EXPECT_EQ(1, decodes.load());
+
+    const std::vector<char> linear = readFixtureBytes(linearFixture().path());
+    ASSERT_TRUE(writeFixtureBytes(path, linear.data(), linear.size()));
+    const std::string changed = FileStampRegistry::changedOnDiskMessage(path);
+    error.clear();
+    EXPECT_FALSE(bool(RawDecodeSupport::readHeader(path, &error)));
+    EXPECT_EQ(changed, error);
+    error.clear();
+    EXPECT_FALSE(RawDecodeSupport::decode(path, first, &pixel, 1, &error));
+    EXPECT_EQ(changed, error);
+    EXPECT_EQ(1, decodes.load());
+
+    // Reload: the stamp and the decode go, and the new file comes in.
+    FileStampRegistry::instance().invalidate(path);
+    RawDecodeSupport::evict({ path });
+    error.clear();
+    header = RawDecodeSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    EXPECT_EQ(3, header->channels);
+    EXPECT_EQ(2, decodes.load());
 }

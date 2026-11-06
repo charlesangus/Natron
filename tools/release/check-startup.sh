@@ -259,8 +259,8 @@ if not plugin_ids:
     fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
 
 expected_plugins = {
-    "reader": "fr.inria.built-in.Read",
-    "writer": "fr.inria.built-in.Write",
+    "reader": "Read",
+    "writer": "Write",
     "Merge": "Merge",
     "USDRead": "USDRead",
 }
@@ -298,11 +298,38 @@ if outside:
 for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAbc"):
     if not Plug.Registry().GetPluginWithName(plugin_name):
         fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
+# Natron registers the natron:// live-texture resolver and image reader itself at startup.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture"):
+    fail("OpenUSD has no natronLiveTexture plug-in registered; Resources/usd/natronLiveTexture is missing")
+# USDProject3D's Storm surface ships beside that plug-in's plugInfo.json.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture").FindPluginResource("natronProject3D.glslfx", True):
+    fail("Resources/usd/natronLiveTexture/natronProject3D.glslfx is missing")
 for extension in ("usda", "usdc", "abc"):
     if not Sdf.FileFormat.FindByExtension(extension):
         fail("OpenUSD has no file format for .%s" % extension)
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
+
+# Model downloads go through QNetworkAccessManager over HTTPS, so Qt has to find
+# its TLS backend under the bundle's plugins/tls and load OpenSSL 3 from lib/.
+# Asked of the Qt this process is running, not of a fresh one, so qt.conf and the
+# stripped environment are what decide it.
+import ctypes
+
+qt_process = ctypes.CDLL(None)
+supports_ssl = qt_process._ZN10QSslSocket11supportsSslEv
+supports_ssl.restype = ctypes.c_bool
+if not supports_ssl():
+    fail("QSslSocket::supportsSsl() is false; Qt found no TLS backend, so HTTPS downloads fail")
+with open("/proc/self/maps") as maps:
+    mapped = {line.split()[-1] for line in maps if line.rstrip().endswith(".so") or ".so." in line}
+for library in ("libqopensslbackend.so", "libssl.so.3", "libcrypto.so.3"):
+    paths = sorted(path for path in mapped if os.path.basename(path) == library)
+    if not paths:
+        fail("%s was not loaded after QSslSocket::supportsSsl()" % library)
+    outside = [path for path in paths if not os.path.realpath(path).startswith(BUNDLE + os.sep)]
+    if outside:
+        fail("%s was loaded from outside the bundle: %s" % (library, ", ".join(outside)))
 
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):
@@ -320,8 +347,6 @@ for config in configs:
 
 # Settings::tryLoadOpenColorIOConfig() exports OCIO long after the interpreter
 # snapshotted the environment into os.environ, so read the live one.
-import ctypes
-
 libc = ctypes.CDLL(None)
 libc.getenv.restype = ctypes.c_char_p
 ocio = libc.getenv(b"OCIO")

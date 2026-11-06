@@ -60,7 +60,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
@@ -74,6 +78,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/ThemedIcon.h"
 
 //All fixed sizes were calculated for a 96 dpi screen
@@ -364,6 +369,9 @@ pixmapEnumToPath(PixmapEnum e)
         break;
     case NATRON_PIXMAP_METADATA_GROUPING:
         path = NATRON_ICONS_PATH "lucide/tags.svg";
+        break;
+    case NATRON_PIXMAP_RFV_GROUPING:
+        path = NATRON_ICONS_PATH "natron/rfv.svg";
         break;
     case NATRON_PIXMAP_FILTER_GROUPING:
         path = NATRON_ICONS_PATH "natron/filter.svg";
@@ -1145,19 +1153,19 @@ GuiApplicationManager::onPluginLoaded(Plugin* plugin)
     bool hasShortcut = true;
 
     /*These are the plug-ins which have a default shortcut. Other plug-ins can have a user-assigned shortcut.*/
-    if ( pluginID == QString::fromUtf8(PLUGINID_OFX_TRANSFORM) ) {
+    if (pluginID == QString::fromUtf8(PLUGINID_NATRON_TRANSFORM)) {
         symbol = Qt::Key_T;
-    } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTO) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTO)) {
         symbol = Qt::Key_O;
-    } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT)) {
         symbol = Qt::Key_P;
     } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
         symbol = Qt::Key_M;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_GRADE)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_GRADE)) {
         symbol = Qt::Key_G;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_COLORCORRECT)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT)) {
         symbol = Qt::Key_C;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_BLURCIMG)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_BLUR)) {
         symbol = Qt::Key_B;
     } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_DOT)) {
         symbol = Qt::Key_Period;
@@ -1219,6 +1227,8 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_3D,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
+    PLUGIN_GROUP_LOOP,
+    PLUGIN_GROUP_RFV,
     PLUGIN_GROUP_MULTIVIEW,
     PLUGIN_GROUP_TOOLSETS,
     PLUGIN_GROUP_OTHER,
@@ -1258,6 +1268,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
         e = NATRON_PIXMAP_METADATA_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_RFV)) {
+        e = NATRON_PIXMAP_RFV_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW)) {
         e = NATRON_PIXMAP_MULTIVIEW_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TOOLSETS)) {
@@ -1640,6 +1652,15 @@ GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
     }
 }
 
+GuiApplicationManager::NodesMenuArgsDecorator
+GuiApplicationManager::swapNodesMenuArgsDecorator(const NodesMenuArgsDecorator& decorator)
+{
+    NodesMenuArgsDecorator previous = _imp->nodesMenuArgsDecorator;
+    _imp->nodesMenuArgsDecorator = decorator;
+
+    return previous;
+}
+
 void
 GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
                                                       int major,
@@ -1679,6 +1700,9 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+    if (nodesMenuArgsDecorator) {
+        nodesMenuArgsDecorator(args);
+    }
     app->createNode(args);
 }
 
@@ -1733,6 +1757,21 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
     action->setProperty(kNodesMenuPropPluginOwned, true);
     action->setProperty(kNodesMenuPropPluginID, leaf.getID());
     action->setProperty(kNodesMenuPropPluginMajor, leaf.getMajorVersion());
+    {
+        DataKindEnum kind = eDataKindImage;
+        const bool hasInput = plugin ? plugin->getFirstInputDataKind(&kind) : true;
+        action->setProperty(kNodesMenuPropInputKind, hasInput ? TabMenuBridge::dataKindKey(kind) : QString());
+        action->setProperty(kNodesMenuPropPrimPathKnob, plugin ? QString::fromStdString(plugin->getPrimPathKnob()) : QString());
+        QStringList inputKinds;
+        if (plugin) {
+            for (DataKindEnum inputKind : plugin->getInputDataKinds()) {
+                inputKinds.push_back(TabMenuBridge::dataKindKey(inputKind));
+            }
+        } else {
+            inputKinds.push_back(TabMenuBridge::dataKindKey(eDataKindImage));
+        }
+        action->setProperty(kNodesMenuPropInputKinds, inputKinds.join(QLatin1Char(',')));
+    }
     refreshPluginActionProperties(action, plugin);
 
     const QString pluginID = leaf.getID();
@@ -1905,6 +1944,12 @@ double
 GuiApplicationManager::getLogicalDPIYRATIO() const
 {
     return _imp->dpiY / NATRON_PIXELS_FOR_DPI_DEFAULT;
+}
+
+double
+GuiApplicationManager::getScreenDevicePixelRatio() const
+{
+    return qApp ? qApp->devicePixelRatio() : 1.;
 }
 
 void

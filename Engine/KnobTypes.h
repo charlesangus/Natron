@@ -670,21 +670,34 @@ public:
     }
 
     /**
+     * @brief Also true while the active entry is one the menu lacks, which only its saved id keeps.
+     **/
+    virtual bool hasModificationsForSerialization() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief Fills-up the menu with the given entries and optionnally their tooltip.
      * @param entriesHelp Can either be empty, meaning no-tooltip or must be of the size of the entries.
      * @param mergingFunctor If not set, the internal menu will be completely reset and replaced with the given entries.
      * Otherwise the internal menu entries will be merged with the given entries according to this equality functor.
      * @param mergingData Can be passed when mergingFunctor is not null to speed up the comparisons.
      *
+     * @param notifyIfUnchanged Emit populated() even if the entries are the same as the current ones. A right-click
+     * menu knob needs this, since populated() is what opens its menu.
+     *
      * @returns true if something changed, false otherwise.
      **/
-    bool populateChoices(const std::vector<ChoiceOption> &entries);
+    bool populateChoices(const std::vector<ChoiceOption>& entries, bool notifyIfUnchanged = false);
 
     void resetChoices();
 
     void appendChoice( const ChoiceOption& entry);
 
     bool isActiveEntryPresentInEntries() const;
+
+    /**
+     * @brief True when the active entry is one that loading could not match back to any entry of the menu.
+     **/
+    bool isActiveEntryUnmatchedByEntries() const;
 
     std::vector<ChoiceOption> getEntries_mt_safe() const;
     ChoiceOption getEntry(int v) const;
@@ -833,6 +846,39 @@ public:
         return true;
     }
 
+    /**
+     * @brief The working-space RGB a colour wheel shows at hueDegrees (0 on the right,
+     * counter-clockwise) and chroma.
+     **/
+    typedef std::function<void(double hueDegrees, double chroma, double rgb[3])> ColorWheelColour;
+
+    /**
+     * @brief One wheel of a colour wheel grid: its title, its 1-dimensional hue (degrees, the
+     * angle), chroma (the radius, the rim starting at its display maximum) and luminance (the
+     * slider beneath) knobs, and its colours.
+     **/
+    struct ColorWheelSpec {
+        std::string label;
+        KnobDoubleWPtr hue;
+        KnobDoubleWPtr chroma;
+        KnobDoubleWPtr luminance;
+        ColorWheelColour colour;
+    };
+
+    /**
+     * @brief Shows wheels, two to a row, in a grid below this separator. The wheels edit the
+     * knobs, which keep their own rows elsewhere for typed values. Call before the GUI is created.
+     **/
+    void setColorWheelGrid(const std::vector<ColorWheelSpec>& wheels)
+    {
+        _colorWheels = wheels;
+    }
+
+    const std::vector<ColorWheelSpec>& getColorWheelGrid() const
+    {
+        return _colorWheels;
+    }
+
 private:
 
 
@@ -845,6 +891,7 @@ private:
 
 private:
     static const std::string _typeNameStr;
+    std::vector<ColorWheelSpec> _colorWheels;
 };
 
 /******************************RGBA_KNOB**************************************/
@@ -1051,6 +1098,26 @@ public:
         return _isCustom;
     }
 
+    // What dropping scene prims on the knob's field puts in it.
+    enum PrimPathHintEnum {
+        // Prims are not dropped on it.
+        ePrimPathHintNone = 0,
+        // The first prim's path.
+        ePrimPathHintPath,
+        // Every prim's path, separated by spaces.
+        ePrimPathHintPattern
+    };
+
+    void setPrimPathHint(PrimPathHintEnum hint)
+    {
+        _primPathHint = hint;
+    }
+
+    PrimPathHintEnum getPrimPathHint() const
+    {
+        return _primPathHint;
+    }
+
     virtual bool supportsInViewerContext() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return !_multiLine;
@@ -1075,6 +1142,7 @@ private:
     bool _customHtmlText;
     bool _isLabel;
     bool _isCustom;
+    PrimPathHintEnum _primPathHint = ePrimPathHintNone;
 };
 
 /******************************KnobGroup**************************************/

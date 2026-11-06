@@ -150,6 +150,17 @@ public:
 
     ColorTuple getRGBColorDialog() const;
 
+    /**
+     * @brief Creates a node as the node graph's own creation does: it connects to the selected node
+     * following the connection preferences, is placed below it or at the creation context's position,
+     * opens its panel and is one undo step. Without a group, the node goes in the graph the creation
+     * context names, else in the last selected graph. createNode() stays the raw script creation.
+     **/
+    Effect* createNodeInGraph(const QString& pluginID,
+                              int majorVersion = -1,
+                              Group* group = 0,
+                              const NodeCreationPropertyMap& props = NodeCreationPropertyMap()) const;
+
     std::list<Effect*> getSelectedNodes(Group* group = 0) const;
 
     void selectNode(Effect* effect, bool clearPreviousSelection);
@@ -169,7 +180,8 @@ public:
 
     /**
      * @brief Triggers an action chosen in the tab menu. Nodes it creates with no group go into the graph
-     * the menu was opened over, and the first one with no position lands at the cursor.
+     * the menu was opened over, and the first one with no position lands at the cursor. None, sent
+     * when the menu closes with no choice, ends a filtered launch without creating anything.
      **/
     void triggerTabMenuAction(QAction* action);
 };

@@ -37,7 +37,11 @@
 
 #include <QOpenGLWidget>
 #include <QtCore/QPoint>
+#include <QtCore/QRect>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
+
+#include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
@@ -51,6 +55,11 @@ class QMouseEvent;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
+
+class SceneStage;
+class UndoHistory;
+class SceneTransformTarget;
+struct SceneTransformDrag;
 
 /**
  * @brief Draws a scene with Storm (UsdImagingGLEngine on HgiGL) into a framebuffer of the GL
@@ -73,18 +82,66 @@ class SceneViewportRenderer {
 public:
     enum DrawModeEnum {
         eDrawModeUnshaded = 0, // the prims' display colours, no lighting
-        eDrawModeShaded, // lit by a light at the camera
+        eDrawModeShaded, // lit by the lighting mode's lights
         eDrawModeWireframe
+    };
+
+    // What lights the shaded mode: the stage's own lights when it has any, else a light at the
+    // camera (auto); always the stage's lights, dark when it has none (scene); or always the
+    // light at the camera (headlight). Scene until set; the viewer sets it from the Viewer 3D
+    // Lighting preference.
+    enum LightingModeEnum {
+        eLightingModeAuto = 0,
+        eLightingModeScene,
+        eLightingModeHeadlight
+    };
+
+    // How the free camera looks at its pivot: in perspective, or orthographic along an axis of
+    // the stage. Front looks along -Z on a Y-up stage and along +Y on a Z-up one, Right along -X,
+    // and Top down the up axis.
+    enum ViewModeEnum {
+        eViewModePerspective = 0,
+        eViewModeFront,
+        eViewModeBack,
+        eViewModeRight,
+        eViewModeLeft,
+        eViewModeTop,
+        eViewModeBottom
     };
 
     // The camera that is not a prim of the stage: it orbits pivot at distance, azimuth and
     // elevation in degrees about the stage's up axis, with a vertical field of view of fovY degrees.
+    // An orthographic view shows the height the perspective one shows at the pivot.
     struct FreeCamera {
         double pivot[3] = { 0., 0., 0. };
         double distance = 10.;
         double azimuth = 0.;
         double elevation = 0.;
         double fovY = 45.;
+        ViewModeEnum viewMode = eViewModePerspective;
+    };
+
+    // The free camera's near and far clip distances, from its eye. Automatic ones follow the
+    // camera's distance to its pivot.
+    struct ClipPlanes {
+        bool automatic = true;
+        double nearClip = 0.1;
+        double farClip = 10000.;
+    };
+
+    // Where a camera is and what it sees, as Gf (row-vector) matrices in row-major order: its
+    // camera-to-world and its parent's local-to-world transforms, the height of its view at unit
+    // depth (perspective) or in scene units (orthographic), its width over its height, its clip
+    // distances, and the depth ahead of it that navigation turns about.
+    struct CameraPose {
+        double cameraToWorld[16];
+        double parentToWorld[16];
+        double viewHeight = 1.;
+        double aspect = 1.;
+        bool orthographic = false;
+        double nearClip = 0.1;
+        double farClip = 10000.;
+        double pivotDepth = 1.;
     };
 
     SceneViewportRenderer();
@@ -100,9 +157,15 @@ public:
     /**
      * @brief Syncs the renderer's stage to payload, under the viewer lock, on the calling thread.
      * Shows nothing for an empty payload. Returns false with *error set if USD is unusable.
-     * MT-safe; does not move the camera.
+     * MT-safe; does not move the camera. serial, when not 0, is the request the payload answers:
+     * a request later than clearTransformPreviewAfter()'s clears the drag preview in the same
+     * step, so the preview gives way to the scene that has the drag written.
      **/
-    bool syncScene(const ScenePayload& payload, std::string* error);
+    bool syncScene(const ScenePayload& payload, std::string* error, U64 serial = 0);
+
+    // syncScene(), and shows the stage at frame from then on: a paint never sees one without the
+    // other.
+    bool syncScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error, U64 serial = 0);
 
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
@@ -119,10 +182,19 @@ public:
 
     bool hasScene() const;
 
+    /**
+     * @brief Calls read under the lock that keeps syncs and paints out of the stage, with the
+     * stage shown, or null when no scene is. read must not call back into the renderer.
+     **/
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    // The shown stage's edit count, without the lock: 0 before the first sync.
+    U64 getStageEditCount() const;
+
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
 
-    // How many engines this renderer has made: one per GL context it rendered in.
+    // How many engines this renderer has made: one per GL context it rendered in and delegate.
     U64 getEngineCount() const;
 
     // How many engines every renderer of the process has made.
@@ -134,23 +206,127 @@ public:
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
 
+    // Whether the shown stage's up axis is Z rather than Y.
+    bool isUpAxisZ() const;
+
     void setDrawMode(DrawModeEnum mode);
 
     DrawModeEnum getDrawMode() const;
+
+    // How what Storm draws reaches the screen: the display and view of config, from colorSpace,
+    // as the 2D viewer shows images, with its gain multiplied in before them and its gamma
+    // applied after.
+    struct DisplayTransform {
+        OCIO_NAMESPACE::ConstConfigRcPtr config;
+        std::string colorSpace;
+        std::string display;
+        std::string view;
+        double gain = 1.;
+        double gamma = 1.;
+    };
+
+    /**
+     * @brief Applies transform from the next render() on. Hydra's colour correction only uses
+     * OpenColorIO when $OCIO is set, so without it, without a config, or when the config cannot
+     * build the transform, the sRGB transform is applied instead. A transform that needs 1D or 2D
+     * LUT textures on the GPU (e.g. ACES 2.0 output transforms), which Hydra's colour correction
+     * cannot bind, is approximated by a log2 shaper and a 65-point 3D LUT baked from it. That
+     * bake, or a transform with a gain or gamma other than 1, reaches Hydra as one view, gain,
+     * display transform and gamma in turn, made current as part of a copy of the config. Without
+     * a usable config, a gain or gamma other than 1 goes with the sRGB transform the same way,
+     * as long as $OCIO is set.
+     **/
+    void setDisplayTransform(const DisplayTransform& transform);
+
+    // Whether render() goes through OpenColorIO rather than Hydra's own sRGB transform.
+    bool isUsingOpenColorIO() const;
 
     // The ground grid, drawn over the scene by default.
     void setShowGrid(bool show);
 
     bool getShowGrid() const;
 
+    // The camera and light guides, drawn over the scene by default. The camera looked through
+    // has none.
+    void setShowGuides(bool show);
+
+    bool getShowGuides() const;
+
+    // How long camera frustums reach and how big light icons are, in scene units: 1 until set.
+    void setGuideSize(double size);
+
+    double getGuideSize() const;
+
+    // Whether prims of the proxy, render and guide purposes are drawn: proxy only by default.
+    void setShowProxy(bool show);
+
+    bool getShowProxy() const;
+
+    void setShowRender(bool show);
+
+    bool getShowRender() const;
+
+    void setShowGuidePurpose(bool show);
+
+    bool getShowGuidePurpose() const;
+
+    void setLightingMode(LightingModeEnum mode);
+
+    LightingModeEnum getLightingMode() const;
+
+    // Whether the last render lit the shaded mode with the stage's lights rather than the headlight.
+    bool isSceneLit() const;
+
+    // A guide the last render drew, its kind's script name and a pixel on it, counted from the top
+    // left, for scripts to aim at.
+    struct DrawnGuide {
+        std::string path;
+        std::string kind;
+        double x = 0.;
+        double y = 0.;
+    };
+
+    // Off by default: building the records costs a projection per guide segment.
+    void setRecordDrawnGuides(bool record);
+
+    const std::vector<DrawnGuide>& getDrawnGuides() const;
+
     void setFreeCamera(const FreeCamera& camera);
 
     const FreeCamera& getFreeCamera() const;
 
+    // Looks through the free camera in mode. An orthographic mode faces its axis; perspective
+    // keeps the current angles.
+    void setViewMode(ViewModeEnum mode);
+
+    ViewModeEnum getViewMode() const;
+
+    void setClipPlanes(const ClipPlanes& planes);
+
+    const ClipPlanes& getClipPlanes() const;
+
+    // The near and far distances the free camera draws with.
+    void getFreeCameraClipRange(double* nearClip, double* farClip) const;
+
+    /**
+     * @brief What a width x height view shows: through the camera looked through, or through the
+     * free camera, whose pivotDepth is its distance. For a stage camera, cameraToWorld is the
+     * prim's own transform (with any scale), parentToWorld its parent's, and pivotDepth the depth
+     * of the scene's centre ahead of it. False only for a stage camera that cannot be read.
+     **/
+    bool getViewPose(int width, int height, CameraPose* pose) const;
+
     // Frames the free camera on the bounds of the scene at the shown time, and looks through it.
     void frameScene();
 
-    // Turns the free camera by degrees.
+    /**
+     * @brief Frames the free camera on the union of the selected prims' bounds at the shown time,
+     * and looks through it. A prim without extent counts as its world origin, and a selection
+     * without extent is framed with a radius of one unit. Frames the scene if nothing is selected.
+     **/
+    void frameSelection();
+
+    // Turns the free camera by degrees, in perspective.
     void tumble(double azimuthDegrees, double elevationDegrees);
 
     // Slides the free camera's pivot in the view plane by a pixel delta of a view height pixels high.
@@ -170,32 +346,79 @@ public:
 
     const std::string& getLookThroughCamera() const;
 
-    // The highlighted prim, empty for none.
-    void setSelectedPrim(const std::string& path);
+    /**
+     * @brief Draws the camera looked through from cameraToWorld (a Gf row-major matrix) in place of
+     * its prim's transform, until clearLookThroughTransform() or another camera is looked through.
+     * Lets a move of the camera show at once, before its edit reaches the stage.
+     **/
+    void setLookThroughTransform(const double cameraToWorld[16]);
 
-    const std::string& getSelectedPrim() const;
+    void clearLookThroughTransform();
+
+    // Whether the camera looked through is drawn from setLookThroughTransform().
+    bool hasLookThroughTransform() const;
+
+    // The highlighted prims, in selection order: the last is the current one.
+    void setSelectedPrims(const std::vector<std::string>& paths);
+
+    const std::vector<std::string>& getSelectedPrims() const;
 
     // The values of an op whose handles the viewer draws over the scene: a translate, rotate
-    // (degrees, in rotateOrder, a SceneRotateOrderEnum) and pivot, authored as opName on primPath.
+    // (degrees, in rotateOrder, a SceneRotateOrderEnum), scale and pivot, authored as opName on
+    // primPath and on each of the other targets, whose prims a drag previews too.
     struct TransformHandles {
+        struct Target {
+            std::string primPath;
+            std::string opName;
+        };
+
         std::string primPath;
         std::string opName;
         double translate[3] = { 0., 0., 0. };
         double rotate[3] = { 0., 0., 0. };
+        double scale[3] = { 1., 1., 1. };
+        double uniformScale = 1.;
         double pivot[3] = { 0., 0., 0. };
         int rotateOrder = 0;
+        std::vector<Target> otherTargets;
     };
 
     /**
      * @brief Draws the handles of an op over the scene, at the shown time, until
      * clearTransformHandles(). Nothing is drawn while the shown stage has no such op on the prim.
+     * The transform widget on the selection, when its tool shows handles, is drawn instead.
      **/
     void setTransformHandles(const TransformHandles& handles);
 
     void clearTransformHandles();
 
-    // Whether the shown stage has the op of the handles set, so that they are drawn.
+    /**
+     * @brief The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum
+     * and PivotEnum): the handles of the tool on the selected prims.
+     **/
+    void setTransformTool(int tool);
+
+    int getTransformTool() const;
+
+    void setTransformSpace(int space);
+
+    int getTransformSpace() const;
+
+    void setTransformPivot(int pivot);
+
+    int getTransformPivot() const;
+
+    // Whether handles are drawn: the transform widget's on the selection or the op's.
     bool hasTransformHandles() const;
+
+    // Whether the handles drawn are the transform widget's on the selection.
+    bool hasSelectionHandles() const;
+
+    /**
+     * @brief The handles drawn, as pixels to aim at in a width x height view, and the frame they
+     * point along: origin then the three axes, 12 values. False when none are drawn.
+     **/
+    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame) const;
 
     // The handle (a SceneGizmo handle) under the pixel (x, y) of a width x height view, or -1.
     int hitTestTransformHandles(double x, double y, int width, int height) const;
@@ -210,9 +433,13 @@ public:
 
     /**
      * @brief Starts dragging handle from the pixel (x, y): later changes are measured against the
-     * handles as they are now. False if the handle is not drawn.
+     * handles as they are now, and a drag of the selection's widget moves the prims it has now.
+     * Clears any drag preview first. False if the handle is not drawn.
      **/
     bool beginTransformDrag(int handle, double x, double y, int width, int height);
+
+    // Whether the drag under way moves the selection, rather than an op's values.
+    bool isSelectionTransformDrag() const;
 
     /**
      * @brief The change a drag to the pixel (x, y) makes since beginTransformDrag(): the amount
@@ -221,7 +448,26 @@ public:
      **/
     bool getTransformDragChange(double x, double y, int width, int height, double* change) const;
 
+    /**
+     * @brief Draws the prims the drag under way moves as a change of change would leave them,
+     * without editing any node: a transient transform on the renderer's own layer. Returns
+     * whether any prim is drawn moved.
+     **/
+    bool previewTransformDrag(double change);
+
+    /**
+     * @brief The selection drag under way, for a change, as a target writes it. False if the drag
+     * under way does not move the selection.
+     **/
+    bool getTransformDrag(double change, double frame, SceneTransformDrag* drag) const;
+
     void endTransformDrag();
+
+    // Drops the drag preview now.
+    void clearTransformPreview();
+
+    // Drops the drag preview when a scene requested after serial is synced.
+    void clearTransformPreviewAfter(U64 serial);
 
     /**
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
@@ -238,15 +484,37 @@ public:
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
-     * a width x height view, or empty if none is. Needs the context of render() current.
+     * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
+     * behind it. Needs the context of render() current.
      **/
     std::string pick(int x, int y, int width, int height);
+
+    /**
+     * @brief The paths of the prims and guides drawn in the rectangle with corners (x0, y0) and
+     * (x1, y1), pixels of a width x height view counted from the top left, sorted. Needs the context of
+     * render() current.
+     **/
+    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
 
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
-    // The background colour render() clears to.
-    static void getBackgroundColor(float rgb[3]);
+    /**
+     * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
+     * empty id. A change destroys the engine, so it needs the context of render() current.
+     **/
+    void setRendererId(const std::string& id);
+
+    const std::string& getRendererId() const;
+
+    // Why the chosen delegate could not render, empty if it can or has not been tried yet.
+    const std::string& getRendererError() const;
+
+    // The delegate of the engine held, empty if none is.
+    std::string getEngineRendererId() const;
+
+    // The background colour render() clears to, as it shows through the display transform.
+    void getBackgroundColor(float rgb[3]) const;
 
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
@@ -297,23 +565,116 @@ public:
 
     void setDrawMode(SceneViewportRenderer::DrawModeEnum mode);
 
+    void setDisplayTransform(const SceneViewportRenderer::DisplayTransform& transform);
+
+    // Renders with the Hydra render delegate id, whatever any USDRender node renders with.
+    void setRendererId(const QString& id);
+    void setShowGrid(bool show);
+
+    void setShowGuides(bool show);
+
+    // Whether prims of the proxy, render and guide purposes are drawn.
+    void setShowPurposes(bool proxy, bool render, bool guide);
+
+    // Sets the Viewer 3D Lighting preference, which every 3D view follows.
+    void setLightingMode(SceneViewportRenderer::LightingModeEnum mode);
+
     void setLookThroughCamera(const QString& path);
 
     void frameScene();
 
-    // Picks the prim drawn at pos (widget coordinates) and selects it, or clears the selection.
+    void frameSelection();
+
+    // The prim drawn at pos (widget coordinates), empty for none.
     QString pickPrimAt(const QPoint& pos);
 
-    void setSelectedPrim(const QString& path);
+    // The prims drawn in rect (widget coordinates).
+    QStringList pickPrimsIn(const QRect& rect);
 
-    QString getSelectedPrim() const;
+    // How a click or marquee combines its prims with the selection.
+    enum SelectionModeEnum {
+        eSelectionModeReplace,
+        eSelectionModeAdd,
+        eSelectionModeToggle
+    };
+
+    void select(const QStringList& paths, SelectionModeEnum mode);
+
+    // The selected prims, the current one last.
+    void setSelection(const QStringList& paths);
+
+    QStringList getSelection() const;
 
     /**
-     * @brief Sets the function that names the node whose transform handles are drawn: a
-     * USDEditTransform with its settings panel open, or null for none. Dragging a handle sets the
-     * node's Translate, Rotate or Scale, one undoable edit per drag.
+     * @brief Sets the function that names the node whose transform handles are drawn while the
+     * transform widget shows none on the selection: a USDEditTransform with its settings panel
+     * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
+     * at the release, as one undoable edit.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
+     * @brief Where drags of the transform widget on the selection are written. Without one, or
+     * while the natronSceneTransformRecordOnly property is true, they are only recorded into the
+     * natronSceneTransformDelta property.
+     **/
+    void setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target);
+
+    // The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum, PivotEnum).
+    void setTransformTool(int tool);
+
+    int getTransformTool() const;
+
+    // Translate, rotate, scale and back to translate; from the select tool, translate.
+    void cycleTransformTool();
+
+    void setTransformSpace(int space);
+
+    void setTransformPivot(int pivot);
+
+    // The node whose scene is shown: new cameras are placed near it, in its group.
+    void setViewedNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
+     * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
+     * paths now, or nothing when it can.
+     **/
+    struct SelectionActions {
+        std::function<QString(const QStringList& paths)> setOnNodeBlocker;
+        std::function<void(const QStringList& paths)> setOnNode;
+        std::function<void(const QStringList& paths)> createFromSelection;
+    };
+
+    void setSelectionActions(const SelectionActions& actions);
+
+    // The Camera node that made the camera prim at a path of the shown scene, null for none.
+    void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
+
+    // Where moves of a locked camera's node are undone.
+    void setUndoHistory(UndoHistory* history);
+
+    void setViewMode(SceneViewportRenderer::ViewModeEnum mode);
+
+    void setClipPlanes(const SceneViewportRenderer::ClipPlanes& planes);
+
+    // While locked, navigating through a stage camera moves it, and the end of each move writes
+    // its node's knobs.
+    void setLockView(bool locked);
+
+    bool isLockView() const;
+
+    /**
+     * @brief Locks the view to the camera looked through. From the free camera, it looks through
+     * the stage's only camera and locks to it, or offers a menu of the stage's cameras to pick
+     * from; with none, the HUD says so and the view stays unlocked.
+     **/
+    void lockViewToCamera();
+
+    // Looks through the camera at path and locks the view to it.
+    void lockViewToCamera(const QString& path);
+
+    // Makes an unconnected Camera node, near the viewed node, that sees what the view shows.
+    NodePtr createCameraFromView();
 
     // Reads the handles of the provided node's op from its knobs, at the shown frame.
     void refreshTransformHandles();
@@ -321,13 +682,18 @@ public:
     /**
      * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
      * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
-     * again would mean syncing the whole scene again. Main thread; waits for a sync under way.
+     * again would mean syncing the whole scene again. A scene showing live textures is requested
+     * again, as the store they live in is emptied alongside, and the repaint waits for that sync.
+     * Main thread; waits for a sync under way.
      **/
     void releaseEngine();
 
 Q_SIGNALS:
 
-    void selectedPrimChanged(const QString& path);
+    void selectionChanged(const QStringList& paths);
+
+    // The renderer's stage holds the latest requested scene, or none (main thread).
+    void sceneSynced();
 
 protected:
     void initializeGL() override;
@@ -337,14 +703,19 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    bool event(QEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
+    void focusOutEvent(QFocusEvent* e) override;
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
     // Mirrors the error, whether a scene is shown, whether every request is synced, how many
-    // engines the renderer made and whether it holds one into the natronSceneError,
-    // natronSceneShown, natronSceneSynced, natronSceneEngineCount and natronSceneEngineHeld
-    // properties.
+    // engines the renderer made, whether it holds one, its delegate and that delegate's error into
+    // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,
+    // natronSceneEngineHeld, natronSceneRenderer and natronSceneRendererError
+    // properties, and the display settings into natronSceneDrawMode, natronSceneShowGrid,
+    // natronSceneShowGuides, natronScenePurposes and natronSceneLighting.
     void publishState();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
@@ -355,6 +726,41 @@ private:
     void endHandleDrag();
 
     void highlightHandleAt(const QPoint& pos);
+
+    // Writes the change of the op handle drag under way to its node, as one undo step.
+    bool commitOpHandleDrag(double change);
+
+    /**
+     * @brief Mirrors the handles drawn into natronSceneTransformHandles (handle, x, y in widget
+     * coordinates) and natronSceneTransformFrame (origin and axes). publishState() mirrors the
+     * widget's tool, frame and origin into natronSceneTransformTool, natronSceneTransformSpace and
+     * natronSceneTransformPivot.
+     **/
+    void publishTransformState();
+
+    // Forgets the mouse gesture under way.
+    void clearGesture();
+
+    // Whether navigation moves the camera looked through, not the free camera.
+    bool navigatesLockedCamera() const;
+
+    // Unlocks the view once it no longer looks through a camera, writing a move of the camera under
+    // way, so a later look-through starts unlocked.
+    void endLockOutsideLookThrough();
+
+    // Starts moving the locked camera's node. False, with the HUD saying why, when it has none.
+    bool beginCameraLock();
+
+    // Applies a tumble or pan drag of delta pixels, or a dolly by dollyFactor, to the locked camera.
+    void moveLockedCamera(int navigation, const QPoint& delta, double dollyFactor);
+
+    // Writes the move to the camera's node as one undo step.
+    void endCameraLock();
+
+    void showContextMenu(const QPoint& globalPos);
+
+    // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
+    void showLockCameraMenu(const std::vector<std::string>& paths);
 
     // Queues payload for the worker; the error shown once it is synced.
     void requestSync(const ScenePayload& payload, const QString& error);

@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 // clang-format off
 CLANG_DIAG_OFF(deprecated-declarations)
@@ -41,10 +42,10 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/EngineFwd.h"
+#include "Engine/RectI.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 #define ROTO_BEZIER_EVAL_ITERATIVE
 
@@ -119,6 +120,13 @@ public:
                                       RectD *bbox);
 
     bool isOpenBezier() const;
+
+    /**
+     * @brief Rasterises the shape with its feather, as the Roto mask does but ignoring opacity, into
+     * coverage (0..1, roi.width() x roi.height(), row 0 at roi.y1). roi is in pixels at mipmapLevel.
+     * Returns false when the shape draws nothing (unfinished, inactive or too few points).
+     **/
+    bool rasterizeCoverage(double time, unsigned int mipmapLevel, const RectI& roi, std::vector<float>* coverage) const;
 
     /**
      * @brief Used to differentiate real shapes with feather of paint strokes which does not have a feather
@@ -273,6 +281,27 @@ public:
      * @brief This function is a combinaison of setPosition + setLeftBezierPoint / setRightBeziePoint
      **/
     void setPointAtIndex(bool feather, int index, double time, double x, double y, double lx, double ly, double rx, double ry);
+
+    /**
+     * @brief Moves the control point at index to (x, y) in the shape's own coordinates at an
+     * existing keyframe, taking its tangents along. The feather point follows when the feather
+     * link is on or when it sits on the control point. Ignores auto-keying and ripple edit.
+     * Returns false, changing nothing, when there is no keyframe at time or no such point.
+     **/
+    bool setPointPositionAtKeyframe(int index, double time, double x, double y);
+
+    /**
+     * @brief Reads the control point's position at time from the curve setPointPositionAtKeyframe
+     * writes to, so a read-modify-write of one coordinate sees the other's pending edit.
+     * Returns false when there is no such point.
+     **/
+    bool getPointPositionForEdit(int index, double time, double* x, double* y) const;
+
+    /**
+     * @brief Asks the curve editor to show (or stop showing) the x/y curves of the given
+     * control points, which must belong to this shape.
+     **/
+    void requestPointsInCurveEditor(const std::list<BezierCPPtr>& points, bool show);
 
 private:
 
@@ -537,6 +566,32 @@ public:
      * @brief Returns the feather point at the given index if any, NULL otherwise.
      **/
     BezierCPPtr getFeatherPointAtIndex(int index) const;
+
+    /**
+     * @brief Makes the control point at index, and its feather point, follow marker's centre,
+     * offset by where they are at time. Throws std::invalid_argument for a bad index.
+     **/
+    void linkPointToTrack(int index, const TrackMarkerPtr& marker, double time);
+
+    /**
+     * @brief Stops the control point at index and its feather point following a track. With
+     * bake, they are first keyed at every frame of the track's keyed range, and their keys at
+     * the curve's other keyframes are replaced by the linked values. Throws
+     * std::invalid_argument for a bad index.
+     **/
+    void unlinkPoint(int index, bool bake);
+
+    /**
+     * @brief Whether any control or feather point follows a track.
+     **/
+    bool hasTrackLinks() const;
+
+    /**
+     * @brief Freezes, at time, the links whose track can no longer be followed, and collects
+     * the names ("tracker / track") of those missing. Returns true if any link changed.
+     **/
+    bool refreshTrackLinks(double time, std::list<std::string>* missing);
+
     BezierCPPtr getFeatherPointForControlPoint(const BezierCPPtr & cp) const;
     BezierCPPtr getControlPointForFeatherPoint(const BezierCPPtr & fp) const;
 
@@ -604,6 +659,12 @@ public:
 
 protected:
     virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;
+
+    /**
+     * @brief Adds, for every linked point, whether its track resolves and the track centre's
+     * hash, which change without this curve being edited.
+     **/
+    virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
 
 private:
 
@@ -715,6 +776,8 @@ Q_SIGNALS:
     void animationRemoved();
 
     void controlPointRemoved();
+
+    void curveEditorPointsRequested(const std::list<BezierCPPtr>& points, bool show);
 
 private:
 

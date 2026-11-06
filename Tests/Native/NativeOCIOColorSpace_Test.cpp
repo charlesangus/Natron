@@ -38,6 +38,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/OCIO/OCIOColorSpace.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -79,7 +81,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOCOLORSPACE, -1, PLUGIN_MAJOR_NATRON_OCIOCOLORSPACE);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOCOLORSPACE, PLUGIN_MAJOR_NATRON_OCIOCOLORSPACE);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<OCIOColorSpace*>(pair.native->getEffectInstance().get()));
@@ -110,35 +112,51 @@ TEST_F(NativeOCIOColorSpaceTest, ConvertsBetweenTwoSpaces)
     expectConverts(pair, "ACES2065-1", "ACEScct", "ACES2065-1 to ACEScct");
 }
 
-TEST_F(NativeOCIOColorSpaceTest, EmptySpaceIsTheWorkingSpace)
+TEST_F(NativeOCIOColorSpaceTest, ProjectDefaultIsTheWorkingSpace)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
 
-    const std::string working = getApp()->getProject()->getWorkingColorSpace();
+    const std::string working = IoColorSpace::nameInConfig(config(getApp()), getApp()->getProject()->getWorkingColorSpace());
     ASSERT_FALSE(working.empty());
 
     // A default node converts the working space to itself: no change.
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), choiceID(pair.native, kOCIOColorSpaceParamInputSpace));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), choiceID(pair.native, kOCIOColorSpaceParamOutputSpace));
     expectProcessed(pair.native, pair.source, OCIO_NAMESPACE::ConstCPUProcessorRcPtr(), "default");
+
+    KnobChoicePtr in = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIOColorSpaceParamInputSpace));
+    ASSERT_TRUE(bool(in));
+    EXPECT_EQ("Project default (" + working + ")", in->getEntry(0).label);
+    EXPECT_EQ(std::string("Input Colorspace"), in->getLabel());
+    KnobChoicePtr out = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIOColorSpaceParamOutputSpace));
+    ASSERT_TRUE(bool(out));
+    EXPECT_EQ(std::string("Output Colorspace"), out->getLabel());
 
     ASSERT_TRUE(setKnobValue(pair.native, kOCIOColorSpaceParamOutputSpace, kSRGB));
     expectConverts(pair, working, kSRGB, "working to sRGB");
 }
 
-TEST_F(NativeOCIOColorSpaceTest, LogPresetsSetTheRoles)
+TEST_F(NativeOCIOColorSpaceTest, LogPresetsSetTheSpacesOfTheRoles)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(config(getApp())->hasRole(OCIO_NAMESPACE::ROLE_COMPOSITING_LOG));
+    const std::string log = IoColorSpace::nameInConfig(config(getApp()), OCIO_NAMESPACE::ROLE_COMPOSITING_LOG);
+    const std::string linear = IoColorSpace::nameInConfig(config(getApp()), OCIO_NAMESPACE::ROLE_SCENE_LINEAR);
+    ASSERT_FALSE(log.empty());
+    ASSERT_FALSE(linear.empty());
 
     ASSERT_TRUE(setKnobValue(pair.native, kOCIOColorSpaceParamPreset, kOCIOColorSpacePresetLogToLin));
-    EXPECT_EQ(std::string(OCIO_NAMESPACE::ROLE_COMPOSITING_LOG), stringValue(pair.native, kOCIOColorSpaceParamInputSpace));
-    EXPECT_EQ(std::string(OCIO_NAMESPACE::ROLE_SCENE_LINEAR), stringValue(pair.native, kOCIOColorSpaceParamOutputSpace));
+    EXPECT_EQ(log, choiceID(pair.native, kOCIOColorSpaceParamInputSpace));
+    EXPECT_EQ(linear, choiceID(pair.native, kOCIOColorSpaceParamOutputSpace));
+    EXPECT_EQ(std::string(kOCIOColorSpacePresetLogToLin), choiceID(pair.native, kOCIOColorSpaceParamPreset));
     expectConverts(pair, OCIO_NAMESPACE::ROLE_COMPOSITING_LOG, OCIO_NAMESPACE::ROLE_SCENE_LINEAR, "log to lin");
 
     ASSERT_TRUE(setKnobValue(pair.native, kOCIOColorSpaceParamPreset, kOCIOColorSpacePresetLinToLog));
-    EXPECT_EQ(std::string(OCIO_NAMESPACE::ROLE_SCENE_LINEAR), stringValue(pair.native, kOCIOColorSpaceParamInputSpace));
-    EXPECT_EQ(std::string(OCIO_NAMESPACE::ROLE_COMPOSITING_LOG), stringValue(pair.native, kOCIOColorSpaceParamOutputSpace));
+    EXPECT_EQ(linear, choiceID(pair.native, kOCIOColorSpaceParamInputSpace));
+    EXPECT_EQ(log, choiceID(pair.native, kOCIOColorSpaceParamOutputSpace));
+    EXPECT_EQ(std::string(kOCIOColorSpacePresetLinToLog), choiceID(pair.native, kOCIOColorSpaceParamPreset));
     expectConverts(pair, OCIO_NAMESPACE::ROLE_SCENE_LINEAR, OCIO_NAMESPACE::ROLE_COMPOSITING_LOG, "lin to log");
 }
 
@@ -146,16 +164,26 @@ TEST_F(NativeOCIOColorSpaceTest, EditingASpaceReturnsThePresetToCustom)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
+    const std::string log = IoColorSpace::nameInConfig(config(getApp()), OCIO_NAMESPACE::ROLE_COMPOSITING_LOG);
+    ASSERT_FALSE(log.empty());
 
     ASSERT_TRUE(setKnobValue(pair.native, kOCIOColorSpaceParamPreset, kOCIOColorSpacePresetLogToLin));
     KnobChoicePtr preset = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIOColorSpaceParamPreset));
-    KnobStringPtr out = std::dynamic_pointer_cast<KnobString>(pair.native->getKnobByName(kOCIOColorSpaceParamOutputSpace));
+    KnobChoicePtr out = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kOCIOColorSpaceParamOutputSpace));
     ASSERT_TRUE(bool(preset));
     ASSERT_TRUE(bool(out));
     EXPECT_EQ(std::string(kOCIOColorSpacePresetLogToLin), preset->getActiveEntry().id);
 
-    out->setValue(std::string(kSRGB), ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    const std::vector<ChoiceOption> entries = out->getEntries_mt_safe();
+    int srgb = -1;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == kSRGB) {
+            srgb = (int)i;
+        }
+    }
+    ASSERT_GE(srgb, 0);
+    out->setValue(srgb, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     EXPECT_EQ(std::string(kOCIOColorSpacePresetCustom), preset->getActiveEntry().id);
-    EXPECT_EQ(std::string(OCIO_NAMESPACE::ROLE_COMPOSITING_LOG), stringValue(pair.native, kOCIOColorSpaceParamInputSpace));
+    EXPECT_EQ(log, choiceID(pair.native, kOCIOColorSpaceParamInputSpace));
     expectConverts(pair, OCIO_NAMESPACE::ROLE_COMPOSITING_LOG, kSRGB, "log to sRGB");
 }

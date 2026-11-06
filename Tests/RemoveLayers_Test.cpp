@@ -62,7 +62,7 @@ NATRON_PYTHON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
-const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
+const char* const kBlurPluginID = "Blur";
 
 // The colour storage entry is named by its layout, e.g. "Color(3)", so a narrowed plane shows.
 std::vector<std::string>
@@ -453,26 +453,24 @@ TEST_F(RemoveLayersTest, SubLabelNamesTheOperationAndSelection)
 
     ASSERT_TRUE(bool(remove));
     KnobChannelSetPtr channels = channelsKnob(remove);
-    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(remove->getKnobByName(kNatronOfxParamStringSublabelName));
+    EXPECT_FALSE(bool(remove->getKnobByName(kNatronOfxParamStringSublabelName)));
     ASSERT_TRUE(bool(channels));
-    ASSERT_TRUE(bool(sublabel));
-    EXPECT_TRUE(sublabel->getIsSecret());
 
-    EXPECT_EQ(std::string(), sublabel->getValue());
+    EXPECT_EQ(std::string(), remove->getSublabel());
 
     channels->setLayer(0, "diffuse", NULL);
     channels->addLayer(kNatronColorViewAlpha, NULL);
-    EXPECT_EQ(std::string("remove\ndiffuse +1"), sublabel->getValue());
+    EXPECT_EQ(std::string("remove\ndiffuse +1"), remove->getSublabel());
 
     channels->addRegex("spec.*");
-    EXPECT_EQ(std::string("remove\ndiffuse +2"), sublabel->getValue());
+    EXPECT_EQ(std::string("remove\ndiffuse +2"), remove->getSublabel());
 
     setKeep(remove);
     std::vector<ChannelSetRow> rows(1);
     rows[0].mode = ChannelSetRow::eModeRegex;
     rows[0].layerOrPattern = "spec.*";
     channels->setRows(rows);
-    EXPECT_EQ(std::string("keep\nspecular"), sublabel->getValue());
+    EXPECT_EQ(std::string("keep\nspecular"), remove->getSublabel());
 }
 
 TEST_F(RemoveLayersTest, KeepSelectionSurvivesSaveResetLoad)

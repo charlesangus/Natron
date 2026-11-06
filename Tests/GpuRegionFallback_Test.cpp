@@ -501,8 +501,71 @@ TEST_F(GpuRegionFallbackTest, GradeWithConnectedDisabledMaskMatchesCpu)
     expectRegionMatchesCpu(grade, { grade });
 }
 
+// The effect accepts the mask on the GPU, but the mask input lacks the selected channel: the placement keeps the
+// Grade off the GPU and a region holding it anyway refuses it, so either way renderRoI() fails it and posts the error.
+TEST_F(GpuRegionFallbackTest, GradeWithMaskChannelMissingRendersOnTheCpuAndPostsTheError)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr mask = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = makeGrade(1.5, 0.1);
+    ASSERT_TRUE(source && mask && grade);
+    connectNodes(source, grade, 0, true);
+    // The Constant carries only Color, so diffuse.R cannot resolve against it.
+    ASSERT_TRUE(connectGradeMask(mask, grade, "diffuse.R", true));
+    std::string message;
+    ASSERT_FALSE(grade->checkSelectedChannelsPresent(kTime, ViewIdx(0), &message));
+
+    {
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+        const FrameRenderContextPtr context = run.context;
+        bool effectAccepts = false;
+        PlacementInputs inputs;
+        inputs.canRenderOnGpu = [&effectAccepts, grade, context](const FrameGraph::Task& task) {
+            if (task.key.node != grade) {
+                return false;
+            }
+            GpuQuery query;
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(grade->getEffectInstance().get());
+            effectAccepts = effectAccepts || (makeGpuQueryForTask(task, *context, &query) && native && native->canRenderOnGpu(query));
+            std::vector<GpuTaskPlane> planes;
+
+            return makeGpuTaskPlanes(task, *context, &planes);
+        };
+        placeGraph(run.graph, inputs);
+        ASSERT_TRUE(effectAccepts) << "the Grade refuses this mask on the GPU itself, which leaves the placement nothing to refuse";
+        EXPECT_TRUE(run.graph.regions.empty()) << "the Grade was placed on the GPU";
+        EXPECT_FALSE(render(&run));
+        ASSERT_TRUE(grade->hasPersistentMessage());
+        QString posted;
+        int type = 0;
+        grade->getPersistentMessage(&posted, &type, false);
+        EXPECT_TRUE(posted.contains(QString::fromUtf8("diffuse.R"))) << posted.toStdString();
+    }
+
+    grade->clearChannelSelectorMessage();
+    ASSERT_FALSE(grade->hasPersistentMessage());
+    {
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(grade, &run, &error)) << error;
+        placeOnGpu(&run, { grade });
+        ASSERT_EQ(1u, run.graph.regions.size());
+        EXPECT_FALSE(render(&run));
+        ASSERT_TRUE(grade->hasPersistentMessage()) << "the region rendered the Grade without its mask channel";
+        QString posted;
+        int type = 0;
+        grade->getPersistentMessage(&posted, &type, false);
+        EXPECT_TRUE(posted.contains(QString::fromUtf8("diffuse.R"))) << posted.toStdString();
+    }
+}
+
 // An unconnected input of a region member stays an empty view in the whole-region path, while the strip path skips it.
-TEST_F(GpuRegionFallbackTest, KeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, KeyerWithEmptyMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -517,7 +580,7 @@ TEST_F(GpuRegionFallbackTest, KeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-TEST_F(GpuRegionFallbackTest, ChromaKeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, ChromaKeyerWithoutMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -532,8 +595,9 @@ TEST_F(GpuRegionFallbackTest, ChromaKeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-// The inside mask producer is connected but is asked for an empty window, so the region has no image to read for it.
-TEST_F(GpuRegionFallbackTest, KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
+// The mask producer is connected but is asked for an empty window, so the region has no image to read for it.
+// The mask is inverted: a mask that misses the window makes the Keyer an identity, which never reaches the GPU.
+TEST_F(GpuRegionFallbackTest, KeyerWithMaskOfEmptyRoIMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -543,7 +607,11 @@ TEST_F(GpuRegionFallbackTest, KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
     NodePtr keyer = makeNode(PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER);
     ASSERT_TRUE(source && mask && keyer);
     connectNodes(source, keyer, kKeyerInputSource, true);
-    connectNodes(mask, keyer, kKeyerInputInsideMask, true);
+    connectNodes(mask, keyer, kKeyerInputMask, true);
+    KnobChannelSelect* selector = dynamic_cast<KnobChannelSelect*>(keyer->getKnobByName("maskChannel_Mask").get());
+    ASSERT_TRUE(selector && setKnobValues(keyer, "enableMask_Mask", { 1. }));
+    selector->set("rgba.A");
+    ASSERT_TRUE(setKnobValues(keyer, kOfxMaskInvertParamName, { 1. }));
 
     expectRegionMatchesCpu(keyer, { keyer });
 }

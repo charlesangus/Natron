@@ -29,9 +29,15 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
@@ -58,7 +64,12 @@ struct GraftSlot {
     // Sublayers input's stack; created once the input has roots.
     PXR_NS::SdfLayerRefPtr wrapper;
     std::string destinationPath;
-    // The name each root is grafted under, index for index with rootNames.
+    // The root left at its own path rather than grafted, empty for none.
+    std::string passThroughRoot;
+    // Whether the input's passThroughRoot holds a UsdGeomGprim; checked when the input has it.
+    bool passThroughHoldsGprim = false;
+    // The name each root is grafted under, index for index with rootNames; a passed-through
+    // root keeps its own.
     std::vector<std::string> childNames;
     // Null layer for an input without roots.
     SceneLayerEntry graft;
@@ -157,6 +168,8 @@ bool
 checkUsdRuntime(std::string* errorMessage)
 {
     static const std::string missing = []() {
+        // A no-op once AppManager has registered them; reached first only by code running without it.
+        SceneCaches::registerLiveTextures(nullptr);
         std::string names;
         PXR_NS::PlugRegistry& registry = PXR_NS::PlugRegistry::GetInstance();
         for (const char* name : { "ar", "sdf", "sdr", "usd", "usdGeom", "usdLux", "usdShade" }) {
@@ -304,6 +317,70 @@ getLayers(const ScenePayload& payload)
     return layers;
 }
 
+namespace {
+    void
+    collectLiveTextures(const ScenePayloadImpl* link,
+                        std::set<const ScenePayloadImpl*>* visited,
+                        std::set<const LiveTextureSourceList*>* seen,
+                        LiveTextureSourceList* sources)
+    {
+        // A link already visited was reached with everything below it.
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            const SceneLayerEntry& entry = link->top;
+            if (entry.liveTextures && seen->insert(entry.liveTextures.get()).second) {
+                sources->insert(sources->end(), entry.liveTextures->begin(), entry.liveTextures->end());
+            }
+            if (entry.dependencies) {
+                for (const ScenePayload& stack : entry.dependencies->stacks) {
+                    collectLiveTextures(stack.getImpl().get(), visited, seen, sources);
+                }
+            }
+        }
+    }
+} // anonymous namespace
+
+LiveTextureSourceList
+getLiveTextures(const ScenePayload& payload)
+{
+    LiveTextureSourceList sources;
+    std::set<const ScenePayloadImpl*> visited;
+    std::set<const LiveTextureSourceList*> seen;
+
+    collectLiveTextures(payload.getImpl().get(), &visited, &seen, &sources);
+
+    return sources;
+}
+
+namespace {
+    bool
+    findDeferredProjections(const ScenePayloadImpl* link,
+                            std::set<const ScenePayloadImpl*>* visited)
+    {
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            if (link->top.deferredProjections) {
+                return true;
+            }
+            if (link->top.dependencies) {
+                for (const ScenePayload& stack : link->top.dependencies->stacks) {
+                    if (findDeferredProjections(stack.getImpl().get(), visited)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+} // anonymous namespace
+
+bool
+hasDeferredProjections(const ScenePayload& payload)
+{
+    std::set<const ScenePayloadImpl*> visited;
+
+    return findDeferredProjections(payload.getImpl().get(), &visited);
+}
+
 SceneMetadata
 readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                   const SceneMetadata& weaker)
@@ -422,12 +499,27 @@ compose(const ScenePayload& payload)
     }
     root->SetSubLayerPaths(getSubLayerPaths(payload));
     writeRootMetadata(root, payload.getMetadata(), nullptr);
+    PXR_NS::UsdStageRefPtr stage = openStage(root);
+    if (!stage || !hasDeferredProjections(payload)) {
+        return stage;
+    }
+    // Resolved into a root no stage listens to yet, then composed once more, rather than edited
+    // into the open stage one recomposition per value.
+    PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
+    if (!resolved) {
+        return stage;
+    }
+    resolved->SetSubLayerPaths(getSubLayerPaths(payload));
+    writeRootMetadata(resolved, payload.getMetadata(), nullptr);
+    SceneProjectionCameras::resolve(stage, resolved, nullptr);
+    stage = PXR_NS::UsdStageRefPtr();
 
-    return openStage(root);
+    return openStage(resolved);
 }
 
 std::vector<PXR_NS::SdfLayerRefPtr>
-getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
+getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
+                    std::vector<std::string>* missingPaths)
 {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
 
@@ -438,6 +530,7 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
     // GetCompositionAssetDependencies lists one layer's own sublayer, reference and payload asset
     // paths, without recursing (sdf/layer.h), so the walk recurses itself.
     std::set<std::string> visited;
+    std::set<std::string> missing;
     std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
     PXR_NS::TfErrorMark mark;
     while (!pending.empty()) {
@@ -458,6 +551,11 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
             const PXR_NS::SdfLayerRefPtr dependency = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(current, assetPath);
             if (dependency) {
                 pending.push_back(dependency);
+            } else if (missingPaths) {
+                const std::string anchored = PXR_NS::SdfComputeAssetPathRelativeToLayer(current, assetPath);
+                if (!anchored.empty() && missing.insert(anchored).second) {
+                    missingPaths->push_back(anchored);
+                }
             }
         }
     }
@@ -526,6 +624,383 @@ frameToTimeCode(const ScenePayload& payload,
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
 }
 
+bool
+parsePrimExpression(const std::string& text,
+                    PXR_NS::SdfPathExpression* expression,
+                    std::string* errorMessage)
+{
+    *expression = PXR_NS::SdfPathExpression();
+    if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+        return true;
+    }
+    PXR_NS::SdfPathExpression parsed;
+    {
+        PXR_NS::TfErrorMark mark;
+        parsed = PXR_NS::SdfPathExpression(text);
+        mark.Clear();
+    }
+    if (!parsed.GetParseError().empty()) {
+        *errorMessage = "\"" + text + "\" is not a valid prim selection: " + parsed.GetParseError();
+
+        return false;
+    }
+    if (!parsed.IsAbsolute()) {
+        *errorMessage = "\"" + text + "\" holds a relative path; prim selections name absolute paths such as /World/Geo or //*Light*.";
+
+        return false;
+    }
+    if (parsed.ContainsExpressionReferences()) {
+        *errorMessage = "\"" + text + "\" references a collection (%), which a prim selection cannot resolve.";
+
+        return false;
+    }
+    *expression = parsed;
+
+    return true;
+}
+
+bool
+selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+            const std::string& expression,
+            std::vector<PXR_NS::SdfPath>* paths,
+            std::string* errorMessage)
+{
+    paths->clear();
+    PXR_NS::SdfPathExpression parsed;
+    if (!parsePrimExpression(expression, &parsed, errorMessage)) {
+        return false;
+    }
+    if (!stage || parsed.IsEmpty()) {
+        return true;
+    }
+    const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+    PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+    PXR_NS::UsdPrimRange range = stage->Traverse();
+    for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+        const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+        if (result.GetValue()) {
+            paths->push_back(it->GetPath());
+        } else if (result.IsConstant()) {
+            // Nothing below can match: a literal path such as /World/Box costs its depth, not
+            // the stage's size.
+            it.PruneChildren();
+        }
+    }
+
+    return true;
+}
+
+double
+getMetricsCorrectionAngle(const SceneMetricsCorrection& correction)
+{
+    if (!correction.correctUpAxis || (correction.fromUpAxis == correction.toUpAxis)) {
+        return 0.;
+    }
+
+    return (correction.toUpAxis == SceneMetadata::eUpAxisZ) ? 90. : -90.;
+}
+
+double
+getMetricsCorrectionScale(const SceneMetricsCorrection& correction)
+{
+    if (!correction.correctUnits || (correction.fromMetersPerUnit <= 0.) || (correction.toMetersPerUnit <= 0.)
+        || PXR_NS::UsdGeomLinearUnitsAre(correction.fromMetersPerUnit, correction.toMetersPerUnit)) {
+        return 1.;
+    }
+
+    return correction.fromMetersPerUnit / correction.toMetersPerUnit;
+}
+
+namespace {
+    // name, or name with the first "_<n>" suffix that neither prim nor order has.
+    PXR_NS::TfToken
+    getFreeCorrectionOpName(const PXR_NS::UsdPrim& prim,
+                            const PXR_NS::VtTokenArray& order,
+                            const std::string& name)
+    {
+        const auto isFree = [&prim, &order](const PXR_NS::TfToken& candidate) {
+            return !prim.HasAttribute(candidate) && (std::find(order.begin(), order.end(), candidate) == order.end());
+        };
+        PXR_NS::TfToken candidate(name);
+        for (int i = 2; !isFree(candidate); ++i) {
+            candidate = PXR_NS::TfToken(name + "_" + std::to_string(i));
+        }
+
+        return candidate;
+    }
+
+    PXR_NS::SdfAttributeSpecHandle
+    getAttributeSpec(const PXR_NS::SdfLayerRefPtr& layer,
+                     const PXR_NS::SdfPath& primPath,
+                     const PXR_NS::TfToken& name,
+                     const PXR_NS::SdfValueTypeName& typeName,
+                     PXR_NS::SdfVariability variability)
+    {
+        const PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, primPath);
+        if (!prim) {
+            return PXR_NS::SdfAttributeSpecHandle();
+        }
+        PXR_NS::SdfAttributeSpecHandle spec = layer->GetAttributeAtPath(primPath.AppendProperty(name));
+
+        return spec ? spec : PXR_NS::SdfAttributeSpec::New(prim, name.GetString(), typeName, variability);
+    }
+
+    // Authors attr's value in layer scaled by scale, its default when it authors one and every
+    // time sample, the sample times mapped by sourceToLayer.
+    template <typename T, typename SCALE>
+    void
+    rescaleAttribute(const PXR_NS::SdfLayerRefPtr& layer,
+                     const PXR_NS::UsdAttribute& attr,
+                     const PXR_NS::SdfLayerOffset& sourceToLayer,
+                     const SCALE& scale)
+    {
+        if (!attr || !attr.HasAuthoredValue()) {
+            return;
+        }
+        const PXR_NS::SdfAttributeSpecHandle spec = getAttributeSpec(layer, attr.GetPrim().GetPath(), attr.GetName(), attr.GetTypeName(), attr.GetVariability());
+        if (!spec) {
+            return;
+        }
+        T value;
+        if ((attr.GetResolveInfo(PXR_NS::UsdTimeCode::Default()).GetSource() == PXR_NS::UsdResolveInfoSourceDefault) && attr.Get(&value, PXR_NS::UsdTimeCode::Default())) {
+            spec->SetDefaultValue(PXR_NS::VtValue(scale(value)));
+        }
+        std::vector<double> times;
+        attr.GetTimeSamples(&times);
+        for (double time : times) {
+            if (attr.Get(&value, time)) {
+                layer->SetTimeSample(spec->GetPath(), sourceToLayer * time, scale(value));
+            }
+        }
+    }
+
+    void
+    rescaleCamera(const PXR_NS::SdfLayerRefPtr& layer,
+                  const PXR_NS::UsdGeomCamera& camera,
+                  const PXR_NS::SdfLayerOffset& sourceToLayer,
+                  double scale)
+    {
+        const float s = (float)scale;
+        const auto scaleFloat = [s](float v) { return v * s; };
+
+        rescaleAttribute<PXR_NS::GfVec2f>(layer, camera.GetClippingRangeAttr(), sourceToLayer, [s](const PXR_NS::GfVec2f& v) { return v * s; });
+        // A clipping plane (a, b, c, d) in camera space keeps its normal; its distance scales.
+        rescaleAttribute<PXR_NS::VtVec4fArray>(layer, camera.GetClippingPlanesAttr(), sourceToLayer, [s](const PXR_NS::VtVec4fArray& planes) {
+            PXR_NS::VtVec4fArray scaled(planes);
+            for (PXR_NS::GfVec4f& plane : scaled) {
+                plane[3] *= s;
+            }
+
+            return scaled;
+        });
+        // Lens lengths are tenths of a scene unit: scaling them keeps the lens the same physical
+        // size, and the field of view, which only their ratios set, unchanged.
+        for (const PXR_NS::UsdAttribute& attr : { camera.GetFocusDistanceAttr(), camera.GetFocalLengthAttr(), camera.GetHorizontalApertureAttr(),
+                                                  camera.GetVerticalApertureAttr(), camera.GetHorizontalApertureOffsetAttr(), camera.GetVerticalApertureOffsetAttr() }) {
+            rescaleAttribute<float>(layer, attr, sourceToLayer, scaleFloat);
+        }
+    }
+} // anonymous namespace
+
+std::size_t
+authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
+                        const PXR_NS::UsdStageRefPtr& source,
+                        const SceneMetricsCorrection& correction)
+{
+    const double angle = getMetricsCorrectionAngle(correction);
+    const double scale = getMetricsCorrectionScale(correction);
+
+    if (!layer || !source || ((angle == 0.) && (scale == 1.))) {
+        return 0;
+    }
+
+    // A prim is corrected when no xformable ancestor carries the correction to it: it is the
+    // topmost xformable on its branch, or its op stack resets and so ignores its ancestors'.
+    std::vector<PXR_NS::UsdPrim> targets;
+    std::vector<PXR_NS::UsdPrim> cameras;
+    {
+        int xformableAncestors = 0;
+        PXR_NS::UsdPrimRange range = PXR_NS::UsdPrimRange::PreAndPostVisit(source->GetPseudoRoot());
+        for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+            const PXR_NS::UsdPrim& prim = *it;
+            const bool xformable = prim.IsA<PXR_NS::UsdGeomXformable>();
+            if (it.IsPostVisit()) {
+                if (xformable) {
+                    --xformableAncestors;
+                }
+                continue;
+            }
+            if (xformable) {
+                if ((xformableAncestors == 0) || PXR_NS::UsdGeomXformable(prim).GetResetXformStack()) {
+                    targets.push_back(prim);
+                }
+                ++xformableAncestors;
+            }
+            if ((scale != 1.) && prim.IsA<PXR_NS::UsdGeomCamera>()) {
+                cameras.push_back(prim);
+            }
+        }
+    }
+
+    PXR_NS::SdfChangeBlock block;
+    for (const PXR_NS::UsdPrim& prim : targets) {
+        PXR_NS::VtTokenArray order;
+        PXR_NS::UsdGeomXformable(prim).GetXformOpOrderAttr().Get(&order);
+        const bool resets = !order.empty() && (order[0] == PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+
+        PXR_NS::VtTokenArray corrected;
+        if (resets) {
+            corrected.push_back(order[0]);
+        }
+        if (angle != 0.) {
+            const PXR_NS::TfToken name = getFreeCorrectionOpName(prim, order, "xformOp:rotateX:upAxisCorrection");
+            const PXR_NS::SdfAttributeSpecHandle op = getAttributeSpec(layer, prim.GetPath(), name, PXR_NS::SdfValueTypeNames->Double, PXR_NS::SdfVariabilityVarying);
+            if (op) {
+                op->SetDefaultValue(PXR_NS::VtValue(angle));
+                corrected.push_back(name);
+            }
+        }
+        if (scale != 1.) {
+            const PXR_NS::TfToken name = getFreeCorrectionOpName(prim, order, "xformOp:scale:unitsCorrection");
+            const PXR_NS::SdfAttributeSpecHandle op = getAttributeSpec(layer, prim.GetPath(), name, PXR_NS::SdfValueTypeNames->Double3, PXR_NS::SdfVariabilityVarying);
+            if (op) {
+                op->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3d(scale)));
+                corrected.push_back(name);
+            }
+        }
+        for (std::size_t i = resets ? 1 : 0; i < order.size(); ++i) {
+            corrected.push_back(order[i]);
+        }
+        const PXR_NS::SdfAttributeSpecHandle orderSpec = getAttributeSpec(layer, prim.GetPath(), PXR_NS::UsdGeomTokens->xformOpOrder,
+                                                                          PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+        if (orderSpec) {
+            orderSpec->SetDefaultValue(PXR_NS::VtValue(corrected));
+        }
+    }
+    for (const PXR_NS::UsdPrim& prim : cameras) {
+        rescaleCamera(layer, PXR_NS::UsdGeomCamera(prim), correction.sourceToLayer, scale);
+    }
+
+    return targets.size();
+} // authorMetricsCorrection
+
+namespace {
+    struct LayerOwner {
+        // Expired once the layer is gone, so an entry outliving its layer never answers for
+        // another layer allocated at the same address.
+        PXR_NS::SdfLayerHandle layer;
+        NodeWPtr owner;
+    };
+
+    struct LayerOwnerRegistry {
+        std::mutex mutex;
+        std::unordered_map<const PXR_NS::SdfLayer*, LayerOwner> owners;
+        std::size_t sweepAt = 1024;
+    };
+
+    LayerOwnerRegistry&
+    layerOwnerRegistry()
+    {
+        static LayerOwnerRegistry registry;
+
+        return registry;
+    }
+
+    void
+    recordLayerOwner(LayerOwnerRegistry& registry,
+                     const PXR_NS::SdfLayerHandle& layer,
+                     const NodePtr& owner)
+    {
+        if (!layer) {
+            return;
+        }
+        LayerOwner& entry = registry.owners[PXR_NS::get_pointer(layer)];
+        entry.layer = layer;
+        entry.owner = owner;
+        if (registry.owners.size() >= registry.sweepAt) {
+            for (auto it = registry.owners.begin(); it != registry.owners.end();) {
+                if (!it->second.layer || it->second.owner.expired()) {
+                    it = registry.owners.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            registry.sweepAt = std::max<std::size_t>(1024, registry.owners.size() * 2);
+        }
+    }
+} // anonymous namespace
+
+void
+setLayerOwner(const ScenePayload& payload,
+              const NodePtr& owner,
+              bool topOnly)
+{
+    if (payload.isEmpty() || !owner) {
+        return;
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (topOnly) {
+        const std::shared_ptr<const ScenePayloadImpl>& impl = payload.getImpl();
+        if (impl) {
+            recordLayerOwner(registry, impl->top.layer, owner);
+        }
+
+        return;
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        recordLayerOwner(registry, entry.layer, owner);
+    }
+}
+
+NodePtr
+getLayerOwner(const PXR_NS::SdfLayerHandle& layer)
+{
+    if (!layer) {
+        return NodePtr();
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.owners.find(PXR_NS::get_pointer(layer));
+
+    if ((found == registry.owners.end()) || (found->second.layer != layer)) {
+        return NodePtr();
+    }
+
+    return found->second.owner.lock();
+}
+
+NodePtr
+authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                PXR_NS::UsdTimeCode time,
+                std::string* layerIdentifier)
+{
+    if (layerIdentifier) {
+        layerIdentifier->clear();
+    }
+    if (!attribute) {
+        return NodePtr();
+    }
+    for (const PXR_NS::SdfPropertySpecHandle& spec : attribute.GetPropertyStack(time)) {
+        if (!spec) {
+            continue;
+        }
+        const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+        const PXR_NS::SdfAttributeSpecHandle attributeSpec = PXR_NS::TfDynamic_cast<PXR_NS::SdfAttributeSpecHandle>(spec);
+        const bool holdsValue = spec->HasDefaultValue() || (layer && (layer->GetNumTimeSamplesForPath(spec->GetPath()) > 0)) || (attributeSpec && attributeSpec->HasSpline());
+        if (!holdsValue) {
+            continue;
+        }
+        if (layerIdentifier && layer) {
+            *layerIdentifier = layer->GetIdentifier();
+        }
+
+        return getLayerOwner(layer);
+    }
+
+    return NodePtr();
+}
+
 namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under
     // them its link index lists whose composed targets leave their root. Pure overs define nothing
@@ -583,6 +1058,55 @@ namespace {
         return true;
     }
 
+    bool
+    isPassedThrough(const GraftSlot& slot,
+                    std::size_t rootIndex)
+    {
+        return !slot.passThroughRoot.empty() && (slot.rootNames[rootIndex] == slot.passThroughRoot);
+    }
+
+    PXR_NS::SdfPath
+    graftedRootOf(const GraftSlot& slot,
+                  const PXR_NS::SdfPath& destination,
+                  std::size_t rootIndex)
+    {
+        if (isPassedThrough(slot, rootIndex)) {
+            return PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(slot.rootNames[rootIndex]));
+        }
+
+        return destination.AppendChild(PXR_NS::TfToken(slot.childNames[rootIndex]));
+    }
+
+    bool
+    rootHoldsGprim(const ScenePayload& input,
+                   const std::string& name,
+                   bool* holdsGprim,
+                   std::string* errorMessage)
+    {
+        *holdsGprim = false;
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        if (!lease.isValid()) {
+            return false;
+        }
+        const PXR_NS::UsdPrim root = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(name)));
+        if (!root) {
+            return true;
+        }
+        if (root.IsA<PXR_NS::UsdGeomGprim>()) {
+            *holdsGprim = true;
+
+            return true;
+        }
+        for (const PXR_NS::UsdPrim& prim : root.GetDescendants()) {
+            if (prim.IsA<PXR_NS::UsdGeomGprim>()) {
+                *holdsGprim = true;
+                break;
+            }
+        }
+
+        return true;
+    }
+
     // Where path lies once slot's roots are grafted under destination; the empty path when it lies
     // under none of them.
     PXR_NS::SdfPath
@@ -597,7 +1121,7 @@ namespace {
         }
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             if (slot.rootNames[i] == root.GetName()) {
-                return path.ReplacePrefix(root, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+                return path.ReplacePrefix(root, graftedRootOf(slot, destination, i));
             }
         }
 
@@ -682,10 +1206,10 @@ namespace {
         return layer;
     }
 
-    // Defines destination/<child name> for each of slot's roots, referencing the root in slot's
-    // wrapper. Everything above the children is an "over": the structure layer defines it, and an
-    // over sent or withdrawn with this layer changes no prim's definition, so swapping this layer
-    // resyncs only the grafted roots.
+    // Defines destination/<child name> for each of slot's roots, or /<root> for a passed-through
+    // one, referencing the root in slot's wrapper. Everything above the children is an "over": the
+    // structure layer defines it, and an over sent or withdrawn with this layer changes no prim's
+    // definition, so swapping this layer resyncs only the grafted roots.
     PXR_NS::SdfLayerRefPtr
     authorGraftLayer(const GraftSlot& slot,
                      const PXR_NS::SdfPath& destination,
@@ -702,7 +1226,7 @@ namespace {
         carryAuthoredMetadata(slot.input, layer);
         const std::string& wrapperIdentifier = slot.wrapper->GetIdentifier();
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
-            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, graftedRootOf(slot, destination, i));
             if (!child) {
                 return PXR_NS::SdfLayerRefPtr();
             }
@@ -764,6 +1288,7 @@ namespace {
              std::vector<bool>* consumed,
              const ScenePayload& input,
              const std::string* destinationPath,
+             const std::string* passThroughRoot,
              const std::vector<std::string>* childNames)
     {
         for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -772,6 +1297,9 @@ namespace {
                 continue;
             }
             if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
+                continue;
+            }
+            if (passThroughRoot && (slot.passThroughRoot != *passThroughRoot)) {
                 continue;
             }
             if (childNames && (slot.childNames != *childNames)) {
@@ -829,16 +1357,25 @@ reparentRoots(const SceneReparentArgs& args,
         GraftSlot& slot = slots[i];
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
-        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL)) {
+        slot.passThroughRoot = args.passThroughRoot;
+        bool gprimChecked = false;
+        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
+            if (previous->passThroughRoot == slot.passThroughRoot) {
+                slot.passThroughHoldsGprim = previous->passThroughHoldsGprim;
+                gprimChecked = true;
+            }
         } else if (!readInput(slot.input, &slot.rootNames, &slot.links, errorMessage)) {
+            return false;
+        }
+        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, slot.passThroughRoot, &slot.passThroughHoldsGprim, errorMessage)) {
             return false;
         }
         if (destination.IsRootPrimPath()) {
             for (const std::string& root : slot.rootNames) {
-                if (root == destination.GetName()) {
+                if ((root == destination.GetName()) && (root != slot.passThroughRoot)) {
                     if (errorMessage) {
                         *errorMessage = "Input " + std::to_string(i + 1) + " has a root prim at " + args.destinationPath + ", the path its roots are grafted under: it would be grafted inside itself.";
                     }
@@ -850,12 +1387,17 @@ reparentRoots(const SceneReparentArgs& args,
     }
 
     // Names in input order: with autoRename, a root whose name an earlier input took gets the
-    // first "_<n>" suffix free of every name taken so far and of its own input's root names.
+    // first "_<n>" suffix free of every name taken so far and of its own input's root names. A
+    // passed-through root is never renamed: every input's composes at its own path.
     std::set<std::string> taken;
     for (GraftSlot& slot : slots) {
         const std::set<std::string> own(slot.rootNames.begin(), slot.rootNames.end());
         for (const std::string& root : slot.rootNames) {
             std::string name = root;
+            if (root == slot.passThroughRoot) {
+                slot.childNames.push_back(name);
+                continue;
+            }
             if (args.autoRename && taken.count(name)) {
                 for (U64 n = 1;; ++n) {
                     const std::string candidate = root + "_" + std::to_string(n);
@@ -896,7 +1438,7 @@ reparentRoots(const SceneReparentArgs& args,
         if (slot.rootNames.empty()) {
             continue;
         }
-        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.childNames)) {
+        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.passThroughRoot, &slot.childNames)) {
             slot.wrapper = previous->wrapper;
             slot.graft = previous->graft;
             continue;
@@ -922,6 +1464,7 @@ reparentRoots(const SceneReparentArgs& args,
         h.appendString("graft");
         h.appendU64(slot.input.getStackHash());
         h.appendString(slot.destinationPath);
+        h.appendString(slot.passThroughRoot);
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             h.appendString(slot.rootNames[i]);
             h.appendString(slot.childNames[i]);
@@ -990,7 +1533,9 @@ reparentRoots(const SceneReparentArgs& args,
                 SceneRootGraft graft;
                 graft.inputIndex = i;
                 graft.sourcePath = "/" + slot.rootNames[j];
-                graft.graftedPath = destination.AppendChild(PXR_NS::TfToken(slot.childNames[j])).GetString();
+                graft.graftedPath = graftedRootOf(slot, destination, j).GetString();
+                graft.passedThrough = isPassedThrough(slot, j);
+                graft.holdsGprim = graft.passedThrough && slot.passThroughHoldsGprim;
                 grafts->push_back(graft);
             }
         }
@@ -1017,6 +1562,17 @@ reparentRoots(const SceneReparentArgs& args,
     return true;
 } // reparentRoots
 
+PXR_NS::SdfLayerRefPtr
+createStackLayer(const ScenePayload& input,
+                 const std::string& tag)
+{
+    if (input.isEmpty()) {
+        return PXR_NS::SdfLayerRefPtr();
+    }
+
+    return createWrapper(input, tag);
+}
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {
@@ -1025,6 +1581,7 @@ struct SceneLayerMemo::Implementation {
     U64 layerHash = 0;
     ScenePayload output;
     U64 authorCount = 0;
+    NodeWPtr owner;
 };
 
 SceneLayerMemo::SceneLayerMemo()
@@ -1042,7 +1599,8 @@ SceneLayerMemo::produce(const Key& key,
                         const std::string& layerTag,
                         const AuthorFunc& author,
                         ScenePayload* output,
-                        std::string* errorMessage)
+                        std::string* errorMessage,
+                        const KeyCheckFunc& keyStillValid)
 {
     ContentHasher h;
     h.appendU64(key.nodeDigest);
@@ -1066,6 +1624,7 @@ SceneLayerMemo::produce(const Key& key,
     h.appendDouble(key.framesPerSecond);
     h.appendI64((std::int64_t)key.upAxis);
     h.appendDouble(key.metersPerUnit);
+    h.appendString(key.materialsScope);
     const U64 layerHash = h.finalize();
 
     if (!SceneOps::checkUsdRuntime(errorMessage)) {
@@ -1100,8 +1659,15 @@ SceneLayerMemo::produce(const Key& key,
     edit.framesPerSecond = key.framesPerSecond;
     edit.upAxis = key.upAxis;
     edit.metersPerUnit = key.metersPerUnit;
+    edit.materialsScope = key.materialsScope;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
+    LiveTextureSourceList liveTextures;
+    edit.liveTextures = &liveTextures;
+    bool deferredProjections = false;
+    edit.deferredProjections = &deferredProjections;
+    std::shared_ptr<const SceneLayerDependencies> dependencies;
+    edit.dependencies = &dependencies;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -1127,10 +1693,30 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    if (!liveTextures.empty()) {
+        entry.liveTextures = std::make_shared<const LiveTextureSourceList>(std::move(liveTextures));
+    }
+    entry.deferredProjections = deferredProjections;
+    entry.dependencies = dependencies;
+    if (keyStillValid && !keyStillValid(key)) {
+        // The layer is not what key describes, so it must not hash like one authored under it:
+        // stack hashes key what downstream caches hold.
+        static std::atomic<U64> unmemoized(0);
+        ContentHasher u;
+        u.appendU64(layerHash);
+        u.appendString("unmemoized");
+        u.appendU64(++unmemoized);
+        entry.hash = u.finalize();
+        *output = SceneOps::appendEntry(upstream, entry);
+        SceneOps::setLayerOwner(*output, _imp->owner.lock(), true);
+
+        return true;
+    }
     _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;
     *output = _imp->output;
+    SceneOps::setLayerOwner(_imp->output, _imp->owner.lock(), true);
 
     return true;
 } // SceneLayerMemo::produce
@@ -1142,6 +1728,14 @@ SceneLayerMemo::invalidate()
 
     _imp->valid = false;
     _imp->output = ScenePayload();
+}
+
+void
+SceneLayerMemo::setOwner(const NodePtr& owner)
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    _imp->owner = owner;
 }
 
 U64

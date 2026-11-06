@@ -68,7 +68,19 @@
 #define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
 #define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
 #define kRawMetadataCatApplied "raw/cat_applied"
+#define kRawMetadataInputColorApplied "raw/input_color_applied"
 #define kRawMetadataMonochrome "raw/monochrome"
+#define kRawMetadataHighlightPreservation "raw/highlight_preservation"
+
+// The EXIF camera and lens keys the Read sets for a raw file, from the file's own EXIF IFDs: the
+// names OiioReadSupport gives the same tags of every other file, so a node that reads them works
+// on any image. Absent when the file does not carry the tag.
+#define kExifMetadataMake "exif/Make"
+#define kExifMetadataModel "exif/Model"
+#define kExifMetadataLensModel "exif/LensModel"
+#define kExifMetadataFocalLength "exif/FocalLength"
+#define kExifMetadataFNumber "exif/FNumber"
+#define kExifMetadataSubjectDistance "exif/SubjectDistance"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -301,6 +313,13 @@ bool getCatApplied(const ImageMetadata& metadata);
 void setCatApplied(ImageMetadata* metadata);
 
 /**
+ * @brief raw/input_color_applied: 1 once a RawInputColor has moved the data out of camera RGB.
+ * Absent until one has.
+ **/
+bool getInputColorApplied(const ImageMetadata& metadata);
+void setInputColorApplied(ImageMetadata* metadata);
+
+/**
  * @brief raw/monochrome: 1 for an image without colour, darktable's DT_IMAGE_MONOCHROME (a raw
  * rawspeed decodes as one sample per photosite without a colour filter array) or
  * DT_IMAGE_MONOCHROME_BAYER (a RawDemosaic passthrough (monochrome) output). Absent otherwise.
@@ -325,6 +344,14 @@ void setModel(ImageMetadata* metadata, const std::string& model);
  **/
 double getLinearResponseLimit(const ImageMetadata& metadata);
 void setLinearResponseLimit(ImageMetadata* metadata, double limit);
+
+/**
+ * @brief raw/highlight_preservation: how many EV the camera underexposed by to protect
+ * highlights (Canon ALO, Fujifilm DR, Nikon Active D-Lighting, Pentax DR expansion), from the
+ * makernote as darktable's exif reader takes it. 0 or absent when the camera recorded none.
+ **/
+std::optional<double> getHighlightPreservation(const ImageMetadata& metadata);
+void setHighlightPreservation(ImageMetadata* metadata, double ev);
 
 /**
  * @brief raw/dng_d65_matrix: the matrix a DNG's embedded colour tags give for D65 (darktable's

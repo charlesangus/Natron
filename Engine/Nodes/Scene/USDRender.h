@@ -43,6 +43,8 @@
 
 #define kUSDRenderParamCamera "camera"
 #define kUSDRenderParamFitMode "fitMode"
+#define kUSDRenderParamHeadlight "headlight"
+#define kUSDRenderParamRenderer "renderer"
 
 // The frame metadata key of the prim path behind a primId.id value: this prefix followed by the
 // value's bits as eight lowercase hexadecimal digits.
@@ -60,12 +62,14 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDRENDER,
         .label = "USDRender",
-        .description = "Render the input scene through a camera with Storm, USD's OpenGL renderer, into the rgba, "
-                       "depth.Z and primId.id layers. rgba is as Storm shades it, in the project's working space "
+        .description = "Render the input scene through a camera with a Hydra render delegate, Storm (USD's OpenGL "
+                       "renderer) unless another is chosen, into the rgba, depth.Z and primId.id layers. Other "
+                       "delegates render on the CPU. rgba is as the delegate shades it, in the project's working space "
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. A scene without lights is lit from the camera.",
+                       "frame metadata maps each hash to its path. Only the scene's lights light it, unless Headlight "
+                       "adds one at the camera.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -151,6 +155,12 @@ private:
 
     void scheduleCameraMenuRefresh();
 
+    // Keeps a loaded renderer that is not installed as an entry of its own, so the project keeps it.
+    void keepLoadedRenderer();
+
+    // The chosen delegate's id, Storm's if none is.
+    std::string rendererId() const;
+
     // What a render at time, view and mipmap level asks Storm for; defined where USD is included.
     struct RenderSetup;
 
@@ -162,11 +172,16 @@ private:
                        RenderSetup* setup,
                        std::string* error);
 
+    // Shows warning, or clears the node's message when it is empty.
+    void showWarning(const std::string& warning);
+
     // The output format in pixels and its pixel aspect ratio, from the format knobs.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 
     KnobChoiceWPtr _camera;
     KnobChoiceWPtr _fitMode;
+    KnobBoolWPtr _headlight;
+    KnobChoiceWPtr _renderer;
     KnobChoiceWPtr _format;
     KnobIntWPtr _formatSize;
     KnobDoubleWPtr _formatPar;

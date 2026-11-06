@@ -42,9 +42,11 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/Settings.h"
 #include "Engine/ThreadPool.h"
@@ -450,10 +452,10 @@ Node::isInputOnlyAlpha(int inputNb) const
 int
 Node::getNInputs() const
 {
-    ///MT-safe, never changes
-    assert(_imp->effect);
-
-    return _imp->effect->getNInputs();
+    /// MT-safe, never changes
+    // A destroyed node has none, and an output with a queued input edit still reads it until the
+    // edit lands.
+    return _imp->effect ? _imp->effect->getNInputs() : 0;
 }
 
 void
@@ -517,6 +519,7 @@ Node::initializeInputs()
         _imp->effect->addAcceptedComponents(-1, &_imp->outputComponents);
     }
     _imp->inputsInitialized = true;
+    LoopEnd::onGraphChanged();
 
     Q_EMIT inputsInitialized();
 } // Node::initializeInputs
@@ -848,6 +851,9 @@ Node::connectInput(const NodePtr & input,
             _imp->guiInputs[inputNumber] = input;
             _imp->actionsQueued = true;
         }
+        // Marked before a render can start: one starting once the lock is released must not find
+        // the new inputs under the old hash, and onInputChanged() below must read the new hash.
+        markHashDirty();
     }
     input->connectOutput(useGuiInputs, shared_from_this());
 
@@ -866,8 +872,6 @@ Node::connectInput(const NodePtr & input,
         mustCallEnd = true;
         onInputChanged(inputNumber);
     }
-
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -938,6 +942,8 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
             _imp->guiInputs[inputNumber] = input;
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
     if (curIn) {
         QObject::connect(curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
@@ -958,8 +964,6 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(detachedInput);
     }
-
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1052,6 +1056,8 @@ Node::switchInput0And1()
             _imp->guiInputs[inputBIndex] = input0;
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
     Q_EMIT inputChanged(inputAIndex);
     Q_EMIT inputChanged(inputBIndex);
@@ -1062,7 +1068,6 @@ Node::switchInput0And1()
         onInputChanged(inputAIndex);
         onInputChanged(inputBIndex);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1118,6 +1123,7 @@ Node::connectOutput(bool useGuiValues,
             _imp->guiOutputs.push_back(output);
         }
     }
+    LoopEnd::onGraphChanged();
     Q_EMIT outputsChanged();
 }
 
@@ -1154,6 +1160,8 @@ Node::disconnectInput(int inputNumber)
             _imp->guiInputs[inputNumber].reset();
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
 
     QObject::disconnect(inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
@@ -1174,7 +1182,6 @@ Node::disconnectInput(int inputNumber)
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(inputShared);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1230,6 +1237,8 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
                 _imp->guiInputs[found].reset();
                 _imp->actionsQueued = true;
             }
+            // Under the render-start lock, as in connectInput().
+            markHashDirty();
         }
     }
     if (found != -1) {
@@ -1242,7 +1251,6 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
             onInputChanged(found);
             invalidateDetachedInputDataKind(inputShared);
         }
-        computeHash();
 
         std::string inputChangedCB = getInputChangedCallback();
         if ( !inputChangedCB.empty() ) {
@@ -1295,6 +1303,7 @@ Node::disconnectOutput(bool useGuiValues,
         }
     }
 
+    LoopEnd::onGraphChanged();
     //Will just refresh the gui
     Q_EMIT outputsChanged();
 
@@ -1620,6 +1629,7 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
+    LoopEnd::onGraphChanged();
     // A destroy deferred until the node's renders quit can finish after its app is gone.
     AppInstancePtr app = getApp();
     if (!app || app->getProject()->isProjectClosing()) {
@@ -1640,6 +1650,8 @@ Node::onInputChanged(int inputNb,
     if (isInspector) {
         isInspector->refreshActiveInputs(inputNb, isInputA);
     }
+    // The path from an RFVRead to the viewer may run through this connection.
+    RFV::scheduleReaderRefresh(app);
 
     bool shouldDoInputChanged = ( !getApp()->getProject()->isProjectClosing() && !getApp()->isCreatingNodeTree() ) ||
                                 _imp->effect->isRotoPaintNode();
@@ -1675,6 +1687,9 @@ Node::onInputChanged(int inputNb,
         ///Don't do clip preferences while loading a project, they will be refreshed globally once the project is loaded.
         _imp->effect->onInputChanged(inputNb);
         _imp->inputsModified.insert(inputNb);
+
+        // A LoopBegin wired into or out of a loop body changes what its LoopEnd shows.
+        LoopEnd::refreshLoopsOf(shared_from_this());
 
         // If the effect has render clones, kill them as the plug-in might have changed its internal state
         _imp->effect->clearRenderInstances();
@@ -1839,6 +1854,19 @@ InspectorNode::connectInput(const NodePtr& input,
 }
 
 void
+Node::editBeforeRenderStarts(const std::function<bool()>& edit)
+{
+    bool rendering;
+    std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+
+    // Marked outside the edit's own locks: the mark can let a hash read through, and that read
+    // may take them.
+    if (edit()) {
+        markHashDirty();
+    }
+}
+
+void
 InspectorNode::setActiveInputAndRefresh(int inputNb,
                                         bool isASide)
 {
@@ -1849,8 +1877,7 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    computeHash();
-
+    // refreshActiveInputs() marks the hash, so the rest of onInputChanged() reads the new one.
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);
 
@@ -1872,8 +1899,12 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
 {
     assert( QThread::currentThread() == qApp->thread() );
     NodePtr inputNode = getRealInput(inputNbChanged);
-    {
+    // The viewer's content hash folds the active inputs: a render starting once they changed must
+    // find the hash marked, and so must the rest of onInputChanged().
+    bool bSideSet = false;
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
+        const int before[2] = { _activeInputs[0], _activeInputs[1] };
         if (!inputNode) {
             ///check if the input was one of the active ones if so set to -1
             if (_activeInputs[0] == inputNbChanged) {
@@ -1883,16 +1914,7 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
             }
         } else {
             if ( !isASide && (_activeInputs[0] != -1) ) {
-                ViewerInstance* isViewer = isEffectViewer();
-                if (isViewer) {
-                    OpenGLViewerI* viewerUI = isViewer->getUiContext();
-                    if (viewerUI) {
-                        ViewerCompositingOperatorEnum op = viewerUI->getCompositingOperator();
-                        if (op == eViewerCompositingOperatorNone) {
-                            viewerUI->setCompositingOperator(eViewerCompositingOperatorWipeUnder);
-                        }
-                    }
-                }
+                bSideSet = true;
                 _activeInputs[1] = inputNbChanged;
             } else {
                 _activeInputs[0] = inputNbChanged;
@@ -1900,6 +1922,14 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
                     _activeInputs[1] = inputNbChanged;
                 }
             }
+        }
+        return (before[0] != _activeInputs[0]) || (before[1] != _activeInputs[1]);
+    });
+    if (bSideSet) {
+        ViewerInstance* isViewer = isEffectViewer();
+        OpenGLViewerI* viewerUI = isViewer ? isViewer->getUiContext() : 0;
+        if (viewerUI && (viewerUI->getCompositingOperator() == eViewerCompositingOperatorNone)) {
+            viewerUI->setCompositingOperator(eViewerCompositingOperatorWipeUnder);
         }
     }
     Q_EMIT activeInputsChanged();
@@ -1982,34 +2012,30 @@ void
 InspectorNode::setInputA(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
-    bool changed;
-    {
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
-        changed = _activeInputs[0] != inputNb;
+        const bool changed = _activeInputs[0] != inputNb;
         _activeInputs[0] = inputNb;
-    }
-    // The viewer's content hash folds the active inputs.
-    if (changed) {
-        computeHash();
-    }
+
+        return changed;
+    });
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 void
 InspectorNode::setInputB(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
-    bool changed;
-    {
+    editBeforeRenderStarts([&]() {
         QMutexLocker l(&_activeInputsMutex);
-        changed = _activeInputs[1] != inputNb;
+        const bool changed = _activeInputs[1] != inputNb;
         _activeInputs[1] = inputNb;
-    }
-    // The viewer's content hash folds the active inputs.
-    if (changed) {
-        computeHash();
-    }
+
+        return changed;
+    });
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 RenderContextReadSet
@@ -2052,6 +2078,7 @@ Node::getContextReadSuccessors(std::vector<NodePtr>* successors,
             overridden->push_back(RenderContextReadSet());
         }
     }
+    _imp->effect->appendExtraContextReadSuccessors(successors, overridden);
 }
 
 namespace {
@@ -2130,9 +2157,10 @@ Node::getUpstreamContextReadSet() const
     static const RenderContextReadSetConstPtr emptyReads = std::make_shared<const RenderContextReadSet>();
 
     // Tarjan's strongly connected components, iteratively so that a deep graph cannot overflow
-    // the stack. Expressions can make the graph cyclic; the nodes of a cycle read each other, so
-    // they share one read-set. Every node walked gets its memo, so asking each node of a graph
-    // in turn walks the graph once.
+    // the stack. Expressions and Feedback LoopBegins can make the graph cyclic. An edge of a cycle
+    // can override variables, as the LoopEnd of a loop nested in a Feedback body does, so the nodes
+    // of a cycle read different sets: each component is solved to its least fixed point. Every
+    // node walked gets its memo, so asking each node of a graph in turn walks the graph once.
     struct Visit {
         const Node* node;
         NodePtr hold;
@@ -2192,19 +2220,42 @@ Node::getUpstreamContextReadSet() const
 
         callStack.pop_back();
         if (visits[v].lowlink == visits[v].index) {
-            RenderContextReadSet componentReads;
             std::size_t first = componentStack.size();
             do {
                 --first;
-                componentReads.merge(visits[componentStack[first]].reads);
             } while (componentStack[first] != v);
-            const RenderContextReadSetConstPtr closure = componentReads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(std::move(componentReads));
+            // Each member's reads hold what leaves the component so far. Reads flow against the
+            // edges and discovery order follows them, so walking it backwards takes few passes.
+            bool changed = (componentStack.size() - first) > 1;
+            while (changed) {
+                changed = false;
+                for (std::size_t i = componentStack.size(); i-- > first;) {
+                    Visit& member = visits[componentStack[i]];
+                    for (std::size_t edge = 0; edge < member.successors.size(); ++edge) {
+                        std::unordered_map<const Node*, std::size_t>::const_iterator found = visitOf.find(member.successors[edge].get());
+                        if ((found == visitOf.end()) || !visits[found->second].onStack || (found->second == componentStack[i])) {
+                            continue;
+                        }
+                        const bool readAll = member.reads.readsAll();
+                        const std::size_t nNames = member.reads.names().size();
+                        mergeSuccessorReads(&member.reads, visits[found->second].reads, member.overridden[edge]);
+                        changed = changed || (member.reads.readsAll() != readAll) || (member.reads.names().size() != nNames);
+                    }
+                }
+            }
+            RenderContextReadSetConstPtr closure;
+            for (std::size_t i = first; i < componentStack.size(); ++i) {
+                Visit& member = visits[componentStack[i]];
+                if (!closure || (*closure != member.reads)) {
+                    closure = member.reads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(member.reads);
+                }
+                member.closure = closure;
+                member.node->setMemoizedContextReads(generation, closure);
+            }
             for (std::size_t i = first; i < componentStack.size(); ++i) {
                 Visit& member = visits[componentStack[i]];
                 member.onStack = false;
-                member.closure = closure;
                 member.reads = RenderContextReadSet();
-                member.node->setMemoizedContextReads(generation, closure);
             }
             componentStack.resize(first);
         }

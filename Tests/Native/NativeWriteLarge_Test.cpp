@@ -268,12 +268,7 @@ protected:
         _writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
         ASSERT_TRUE(bool(_writer));
         // The values are compared with the constants that went in, so the file is written without conversion.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_writer->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_writer->getKnobByName("ocioOutputSpaceSet").get());
-        ASSERT_TRUE(outputSpace != NULL);
-        ASSERT_TRUE(outputSpaceSet != NULL);
-        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        outputSpaceSet->setValue(true);
+        fileInWorkingSpace(_writer);
         connectNodes(_checker, _writer, 0, true);
     }
 
@@ -326,9 +321,6 @@ TEST_F(NativeWriteLargeTest, NodeWritesAFrameOverTwoGigabytes)
     KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_writer->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(file != NULL);
     file->setValue(path);
-    ASSERT_TRUE(setChoice(kNatronWriteParamFormatType, kNatronWriteFormatTypeFixed));
-    ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatSize, { (double)kWidth, (double)kHeight }));
-    ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatPar, { 1. }));
     ASSERT_TRUE(setChoice(kNatronWriteParamBitDepth, "32f"));
     ASSERT_TRUE(setChoice(kNatronWriteParamCompression, "none"));
 

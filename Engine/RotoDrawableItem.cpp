@@ -38,6 +38,9 @@
 
 #include "Serialization/KnobSerialization.h"
 
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/RotoContextPrivate.h"
 
 #include "Engine/AppInstance.h"
@@ -52,6 +55,8 @@
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Time/FrameHold.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -64,8 +69,6 @@
 #include "Engine/ViewerInstance.h"
 
 #define kBlurCImgParamSize "size"
-#define kTimeOffsetParamOffset "timeOffset"
-#define kFrameHoldParamFirstFrame "firstFrame"
 
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
@@ -123,6 +126,14 @@ RotoDrawableItem::addKnob(const KnobIPtr& knob)
 {
     _imp->observeKnob(knob);
     _imp->knobs.push_back(knob);
+}
+
+void
+RotoDrawableItem::addHostKnob(const KnobIPtr& knob)
+{
+    if (knob) {
+        addKnob(knob);
+    }
 }
 
 void
@@ -192,17 +203,17 @@ RotoDrawableItem::createNodes(bool connectNodes)
 
     switch (type) {
     case eRotoStrokeTypeBlur:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_BLURCIMG);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_BLUR);
         break;
     case eRotoStrokeTypeEraser:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_CONSTANT);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_CONSTANT);
         break;
     case eRotoStrokeTypeSolid:
         pluginId = QString::fromUtf8(PLUGINID_OFX_ROTO);
         break;
     case eRotoStrokeTypeClone:
     case eRotoStrokeTypeReveal:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_TRANSFORM);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_TRANSFORM);
         break;
     case eRotoStrokeTypeBurn:
     case eRotoStrokeTypeDodge:
@@ -237,27 +248,27 @@ RotoDrawableItem::createNodes(bool connectNodes)
             {
                 fixedNamePrefix = baseFixedName;
                 fixedNamePrefix.append( QString::fromUtf8("TimeOffset") );
-                CreateNodeArgs args(PLUGINID_OFX_TIMEOFFSET, NodeCollectionPtr() );
+                CreateNodeArgs args(PLUGINID_NATRON_TIMEOFFSET, NodeCollectionPtr());
                 args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
                 args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
                 args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
 
                 _imp->timeOffsetNode = app->createNode(args);
                 if (!_imp->timeOffsetNode) {
-                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_OFX_TIMEOFFSET " in order to work");
+                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_NATRON_TIMEOFFSET " in order to work");
                 }
                 assert(_imp->timeOffsetNode);
             }
             {
                 fixedNamePrefix = baseFixedName;
                 fixedNamePrefix.append( QString::fromUtf8("FrameHold") );
-                CreateNodeArgs args( PLUGINID_OFX_FRAMEHOLD, NodeCollectionPtr() );
+                CreateNodeArgs args(PLUGINID_NATRON_FRAMEHOLD, NodeCollectionPtr());
                 args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
                 args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
                 args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
                 _imp->frameHoldNode = app->createNode(args);
                 if (!_imp->frameHoldNode) {
-                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_OFX_FRAMEHOLD " in order to work");
+                    throw std::runtime_error("Rotopaint requires the plug-in " PLUGINID_NATRON_FRAMEHOLD " in order to work");
                 }
                 assert(_imp->frameHoldNode);
             }
@@ -353,7 +364,9 @@ RotoDrawableItem::createNodes(bool connectNodes)
 std::string
 RotoDrawableItem::getCacheID() const
 {
-    assert(_imp->mergeNode);
+    if (!_imp->mergeNode) {
+        return getScriptName() + ".RotoDrawableItem";
+    }
 
     //The cache iD is the one of the internal merge node + RotoDrawableItem
     return _imp->mergeNode->getCacheID() + ".RotoDrawableItem";
@@ -362,8 +375,10 @@ RotoDrawableItem::getCacheID() const
 void
 RotoDrawableItem::disconnectNodes()
 {
-    _imp->mergeNode->disconnectInput(0);
-    _imp->mergeNode->disconnectInput(1);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->disconnectInput(0);
+        _imp->mergeNode->disconnectInput(1);
+    }
     if (_imp->effectNode) {
         _imp->effectNode->disconnectInput(0);
     }
@@ -398,7 +413,9 @@ RotoDrawableItem::activateNodes()
     if (_imp->effectNode) {
         _imp->effectNode->activate(std::list<NodePtr>(), false, false);
     }
-    _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->activate(std::list<NodePtr>(), false, false);
     }
@@ -587,11 +604,11 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         KnobIPtr offsetKnob;
 
         if (offsetMode_i == 0) {
-            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamOffset);
+            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamTimeOffset);
         } else {
             offsetKnob = _imp->frameHoldNode->getKnobByName(kFrameHoldParamFirstFrame);
         }
-        KnobInt* offset = dynamic_cast<KnobInt*>( offsetKnob.get() );
+        KnobDouble* offset = dynamic_cast<KnobDouble*>(offsetKnob.get());
         if (offset) {
             double value = _imp->timeOffset->getValue();
             offset->setValue(value);
@@ -737,6 +754,9 @@ RotoDrawableItem::getFrameHoldNode() const
 void
 RotoDrawableItem::refreshNodesConnections()
 {
+    if (!_imp->mergeNode) {
+        return;
+    }
     RotoDrawableItem* previous = findPreviousInHierarchy();
     NodePtr rotoPaintInput =  getContext()->getNode()->getInput(0);
     NodePtr upstreamNode = previous ? previous->getMergeNode() : rotoPaintInput;
@@ -886,7 +906,9 @@ RotoDrawableItem::resetNodesThreadSafety()
     if (_imp->effectNode) {
         _imp->effectNode->revertToPluginThreadSafety();
     }
-    _imp->mergeNode->revertToPluginThreadSafety();
+    if (_imp->mergeNode) {
+        _imp->mergeNode->revertToPluginThreadSafety();
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->revertToPluginThreadSafety();
     }
@@ -904,15 +926,12 @@ RotoDrawableItem::clone(const RotoItem* other)
     if (!otherDrawable) {
         return;
     }
-    const std::list<KnobIPtr>& otherKnobs = otherDrawable->getKnobs();
-    assert( otherKnobs.size() == _imp->knobs.size() );
-    if ( otherKnobs.size() != _imp->knobs.size() ) {
-        return;
-    }
-    std::list<KnobIPtr>::iterator it = _imp->knobs.begin();
-    std::list<KnobIPtr>::const_iterator otherIt = otherKnobs.begin();
-    for (; it != _imp->knobs.end(); ++it, ++otherIt) {
-        (*it)->clone(*otherIt);
+    // By name: a hosting effect may add knobs of its own after the built-in ones.
+    for (std::list<KnobIPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr otherKnob = otherDrawable->getKnobByName((*it)->getName());
+        if (otherKnob) {
+            (*it)->clone(otherKnob);
+        }
     }
     {
         QMutexLocker l(&itemMutex);
@@ -1051,11 +1070,11 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
         KnobIPtr offsetKnob;
 
         if (offsetMode_i == 0) {
-            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamOffset);
+            offsetKnob = _imp->timeOffsetNode->getKnobByName(kTimeOffsetParamTimeOffset);
         } else {
             offsetKnob = _imp->frameHoldNode->getKnobByName(kFrameHoldParamFirstFrame);
         }
-        KnobInt* offset = dynamic_cast<KnobInt*>( offsetKnob.get() );
+        KnobDouble* offset = dynamic_cast<KnobDouble*>(offsetKnob.get());
         if (offset) {
             offset->clone( _imp->timeOffset.get() );
         }
@@ -1445,6 +1464,21 @@ void
 RotoDrawableItem::getTransformAtTime(double time,
                                      Transform::Matrix3x3* matrix) const
 {
+    RotoCurveContextPtr context = getContext();
+    if (!context) {
+        getLocalTransformAtTime(time, matrix);
+
+        return;
+    }
+    Transform::Matrix3x3 local;
+    getLocalTransformAtTime(time, &local);
+    context->composeItemTransform(*this, time, local, matrix);
+}
+
+void
+RotoDrawableItem::getLocalTransformAtTime(double time,
+                                          Transform::Matrix3x3* matrix) const
+{
     double tx = _imp->translate->getValueAtTime(time, 0);
     double ty = _imp->translate->getValueAtTime(time, 1);
     double sx = _imp->scale->getValueAtTime(time, 0);
@@ -1537,8 +1571,14 @@ RotoDrawableItem::setExtraMatrix(bool setKeyframe,
 void
 RotoDrawableItem::resetTransformCenter()
 {
-    double time = getContext()->getNode()->getApp()->getTimeLine()->currentFrame();
-    RectD bbox =  getBoundingBox(time);
+    RotoCurveContextPtr context = getContext();
+    double time = context->getNode()->getApp()->getTimeLine()->currentFrame();
+    double centerX, centerY;
+    if (!context->getDefaultTransformCenter(time, &centerX, &centerY)) {
+        RectD bbox = getBoundingBox(time);
+        centerX = (bbox.x1 + bbox.x2) / 2.;
+        centerY = (bbox.y1 + bbox.y2) / 2.;
+    }
     KnobDoublePtr centerKnob = _imp->center;
 
     centerKnob->beginChanges();
@@ -1551,7 +1591,7 @@ RotoDrawableItem::resetTransformCenter()
     }
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 0);
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 1);
-    centerKnob->setValues( (bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited );
+    centerKnob->setValues(centerX, centerY, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     if (hasMaster.second) {
         for (int i = 0; i < centerKnob->getDimension(); ++i) {
             dynamic_cast<KnobI*>( centerKnob.get() )->slaveTo(i, hasMaster.second, i);

@@ -165,6 +165,14 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     return plan;
 }
 
+StagePlan
+StagedImageEffect::resolveRenderPlan(double time,
+                                     ViewIdx view,
+                                     const std::bitset<4>& processChannels)
+{
+    return resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, processChannels);
+}
+
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
@@ -212,7 +220,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
-        return opPassesInputRoI(inputNb, outputRect, scale);
+        return opPassesInputRoI(inputNb, time, view, outputRect, scale);
     }
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);
@@ -693,9 +701,8 @@ FramesNeededMap
 StagedImageEffect::getFramesNeeded(double time,
                                    ViewIdx view)
 {
-    if (imagePipelineSpec().op != OpKind::Route) {
-        return NativeEffectBase::getFramesNeeded(time, view);
-    }
+    // Whatever the op kind, an answer other than None is the identity isIdentity() reports, at
+    // the time route() chose, which is what the scheduler must plan.
     const Route answer = route(time, view);
     if (answer.kind == Route::Kind::None) {
         return NativeEffectBase::getFramesNeeded(time, view);
@@ -849,7 +856,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
             return eStatusFailed;
         }
 
-        return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
+        return renderOp(args, resolveRenderPlan(args.time, args.view, args.processChannels));
     }
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
     const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);

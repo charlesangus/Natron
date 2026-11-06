@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
@@ -121,6 +122,7 @@ Gui::setupUi()
     _imp->createDopeSheetGui();
     _imp->createScriptEditorGui();
     _imp->createProgressPanelGui();
+    _imp->createSceneGraphPanelGui();
     ///Must be absolutely called once _nodeGraphArea has been initialized.
     _imp->createPropertiesBinGui();
 
@@ -304,7 +306,13 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    if (_imp->_activeViewer == viewer) {
+        return;
+    }
     _imp->_activeViewer = viewer;
+    Q_EMIT activeViewerChanged();
+    // RFVRead lists what reaches it from the active viewer.
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 ViewerTab*

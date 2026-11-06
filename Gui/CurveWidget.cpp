@@ -106,6 +106,8 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         for (std::list<CurveGuiPtr>::const_iterator it = editedCurves.begin(); it != editedCurves.end(); ++it) {
             if (KnobCurveGui* knobCurve = dynamic_cast<KnobCurveGui*>(it->get())) {
                 scope.touchKnob(knobCurve->getInternalKnob());
+            } else if (DriverCurveGui* driverCurve = dynamic_cast<DriverCurveGui*>(it->get())) {
+                scope.touchKnob(driverCurve->getInternalKnob());
             } else if (BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>(it->get())) {
                 RotoCurveContextPtr roto = bezierCurve->getRotoContext();
                 if (roto) {
@@ -124,6 +126,12 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
         }
         if (!foldedCurves.empty()) {
             cmd = new FoldedCurveEditCommand(editor, cmd, foldedCurves);
+        }
+    }
+    if (curveCmd) {
+        const std::list<KnobIPtr> driverKnobs = DriverCurveEditCommand::driverKnobsOf(editedCurves);
+        if (!driverKnobs.empty()) {
+            cmd = new DriverCurveEditCommand(cmd, driverKnobs);
         }
     }
 
@@ -1864,14 +1872,19 @@ CurveWidget::deleteSelectedKeyFrames()
 
     std::map<CurveGuiPtr, std::vector<KeyFrame> >  toRemove;
     for (SelectedKeys::iterator it = _imp->_selectedKeyFrames.begin(); it != _imp->_selectedKeyFrames.end(); ++it) {
+        // Control point keys are their shape's keyframes, deleted in the dope sheet.
+        if (dynamic_cast<BezierCPCurveGui*>(it->first.get())) {
+            continue;
+        }
         std::vector<KeyFrame>& vect = toRemove[it->first];
         for (std::list<KeyPtr>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
             vect.push_back( (*it2)->key );
         }
     }
 
-    pushUndoCommand( new RemoveKeysCommand(this, toRemove) );
-
+    if (!toRemove.empty()) {
+        pushUndoCommand(new RemoveKeysCommand(this, toRemove));
+    }
 
     _imp->_selectedKeyFrames.clear();
 
@@ -1908,6 +1921,9 @@ CurveWidget::pasteKeyFramesFromClipBoardToSelectedCurve()
     if (!curve) {
         Dialogs::warningDialog( tr("Curve Editor").toStdString(), tr("You must select a curve first.").toStdString() );
 
+        return;
+    }
+    if (dynamic_cast<BezierCPCurveGui*>(curve.get())) {
         return;
     }
     //this function will call update() for us
@@ -2403,6 +2419,9 @@ CurveWidget::importCurveFromAscii()
         }
         ///now restore the curves since we know what we read is valid
         for (std::map<CurveGuiPtr, std::vector<double> >::const_iterator it = curvesValues.begin(); it != curvesValues.end(); ++it) {
+            if (dynamic_cast<BezierCPCurveGui*>(it->first.get())) {
+                continue;
+            }
             std::vector<KeyFrame> keys;
             const std::vector<double> & values = it->second;
             double xIndex = x;
@@ -2441,6 +2460,10 @@ void
 CurveWidget::addKey(const CurveGuiPtr& curve, double xCurve, double yCurve)
 {
     _imp->selectCurve(curve);
+    // A control point is keyed with its shape.
+    if (dynamic_cast<BezierCPCurveGui*>(curve.get())) {
+        return;
+    }
 
     Curve::YRange yRange = curve->getCurveYRange();
     if ( (yCurve < yRange.min) || (yCurve > yRange.max) ) {

@@ -31,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -51,6 +52,7 @@
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -99,6 +101,27 @@ protected:
         bezier->setCurveFinished(true);
 
         return bezier;
+    }
+
+    // The viewer opens the menu when the node signals, so each right-click has to signal once.
+    static void expectEveryRightClickOpensTheMenu(const NodePtr& node,
+                                                  const RotoCurveInteractPtr& ui,
+                                                  const BezierPtr& curve)
+    {
+        int opened = 0;
+        QObject receiver;
+        QObject::connect(node.get(), &Node::rightClickMenuKnobPopulated, &receiver, [&opened]() { ++opened; });
+
+        ui->showMenuForCurve(curve);
+        EXPECT_EQ(1, opened);
+        ui->showMenuForCurve(curve);
+        EXPECT_EQ(2, opened);
+
+        const BezierCPPtr point = curve->getControlPointAtIndex(0);
+        ui->showMenuForControlPoint(point);
+        EXPECT_EQ(3, opened);
+        ui->showMenuForControlPoint(point);
+        EXPECT_EQ(4, opened);
     }
 };
 
@@ -364,6 +387,33 @@ TEST_F(CurveHostTest, TheHostHasTheCurveViewerAndMenuKnobs)
 
     EXPECT_FALSE(bool(effect->getKnobByName(kRotoUIParamMultiStrokeEnabled)));
     EXPECT_FALSE(bool(effect->getKnobByName(kRotoUIParamBlendingOp)));
+}
+
+TEST_F(CurveHostTest, EveryRightClickOpensTheMenuOfTheCurveHost)
+{
+    NodePtr host = createNode(QString::fromUtf8(kTestPluginIDCurveHost));
+    ASSERT_TRUE(bool(host));
+    CurveHostTestEffect* effect = dynamic_cast<CurveHostTestEffect*>(host->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    BezierPtr bezier = makeQuad(host->getCurveContext());
+    ASSERT_TRUE(bool(bezier));
+
+    expectEveryRightClickOpensTheMenu(host, effect->getInteract(), bezier);
+}
+
+TEST_F(CurveHostTest, EveryRightClickOpensTheMenuOfRotoAndRotoPaint)
+{
+    const char* plugins[] = { PLUGINID_NATRON_ROTO, PLUGINID_NATRON_ROTOPAINT };
+    for (std::size_t i = 0; i < sizeof(plugins) / sizeof(plugins[0]); ++i) {
+        NodePtr node = createNode(QString::fromUtf8(plugins[i]));
+        ASSERT_TRUE(bool(node)) << plugins[i];
+        RotoPaint* effect = dynamic_cast<RotoPaint*>(node->getEffectInstance().get());
+        ASSERT_TRUE(effect) << plugins[i];
+        BezierPtr square = node->getRotoContext()->makeSquare(0., 100., 100., 1.);
+        ASSERT_TRUE(bool(square)) << plugins[i];
+
+        expectEveryRightClickOpensTheMenu(node, effect->getInteract(), square);
+    }
 }
 
 TEST_F(CurveHostTest, ASelectionChangeRedrawsTheOverlay)

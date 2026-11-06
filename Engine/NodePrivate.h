@@ -162,6 +162,7 @@ public:
         , app(app_)
         , isPartOfProject(true)
         , knobsInitialized(false)
+        , restoringKnobs(false)
         , inputsInitialized(false)
         , outputsMutex()
         , outputs()
@@ -177,6 +178,7 @@ public:
         , scriptName()
         , label()
         , cacheID()
+        , cacheIDClaimed(false)
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -349,6 +351,8 @@ public:
     AppInstanceWPtr app; // pointer to the app: needed to access the application's default-project's format
     bool isPartOfProject;
     bool knobsInitialized;
+    // Main thread only: set while fromSerialization() restores the knobs.
+    bool restoringKnobs;
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
@@ -374,11 +378,9 @@ public:
     std::string scriptName; //node name internally and as visible to python
     std::string label; // node label as visible in the GUI
 
-    ///The cacheID is the first script name that was given to a node
-    ///it is then used in the cache to identify images that belong to this node
-    ///In order for the cache to be persistent, the cacheID is serialized with the node
-    ///and 2 nodes cannot have the same cacheID.
+    // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
+    bool cacheIDClaimed; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;
@@ -586,9 +588,9 @@ public:
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
 
-    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
-    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
-    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (DenoiseSharpen collapses
+    // R/G/B into one flag, ClipTest ORs the selection into a zebra decision): adoptChannelQuad()
+    // leaves their quad alone instead of forcing it.
     bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose

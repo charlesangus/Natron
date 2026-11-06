@@ -44,6 +44,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/KnobReader.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -852,12 +853,79 @@ IErodeDilateAxis::at(float map) const
     return std::min(std::max(r, std::min(black, white)), std::max(black, white));
 }
 
-float
-IErodeDilateAxis::largest(const MapRange& range) const
+void
+IErodeDilateAxis::extent(const MapRange& range,
+                         float* lo,
+                         float* hi) const
 {
-    // at() is monotonic, so its largest value over the range is at one end.
-    return std::max(at(range.min), at(range.max));
+    // at() is monotonic, so its extrema over the range are at its ends.
+    const float a = at(range.min);
+    const float b = at(range.max);
+    *lo = std::min(a, b);
+    *hi = std::max(a, b);
 }
+
+namespace IErodeDilateKernels {
+namespace {
+    // The positive part, never -0, so that the GPU's mirror gives the same bits.
+    inline float
+    positivePart(float v)
+    {
+        return (v > 0.f) ? v : 0.f;
+    }
+
+    inline int
+    haloOf(float radius)
+    {
+        return (radius > 0.f) ? (int)std::ceil(radius) : 0;
+    }
+} // anonymous namespace
+
+void
+stageRadii(int stage,
+           float rx,
+           float ry,
+           float* sx,
+           float* sy)
+{
+    const bool opposite = ((rx > 0.f) && (ry < 0.f)) || ((rx < 0.f) && (ry > 0.f));
+    const bool dilate = stageTakesMax(stage);
+    const float x = dilate ? -rx : rx;
+    const float y = dilate ? -ry : ry;
+
+    if (stage < 2) {
+        *sx = positivePart(x);
+        *sy = opposite ? 0.f : positivePart(y);
+    } else {
+        *sx = 0.f;
+        *sy = opposite ? positivePart(y) : 0.f;
+    }
+}
+
+void
+stageHalos(const IErodeDilateAxis& x,
+           const IErodeDilateAxis& y,
+           const MapRange& range,
+           int haloX[kStageCount],
+           int haloY[kStageCount])
+{
+    float xlo;
+    float xhi;
+    float ylo;
+    float yhi;
+    x.extent(range, &xlo, &xhi);
+    y.extent(range, &ylo, &yhi);
+
+    haloX[0] = haloOf(xhi);
+    haloY[0] = haloOf(yhi);
+    haloX[1] = haloOf(-xlo);
+    haloY[1] = haloOf(-ylo);
+    haloX[2] = 0;
+    haloY[2] = (xlo < 0.f) ? haloOf(yhi) : 0;
+    haloX[3] = 0;
+    haloY[3] = (xhi > 0.f) ? haloOf(-ylo) : 0;
+}
+} // namespace IErodeDilateKernels
 
 void
 IErodeDilateParams::axes(const RenderScale& scale,
@@ -866,11 +934,11 @@ IErodeDilateParams::axes(const RenderScale& scale,
 {
     const OfxPointD rs = scale.toOfxPointD();
 
-    // Like Erode's, the radii are not divided by the pixel aspect ratio.
-    x->black = (float)std::max(0., map.sizeAtBlack[0] * rs.x);
-    x->white = (float)std::max(0., sizeX * rs.x);
-    y->black = (float)std::max(0., map.sizeAtBlack[1] * rs.y);
-    y->white = (float)std::max(0., sizeY * rs.y);
+    // Like ErodeDilate's, the radii are not divided by the pixel aspect ratio.
+    x->black = (float)(map.sizeAtBlack[0] * rs.x);
+    x->white = (float)(sizeX * rs.x);
+    y->black = (float)(map.sizeAtBlack[1] * rs.y);
+    y->white = (float)(sizeY * rs.y);
 }
 
 namespace {
@@ -880,34 +948,23 @@ constexpr InputSpec kIErodeDilateInputs[] = {
     kMapInputSpec,
 };
 
-template <ErodeDilateMode MODE>
 struct IErodeDilateSpec {
-    static constexpr bool kDilate = (MODE == ErodeDilateMode::Dilate);
-
     static constexpr NodeSpec kNodeSpec = {
-        .id = kDilate ? PLUGINID_NATRON_IDILATE : PLUGINID_NATRON_IERODE,
-        .label = kDilate ? "IDilate" : "IErode",
-        .description = kDilate ? "Dilate the input stream by a structuring element whose size varies per pixel with the Map input: each pixel takes the maximum of the pixels around it.\n"
-                                 "\n"
-                                 "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
-                                 "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
-                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                                 "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
-                                 "\n"
-                                 "The element is a rectangle of 2*size+1 pixels, as Dilate's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
-                                 "the rectangle gives Dilate's result. The Mask and Mix limit the result as usual."
-                               : "Erode the input stream by a structuring element whose size varies per pixel with the Map input: each pixel takes the minimum of the pixels around it.\n"
-                                 "\n"
-                                 "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
-                                 "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
-                                 "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                                 "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
-                                 "\n"
-                                 "The element is a rectangle of 2*size+1 pixels, as Erode's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
-                                 "the rectangle gives Erode's result. The Mask and Mix limit the result as usual.",
+        .id = PLUGINID_NATRON_IERODEDILATE,
+        .label = "IErodeDilate",
+        .description = "Erode or dilate the input stream by a structuring element whose signed size varies per pixel with the Map input: a positive size erodes (each pixel takes "
+                       "the minimum of the pixels around it), a negative size dilates (the maximum), so the operation may change across the image as the size crosses 0.\n"
+                       "\n"
+                       "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
+                       "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
+                       "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
+                       "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
+                       "\n"
+                       "The element is a rectangle of 2*|size|+1 pixels, as ErodeDilate's, or a disc (an ellipse when the two sizes differ). Where the X and Y sizes have opposite signs, "
+                       "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.",
         .grouping = PLUGIN_GROUP_FILTER,
-        .majorVersion = kDilate ? PLUGIN_MAJOR_NATRON_IDILATE : PLUGIN_MAJOR_NATRON_IERODE,
-        .icon = kDilate ? NATRON_IMAGES_PATH "NativeNodes/IDilate.png" : NATRON_IMAGES_PATH "NativeNodes/IErode.png",
+        .majorVersion = PLUGIN_MAJOR_NATRON_IERODEDILATE,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/IErodeDilate.png",
         .inputs = kIErodeDilateInputs,
     };
 
@@ -926,19 +983,33 @@ struct IErodeDilateSpec {
 const std::size_t kTileBudgetFloats = (std::size_t)1 << 22;
 
 /**
- * @brief What the passes of one render share: the tile's plan, and its buffers for every plane.
- * The first pass sizes the buffers for the plane job it runs in, as IBlur's state does; every
- * buffer is written before it is read, so they start uninitialised.
+ * @brief The tile buffers of every plane, which the stages of one render share since they run one
+ * after the other. Every buffer is written before it is read, so they start uninitialised.
  **/
-struct MorphologyState {
-    std::shared_ptr<const MapPlane> map;
-    IErodeDilateKernels::TilePlan plan;
-
+struct MorphologyBuffers {
     std::mutex mutex;
     std::unique_ptr<float[]> tables;
     std::size_t tablesCapacity = 0;
     std::unique_ptr<float[]> extra;
     std::size_t extraCapacity = 0;
+};
+
+/**
+ * @brief What the passes of one stage share: the tile's plan, the slot it reads and the slot it
+ * writes, and the buffers. The first pass sizes the buffers for the plane job it runs in, as
+ * IBlur's state does.
+ **/
+struct MorphologyState {
+    std::shared_ptr<const MapPlane> map;
+    IErodeDilateKernels::TilePlan plan;
+    int src = 0;
+    int dst = 1;
+    std::shared_ptr<MorphologyBuffers> buffers;
+
+    float* tables() const
+    {
+        return buffers->tables.get();
+    }
 
     std::size_t planeTables(const PassScratch& scratch) const
     {
@@ -957,23 +1028,24 @@ struct MorphologyState {
     IErodeDilateKernels::TilePlane plane(const PassScratch& scratch,
                                          int p) const
     {
-        return IErodeDilateKernels::tilePlane(plan, scratch.plane(0, p), scratch.width, scratch.height, scratch.rect.x1, scratch.rect.y1);
+        return IErodeDilateKernels::tilePlane(plan, scratch.plane(src, p), scratch.width, scratch.height, scratch.rect.x1, scratch.rect.y1);
     }
 
     void reserve(const PassScratch& scratch)
     {
-        const std::lock_guard<std::mutex> lock(mutex);
+        MorphologyBuffers& b = *buffers;
+        const std::lock_guard<std::mutex> lock(b.mutex);
         const std::size_t nPlanes = (std::size_t)scratch.nPlanes;
         const std::size_t size = std::max<std::size_t>(1, planeTables(scratch) * nPlanes);
-        if (tablesCapacity < size) {
-            tables.reset(new float[size]);
-            tablesCapacity = size;
+        if (b.tablesCapacity < size) {
+            b.tables.reset(new float[size]);
+            b.tablesCapacity = size;
         }
         if (plan.strategy == IErodeDilateKernels::TileStrategy::Rows) {
             const std::size_t extraSize = std::max<std::size_t>(1, (std::size_t)plan.extraElements() * bandArea(plane(scratch, 0)) * nPlanes);
-            if (extraCapacity < extraSize) {
-                extra.reset(new float[extraSize]);
-                extraCapacity = extraSize;
+            if (b.extraCapacity < extraSize) {
+                b.extra.reset(new float[extraSize]);
+                b.extraCapacity = extraSize;
             }
         }
     }
@@ -984,7 +1056,7 @@ struct MorphologyState {
                                                int ra) const
     {
         IErodeDilateKernels::TileElements out;
-        out.e[0] = scratch.plane(1, p);
+        out.e[0] = scratch.plane(dst, p);
         out.stride[0] = (std::size_t)scratch.width;
         out.c0[0] = t.x0 - plan.window.x1;
         out.r0[0] = t.y0 - plan.window.y1;
@@ -992,8 +1064,8 @@ struct MorphologyState {
         const std::size_t count = (std::size_t)plan.extraElements();
         std::size_t index = 0;
         for (int e = 1; e < 4; ++e) {
-            if (extra && plan.element[e]) {
-                out.e[e] = extra.get() + ((std::size_t)p * count + index++) * area;
+            if (buffers->extra && plan.element[e]) {
+                out.e[e] = buffers->extra.get() + ((std::size_t)p * count + index++) * area;
             }
             out.stride[e] = (std::size_t)(t.c1 - t.c0);
             out.c0[e] = t.c0;
@@ -1049,8 +1121,8 @@ tileWorker(const MorphologyStatePtr& state,
     };
 }
 
-/// Row y of plane p of slot 1, outside the window: slot 0's pixels, which only the halo holds and
-/// nothing reads.
+/// Row y of plane p of the stage's slot, outside its window: the pixels of the slot it reads, which
+/// only a halo holds.
 std::function<PassRowFn(const PassScratch&)>
 copyWorker(const MorphologyStatePtr& state)
 {
@@ -1065,8 +1137,8 @@ copyWorker(const MorphologyStatePtr& state)
             const int y = line % height;
             const IErodeDilateKernels::TilePlane t = s->plane(*buffers, p);
             const std::size_t row = (std::size_t)y * width;
-            const float* const src = buffers->plane(0, p) + row;
-            float* const dst = buffers->plane(1, p) + row;
+            const float* const src = buffers->plane(s->src, p) + row;
+            float* const dst = buffers->plane(s->dst, p) + row;
             const int r = y - t.y(s->plan, 0);
             if ((r < t.r0) || (r >= t.r1) || (t.c0 == t.c1)) {
                 std::copy(src, src + width, dst);
@@ -1108,7 +1180,7 @@ tilePasses(const MorphologyStatePtr& state,
                     int ca;
                     int cb;
                     K::columnBatchRange(s.plan, t, b, &ca, &cb);
-                    K::fillSpans(s.plan, t, ca, cb, y, s.tables.get() + (std::size_t)p * s.planeTables(scratch), work);
+                    K::fillSpans(s.plan, t, ca, cb, y, s.tables() + (std::size_t)p * s.planeTables(scratch), work);
                 },
                 levels);
             add([b](const MorphologyState& s, const K::TilePlane& t) {
@@ -1118,7 +1190,7 @@ tilePasses(const MorphologyStatePtr& state,
 
                 return s.plan.slotStart[cb] - s.plan.slotStart[ca]; },
                 [](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int slot, std::vector<float>&) {
-                    K::buildColumn(s.plan, t, s.tables.get() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)slot * s.plan.columnFloats(t.height));
+                    K::buildColumn(s.plan, t, s.tables() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)slot * s.plan.columnFloats(t.height));
                 },
                 (std::size_t)plan.columnLevels);
             add([](const MorphologyState&, const K::TilePlane& t) { return t.r1 - t.r0; },
@@ -1126,7 +1198,7 @@ tilePasses(const MorphologyStatePtr& state,
                     int ca;
                     int cb;
                     K::columnBatchRange(s.plan, t, b, &ca, &cb);
-                    K::answerRow(s.plan, t, ca, cb, t.r0 + i, s.tables.get() + (std::size_t)p * s.planeTables(scratch), s.elements(scratch, t, p, 0), work);
+                    K::answerRow(s.plan, t, ca, cb, t.r0 + i, s.tables() + (std::size_t)p * s.planeTables(scratch), s.elements(scratch, t, p, 0), work);
                 },
                 8);
         }
@@ -1151,7 +1223,7 @@ tilePasses(const MorphologyStatePtr& state,
                         int count;
                         K::batchRange(s.plan, t, band, batch, &first, &count);
                         const int y = first + i;
-                        float* const tableRow = s.tables.get() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)i * s.plan.rowTableFloats(t.width);
+                        float* const tableRow = s.tables() + (std::size_t)p * s.planeTables(scratch) + (std::size_t)i * s.plan.rowTableFloats(t.width);
                         K::buildRowTable(t.src + (std::size_t)y * t.width, t.width, s.plan.levels, s.plan.takeMax, tableRow, (std::size_t)t.width);
                     },
                     levels);
@@ -1162,7 +1234,7 @@ tilePasses(const MorphologyStatePtr& state,
                     int first;
                     int count;
                     K::batchRange(s.plan, t, band, batch, &first, &count);
-                    K::foldRows(s.plan, t, s.tables.get() + (std::size_t)p * s.planeTables(scratch), first, count, ra + i, s.elements(scratch, t, p, ra), work); }, foldTaps);
+                    K::foldRows(s.plan, t, s.tables() + (std::size_t)p * s.planeTables(scratch), first, count, ra + i, s.elements(scratch, t, p, ra), work); }, foldTaps);
             }
             add(bandRows, [band](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int i, std::vector<float>& work) {
                 int ra;
@@ -1181,7 +1253,7 @@ tilePasses(const MorphologyStatePtr& state,
     first.growX = grow ? haloX : 0;
     first.growY = grow ? haloY : 0;
     for (Pass& pass : passes) {
-        pass.slot = 1;
+        pass.slot = state->dst;
         list->passes.push_back(std::move(pass));
     }
 } // tilePasses
@@ -1190,9 +1262,10 @@ tilePasses(const MorphologyStatePtr& state,
 // A larger element stays on the CPU.
 const int kGpuMaxRadius = 255;
 
-// Mirror kDisc, kTakeMax and kMap* in Kernels/ierodedilate.slang.
+// Mirror kDisc, kTakeMax, kStageShift and kMap* in Kernels/ierodedilate.slang.
 const uint32_t kGpuDisc = 1;
 const uint32_t kGpuTakeMax = 2;
+const uint32_t kGpuStageShift = 2;
 const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
@@ -1292,20 +1365,23 @@ dispatchIErodeDilate(gpu::GpuRecordContext& ctx,
 }
 
 /**
- * @brief The passes of IErodeDilateNode::passes() as the GPU records them over io.domain, the
- * CPU's scratch rect, one component at a time: the component into level 0 of the work buffer,
- * the table's levels one dispatch each, and the filter of every output pixel into io.filtered.
- * The Map's channel is mapChannel of io.inputs[Map], or none when that is negative. Fails, so that
- * the CPU renders, when a buffer exceeds the kernels' 32-bit indices.
+ * @brief The passes of IErodeDilate::passes() as the GPU records them over io.domain, the CPU's
+ * scratch rect, stage by stage and one component at a time: the component into level 0 of the
+ * work buffer, the table's levels one dispatch each, and the filter of every pixel into the next
+ * stage's buffer, which covers the domain, or for the last stage of the output into io.filtered.
+ * A stage whose radii are 0 for some pixels leaves them exactly as they are, so running every stage
+ * the full Map range may need matches the CPU, which skips those its tile does not. The Map's
+ * channel is mapChannel of io.inputs[Map], or none when that is negative. Fails, so that the CPU
+ * renders, when a buffer exceeds the kernels' 32-bit indices.
  **/
 StatusEnum
 recordIErodeDilateGpu(const PassGpuIO& io,
                       const IErodeDilateParams& params,
                       const RenderScale& scale,
-                      bool takeMax,
                       bool mapConnected,
                       int mapChannel)
 {
+    namespace K = IErodeDilateKernels;
     gpu::GpuRecordContext& ctx = io.context;
     const RectI& domain = io.domain;
     const int nComps = io.nComps;
@@ -1315,14 +1391,28 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     IErodeDilateAxis axisX;
     IErodeDilateAxis axisY;
     params.axes(scale, &axisX, &axisY);
-    MapRange full;
-    full.min = 0.f;
-    full.max = 1.f;
-    const int levels = IErodeDilateKernels::levelCount((int)std::ceil(axisX.largest(full)));
+    MapRange range;
+    range.min = mapConnected ? 0.f : 1.f;
+    range.max = 1.f;
+    int haloX[K::kStageCount];
+    int haloY[K::kStageCount];
+    K::stageHalos(axisX, axisY, range, haloX, haloY);
+    std::vector<int> stages;
+    int maxHaloX = 0;
+    for (int stage = 0; stage < K::kStageCount; ++stage) {
+        if ((haloX[stage] > 0) || (haloY[stage] > 0)) {
+            stages.push_back(stage);
+            maxHaloX = std::max(maxHaloX, haloX[stage]);
+        }
+    }
+    if (stages.empty()) {
+        return eStatusFailed;
+    }
     const uint64_t width = (uint64_t)domain.width();
     const uint64_t height = (uint64_t)domain.height();
-    const uint64_t workFloats = (uint64_t)levels * width * height;
-    if (workFloats > UINT32_MAX) {
+    const uint64_t workFloats = (uint64_t)K::levelCount(maxHaloX) * width * height;
+    const uint64_t stageFloats = width * height * (uint64_t)nComps;
+    if ((workFloats > UINT32_MAX) || (stageFloats > UINT32_MAX)) {
         return eStatusFailed;
     }
 
@@ -1339,6 +1429,14 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     gpu::GpuBuffer* work = nullptr;
     if (!ctx.scratch(sizeof(k), constants) || !constants || !ctx.scratch(workFloats * sizeof(float), work) || !work) {
         return eStatusFailed;
+    }
+    // Two stage buffers at most, the stages after the first reading the one the previous wrote.
+    gpu::GpuBuffer* stageBuffers[2] = { nullptr, nullptr };
+    const std::size_t stageBufferCount = std::min<std::size_t>(2, stages.size() - 1);
+    for (std::size_t b = 0; b < stageBufferCount; ++b) {
+        if (!ctx.scratch(stageFloats * sizeof(float), stageBuffers[b]) || !stageBuffers[b]) {
+            return eStatusFailed;
+        }
     }
 
     IErodeDilateGpuBuffers buffers;
@@ -1374,7 +1472,6 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     base.domWidth = (uint32_t)width;
     base.domHeight = (uint32_t)height;
     base.channels = (uint32_t)nComps;
-    base.flags = (params.disc ? kGpuDisc : 0u) | (takeMax ? kGpuTakeMax : 0u);
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
     base.outX1 = io.output.x1;
     base.outY1 = io.output.y1;
@@ -1397,26 +1494,53 @@ recordIErodeDilateGpu(const PassGpuIO& io,
         buffers.source = io.source.buffer;
     }
 
-    for (int c = 0; c < nComps; ++c) {
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+        const int stage = stages[i];
+        const bool last = (i + 1 == stages.size());
         IErodeDilateGpuParams p = base;
-        p.comp = (uint32_t)c;
-        if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_load, buffers, p, base.domWidth, base.domHeight)) {
-            return eStatusFailed;
+        IErodeDilateGpuBuffers b = buffers;
+        p.flags = (params.disc ? kGpuDisc : 0u) | (K::stageTakesMax(stage) ? kGpuTakeMax : 0u) | ((uint32_t)stage << kGpuStageShift);
+        if (i > 0) {
+            p.srcX1 = domain.x1;
+            p.srcY1 = domain.y1;
+            p.srcX2 = domain.x2;
+            p.srcY2 = domain.y2;
+            p.srcOffset = 0;
+            p.srcStride = (uint32_t)(width * (uint64_t)nComps);
+            b.source = stageBuffers[(i - 1) % 2];
         }
-        ctx.computeBarrier();
-        for (int level = 1; level < levels; ++level) {
-            p.level = (uint32_t)level;
-            if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_level, buffers, p, base.domWidth, base.domHeight)) {
+        if (!last) {
+            p.outX1 = domain.x1;
+            p.outY1 = domain.y1;
+            p.outWidth = (uint32_t)width;
+            p.outHeight = (uint32_t)height;
+            p.dstOffset = 0;
+            p.dstStride = (uint32_t)(width * (uint64_t)nComps);
+            b.out = stageBuffers[i % 2];
+        }
+        const int levels = K::levelCount(haloX[stage]);
+        for (int c = 0; c < nComps; ++c) {
+            p.comp = (uint32_t)c;
+            p.level = 0;
+            if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_load, b, p, p.domWidth, p.domHeight)) {
                 return eStatusFailed;
             }
             ctx.computeBarrier();
-        }
-        if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_filter, buffers, p, base.outWidth, base.outHeight)) {
-            return eStatusFailed;
-        }
-        // The next component overwrites the table the filter reads.
-        if (c < nComps - 1) {
-            ctx.computeBarrier();
+            for (int level = 1; level < levels; ++level) {
+                p.level = (uint32_t)level;
+                if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_level, b, p, p.domWidth, p.domHeight)) {
+                    return eStatusFailed;
+                }
+                ctx.computeBarrier();
+            }
+            if (!dispatchIErodeDilate(ctx, gpu::GpuKernelId::ierodedilate_filter, b, p, p.outWidth, p.outHeight)) {
+                return eStatusFailed;
+            }
+            // The next component, or the next stage, overwrites the table the filter reads and
+            // reads what it writes.
+            if ((c < nComps - 1) || !last) {
+                ctx.computeBarrier();
+            }
         }
     }
 
@@ -1425,8 +1549,7 @@ recordIErodeDilateGpu(const PassGpuIO& io,
 #endif // NATRON_HAVE_GPU
 } // anonymous namespace
 
-template <ErodeDilateMode MODE>
-IErodeDilateNode<MODE>::IErodeDilateNode(NodePtr node)
+IErodeDilate::IErodeDilate(NodePtr node)
     : StagedImageEffect(node)
     , _map()
     , _size()
@@ -1435,32 +1558,28 @@ IErodeDilateNode<MODE>::IErodeDilateNode(NodePtr node)
 {
 }
 
-template <ErodeDilateMode MODE>
-IErodeDilateNode<MODE>::~IErodeDilateNode()
+IErodeDilate::~IErodeDilate()
 {
 }
 
-template <ErodeDilateMode MODE>
 const NodeSpec*
-IErodeDilateNode<MODE>::nodeSpec() const
+IErodeDilate::nodeSpec() const
 {
-    return staticNodeSpec<IErodeDilateSpec<MODE>::kNodeSpec>();
+    return staticNodeSpec<IErodeDilateSpec::kNodeSpec>();
 }
 
-template <ErodeDilateMode MODE>
 const ImagePipelineSpec&
-IErodeDilateNode<MODE>::imagePipelineSpec() const
+IErodeDilate::imagePipelineSpec() const
 {
-    return staticImagePipelineSpec<IErodeDilateSpec<MODE>::kPipeline, IErodeDilateSpec<MODE>::kNodeSpec>();
+    return staticImagePipelineSpec<IErodeDilateSpec::kPipeline, IErodeDilateSpec::kNodeSpec>();
 }
 
-template <ErodeDilateMode MODE>
 std::string
-IErodeDilateNode<MODE>::getInputHint(int inputNb) const
+IErodeDilate::getInputHint(int inputNb) const
 {
     switch (inputNb) {
     case kIErodeDilateInputSource:
-        return kDilate ? tr("The image to dilate.").toStdString() : tr("The image to erode.").toStdString();
+        return tr("The image to erode or dilate.").toStdString();
     case kIErodeDilateInputMask:
         return tr("The mask the result is mixed with the source through.").toStdString();
     case kIErodeDilateInputMap:
@@ -1470,10 +1589,9 @@ IErodeDilateNode<MODE>::getInputHint(int inputNb) const
     return std::string();
 }
 
-template <ErodeDilateMode MODE>
 void
-IErodeDilateNode<MODE>::addAcceptedComponents(int inputNb,
-                                              std::list<ImageLayerDesc>* comps)
+IErodeDilate::addAcceptedComponents(int inputNb,
+                                    std::list<ImageLayerDesc>* comps)
 {
     StagedImageEffect::addAcceptedComponents(inputNb, comps);
     if (!isInputMask(inputNb)) {
@@ -1481,23 +1599,24 @@ IErodeDilateNode<MODE>::addAcceptedComponents(int inputNb,
     }
 }
 
-template <ErodeDilateMode MODE>
 void
-IErodeDilateNode<MODE>::initializeKnobs()
+IErodeDilate::initializeKnobs()
 {
     const KnobPagePtr page = createControlsPage();
 
-    _map.createSizeAtBlackKnob(this, page, 2);
+    _map.createSizeAtBlackKnob(this, page, 2, true);
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"), 2);
     sizeKnob->setName(kIErodeDilateParamSize);
-    sizeKnob->setHintToolTip(tr("Half the width and height of the structuring element where the Map is white, in pixel units (>=0): the rectangle is 2*size+1 pixels wide, the disc's radius is size. A fractional size blends the results of the whole sizes either side of it."));
+    sizeKnob->setHintToolTip(tr("Half the width and height of the structuring element where the Map is white, in pixel units (-1000 to 1000): the rectangle is 2*|size|+1 pixels wide, the disc's radius is |size|. "
+                                "A positive size erodes, a negative size dilates, 0 leaves the axis unchanged; where the axes have opposite signs X is filtered before Y. "
+                                "A fractional size blends the results of the whole sizes either side of it."));
     sizeKnob->setSpatial(true);
     sizeKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
-        sizeKnob->setMinimum(0., d);
+        sizeKnob->setMinimum(-kMapInputMaxSize, d);
         sizeKnob->setMaximum(kMapInputMaxSize, d);
-        sizeKnob->setDisplayMinimum(0., d);
+        sizeKnob->setDisplayMinimum(-100., d);
         sizeKnob->setDisplayMaximum(100., d);
         sizeKnob->setIncrement(0.1, d);
         sizeKnob->setDecimals(1, d);
@@ -1511,7 +1630,7 @@ IErodeDilateNode<MODE>::initializeKnobs()
     shapeKnob->setHintToolTip(tr("The shape of the structuring element."));
     {
         std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kIErodeDilateParamShapeSquare, tr("Square").toStdString(), tr("A rectangle of 2*size+1 pixels, as Erode's and Dilate's.").toStdString()));
+        options.push_back(ChoiceOption(kIErodeDilateParamShapeSquare, tr("Square").toStdString(), tr("A rectangle of 2*|size|+1 pixels, as ErodeDilate's.").toStdString()));
         options.push_back(ChoiceOption(kIErodeDilateParamShapeDisc, tr("Disc").toStdString(), tr("The pixels within the ellipse of half-axes the two sizes: a disc when they are equal.").toStdString()));
         shapeKnob->populateChoices(options);
     }
@@ -1523,11 +1642,7 @@ IErodeDilateNode<MODE>::initializeKnobs()
 
     KnobBoolPtr expandRoDKnob = AppManager::createKnob<KnobBool>(this, tr("Expand RoD"));
     expandRoDKnob->setName(kIErodeDilateParamExpandRoD);
-    if (kDilate) {
-        expandRoDKnob->setHintToolTip(tr("Expand the source region of definition by the larger of the two sizes."));
-    } else {
-        expandRoDKnob->setHintToolTip(tr("Erosion never expands the source region of definition; kept for symmetry with IDilate."));
-    }
+    expandRoDKnob->setHintToolTip(tr("Grow the source region of definition by the largest dilating (negative) size on each axis."));
     expandRoDKnob->setDefaultValue(true);
     page->addKnob(expandRoDKnob);
     _expandRoD = expandRoDKnob;
@@ -1535,18 +1650,17 @@ IErodeDilateNode<MODE>::initializeKnobs()
     addStageKnobs(page);
 
     _map.declareLayerKnob(getNode(), kIErodeDilateInputMap);
-} // IErodeDilateNode::initializeKnobs
+} // IErodeDilate::initializeKnobs
 
-template <ErodeDilateMode MODE>
 IErodeDilateParams
-IErodeDilateNode<MODE>::getParams(double time,
-                                  ViewIdx view) const
+IErodeDilate::getParams(double time,
+                        ViewIdx view) const
 {
     const KnobReader reader(time, view);
     IErodeDilateParams params;
 
-    params.sizeX = MapInput::clampSize(reader.value(_size, 0));
-    params.sizeY = MapInput::clampSize(reader.value(_size, 1));
+    params.sizeX = MapInput::clampSignedSize(reader.value(_size, 0));
+    params.sizeY = MapInput::clampSignedSize(reader.value(_size, 1));
     params.disc = (reader.value(_shape) == 1);
     params.expandRoD = reader.value(_expandRoD);
     params.map = _map.bake(reader);
@@ -1554,91 +1668,204 @@ IErodeDilateNode<MODE>::getParams(double time,
     return params;
 }
 
-template <ErodeDilateMode MODE>
-PassList
-IErodeDilateNode<MODE>::passes(const IErodeDilateParams& params,
-                               const RenderScale& scale,
-                               const MapRange& range,
-                               const std::shared_ptr<const MapPlane>& map,
-                               const RectI& roi)
+namespace {
+// The stages that run over range, with their halos, in order.
+int
+activeStages(const IErodeDilateParams& params,
+             const RenderScale& scale,
+             const MapRange& range,
+             IErodeDilateAxis* axisX,
+             IErodeDilateAxis* axisY,
+             int stages[IErodeDilateKernels::kStageCount],
+             int haloX[IErodeDilateKernels::kStageCount],
+             int haloY[IErodeDilateKernels::kStageCount])
 {
+    params.axes(scale, axisX, axisY);
+    IErodeDilateKernels::stageHalos(*axisX, *axisY, range, haloX, haloY);
+    int count = 0;
+    for (int stage = 0; stage < IErodeDilateKernels::kStageCount; ++stage) {
+        if ((haloX[stage] > 0) || (haloY[stage] > 0)) {
+            stages[count++] = stage;
+        }
+    }
+
+    return count;
+}
+} // anonymous namespace
+
+RectI
+IErodeDilate::mapWindow(const IErodeDilateParams& params,
+                        const RenderScale& scale,
+                        const MapRange& range,
+                        const RectI& roi)
+{
+    IErodeDilateAxis axisX;
+    IErodeDilateAxis axisY;
+    int stages[IErodeDilateKernels::kStageCount];
+    int haloX[IErodeDilateKernels::kStageCount];
+    int haloY[IErodeDilateKernels::kStageCount];
+    const int count = activeStages(params, scale, range, &axisX, &axisY, stages, haloX, haloY);
+
+    if (count < 2) {
+        return roi;
+    }
+    int growX = 0;
+    int growY = 0;
+    for (int i = 0; i < count; ++i) {
+        growX += haloX[stages[i]];
+        growY += haloY[stages[i]];
+    }
+
+    return RectI(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+}
+
+PassList
+IErodeDilate::passes(const IErodeDilateParams& params,
+                     const RenderScale& scale,
+                     const MapRange& range,
+                     const std::shared_ptr<const MapPlane>& map,
+                     const RectI& roi)
+{
+    namespace K = IErodeDilateKernels;
     PassList list;
     IErodeDilateAxis axisX;
     IErodeDilateAxis axisY;
-    params.axes(scale, &axisX, &axisY);
-    const float rx = axisX.largest(range);
-    const float ry = axisY.largest(range);
+    int stages[K::kStageCount];
+    int haloX[K::kStageCount];
+    int haloY[K::kStageCount];
+    const int count = activeStages(params, scale, range, &axisX, &axisY, stages, haloX, haloY);
 
-    if ((rx <= 0.f) && (ry <= 0.f)) {
+    if (count == 0) {
         return list;
     }
-    const int haloX = (int)std::ceil(rx);
-    const int haloY = (int)std::ceil(ry);
-
-    list.scratchSlots = 2;
-    list.resultSlot = 1;
+    // Slot 0 keeps the source; the stages alternate between slots 1 and 2.
+    list.scratchSlots = (count > 1) ? 3 : 2;
+    const auto dstSlot = [](int i) { return (i % 2 == 0) ? 1 : 2; };
+    list.resultSlot = dstSlot(count - 1);
 
     if (!map) {
-        Pass halo = Pass::gather(haloX, haloY, true, std::function<PassRowFn(const PassScratch&)>());
-        halo.slot = 1;
-        // Up to four elements of two lookups per row.
-        halo.tapsPerSample = 8 * (2 * (std::size_t)haloY + 1);
-        // An erosion never spreads the region of definition.
-        if (!kDilate) {
-            halo.growX = 0;
-            halo.growY = 0;
+        for (int i = 0; i < count; ++i) {
+            const int stage = stages[i];
+            Pass halo = Pass::gather(haloX[stage], haloY[stage], true, std::function<PassRowFn(const PassScratch&)>());
+            halo.slot = dstSlot(i);
+            // Up to four elements of two lookups per row.
+            halo.tapsPerSample = 8 * (2 * (std::size_t)haloY[stage] + 1);
+            // An erosion never spreads the region of definition.
+            if (!K::stageTakesMax(stage)) {
+                halo.growX = 0;
+                halo.growY = 0;
+            }
+            list.passes.push_back(halo);
         }
-        list.passes.push_back(halo);
 
         return list;
     }
-    MorphologyStatePtr state = std::make_shared<MorphologyState>();
-    state->map = map;
+    std::shared_ptr<MorphologyBuffers> buffers = std::make_shared<MorphologyBuffers>();
     const std::shared_ptr<const MapPlane> plane = map;
-    const int x1 = roi.x1;
-    const int y1 = roi.y1;
-    const int width = roi.width();
-    const IErodeDilateKernels::TileRadiiFn radii = [plane, axisX, axisY, x1, y1, width](int r, float* rxRow, float* ryRow) {
-        float last = plane->at(x1, y1 + r);
-        float lastX = axisX.at(last);
-        float lastY = axisY.at(last);
-        for (int c = 0; c < width; ++c) {
-            const float m = plane->at(x1 + c, y1 + r);
-            if (m != last) {
-                last = m;
-                lastX = axisX.at(m);
-                lastY = axisY.at(m);
-            }
-            rxRow[c] = lastX;
-            ryRow[c] = lastY;
+    for (int i = 0; i < count; ++i) {
+        const int stage = stages[i];
+        // The stage computes every pixel the stages after it read.
+        int growX = 0;
+        int growY = 0;
+        for (int later = i + 1; later < count; ++later) {
+            growX += haloX[stages[later]];
+            growY += haloY[stages[later]];
         }
-    };
-    state->plan = IErodeDilateKernels::planTile(roi, radii, params.disc, kDilate, kTileBudgetFloats);
-    tilePasses(state, haloX, haloY, kDilate, &list);
+        const RectI window(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+        const int x1 = window.x1;
+        const int y1 = window.y1;
+        const int width = window.width();
+        const K::TileRadiiFn radii = [plane, axisX, axisY, stage, x1, y1, width](int r, float* rxRow, float* ryRow) {
+            float last = plane->at(x1, y1 + r);
+            float lastX;
+            float lastY;
+            K::stageRadii(stage, axisX.at(last), axisY.at(last), &lastX, &lastY);
+            for (int c = 0; c < width; ++c) {
+                const float m = plane->at(x1 + c, y1 + r);
+                if (m != last) {
+                    last = m;
+                    K::stageRadii(stage, axisX.at(m), axisY.at(m), &lastX, &lastY);
+                }
+                rxRow[c] = lastX;
+                ryRow[c] = lastY;
+            }
+        };
+        MorphologyStatePtr state = std::make_shared<MorphologyState>();
+        state->map = map;
+        state->src = (i == 0) ? 0 : dstSlot(i - 1);
+        state->dst = dstSlot(i);
+        state->buffers = buffers;
+        state->plan = K::planTile(window, radii, params.disc, K::stageTakesMax(stage), kTileBudgetFloats);
+        tilePasses(state, haloX[stage], haloY[stage], K::stageTakesMax(stage), &list);
+    }
 
     return list;
-} // IErodeDilateNode::passes
+} // IErodeDilate::passes
 
-template <ErodeDilateMode MODE>
 std::string
-IErodeDilateNode<MODE>::mapNotConnectedMessage()
+IErodeDilate::mapNotConnectedMessage()
 {
-    return kDilate ? tr("The Map input is not connected: the dilation has the Size everywhere.").toStdString()
-                   : tr("The Map input is not connected: the erosion has the Size everywhere.").toStdString();
+    return tr("The Map input is not connected: the erosion or dilation has the Size everywhere.").toStdString();
 }
 
-template <ErodeDilateMode MODE>
-PassList
-IErodeDilateNode<MODE>::opPasses(double time,
-                                 ViewIdx view,
-                                 const RenderScale& scale) const
+MapRange
+IErodeDilate::fullMapRange() const
 {
     // A disconnected Map reads 1 everywhere; a connected one may hold any value.
     MapRange range;
     range.min = getInput(kIErodeDilateInputMap) ? 0.f : 1.f;
     range.max = 1.f;
+
+    return range;
+}
+
+RectI
+IErodeDilate::opPassesInputRoI(int inputNb,
+                               double time,
+                               ViewIdx view,
+                               const RectI& outputRect,
+                               const RenderScale& scale) const
+{
+    if (inputNb != kIErodeDilateInputMap) {
+        return outputRect;
+    }
+
+    return mapWindow(getParams(time, view), scale, fullMapRange(), outputRect);
+}
+
+void
+IErodeDilate::getRegionsOfInterest(double time,
+                                   const RenderScale& scale,
+                                   const RectD& outputRoD,
+                                   const RectD& renderWindow,
+                                   ViewIdx view,
+                                   RoIMap* ret)
+{
+    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    EffectInstancePtr map = getInput(kIErodeDilateInputMap);
+    if (!map) {
+        return;
+    }
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(kIErodeDilateInputSource);
+    const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
+    const RectD mapRoI = PassExec::toCanonical(mapWindow(getParams(time, view), scale, fullMapRange(), rectPixel), scale, par);
+    // The Map may be the same effect as the source or the mask, which then needs both regions.
+    RoIMap::iterator found = ret->find(map);
+    if (found != ret->end()) {
+        found->second.merge(mapRoI);
+    } else {
+        ret->insert(std::make_pair(map, mapRoI));
+    }
+}
+
+PassList
+IErodeDilate::opPasses(double time,
+                       ViewIdx view,
+                       const RenderScale& scale) const
+{
     const IErodeDilateParams params = getParams(time, view);
-    PassList list = passes(params, scale, range, std::shared_ptr<const MapPlane>(), RectI());
+    PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI());
 
 #ifdef NATRON_HAVE_GPU
     bool capped = false;
@@ -1646,7 +1873,7 @@ IErodeDilateNode<MODE>::opPasses(double time,
         capped = capped || (pass.haloX > kGpuMaxRadius) || (pass.haloY > kGpuMaxRadius);
     }
     if (!list.empty() && !capped) {
-        const IErodeDilateNode* self = this;
+        const IErodeDilate* self = this;
         list.gpu = [self, time, view, params, scale](const PassGpuIO& io) -> StatusEnum {
             return self->recordGpu(io, time, view, params, scale);
         };
@@ -1656,23 +1883,22 @@ IErodeDilateNode<MODE>::opPasses(double time,
     return list;
 }
 
-template <ErodeDilateMode MODE>
 StatusEnum
-IErodeDilateNode<MODE>::recordGpu(const PassGpuIO& io,
-                                  double time,
-                                  ViewIdx view,
-                                  const IErodeDilateParams& params,
-                                  const RenderScale& scale) const
+IErodeDilate::recordGpu(const PassGpuIO& io,
+                        double time,
+                        ViewIdx view,
+                        const IErodeDilateParams& params,
+                        const RenderScale& scale) const
 {
 #ifdef NATRON_HAVE_GPU
     const bool connected = (bool)getInput(kIErodeDilateInputMap);
     ImageLayerDesc layer;
     int channel = -1;
-    if (!connected || !_map.resolveChannel(const_cast<IErodeDilateNode*>(this), kIErodeDilateInputMap, time, view, &layer, &channel)) {
+    if (!connected || !_map.resolveChannel(const_cast<IErodeDilate*>(this), kIErodeDilateInputMap, time, view, &layer, &channel)) {
         channel = -1;
     }
 
-    return recordIErodeDilateGpu(io, params, scale, kDilate, connected, channel);
+    return recordIErodeDilateGpu(io, params, scale, connected, channel);
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);
@@ -1684,12 +1910,11 @@ IErodeDilateNode<MODE>::recordGpu(const PassGpuIO& io,
 #endif
 }
 
-template <ErodeDilateMode MODE>
 bool
-IErodeDilateNode<MODE>::readsGpuInput(int inputNb,
-                                      const ImageLayerDesc& /*plane*/,
-                                      double time,
-                                      ViewIdx view) const
+IErodeDilate::readsGpuInput(int inputNb,
+                            const ImageLayerDesc& /*plane*/,
+                            double time,
+                            ViewIdx view) const
 {
     if (inputNb != kIErodeDilateInputMap) {
         return true;
@@ -1697,30 +1922,28 @@ IErodeDilateNode<MODE>::readsGpuInput(int inputNb,
     ImageLayerDesc layer;
     int channel = -1;
 
-    return _map.resolveChannel(const_cast<IErodeDilateNode*>(this), kIErodeDilateInputMap, time, view, &layer, &channel);
+    return _map.resolveChannel(const_cast<IErodeDilate*>(this), kIErodeDilateInputMap, time, view, &layer, &channel);
 }
 
-template <ErodeDilateMode MODE>
 GpuWeight
-IErodeDilateNode<MODE>::gpuWeight(double time,
-                                  ViewIdx view,
-                                  unsigned int mipmapLevel) const
+IErodeDilate::gpuWeight(double time,
+                        ViewIdx view,
+                        unsigned int mipmapLevel) const
 {
     IErodeDilateAxis x;
     IErodeDilateAxis y;
 
     getParams(time, view).axes(RenderScale::fromMipmapLevel(mipmapLevel), &x, &y);
 
-    return gpuSizeScaledWeight(std::floor(std::max({ x.black, x.white, y.black, y.white })));
+    return gpuSizeScaledWeight(std::floor(std::max({ std::abs(x.black), std::abs(x.white), std::abs(y.black), std::abs(y.white) })));
 }
 
-template <ErodeDilateMode MODE>
 bool
-IErodeDilateNode<MODE>::opPassesInputLayer(int inputNb,
-                                           const ImageLayerDesc& plane,
-                                           double time,
-                                           ViewIdx view,
-                                           ImageLayerDesc* layer) const
+IErodeDilate::opPassesInputLayer(int inputNb,
+                                 const ImageLayerDesc& plane,
+                                 double time,
+                                 ViewIdx view,
+                                 ImageLayerDesc* layer) const
 {
     if (inputNb != kIErodeDilateInputMap) {
         *layer = plane;
@@ -1729,23 +1952,21 @@ IErodeDilateNode<MODE>::opPassesInputLayer(int inputNb,
     }
     int channel = -1;
 
-    return _map.resolveChannel(const_cast<IErodeDilateNode*>(this), kIErodeDilateInputMap, time, view, layer, &channel);
+    return _map.resolveChannel(const_cast<IErodeDilate*>(this), kIErodeDilateInputMap, time, view, layer, &channel);
 }
 
-template <ErodeDilateMode MODE>
 bool
-IErodeDilateNode<MODE>::isOpIdentity(double time,
-                                     const RenderScale& scale,
-                                     const RectI& /*roi*/,
-                                     ViewIdx view)
+IErodeDilate::isOpIdentity(double time,
+                           const RenderScale& scale,
+                           const RectI& /*roi*/,
+                           ViewIdx view)
 {
     return opPasses(time, view, scale).empty();
 }
 
-template <ErodeDilateMode MODE>
 StatusEnum
-IErodeDilateNode<MODE>::renderOp(const RenderActionArgs& args,
-                                 const StagePlan& plan)
+IErodeDilate::renderOp(const RenderActionArgs& args,
+                       const StagePlan& plan)
 {
     const PassList full = opPasses(args.time, args.view, args.mappedScale);
 
@@ -1753,26 +1974,26 @@ IErodeDilateNode<MODE>::renderOp(const RenderActionArgs& args,
         return runPassesCpu(*this, plan, args, full);
     }
     const IErodeDilateParams params = getParams(args.time, args.view);
-    // Only the output pixels' radii matter, so the Map is read over the render window alone, and
-    // the tile's halo is that of its largest radius there.
+    // The Map over every pixel whose radii a stage needs, as getRegionsOfInterest() asked for it;
+    // the tile's halos are those of its radii there.
+    const RectI window = mapWindow(params, args.mappedScale, fullMapRange(), args.roi);
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
-    const StatusEnum status = _map.read(this, kIErodeDilateInputMap, params.map, args.time, args.view, args.mappedScale, args.roi, map.get());
+    const StatusEnum status = _map.read(this, kIErodeDilateInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
         return status;
     }
-    const MapRange range = map->tileRange(args.roi);
+    const MapRange range = map->tileRange(window);
 
     return runPassesCpu(*this, plan, args, passes(params, args.mappedScale, range, map, args.roi));
 }
 
-template <ErodeDilateMode MODE>
 bool
-IErodeDilateNode<MODE>::clipRegionOfDefinition(double time,
-                                               const RenderScale& /*scale*/,
-                                               ViewIdx view,
-                                               const EffectInstancePtr& /*source*/,
-                                               const RectI& srcRoD,
-                                               RectI* rod)
+IErodeDilate::clipRegionOfDefinition(double time,
+                                     const RenderScale& /*scale*/,
+                                     ViewIdx view,
+                                     const EffectInstancePtr& /*source*/,
+                                     const RectI& srcRoD,
+                                     RectI* rod)
 {
     const KnobReader reader(time, view);
 
@@ -1784,24 +2005,21 @@ IErodeDilateNode<MODE>::clipRegionOfDefinition(double time,
     return true;
 }
 
-template <ErodeDilateMode MODE>
 void
-IErodeDilateNode<MODE>::onEffectCreated(bool /*mayCreateFileDialog*/,
-                                        const CreateNodeArgs& /*args*/)
+IErodeDilate::onEffectCreated(bool /*mayCreateFileDialog*/,
+                              const CreateNodeArgs& /*args*/)
 {
     refreshMapWarning();
 }
 
-template <ErodeDilateMode MODE>
 void
-IErodeDilateNode<MODE>::onInputChanged(int /*inputNo*/)
+IErodeDilate::onInputChanged(int /*inputNo*/)
 {
     refreshMapWarning();
 }
 
-template <ErodeDilateMode MODE>
 void
-IErodeDilateNode<MODE>::refreshMapWarning()
+IErodeDilate::refreshMapWarning()
 {
     const NodePtr node = getNode();
 
@@ -1822,8 +2040,5 @@ IErodeDilateNode<MODE>::refreshMapWarning()
         node->clearPersistentMessage(false);
     }
 }
-
-template class IErodeDilateNode<ErodeDilateMode::Erode>;
-template class IErodeDilateNode<ErodeDilateMode::Dilate>;
 
 NATRON_NAMESPACE_EXIT

@@ -8,7 +8,9 @@ property natronCachedFrames (the frames the line marks), polling with a timeout:
   - after the colour is set back, it marks 1-4 again, since the original hash's textures are
     still cached and the frame shown comes from the cache;
   - after Cache > Clear All Caches, it marks nothing but the current frame, which the clear renders
-    again.
+    again;
+  - after the viewer is switched to a Read of a missing file, whose render fails and uploads
+    nothing, it marks nothing.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -78,13 +80,13 @@ try:
 
         gt.section("setup")
         app.getProjectParam("frameRange").set(1, 10)
-        constant = app.createNode("net.sf.openfx.ConstantPlugin")
-        require(constant is not None, "create a Constant", gt.plugin_problem("net.sf.openfx.ConstantPlugin"))
+        constant = app.createNode("Constant")
+        require(constant is not None, "create a Constant", gt.plugin_problem("Constant"))
         colour = constant.getParam("color")
         require(colour is not None, "the Constant has a color parameter")
         original = (0.25, 0.5, 0.75, 1.0)
         set_colour(colour, original)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer exists")
         require(viewer.connectInput(0, constant), "the Viewer shows the Constant")
         gt.close_all_panels()
@@ -115,6 +117,15 @@ try:
         require(bool(actions), "found the Clear All Caches action")
         actions[0].trigger()
         yield from expect_line("after clear all", [4])
+
+        gt.section("failed render")
+        read = app.createNode("Read")
+        require(read is not None, "create a Read", gt.plugin_problem("Read"))
+        read.getParam("filename").setValue(os.path.join(gt.OUT, "m178-missing-file.exr"))
+        gt.close_all_panels()
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, read), "the Viewer shows the Read of a missing file")
+        yield from expect_line("after failed render", [])
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

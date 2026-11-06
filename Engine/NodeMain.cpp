@@ -51,6 +51,7 @@
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
 
@@ -673,6 +674,12 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
             _imp->restoreKnobLinksRecursive(allNodes, group, oldNewScriptNamesMapping, throwOnFailure);
         }
     }
+
+    // Curve points linked to tracks resolve them by name once every tracker exists.
+    RotoCurveContextPtr curves = getCurveContext();
+    if (curves) {
+        curves->resolveTrackLinks();
+    }
 }
 
 
@@ -751,6 +758,9 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     if ( thisGroup ) {
         thisGroup->removeNode(this);
     }
+
+    // A pointer that outlives the teardown must not keep a reloaded project's node off its saved ID.
+    releaseOwnCacheID();
 
 } // Node::doDestroyNodeInternalEnd
 

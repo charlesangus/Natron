@@ -145,7 +145,11 @@ is visited once per call, so chains several knobs share cost one walk and a mast
   `appendHashedMetadataSources` (Knob.cpp:3596-3600) still returns for `dimension < 0`, so metadata
   sources reached through a whole-value dependency are not folded.
   Stress case: `CacheStressTest.DISABLED_WholeValueExpression_M72`; `eOpWholeValueExpression` is out of `defaultOps()`.
-- **E2 Rename rewrites listeners by plain string replace.** `replaceNodeNameInExpression`
+- **E2 Rename rewrites listeners by plain string replace. Fixed in M260:** the listener path now
+  uses the identifier-aware `replaceNodeNameInExpressionCode`, and the plain-replace function is
+  gone. Test: `NodeContentHashTest.RenameRewritesOnlyTheRenamedNodeInExpressions`; the random walk
+  has `rename`. The analysis below describes the code before the fix.
+  `replaceNodeNameInExpression`
   (Knob.cpp:3425) replaces the old name as a substring, unlike the identifier-aware path for
   metadata readers (:3458). A name that is a substring of another identifier can be rewritten
   wrongly; the new expression string then moves the hash, so no cache serves stale content, but
@@ -154,8 +158,10 @@ is visited once per call, so chains several knobs share cost one walk and a mast
   AppInstance.cpp:2777). Correctness notes, not cache holes; on the follow-up list.
 - **E3 Clamped and unclamped results share entries.** The stored result is clamped or not by the
   caller's `clamp` (KnobImpl.h:538-539); the pod path passes `false` (KnobImpl.h:957). A value
-  outside min and max read both ways returns whichever was stored first. Minor. **Not fixed by
-  M202.**
+  outside min and max read both ways returns whichever was stored first. **Fixed in M260:** the
+  result is stored unclamped and each read clamps as it asks. Tests:
+  `BaseTest.ExpressionResultOutsideTheRangeServesClampedAndUnclampedReads`,
+  `CacheStressTest.ExpressionOutsideRange`.
 
 ## Fixed (historical)
 

@@ -250,6 +250,13 @@ public:
                          CreateNodeArgs& args,
                          int firstFrame = std::numeric_limits<int>::min(), int lastFrame = std::numeric_limits<int>::max());
 
+    /**
+     * @brief Creates a Write with no file set whose input is connected to source, as Render Selected
+     * makes for a node that is not a writer. Returns null if the Write could not be created.
+     **/
+    NodePtr createWriterFor(const NodePtr& source,
+                            CreateNodeArgs& args);
+
     NodePtr getNodeByFullySpecifiedName(const std::string & name) const;
 
     ProjectPtr getProject() const;
@@ -369,6 +376,17 @@ public:
     virtual std::string saveImageFileDialog() { return std::string(); }
 
     /**
+     * @brief Asks the user to pick one of items, listed under label. Returns the index of the
+     * chosen item, or -1 when the user cancels or there is no GUI.
+     **/
+    virtual int chooseItemDialog(const std::string& /*title*/,
+                                 const std::string& /*label*/,
+                                 const std::vector<std::string>& /*items*/)
+    {
+        return -1;
+    }
+
+    /**
      * @brief Given writer names, start rendering the given RenderRequest. If empty all Writers in the project
      * will be rendered using the frame ranges.
      **/
@@ -462,6 +480,13 @@ public:
 
     virtual ViewerInstance* getLastViewerUsingTimeline() const { return 0; }
 
+    /**
+     * @brief The viewer the user works in: the last one to use the timeline, otherwise the first
+     * viewer of the project's top level, or null. The GUI prefers the viewer last clicked or typed
+     * in. Main thread.
+     **/
+    virtual NodePtr getActiveViewerNode() const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 
@@ -493,6 +518,9 @@ public:
     virtual void updateProjectLoadStatus(const QString& /*str*/) {}
 
     virtual void closeLoadProjectSplashScreen() {}
+
+    // A short transient message, such as why a viewer action was refused. The GUI shows it in its status bar.
+    virtual void showStatusMessage(const QString& /*message*/) { }
 
     std::string getAppIDString() const;
     const std::list<NodePtr>& getNodesBeingCreated() const;

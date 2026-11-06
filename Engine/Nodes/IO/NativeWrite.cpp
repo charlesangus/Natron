@@ -57,7 +57,6 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
-#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
@@ -69,7 +68,6 @@
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
-#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -81,12 +79,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-enum FormatTypeEnum {
-    eFormatTypeInput = 0,
-    eFormatTypeProject,
-    eFormatTypeFixed
-};
-
 enum FrameRangeEnum {
     eFrameRangeUnion = 0,
     eFrameRangeProject,
@@ -165,7 +157,7 @@ decodeReadBackBand(const ReadBackPlane& plane,
     const int span = hi - lo + 1;
     const RectI window(plane.rect.x1, y1, plane.rect.x2, y2);
     std::vector<float> staging((std::size_t)width * (y2 - y1) * span);
-    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
+    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error, FilePin::eDisk)) {
         return false;
     }
     for (int y = y1; y < y2; ++y) {
@@ -842,11 +834,12 @@ NativeWrite::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobOutputFilePtr filename = createKnob<KnobOutputFile>(tr("File"));
+    KnobOutputFilePtr filename = createKnob<KnobOutputFile>(tr("Filename"));
     filename->setName(kOfxImageEffectFileParamName);
     filename->setAsOutputImageFile();
     filename->setHintToolTip(tr("The image or image sequence to write."));
     filename->setIsMetadataSlave(true);
+    filename->setShowsRewriteButton(false);
     page->addKnob(filename);
     _filename = filename;
 
@@ -858,32 +851,10 @@ NativeWrite::initializeKnobs()
     page->addKnob(overwrite);
     _overwrite = overwrite;
 
-    KnobChoicePtr formatType = createKnob<KnobChoice>(tr("Format Type"));
-    formatType->setName(kNatronWriteParamFormatType);
-    formatType->setHintToolTip(tr("Determines which rectangle of pixels will be written in output."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kNatronWriteFormatTypeInput, tr("Input Format").toStdString(), tr("Renders the pixels included in the input format").toStdString()));
-        options.push_back(ChoiceOption(kNatronWriteFormatTypeProject, tr("Project Format").toStdString(), tr("Renders the pixels included in the project format").toStdString()));
-        options.push_back(ChoiceOption(kNatronWriteFormatTypeFixed, tr("Fixed Format").toStdString(), tr("Renders the pixels included in the format indicated by the Format parameter.").toStdString()));
-        formatType->populateChoices(options);
-    }
-    formatType->setDefaultValue(eFormatTypeProject);
-    formatType->setAnimationEnabled(false);
-    formatType->setAddNewLine(false);
-    page->addKnob(formatType);
-    _formatType = formatType;
-
-    const ExtentKnobs::FormatKnobSet formatKnobs = ExtentKnobs::createFormatKnobs(this, page);
-    _format = formatKnobs.choice;
-    _formatSize = formatKnobs.size;
-    _formatPar = formatKnobs.par;
-    formatKnobs.choice->setSecretByDefault(true);
-
     KnobBoolPtr clipToRoD = createKnob<KnobBool>(tr("Clip To RoD"));
     clipToRoD->setName(kNatronWriteParamClipToRoD);
-    clipToRoD->setHintToolTip(tr("When checked, the portion of the image written will be the region of definition of the image in input and not the format selected by the Format Type parameter.\n"
-                                 "For the EXR file format, this will distinguish the data window (size of the image in input) from the display window (the format specified by Format Type)."));
+    clipToRoD->setHintToolTip(tr("When checked, the pixels written are the input's region of definition rather than its format.\n"
+                                 "Formats with a display window, such as EXR, keep the input's format as the display window and its region of definition as the data window."));
     clipToRoD->setDefaultValue(true);
     clipToRoD->setAnimationEnabled(false);
     page->addKnob(clipToRoD);
@@ -923,15 +894,6 @@ NativeWrite::initializeKnobs()
     page->addKnob(lastFrame);
     _lastFrame = lastFrame;
 
-    // Node.cpp shows this knob's value, in parentheses, next to the node's label; it follows the
-    // file name there.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    sublabel->setEvaluateOnChange(false);
-    page->addKnob(sublabel);
-
     KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
     frameIncr->setName(kNatronWriteParamFrameStep);
     frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));
@@ -941,15 +903,15 @@ NativeWrite::initializeKnobs()
     page->addKnob(frameIncr);
 
     OcioSpaceKnobs::Description outputSpace;
-    outputSpace.prefix = kNatronWriteParamOCIOOutputSpace;
-    outputSpace.label = tr("Output Colorspace");
-    outputSpace.spaceHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
-                               "working space. It is shown only when the project's config has no colorspace of that name.");
-    outputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
-                              "working space. A new Write takes the colorspace the config's file rules give the file name, "
-                              "else the project's default for files of its kind. The config's default rule does not count. "
-                              "Reset to default returns to that colorspace.");
-    outputSpace.setLabel = tr("Output Colorspace Set");
+    outputSpace.name = kNatronWriteParamColorspace;
+    outputSpace.label = tr("Colorspace");
+    outputSpace.hint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
+                          "working space. Project default takes the colorspace the config's file rules give the file "
+                          "name, else the project's default for files of its kind, and follows them as they change; "
+                          "its label shows the colorspace it currently stands for. The config's default rule does not "
+                          "count.");
+    outputSpace.defaultHint = tr("The colorspace the config's file rules give the file name, else the project's default "
+                                 "for files of its kind, following them as they change.");
     _outputSpace.create(this, page, outputSpace, [this]() { return automaticOutputSpace(); });
 
     KnobChoicePtr bitDepth = createKnob<KnobChoice>(tr("Bit Depth"));
@@ -1023,7 +985,7 @@ NativeWrite::initializeKnobs()
     page->addKnob(tileSize);
     _tileSize = tileSize;
 
-    KnobChoicePtr partSplitting = createKnob<KnobChoice>(tr("Parts"));
+    KnobChoicePtr partSplitting = createKnob<KnobChoice>(tr("Part Splitting"));
     partSplitting->setName(kNatronWriteParamPartSplitting);
     partSplitting->setHintToolTip(tr("Defines whether to separate views and layers in different EXR parts or not. Multi-part files can be opened only with applications supporting OpenEXR 2."));
     {
@@ -1040,7 +1002,7 @@ NativeWrite::initializeKnobs()
 
     // Its script name and its first entry are what OutputEffectInstance and Node look for.
     KnobChoicePtr views = createKnob<KnobChoice>(tr("Views"));
-    views->setName(kNatronWriteParamViewsSelector);
+    views->setName(kNatronWriteParamViews);
     views->setHintToolTip(tr("Select the views to render. When choosing All, make sure the output filename does not have a %v or %V view pattern in which case each view would be written to a separate file."));
     views->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kNatronWriteViewsAll)));
     views->setDefaultValue(0);
@@ -1071,7 +1033,7 @@ NativeWrite::initializeKnobs()
     KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
     reload->setName(kNatronWriteParamReload);
     reload->setHintToolTip(tr("Reads the written files again: forgets their headers and layers and the images read from "
-                              "them, so a file changed on disk is what the node outputs. Only while Read back file is on."));
+                              "them, so a file changed on disk is what the node outputs. Only while Read Back is on."));
     reload->setIsMetadataSlave(true);
     reload->setAllDimensionsEnabled(false);
     page->addKnob(reload);
@@ -1087,6 +1049,14 @@ NativeWrite::initializeKnobs()
             refreshViewsMenu();
             _viewToKeep.clear();
         });
+        // A render thread can drop the last reference and destroy this effect while the project emits on the
+        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
+        std::weak_ptr<EffectInstance> self = weak_from_this();
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
+            if (EffectInstancePtr alive = self.lock()) {
+                _outputSpace.sourceChanged();
+            }
+        });
     }
 
     refreshOptions();
@@ -1096,11 +1066,26 @@ void
 NativeWrite::onKnobsLoaded()
 {
     _outputSpace.refreshMenu();
+    _outputSpace.refreshProjectDefault();
     // The project's views may load after this node's knobs, so a saved view missing from the menu now stays chosen until they arrive.
     KnobChoicePtr views = _views.lock();
     const std::string saved = views ? views->getActiveEntry().id : std::string();
     _viewToKeep = saved == kNatronWriteViewsAll ? std::string() : saved;
     refreshOptions();
+    refreshSublabel();
+}
+
+void
+NativeWrite::refreshSublabel()
+{
+    KnobOutputFilePtr filename = _filename.lock();
+    std::string pattern = filename ? filename->getValue() : std::string();
+    const std::size_t slash = pattern.find_last_of('/');
+
+    if (slash != std::string::npos) {
+        pattern = pattern.substr(slash + 1);
+    }
+    setSublabel(pattern);
 }
 
 std::optional<std::string>
@@ -1370,6 +1355,7 @@ NativeWrite::onEffectCreated(bool mayCreateFileDialog,
 
     KnobOutputFilePtr filename = _filename.lock();
 
+    _outputSpace.refreshProjectDefault();
     if (filename && !filename->getValue().empty()) {
         rejectUnsupportedFormat(filename->getValue());
 
@@ -1452,7 +1438,7 @@ NativeWrite::readBackFile(const std::string& path) const
     std::error_code ec;
     if (std::filesystem::is_regular_file(std::filesystem::path(path), ec)) {
         std::string error;
-        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error, FilePin::eDisk);
         if (header && !header->subimages.empty()) {
             file.header = header;
             // Every part of the file carries the attribute, so the first one speaks for the file.
@@ -1522,9 +1508,22 @@ NativeWrite::getOutputContentHash() const
         h.appendDouble(last);
     }
     h.appendU64(project->getContentDigest());
+    _outputSpace.appendHash(h);
 
     return h.finalize();
 } // NativeWrite::getOutputContentHash
+
+void
+NativeWrite::appendNodeContentHash(ContentHasher& h) const
+{
+    _outputSpace.appendHash(h);
+}
+
+std::string
+NativeWrite::colorspace() const
+{
+    return _outputSpace.space();
+}
 
 bool
 NativeWrite::isInputOptional(int inputNb) const
@@ -1635,9 +1634,8 @@ NativeWrite::refreshOptions()
     KnobOutputFilePtr filename = _filename.lock();
     KnobChoicePtr compression = _compression.lock();
     KnobChoicePtr bitDepth = _bitDepth.lock();
-    KnobChoicePtr formatType = _formatType.lock();
 
-    if (!filename || !compression || !bitDepth || !formatType) {
+    if (!filename || !compression || !bitDepth) {
         return;
     }
     const std::string path = filename->getValue();
@@ -1662,9 +1660,6 @@ NativeWrite::refreshOptions()
     setSecretAndDisabled(_partSplitting.lock(), !visible.views);
     setSecretAndDisabled(_views.lock(), !visible.views || hasViewToken(path));
     setSecretAndDisabled(_clipToRoD.lock(), !caps.displayWindow);
-    setSecretAndDisabled(_format.lock(), formatType->getValue() != eFormatTypeFixed);
-    setSecretAndDisabled(_formatSize.lock(), true);
-    setSecretAndDisabled(_formatPar.lock(), true);
 
     refreshViewsMenu();
 
@@ -1747,7 +1742,6 @@ NativeWrite::knobChanged(KnobI* k,
     }
     KnobOutputFilePtr filename = _filename.lock();
     KnobChoicePtr compression = _compression.lock();
-    KnobChoicePtr formatType = _formatType.lock();
     KnobChoicePtr bitDepth = _bitDepth.lock();
 
     if (bitDepth && (k == bitDepth.get())) {
@@ -1760,6 +1754,7 @@ NativeWrite::knobChanged(KnobI* k,
     }
     if (filename && (k == filename.get())) {
         refreshOptions();
+        refreshSublabel();
         _outputSpace.sourceChanged();
         const std::string path = filename->getValue();
         if (path.empty() || !rejectUnsupportedFormat(path)) {
@@ -1768,7 +1763,7 @@ NativeWrite::knobChanged(KnobI* k,
 
         return true;
     }
-    if ((compression && (k == compression.get())) || (formatType && (k == formatType.get()))) {
+    if (compression && (k == compression.get())) {
         refreshOptions();
 
         return true;
@@ -1803,39 +1798,32 @@ NativeWrite::knobChanged(KnobI* k,
 }
 
 void
-NativeWrite::selectedFormat(double time,
-                            ViewIdx view,
-                            RectI* display,
-                            double* par) const
+NativeWrite::inputFormat(double time,
+                         ViewIdx view,
+                         RectI* display,
+                         double* par) const
 {
-    KnobChoicePtr formatType = _formatType.lock();
-    const int type = formatType ? formatType->getValueAtTime(time, 0, view) : (int)eFormatTypeProject;
-
-    if (type == eFormatTypeInput) {
-        NodeMetadataConstPtr inputMetadata = getInputMetadataAt(0, time, view);
-        if (inputMetadata) {
-            const RectI inputFormat = inputMetadata->getOutputFormat();
-            if ((inputFormat.x2 > inputFormat.x1) && (inputFormat.y2 > inputFormat.y1)) {
-                *display = inputFormat;
-                *par = inputMetadata->getPixelAspectRatio(-1);
-
-                return;
-            }
-        }
-    } else if (type == eFormatTypeFixed) {
-        KnobIntPtr size = _formatSize.lock();
-        KnobDoublePtr formatPar = _formatPar.lock();
-        if (size && formatPar) {
-            *display = RectI(0, 0, size->getValueAtTime(time, 0, view), size->getValueAtTime(time, 1, view));
-            *par = formatPar->getValueAtTime(time, 0, view);
+    *display = RectI();
+    *par = 1.;
+    EffectInstancePtr input = getInput(0);
+    if (!input) {
+        return;
+    }
+    NodeMetadataConstPtr inputMetadata = getInputMetadataAt(0, time, view);
+    if (inputMetadata) {
+        *par = inputMetadata->getPixelAspectRatio(-1);
+        const RectI format = inputMetadata->getOutputFormat();
+        if ((format.x2 > format.x1) && (format.y2 > format.y1)) {
+            *display = format;
 
             return;
         }
     }
-    Format projectFormat;
-    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
-    *display = projectFormat;
-    *par = projectFormat.getPixelAspectRatio();
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &rod, &isProjectFormat) == eStatusOK) {
+        *display = rod.toPixelEnclosing(0u, *par);
+    }
 }
 
 bool
@@ -1851,7 +1839,7 @@ NativeWrite::resolveWindow(double time,
                            ViewIdx view,
                            Window* window) const
 {
-    selectedFormat(time, view, &window->display, &window->par);
+    inputFormat(time, view, &window->display, &window->par);
     window->rod = window->display.toCanonical_noClipping(0, window->par);
 
     EffectInstancePtr input = getInput(0);
@@ -2172,6 +2160,11 @@ NativeWrite::render(const RenderActionArgs& args)
         return eStatusFailed;
     }
     if (rejectUnsupportedFormat(path)) {
+        return eStatusFailed;
+    }
+    if (!getInput(0)) {
+        setPersistentMessage(eMessageTypeError, tr("The Write has no input, so it has no format to write").toStdString());
+
         return eStatusFailed;
     }
 

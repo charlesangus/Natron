@@ -164,9 +164,24 @@ public:
 
     KnobIPtr getKnobByName(const std::string& name) const;
 
+    /**
+     * @brief Adds a knob the hosting effect owns on this item: it is saved, copied and hashed
+     * like the item's own knobs. Call from EffectInstance::onCurveItemCreated() only.
+     **/
+    void addHostKnob(const KnobIPtr& knob);
+
     virtual RectD getBoundingBox(double time) const = 0;
 
+    /**
+     * @brief The item's transform as drawn and rendered: its own, through the context's
+     * composeItemTransform().
+     **/
     void getTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The transform the item's own knobs make.
+     **/
+    void getLocalTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
 
     /**
      * @brief Set the transform at the given time

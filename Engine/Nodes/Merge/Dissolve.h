@@ -31,8 +31,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_DISSOLVE "net.sf.openfx.DissolvePlugin"
-#define PLUGIN_MAJOR_NATRON_DISSOLVE 2
+#define PLUGINID_NATRON_DISSOLVE "Dissolve"
+#define PLUGIN_MAJOR_NATRON_DISSOLVE 1
 
 #define kDissolveParamWhich "which"
 
@@ -60,9 +60,8 @@ dissolveSourceInput(int k)
 
 /**
  * @brief Dissolve: a weighted average of the two source inputs `floor(which)` and `ceil(which)`
- * out of 64, the blend being the fractional part of `which`, optionally masked. Knob names,
- * defaults, region of definition, identity rules and per-pixel arithmetic are the openfx-misc
- * DissolvePlugin's; it registers under that plug-in's ID one major above.
+ * out of 64, the blend being the fractional part of `which`, optionally masked and mixed with
+ * the lower of the two. Its region of definition is the union of those two that are connected.
  **/
 struct DissolveOp {
     struct Params {
@@ -79,7 +78,7 @@ struct DissolveOp {
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_DISSOLVE,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Dissolve.png",
         .inputs = kDissolveInputs,
     };
 

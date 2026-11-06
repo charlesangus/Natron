@@ -167,6 +167,12 @@ public:
     // Terminates every registered thread. See AbortableThread::killThread() for the dangers.
     void killRegisteredThreads();
 
+    /**
+     * @brief Keeps object alive until this render is destroyed, so that what a node keeps for
+     * one render is released when the render ends.
+     **/
+    void keepAliveWithRender(const std::shared_ptr<void>& object);
+
 private:
 
     std::unique_ptr<AbortableRenderInfoPrivate> _imp;

@@ -53,6 +53,9 @@
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/RFV/RFVRead.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
+#include "Engine/Nodes/RFV/RFVSwitch.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/OfxRetired.h"
 #include "Engine/Plugin.h"
@@ -70,6 +73,7 @@ struct FragmentEntry {
     std::string id;
     void (*builder)();
     bool internal;
+    int major;
 };
 
 // The builder is compared by address with the one the registry stored for the same ID.
@@ -83,10 +87,10 @@ fragmentEntry()
     if (!native) {
         ADD_FAILURE() << effect->getPluginID() << " has a registration fragment but is not a NativeEffectBase";
 
-        return FragmentEntry { effect->getPluginID(), nullptr, false };
+        return FragmentEntry { effect->getPluginID(), nullptr, false, 0 };
     }
 
-    return FragmentEntry { std::string(native->nodeSpec()->id), (void (*)())&PLUGIN::BuildEffect, native->nodeSpec()->internal };
+    return FragmentEntry { std::string(native->nodeSpec()->id), (void (*)())&PLUGIN::BuildEffect, native->nodeSpec()->internal, native->nodeSpec()->majorVersion };
 }
 
 // Expands the generated aggregate of the registration fragments with a recording macro, so the
@@ -190,19 +194,34 @@ TEST_F(NativePluginListTest, NoTwoFragmentsRegisterTheSameId)
     }
 }
 
-TEST_F(NativePluginListTest, RetiredOfxIdsResolveToASingleNativeVersion)
+TEST_F(NativePluginListTest, EveryNativeIdHasASingleVersion)
 {
     const PluginsMap& plugins = appPTR->getPluginsList();
 
     for (const FragmentEntry& entry : fragments()) {
         const PluginsMap::const_iterator it = plugins.find(entry.id);
         ASSERT_TRUE(it != plugins.end()) << entry.id;
-        ASSERT_EQ(1u, it->second.size()) << entry.id << " must have no OFX version left";
+        ASSERT_EQ(1u, it->second.size()) << entry.id << " is registered more than once";
     }
 }
 
-// A native node that kept its OFX predecessor's ID already takes that ID's place, so a marker
-// for it would retire nothing; only an OFX ID no native node took over may be retired.
+// Native nodes are named by their plain display name, never a reverse-domain OFX-style ID, and
+// start at major 1.
+TEST_F(NativePluginListTest, NativeIdsArePlainAtMajorOne)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+
+    for (const FragmentEntry& entry : fragments()) {
+        EXPECT_EQ(std::string::npos, entry.id.find('.')) << entry.id << " is a reverse-domain ID";
+        EXPECT_EQ(1, entry.major) << entry.id;
+        const PluginsMap::const_iterator it = plugins.find(entry.id);
+        ASSERT_TRUE(it != plugins.end()) << entry.id;
+        ASSERT_FALSE(it->second.empty()) << entry.id;
+        EXPECT_EQ(1, (*it->second.begin())->getMajorVersion()) << entry.id;
+    }
+}
+
+// A marker naming a native ID would retire the native node itself.
 TEST_F(NativePluginListTest, NoRetiredOfxIdIsANativePluginId)
 {
     const std::set<std::string> nativeIds = fragmentIds();
@@ -260,6 +279,30 @@ TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
         ASSERT_TRUE(bool(node)) << id;
         EXPECT_FALSE(node->getPluginDescription().empty()) << id;
     }
+}
+
+TEST_F(NativePluginListTest, RFVNodesShareTheReverseFlowVariableGroup)
+{
+    const char* const ids[] = {
+        PLUGINID_NATRON_RFVSET,
+        PLUGINID_NATRON_RFVSWITCH,
+        PLUGINID_NATRON_RFVREAD,
+    };
+    const PluginsMap& plugins = appPTR->getPluginsList();
+
+    for (const char* id : ids) {
+        const PluginsMap::const_iterator it = plugins.find(id);
+        ASSERT_TRUE(it != plugins.end()) << id;
+        ASSERT_FALSE(it->second.empty()) << id;
+
+        const Plugin* plugin = *it->second.begin();
+        const QStringList grouping = plugin->getGrouping();
+        ASSERT_EQ(1, grouping.size()) << id;
+        EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_RFV), grouping.front()) << id;
+        EXPECT_EQ(QString::fromUtf8(id), plugin->getPluginLabel()) << id;
+        EXPECT_FALSE(plugin->getIconFilePath().isEmpty()) << id;
+    }
+    EXPECT_TRUE(plugins.find("ReverseFlowVariableSet") == plugins.end());
 }
 
 TEST_F(NativePluginListTest, OfxMetadataNodesAreGroupedWithTheNativeOnes)

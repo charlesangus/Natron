@@ -437,7 +437,12 @@ Knob<T>::evaluateExpression(double time,
 
     ///Reset the random state to reproduce the sequence
     randomSeed( time, hashFunction(dimension) );
-    bool exprOk = executeExpression(time, view, dimension, &ret, error);
+    bool exprOk;
+    {
+        ExpressionReadRecorder reads(this);
+        exprOk = executeExpression(time, view, dimension, &ret, error);
+        registerExpressionReads(dimension, reads.getReads(), true);
+    }
     if (!exprOk) {
         return false;
     }
@@ -459,7 +464,12 @@ Knob<T>::evaluateExpression_pod(double time,
 
     ///Reset the random state to reproduce the sequence
     randomSeed( time, hashFunction(dimension) );
-    bool exprOk = executeExpression(time, view, dimension, &ret, error);
+    bool exprOk;
+    {
+        ExpressionReadRecorder reads(this);
+        exprOk = executeExpression(time, view, dimension, &ret, error);
+        registerExpressionReads(dimension, reads.getReads(), true);
+    }
     if (!exprOk) {
         return false;
     }
@@ -506,14 +516,14 @@ Knob<T>::getValueFromExpression(double time,
         if (byContext) {
             typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
             if (found != _exprCtxRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
         } else {
             typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
@@ -540,18 +550,20 @@ Knob<T>::getValueFromExpression(double time,
         }
     }
 
+    // Stored unclamped: the same result serves clamped and unclamped reads.
+    {
+        const bool bindingsCurrent = bindings.isCurrent();
+        QMutexLocker k(&_valueMutex);
+        if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+            if (byContext) {
+                _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+            } else {
+                _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+            }
+        }
+    }
     if (clamp) {
         *ret =  clampToMinMax(*ret, dimension);
-    }
-
-    const bool bindingsCurrent = bindings.isCurrent();
-    QMutexLocker k(&_valueMutex);
-    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
-        if (byContext) {
-            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
-        } else {
-            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
-        }
     }
 
     return true;
@@ -618,14 +630,14 @@ Knob<T>::getValueFromExpression_pod(double time,
         if (byContext) {
             typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
             if (found != _exprCtxRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
         } else {
             typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
@@ -652,18 +664,20 @@ Knob<T>::getValueFromExpression_pod(double time,
         }
     }
 
+    // Stored unclamped: the same result serves clamped and unclamped reads.
+    {
+        const bool bindingsCurrent = bindings.isCurrent();
+        QMutexLocker k(&_valueMutex);
+        if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+            if (byContext) {
+                _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+            } else {
+                _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+            }
+        }
+    }
     if (clamp) {
         *ret =  clampToMinMax(*ret, dimension);
-    }
-
-    const bool bindingsCurrent = bindings.isCurrent();
-    QMutexLocker k(&_valueMutex);
-    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
-        if (byContext) {
-            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
-        } else {
-            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
-        }
     }
 
     return true;
@@ -754,6 +768,7 @@ Knob<T>::getValue(int dimension,
                   bool clamp)
 {
     assert( !view.isAll() );
+    ExpressionReadRecorder::record(this, dimension);
     bool useGuiValues = QThread::currentThread() == qApp->thread();
 
 #ifdef DEBUG
@@ -765,6 +780,12 @@ Knob<T>::getValue(int dimension,
 
     if ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
+    }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(getCurrentTime(), expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
     }
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
@@ -803,6 +824,52 @@ Knob<T>::getValue(int dimension,
             return _values[dimension];
         }
     }
+}
+
+template <typename T>
+bool
+Knob<T>::getValueFromDriver(double time,
+                            ViewIdx view,
+                            int dimension,
+                            bool clamp,
+                            T* ret) const
+{
+    if constexpr (std::is_same<T, std::string>::value) {
+        return false;
+    } else {
+        double value;
+        if (!getDriverValue(time, view, dimension, &value)) {
+            return false;
+        }
+        if constexpr (std::is_same<T, int>::value) {
+            *ret = (int)std::lround(value);
+        } else {
+            *ret = (T)value;
+        }
+        if (clamp) {
+            *ret = clampToMinMax(*ret, dimension);
+        }
+
+        return true;
+    }
+}
+
+template <typename T>
+bool
+Knob<T>::isValueChangeAtCurrentTime(const T& value,
+                                    int dimension)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker kql(&_setValuesQueueMutex);
+        for (typename std::list<QueuedSetValuePtr>::const_iterator it = _setValuesQueue.begin(); it != _setValuesQueue.end(); ++it) {
+            if ((*it)->dimension() == dimension) {
+                return true;
+            }
+        }
+    }
+
+    return getValue(dimension, ViewSpec::current(), false) != value;
 }
 
 template <typename T>
@@ -881,8 +948,15 @@ Knob<T>::getValueAtTime(double time,
                         bool byPassMaster)
 {
     assert( !view.isAll() );
+    ExpressionReadRecorder::record(this, dimension);
     if  ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
+    }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(time, expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
     }
 
     bool useGuiValues = QThread::currentThread() == qApp->thread();
@@ -2287,7 +2361,6 @@ Knob<T>::onKeyFrameSet(double time,
     bool useGuiCurve = ( !holder || !holder->isSetValueCurrentlyPossible() ) && getKnobGuiPointer();
 
     if (!useGuiCurve) {
-        assert(holder);
         curve = getCurve(view, dimension);
     } else {
         curve = getGuiCurve(view, dimension);
@@ -2311,7 +2384,6 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool useGuiCurve = ( !holder || !holder->isSetValueCurrentlyPossible() ) && getKnobGuiPointer();
 
     if (!useGuiCurve) {
-        assert(holder);
         curve = getCurve(view, dimension);
     } else {
         curve = getGuiCurve(view, dimension);
@@ -2321,6 +2393,13 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool ret = curve->addKeyFrame(key);
 
     if (!useGuiCurve) {
+        // A slaved knob writes the master's curve, but its own values and key removals stay on its own
+        // curve; a holder that mirrors the slave back into the master (the roto context does, for the
+        // selected item) would otherwise copy back a curve missing this key.
+        CurvePtr ownCurve = getCurve(view, dimension, true);
+        if (ownCurve && (ownCurve != curve)) {
+            ownCurve->addKeyFrame(key);
+        }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
     }
@@ -2348,7 +2427,8 @@ Knob<T>::onTimeChanged(bool isPlayback,
     if ( getIsSecret() ) {
         return;
     }
-    bool shouldRefresh = false;
+    // A keyed driver start or end changes the value with the frame too.
+    bool shouldRefresh = hasAnimatedDriver();
     for (int i = 0; i < dims; ++i) {
         if ( _signalSlotHandler && ( isAnimated( i, ViewIdx(0) ) || !getExpression(i).empty() ) ) {
             shouldRefresh = true;
@@ -3224,20 +3304,23 @@ appendKnobValueToContentHash(ContentHasher& h,
 template <typename T>
 void
 Knob<T>::appendValueContentHash(ContentHasher& h,
-                                int dimension) const
+                                int dimension,
+                                bool withStaticValue) const
 {
-    T value;
-    {
-        QMutexLocker k(&_valueMutex);
-        value = _values[dimension];
-    }
     T mini, maxi;
     {
         QReadLocker k(&_minMaxMutex);
         mini = _minimums[dimension];
         maxi = _maximums[dimension];
     }
-    appendKnobValueToContentHash(h, value);
+    if (withStaticValue) {
+        T value;
+        {
+            QMutexLocker k(&_valueMutex);
+            value = _values[dimension];
+        }
+        appendKnobValueToContentHash(h, value);
+    }
     appendKnobValueToContentHash(h, mini);
     appendKnobValueToContentHash(h, maxi);
 }

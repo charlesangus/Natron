@@ -30,33 +30,37 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QIcon>
-#include <QPixmap>
-#include <QTreeWidget>
-#include <QTreeWidgetItem>
-#include <QHeaderView>
+#include <QApplication>
+#include <QByteArray>
+#include <QClipboard>
 #include <QColor>
 #include <QColorDialog>
 #include <QCursor>
-#include <QMouseEvent>
-#include <QApplication>
 #include <QDataStream>
-#include <QMimeData>
+#include <QDebug>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QIcon>
 #include <QImage>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPixmap>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QUndoCommand>
-#include <QByteArray>
+#include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoContextPrivate.h" // for getCompositingOperators
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -134,6 +138,7 @@ private:
 
     RotoPanel* _roto;
     std::list<RemovedItem> _items;
+    RotoCurveContextHostStatePtr _hostState;
 };
 
 class AddLayerUndoCommand
@@ -229,6 +234,14 @@ public:
                          QTreeWidgetItem* target,
                          QList<QTreeWidgetItem*> source);
 
+    /**
+     * @brief Copy-to-layer mode fed from a RotoCurveContext::serializeItems() text, which may come
+     * from any curve host.
+     **/
+    PasteItemUndoCommand(RotoPanel* roto,
+                         const RotoLayerPtr& layer,
+                         const std::string& blob);
+
     virtual ~PasteItemUndoCommand();
 
     virtual void undo() OVERRIDE FINAL;
@@ -242,6 +255,10 @@ private:
     RotoItemPtr _targetItem;
     RotoItemPtr _oldTargetItem;
     std::list<PastedItem > _pastedItems;
+    std::string _blob;
+    bool _blobPasted;
+    RotoCurveContextHostStatePtr _hostBefore;
+    RotoCurveContextHostStatePtr _hostAfter;
 };
 
 
@@ -493,6 +510,11 @@ public:
     bool itemHasKey(const RotoItemPtr& item, double time) const;
 
     void setItemKey(const RotoItemPtr& item, double time);
+
+    // Every shape's keyframes are followed, selected or not, so the timeline shows current
+    // keys as soon as a shape is selected.
+    void trackBezierKeyframes(const BezierPtr& bezier);
+    void untrackBezierKeyframes(const BezierPtr& bezier);
 
     void removeItemKey(const RotoItemPtr& item, double time);
 
@@ -777,14 +799,6 @@ RotoPanel::onSelectionChangedInternal()
     std::list<std::set<double> > toRemove;
 
     for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (isBezier) {
-            QObject::disconnect( isBezier.get(), SIGNAL(keyframeSet(double)), this, SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-            QObject::disconnect( isBezier.get(), SIGNAL(aboutToClone()), this, SLOT(onSelectedBezierAboutToClone()) );
-            QObject::disconnect( isBezier.get(), SIGNAL(cloned()), this, SLOT(onSelectedBezierCloned()) );
-        }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
         if ( found != _imp->keyframes.end() ) {
             toRemove.push_back(found->second.keys);
@@ -817,13 +831,8 @@ RotoPanel::onSelectionChangedInternal()
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         const RotoLayer* isLayer = dynamic_cast<const RotoLayer*>( it->get() );
         if (isBezier) {
-            QObject::connect( isBezier.get(), SIGNAL(keyframeSet(double)), this, SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::connect( isBezier.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::connect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-            QObject::connect( isBezier.get(), SIGNAL(aboutToClone()), this, SLOT(onSelectedBezierAboutToClone()) );
-            QObject::connect( isBezier.get(), SIGNAL(cloned()), this, SLOT(onSelectedBezierCloned()) );
             ++selectedBeziersCount;
-        } else if ( isLayer && !isLayer->getItems().empty() ) {
+        } else if (isLayer && !isLayer->getItems().empty()) {
             ++selectedBeziersCount;
         }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
@@ -1245,6 +1254,7 @@ RotoPanelPrivate::insertItemRecursively(double time,
                 keys.visible = false;
                 keyframes.insert( std::make_pair(isBezier, keys) );
             }
+            trackBezierKeyframes(isBezier);
         }
     } else if (layer) {
         treeItem->setIcon(0, iconLayer);
@@ -1348,6 +1358,7 @@ RotoPanelPrivate::insertItemInternal(int reason,
             keys.visible = false;
             keyframes.insert( std::make_pair(isBezier, keys) );
         }
+        trackBezierKeyframes(isBezier);
     }
     if ( (RotoItem::SelectionReasonEnum)reason == RotoItem::eSelectionReasonSettingsPanel ) {
         RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
@@ -1365,18 +1376,16 @@ void
 RotoPanel::onItemRemoved(const RotoItemPtr& item,
                          int reason)
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
 
     if (isBezier) {
+        _imp->untrackBezierKeyframes(isBezier);
         ItemKeys::iterator it = _imp->keyframes.find(isBezier);
         if ( it != _imp->keyframes.end() ) {
-            for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
-                getNode()->getNode()->getApp()->removeKeyFrameIndicator(*it2);
+            if (it->second.visible) {
+                for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
+                    getNode()->getNode()->getApp()->removeKeyFrameIndicator(*it2);
+                }
             }
             _imp->keyframes.erase(it);
         }
@@ -1658,6 +1667,10 @@ RotoPanel::onItemChanged(QTreeWidgetItem* item,
 void
 RotoPanel::onItemLabelChanged(const RotoItemPtr& item)
 {
+    // A host column may show another item's label.
+    if (_imp->hostHook) {
+        onItemPanelColumnsChanged(RotoItemPtr());
+    }
     if (_imp->settingNameFromGui) {
         return;
     }
@@ -1841,18 +1854,6 @@ RotoPanel::onItemSelectionChanged()
     std::list<std::set<double> > toRemove;
 
     for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if (isBezier) {
-            QObject::disconnect( isBezier.get(),
-                                 SIGNAL(keyframeSet(double)),
-                                 this,
-                                 SLOT(onSelectedBezierKeyframeSet(double)) );
-            QObject::disconnect( isBezier.get(),
-                                 SIGNAL(keyframeRemoved(double)),
-                                 this,
-                                 SLOT(onSelectedBezierKeyframeRemoved(double)) );
-            QObject::disconnect( isBezier.get(), SIGNAL(animationRemoved()), this, SLOT(onSelectedBezierAnimationRemoved()) );
-        }
         ItemKeys::iterator found = _imp->keyframes.find(*it);
         if ( found != _imp->keyframes.end() ) {
             toRemove.push_back(found->second.keys);
@@ -2270,7 +2271,7 @@ RotoPanel::showItemMenu(QTreeWidgetItem* item,
     QAction* pasteAct = menu.addAction( tr("Paste") );
     pasteAct->setShortcut( QKeySequence(Qt::Key_V | Qt::CTRL) );
     QObject::connect( pasteAct, SIGNAL(triggered()), this, SLOT(onPasteItemActionTriggered()) );
-    pasteAct->setEnabled( !_imp->clipBoard.empty() );
+    pasteAct->setEnabled(!_imp->clipBoard.empty() || !clipboardCurves().empty());
     QAction* duplicateAct = menu.addAction( tr("Duplicate") );
     duplicateAct->setShortcut( QKeySequence(Qt::Key_C | Qt::ALT) );
     QObject::connect( duplicateAct, SIGNAL(triggered()), this, SLOT(onDuplicateItemActionTriggered()) );
@@ -2297,6 +2298,7 @@ RotoPanel::showItemMenu(QTreeWidgetItem* item,
         RotoCurvePanelHook* hook = _imp->hostHook;
         for (std::size_t i = 0; i < hostActions.size(); ++i) {
             QAction* act = menu.addAction(QString::fromUtf8(hostActions[i].label.c_str()));
+            act->setEnabled(hostActions[i].enabled);
             const std::string actionId = hostActions[i].id;
             QObject::connect(act, &QAction::triggered, this, [hook, actionId, selection]() {
                 hook->onItemMenuActionTriggered(actionId, selection);
@@ -2328,6 +2330,7 @@ RotoPanel::onCutItemActionTriggered()
     assert(_imp->lastRightClickedItem);
     QList<QTreeWidgetItem*> selectedItems = _imp->tree->selectedItems();
     _imp->clipBoard = selectedItems;
+    copyToSystemClipboard(selectedItems);
     pushUndoCommand( new RemoveItemsUndoCommand(this, selectedItems) );
 }
 
@@ -2336,21 +2339,90 @@ RotoPanel::onCopyItemActionTriggered()
 {
     assert(_imp->lastRightClickedItem);
     _imp->clipBoard = _imp->tree->selectedItems();
+    copyToSystemClipboard(_imp->clipBoard);
+}
+
+void
+RotoPanel::copyToSystemClipboard(const QList<QTreeWidgetItem*>& treeItems)
+{
+    std::list<RotoItemPtr> items;
+
+    for (int i = 0; i < treeItems.size(); ++i) {
+        RotoItemPtr item = getRotoItemForTreeItem(treeItems[i]);
+        if (item) {
+            items.push_back(item);
+        }
+    }
+    if (items.empty()) {
+        return;
+    }
+    std::string blob;
+    try {
+        blob = getContext()->serializeItems(items);
+    } catch (const std::exception& e) {
+        qDebug() << "Copy:" << e.what();
+
+        return;
+    }
+    QMimeData* data = new QMimeData;
+    data->setData(QString::fromUtf8(kRotoCurvesMimeType), QByteArray(blob.data(), (int)blob.size()));
+    QApplication::clipboard()->setMimeData(data);
+}
+
+std::string
+RotoPanel::clipboardCurves()
+{
+    const QMimeData* data = QApplication::clipboard()->mimeData();
+
+    if (!data || !data->hasFormat(QString::fromUtf8(kRotoCurvesMimeType))) {
+        return std::string();
+    }
+    QByteArray bytes = data->data(QString::fromUtf8(kRotoCurvesMimeType));
+
+    return std::string(bytes.constData(), (std::size_t)bytes.size());
 }
 
 void
 RotoPanel::onPasteItemActionTriggered()
 {
-    assert( !_imp->clipBoard.empty() );
+    RotoItemPtr target;
     RotoDrawableItemPtr drawable;
     {
         TreeItems::iterator it = _imp->findItem(_imp->lastRightClickedItem);
         if ( it == _imp->items.end() ) {
             return;
         }
+        target = it->rotoItem;
         drawable = std::dynamic_pointer_cast<RotoDrawableItem>(it->rotoItem);
     }
 
+    // Pasting onto a shape copies another shape of this panel into it; anything else inserts
+    // the curves on the system clipboard, which may come from any curve host.
+    const std::string blob = clipboardCurves();
+    if (!blob.empty() && (!drawable || _imp->clipBoard.empty())) {
+        RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(target);
+        if (!layer) {
+            layer = target->getParentLayer();
+        }
+        if (!layer) {
+            return;
+        }
+        int droppedStrokes = 0;
+        const int count = getContext()->countPastableItems(blob, &droppedStrokes);
+        if (droppedStrokes > 0) {
+            Dialogs::warningDialog(tr("Paste").toStdString(),
+                                   tr("Paint strokes can only be pasted into a RotoPaint node; %1 stroke(s) were left out.").arg(droppedStrokes).toStdString());
+        }
+        if (count > 0) {
+            pushUndoCommand(new PasteItemUndoCommand(this, layer, blob));
+        }
+
+        return;
+    }
+
+    if (_imp->clipBoard.empty()) {
+        return;
+    }
 
     ///make sure that if the item copied is only a bezier that we do not paste it on the same bezier.
     if (_imp->clipBoard.size() == 1) {
@@ -2418,6 +2490,26 @@ RotoPanelPrivate::itemHasKey(const RotoItemPtr& item,
     }
 
     return false;
+}
+
+void
+RotoPanelPrivate::trackBezierKeyframes(const BezierPtr& bezier)
+{
+    QObject::connect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()), Qt::UniqueConnection);
+    QObject::connect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()), Qt::UniqueConnection);
+}
+
+void
+RotoPanelPrivate::untrackBezierKeyframes(const BezierPtr& bezier)
+{
+    QObject::disconnect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)));
+    QObject::disconnect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)));
+    QObject::disconnect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()));
+    QObject::disconnect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()));
+    QObject::disconnect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()));
 }
 
 void
@@ -2528,7 +2620,8 @@ RotoPanel::onSettingsPanelClosed(bool closed)
         for (TreeItems::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
             BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(it->rotoItem);
             if (isBezier) {
-                assert ( _imp->keyframes.find(isBezier) == _imp->keyframes.end() );
+                _imp->keyframes.erase(isBezier);
+                _imp->trackBezierKeyframes(isBezier);
                 TimeLineKeys keys;
                 isBezier->getKeyframeTimes(&keys.keys);
                 keys.visible = false;
@@ -2622,6 +2715,9 @@ RemoveItemsUndoCommand::undo()
 
         it->treeItem->setHidden(false);
     }
+    if (_hostState) {
+        _roto->getContext()->restoreHostState(_hostState);
+    }
     _roto->getContext()->evaluateChange();
     setText( tr("Remove items of %2").arg( QString::fromUtf8( _roto->getNodeName().c_str() ) ) );
 }
@@ -2632,6 +2728,7 @@ RemoveItemsUndoCommand::redo()
     if ( _items.empty() ) {
         return;
     }
+    _hostState = _roto->getContext()->saveHostState();
     _roto->clearAndSelectPreviousItem(_items.back().item);
     for (std::list<RemovedItem>::iterator it = _items.begin(); it != _items.end(); ++it) {
         _roto->getContext()->removeItem(it->item, RotoItem::eSelectionReasonSettingsPanel);
@@ -2844,6 +2941,10 @@ PasteItemUndoCommand::PasteItemUndoCommand(RotoPanel* roto,
     , _targetTreeItem(target)
     , _targetItem()
     , _pastedItems()
+    , _blob()
+    , _blobPasted(false)
+    , _hostBefore()
+    , _hostAfter()
 {
     _targetItem = roto->getRotoItemForTreeItem(target);
     assert(_targetItem);
@@ -2882,6 +2983,23 @@ PasteItemUndoCommand::PasteItemUndoCommand(RotoPanel* roto,
     }
 }
 
+PasteItemUndoCommand::PasteItemUndoCommand(RotoPanel* roto,
+                                           const RotoLayerPtr& layer,
+                                           const std::string& blob)
+    : QUndoCommand()
+    , _roto(roto)
+    , _mode(ePasteModeCopyToLayer)
+    , _targetTreeItem(0)
+    , _targetItem(layer)
+    , _pastedItems()
+    , _blob(blob)
+    , _blobPasted(false)
+    , _hostBefore()
+    , _hostAfter()
+{
+    assert(layer);
+}
+
 PasteItemUndoCommand::~PasteItemUndoCommand()
 {
 }
@@ -2900,6 +3018,9 @@ PasteItemUndoCommand::undo()
         assert( dynamic_cast<RotoLayer*>( _targetItem.get() ) );
         for (std::list<PastedItem>::iterator it = _pastedItems.begin(); it != _pastedItems.end(); ++it) {
             _roto->getContext()->removeItem(it->itemCopy, RotoItem::eSelectionReasonOther);
+        }
+        if (_blobPasted) {
+            _roto->getContext()->restoreHostState(_hostBefore);
         }
     }
     _roto->getContext()->evaluateChange();
@@ -2939,10 +3060,35 @@ PasteItemUndoCommand::redo()
     } else {
         RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(_targetItem);
         assert(isLayer);
-        for (std::list<PastedItem>::iterator it = _pastedItems.begin(); it != _pastedItems.end(); ++it) {
-            assert(it->itemCopy);
-            //it->itemCopy->setParentLayer(isLayer);
-            _roto->getContext()->addItem(isLayer, 0, it->itemCopy, RotoItem::eSelectionReasonOther);
+        RotoCurveContextPtr context = _roto->getContext();
+        if (!_blob.empty() && !_blobPasted) {
+            _hostBefore = context->saveHostState();
+            std::list<RotoItemPtr> pasted;
+            try {
+                pasted = context->pasteItems(_blob, isLayer);
+            } catch (const std::exception& e) {
+                qDebug() << "Paste:" << e.what();
+            }
+            for (std::list<RotoItemPtr>::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+                PastedItem item;
+                item.treeItem = 0;
+                item.itemCopy = *it;
+                _pastedItems.push_back(item);
+            }
+            _hostAfter = context->saveHostState();
+            _blobPasted = true;
+        } else if (_blobPasted) {
+            // Last first at the top, as pasteItems() inserted them.
+            for (std::list<PastedItem>::reverse_iterator it = _pastedItems.rbegin(); it != _pastedItems.rend(); ++it) {
+                context->addItem(isLayer, 0, it->itemCopy, RotoItem::eSelectionReasonOther);
+            }
+            context->restoreHostState(_hostAfter);
+        } else {
+            for (std::list<PastedItem>::iterator it = _pastedItems.begin(); it != _pastedItems.end(); ++it) {
+                assert(it->itemCopy);
+                // it->itemCopy->setParentLayer(isLayer);
+                context->addItem(isLayer, 0, it->itemCopy, RotoItem::eSelectionReasonOther);
+            }
         }
     }
 

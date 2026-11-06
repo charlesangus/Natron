@@ -198,6 +198,7 @@ public:
     virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual std::string getSublabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The node's static description, which every query above answers from. A node
@@ -303,7 +304,10 @@ public:
     /**
      * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
      * view; the region engine hands that input over in it. False when the GPU path cannot read
-     * the input at all, which keeps the node on the CPU, as the default does.
+     * the input at all, which keeps the node on the CPU, as the default does. Asked with
+     * FrameViewRequest::TaskEdge::kContextRequestInputNb, as are readsGpuInput() and
+     * getGpuInputRoI(), for the outputs a node requests under a context, which it reads from
+     * GpuRenderArgs::contextInputs.
      **/
     virtual bool getGpuInputLayer(int /*inputNb*/,
                                   const ImageLayerDesc& /*plane*/,
@@ -385,6 +389,25 @@ public:
      **/
     ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The image of input inputNb at time, for the render args describes, over roiPixel
+     * when given: getImage() at args' scale and view. time must be one getFramesNeeded() lists
+     * for that input and view at args.time, which is what the scheduler planned; any other time
+     * posts an error naming it and returns null, so that the render fails rather than pulling
+     * an unplanned frame.
+     **/
+    ImagePtr fetchInputAt(int inputNb,
+                          double time,
+                          const RenderActionArgs& args,
+                          const ImageLayerDesc* layer = NULL,
+                          bool mapToClipPrefs = true,
+                          RectI* roiPixel = NULL) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether getFramesNeeded() at time and view lists time needed of input inputNb.
+     **/
+    bool declaresInputTime(int inputNb, double time, ViewIdx view, double needed) WARN_UNUSED_RETURN;
+
 protected:
     /**
      * @brief The metadata of the first connected non-mask input at time and view, or empty if
@@ -415,6 +438,11 @@ protected:
      * of an earlier state again.
      **/
     void invalidateOutputMetadata();
+
+    /**
+     * @brief Sets the text getSublabel() returns and shows it in the node graph.
+     **/
+    void setSublabel(const std::string& sublabel);
 
     /**
      * @brief The metadata of the effect connected to inputNb, or empty if nothing is. For a node
@@ -647,6 +675,9 @@ private:
     U64 _metadataCacheHash; //< the node hash (before the context key is mixed in) every entry was derived under
 
     SceneLayerMemo _sceneLayerMemo;
+
+    mutable std::mutex _sublabelMutex;
+    std::string _sublabel;
 
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 

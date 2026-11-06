@@ -35,8 +35,11 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
+#include <QInputDialog>
 #include <QMutex>
 #include <QSettings>
+#include <QStatusBar>
+#include <QStringList>
 #include <QTimer>
 #include <QWindow>
 
@@ -53,6 +56,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
@@ -664,6 +668,32 @@ GuiAppInstance::openImageFileDialog()
     return ret;
 }
 
+int
+GuiAppInstance::chooseItemDialog(const std::string& title,
+                                 const std::string& label,
+                                 const std::vector<std::string>& items)
+{
+    if (!_imp->_gui || items.empty()) {
+        return -1;
+    }
+    QStringList list;
+    for (std::vector<std::string>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        list.push_back(QString::fromUtf8(it->c_str()));
+    }
+    {
+        QMutexLocker l(&_imp->_showingDialogMutex);
+        ++_imp->_showingDialog;
+    }
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(_imp->_gui, QString::fromUtf8(title.c_str()), QString::fromUtf8(label.c_str()), list, 0, false, &ok);
+    {
+        QMutexLocker l(&_imp->_showingDialogMutex);
+        --_imp->_showingDialog;
+    }
+
+    return ok ? list.indexOf(chosen) : -1;
+}
+
 std::string
 GuiAppInstance::saveImageFileDialog()
 {
@@ -1175,8 +1205,15 @@ GuiAppInstance::setLastViewerUsingTimeline(const NodePtr& node)
         return;
     }
     if ( node->isEffectViewer() ) {
-        QMutexLocker k(&_imp->lastTimelineViewerMutex);
-        _imp->lastTimelineViewer = node;
+        bool changed = false;
+        {
+            QMutexLocker k(&_imp->lastTimelineViewerMutex);
+            changed = (_imp->lastTimelineViewer != node);
+            _imp->lastTimelineViewer = node;
+        }
+        if (changed) {
+            RFV::scheduleReaderRefresh(std::const_pointer_cast<AppInstance>(shared_from_this()));
+        }
     }
 }
 
@@ -1190,6 +1227,16 @@ GuiAppInstance::getLastViewerUsingTimeline() const
     }
 
     return _imp->lastTimelineViewer->isEffectViewer();
+}
+
+NodePtr
+GuiAppInstance::getActiveViewerNode() const
+{
+    ViewerTab* tab = _imp->_gui ? _imp->_gui->getActiveViewer() : 0;
+    ViewerInstance* viewer = tab ? tab->getInternalNode() : 0;
+    NodePtr node = viewer ? viewer->getNode() : NodePtr();
+
+    return node ? node : AppInstance::getActiveViewerNode();
 }
 
 void
@@ -1240,6 +1287,16 @@ GuiAppInstance::updateProjectLoadStatus(const QString& str)
         return;
     }
     _imp->loadProjectSplash->updateText(str);
+}
+
+void
+GuiAppInstance::showStatusMessage(const QString& message)
+{
+    Gui* gui = getGui();
+
+    if (gui && gui->statusBar()) {
+        gui->statusBar()->showMessage(message, 5000);
+    }
 }
 
 void

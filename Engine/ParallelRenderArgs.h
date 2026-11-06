@@ -58,6 +58,16 @@ typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;
 
+/**
+ * @brief Whether the frames of range are walked: each whole frame of a range with whole-frame bounds, or the one
+ * time of a single-time range, fractional or not. A range with other fractional bounds is read anywhere within it.
+ **/
+inline bool
+isPlannedRange(const RangeD& range)
+{
+    return (range.min == range.max) || ((range.min == (int)range.min) && (range.max == (int)range.max));
+}
+
 struct InputMatrix
 {
     EffectInstancePtr newInputEffect;
@@ -231,6 +241,10 @@ public:
 
     ///Was the render started in the instanceChangedAction (knobChanged)
     bool isAnalysis : 1;
+
+    /// Installed only for the node's own instance-changed action: no render is running, so code
+    /// that reads a render's state (its context, its time) reads as it would outside one.
+    bool isInstanceChangedAction : 1;
 
     ///If true, the attached paint stroke is being drawn currently
     bool isDuringPaintStrokeCreation : 1;

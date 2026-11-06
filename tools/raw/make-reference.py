@@ -2,18 +2,22 @@
 """Renders the darktable references of Tests/fixtures/raw/reference with darktable-cli.
 
 Runs inside the image tools/raw/make-reference.sh builds. Each job writes a sidecar XMP whose
-history packs the parameters of the darktable modules the raw nodes port, exports a 32-bit float
-linear Rec. 709 TIFF and keeps either a crop of it (camera files) or its white-balanced mosaic
-(synthetic DNGs). Usage:
+history packs the parameters of the darktable modules the native nodes port, exports a 32-bit
+float linear TIFF and keeps either a crop of it (camera files), its white-balanced mosaic
+(synthetic DNGs) or all of it (the plate jobs, the jobs that render on a plate and the ashift jobs, which
+render a synthetic image's whole perspective correction). Usage:
 
-    make-reference.py [--dry-run] [--only TEXT] <fixtures dir> <output dir> <scratch dir>
+    make-reference.py [--dry-run] [--only TEXT] [--ref NAME] <fixtures dir> <output dir> <scratch dir>
 
 --dry-run lists every job and writes every XMP to the scratch directory without running
 darktable-cli or writing a fixture, with placeholder white balance coefficients in place of the
-probed ones. --only keeps the jobs whose output name contains TEXT.
+probed ones. --only keeps the jobs whose output name contains TEXT. --ref keeps the jobs rendered
+at one darktable revision: "release" (DARKTABLE_REF) or "master" (DARKTABLE_MASTER_REF); a job's
+source that another job writes must be rendered at the same revision.
 """
 
 import argparse
+import math
 import os
 import re
 import struct
@@ -89,6 +93,7 @@ DT_IOP_TEMP_D65_LATE = 4
 USER_COEFFS = (2.2, 1.0, 1.6)
 
 DT_COLORSPACE_LIN_REC709 = 3
+DT_COLORSPACE_LIN_REC2020 = 4
 DT_COLORSPACE_EMBEDDED_MATRIX = 10
 DT_COLORSPACE_STANDARD_MATRIX = 11
 DT_COLORSPACE_ENHANCED_MATRIX = 12
@@ -134,16 +139,15 @@ def highlights_params(mode, strength=0.0, clip=1.0, noise_level=0.0, iterations=
                        iterations, 6, 0.4, 2.0, RECOVERY_MODES[recovery], solid_color)
 
 
-def colorin_params(input_profile, normalize=0):
+def colorin_params(input_profile, normalize=0, work=DT_COLORSPACE_LIN_REC709):
     # dt_iop_colorin_params_t, version 7: perceptual intent (a matrix profile ignores it), no blue
-    # mapping, linear Rec. 709 working space.
-    return struct.pack("<i%dsiiii%ds" % (ICC_LEN, ICC_LEN), input_profile, b"", 0, normalize, 0,
-                       DT_COLORSPACE_LIN_REC709, b"")
+    # mapping, linear Rec. 709 working space unless work says otherwise.
+    return struct.pack("<i%dsiiii%ds" % (ICC_LEN, ICC_LEN), input_profile, b"", 0, normalize, 0, work, b"")
 
 
-def colorout_params():
-    # dt_iop_colorout_params_t, version 5: linear Rec. 709.
-    return struct.pack("<i%dsi" % ICC_LEN, DT_COLORSPACE_LIN_REC709, b"", 0)
+def colorout_params(profile=DT_COLORSPACE_LIN_REC709):
+    # dt_iop_colorout_params_t, version 5.
+    return struct.pack("<i%dsi" % ICC_LEN, profile, b"", 0)
 
 
 def flip_params():
@@ -175,6 +179,24 @@ def rawdenoise_params(threshold, all_curve=(0.5,) * 5):
     return struct.pack("<f20f20f", threshold, *(xs + ys))
 
 
+DENOISEPROFILE_MODES = {"nlm": 0, "wavelets": 1, "variance": 2, "nlm-auto": 3, "wavelets-auto": 4}
+DENOISEPROFILE_COLOR_MODES = {"rgb": 0, "y0u0v0": 1}
+
+
+def denoiseprofile_params(mode="wavelets", color_mode="y0u0v0", radius=1.0, nbhood=7.0, strength=1.0, shadows=1.0,
+                          bias=0.0, scattering=0.0, central_pixel_weight=0.1, overshooting=1.0, compensate_hilite_pres=1):
+    # dt_iop_denoiseprofile_params_t, version 12: the eight sliders, a[3] and b[3] with a[0] = -1
+    # for the profile darktable finds for the file, the mode, x[6][7] and y[6][7] (all, R, G, B,
+    # Y0, U0V0) flat at 0.5 with the x positions evenly spaced as darktable's defaults are, then
+    # wb_adaptive_anscombe, fix_anscombe_and_nlmeans_norm, use_new_vst, wavelet_color_mode and
+    # compensate_hilite_pres.
+    xs = [k / 6.0 for k in range(7)] * 6
+    ys = [0.5] * 42
+    return struct.pack("<8f3f3fi42f42f5i", radius, nbhood, strength, shadows, bias, scattering, central_pixel_weight,
+                       overshooting, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, DENOISEPROFILE_MODES[mode], *(xs + ys), 1, 1, 1,
+                       DENOISEPROFILE_COLOR_MODES[color_mode], compensate_hilite_pres)
+
+
 def rawprepare_params(black, white, flat_field):
     # dt_iop_rawprepare_params_t, version 2: no crop, the four black levels, the white point and
     # the flat field enum, which sits after two bytes of padding.
@@ -202,14 +224,47 @@ def sigmoid_params():
     return struct.pack("<4fi8fi", 1.5, 0.0, 100.0, 0.0152, 0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 
 
-def exposure_params():
-    # dt_iop_exposure_params_t, version 7, at its defaults.
-    return struct.pack("<i4fii", 0, 0.0, 0.0, 50.0, -4.0, 0, 1)
+def exposure_params(exposure=0.0):
+    # dt_iop_exposure_params_t, version 7, at its defaults but for the exposure in EV.
+    return struct.pack("<i4fii", 0, 0.0, exposure, 50.0, -4.0, 0, 1)
 
 
 def sharpen_params():
     # dt_iop_sharpen_params_t, version 1, at its defaults.
     return struct.pack("<3f", 2.0, 0.5, 0.5)
+
+
+# AutoStraighten's source: a synthetic linear Rec. 709 image the ashift jobs correct, written as
+# a half-float TIFF that darktable and the test both read.
+ASHIFT_SOURCE = "ashift-source.tif"
+ASHIFT_WIDTH = 160
+ASHIFT_HEIGHT = 120
+ASHIFT_MAX_SAVED_LINES = 50
+ASHIFT_MODES = {"generic": 0, "specific": 1}
+# darktable's warp interpolator for the jobs; AutoStraighten's filter knob is set to match.
+ASHIFT_INTERPOLATOR = "bilinear"
+# (suffix, rotation, lensShiftV, lensShiftH, shear, lens model, focal length, crop factor, lens
+# dependence, aspect adjust, crop box cl cr ct cb). Rotation is AutoStraighten's knob, the slider
+# value; darktable stores its negation. Every crop box is explicit, as darktable-cli never runs the
+# automatic crop the GUI computes; Tests/Native/NativeAutoStraighten_Test.cpp mirrors this table.
+ASHIFT_CASES = [
+    ("rotation", 3.0, 0.0, 0.0, 0.0, "generic", 28.0, 1.0, 100.0, 1.0, (0.0, 1.0, 0.0, 1.0)),
+    ("keystone", 0.0, 0.3, 0.0, 0.0, "generic", 28.0, 1.0, 100.0, 1.0, (0.05, 0.95, 0.04, 0.96)),
+    ("all", -2.0, 0.2, -0.15, 0.05, "generic", 28.0, 1.0, 100.0, 1.0, (0.08, 0.9, 0.06, 0.93)),
+    ("specific", 1.5, -0.25, 0.1, 0.0, "specific", 50.0, 1.5, 60.0, 1.2, (0.0, 1.0, 0.0, 1.0)),
+]
+
+
+def ashift_params(rotation, lens_shift_v, lens_shift_h, shear, mode, focal_length, crop_factor, orthocorr, aspect,
+                  crop):
+    # dt_iop_ashift_params_t, version 5: rotation (stored negated), lens shifts, shear, focal
+    # length, crop factor, orthocorr, aspect, mode, crop mode (off: the box is taken as given),
+    # the crop box, then the saved lines and quad, empty.
+    cl, cr, ct, cb = crop
+    return struct.pack("<8f2i4f%dfi8f" % (ASHIFT_MAX_SAVED_LINES * 4),
+                       -rotation, lens_shift_v, lens_shift_h, shear, focal_length, crop_factor, orthocorr, aspect,
+                       ASHIFT_MODES[mode], 0, cl, cr, ct, cb, *([0.0] * (ASHIFT_MAX_SAVED_LINES * 4)), 0,
+                       *([0.0] * 8))
 
 
 def history_entry(num, operation, enabled, version, params):
@@ -226,13 +281,13 @@ def history_entry(num, operation, enabled, version, params):
 
 
 def develop_entries(demosaic, highlights="opposed", input_profile=DT_COLORSPACE_STANDARD_MATRIX, normalize=0,
-                    demosaic_options=None, highlights_options=None, extra=()):
+                    demosaic_options=None, highlights_options=None, extra=(), work_profile=DT_COLORSPACE_LIN_REC709):
     entries = [
         ("flip", 0, 2, flip_params()),
         ("highlights", 0 if highlights == "unclipped" else 1, 4, highlights_params(highlights, **(highlights_options or {}))),
         ("demosaic", 1, 6, demosaic_params(demosaic, **(demosaic_options or {}))),
-        ("colorin", 1, 7, colorin_params(input_profile, normalize)),
-        ("colorout", 1, 5, colorout_params()),
+        ("colorin", 1, 7, colorin_params(input_profile, normalize, work_profile)),
+        ("colorout", 1, 5, colorout_params(work_profile)),
     ]
     return entries + list(extra)
 
@@ -273,10 +328,15 @@ def write_xmp(path, entries, auto_presets_applied=True):
 
 
 class Job:
-    """One reference: a crop of a camera file's develop, or a synthetic DNG's mosaic."""
+    """One reference: a crop of a camera file's develop, a synthetic DNG's mosaic or a whole image.
+
+    ref names the darktable revision that renders it ("release" or "master"), icc the --icc-type
+    of the export, size its --width and --height (0 for the full size). whole keeps the whole
+    export rather than a crop. half stores it as half float, which keeps a parity reference small.
+    """
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None):
+                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False, half=False, conf=()):
         self.name = name
         self.source = source
         self.entries = entries
@@ -287,6 +347,13 @@ class Job:
         self.log_line = log_line
         # (pattern, period) of a synthetic mosaic; None for a camera crop.
         self.mosaic = mosaic
+        self.ref = ref
+        self.icc = icc
+        self.size = size
+        self.whole = whole
+        self.half = half
+        # Extra darktable-cli --conf settings.
+        self.conf = tuple(conf)
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -387,6 +454,32 @@ def rawdenoise_jobs():
     return jobs
 
 
+# (suffix, params): each mode, both wavelet colour modes, and shadows, bias and strength off their
+# defaults, which the auto modes would replace.
+DENOISEPROFILE_VARIANTS = (
+    ("wavelets-y0u0v0", {}),
+    ("wavelets-rgb", {"color_mode": "rgb"}),
+    ("wavelets-auto", {"mode": "wavelets-auto"}),
+    ("nlm", {"mode": "nlm"}),
+    ("nlm-auto", {"mode": "nlm-auto"}),
+    ("nlm-p2-k4-s0.5", {"mode": "nlm", "radius": 2.0, "nbhood": 4.0, "scattering": 0.5, "central_pixel_weight": 0.3}),
+    ("wavelets-shadows-0.5", {"shadows": 0.5}),
+    ("wavelets-bias-minus-2", {"bias": -2.0}),
+    ("wavelets-strength-2", {"strength": 2.0}),
+)
+
+
+def denoiseprofile_jobs():
+    jobs = []
+    for fixture in (CR2, RAF):
+        base = BASE_DEMOSAIC[fixture]
+        for suffix, options in DENOISEPROFILE_VARIANTS:
+            jobs.append(camera_job(fixture, "denoiseprofile-" + suffix, "demosaic %s, denoise (profiled) %s, auto profile"
+                                   % (base, suffix), develop_entries(base, extra=[("denoiseprofile", 1, 12,
+                                                                                   denoiseprofile_params(**options))])))
+    return jobs
+
+
 def colorin_jobs():
     jobs = [camera_job(f, "colorin-standard", "demosaic %s, input profile standard matrix" % BASE_DEMOSAIC[f],
                        develop_entries(BASE_DEMOSAIC[f])) for f in (CR2, RAF)]
@@ -453,6 +546,42 @@ def synthetic_jobs():
     return jobs
 
 
+def ashift_jobs():
+    jobs = []
+    for case in ASHIFT_CASES:
+        suffix, rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop = case
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("ashift", 1, 5, ashift_params(rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop)),
+        ]
+        what = ("ashift rotation %g lensShiftV %g lensShiftH %g shear %g lensModel %s focalLength %g cropFactor %g "
+                "lensDependence %g aspectAdjust %g crop %g %g %g %g, %s interpolation"
+                % (rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop[0], crop[1], crop[2],
+                   crop[3], ASHIFT_INTERPOLATOR))
+        jobs.append(Job("ashift-%s.tif" % suffix, ASHIFT_SOURCE, entries, what, whole=True, half=True,
+                        conf=["plugins/lighttable/export/pixel_interpolator_warp=" + ASHIFT_INTERPOLATOR]))
+    return jobs
+
+
+def ashift_scene():
+    """Soft-edged grid lines and colour gradients, band-limited so that the interpolators differ
+    little between the grid's pixels."""
+    y, x = np.mgrid[0:ASHIFT_HEIGHT, 0:ASHIFT_WIDTH].astype(np.float64)
+    image = np.empty((ASHIFT_HEIGHT, ASHIFT_WIDTH, 3))
+    image[:, :, 0] = 0.15 + 0.5 * x / ASHIFT_WIDTH
+    image[:, :, 1] = 0.2 + 0.4 * y / ASHIFT_HEIGHT
+    image[:, :, 2] = 0.25 + 0.2 * np.sin(x / 13.0) * np.cos(y / 11.0)
+    lines = np.zeros((ASHIFT_HEIGHT, ASHIFT_WIDTH))
+    for cx in range(12, ASHIFT_WIDTH, 24):
+        lines = np.maximum(lines, np.exp(-0.5 * ((x - cx) / 1.2) ** 2))
+    for cy in range(10, ASHIFT_HEIGHT, 20):
+        lines = np.maximum(lines, np.exp(-0.5 * ((y - cy) / 1.2) ** 2))
+    image += 0.35 * lines[:, :, None]
+    return np.clip(image, 0.0, 1.0).astype(np.float16)
+
+
 def colour_calibration_jobs(coeffs):
     def cc(fixture, suffix, what, preset=DT_IOP_TEMP_AS_SHOT, **options):
         c = coeffs[fixture]["as_shot"]
@@ -517,14 +646,335 @@ def colour_calibration_jobs(coeffs):
     return jobs
 
 
-def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0):
+# dt_iop_colorbalancergb_params_t, version 5, in field order, with darktable's defaults; the last
+# field, saturation_formula, is an int (0 JzAzBz, 1 darktable UCS).
+COLORBALANCERGB_FIELDS = [
+    ("shadows_Y", 0.0), ("shadows_C", 0.0), ("shadows_H", 0.0),
+    ("midtones_Y", 0.0), ("midtones_C", 0.0), ("midtones_H", 0.0),
+    ("highlights_Y", 0.0), ("highlights_C", 0.0), ("highlights_H", 0.0),
+    ("global_Y", 0.0), ("global_C", 0.0), ("global_H", 0.0),
+    ("shadows_weight", 1.0), ("white_fulcrum", 0.0), ("highlights_weight", 1.0),
+    ("chroma_shadows", 0.0), ("chroma_highlights", 0.0), ("chroma_global", 0.0), ("chroma_midtones", 0.0),
+    ("saturation_global", 0.0), ("saturation_highlights", 0.0), ("saturation_midtones", 0.0),
+    ("saturation_shadows", 0.0), ("hue_angle", 0.0),
+    ("brilliance_global", 0.0), ("brilliance_highlights", 0.0), ("brilliance_midtones", 0.0),
+    ("brilliance_shadows", 0.0), ("mask_grey_fulcrum", 0.1845),
+    ("vibrance", 0.0), ("grey_fulcrum", 0.1845), ("contrast", 0.0),
+]
+COLORBALANCERGB_FORMULAS = {"jzazbz": 0, "ucs": 1}
+# init_presets() in src/iop/colorbalancergb.c: every other field at its default.
+COLORBALANCERGB_PRESETS = [
+    ("legacy", {"formula": "jzazbz", "chroma_global": 0.2, "saturation_shadows": 0.1,
+                "saturation_midtones": 0.05, "saturation_highlights": -0.05}),
+    ("natural-skin", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.30,
+                      "saturation_midtones": 0.0, "saturation_highlights": -0.5}),
+    ("vibrant-colors", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.5,
+                        "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+    ("standard", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.25,
+                  "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+]
+
+
+def colorbalancergb_params(formula="ucs", **fields):
+    unknown = set(fields) - {name for name, _ in COLORBALANCERGB_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorbalancergb fields %s" % sorted(unknown))
+    values = [float(fields.get(name, default)) for name, default in COLORBALANCERGB_FIELDS]
+    return struct.pack("<%dfi" % len(values), *values, COLORBALANCERGB_FORMULAS[formula])
+
+
+def colour_balance_rgb_jobs():
+    """Color balance rgb on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    Every job exports linear Rec. 2020. The "base" job is the same develop without the module:
+    NativeColorBalanceRGB_Test feeds it to ColorBalanceRGB in a linear Rec. 2020 project and
+    compares the result with each graded job. The base stays float, the test's input; the graded
+    jobs are stored as half float.
+    """
+    def develop(extra=()):
+        return develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=list(extra))
+
+    def graded(suffix, what, **params):
+        entry = ("colorbalancergb", 1, 5, colorbalancergb_params(**params))
+        return camera_job(CR2, "colorbalancergb-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "balance rgb %s" % (BASE_DEMOSAIC[CR2], what), develop([entry]), icc="LIN_REC2020",
+                          half=True)
+
+    jobs = [camera_job(CR2, "colorbalancergb-base", "demosaic %s, working space linear Rec. 2020, no color balance "
+                       "rgb" % BASE_DEMOSAIC[CR2], develop(), icc="LIN_REC2020")]
+    for name, fields in COLORBALANCERGB_PRESETS:
+        jobs.append(graded("preset-" + name, "preset %s %s" % (name, sorted(fields.items())), **fields))
+    for formula in ("jzazbz", "ucs"):
+        jobs.append(graded("defaults-" + formula, "defaults, %s" % formula, formula=formula))
+    # The 4 ways: luminance, chroma and hue of each wheel.
+    wheels = [("offset", "global", 0.02, 0.005, 40.0), ("lift", "shadows", 0.15, 0.2, 200.0),
+              ("gain", "highlights", -0.1, 0.1, 80.0), ("power", "midtones", 0.1, 0.05, 300.0)]
+    for name, field, y, c, h in wheels:
+        params = {field + "_Y": y, field + "_C": c, field + "_H": h}
+        jobs.append(graded("4ways-" + name, "%s %s" % (name, sorted(params.items())), **params))
+    for formula in ("jzazbz", "ucs"):
+        for kind in ("saturation", "brilliance"):
+            for zone, amount in (("global", 0.3), ("shadows", 0.4), ("midtones", -0.3), ("highlights", 0.5)):
+                field = "%s_%s" % (kind, zone)
+                jobs.append(graded("%s-%s-%s" % (kind, zone, formula), "%s %+g, %s" % (field, amount, formula),
+                                   formula=formula, **{field: amount}))
+    chroma = {"chroma_global": 0.2, "chroma_shadows": 0.3, "chroma_midtones": -0.2, "chroma_highlights": 0.4}
+    jobs.append(graded("chroma", "chroma %s" % sorted(chroma.items()), **chroma))
+    jobs.append(graded("hue-shift", "hue shift 25", hue_angle=25.0))
+    for sign, amount in (("plus", 0.4), ("minus", -0.4)):
+        jobs.append(graded("vibrance-" + sign, "vibrance %+g" % amount, vibrance=amount))
+        jobs.append(graded("contrast-" + sign, "contrast %+g" % amount, contrast=amount))
+    masks = {"shadows_weight": 2.0, "highlights_weight": 0.5, "mask_grey_fulcrum": 0.3, "white_fulcrum": 1.5,
+             "grey_fulcrum": 0.25, "shadows_Y": 0.2, "highlights_Y": -0.2, "midtones_Y": 0.1, "contrast": 0.2}
+    jobs.append(graded("masks", "mask and fulcrum controls %s" % sorted(masks.items()), **masks))
+    return jobs
+
+
+# toneequal runs on a synthetic linear Rec. 709 half float TIFF the jobs write next to the
+# references, which NativeToneEqualizer_Test feeds the node unchanged; colorin and colorout are
+# identities around it and the whole frame is kept, as half float too. The mask's radius is a
+# share of the larger side and the scene's features scale with the frame.
+TONEEQUAL_SOURCE = "toneequal-source.tif"
+TONEEQUAL_WIDTH = 128
+TONEEQUAL_HEIGHT = 96
+# The band gains of every job, in EV, from -8 EV (blacks) to 0 EV (speculars).
+TONEEQUAL_GAINS = (1.2, 0.9, 0.6, 0.3, 0.0, -0.2, -0.5, -0.8, -1.0)
+TONEEQUAL_DETAILS = {"none": 0, "averaged-guided": 1, "guided": 2, "averaged-eigf": 3, "eigf": 4}
+TONEEQUAL_ESTIMATORS = {"mean": 0, "lightness": 1, "value": 2, "norm1": 3, "norm2": 4, "power-norm": 5, "geomean": 6}
+# (suffix, options); options override toneequal_params()'s defaults. NativeToneEqualizer_Test's
+# kReferenceJobs mirrors this list.
+TONEEQUAL_VARIANTS = (
+    [("bands", {})]
+    + [("details-" + name, {"details": value}) for name, value in TONEEQUAL_DETAILS.items()]
+    + [("estimator-" + name, {"method": value}) for name, value in TONEEQUAL_ESTIMATORS.items()]
+    + [
+        ("compensations-guided", {"details": 2, "exposure_boost": 1.5, "contrast_boost": 0.8}),
+        ("compensations-eigf", {"exposure_boost": -0.5, "contrast_boost": 0.6}),
+        ("smoothing-diffusion", {"smoothing": math.sqrt(2.0) ** 1.5, "iterations": 3, "feathering": 20.0, "blending": 10.0}),
+        ("quantization", {"quantization": 0.5}),
+    ]
+)
+
+
+def toneequal_params(gains=TONEEQUAL_GAINS, blending=5.0, smoothing=math.sqrt(2.0), feathering=1.0, quantization=0.0,
+                     contrast_boost=0.0, exposure_boost=0.0, details=4, method=4, iterations=1):
+    # dt_iop_toneequalizer_params_t, version 2: the nine band gains, blending (per cent of the
+    # largest side), smoothing (the gaussians' sigma), feathering, quantization, the two mask
+    # compensations, details, the luminance estimator and the filter iterations.
+    return struct.pack("<15f3i", *gains, blending, smoothing, feathering, quantization, contrast_boost, exposure_boost,
+                       details, method, iterations)
+
+
+def toneequal_jobs():
+    jobs = []
+    for suffix, options in TONEEQUAL_VARIANTS:
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("toneequal", 1, 2, toneequal_params(**options)),
+        ]
+        what = "toneequal %s" % " ".join("%s=%s" % kv for kv in sorted(options.items()))
+        jobs.append(Job("toneequal-%s.tif" % suffix, TONEEQUAL_SOURCE, entries, what.strip(), whole=True, half=True))
+    return jobs
+
+
+def toneequal_scene():
+    """The source: exposures from -10 EV to +1 EV left to right, rippled down the rows, under
+    hard-edged patches 1.5 EV up and a fine texture, tinted by row band so the estimators differ.
+    Rows from the top."""
+    y, x = np.mgrid[0:TONEEQUAL_HEIGHT, 0:TONEEQUAL_WIDTH].astype(np.float64)
+    patch = TONEEQUAL_WIDTH // 8
+    ev = -10.0 + 11.0 * x / (TONEEQUAL_WIDTH - 1) + 0.5 * np.sin(2.0 * np.pi * y / (TONEEQUAL_HEIGHT / 4.0))
+    ev += np.where(((x // patch) + (y // patch)) % 3 == 0, 1.5, 0.0)
+    ev += 0.15 * np.sin(1.3 * x) * np.sin(1.7 * y)
+    tints = np.array([(1.0, 1.0, 1.0), (1.25, 1.0, 0.7), (0.75, 0.95, 1.3)])
+    tint = tints[(y.astype(int) // (TONEEQUAL_HEIGHT // 3)) % 3]
+    return (np.exp2(ev)[:, :, None] * tint).astype(np.float16)
+
+
+def write_toneequal_source(path):
+    tifffile.imwrite(path, np.ascontiguousarray(toneequal_scene()), photometric="rgb", compression="zlib",
+                     description="synthetic linear Rec. 709 half float source of the toneequal references", metadata=None)
+
+
+# darktable's contrast & texture (src/iop/contrastntexture.c at DARKTABLE_MASTER_REF), rendered on
+# a plate: the CR2 developed to linear Rec. 2020 and exported small, then read back as a float TIFF
+# whose input and working profiles are both linear Rec. 2020, so the module's input is the plate.
+# The module's radii and detail levels follow the size of the image it is given, so the plate is
+# the whole image there and in Tests/Native/NativeContrastTexture_Test.cpp. Every file is half
+# float, the plate included: darktable reads back the same half plate the test feeds the kernels.
+#
+# dt_iop_contrastntexture_params_t, DT_MODULE_INTROSPECTION version 2, eight floats in this order
+# (darktable's min, max, default; description):
+#   gain_coarse      -1 .. 5,    0      "coarse details"
+#   gain_medium      -1 .. 5,    0      "medium details"
+#   gain_fine        -1 .. 5,    0      "fine details"
+#   detail_level      1 .. 15,   5      "base detail level"
+#   halo_control    -10 .. 10,   0      "halo control"
+#   noise_bias        0 .. 1,    0.001  "noise bias"
+#   gain_shadows     -5 .. 5,    0      "shadows"
+#   gain_highlights  -5 .. 5,    0      "highlights"
+# GUI: base detail level (soft 1 .. 10, with a mask toggle showing the low-pass), highlights and
+# shadows (soft -2 .. 2); "local contrast": coarse, medium and fine details (soft -1 .. 1.5, shown
+# in %, each with a mask toggle showing its band); "filter settings": halo control (soft -5 .. 5,
+# in %) and noise bias (soft 0 .. 0.2). The mask toggles are GUI state, not params.
+CONTRASTNTEXTURE_PLATE = "contrastntexture-plate.tif"
+CONTRASTNTEXTURE_PLATE_SIZE = 256
+CONTRASTNTEXTURE_PLATE_EXPOSURE = 0.7
+CONTRASTNTEXTURE_FIELDS = ("gain_coarse", "gain_medium", "gain_fine", "detail_level", "halo_control", "noise_bias",
+                           "gain_shadows", "gain_highlights")
+CONTRASTNTEXTURE_DEFAULTS = (0.0, 0.0, 0.0, 5.0, 0.0, 0.001, 0.0, 0.0)
+
+
+def contrastntexture_params(**fields):
+    unknown = set(fields) - set(CONTRASTNTEXTURE_FIELDS)
+    if unknown:
+        raise ValueError("unknown contrastntexture fields %s" % sorted(unknown))
+    values = [fields.get(name, default) for name, default in zip(CONTRASTNTEXTURE_FIELDS, CONTRASTNTEXTURE_DEFAULTS)]
+    return struct.pack("<8f", *values)
+
+
+CONTRASTNTEXTURE_VARIANTS = [
+    ("default", {}),
+    ("coarse-1", {"gain_coarse": 1.0}),
+    ("coarse-minus-0.5", {"gain_coarse": -0.5}),
+    ("medium-1", {"gain_medium": 1.0}),
+    ("medium-minus-0.5", {"gain_medium": -0.5}),
+    ("fine-1", {"gain_fine": 1.0}),
+    ("fine-3", {"gain_fine": 3.0}),
+    ("detail-level-2", {"gain_medium": 1.0, "detail_level": 2.0}),
+    ("detail-level-9", {"gain_medium": 1.0, "detail_level": 9.0}),
+    ("halo-minus-3", {"gain_fine": 1.0, "halo_control": -3.0}),
+    ("halo-3", {"gain_fine": 1.0, "halo_control": 3.0}),
+    ("noise-bias-0.05", {"gain_fine": 1.0, "noise_bias": 0.05}),
+    ("noise-bias-0", {"gain_fine": 1.0, "noise_bias": 0.0}),
+    ("shadows-1", {"gain_shadows": 1.0}),
+    ("shadows-minus-1", {"gain_shadows": -1.0}),
+    ("highlights-1", {"gain_highlights": 1.0}),
+    ("highlights-minus-1", {"gain_highlights": -1.0}),
+    ("combined", {"gain_coarse": 0.4, "gain_medium": 0.6, "gain_fine": 0.8, "detail_level": 4.0,
+                  "halo_control": 1.0, "noise_bias": 0.01, "gain_shadows": 0.5, "gain_highlights": -0.5}),
+]
+
+
+def contrastntexture_jobs():
+    work = {"work": DT_COLORSPACE_LIN_REC2020}
+    rec2020 = DT_COLORSPACE_LIN_REC2020
+    plate_entries = [
+        ("flip", 0, 2, flip_params()),
+        ("highlights", 1, 4, highlights_params("opposed")),
+        ("demosaic", 1, 6, demosaic_params("rcd")),
+        ("exposure", 1, 7, exposure_params(CONTRASTNTEXTURE_PLATE_EXPOSURE)),
+        ("colorin", 1, 7, colorin_params(DT_COLORSPACE_STANDARD_MATRIX, **work)),
+        ("colorout", 1, 5, colorout_params(rec2020)),
+    ]
+    jobs = [Job(CONTRASTNTEXTURE_PLATE, CR2, plate_entries,
+                "demosaic rcd, highlights opposed, exposure %+g EV, standard matrix to linear Rec. 2020, "
+                "exported at %d px" % (CONTRASTNTEXTURE_PLATE_EXPOSURE, CONTRASTNTEXTURE_PLATE_SIZE),
+                ref="master", icc="LIN_REC2020", size=CONTRASTNTEXTURE_PLATE_SIZE, whole=True, half=True)]
+    for suffix, fields in CONTRASTNTEXTURE_VARIANTS:
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(rec2020, **work)),
+            ("contrastntexture", 1, 2, contrastntexture_params(**fields)),
+            ("colorout", 1, 5, colorout_params(rec2020)),
+        ]
+        what = "contrast & texture %s" % (" ".join("%s=%g" % kv for kv in sorted(fields.items())) or "at its defaults")
+        jobs.append(Job("contrastntexture-%s.tif" % suffix, CONTRASTNTEXTURE_PLATE, entries, what, ref="master",
+                        icc="LIN_REC2020", whole=True, half=True))
+    return jobs
+
+
+# dt_iop_colorequal_params_t, version 4, in field order, with darktable's defaults; use_filter is a
+# gboolean (int), every other field a float.
+COLOREQUAL_NODES = ["red", "orange", "yellow", "green", "cyan", "blue", "lavender", "magenta"]
+COLOREQUAL_FIELDS = ([("threshold", 0.1), ("smoothing_hue", 1.0), ("contrast", 0.0), ("white_level", 1.0),
+                      ("chroma_size", 1.5), ("param_size", 1.0), ("use_filter", 1)]
+                     + [("sat_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_" + n, 0.0) for n in COLOREQUAL_NODES]
+                     + [("bright_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_shift", 0.0)])
+
+
+def colorequal_nodes(kind, values):
+    return {"%s_%s" % (kind, n): v for n, v in zip(COLOREQUAL_NODES, values)}
+
+
+# init_presets() in src/iop/colorequal.c: every other field at its default.
+COLOREQUAL_PRESETS = [
+    ("bleach-bypass", dict(threshold=0.0, smoothing_hue=1.0, contrast=0.0, param_size=1.0, hue_shift=0.0,
+                           **colorequal_nodes("sat", [1 - .2215, 1 - .1772, 1 - .3861, 1 - .3924, 1 - .4557, 1 - .4177,
+                                                      1 - .2468, 1 - .2532]),
+                           **colorequal_nodes("hue", [15.46, 0.0, -2.21, 28.72, 16.57, 0.0, 0.0, 0.0]),
+                           **colorequal_nodes("bright", [.75, .75, .75, .65, .65, .75, .75, .75]))),
+    ("kodachrome-64-like", dict(threshold=0.193, smoothing_hue=1.0, contrast=-0.345, param_size=19.0, hue_shift=0.0,
+                                **colorequal_nodes("sat", [1.2390, 1.0377, 1 - .1761, 1 - .1635, 1 - .0126, 1.0126, 1.0,
+                                                           1.1384]),
+                                **colorequal_nodes("hue", [-2.20, -17.56, -3.29, 32.93, 14.27, 6.59, -7.68, 0.0]),
+                                **colorequal_nodes("bright", [1 - .0063, 1.1824, 1 - .1950, 1 - .2390, 1 - .2453,
+                                                              1.0377, 1 - .1572, 1 - .1384]))),
+    ("kodak-portra-400-like", dict(threshold=0.199, smoothing_hue=1.0, contrast=-0.375, param_size=1.0, hue_shift=-23.0,
+                                   **colorequal_nodes("sat", [1.0692, 1.0503, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+                                   **colorequal_nodes("hue", [9.88, -4.39, 15.37, 8.78, 2.20, -19.76, -3.29, 0.0]),
+                                   **colorequal_nodes("bright", [1.0881, 1.0629, 1.0629, 1 - .1069, 1 - .1069,
+                                                                 1 - .1006, 1 - .0189, 1.0]))),
+    ("teal-and-orange", dict(threshold=0.184, smoothing_hue=0.52, contrast=-0.3, param_size=1.0, hue_shift=0.0,
+                             **colorequal_nodes("sat", [1.1572, 1 - .0063, 1 - .3270, 1 - .0377, 1.0, 1.0126, 1.0, 1.0]),
+                             **colorequal_nodes("hue", [15.37, -24.15, 75.74, 42.81, 2.20, -36.22, 2.20, 42.81]),
+                             **colorequal_nodes("bright", [1.0] * 8))),
+]
+# Every node moved, the settings the option jobs start from.
+COLOREQUAL_BUSY = dict(**colorequal_nodes("hue", [20.0, -15.0, 10.0, 35.0, -25.0, 12.0, -8.0, 30.0]),
+                       **colorequal_nodes("sat", [1.3, 0.7, 1.1, 0.6, 1.4, 0.9, 1.2, 0.8]),
+                       **colorequal_nodes("bright", [1.2, 0.85, 1.1, 0.75, 1.15, 0.9, 1.05, 0.8]))
+
+
+def colorequal_params(**fields):
+    unknown = set(fields) - {name for name, _ in COLOREQUAL_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorequal fields %s" % sorted(unknown))
+    values = [fields.get(name, default) for name, default in COLOREQUAL_FIELDS]
+    return struct.pack("<6fi25f", *[float(v) for v in values[:6]], int(values[6]), *[float(v) for v in values[7:]])
+
+
+def colour_equalizer_jobs():
+    """Color equalizer on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    NativeColorEqualizer_Test feeds colour balance rgb's "base" job (the same develop without the
+    module) to ColorEqualizer in a linear Rec. 2020 project and compares the result with each job
+    away from the crop's edges, where darktable's guided filters saw the rest of the image. Stored
+    as half float.
+    """
+    def equalized(suffix, what, **params):
+        entry = ("colorequal", 1, 4, colorequal_params(**params))
+        develop = develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=[entry])
+        return camera_job(CR2, "colorequal-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "equalizer %s" % (BASE_DEMOSAIC[CR2], what), develop, icc="LIN_REC2020", half=True)
+
+    jobs = [equalized("defaults", "defaults")]
+    for i, node in enumerate(COLOREQUAL_NODES):
+        params = {"hue_" + node: 30.0 if i % 2 == 0 else -30.0, "sat_" + node: 1.4, "bright_" + node: 1.25}
+        jobs.append(equalized("node-" + node, "%s" % sorted(params.items()), **params))
+    options = [("busy", {}), ("filter-off", {"use_filter": 0}), ("node-placement", {"hue_shift": 15.0}),
+               ("hue-smoothing", {"smoothing_hue": 0.3}), ("threshold-contrast", {"threshold": 0.2, "contrast": 0.5}),
+               ("white-level", {"white_level": 4.0}), ("sizes", {"chroma_size": 6.0, "param_size": 12.0})]
+    for suffix, extra in options:
+        params = dict(COLOREQUAL_BUSY, **extra)
+        jobs.append(equalized(suffix, "every node moved, %s" % sorted(extra.items()), **params))
+    for name, fields in COLOREQUAL_PRESETS:
+        jobs.append(equalized("preset-" + name, "preset %s" % name, **fields))
+    return jobs
+
+
+def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc="LIN_REC709", conf=()):
     if os.path.exists(output):
         os.remove(output)
     config = os.path.join(scratch, "config-" + re.sub(r"[^a-z]+", "-", workflow))
     os.makedirs(config, exist_ok=True)
     command = [
         "darktable-cli", source, xmp, output,
-        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", "LIN_REC709",
+        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", icc,
         "--width", str(size), "--height", str(size),
         "--core", "--configdir", config, "--disable-opencl",
         "--conf", "plugins/darkroom/workflow=%s" % workflow,
@@ -537,6 +987,8 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
         "--conf", "host_memory_limit=4096",
         "--conf", "worker_threads=4", "-t", "4",
     ]
+    for setting in conf:
+        command += ["--conf", setting]
     if debug:
         command += ["-d", debug]
     result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -547,9 +999,10 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
     return image[:, :, :3], result.stdout.splitlines()
 
 
-def write_reference(path, image, description):
-    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float32), photometric="rgb" if image.ndim == 3 else "minisblack",
-                     compression="zlib", description=description, metadata=None)
+def write_reference(path, image, description, half=False):
+    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float16 if half else np.float32),
+                     photometric="rgb" if image.ndim == 3 else "minisblack", compression="zlib", description=description,
+                     metadata=None)
 
 
 def probe_coefficients(fixture, scratch):
@@ -657,20 +1110,27 @@ def write_cfa_dng(path, pattern, period, scene="disc", gain_maps=False, linear_r
 
 
 def run_job(job, out, scratch):
+    if getattr(job, "plate", None):
+        return run_retouch_job(job, out, scratch)
     xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
     write_xmp(xmp, job.entries, job.auto_presets_applied)
     image, log = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
-                               job.workflow, job.debug)
+                               job.workflow, job.debug, job.size, job.icc, job.conf)
     height, width = image.shape[:2]
     logged = [line.strip() for line in log if job.log_line and job.log_line.search(line)]
     for line in logged:
         print("%s: log: %s" % (job.name, line))
-    if job.mosaic is None:
+    space = "linear Rec. 2020" if job.icc == "LIN_REC2020" else "linear Rec. 709"
+    if job.whole:
+        result = image
+        where = "whole image %dx%d, %s" % (width, height, space)
+        summary = "%dx%d mean %s max %s" % (width, height, result.mean(axis=(0, 1)), result.max())
+    elif job.mosaic is None:
         left, top = CROP_ORIGIN[job.source]
         result = image[top:top + CROP_SIZE, left:left + CROP_SIZE, :]
         if result.shape[:2] != (CROP_SIZE, CROP_SIZE):
             raise RuntimeError("%s: developed %dx%d, too small for the crop" % (job.name, width, height))
-        where = "developed %dx%d, crop left %d top %d size %d, linear Rec. 709" % (width, height, left, top, CROP_SIZE)
+        where = "developed %dx%d, crop left %d top %d size %d, %s" % (width, height, left, top, CROP_SIZE, space)
         summary = "mean %s max %s" % (result.mean(axis=(0, 1)), result.max())
     else:
         if (height, width) != (SYNTH_HEIGHT, SYNTH_WIDTH):
@@ -686,23 +1146,262 @@ def run_job(job, out, scratch):
         where = "photosite colour, white-balanced mosaic"
         summary = "max %g, largest other-channel value %g" % (result.max(), leak)
     description = "darktable %s, %s, workflow %s, %s, %s" % (
-        os.environ.get("DARKTABLE_REF", "?"), job.source, job.workflow, job.what, where)
+        revision(job.ref), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
-    write_reference(os.path.join(out, job.name), result, description)
+    write_reference(os.path.join(out, job.name), result, description, job.half)
     print("%s: %s" % (job.name, summary))
+
+
+# Retouch (darktable src/iop/retouch.c): clone, heal, blur and fill with circle, ellipse and path
+# forms that the XMP's masks history carries in a group, on the image, detail scales and the
+# residual. The plate is the tests' ParitySource (Tests/NativeParity.cpp) with its noise at time 1,
+# so NativeRetouch_Test renders the same pixels; each reference keeps the whole 64x48 result as a
+# half-float TIFF of about 15 KB.
+RETOUCH_WIDTH = 64
+RETOUCH_HEIGHT = 48
+RETOUCH_PLATE = "retouch-plate.tif"
+RETOUCH_TIME = 1.0
+DT_MASKS_CIRCLE = 1
+DT_MASKS_PATH = 2
+DT_MASKS_GROUP = 4
+DT_MASKS_CLONE = 8
+DT_MASKS_ELLIPSE = 32
+DT_MASKS_NON_CLONE = 128
+# use, show, union
+DT_MASKS_GROUP_STATE = 1 | 2 | 8
+# The control points as given, not recomputed.
+DT_MASKS_POINT_STATE_USER = 2
+DEVELOP_MASKS_VERSION = 6
+RETOUCH_ALGORITHMS = {"clone": 1, "heal": 2, "blur": 3, "fill": 4}
+RETOUCH_BLUR_TYPES = {"gaussian": 0, "bilateral": 1}
+RETOUCH_FILL_MODES = {"erase": 0, "color": 1}
+RETOUCH_NO_FORMS = 300
+RETOUCH_GROUP_ID = 1000
+# New forms' distortion mode (DT_IOP_RETOUCH_DISTORT_MODE).
+RETOUCH_DISTORT_MODE = 2
+
+# In Natron's canonical pixels, y up, as NativeRetouch_Test builds them: a circle and a rotated
+# ellipse (darktable's rotation turns clockwise on screen) given by centre and radii, a path by
+# (corner, left handle, right handle) per point. offset goes from the shape to its source; the
+# source of a path is its first corner's.
+RETOUCH_SHAPES = {
+    "circle": {"centre": (20.0, 30.0), "radii": (6.0, 6.0), "feather": 3.0, "opacity": 1.0,
+               "offset": (22.0, -8.0)},
+    "ellipse": {"centre": (42.0, 24.0), "radii": (9.0, 5.0), "rotation": 30.0, "feather": 2.0, "opacity": 0.6,
+                "offset": (-22.0, 8.0)},
+    "path": {"points": (((26.0, 8.0), (24.0, 9.0), (28.0, 7.0)),
+                        ((38.0, 10.0), (37.0, 8.0), (39.0, 12.0)),
+                        ((36.0, 20.0), (38.0, 19.0), (34.0, 21.0)),
+                        ((24.0, 18.0), (25.0, 20.0), (23.0, 16.0))),
+             "feather": 2.0, "opacity": 1.0, "offset": (16.0, 20.0)},
+}
+
+
+def retouch_point(x, y):
+    """Natron canonical (pixel centres at +0.5, y up) to darktable's normalised image position."""
+    return ((x - 0.5) / RETOUCH_WIDTH, (RETOUCH_HEIGHT - y - 0.5) / RETOUCH_HEIGHT)
+
+
+def retouch_length(d):
+    return d / min(RETOUCH_WIDTH, RETOUCH_HEIGHT)
+
+
+def retouch_form(kind, formid, clone):
+    """(mask type, points blob, point count, source blob) of one masks_history entry."""
+    shape = RETOUCH_SHAPES[kind]
+    ox, oy = shape["offset"]
+    if kind == "path":
+        points = b"".join(struct.pack("<8fi", *retouch_point(*corner), *retouch_point(*left),
+                                      *retouch_point(*right), retouch_length(shape["feather"]),
+                                      retouch_length(shape["feather"]), DT_MASKS_POINT_STATE_USER)
+                          for corner, left, right in shape["points"])
+        count = len(shape["points"])
+        origin = shape["points"][0][0]
+        mask_type = DT_MASKS_PATH
+    else:
+        centre = retouch_point(*shape["centre"])
+        if kind == "circle":
+            points = struct.pack("<4f", *centre, retouch_length(shape["radii"][0]), retouch_length(shape["feather"]))
+            mask_type = DT_MASKS_CIRCLE
+        else:
+            # Equidistant feather (flags 0).
+            points = struct.pack("<6fi", *centre, *(retouch_length(r) for r in shape["radii"]), shape["rotation"],
+                                 retouch_length(shape["feather"]), 0)
+            mask_type = DT_MASKS_ELLIPSE
+        count = 1
+        origin = shape["centre"]
+    source = struct.pack("<2f", *retouch_point(origin[0] + ox, origin[1] + oy)) if clone else struct.pack("<2f", 0.0, 0.0)
+    return mask_type | (DT_MASKS_CLONE if clone else DT_MASKS_NON_CLONE), points, count, source
+
+
+def retouch_mask_entry(num, formid, mask_type, name, points, count, source):
+    return ("     <rdf:li\n"
+            "      darktable:mask_num=\"%d\"\n"
+            "      darktable:mask_id=\"%d\"\n"
+            "      darktable:mask_type=\"%d\"\n"
+            "      darktable:mask_name=\"%s\"\n"
+            "      darktable:mask_version=\"%d\"\n"
+            "      darktable:mask_points=\"%s\"\n"
+            "      darktable:mask_nb=\"%d\"\n"
+            "      darktable:mask_src=\"%s\"/>\n") % (num, formid, mask_type, name, DEVELOP_MASKS_VERSION, points.hex(),
+                                                   count, source.hex())
+
+
+def retouch_params(forms, num_scales, merge_from_scale=0):
+    """dt_iop_retouch_params_t, version 3. forms: (formid, settings) with settings a dict of
+    scale, algorithm and the blur and fill settings."""
+    packed = b""
+    for formid, s in forms:
+        packed += struct.pack("<Iiiifi3ffi", formid, s["scale"], RETOUCH_ALGORITHMS[s["algorithm"]],
+                              RETOUCH_BLUR_TYPES[s.get("blur_type", "gaussian")], s.get("blur_radius", 10.0),
+                              RETOUCH_FILL_MODES[s.get("fill_mode", "erase")], *s.get("fill_color", (0.0, 0.0, 0.0)),
+                              s.get("fill_brightness", 0.0), RETOUCH_DISTORT_MODE)
+    packed += b"\0" * (44 * (RETOUCH_NO_FORMS - len(forms)))
+    # Globals: the default algorithm, scales, current scale, merge from, preview levels, the
+    # default blur and fill settings and max_heal_iter (darktable's defaults).
+    packed += struct.pack("<iiii3fifi3ffi", RETOUCH_ALGORITHMS["heal"], num_scales, 0, merge_from_scale,
+                          -3.0, 0.0, 3.0, 0, 10.0, 0, 0.0, 0.0, 0.0, 0.0, 2000)
+    if len(packed) != 13260:
+        raise RuntimeError("retouch params are %d bytes" % len(packed))
+    return packed
+
+
+def retouch_blend_params():
+    """BLEND_PARAMS with mask_id, at offset 24 of dt_develop_blend_params_t, set to the group."""
+    import base64
+    import zlib
+    blob = bytearray(zlib.decompress(base64.b64decode(BLEND_PARAMS[4:])))
+    struct.pack_into("<i", blob, 24, RETOUCH_GROUP_ID)
+    return bytes(blob).hex()
+
+
+class RetouchJob(Job):
+    """A retouch of the synthetic plate; shapes is a list of (kind, settings)."""
+
+    def __init__(self, name, shapes, num_scales, merge_from_scale=0):
+        self.shapes = shapes
+        forms = [(RETOUCH_GROUP_ID + 1 + i, s) for i, (kind, s) in enumerate(shapes)]
+        entries = [
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("retouch", 1, 3, retouch_params(forms, num_scales, merge_from_scale)),
+        ]
+        what = "retouch %d scales, merge from %d: %s" % (num_scales, merge_from_scale, "; ".join(
+            "%s %s on scale %d" % (s["algorithm"], kind, s["scale"]) for kind, s in shapes))
+        super().__init__(name, RETOUCH_PLATE, entries, what)
+        self.plate = RETOUCH_PLATE
+        num = len(entries) - 1
+        group = b""
+        masks = ""
+        for (formid, s), (kind, _) in zip(forms, shapes):
+            mask_type, points, count, source = retouch_form(kind, formid, s["algorithm"] in ("clone", "heal"))
+            masks += retouch_mask_entry(num, formid, mask_type, "%s %d" % (kind, formid), points, count, source)
+            group += struct.pack("<iiif", formid, RETOUCH_GROUP_ID, DT_MASKS_GROUP_STATE, RETOUCH_SHAPES[kind]["opacity"])
+        masks += retouch_mask_entry(num, RETOUCH_GROUP_ID, DT_MASKS_GROUP, "grp retouch", group, len(forms), b"\0" * 8)
+        self.masks = masks
+        self.blend = retouch_blend_params()
+
+
+def write_retouch_xmp(path, job):
+    write_xmp(path, job.entries, job.auto_presets_applied)
+    with open(path) as f:
+        xmp = f.read()
+    xmp = xmp.replace("    <rdf:Seq/>\n", "    <rdf:Seq>\n%s    </rdf:Seq>\n" % job.masks, 1)
+    xmp = xmp.replace(BLEND_PARAMS, job.blend)
+    with open(path, "w") as f:
+        f.write(xmp)
+
+
+def parity_source_noise(channel, x, y):
+    mask = 0xffffffff
+    h = ((x * 0x8da6b343) ^ (y * 0xd8163841) ^ (channel * 0xcb1ab31f) ^ 0x9e3779b9) & mask
+    h ^= h >> 16
+    h = (h * 0x7feb352d) & mask
+    h ^= h >> 15
+    h = (h * 0x846ca68b) & mask
+    h ^= h >> 16
+    return np.float32(h >> 8) * np.float32(1.0 / 16777216.0) - np.float32(0.5)
+
+
+def write_retouch_plate(path):
+    """Tests/NativeParity.cpp's ParitySource colour at RETOUCH_TIME with noise, rows top down."""
+    import math
+    image = np.zeros((RETOUCH_HEIGHT, RETOUCH_WIDTH, 3), dtype=np.float32)
+    offset = 0.01 * RETOUCH_TIME
+    for cy in range(RETOUCH_HEIGHT):
+        v = (cy + 0.5) / RETOUCH_HEIGHT
+        for cx in range(RETOUCH_WIDTH):
+            u = (cx + 0.5) / RETOUCH_WIDTH
+            values = (-0.25 + 2.0 * u + 0.15 * math.sin(6.1 * v + 0.3) + offset,
+                      -0.25 + 2.0 * v + 0.15 * math.sin(4.3 * u + 1.1) + offset,
+                      -0.25 + (u + v) + 0.15 * math.sin(9.7 * u * v + 2.0) + offset)
+            for c in range(3):
+                image[RETOUCH_HEIGHT - 1 - cy, cx, c] = (np.float32(values[c])
+                                                         + np.float32(0.1) * parity_source_noise(c, cx, cy))
+    tifffile.imwrite(path, image, photometric="rgb", metadata=None)
+
+
+def run_retouch_job(job, out, scratch):
+    xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
+    write_retouch_xmp(xmp, job)
+    image, _ = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
+                             job.workflow)
+    if image.shape[:2] != (RETOUCH_HEIGHT, RETOUCH_WIDTH):
+        raise RuntimeError("%s: developed %s" % (job.name, image.shape))
+    description = "darktable %s, ParitySource plate with noise at time %g, %s, whole image, linear Rec. 709" % (
+        os.environ.get("DARKTABLE_REF", "?"), RETOUCH_TIME, job.what)
+    tifffile.imwrite(os.path.join(out, job.name), np.ascontiguousarray(image, dtype=np.float16), photometric="rgb",
+                     compression="zlib", description=description, metadata=None)
+    print("%s: mean %s max %s" % (job.name, image.mean(axis=(0, 1)), image.max()))
+
+
+def retouch_jobs():
+    """Each algorithm on each kind of shape: the circle (feathered) on scale 1, the ellipse (opacity
+    0.6) on scale 2 and the path on the residual of two scales; then the image scale, the bilateral
+    blur, the colour fill and a mix of shapes with merged scales."""
+    settings = {
+        "clone": {},
+        "heal": {},
+        "blur": {"blur_radius": 4.0},
+        "fill": {"fill_brightness": 0.05},
+    }
+    scales = {"circle": 1, "ellipse": 2, "path": 3}
+    jobs = []
+    for algorithm in ("clone", "heal", "blur", "fill"):
+        for kind in ("circle", "ellipse", "path"):
+            s = dict(settings[algorithm], algorithm=algorithm, scale=scales[kind])
+            jobs.append(RetouchJob("retouch-%s-%s.tif" % (algorithm, kind), [(kind, s)], 2))
+    jobs.append(RetouchJob("retouch-heal-circle-image.tif", [("circle", {"algorithm": "heal", "scale": 0})], 2))
+    jobs.append(RetouchJob("retouch-blur-bilateral-circle.tif",
+                           [("circle", {"algorithm": "blur", "scale": 1, "blur_type": "bilateral", "blur_radius": 6.0})], 2))
+    jobs.append(RetouchJob("retouch-fill-color-ellipse.tif",
+                           [("ellipse", {"algorithm": "fill", "scale": 0, "fill_mode": "color",
+                                         "fill_color": (0.8, 0.2, 0.1), "fill_brightness": 0.1})], 2))
+    jobs.append(RetouchJob("retouch-mixed-merge.tif",
+                           [("circle", {"algorithm": "heal", "scale": 1}),
+                            ("ellipse", {"algorithm": "clone", "scale": 2}),
+                            ("path", {"algorithm": "fill", "scale": 4, "fill_brightness": 0.05})], 3, 2))
+    return jobs
+
+
+def revision(ref):
+    """The darktable commit a ref names, from the environment make-reference.sh sets."""
+    return os.environ.get("DARKTABLE_MASTER_REF" if ref == "master" else "DARKTABLE_REF", "?")
 
 
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
-            + cacorrect_jobs() + rawdenoise_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs))
+            + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
+            + colour_calibration_jobs(coeffs) + contrastntexture_jobs() + ashift_jobs() + toneequal_jobs()
+            + colour_balance_rgb_jobs() + colour_equalizer_jobs() + retouch_jobs())
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only")
+    parser.add_argument("--ref", choices=("release", "master"))
     parser.add_argument("fixtures")
     parser.add_argument("out")
     parser.add_argument("scratch")
@@ -713,22 +1412,40 @@ def main():
     jobs = all_jobs({f: PLACEHOLDER_COEFFS for f in CAMERA_FIXTURES})
     if args.only:
         jobs = [job for job in jobs if args.only in job.name]
+    if args.ref:
+        jobs = [job for job in jobs if job.ref == args.ref]
     names = [job.name for job in jobs]
     if len(set(names)) != len(names):
         raise RuntimeError("duplicate output names")
 
     if args.dry_run:
         for job in jobs:
-            write_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job.entries, job.auto_presets_applied)
-            print("%s <- %s, workflow %s%s: %s" % (job.name, job.source, job.workflow,
-                                                     ", -d %s" % job.debug if job.debug else "", job.what))
+            if getattr(job, "plate", None):
+                write_retouch_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job)
+            else:
+                write_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job.entries, job.auto_presets_applied)
+            print("%s <- %s, darktable %s (%s), workflow %s%s: %s" % (
+                job.name, job.source, job.ref, revision(job.ref), job.workflow,
+                ", -d %s" % job.debug if job.debug else "", job.what))
         print("%d jobs, %d XMPs in %s" % (len(jobs), len(jobs), args.scratch))
         return
 
-    for fixture in sorted({job.source for job in jobs if job.mosaic is None}):
+    produced = {job.name for job in jobs}
+    cameras = sorted({job.source for job in jobs if job.mosaic is None and job.source in CAMERA_FIXTURES})
+    for job in jobs:
+        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced | {ASHIFT_SOURCE, TONEEQUAL_SOURCE, RETOUCH_PLATE}:
+            raise RuntimeError("%s: its source %s is another job's output; run that job too" % (job.name, job.source))
+    if any(job.source == ASHIFT_SOURCE for job in jobs):
+        path = os.path.join(args.out, ASHIFT_SOURCE)
+        write_reference(path, ashift_scene(), "synthetic AutoStraighten source, linear Rec. 709", True)
+        with open(path, "rb") as src, open(os.path.join(args.scratch, ASHIFT_SOURCE), "wb") as dst:
+            dst.write(src.read())
+    for fixture in cameras:
         with open(os.path.join(args.fixtures, fixture), "rb") as src, open(os.path.join(args.scratch, fixture), "wb") as dst:
             dst.write(src.read())
-    coeffs = {f: probe_coefficients(f, args.scratch) for f in sorted({job.source for job in jobs if job.mosaic is None})}
+    # Only the jobs that crop a camera file pack the probed coefficients.
+    probed = sorted({job.source for job in jobs if job.mosaic is None and not job.whole and not getattr(job, "plate", None)})
+    coeffs = {f: probe_coefficients(f, args.scratch) for f in probed}
     for f in CAMERA_FIXTURES:
         coeffs.setdefault(f, PLACEHOLDER_COEFFS)
     jobs = [job for job in all_jobs(coeffs) if job.name in names]
@@ -739,8 +1456,18 @@ def main():
         write_cfa_dng(path, pattern, period, scene, gain_maps, limit)
         with open(path, "rb") as src, open(os.path.join(args.scratch, dng), "wb") as dst:
             dst.write(src.read())
+    if any(getattr(job, "plate", None) for job in jobs):
+        write_retouch_plate(os.path.join(args.scratch, RETOUCH_PLATE))
+    if any(job.source == TONEEQUAL_SOURCE for job in jobs):
+        path = os.path.join(args.out, TONEEQUAL_SOURCE)
+        write_toneequal_source(path)
+        with open(path, "rb") as src, open(os.path.join(args.scratch, TONEEQUAL_SOURCE), "wb") as dst:
+            dst.write(src.read())
     for job in jobs:
         run_job(job, args.out, args.scratch)
+        if job.name in {other.source for other in jobs}:
+            with open(os.path.join(args.out, job.name), "rb") as src, open(os.path.join(args.scratch, job.name), "wb") as dst:
+                dst.write(src.read())
 
 
 if __name__ == "__main__":

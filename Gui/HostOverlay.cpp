@@ -25,8 +25,9 @@
 
 #include "HostOverlay.h"
 
-#include <list>
 #include <cmath>
+#include <limits>
+#include <list>
 #include <stdexcept>
 
 #include "Gui/NodeGui.h"
@@ -36,9 +37,12 @@
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
 #include "Engine/Transform.h"
 #include "Engine/Utils.h"
@@ -79,13 +83,40 @@ NATRON_NAMESPACE_ENTER
 // OpenFX plugins are not affected, because instanceChanged does not pass the dimension information.
 namespace {
 
-void nonBlockingSetValues(Natron::KnobDoublePtr& knob, const double x, const double y, const ValueChangedReasonEnum reason) {
-    knob->setValue(x, ViewSpec::all(), 0, reason, nullptr);
-    knob->setValue(y, ViewSpec::all(), 1, reason, nullptr);
+// Writes a dimension as an edit in the settings panel does: an animated dimension takes a key at
+// the current frame, and the knob's prior state joins the undo step of the gesture (see
+// EffectInstance::onOverlayPenDown_public). A dimension that keeps its value is not written, so it
+// gains no key.
+void
+setOverlayKnobValue(const KnobDoublePtr& knob,
+                    const double value,
+                    const int dimension)
+{
+    if (!knob) {
+        return;
+    }
+    if (!knob->isValueChangeAtCurrentTime(value, dimension)) {
+        return;
+    }
+    recordKnobEdit(knob);
+    KeyFrame k;
+    knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, &k);
 }
 
-inline void nonBlockingSetValues(Natron::KnobDoublePtr& knob, const OfxPointD& point, const ValueChangedReasonEnum reason) {
-    nonBlockingSetValues(knob, point.x, point.y, reason);
+void
+setOverlayKnobValues(const KnobDoublePtr& knob,
+                     const double x,
+                     const double y)
+{
+    setOverlayKnobValue(knob, x, 0);
+    setOverlayKnobValue(knob, y, 1);
+}
+
+inline void
+setOverlayKnobValues(const KnobDoublePtr& knob,
+                     const OfxPointD& point)
+{
+    setOverlayKnobValues(knob, point.x, point.y);
 }
 
 }  // namespace
@@ -378,7 +409,6 @@ public:
 private:
     KnobDoubleWPtr _btmLeft;
     KnobDoubleWPtr _size;
-    KnobBoolWPtr _interactive;
     KnobBoolWPtr _enable;
     OfxPointD _lastMousePos;
     MouseStateEnum _mouseState;
@@ -395,7 +425,6 @@ public:
         : DefaultInteractI(overlay)
         , _btmLeft()
         , _size()
-        , _interactive()
         , _enable()
         , _lastMousePos()
         , _mouseState(eMouseStateIdle)
@@ -408,7 +437,6 @@ public:
     {
         _btmLeft = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
         _size = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationSize);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
         _enable = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
         _lastMousePos.x = _lastMousePos.y = 0.;
         _btmLeftDragPos.x = _btmLeftDragPos.y = 0.;
@@ -552,7 +580,6 @@ class TransformInteract
     KnobDoubleWPtr _skewY;
     KnobChoiceWPtr _skewOrder;
     KnobBoolWPtr _invert;
-    KnobBoolWPtr _interactive;
     DrawStateEnum _drawState;
     MouseStateEnum _mouseState;
     int _modifierStateCtrl;
@@ -570,7 +597,6 @@ class TransformInteract
     bool _interactiveDrag;
 
 public:
-
     TransformInteract(const HostOverlayKnobsTransform* knobs,
                       HostOverlay* overlay)
         : DefaultInteractI(overlay)
@@ -583,7 +609,6 @@ public:
         , _skewY()
         , _skewOrder()
         , _invert()
-        , _interactive()
         , _drawState(eInActive)
         , _mouseState(eReleased)
         , _modifierStateCtrl(0)
@@ -609,7 +634,6 @@ public:
         _skewY = knobs->getKnob<KnobDouble>(HostOverlayKnobsTransform::eKnobsEnumerationSkewy);
         _skewOrder = knobs->getKnob<KnobChoice>(HostOverlayKnobsTransform::eKnobsEnumerationSkewOrder);
         _invert = knobs->getKnob<KnobBool>(HostOverlayKnobsTransform::eKnobsEnumerationInvert);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsTransform::eKnobsEnumerationInteractive);
     }
 
     virtual ~TransformInteract()
@@ -618,16 +642,7 @@ public:
 
     virtual bool isInteractForKnob(const KnobI* knob) const OVERRIDE FINAL
     {
-        return knob == _translate.lock().get() ||
-               knob == _scale.lock().get() ||
-               knob == _scaleUniform.lock().get() ||
-               knob == _rotate.lock().get() ||
-               knob == _center.lock().get() ||
-               knob == _skewX.lock().get() ||
-               knob == _skewY.lock().get() ||
-               knob == _skewOrder.lock().get() ||
-               knob == _invert.lock().get() ||
-               knob == _interactive.lock().get();
+        return knob == _translate.lock().get() || knob == _scale.lock().get() || knob == _scaleUniform.lock().get() || knob == _rotate.lock().get() || knob == _center.lock().get() || knob == _skewX.lock().get() || knob == _skewY.lock().get() || knob == _skewOrder.lock().get() || knob == _invert.lock().get();
     }
 
     static double circleRadiusBase() { return 30.; }
@@ -715,8 +730,7 @@ public:
     {
         KnobBoolPtr knob = _scaleUniform.lock();
 
-        assert(knob);
-        *uniform = knob->getValueAtTime(time, 0);
+        *uniform = knob ? knob->getValueAtTime(time, 0) : false;
     }
 
     bool getInvert(double time) const
@@ -730,13 +744,9 @@ public:
         }
     }
 
-    bool getInteractive(double time) const
+    bool getInteractive() const
     {
-        if ( _interactive.lock() ) {
-            return _interactive.lock()->getValueAtTime(time);
-        } else {
-            return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
 
     virtual void draw(double time,
@@ -796,7 +806,6 @@ class CornerPinInteract
     std::vector<KnobBoolWPtr> _enable;
     KnobBoolWPtr _invert;
     KnobChoiceWPtr _overlayPoints;
-    KnobBoolWPtr _interactive;
     int _dragging; // -1: idle, else dragging point number
     int _hovering; // -1: idle, else hovering point number
     Point _toDrag[4];
@@ -806,12 +815,10 @@ class CornerPinInteract
     bool _interactiveDrag;
 
 public:
-
     CornerPinInteract(const HostOverlayKnobsCornerPin* knobs,
                       HostOverlay* overlay)
         : DefaultInteractI(overlay)
         , _invert()
-        , _interactive()
         , _dragging(-1)
         , _hovering(-1)
         , _useFromDrag(false)
@@ -839,7 +846,6 @@ public:
 
         _overlayPoints = knobs->getKnob<KnobChoice>(HostOverlayKnobsCornerPin::eKnobsEnumerationOverlayPoints);
         _invert = knobs->getKnob<KnobBool>(HostOverlayKnobsCornerPin::eKnobsEnumerationInvert);
-        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsCornerPin::eKnobsEnumerationInteractive);
         for (unsigned i = 0; i < 4; ++i) {
             _toDrag[i].x = _toDrag[i].y = _fromDrag[i].x = _fromDrag[i].y = 0.;
         }
@@ -864,9 +870,6 @@ public:
             return true;
         }
         if (_overlayPoints.lock().get() == knob) {
-            return true;
-        }
-        if (_interactive.lock().get() == knob) {
             return true;
         }
 
@@ -938,13 +941,9 @@ public:
         return knob->getValueAtTime(time) == 1;
     }
 
-    bool getInteractive(double time) const
+    bool getInteractive() const
     {
-        if ( _interactive.lock() ) {
-            return _interactive.lock()->getValueAtTime(time);
-        } else {
-            return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        return !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
 
     virtual void draw(double time,
@@ -999,6 +998,371 @@ fround(double val,
 
     return pscale10 * std::floor(val / pscale10 + 0.5);
 }
+
+// The part of the line through p along v inside the rectangle, if any.
+bool
+clipLineToRect(const OfxPointD& p,
+               const OfxPointD& v,
+               const RectD& r,
+               OfxPointD* a,
+               OfxPointD* b)
+{
+    if ((v.x == 0.) && (v.y == 0.)) {
+        return false;
+    }
+    const double pos[2] = { p.x, p.y };
+    const double dir[2] = { v.x, v.y };
+    const double lo[2] = { r.x1, r.y1 };
+    const double hi[2] = { r.x2, r.y2 };
+    double s0 = -std::numeric_limits<double>::infinity();
+    double s1 = std::numeric_limits<double>::infinity();
+    for (int k = 0; k < 2; ++k) {
+        if (dir[k] == 0.) {
+            if ((pos[k] < lo[k]) || (pos[k] > hi[k])) {
+                return false;
+            }
+        } else {
+            double ta = (lo[k] - pos[k]) / dir[k];
+            double tb = (hi[k] - pos[k]) / dir[k];
+            if (ta > tb) {
+                std::swap(ta, tb);
+            }
+            s0 = (std::max)(s0, ta);
+            s1 = (std::min)(s1, tb);
+        }
+    }
+    if (s0 > s1) {
+        return false;
+    }
+    a->x = p.x + s0 * v.x;
+    a->y = p.y + s0 * v.y;
+    b->x = p.x + s1 * v.x;
+    b->y = p.y + s1 * v.y;
+
+    return true;
+}
+
+class RampInteract
+    : public DefaultInteractI {
+    enum StateEnum {
+        eStateIdle = 0,
+        eStateDraggingPoint0,
+        eStateDraggingPoint1
+    };
+
+    KnobDoubleWPtr _point[2];
+    KnobBoolWPtr _interactive;
+    OfxPointD _dragPos[2];
+    OfxPointD _lastMousePos;
+    StateEnum _state;
+    bool _interactiveDrag;
+
+public:
+    RampInteract(const HostOverlayKnobsRamp* knobs,
+                 HostOverlay* overlay)
+        : DefaultInteractI(overlay)
+        , _point()
+        , _interactive()
+        , _dragPos()
+        , _lastMousePos()
+        , _state(eStateIdle)
+        , _interactiveDrag(false)
+    {
+        _point[0] = knobs->getKnob<KnobDouble>(HostOverlayKnobsRamp::eKnobsEnumerationPoint0);
+        _point[1] = knobs->getKnob<KnobDouble>(HostOverlayKnobsRamp::eKnobsEnumerationPoint1);
+        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsRamp::eKnobsEnumerationInteractive);
+        for (int i = 0; i < 2; ++i) {
+            _dragPos[i].x = _dragPos[i].y = 0.;
+        }
+        _lastMousePos.x = _lastMousePos.y = 0.;
+    }
+
+    virtual ~RampInteract()
+    {
+    }
+
+    virtual bool isInteractForKnob(const KnobI* knob) const OVERRIDE FINAL
+    {
+        return _point[0].lock().get() == knob || _point[1].lock().get() == knob;
+    }
+
+    static double pointSize()
+    {
+        return 5.;
+    }
+
+    static double pointTolerance()
+    {
+        return 6.;
+    }
+
+    virtual void draw(double time,
+                      const RenderScale& /*renderScale*/,
+                      ViewIdx view,
+                      const OfxPointD& pscale,
+                      const QPointF& /*lastPenPos*/,
+                      const OfxRGBColourD& color,
+                      const OfxPointD& shadow,
+                      const QFont& font,
+                      const QFontMetrics& /*fm*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return;
+        }
+        const double screenPixelRatio = getScreenPixelRatio();
+        OfxPointD p[2];
+        getPoints(time, p);
+
+        // Each line runs through its point orthogonally to p0p1, across the node's output.
+        RectD rod;
+        getOutputRect(time, view, &rod);
+        OfxPointD ortho;
+        ortho.x = -(p[1].y - p[0].y);
+        ortho.y = p[1].x - p[0].x;
+        OfxPointD lineStart[2];
+        OfxPointD lineEnd[2];
+        bool hasLine[2];
+        for (int i = 0; i < 2; ++i) {
+            hasLine[i] = clipLineToRect(p[i], ortho, rod, &lineStart[i], &lineEnd[i]);
+        }
+
+        glEnable(GL_LINE_SMOOTH);
+        glEnable(GL_BLEND);
+        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+        glLineWidth(1.5f * screenPixelRatio);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glLineStipple(2, 0xAAAA);
+        glPointSize(pointSize() * screenPixelRatio);
+
+        for (int l = 0; l < 2; ++l) {
+            glMatrixMode(GL_PROJECTION);
+            int direction = (l == 0) ? 1 : -1;
+            glTranslated(direction * shadow.x, -direction * shadow.y, 0);
+            glMatrixMode(GL_MODELVIEW);
+
+            for (int i = 0; i < 2; ++i) {
+                glDisable(GL_LINE_STIPPLE);
+                glDisable(GL_POINT_SMOOTH);
+                const bool dragging = _state == (i == 0 ? eStateDraggingPoint0 : eStateDraggingPoint1);
+                float r = (float)color.r;
+                float g = (float)color.g;
+                float b = (float)color.b;
+                if (dragging) {
+                    r = 0.f;
+                    g = 1.f;
+                    b = 0.f;
+                }
+                glColor3f(r * l, g * l, b * l);
+                glBegin(GL_POINTS);
+                glVertex2d(p[i].x, p[i].y);
+                glEnd();
+
+                if (hasLine[i]) {
+                    glEnable(GL_LINE_STIPPLE);
+                    glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+                    glBegin(GL_LINES);
+                    glVertex2d(lineStart[i].x, lineStart[i].y);
+                    glVertex2d(lineEnd[i].x, lineEnd[i].y);
+                    glEnd();
+                    glDisable(GL_LINE_STIPPLE);
+                }
+
+                QColor c;
+                c.setRgbF(r * l, g * l, b * l);
+                KnobDoublePtr knob = _point[i].lock();
+                renderText(p[i].x, p[i].y + pointSize() * pscale.y,
+                           pscale.x, pscale.y, QString::fromUtf8(knob->getLabel().c_str()), c, font);
+            }
+        }
+        glPointSize(1);
+    }
+
+    virtual bool penMotion(double time,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           const OfxPointD& pscale,
+                           const QPointF& /*lastPenPos*/,
+                           const QPointF& penPos,
+                           const QPoint& /*penPosViewport*/,
+                           double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        bool valuesChanged = false;
+        const int dragged = draggedPoint();
+        if (dragged >= 0) {
+            _dragPos[dragged].x += penPos.x() - _lastMousePos.x;
+            _dragPos[dragged].y += penPos.y() - _lastMousePos.y;
+            valuesChanged = true;
+            if (_interactiveDrag) {
+                setPoint(time, dragged, pscale);
+            }
+            requestRedraw();
+        }
+        _lastMousePos.x = penPos.x();
+        _lastMousePos.y = penPos.y();
+
+        return valuesChanged;
+    }
+
+    virtual bool penDown(double time,
+                         const RenderScale& /*renderScale*/,
+                         ViewIdx /*view*/,
+                         const OfxPointD& pscale,
+                         const QPointF& /*lastPenPos*/,
+                         const QPointF& penPos,
+                         const QPoint& /*penPosViewport*/,
+                         double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        OfxPointD p[2];
+        getPoints(time, p);
+        if (_state == eStateIdle) {
+            KnobBoolPtr interactive = _interactive.lock();
+            if (interactive) {
+                _interactiveDrag = interactive->getValueAtTime(time);
+            } else {
+                _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+            }
+        }
+        OfxPointD pen;
+        pen.x = penPos.x();
+        pen.y = penPos.y();
+        if (isNearby(pen, p[0], pscale)) {
+            _state = eStateDraggingPoint0;
+        } else if (isNearby(pen, p[1], pscale)) {
+            _state = eStateDraggingPoint1;
+        } else {
+            _state = eStateIdle;
+        }
+        _dragPos[0] = p[0];
+        _dragPos[1] = p[1];
+        _lastMousePos = pen;
+        const bool didSomething = _state != eStateIdle;
+        if (didSomething) {
+            requestRedraw();
+        }
+
+        return didSomething;
+    }
+
+    virtual bool penUp(double time,
+                       const RenderScale& /*renderScale*/,
+                       ViewIdx /*view*/,
+                       const OfxPointD& pscale,
+                       const QPointF& /*lastPenPos*/,
+                       const QPointF& /*penPos*/,
+                       const QPoint& /*penPosViewport*/,
+                       double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        bool didSomething = false;
+        const int dragged = draggedPoint();
+        if (!_interactiveDrag && (dragged >= 0)) {
+            setPoint(time, dragged, pscale);
+            didSomething = true;
+        } else if (dragged >= 0) {
+            requestRedraw();
+        }
+        _state = eStateIdle;
+
+        return didSomething;
+    }
+
+    virtual bool loseFocus(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/) OVERRIDE FINAL
+    {
+        _interactiveDrag = false;
+        _state = eStateIdle;
+
+        return false;
+    }
+
+private:
+    bool isActive() const
+    {
+        for (int i = 0; i < 2; ++i) {
+            KnobDoublePtr knob = _point[i].lock();
+            if (!knob || !knob->shouldDrawOverlayInteract()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    int draggedPoint() const
+    {
+        return _state == eStateDraggingPoint0 ? 0 : (_state == eStateDraggingPoint1 ? 1 : -1);
+    }
+
+    static bool isNearby(const OfxPointD& pen,
+                         const OfxPointD& p,
+                         const OfxPointD& pscale)
+    {
+        return std::fabs(pen.x - p.x) <= pointTolerance() * pscale.x && std::fabs(pen.y - p.y) <= pointTolerance() * pscale.y;
+    }
+
+    void getPoints(double time,
+                   OfxPointD p[2]) const
+    {
+        if (_state != eStateIdle) {
+            p[0] = _dragPos[0];
+            p[1] = _dragPos[1];
+
+            return;
+        }
+        for (int i = 0; i < 2; ++i) {
+            KnobDoublePtr knob = _point[i].lock();
+            double v[2];
+            for (int d = 0; d < 2; ++d) {
+                v[d] = knob->getValueAtTime(time, d);
+                if (knob->getValueIsNormalized(d) != eValueIsNormalizedNone) {
+                    v[d] = knob->denormalize(d, time, v[d]);
+                }
+            }
+            p[i].x = v[0];
+            p[i].y = v[1];
+        }
+    }
+
+    // The node's output at the time, or the project format when it has none.
+    void getOutputRect(double time,
+                       ViewIdx view,
+                       RectD* rect) const
+    {
+        EffectInstancePtr effect = _overlay->getNode()->getNode()->getEffectInstance();
+        bool isProjectFormat = false;
+        if ((effect->getRegionOfDefinition_public(effect->getRenderHash(), time, RenderScale::identity, view, rect, &isProjectFormat) != eStatusFailed) && !rect->isNull()) {
+            return;
+        }
+        Format format;
+        effect->getApp()->getProject()->getProjectDefaultFormat(&format);
+        *rect = format.toCanonicalFormat();
+    }
+
+    void setPoint(double time,
+                  int i,
+                  const OfxPointD& pscale)
+    {
+        KnobDoublePtr knob = _point[i].lock();
+        double v[2] = { fround(_dragPos[i].x, pscale.x), fround(_dragPos[i].y, pscale.y) };
+        for (int d = 0; d < 2; ++d) {
+            if (knob->getValueIsNormalized(d) != eValueIsNormalizedNone) {
+                v[d] = knob->normalize(d, time, v[d]);
+            }
+        }
+        setOverlayKnobValues(knob, v[0], v[1]);
+    }
+};
+
+typedef std::shared_ptr<RampInteract> RampInteractPtr;
 
 typedef std::list<DefaultInteractIPtr> DefaultInteractIPtrList;
 typedef std::list<TransformInteract> TransformInteracts;
@@ -1089,6 +1453,7 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
     HostOverlayKnobsTransform* isTransform = dynamic_cast<HostOverlayKnobsTransform*>( knobs.get() );
     HostOverlayKnobsCornerPin* isCornerPin = dynamic_cast<HostOverlayKnobsCornerPin*>( knobs.get() );
     HostOverlayKnobsRectangle* isRectangle = dynamic_cast<HostOverlayKnobsRectangle*>(knobs.get());
+    HostOverlayKnobsRamp* isRamp = dynamic_cast<HostOverlayKnobsRamp*>(knobs.get());
     DefaultInteractIPtr overlay;
     if (isPosition) {
         PositionInteractPtr p( new PositionInteract(isPosition, this) );
@@ -1101,6 +1466,9 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
         overlay = p;
     } else if (isRectangle) {
         RectangleInteractPtr p(new RectangleInteract(isRectangle, this));
+        overlay = p;
+    } else if (isRamp) {
+        RampInteractPtr p(new RampInteract(isRamp, this));
         overlay = p;
     }
 
@@ -1582,12 +1950,7 @@ RectangleInteract::penDown(double time,
     }
 
     if (_mouseState == eMouseStateIdle) {
-        KnobBoolPtr interactive = _interactive.lock();
-        if (interactive) {
-            _interactiveDrag = interactive->isEnabled(0) && interactive->getValueAtTime(time);
-        } else {
-            _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
-        }
+        _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
     }
     OfxPointD pen;
     pen.x = penPos.x();
@@ -1803,12 +2166,8 @@ RectangleInteract::setValue(double time,
         }
     }
 
-    EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-    // Do not use setValues(x,y) (see note at the top of this file).
-    nonBlockingSetValues(btmLeftKnob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-    nonBlockingSetValues(sizeKnob, s[0], s[1], eValueChangedReasonNatronGuiEdited);
-    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    setOverlayKnobValues(btmLeftKnob, p[0], p[1]);
+    setOverlayKnobValues(sizeKnob, s[0], s[1]);
 } // RectangleInteract::setValue
 
 static void
@@ -2447,9 +2806,9 @@ PositionInteract::penMotion(double time,
                             const RenderScale& /*renderScale*/,
                             ViewIdx /*view*/,
                             const OfxPointD& pscale,
-                            const QPointF& lastPenPos,
-                            const QPointF &penPos,
-                            const QPoint & /*penPosViewport*/,
+                            const QPointF& /*lastPenPos*/,
+                            const QPointF& penPos,
+                            const QPoint& /*penPosViewport*/,
                             double /*pressure*/)
 {
     KnobDoublePtr knob = _param.lock();
@@ -2462,7 +2821,7 @@ PositionInteract::penMotion(double time,
 
     QPointF pos;
     if (_state == ePositionInteractStatePicked) {
-        pos = lastPenPos;
+        pos = penPos;
     } else {
         double p[2];
         for (int i = 0; i < 2; ++i) {
@@ -2508,19 +2867,15 @@ PositionInteract::penMotion(double time,
 
     if ( (_state != ePositionInteractStateInactive) && _interactiveDrag && valuesChanged ) {
         double p[2];
-        p[0] = fround(lastPenPos.x(), pscale.x);
-        p[1] = fround(lastPenPos.y(), pscale.y);
+        p[0] = fround(penPos.x(), pscale.x);
+        p[1] = fround(penPos.y(), pscale.y);
         for (int i = 0; i < 2; ++i) {
             if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                 p[i] = knob->normalize(i, time, p[i]);
             }
         }
 
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-        // Do not use setValues(x,y) (see note at the top of this file).
-        nonBlockingSetValues(knob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+        setOverlayKnobValues(knob, p[0], p[1]);
     }
 
     return (didSomething || valuesChanged);
@@ -2958,37 +3313,30 @@ TransformInteract::penMotion(double time,
 
     if ( (_mouseState != TransformInteract::eReleased) && _interactiveDrag && valuesChanged ) {
         // no need to redraw overlay since it is slave to the parameters
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-        KeyFrame k;
         if (centerChanged) {
             KnobDoublePtr knob = _center.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, center, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, center);
         }
         if (translateChanged) {
             KnobDoublePtr knob = _translate.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, translate, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, translate);
         }
         if (scaleChanged) {
             KnobDoublePtr knob = _scale.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, scale, eValueChangedReasonNatronGuiEdited);
+            setOverlayKnobValues(knob, scale);
         }
         if (rotateChanged) {
             KnobDoublePtr knob = _rotate.lock();
-            knob->setValue(rotate, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, rotate, 0);
         }
         if (skewXChanged) {
             KnobDoublePtr knob = _skewX.lock();
-            knob->setValue(skewX, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, skewX, 0);
         }
         if (skewYChanged) {
             KnobDoublePtr knob = _skewY.lock();
-            knob->setValue(skewY, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, &k);
+            setOverlayKnobValue(knob, skewY, 0);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     } else if (didSomething || valuesChanged) {
         requestRedraw();
     }
@@ -3089,20 +3437,15 @@ CornerPinInteract::penMotion(double time,
     if ( (_dragging != -1) && _interactiveDrag && valuesChanged ) {
         // no need to redraw overlay since it is slave to the parameters
 
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         if (_useFromDrag) {
             KnobDoublePtr knob = _from[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, from[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, from[_dragging]);
         } else {
             KnobDoublePtr knob = _to[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, to[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, to[_dragging]);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     }
 
     return didSomething || valuesChanged;
@@ -3155,19 +3498,15 @@ PositionInteract::penUp(double time,
         if (!_interactiveDrag) {
             KnobDoublePtr knob = _param.lock();
             double p[2];
-            p[0] = fround(lastPenPos.x(), pscale.x);
-            p[1] = fround(lastPenPos.y(), pscale.y);
+            p[0] = fround(penPos.x(), pscale.x);
+            p[1] = fround(penPos.y(), pscale.y);
             for (int i = 0; i < 2; ++i) {
                 if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                     p[i] = knob->normalize(i, time, p[i]);
                 }
             }
 
-            EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-            holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
-            holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+            setOverlayKnobValues(knob, p[0], p[1]);
         }
 
         _state = ePositionInteractStateInactive;
@@ -3193,44 +3532,30 @@ TransformInteract::penUp(double /*time*/,
 
     if ( !_interactiveDrag && (_mouseState != TransformInteract::eReleased) ) {
         // no need to redraw overlay since it is slave to the parameters
-
-        /*
-           Give eValueChangedReasonPluginEdited reason so that the command uses the undo/redo stack
-           see Knob::setValue
-         */
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         {
             KnobDoublePtr knob = _center.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _centerDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _centerDrag);
         }
         {
             KnobDoublePtr knob = _translate.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _translateDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _translateDrag);
         }
         {
             KnobDoublePtr knob = _scale.lock();
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _scaleParamDrag, eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _scaleParamDrag);
         }
         {
             KnobDoublePtr knob = _rotate.lock();
-            KeyFrame k;
-            knob->setValue(_rotateDrag, ViewSpec::all(),  0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _rotateDrag, 0);
         }
         {
             KnobDoublePtr knob = _skewX.lock();
-            KeyFrame k;
-            knob->setValue(_skewXDrag, ViewSpec::all(), 0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _skewXDrag, 0);
         }
         {
             KnobDoublePtr knob = _skewY.lock();
-            KeyFrame k;
-            knob->setValue(_skewYDrag, ViewSpec::all(),  0, eValueChangedReasonPluginEdited, &k);
+            setOverlayKnobValue(knob, _skewYDrag, 0);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     } else if (_mouseState != TransformInteract::eReleased) {
         requestRedraw();
     }
@@ -3262,20 +3587,15 @@ CornerPinInteract::penUp(double /*time*/,
 
     if ( !_interactiveDrag && (_dragging != -1) ) {
         // no need to redraw overlay since it is slave to the parameters
-        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
         if (_useFromDrag) {
             KnobDoublePtr knob = _from[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _fromDrag[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _fromDrag[_dragging]);
         } else {
             KnobDoublePtr knob = _to[_dragging].lock();
             assert(knob);
-            // Do not use setValues(x,y) (see note at the top of this file).
-            nonBlockingSetValues(knob, _toDrag[_dragging], eValueChangedReasonPluginEdited);
+            setOverlayKnobValues(knob, _toDrag[_dragging]);
         }
-        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     }
     _dragging = -1;
 
@@ -3369,7 +3689,7 @@ TransformInteract::penDown(double time,
         getSkewY(time, &skewY);
         getSkewOrder(time, &skewOrder);
         inverted = getInvert(time);
-        _interactiveDrag = getInteractive(time);
+        _interactiveDrag = getInteractive();
     } else {
         center = _centerDrag;
         translate = _translateDrag;
@@ -3515,7 +3835,7 @@ CornerPinInteract::penDown(double time,
             from[i] = _fromDrag[i];
             enable[i] = _enableDrag[i];
         }
-        _interactiveDrag = getInteractive(time);
+        _interactiveDrag = getInteractive();
         useFrom = _useFromDrag;
     }
 

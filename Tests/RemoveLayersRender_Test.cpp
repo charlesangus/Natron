@@ -74,8 +74,8 @@ namespace {
 // Color (1, 0, 0, 1), diffuse (0, 1, 0) and specular (0, 0, 1), so one pixel stands for all.
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
-const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
+const char* const kGradePluginID = "Grade";
+const char* const kBlurPluginID = "Blur";
 const char* const kMergePluginID = "Merge";
 
 std::set<std::string>

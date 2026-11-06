@@ -35,9 +35,11 @@ SceneStage::SceneStage()
         return;
     }
     _root = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
-    if (!_root) {
+    _projections = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
+    if (!_root || !_projections) {
         return;
     }
+    _root->SetSubLayerPaths(std::vector<std::string>(1, _projections->GetIdentifier()));
     // The root carries every metadata field from the start, so later syncs only rewrite the
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
@@ -92,7 +94,9 @@ SceneStage::sync(const ScenePayload& payload)
         // the old and new layer stacks itself when it processes the change.
         PXR_NS::SdfChangeBlock block;
         if (stackChanged) {
-            _root->SetSubLayerPaths(subLayerPaths);
+            std::vector<std::string> rootSubLayers(1, _projections->GetIdentifier());
+            rootSubLayers.insert(rootSubLayers.end(), subLayerPaths.begin(), subLayerPaths.end());
+            _root->SetSubLayerPaths(rootSubLayers);
         }
         if (metadataChanged) {
             SceneOps::writeRootMetadata(_root, metadata, &_metadata);
@@ -103,9 +107,40 @@ SceneStage::sync(const ScenePayload& payload)
     _payload = payload;
     _subLayerPaths.swap(subLayerPaths);
     _metadata = metadata;
+    syncProjections();
     ++_editCount;
 
     return true;
+}
+
+void
+SceneStage::syncProjections()
+{
+    _unresolvedProjections.clear();
+    const bool deferred = SceneOps::hasDeferredProjections(_payload);
+    if (!deferred && _projections->GetRootPrims().empty()) {
+        return;
+    }
+    // Resolved apart and swapped in whole: the stage hears of one change, and of none when the
+    // values are the ones it has.
+    PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
+    if (!resolved) {
+        return;
+    }
+    if (deferred) {
+        SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections);
+    }
+    std::string wanted, current;
+    if (resolved->ExportToString(&wanted) && _projections->ExportToString(&current) && (wanted == current)) {
+        return;
+    }
+    _projections->TransferContent(resolved);
+}
+
+const std::vector<SceneProjectionCameras::Unresolved>&
+SceneStage::getUnresolvedProjections() const
+{
+    return _unresolvedProjections;
 }
 
 std::size_t
@@ -126,6 +161,115 @@ U64
 SceneStage::getEditCount() const
 {
     return _editCount;
+}
+
+bool
+SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>& deltas,
+                                 double timeCode)
+{
+    if (!_stage) {
+        return false;
+    }
+    std::vector<std::string> requested;
+    requested.reserve(deltas.size());
+    for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+        requested.push_back(delta.first);
+    }
+    const bool samePrims = !_preview.empty() && (requested == _previewRequested);
+    if (!samePrims) {
+        clearPreviewTransforms();
+
+        // Read everything before the first write, so the stage is not recomposed in between.
+        static const PXR_NS::TfToken kOpName("xformOp:transform:natronPreview");
+        std::vector<PreviewPrim> prims;
+        std::vector<PXR_NS::VtTokenArray> orders;
+        PXR_NS::UsdGeomXformCache xforms((PXR_NS::UsdTimeCode(timeCode)));
+        for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+            if (!PXR_NS::SdfPath::IsValidPathString(delta.first)) {
+                continue;
+            }
+            const PXR_NS::SdfPath path(delta.first);
+            if (!path.IsAbsolutePath() || !path.IsPrimPath()) {
+                continue;
+            }
+            const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(path);
+            const PXR_NS::UsdGeomXformable xformable(prim);
+            if (!xformable || prim.IsInstanceProxy() || prim.IsInPrototype()) {
+                continue;
+            }
+            PXR_NS::VtTokenArray baseOrder;
+            xformable.GetXformOpOrderAttr().Get(&baseOrder);
+            PreviewPrim preview;
+            preview.path = path;
+            preview.resetsXformStack = !baseOrder.empty() && (baseOrder[0] == PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+            preview.parentToWorld = xforms.GetParentToWorldTransform(prim);
+            preview.worldToParent = preview.parentToWorld.GetInverse();
+            PXR_NS::VtTokenArray order;
+            if (preview.resetsXformStack) {
+                order.push_back(PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+            }
+            order.push_back(kOpName);
+            for (std::size_t i = preview.resetsXformStack ? 1 : 0; i < baseOrder.size(); ++i) {
+                order.push_back(baseOrder[i]);
+            }
+            prims.push_back(preview);
+            orders.push_back(order);
+        }
+        if (prims.empty()) {
+            return false;
+        }
+        _previewRequested = requested;
+        PXR_NS::SdfChangeBlock block;
+        for (std::size_t i = 0; i < prims.size(); ++i) {
+            const PXR_NS::SdfPrimSpecHandle spec = PXR_NS::SdfCreatePrimInLayer(_root, prims[i].path);
+            if (!spec) {
+                continue;
+            }
+            PXR_NS::SdfAttributeSpecHandle orderSpec = PXR_NS::SdfAttributeSpec::New(spec, PXR_NS::UsdGeomTokens->xformOpOrder.GetString(), PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+            prims[i].op = PXR_NS::SdfAttributeSpec::New(spec, kOpName.GetString(), PXR_NS::SdfValueTypeNames->Matrix4d);
+            if (!orderSpec || !prims[i].op) {
+                continue;
+            }
+            orderSpec->SetDefaultValue(PXR_NS::VtValue(orders[i]));
+            _preview.push_back(prims[i]);
+        }
+    }
+
+    PXR_NS::SdfChangeBlock block;
+    for (PreviewPrim& preview : _preview) {
+        for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+            if (delta.first != preview.path.GetString()) {
+                continue;
+            }
+            // The op goes outside the prim's own ops: W * delta = local * op * parentToWorld.
+            const PXR_NS::GfMatrix4d op = preview.resetsXformStack ? delta.second : preview.parentToWorld * delta.second * preview.worldToParent;
+            if (preview.op) {
+                preview.op->SetDefaultValue(PXR_NS::VtValue(op));
+            }
+            break;
+        }
+    }
+
+    return !_preview.empty();
+} // SceneStage::setPreviewTransforms
+
+void
+SceneStage::clearPreviewTransforms()
+{
+    _previewRequested.clear();
+    if (_preview.empty() || !_root) {
+        _preview.clear();
+
+        return;
+    }
+    _preview.clear();
+    _root->SetRootPrims(PXR_NS::SdfPrimSpecHandleVector());
+}
+
+bool
+SceneStage::hasPreviewTransforms() const
+{
+    return !_preview.empty();
 }
 
 NATRON_NAMESPACE_EXIT

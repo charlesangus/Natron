@@ -64,7 +64,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 const int kWindowSize = 64;
 
 struct Record {

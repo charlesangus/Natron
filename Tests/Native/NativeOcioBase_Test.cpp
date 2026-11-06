@@ -73,7 +73,7 @@ constexpr InputSpec kOcioBaseTestInputs[] = {
 };
 
 /**
- * @brief An OCIO op converting between two spaces, in_colorspace and out_colorspace, as the
+ * @brief An OCIO op converting between two spaces, inputColorspace and outputColorspace, as the
  * smallest user of the base with two spaces.
  **/
 struct OcioBaseTestOp
@@ -88,17 +88,8 @@ struct OcioBaseTestOp
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page)
     {
-        OcioSpaceKnobs::Description in;
-        in.prefix = "in_colorspace";
-        in.label = QString::fromUtf8("Input Colorspace");
-        in.setLabel = QString::fromUtf8("Input Colorspace Set");
-        ocio.addSpace(holder, page, in, []() { return std::optional<std::string>(); });
-
-        OcioSpaceKnobs::Description out;
-        out.prefix = "out_colorspace";
-        out.label = QString::fromUtf8("Output Colorspace");
-        out.setLabel = QString::fromUtf8("Output Colorspace Set");
-        ocio.addSpace(holder, page, out, []() { return std::optional<std::string>(); });
+        ocio.addWorkingSpace(holder, page, "inputColorspace", QString::fromUtf8("Input Colorspace"), QString::fromUtf8("The input space."));
+        ocio.addWorkingSpace(holder, page, "outputColorspace", QString::fromUtf8("Output Colorspace"), QString::fromUtf8("The output space."));
     }
 
     OCIO_NAMESPACE::ConstTransformRcPtr transform(const KnobReader& /*reader*/) const
@@ -236,6 +227,29 @@ protected:
         knob->setValue(value);
     }
 
+    /**
+     * @brief Chooses \p id in the menu \p name, or, for an id the menu lacks (a role, a space of
+     * another config), plants it as a project saved with it would and refreshes the status.
+     **/
+    static void setSpace(const NodePtr& node,
+                         const char* name,
+                         const std::string& id)
+    {
+        KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(name));
+
+        ASSERT_TRUE(bool(menu)) << name;
+        const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                menu->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+
+                return;
+            }
+        }
+        menu->setActiveEntry(ChoiceOption(id, id, ""));
+        effect(node)->refreshStatus();
+    }
+
     static std::string stringValue(const NodePtr& node,
                                    const char* name)
     {
@@ -264,19 +278,21 @@ TEST_F(NativeOcioBaseTest, TwoSpacesShareOneHiddenConfigPairAndContext)
 
     EXPECT_EQ(1, countKnobsNamed(node, "ocioConfigFile"));
     EXPECT_EQ(1, countKnobsNamed(node, "ocioWorkingSpace"));
-    EXPECT_EQ(1, countKnobsNamed(node, "Context"));
-    EXPECT_EQ(1, countKnobsNamed(node, "key1"));
-    EXPECT_EQ(1, countKnobsNamed(node, "value4"));
-    EXPECT_EQ(1, countKnobsNamed(node, "in_colorspaceIndex"));
-    EXPECT_EQ(1, countKnobsNamed(node, "out_colorspaceIndex"));
+    EXPECT_EQ(1, countKnobsNamed(node, "ocioContext"));
+    EXPECT_EQ(1, countKnobsNamed(node, "contextKey1"));
+    EXPECT_EQ(1, countKnobsNamed(node, "contextValue4"));
+    EXPECT_EQ(1, countKnobsNamed(node, "inputColorspace"));
+    EXPECT_EQ(1, countKnobsNamed(node, "outputColorspace"));
+    EXPECT_EQ(0, countKnobsNamed(node, "Context"));
+    EXPECT_EQ(0, countKnobsNamed(node, "key1"));
 
     // The project pushes to the one pair.
     EXPECT_EQ(project()->getOCIOConfigSource(), stringValue(node, "ocioConfigFile"));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(node, "ocioWorkingSpace"));
 
-    // The second space goes before the shared Context group.
-    KnobIPtr context = node->getKnobByName("Context");
-    KnobIPtr outMenu = node->getKnobByName("out_colorspaceIndex");
+    // The second space goes before the shared context group.
+    KnobIPtr context = node->getKnobByName("ocioContext");
+    KnobIPtr outMenu = node->getKnobByName("outputColorspace");
     ASSERT_TRUE(bool(context));
     ASSERT_TRUE(bool(outMenu));
     KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(context->getParentKnob());
@@ -295,9 +311,9 @@ TEST_F(NativeOcioBaseTest, TwoSpacesShareOneHiddenConfigPairAndContext)
     ASSERT_GE(outMenuIndex, 0);
     EXPECT_LT(outMenuIndex, contextIndex);
 
-    // Both spaces read the shared Context variables.
-    setString(node, "key1", "SHOT");
-    setString(node, "value1", "sh010");
+    // Both spaces read the shared context variables.
+    setString(node, "contextKey1", "SHOT");
+    setString(node, "contextValue1", "sh010");
     const std::vector<std::pair<std::string, std::string>> variables = effect(node)->ocioKnobs().contextVariables(1.);
     ASSERT_EQ(1u, variables.size());
     EXPECT_EQ(std::string("SHOT"), variables[0].first);
@@ -309,8 +325,8 @@ TEST_F(NativeOcioBaseTest, EqualSpacesAreAnIdentityWithNoProcessor)
     NodePtr node = createOcioNode();
     ASSERT_TRUE(bool(node));
 
-    setString(node, "in_colorspace", "ACEScg");
-    setString(node, "out_colorspace", "ACEScg");
+    setSpace(node, "inputColorspace", "ACEScg");
+    setSpace(node, "outputColorspace", "ACEScg");
     OcioProcessor baked = effect(node)->bakeOcio(1., ViewIdx(0));
     EXPECT_FALSE(bool(baked.processor));
     EXPECT_FALSE(bool(baked.cpu));
@@ -319,8 +335,8 @@ TEST_F(NativeOcioBaseTest, EqualSpacesAreAnIdentityWithNoProcessor)
     // A role names the same space as the space it designates.
     const std::string sceneLinear = IoColorSpace::nameInConfig(project()->getColorManagement()->getConfig(), OCIO_NAMESPACE::ROLE_SCENE_LINEAR);
     ASSERT_FALSE(sceneLinear.empty());
-    setString(node, "in_colorspace", OCIO_NAMESPACE::ROLE_SCENE_LINEAR);
-    setString(node, "out_colorspace", sceneLinear);
+    setSpace(node, "inputColorspace", OCIO_NAMESPACE::ROLE_SCENE_LINEAR);
+    setSpace(node, "outputColorspace", sceneLinear);
     EXPECT_FALSE(bool(effect(node)->ocioKnobs().spaceTransform(OCIO_NAMESPACE::ROLE_SCENE_LINEAR, sceneLinear)));
     baked = effect(node)->bakeOcio(1., ViewIdx(0));
     EXPECT_FALSE(bool(baked.cpu));
@@ -332,8 +348,8 @@ TEST_F(NativeOcioBaseTest, ProcessorMatchesOcioAndRowLeavesAlpha)
     NodePtr node = createOcioNode();
     ASSERT_TRUE(bool(node));
 
-    setString(node, "in_colorspace", "ACEScg");
-    setString(node, "out_colorspace", kSRGB);
+    setSpace(node, "inputColorspace", "ACEScg");
+    setSpace(node, "outputColorspace", kSRGB);
     const OcioProcessor baked = effect(node)->bakeOcio(1., ViewIdx(0));
     ASSERT_TRUE(baked.cpu != nullptr) << baked.error;
     ASSERT_TRUE(baked.processor != nullptr);
@@ -365,8 +381,8 @@ TEST_F(NativeOcioBaseTest, ConfigChangeRebuildsTheProcessorAndRefreshesMenus)
     NodePtr node = createOcioNode();
     ASSERT_TRUE(bool(node));
 
-    setString(node, "in_colorspace", "ACEScg");
-    setString(node, "out_colorspace", kSRGB);
+    setSpace(node, "inputColorspace", "ACEScg");
+    setSpace(node, "outputColorspace", kSRGB);
     const OcioProcessor before = effect(node)->bakeOcio(1., ViewIdx(0));
     ASSERT_TRUE(before.processor != nullptr) << before.error;
     // The same transform comes from the project's cache while the config stays.
@@ -378,9 +394,9 @@ TEST_F(NativeOcioBaseTest, ConfigChangeRebuildsTheProcessorAndRefreshesMenus)
     ASSERT_TRUE(after.processor != nullptr) << after.error;
     EXPECT_NE(before.processor, after.processor);
 
-    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("out_colorspaceIndex"));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("outputColorspace"));
     ASSERT_TRUE(bool(menu));
-    EXPECT_EQ((int)Project::colorSpaceOptions(*project()->getColorManagement()).size(), menu->getNumEntries());
+    EXPECT_EQ((int)Project::colorSpaceOptions(*project()->getColorManagement()).size() + 1, menu->getNumEntries());
     ASSERT_GE(menu->getValue(), 0);
     EXPECT_EQ(std::string(kSRGB), menu->getEntry(menu->getValue()).id);
 }
@@ -390,8 +406,8 @@ TEST_F(NativeOcioBaseTest, MissingSpaceShowsAnErrorAndPassesThrough)
     NodePtr node = createOcioNode();
     ASSERT_TRUE(bool(node));
 
-    setString(node, "in_colorspace", "ACEScg");
-    setString(node, "out_colorspace", "no such colorspace");
+    setSpace(node, "inputColorspace", "ACEScg");
+    setSpace(node, "outputColorspace", "no such colorspace");
     const OcioProcessor broken = effect(node)->bakeOcio(1., ViewIdx(0));
     EXPECT_FALSE(bool(broken.cpu));
     EXPECT_FALSE(broken.error.empty());
@@ -411,6 +427,42 @@ TEST_F(NativeOcioBaseTest, MissingSpaceShowsAnErrorAndPassesThrough)
         EXPECT_EQ(src[c], dst[c]) << "channel " << c;
     }
 
-    setString(node, "out_colorspace", kSRGB);
+    setSpace(node, "outputColorspace", kSRGB);
     EXPECT_TRUE(persistentMessage(node).isEmpty()) << persistentMessage(node).toStdString();
+}
+
+TEST_F(NativeOcioBaseTest, ProjectDefaultIsTheWorkingSpaceAndShowsIt)
+{
+    NodePtr node = createOcioNode();
+    ASSERT_TRUE(bool(node));
+
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("inputColorspace"));
+    ASSERT_TRUE(bool(menu));
+    ASSERT_GT(menu->getNumEntries(), 1);
+    EXPECT_EQ(0, menu->getValue());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menu->getActiveEntry().id);
+
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = project()->getColorManagement()->getConfig();
+    const std::string working = IoColorSpace::nameInConfig(config, project()->getWorkingColorSpace());
+    ASSERT_FALSE(working.empty());
+    EXPECT_EQ(working, effect(node)->ocioKnobs().space(0));
+    EXPECT_EQ("Project default (" + working + ")", menu->getEntry(0).label);
+    EXPECT_EQ("Project default (" + working + ")", menu->getActiveEntry().label);
+
+    // Another working space relabels the entry and is what it stands for.
+    KnobChoicePtr workingKnob = project()->getKnobByNameAndType<KnobChoice>("workingSpace");
+    ASSERT_TRUE(bool(workingKnob));
+    std::string other;
+    const std::vector<ChoiceOption> spaces = workingKnob->getEntries_mt_safe();
+    for (std::size_t i = 0; i < spaces.size() && other.empty(); ++i) {
+        if (IoColorSpace::nameInConfig(config, spaces[i].id) != working) {
+            other = spaces[i].id;
+        }
+    }
+    ASSERT_FALSE(other.empty());
+    workingKnob->setValueFromID(other, 0);
+    const std::string otherName = IoColorSpace::nameInConfig(config, other);
+    EXPECT_EQ(otherName, effect(node)->ocioKnobs().space(0));
+    EXPECT_EQ("Project default (" + otherName + ")", menu->getEntry(0).label);
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menu->getActiveEntry().id);
 }

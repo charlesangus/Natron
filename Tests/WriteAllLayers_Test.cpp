@@ -642,7 +642,7 @@ TEST_F(BaseTest, PresentLayersAreStreamOnlyAvailableLayersIncludeRegistry)
         EXPECT_EQ(std::size_t(1), availableIDs.count(std::string("depth")));
     }
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
 
     connectNodes(reader, blur, 0, true);

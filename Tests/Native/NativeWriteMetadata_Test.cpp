@@ -194,21 +194,7 @@ protected:
     void configureWrite(const std::string& output)
     {
         // The file is compared with what went in, so no colour conversion may sit between them.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_write->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_write->getKnobByName("ocioOutputSpaceSet").get());
-        if (outputSpace && outputSpaceSet) {
-            outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-            outputSpaceSet->setValue(true);
-        }
-
-        KnobChoice* formatType = dynamic_cast<KnobChoice*>(_write->getKnobByName(kNatronWriteParamFormatType).get());
-        ASSERT_TRUE(formatType != NULL);
-        const std::vector<ChoiceOption> entries = formatType->getEntries_mt_safe();
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            if (entries[i].id == kNatronWriteFormatTypeInput) {
-                formatType->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
-            }
-        }
+        fileInWorkingSpace(_write);
 
         KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_write->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(file != NULL);

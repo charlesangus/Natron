@@ -318,19 +318,6 @@ void
 NativeMergeOp::createKnobs(KnobHolder* holder,
                            const KnobPagePtr& page)
 {
-    // Node.cpp shows this knob's value in parentheses next to the node's label, and NodeGui
-    // draws the operator icon from it.
-    KnobStringPtr subLabelKnob = AppManager::createKnob<KnobString>(holder, std::string(kNatronOfxParamStringSublabelName));
-    subLabelKnob->setName(kNatronOfxParamStringSublabelName);
-    subLabelKnob->setSecretByDefault(true);
-    subLabelKnob->setDefaultAllDimensionsEnabled(false);
-    subLabelKnob->setIsPersistent(false);
-    subLabelKnob->setEvaluateOnChange(false);
-    subLabelKnob->setAnimationEnabled(false);
-    subLabelKnob->setDefaultValue(std::string(MergeOps::operatorName(MergeOps::eOver)));
-    page->addKnob(subLabelKnob);
-    subLabel = subLabelKnob;
-
     // The panel's rows: B Layers and B's alpha; A Layers and A's alpha; Operation; Set BBox,
     // Metadata From and Range From; each group under a separator. The host's mask and mix rows
     // follow under their own separator.
@@ -644,14 +631,13 @@ void
 NativeMerge::refreshSubLabel()
 {
     KnobChoicePtr operation = op().operation.lock();
-    KnobStringPtr subLabel = op().subLabel.lock();
 
-    if (!operation || !subLabel) {
+    if (!operation) {
         return;
     }
     const int value = operation->getValue();
     if ((value >= 0) && (value < (int)MergeOps::eOperatorCount)) {
-        subLabel->setValue(std::string(MergeOps::operatorName((MergeOps::Operator)value)));
+        setSublabel(std::string(MergeOps::operatorName((MergeOps::Operator)value)));
     }
 }
 

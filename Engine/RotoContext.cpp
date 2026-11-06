@@ -69,8 +69,6 @@
 #include "Engine/ViewerInstance.h"
 
 #define kBlurCImgParamSize "size"
-#define kTimeOffsetParamOffset "timeOffset"
-#define kFrameHoldParamFirstFrame "firstFrame"
 
 #define kTransformParamTranslate "translate"
 #define kTransformParamRotate "rotate"
@@ -313,87 +311,22 @@ void
 RotoContext::resetTransformsCenter(bool doClone,
                                    bool doTransform)
 {
-    double time = getNode()->getApp()->getTimeLine()->currentFrame();
-    RectD bbox;
-
-    getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
     if (doTransform) {
-        KnobDoublePtr centerKnob = _imp->centerKnob.lock();
-        centerKnob->beginChanges();
-        dynamic_cast<KnobI*>(centerKnob.get())->removeAnimation(ViewSpec::all(), 0);
-        dynamic_cast<KnobI*>(centerKnob.get())->removeAnimation(ViewSpec::all(), 1);
-        centerKnob->setValues((bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-        centerKnob->endChanges();
+        resetTransformCenter();
     }
     if (doClone) {
-        KnobDoublePtr centerKnob = _imp->cloneCenterKnob.lock();
-        centerKnob->beginChanges();
-        dynamic_cast<KnobI*>(centerKnob.get())->removeAnimation(ViewSpec::all(), 0);
-        dynamic_cast<KnobI*>(centerKnob.get())->removeAnimation(ViewSpec::all(), 1);
-        centerKnob->setValues((bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-        centerKnob->endChanges();
-    }
-}
+        double time = getNode()->getApp()->getTimeLine()->currentFrame();
+        RectD bbox;
 
-void
-RotoContext::resetTransformCenter()
-{
-    resetTransformsCenter(false, true);
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        setCenterKnob(_imp->cloneCenterKnob.lock(), (bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2.);
+    }
 }
 
 void
 RotoContext::resetCloneTransformCenter()
 {
     resetTransformsCenter(true, false);
-}
-
-void
-RotoContext::resetTransformInternal(const KnobDoublePtr& translate,
-                                    const KnobDoublePtr& scale,
-                                    const KnobDoublePtr& center,
-                                    const KnobDoublePtr& rotate,
-                                    const KnobDoublePtr& skewX,
-                                    const KnobDoublePtr& skewY,
-                                    const KnobBoolPtr& scaleUniform,
-                                    const KnobChoicePtr& skewOrder,
-                                    const KnobDoublePtr& extraMatrix)
-{
-    std::list<KnobI*> knobs;
-
-    knobs.push_back(translate.get());
-    knobs.push_back(scale.get());
-    knobs.push_back(center.get());
-    knobs.push_back(rotate.get());
-    knobs.push_back(skewX.get());
-    knobs.push_back(skewY.get());
-    knobs.push_back(scaleUniform.get());
-    knobs.push_back(skewOrder.get());
-    if (extraMatrix) {
-        knobs.push_back(extraMatrix.get());
-    }
-    bool wasEnabled = translate->isEnabled(0);
-    for (std::list<KnobI*>::iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        for (int i = 0; i < (*it)->getDimension(); ++i) {
-            (*it)->resetToDefaultValue(i);
-        }
-        (*it)->setAllDimensionsEnabled(wasEnabled);
-    }
-}
-
-void
-RotoContext::resetTransform()
-{
-    KnobDoublePtr translate = _imp->translateKnob.lock();
-    KnobDoublePtr center = _imp->centerKnob.lock();
-    KnobDoublePtr scale = _imp->scaleKnob.lock();
-    KnobDoublePtr rotate = _imp->rotateKnob.lock();
-    KnobBoolPtr uniform = _imp->scaleUniformKnob.lock();
-    KnobDoublePtr skewX = _imp->skewXKnob.lock();
-    KnobDoublePtr skewY = _imp->skewYKnob.lock();
-    KnobChoicePtr skewOrder = _imp->skewOrderKnob.lock();
-    KnobDoublePtr extraMatrix = _imp->extraMatrixKnob.lock();
-
-    resetTransformInternal(translate, scale, center, rotate, skewX, skewY, uniform, skewOrder, extraMatrix);
 }
 
 void
@@ -1327,6 +1260,45 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
 
     return image;
 } // RotoDrawableItem::renderMaskInternal
+
+bool
+Bezier::rasterizeCoverage(double time,
+                          unsigned int mipmapLevel,
+                          const RectI& roi,
+                          std::vector<float>* coverage) const
+{
+    coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
+        return false;
+    }
+
+    CairoImageWrapper imgWrapper;
+    imgWrapper.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, roi.width(), roi.height());
+    if (cairo_surface_status(imgWrapper.cairoImg) != CAIRO_STATUS_SUCCESS) {
+        return false;
+    }
+    cairo_surface_set_device_offset(imgWrapper.cairoImg, -roi.x1, -roi.y1);
+    imgWrapper.ctx = cairo_create(imgWrapper.cairoImg);
+    cairo_set_fill_rule(imgWrapper.ctx, CAIRO_FILL_RULE_WINDING);
+    cairo_set_antialias(imgWrapper.ctx, CAIRO_ANTIALIAS_NONE);
+    RotoContextPrivate::renderBezier(imgWrapper.ctx, this, 1., time, time, time, 1., mipmapLevel);
+    cairo_surface_flush(imgWrapper.cairoImg);
+
+    const unsigned char* data = cairo_image_surface_get_data(imgWrapper.cairoImg);
+    const int stride = cairo_image_surface_get_stride(imgWrapper.cairoImg);
+    const int width = roi.width();
+    bool any = false;
+    for (int y = 0; y < roi.height(); ++y) {
+        const unsigned char* row = data + (std::size_t)y * stride;
+        float* dst = &(*coverage)[(std::size_t)y * width];
+        for (int x = 0; x < width; ++x) {
+            dst[x] = row[x] / 255.f;
+            any = any || row[x];
+        }
+    }
+
+    return any;
+}
 
 static inline
 double

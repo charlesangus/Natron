@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 // clang-format off
@@ -46,12 +49,27 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/RotoItem.h"
 #include "Engine/ViewIdx.h"
 
+// The mime type of curves on the system clipboard: the text of serializeItems().
+#define kRotoCurvesMimeType "application/x-natron-curves"
+
 // #define NATRON_ROTO_INVERTIBLE
 // #define NATRON_ROTO_ENABLE_MOTION_BLUR
 
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+class ContentHasher;
+
+/**
+ * @brief Host data a subclass keeps about its curves (links, roles), saved by undo commands that
+ * edit curves so undoing the edit also restores what the hooks below changed.
+ **/
+class RotoCurveContextHostState {
+public:
+    virtual ~RotoCurveContextHostState() { }
+};
+
+typedef std::shared_ptr<RotoCurveContextHostState> RotoCurveContextHostStatePtr;
 
 /**
  * @class The curves of a node that hosts Roto shapes: layers, Beziers, their animation, the
@@ -151,6 +169,12 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
+     * @brief Registers a node knob that edits the per-item host knob of the same name: on
+     * selection it is slaved to the selected item's knob like the Shape page knobs.
+     **/
+    void addHostItemKnob(const KnobIPtr& knob);
+
+    /**
      * @brief Copies a Bezier or stroke of this context under the given name, through onItemCreated(),
      * for the curve panel's paste and duplicate. A Bezier copy is not inserted in any layer; a stroke
      * copy is inserted at the top of the source's layer.
@@ -171,6 +195,52 @@ public:
     virtual void onStructureChanged();
 
     /**
+     * @brief Called after addControlPointAfterIndex(afterIndex, t) split a segment of curve, on the
+     * main thread, outside the curve's lock.
+     **/
+    virtual void onControlPointInserted(const BezierPtr& /*curve*/,
+                                        int /*afterIndex*/,
+                                        double /*t*/)
+    {
+    }
+
+    /**
+     * @brief Called by removeControlPointByIndex() before it removes the point at index, on the
+     * main thread, outside the curve's lock. index may be out of range, in which case nothing is
+     * removed.
+     **/
+    virtual void onControlPointAboutToBeRemoved(const BezierPtr& /*curve*/,
+                                                int /*index*/)
+    {
+    }
+
+    /**
+     * @brief Called after setCurveFinished() opened or closed curve.
+     **/
+    virtual void onCurveFinishedChanged(const BezierPtr& /*curve*/)
+    {
+    }
+
+    /**
+     * @brief Called for the item and each of its descendants when removeItem() deletes it.
+     **/
+    virtual void onItemRemoved(const RotoItemPtr& /*item*/)
+    {
+    }
+
+    /**
+     * @brief Returns null when the context keeps no host data.
+     **/
+    virtual RotoCurveContextHostStatePtr saveHostState() const
+    {
+        return RotoCurveContextHostStatePtr();
+    }
+
+    virtual void restoreHostState(const RotoCurveContextHostStatePtr& /*state*/)
+    {
+    }
+
+    /**
      * @brief Removes the given item from the context. This also removes the item from the selection
      * if it was selected. If the item has children, this will also remove all the children.
      **/
@@ -186,9 +256,11 @@ public:
 
     /**
      * @brief Returns a bezier curves nearby the point (x,y) and the parametric value
-     * which would be used to find the exact Bezier point lying on the curve.
+     * which would be used to find the exact Bezier point lying on the curve. When accept is
+     * given, curves it refuses are skipped.
      **/
-    BezierPtr isNearbyBezier(double x, double y, double acceptance, int* index, double* t, bool* feather) const;
+    BezierPtr isNearbyBezier(double x, double y, double acceptance, int* index, double* t, bool* feather,
+                             const std::function<bool(const BezierPtr&)>& accept = std::function<bool(const BezierPtr&)>()) const;
 
     /**
      * @brief Returns the region of definition of the shape unioned to the region of definition of the node
@@ -202,6 +274,94 @@ public:
                                      double* startTime,
                                      double* endTime,
                                      double* timeStep) const;
+
+public:
+    /**
+     * @brief The knobs of the Transform page, which edit the selected items' transforms like the
+     * other context knobs. Members are null until createTransformKnobs() is called.
+     **/
+    struct TransformKnobs {
+        KnobDoublePtr translate;
+        KnobDoublePtr rotate;
+        KnobDoublePtr scale;
+        KnobBoolPtr scaleUniform;
+        KnobDoublePtr skewX;
+        KnobDoublePtr skewY;
+        KnobChoicePtr skewOrder;
+        KnobDoublePtr center;
+        KnobDoublePtr extraMatrix;
+        KnobButtonPtr resetCenter;
+        KnobButtonPtr resetTransform;
+    };
+
+    /**
+     * @brief Creates the Transform page's knobs on page. The paint context makes them itself; any
+     * other host calls this once, from its initializeKnobs(). Such a host gets no Interactive
+     * knob: its transform handle follows the global "Refresh viewer only when editing is
+     * finished" preference.
+     **/
+    void createTransformKnobs(const KnobPagePtr& page);
+    TransformKnobs getTransformKnobs() const;
+    bool isTransformKnob(const KnobI* knob) const;
+
+    /**
+     * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
+     * items' bounding box, at the current time.
+     **/
+    void resetTransformCenter();
+
+    /**
+     * @brief Resets the transform knobs, except Interactive, to their defaults.
+     **/
+    void resetTransform();
+
+    /**
+     * @brief Runs the reset buttons of the Transform page. Returns false when k is not one of them.
+     **/
+    bool onTransformButtonPressed(const KnobI* k);
+
+    /**
+     * @brief The center an item's transform starts at, when the host has one; otherwise the item
+     * takes the centre of its bounding box. MT-safe.
+     **/
+    virtual bool getDefaultTransformCenter(double /*time*/, double* /*x*/, double* /*y*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The transform item is drawn and rendered with, from local, the one its own knobs
+     * make. The host may replace local or compose it with transforms it holds. MT-safe.
+     **/
+    virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
+
+protected:
+    /**
+     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
+     * the item leaves them untied. See refreshTransformKnobTies().
+     **/
+    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
+     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     **/
+    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+
+    void resetTransformInternal(const KnobDoublePtr& translate,
+                                const KnobDoublePtr& scale,
+                                const KnobDoublePtr& center,
+                                const KnobDoublePtr& rotate,
+                                const KnobDoublePtr& skewX,
+                                const KnobDoublePtr& skewY,
+                                const KnobBoolPtr& scaleUniform,
+                                const KnobChoicePtr& skewOrder,
+                                const KnobDoublePtr& extraMatrix);
+
+    static void setCenterKnob(const KnobDoublePtr& center, double x, double y);
 
 protected:
     void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, RectD* rod) const;
@@ -227,13 +387,68 @@ public:
      **/
     U64 getContentHash() const;
 
-    void toSerialization(Serialization::RotoContextSerialization* serialization) const;
+    virtual void toSerialization(Serialization::RotoContextSerialization* serialization) const;
 
     /**
      * @brief Must be called on a context that holds nothing but its base layer.
      **/
-    void fromSerialization(const Serialization::RotoContextSerialization& serialization);
+    virtual void fromSerialization(const Serialization::RotoContextSerialization& serialization);
 
+    /**
+     * @brief A self-contained text holding items, for pasting into any curve host. Each item is
+     * written once: an item inside a layer that is also given comes with that layer, and the base
+     * layer stands for its children. Throws std::runtime_error when encoding fails.
+     **/
+    virtual std::string serializeItems(const std::list<RotoItemPtr>& items) const;
+
+    /**
+     * @brief Inserts the items of a serializeItems() text at the top of layer, the base layer when
+     * null, in their order, on the main thread. A name already used here gets a "_copy" suffix.
+     * Strokes are dropped unless this is a paint host, and counted in droppedStrokes. Track links
+     * are resolved by tracker and track names, and stay where they were when those are not found.
+     * Returns the inserted items. Throws std::invalid_argument when blob cannot be read.
+     **/
+    virtual std::list<RotoItemPtr> pasteItems(const std::string& blob,
+                                              const RotoLayerPtr& layer,
+                                              int* droppedStrokes = nullptr);
+
+    /**
+     * @brief How many items pasteItems(blob) would insert at the top level, and in droppedStrokes
+     * how many strokes it would drop. Returns 0 when blob cannot be read.
+     **/
+    int countPastableItems(const std::string& blob, int* droppedStrokes = nullptr) const;
+
+protected:
+    void itemsToSerialization(const std::list<RotoItemPtr>& items,
+                              Serialization::RotoContextSerialization* serialization) const;
+
+    /**
+     * @brief The text of serialization, with its blobs inlined.
+     **/
+    std::string encodeItems(const Serialization::RotoContextSerialization& serialization) const;
+
+    /**
+     * @brief Throws std::invalid_argument when blob cannot be read.
+     **/
+    static Serialization::RotoContextSerialization decodeItems(const std::string& blob);
+
+    /**
+     * @brief The work of pasteItems() on a decoded text, without the render. names maps each
+     * pasted item's name in the text to its name here.
+     **/
+    std::list<RotoItemPtr> pasteSerialization(const Serialization::RotoContextSerialization& serialization,
+                                              const RotoLayerPtr& layer,
+                                              std::map<std::string, std::string>* names,
+                                              int* droppedStrokes);
+
+    /**
+     * @brief Appends what a subclass holds beside the items to getContentHash(). MT-safe.
+     **/
+    virtual void appendHostContentHash(ContentHasher& /*h*/) const
+    {
+    }
+
+public:
     /**
      * @brief This must be called by the GUI whenever an item is selected. This is recursive for layers.
      **/
@@ -290,6 +505,12 @@ public:
 
     int getNCurves() const;
 
+    /**
+     * @brief True for a node knob that mirrors the selected item's knob of the same name; its
+     * animation belongs to the item, so the editors list it under the item instead.
+     **/
+    bool isItemProxyKnob(const KnobIPtr& knob) const;
+
     NodePtr getNode() const;
 
     RotoLayerPtr getLayerByName(const std::string& n) const;
@@ -344,6 +565,20 @@ public:
 
     void dequeueGuiActions();
 
+    /**
+     * @brief Watches the tracks the linked points follow, their trackers and tracker nodes, so
+     * edits re-render the node; refreshes the links' state and the warning naming missing
+     * tracks. Called whenever links or items change, on the main thread.
+     **/
+    void refreshTrackLinkListeners();
+
+    /**
+     * @brief Points loaded links whose track object is unknown at their tracks, found by the
+     * tracker node's fully qualified name and the track's script name. Called once every node
+     * of a load or paste exists. Links that do not resolve keep their last centre.
+     **/
+    void resolveTrackLinks();
+
 Q_SIGNALS:
 
     /**
@@ -377,11 +612,21 @@ public Q_SLOTS:
 
     void onSelectedKnobCurveChanged();
 
+    void onSelectedKnobValueChanged();
+
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 
 private:
+    std::list<BezierPtr> getTrackLinkedCurves() const;
+
+    // Refreshes every link's state and the warning; with redraw, also invalidates the linked
+    // curves and re-renders.
+    void updateTrackLinks(bool redraw);
+
     void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
     void deselectInternal(RotoItemPtr b);
+    void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
+    void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

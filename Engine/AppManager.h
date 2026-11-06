@@ -197,11 +197,10 @@ public:
     void setRenderFailed();
     bool hasRenderFailed() const WARN_UNUSED_RETURN;
     const PluginsMap & getPluginsList() const WARN_UNUSED_RETURN;
-    Plugin* getPluginBinary(const QString & pluginId,
+    Plugin* getPluginBinary(const QString& pluginId,
                             int majorVersion,
                             int minorVersion,
                             bool convertToLowerCase) const WARN_UNUSED_RETURN;
-    Plugin* getPluginBinaryFromOldID(const QString & pluginId, int majorVersion, int minorVersion) const WARN_UNUSED_RETURN;
 
     /*Find a builtin format with the same resolution and aspect ratio*/
     Format findExistingFormat(int w, int h, double par = 1.0) const WARN_UNUSED_RETURN;
@@ -247,11 +246,14 @@ public:
     /**
      * @brief The frames the viewer cache holds textures for under the given holder, viewer hash and
      * mipmap level, each with where it is stored (RAM wins over disk when a frame has both). Entries
-     * of other hashes stay in the cache for undo, so they are left out.
+     * of other hashes stay in the cache for undo, so they are left out. With a filter, a frame is
+     * listed only if a lookup under the filter's settings would hit: its textures have those display
+     * settings, are not draft, and cover every tile of the filter.
      **/
     void getViewerCachedFrames(const std::string& holderID,
                                U64 viewerHash,
                                unsigned int mipmapLevel,
+                               const ViewerFrameFilter* filter,
                                std::map<SequenceTime, StorageModeEnum>* frames) const;
 
     void setApplicationsCachesMaximumMemoryPercent(double p);
@@ -504,6 +506,14 @@ public:
         return 72;
     }
 
+    /**
+     * @brief The device pixel ratio of the screens the GUI draws on; 1 without a GUI.
+     **/
+    virtual double getScreenDevicePixelRatio() const
+    {
+        return 1.;
+    }
+
     template <typename T>
     void adjustSizeToDPI(T &x,
                          T &y) const
@@ -544,6 +554,9 @@ public:
     int isProjectAlreadyOpened(const std::string& projectFilePath) const;
 
     virtual void reloadStylesheets() {}
+
+    // A Settings::Viewer3DNavigationEnum preset was chosen.
+    virtual void onViewer3DNavigationChanged(int /*navigation*/) { }
 
 #ifdef USE_NATRON_GIL
     void takeNatronGIL();
@@ -747,7 +760,7 @@ protected:
     template <typename PLUGIN>
     void registerNativePlugin();
 
-    void registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
+    Plugin* registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
 
     virtual AppInstancePtr makeNewInstance(int appID) const;
     virtual void registerGuiMetaTypes() const

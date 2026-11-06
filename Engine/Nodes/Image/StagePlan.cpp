@@ -296,6 +296,7 @@ makeStageGpuWrap(const StagePlan& plan,
     wrap->nComps = (uint32_t)nComps;
     wrap->channelMask = (uint32_t)plan.processChannels.to_ulong();
     wrap->mix = (float)plan.mix;
+    wrap->clampAlpha = plan.stages.has(Stage::ClampAlpha);
 
     // An input that is not connected reads zero, as runStagesCpu() reads it.
     const int sourceInput = plan.sourceInput;
@@ -1029,6 +1030,7 @@ runStagesCpu(EffectInstance& effect,
     const float mix = (float)plan.mix;
     const bool maskInvert = plan.maskInvert;
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
+    const bool clampAlpha = plan.stages.has(Stage::ClampAlpha);
     // A Divisor stage hands the op the divisor row and neither divides nor multiplies back.
     const bool divisorToOp = plan.stages.has(Stage::Divisor);
     const int sourceInput = plan.sourceInput;
@@ -1338,6 +1340,10 @@ runStagesCpu(EffectInstance& effect,
                         v = srcPix[c];
                     } else if (alpha != 1.f) {
                         v = v * alpha + (1.f - alpha) * srcPix[c];
+                        if (clampAlpha && (pixelKernelChannelBit(nComps, c) == 3)) {
+                            // Written as a comparison so that a NaN gives 0.
+                            v = (v > 0.f) ? std::min(v, 1.f) : 0.f;
+                        }
                     }
                     dstPix[c] = v;
                 }
@@ -1631,24 +1637,45 @@ stageSourcesNeededLayers(EffectInstance& effect,
     }
 }
 
+std::string
+StageGpuShaderGate::rejectionKey(const std::string& deviceTag,
+                                 const GpuRuntimeShader& shader)
+{
+    std::string key = deviceTag;
+    key += '\0';
+    key += shader.entry;
+    key += '\0';
+    key += shader.source;
+
+    return key;
+}
+
+bool
+StageGpuShaderGate::isRejected(const std::string& deviceTag,
+                               const GpuRuntimeShader& shader)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _rejected.count(rejectionKey(deviceTag, shader)) != 0;
+}
+
 bool
 StageGpuShaderGate::accept(const GpuRuntimeShader& shader,
                            const NodePtr& node)
 {
 #ifdef NATRON_HAVE_GPU
-    std::string key = shader.entry;
-    key += '\0';
-    key += shader.source;
+    GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+    gpu::GpuRuntime* runtime = (context && context->isAvailable()) ? context->runtime() : nullptr;
+    if (!runtime || runtime->isLost()) {
+        return false;
+    }
+    // Another device, picked in the preferences, may run what this one rejected.
+    const std::string key = rejectionKey(runtime->pipelines().deviceTag(), shader);
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_rejected.count(key)) {
             return false;
         }
-    }
-    GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
-    gpu::GpuRuntime* runtime = (context && context->isAvailable()) ? context->runtime() : nullptr;
-    if (!runtime || runtime->isLost()) {
-        return false;
     }
     std::shared_ptr<gpu::GpuKernel> kernel;
     gpu::GpuStatus status = runtime->pipelines().get(shader.source, gpu::ShaderStage::Compute, shader.entry, kernel);

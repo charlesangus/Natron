@@ -108,6 +108,8 @@
 #include "Global/PythonUtils.h"
 
 #include "Engine/AbortWatchdog.h"
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
@@ -417,6 +419,14 @@ AppManager::loadFromArgs(const CLArgs& cl)
 #else
              qputenv( "FONTCONFIG_PATH", stdFcPath.c_str() );
 #endif
+        }
+    }
+
+    // Before Python or a scene asks OpenUSD for its resolver, which reads the registered ones once.
+    {
+        std::string liveTextureError;
+        if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
+            std::cerr << liveTextureError << std::endl;
         }
     }
 
@@ -740,6 +750,49 @@ AppManager::setApplicationLocale()
     QLocale::setDefault( QLocale(QLocale::English, QLocale::UnitedStates) );
 }
 
+// --list-models: one line per model, tab-separated so that scripts can cut it.
+static bool
+printModelList()
+{
+    try {
+        const std::shared_ptr<const ModelRegistry> registry = ModelRegistry::process();
+        std::cout << "id\ttask\tstatus\tsize\tweights licence\ttraining-data licence\tosaid" << std::endl;
+        for (const AiModelEntry& entry : registry->models()) {
+            const bool installed = registry->resolve(entry.id).status == AiModelStatus::eInstalled;
+            std::cout << entry.id << '\t' << aiModelTaskName(entry.task) << '\t' << (installed ? "Installed" : "Missing")
+                      << '\t' << entry.size << '\t' << entry.weightsLicence << '\t' << entry.trainingDataLicence
+                      << '\t' << entry.osaid << std::endl;
+        }
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
+static bool
+downloadModel(const std::string& id)
+{
+    try {
+        std::string error;
+        if (!ModelDownloader::process()->download(id, &error)) {
+            std::cerr << "Cannot download the AI model " << id << ": " << error << std::endl;
+
+            return false;
+        }
+        const AiModelResolution resolution = ModelDownloader::process()->registry()->resolve(id);
+        std::cout << "Installed the AI model " << id << " in " << resolution.directory << std::endl;
+    } catch (const ModelRegistryError& e) {
+        std::cerr << "Cannot read the AI model list: " << e.what() << std::endl;
+
+        return false;
+    }
+
+    return true;
+}
+
 bool
 AppManager::loadInternal(const CLArgs& cl)
 {
@@ -800,6 +853,19 @@ AppManager::loadInternal(const CLArgs& cl)
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
+
+    // Model commands need no project, plug-ins or GPU, so they run and exit here.
+    if (cl.isListModels() || !cl.getDownloadModelId().isEmpty()) {
+        bool ok = true;
+        if (!cl.getDownloadModelId().isEmpty()) {
+            ok = downloadModel(cl.getDownloadModelId().toStdString());
+        }
+        if (ok && cl.isListModels()) {
+            ok = printModelList();
+        }
+
+        return ok;
+    }
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
@@ -1371,6 +1437,7 @@ void
 AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines();
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
@@ -1411,6 +1478,8 @@ AppManager::clearAllCaches()
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
+    SceneCaches::releaseCpuRenderEngines();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
@@ -1637,7 +1706,7 @@ AppManager::onAllPluginsLoaded()
     }
 } // AppManager::onAllPluginsLoaded
 
-void
+Plugin*
 AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
                                   void (*buildEffect)(),
                                   const QString& iconPath,
@@ -1672,6 +1741,22 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
     if (internalUseOnly) {
         p->setForInternalUseOnly(true);
     }
+    if (dynamic_cast<const NodeGroup*>(node.get())) {
+        // A group's inputs are its Input nodes, and it has none until it is created.
+        p->setFirstInputDataKind(true, eDataKindPolymorphic);
+        p->setInputDataKinds({ eDataKindPolymorphic });
+    } else {
+        p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
+        std::vector<DataKindEnum> kinds;
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            if (!node->isInputMask(i)) {
+                kinds.push_back(node->getInputDataKind(i));
+            }
+        }
+        p->setInputDataKinds(kinds);
+    }
+
+    return p;
 }
 
 template <typename PLUGIN>
@@ -1698,7 +1783,10 @@ AppManager::registerNativePlugin()
     }
     const NodeSpec* spec = native->nodeSpec();
 
-    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    Plugin* plugin = registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    if (plugin) {
+        plugin->setPrimPathKnob(std::string(spec->primPathKnob), spec->primPathKnobTakesPattern);
+    }
 }
 
 void
@@ -1724,9 +1812,9 @@ AppManager::loadBuiltinNodePlugins()
         registerNativePlugin<OverlayTestNode>();
     }
 
-    if ( !isBackground() ) {
-        registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
-    }
+    // Registered in the background too, so that a script that loads and saves a project keeps its
+    // viewers. Without a viewer widget a viewer never renders.
+    registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);
 }
 
 bool
@@ -2187,6 +2275,9 @@ AppManager::loadPythonGroups()
 
             p->setPythonModule(modulePath + moduleName);
             p->setToolsetScript(isToolset);
+            // Its inputs are only known once its script has built it.
+            p->setFirstInputDataKind(true, eDataKindPolymorphic);
+            p->setInputDataKinds({ eDataKindPolymorphic });
         }
     }
 } // AppManager::loadPythonGroups
@@ -2300,88 +2391,6 @@ AppManager::getKnobFactory() const
 }
 
 Plugin*
-AppManager::getPluginBinaryFromOldID(const QString & pluginId,
-                                     int majorVersion,
-                                     int minorVersion) const
-{
-    std::map<int, Plugin*> matches;
-
-    if ( pluginId == QString::fromUtf8("Viewer") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_VIEWER), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("Dot") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_DOT), majorVersion, minorVersion );
-    } else if ( pluginId == QString::fromUtf8("DiskCache") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_DISKCACHE), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("Backdrop") ) { // DO NOT change the capitalization, even if it's wrong
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_BACKDROP), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("RotoOFX  [Draw]") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_ROTO), majorVersion, minorVersion);
-    }
-
-    ///Try remapping these ids to old ids we had in Natron < 1.0 for backward-compat
-    for (PluginsMap::const_iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
-        assert( !it->second.empty() );
-        PluginVersionsOrdered::const_reverse_iterator itver = it->second.rbegin();
-        QString friendlyLabel = (*itver)->getPluginLabel();
-        const QStringList& s = (*itver)->getGrouping();
-        QString grouping;
-        if (s.size() > 0) {
-            grouping = s[0];
-        }
-        friendlyLabel += QString::fromUtf8("  [") + grouping + QChar::fromLatin1(']');
-
-        if (friendlyLabel == pluginId) {
-            if (majorVersion == -1) {
-                // -1 means we want to load the highest version existing
-                return *( it->second.rbegin() );
-            }
-
-            PluginsMap::const_iterator foundID = it;
-            
-            // see also OFX::Host::PluginCache::getPluginById()
-            // see also AppManager::getPluginBinary()
-
-            // Let's be a bit smarter than HostSupport.
-            // The best compatible plugin is, by order of preference
-            // - the plugin with the same major version and the highest minor
-            // - the plugin with the closest major above and the highest minor
-            // - the plugin with the highest major and the highest minor
-            //
-            // For example, if versions (1,0) (1,2) (3,1) (3,4) (4,2) are available,
-            // - asking for (1,0) returns (1,2)
-            // - asking for (2,7) returns (3,4)
-            // - asking for (3,1) returns (3,4)
-            // - asking for (6,0) returns (4,2)
-
-            // Try to find the exact major version, with the highest minor
-            // (thus the reverse iterator)
-            Plugin* nextPlugin = *(foundID->second.rbegin());
-            int nextVersion = nextPlugin->getMajorVersion();
-            for (PluginVersionsOrdered::const_reverse_iterator itver = foundID->second.rbegin(); itver != foundID->second.rend(); ++itver) {
-                int thisMajorVersion = (*itver)->getMajorVersion();
-                if (thisMajorVersion == majorVersion) {
-                    return *itver;
-                } else if (thisMajorVersion > majorVersion &&
-                           thisMajorVersion < nextVersion) {
-                    nextPlugin = *itver;
-                    nextVersion = thisMajorVersion;
-                } else if (thisMajorVersion < majorVersion) {
-                    // no need to continue
-                    break;
-                }
-            }
-            assert(nextPlugin != NULL); // there should be at least one version
-
-            // Could not find the exact version... get the major version above,
-            // else the highest version.
-            return nextPlugin;
-        }
-    }
-
-    return 0;
-}
-
-Plugin*
 AppManager::getPluginBinary(const QString & pluginId,
                             int majorVersion,
                             int minorVersion,
@@ -2394,12 +2403,9 @@ AppManager::getPluginBinary(const QString & pluginId,
         foundID = _imp->_plugins.end();
         for (PluginsMap::const_iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
             QString pID = QString::fromUtf8( it->first.c_str() );
-            if ( !pluginId.startsWith( QString::fromUtf8(NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.") ) ) {
-                QString lowerCase = pID.toLower();
-                if (lowerCase == pluginId) {
-                    foundID = it;
-                    break;
-                }
+            if (pID.toLower() == pluginId) {
+                foundID = it;
+                break;
             }
         }
     }
@@ -2408,7 +2414,6 @@ AppManager::getPluginBinary(const QString & pluginId,
         assert( !foundID->second.empty() );
 
         // see also OFX::Host::PluginCache::getPluginById()
-        // see also AppManager::getPluginBinaryFromOldID()
 
         if (majorVersion == -1) {
             // -1 means we want to load the highest version existing
@@ -2647,15 +2652,23 @@ void
 AppManager::getViewerCachedFrames(const std::string& holderID,
                                   U64 viewerHash,
                                   unsigned int mipmapLevel,
+                                  const ViewerFrameFilter* filter,
                                   std::map<SequenceTime, StorageModeEnum>* frames) const
 {
     frames->clear();
     if (!_imp->_viewerCache) {
         return;
     }
+    std::map<SequenceTime, std::vector<TextureRect>> tilesHeld;
     _imp->_viewerCache->visitEntryKeys([&](const FrameKey& key, StorageModeEnum storage) {
         if ((key.getTreeVersion() != viewerHash) || (key.getMipmapLevel() != mipmapLevel) || (key.getCacheHolderID() != holderID)) {
             return;
+        }
+        if (filter && (key.isDraft() || !key.hasTheDisplaySettingsOf(filter->settings))) {
+            return;
+        }
+        if (filter) {
+            tilesHeld[key.getTime()].push_back(key.getTexRect());
         }
         std::map<SequenceTime, StorageModeEnum>::iterator found = frames->find(key.getTime());
         if (found == frames->end()) {
@@ -2664,6 +2677,24 @@ AppManager::getViewerCachedFrames(const std::string& holderID,
             found->second = eStorageModeRAM;
         }
     });
+    if (!filter) {
+        return;
+    }
+    for (std::map<SequenceTime, StorageModeEnum>::iterator it = frames->begin(); it != frames->end();) {
+        const std::vector<TextureRect>& held = tilesHeld[it->first];
+        bool covered = true;
+        for (const TextureRect& tile : filter->tiles) {
+            if (std::find(held.begin(), held.end(), tile) == held.end()) {
+                covered = false;
+                break;
+            }
+        }
+        if (covered) {
+            ++it;
+        } else {
+            frames->erase(it++);
+        }
+    }
 }
 
 SettingsPtr AppManager::getCurrentSettings() const
@@ -3531,7 +3562,7 @@ AppManager::getReaderPluginIDForFile(const std::string& originalPath,
         }
     }
     // DeepRead reads the first part, so that is the part that decides.
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL, FilePin::eDisk);
     if (header && !header->subimages.empty() && header->subimages[0].deep) {
         return std::string(PLUGINID_NATRON_DEEPREAD);
     }

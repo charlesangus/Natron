@@ -43,7 +43,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWDEMOSAIC "fr.natron.RawDemosaic"
+#define PLUGINID_NATRON_RAWDEMOSAIC "RawDemosaic"
 #define PLUGIN_MAJOR_NATRON_RAWDEMOSAIC 1
 
 #define kRawDemosaicParamBayerMethod "method"

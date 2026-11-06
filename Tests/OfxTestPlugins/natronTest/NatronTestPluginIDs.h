@@ -112,4 +112,24 @@
 #define kNatronTestPremultProbeReportedPreMultipliedID "premultiplied"
 #define kNatronTestPremultProbeReportedOpaqueID "opaque"
 
+// Pass the Source through; each declares the params the host's footer collects in one layout.
+#define kNatronTestFooterProbeMajor 1
+#define kNatronTestFooterClampBlackOnlyPluginID "fr.natron.test.FooterClampBlackOnly"
+#define kNatronTestFooterClampWhiteOnlyPluginID "fr.natron.test.FooterClampWhiteOnly"
+#define kNatronTestFooterClampsInGroupPluginID "fr.natron.test.FooterClampsInGroup"
+#define kNatronTestFooterSecretAfterDividerPluginID "fr.natron.test.FooterSecretAfterDivider"
+#define kNatronTestFooterSecretAfterVisiblePluginID "fr.natron.test.FooterSecretAfterVisible"
+#define kNatronTestFooterMultiPlanarPluginID "fr.natron.test.FooterMultiPlanar"
+#define kNatronTestFooterProbeParamAmount "amount"
+#define kNatronTestFooterProbeParamHiddenOption "hiddenOption"
+#define kNatronTestFooterProbeParamClampGroup "clampGroup"
+#define kNatronTestFooterProbeParamKeyChannel "keyChannel"
+
+// Passes the Source through and declares the overlay toggles the host hides and drives. hidpi
+// defaults on, so a host that leaves it alone shows on a screen below the HiDPI threshold.
+#define kNatronTestOverlayParamsPluginID "fr.natron.test.OverlayParams"
+#define kNatronTestOverlayParamsMajor 1
+#define kNatronTestOverlayParamsInteractive "interactive"
+#define kNatronTestOverlayParamsHidpi "hidpi"
+
 #endif // Tests_OfxTestPlugins_NatronTestPluginIDs_h

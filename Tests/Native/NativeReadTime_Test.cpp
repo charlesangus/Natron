@@ -147,9 +147,7 @@ protected:
         ASSERT_TRUE(file != NULL);
         file->setValue(pattern);
         // These tests compare with the raw pixels, so the file is read without conversion.
-        KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-        ASSERT_TRUE(inputSpace != NULL);
-        inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+        fileInWorkingSpace(node);
         node->getEffectInstance()->dropCachedMetadata();
     }
 
@@ -269,8 +267,8 @@ TEST_F(NativeReadTimeTest, SettingTheFilenameFillsTheOriginalRangeAndTheTimeDoma
     EXPECT_EQ(4, intValue(node, "originalFrameRange", 1));
     EXPECT_EQ(1, intValue(node, "firstFrame"));
     EXPECT_EQ(4, intValue(node, "lastFrame"));
-    EXPECT_EQ(1, intValue(node, "startingTime"));
-    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_EQ(1, intValue(node, "startAt"));
+    EXPECT_EQ(0, intValue(node, "frameOffset"));
 
     double first = 0.;
     double last = 0.;
@@ -327,24 +325,24 @@ TEST_F(NativeReadTimeTest, BeforeAndAfterModesOutsideTheRange)
     EXPECT_EQ(0.125f, render(node, 0.));
     EXPECT_EQ(0.5f, render(node, 5.));
 
-    setChoice(node, "before", 1);
-    setChoice(node, "after", 1);
+    setChoice(node, "beforeFirstFrame", 1);
+    setChoice(node, "afterLastFrame", 1);
     EXPECT_EQ(0.5f, render(node, 0.));
     EXPECT_EQ(0.125f, render(node, 5.));
 
-    setChoice(node, "before", 2);
-    setChoice(node, "after", 2);
+    setChoice(node, "beforeFirstFrame", 2);
+    setChoice(node, "afterLastFrame", 2);
     EXPECT_EQ(0.25f, render(node, 0.));
     EXPECT_EQ(0.25f, render(node, 6.));
 
-    setChoice(node, "before", 3);
-    setChoice(node, "after", 3);
+    setChoice(node, "beforeFirstFrame", 3);
+    setChoice(node, "afterLastFrame", 3);
     EXPECT_EQ(0.f, render(node, 0.));
     EXPECT_EQ(0.f, render(node, 5.));
     EXPECT_EQ(std::string(), persistentMessage(node));
 
-    setChoice(node, "before", 4);
-    setChoice(node, "after", 4);
+    setChoice(node, "beforeFirstFrame", 4);
+    setChoice(node, "afterLastFrame", 4);
     EXPECT_EQ(kNotRendered, render(node, 0.));
     EXPECT_FALSE(persistentMessage(node).empty());
     EXPECT_EQ(kNotRendered, render(node, 5.));
@@ -356,8 +354,8 @@ TEST_F(NativeReadTimeTest, StartingTimeMovesTheSequenceAndSyncsTheOffset)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
 
-    userSetInt(node, "startingTime", 100);
-    EXPECT_EQ(99, intValue(node, "timeOffset"));
+    userSetInt(node, "startAt", 100);
+    EXPECT_EQ(99, intValue(node, "frameOffset"));
     EXPECT_EQ(0.125f, render(node, 100.));
     EXPECT_EQ(0.25f, render(node, 101.));
     EXPECT_EQ(0.5f, render(node, 103.));
@@ -376,9 +374,9 @@ TEST_F(NativeReadTimeTest, TimeOffsetMovesTheSequenceAndSyncsTheStartingTime)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
 
-    userSetChoice(node, "frameMode", 1);
-    userSetInt(node, "timeOffset", 10);
-    EXPECT_EQ(11, intValue(node, "startingTime"));
+    userSetChoice(node, "frameOffsetMode", 1);
+    userSetInt(node, "frameOffset", 10);
+    EXPECT_EQ(11, intValue(node, "startAt"));
     EXPECT_EQ(0.125f, render(node, 11.));
     EXPECT_EQ(0.25f, render(node, 12.));
     EXPECT_EQ(0.5f, render(node, 14.));
@@ -397,7 +395,7 @@ TEST_F(NativeReadTimeTest, ChangingTheFirstFrameNarrowsTheSequenceAndMovesTheSta
     NodePtr node = createRead(patternPath(dir, "seq"));
 
     userSetInt(node, "firstFrame", 2);
-    EXPECT_EQ(2, intValue(node, "startingTime"));
+    EXPECT_EQ(2, intValue(node, "startAt"));
     EXPECT_EQ(0.25f, render(node, 1.));
     EXPECT_EQ(0.25f, render(node, 2.));
 }
@@ -413,8 +411,8 @@ TEST_F(NativeReadTimeTest, ResettingTheFirstFrameRestoresTheRangeAndTheStartingT
     restoreDefaultAsTheGuiDoes(node, "firstFrame");
 
     EXPECT_EQ(1, intValue(node, "firstFrame"));
-    EXPECT_EQ(1, intValue(node, "startingTime"));
-    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_EQ(1, intValue(node, "startAt"));
+    EXPECT_EQ(0, intValue(node, "frameOffset"));
     EXPECT_FALSE(userEdited(node));
     EXPECT_EQ(0.125f, render(node, 1.));
     EXPECT_EQ(0.25f, render(node, 2.));
@@ -469,12 +467,12 @@ TEST_F(NativeReadTimeTest, ResettingTheStartingTimeRestoresTheOffset)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
 
-    userSetInt(node, "startingTime", 100);
-    ASSERT_EQ(99, intValue(node, "timeOffset"));
-    restoreDefaultAsTheGuiDoes(node, "startingTime");
+    userSetInt(node, "startAt", 100);
+    ASSERT_EQ(99, intValue(node, "frameOffset"));
+    restoreDefaultAsTheGuiDoes(node, "startAt");
 
-    EXPECT_EQ(1, intValue(node, "startingTime"));
-    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_EQ(1, intValue(node, "startAt"));
+    EXPECT_EQ(0, intValue(node, "frameOffset"));
     EXPECT_FALSE(userEdited(node));
     EXPECT_EQ(0.125f, render(node, 1.));
     EXPECT_EQ(0.25f, render(node, 2.));
@@ -486,13 +484,13 @@ TEST_F(NativeReadTimeTest, ResettingTheTimeOffsetRestoresTheStartingTime)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
 
-    userSetChoice(node, "frameMode", 1);
-    userSetInt(node, "timeOffset", 10);
-    ASSERT_EQ(11, intValue(node, "startingTime"));
-    restoreDefaultAsTheGuiDoes(node, "timeOffset");
+    userSetChoice(node, "frameOffsetMode", 1);
+    userSetInt(node, "frameOffset", 10);
+    ASSERT_EQ(11, intValue(node, "startAt"));
+    restoreDefaultAsTheGuiDoes(node, "frameOffset");
 
-    EXPECT_EQ(0, intValue(node, "timeOffset"));
-    EXPECT_EQ(1, intValue(node, "startingTime"));
+    EXPECT_EQ(0, intValue(node, "frameOffset"));
+    EXPECT_EQ(1, intValue(node, "startAt"));
     EXPECT_FALSE(userEdited(node));
     EXPECT_EQ(0.125f, render(node, 1.));
 }
@@ -503,14 +501,14 @@ TEST_F(NativeReadTimeTest, ResettingTheFrameModeShowsTheDefaultModesKnob)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
 
-    userSetChoice(node, "frameMode", 1);
-    ASSERT_TRUE(knob<KnobInt>(node, "startingTime")->getIsSecret());
-    ASSERT_FALSE(knob<KnobInt>(node, "timeOffset")->getIsSecret());
-    restoreDefaultAsTheGuiDoes(node, "frameMode");
+    userSetChoice(node, "frameOffsetMode", 1);
+    ASSERT_TRUE(knob<KnobInt>(node, "startAt")->getIsSecret());
+    ASSERT_FALSE(knob<KnobInt>(node, "frameOffset")->getIsSecret());
+    restoreDefaultAsTheGuiDoes(node, "frameOffsetMode");
 
-    EXPECT_EQ(0, knob<KnobChoice>(node, "frameMode")->getValue());
-    EXPECT_FALSE(knob<KnobInt>(node, "startingTime")->getIsSecret());
-    EXPECT_TRUE(knob<KnobInt>(node, "timeOffset")->getIsSecret());
+    EXPECT_EQ(0, knob<KnobChoice>(node, "frameOffsetMode")->getValue());
+    EXPECT_FALSE(knob<KnobInt>(node, "startAt")->getIsSecret());
+    EXPECT_TRUE(knob<KnobInt>(node, "frameOffset")->getIsSecret());
 }
 
 TEST_F(NativeReadTimeTest, AUserEditedTimeDomainSurvivesAFilenameChange)
@@ -556,8 +554,8 @@ TEST_F(NativeReadTimeTest, ResettingAnEditedRangeAfterAFileChangeAdoptsTheNewFil
 
     EXPECT_EQ(3, intValue(node, "firstFrame"));
     EXPECT_EQ(6, intValue(node, "lastFrame"));
-    EXPECT_EQ(3, intValue(node, "startingTime"));
-    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_EQ(3, intValue(node, "startAt"));
+    EXPECT_EQ(0, intValue(node, "frameOffset"));
     EXPECT_FALSE(userEdited(node));
     double first = 0.;
     double last = 0.;
@@ -662,7 +660,8 @@ TEST_F(NativeReadTimeTest, PurgingOneReadKeepsTheHeadersOfAnother)
     EXPECT_EQ(otherBefore, OiioReadSupport::readHeader(framePath(dir, "other", 1), &error));
 }
 
-TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
+// A Read stays pinned to the file as loaded: Clear Caches does not pick up a rewrite, Reload does.
+TEST_F(NativeReadTimeTest, ClearingTheCachesKeepsARewrittenFileUntilReload)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -673,6 +672,13 @@ TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
 
     ASSERT_TRUE(writeConstantFrame(path, 0.5f, 8, 6));
     getApp()->clearOpenFXPluginsCaches();
+
+    NodeMetadataConstPtr pinned = node->getEffectInstance()->getTimeInvariantMetadata();
+    EXPECT_TRUE(!pinned || !(RectI(0, 0, 8, 6) == pinned->getOutputFormat()));
+
+    KnobButton* reload = dynamic_cast<KnobButton*>(node->getKnobByName(kNatronReadParamReload).get());
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
 
     EXPECT_TRUE(RectI(0, 0, 8, 6) == node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
 }
@@ -688,7 +694,7 @@ TEST_F(NativeReadTimeTest, APatternMatchingOneFileKeepsItsFrameNumber)
     EXPECT_EQ(100, intValue(node, "originalFrameRange", 1));
     EXPECT_EQ(100, intValue(node, "firstFrame"));
     EXPECT_EQ(100, intValue(node, "lastFrame"));
-    EXPECT_EQ(100, intValue(node, "startingTime"));
+    EXPECT_EQ(100, intValue(node, "startAt"));
     double first = 0.;
     double last = 0.;
     frameRangeOf(node, &first, &last);

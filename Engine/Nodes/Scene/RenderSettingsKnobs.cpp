@@ -1418,7 +1418,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         names.insert(scriptName);
         KnobGroupPtr group = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(scriptName, prefix));
         group->setName(scriptName);
-        group->setHintToolTip(classifiedTooltip(groupName));
+        group->setHintToolTip(std::string(classifiedTooltip(groupName)));
         group->setDefaultValue(allOpen || first);
         page->addKnob(group);
         first = false;

@@ -65,7 +65,7 @@ new attribute names back.
   - approach: Replace `kNatronWriteParamWriteMetadata`/`KnobBool` (NativeWrite.cpp ~:1022-1028, member at NativeWrite.h ~:335) with a `KnobChoice` script name `metadata`, label "Metadata", options No Metadata / Default Metadata / All Metadata Except Input / All Metadata, default All Metadata Except Input, animation off; tooltip says what each option writes and that formats without custom attributes (TIFF, JPEG, DPX) take only their standard tags. At ~:2213 skip `applyMetadata` for No Metadata, else pass the mapped mode. Grep `.local/docs` (Nuke Write `metadata`) for option wording. Update NativeWrite.md and the README metadata routing section (~:273). Rewrite `SwitchedOffWritesNoneOfTheCustomAttributes` and `WriteMetadataDefaultsOn` for the new knob; grep Tests/ and Tests/gui for other `writeMetadata` users and update them.
   - verify: NativeWriteMetadata tests pass with the new knob; `git grep writeMetadata` finds no stale users.
   - size: M
-- [ ] M320.P2.T2 — Read namespaced attribute names back as their key
+- [x] M320.P2.T2 — Read namespaced attribute names back as their key
   - files: Engine/Nodes/IO/OiioReadSupport.cpp, Tests/Native/OiioReadSupport_Test.cpp
   - approach: In `keyOf` (~:696-720), before the unprefixed fallback, map an attribute name of the form `<ns>/<rest>` where `<ns>` is a metadata namespace from `ofxMetadata.h` (`ofx`, `exr`, `exif`, `tiff`, `dpx`, `cin`, `oiio`, `quicktime`) to the key verbatim, for every format. Other names keep today's mapping. Add `OiioReadSupport_Test` cases on a bare `ImageSpec` with `ofx/creator`, `exif/Make` (in an EXR and a PNG spec) and an unprefixed name.
   - verify: the new OiioReadSupport unit cases pass; existing NativeReadMetadata tests still pass.
@@ -73,7 +73,7 @@ new attribute names back.
 
 ## Phase 320.3: End-To-End
 
-- [ ] M320.P3.T1 — Round-trip tests through Read → metadata nodes → Write
+- [x] M320.P3.T1 — Round-trip tests through Read → metadata nodes → Write
   - files: Tests/Native/NativeWriteMetadata_Test.cpp
   - approach: Extend the Read → Dot → Write fixture with a ModifyMetadata (or AddMetaData) node setting an unprefixed user key, `ofx/comment`, `ofx/creator` and a double. For EXR and PNG, in each mode, write, read back with the native Read and with OIIO directly, and assert: Default has `ImageDescription`/`Software` but no `shot`; All Metadata Except Input round-trips every key (EXR double exact) and has no `ofx/filepath`; All Metadata has `ofx/filepath`; No Metadata writes none; structural names never appear. Keep fixtures synthetic and tiny (LFS quota).
   - verify: the new NativeWriteMetadata cases pass in the build's ctest.

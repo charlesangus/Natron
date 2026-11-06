@@ -45,14 +45,54 @@ the scene, USDWrite writes them out with it and other USD tools can read them.
 ## Renderer tabs
 
 Every render delegate the build has gets a tab, labelled with the delegate's
-name (Storm, Cycles, MoonRay, ...). A tab holds two groups:
+name (Storm, Cycles, MoonRay, ...). Its knobs sit in groups, listed below. Each
+knob's tooltip says what it does, what it trades off and which values to try,
+and says so when the control has no effect in this build.
 
-- A settings group (`cyclesSettings`, `moonraySettings`, ...) with the
-  hand-picked settings most renders need, for example Cycles' Samples
-  (`cyclesSamples`) and bounce limits, or MoonRay's Pixel Samples
-  (`moonrayPixelSamples`).
-- Other Settings (`cyclesOtherSettings`, ...) with every other setting the
-  delegate declares.
+### Cycles
+
+- Sampling: samples, adaptive sampling, time limit and seed.
+- Denoise: whether and how the image is denoised.
+- Light Paths: how far light travels through the scene.
+  - Bounces: the bounce limits, in total and for each kind of bounce.
+  - Clamping: the brightness limits on samples, against fireflies.
+  - Caustics: reflective and refractive caustics, and Filter Glossy.
+  - Fast GI: the approximation of distant indirect light.
+- Lights: Use Light Tree and Light Sampling Threshold.
+- Volumes: ray marching and its steps.
+- Path Guiding: this build of Cycles has no path guiding, so these controls
+  have no effect.
+- Light Contributions: switches for kinds of light, to break down or debug an
+  image.
+- Advanced: sampling pattern, minimum bounces, motion blur and pixel jitter.
+  - Sample Subset: rendering part of the sample sequence. Only Sample Offset
+    has an effect.
+- Other Settings: every other setting Cycles declares.
+
+### MoonRay
+
+- Sampling: pixel, light, material and subsurface samples.
+- Depth: the bounce limits, in total and for each kind of bounce.
+- Filtering: the pixel filter and its width.
+- Denoise: denoising and its guides. In this build MoonRay asks for a denoiser
+  it lacks, so expect the image to stay noisy.
+- Scene Toggles: motion blur, lighting and how geometry and normals are read.
+  - Prune: removing kinds of geometry from the render.
+- Performance: Execution Mode and Max FPS.
+- Remote: rendering on other machines, which stays disabled because Natron
+  renders MoonRay on this machine only.
+- Logging: log levels and writing the scene to an RDLA file.
+- Other Settings: every other setting MoonRay declares.
+
+### Storm and other renderers
+
+These tabs have no hand-picked groups. Each setting goes in a group chosen from
+its name, and only groups with a setting appear: Denoise, Path Guiding, Volumes,
+Bounces, Clamping, Lights, Sampling, Filtering, Motion, Performance and Logging.
+A setting whose name matches none of them goes in Other Settings. Storm, for
+example, has Volumes, Lights and Performance.
+
+### Script names and attributes
 
 A knob's script name is the renderer's prefix followed by the setting's name in
 camel case. Its label is that name made readable, so `cyclesMaxDiffuseBounce`

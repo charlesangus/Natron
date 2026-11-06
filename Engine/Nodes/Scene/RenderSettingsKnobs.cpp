@@ -1296,6 +1296,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                 d->setDisplayMaximum(range->displayMaximum);
             }
         }
+        if (range && range->sameRowAsNext) {
+            k->setAddNewLine(false);
+        }
         group->addKnob(k);
         Impl::Setting setting;
         setting.renderer = rendererId;

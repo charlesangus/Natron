@@ -99,6 +99,8 @@ public:
         bool hasRange = false;
         // The name of the GroupSpec the knob goes in; empty for the curated group.
         std::string group;
+        // The next setting's knob shares this one's row.
+        bool sameRowAsNext = false;
     };
 
     // A named section of the renderer's page. Its script name is the renderer's prefix followed by name.

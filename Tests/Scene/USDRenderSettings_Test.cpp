@@ -28,10 +28,13 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <fstream>
 #include <list>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -333,6 +336,172 @@ TEST_F(USDRenderSettingsTest, StormSettingsAreGroupedByTheirNames)
     }
     for (const std::string& name : { "Sampling", "Denoise", "Bounces", "PathGuiding", "OtherSettings" }) {
         EXPECT_FALSE(bool(node->getKnobByName(prefix + name))) << name;
+    }
+}
+
+namespace {
+struct CuratedTable {
+    std::string prefix;
+    std::string docsHeading;
+    const RenderSettingsKnobs::Curated* curated;
+};
+
+std::vector<CuratedTable>
+curatedTables()
+{
+    return {
+        { "cycles", "### Cycles", &CyclesSettings::curated() },
+        { "moonray", "### MoonRay", &MoonRaySettings::curated() },
+    };
+}
+
+// The delegate may not be installed, so this can be empty.
+std::string
+installedRenderer(const RenderSettingsKnobs::Curated* curated)
+{
+    for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
+        if (RenderSettingsKnobs::curatedFor(id) == curated) {
+            return id;
+        }
+    }
+
+    return std::string();
+}
+
+void
+expectExplains(const std::string& what,
+               const std::string& tooltip,
+               const std::string& name)
+{
+    EXPECT_FALSE(tooltip.empty()) << what;
+    EXPECT_NE(name, tooltip) << what;
+    EXPECT_EQ(std::string::npos, tooltip.find("Nuke")) << what;
+    EXPECT_EQ(std::string::npos, tooltip.find("\xE2\x80\x94")) << what;
+    if (!tooltip.empty()) {
+        EXPECT_EQ('.', tooltip.back()) << what;
+    }
+}
+
+std::string
+groupLabel(const std::string& prefix,
+           std::string name)
+{
+    name[0] = (char)std::toupper((unsigned char)name[0]);
+
+    return RenderSettingsKnobs::labelFromScriptName(prefix + name, prefix);
+}
+} // anon namespace
+
+TEST_F(USDRenderSettingsTest, CuratedTooltipsExplainEverySetting)
+{
+    for (const CuratedTable& table : curatedTables()) {
+        std::map<std::string, std::string> declaredNames;
+        const std::string id = installedRenderer(table.curated);
+        if (id.empty()) {
+            std::printf("[  SKIPPED ] %s's delegate is not installed: declared names unchecked\n", table.prefix.c_str());
+        } else {
+            for (const RenderSettingsKnobs::Descriptor& d : RenderSettingsKnobs::descriptors(id)) {
+                declaredNames[d.key] = d.name;
+            }
+        }
+        for (const RenderSettingsKnobs::CuratedSetting& s : table.curated->settings) {
+            expectExplains(s.key, s.tooltip, s.name);
+            std::map<std::string, std::string>::const_iterator declared = declaredNames.find(s.key);
+            if (declared != declaredNames.end()) {
+                EXPECT_NE(declared->second, s.tooltip) << s.key;
+            }
+        }
+        for (const RenderSettingsKnobs::GroupSpec& g : table.curated->groups) {
+            expectExplains(g.name, g.tooltip, g.name);
+            EXPECT_NE(groupLabel(table.prefix, g.name), g.tooltip) << g.name;
+        }
+    }
+}
+
+TEST_F(USDRenderSettingsTest, TooltipsSayWhenAControlHasNoEffect)
+{
+    for (const char* key : { "cycles:integrator:use_sample_subset", "cycles:integrator:sample_subset_offset",
+                             "cycles:integrator:sample_subset_length", "cycles:integrator:aa_samples" }) {
+        bool found = false;
+        for (const RenderSettingsKnobs::CuratedSetting& s : CyclesSettings::curated().settings) {
+            if (s.key == key) {
+                found = true;
+                EXPECT_NE(std::string::npos, s.tooltip.find("no effect")) << key;
+            }
+        }
+        EXPECT_TRUE(found) << key;
+    }
+}
+
+TEST_F(USDRenderSettingsTest, BoolPairsShareARow)
+{
+    NodePtr node = settings(NodePtr());
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    const std::map<std::string, std::string> pairs = {
+        { "cycles:integrator:caustics_reflective", "cycles:integrator:caustics_refractive" },
+        { "denoiseAlbedoGuiding", "denoiseNormalGuiding" },
+    };
+    std::set<std::string> seen;
+    for (const CuratedTable& table : curatedTables()) {
+        const std::vector<RenderSettingsKnobs::CuratedSetting>& list = table.curated->settings;
+        const std::string id = installedRenderer(table.curated);
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (!list[i].sameRowAsNext) {
+                continue;
+            }
+            std::map<std::string, std::string>::const_iterator pair = pairs.find(list[i].key);
+            ASSERT_TRUE(pair != pairs.end()) << list[i].key;
+            ASSERT_LT(i + 1, list.size()) << list[i].key;
+            EXPECT_EQ(pair->second, list[i + 1].key);
+            EXPECT_EQ(list[i].group, list[i + 1].group) << list[i].key;
+            EXPECT_TRUE(list[i].defaultValue.IsHolding<bool>()) << list[i].key;
+            EXPECT_TRUE(list[i + 1].defaultValue.IsHolding<bool>()) << list[i + 1].key;
+            seen.insert(list[i].key);
+            if (id.empty()) {
+                continue;
+            }
+            KnobIPtr first = knobs->knob(id, list[i].key);
+            KnobIPtr second = knobs->knob(id, list[i + 1].key);
+            if (first && second) {
+                EXPECT_FALSE(first->isNewLineActivated()) << list[i].key;
+                EXPECT_TRUE(second->isNewLineActivated()) << list[i + 1].key;
+                EXPECT_NE(std::string::npos, first->getHintToolTip().find("Authored as ")) << list[i].key;
+            }
+        }
+    }
+    EXPECT_EQ(pairs.size(), seen.size());
+}
+
+TEST_F(USDRenderSettingsTest, DocsListTheGroupsOfTheTables)
+{
+    const std::string path = std::string(NATRON_TESTS_ENGINE_DIR) + "/Nodes/Scene/docs/USDRenderSettings.md";
+    std::ifstream file(path);
+    ASSERT_TRUE(file.is_open()) << path;
+    std::stringstream text;
+    text << file.rdbuf();
+    const std::string docs = text.str();
+    for (const CuratedTable& table : curatedTables()) {
+        const std::string heading = table.docsHeading + "\n";
+        const size_t start = docs.find(heading);
+        ASSERT_NE(std::string::npos, start) << heading;
+        std::istringstream section(docs.substr(start + heading.size()));
+        std::vector<std::string> listed;
+        std::string line;
+        while (std::getline(section, line) && (line.compare(0, 1, "#") != 0)) {
+            if ((line.compare(0, 2, "- ") == 0) || (line.compare(0, 4, "  - ") == 0)) {
+                listed.push_back(line.substr(0, line.find(':')));
+            }
+        }
+        std::vector<std::string> expected;
+        for (const RenderSettingsKnobs::GroupSpec& g : table.curated->groups) {
+            expected.push_back((g.parent.empty() ? "- " : "  - ") + groupLabel(table.prefix, g.name));
+        }
+        expected.push_back("- Other Settings");
+        EXPECT_EQ(expected, listed) << table.docsHeading;
     }
 }
 

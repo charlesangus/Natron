@@ -36,7 +36,7 @@ namespace {
 RenderSettingsKnobs::CuratedSetting
 setting(const char* key,
         const char* name,
-        const char* tooltip,
+        const std::string& tooltip,
         const VtValue& defaultValue)
 {
     RenderSettingsKnobs::CuratedSetting s;
@@ -73,13 +73,15 @@ menu(RenderSettingsKnobs::CuratedSetting s,
 RenderSettingsKnobs::GroupSpec
 groupSpec(const char* name,
           const char* parent,
-          bool open)
+          bool open,
+          const char* tooltip)
 {
     RenderSettingsKnobs::GroupSpec g;
 
     g.name = name;
     g.parent = parent;
     g.open = open;
+    g.tooltip = tooltip;
 
     return g;
 }
@@ -90,19 +92,19 @@ make()
     RenderSettingsKnobs::Curated c;
 
     c.tooltip = "The settings Cycles declares.";
-    c.groups.push_back(groupSpec("sampling", "", true));
-    c.groups.push_back(groupSpec("denoise", "", true));
-    c.groups.push_back(groupSpec("lightPaths", "", true));
-    c.groups.push_back(groupSpec("bounces", "lightPaths", true));
-    c.groups.push_back(groupSpec("clamping", "lightPaths", true));
-    c.groups.push_back(groupSpec("caustics", "lightPaths", false));
-    c.groups.push_back(groupSpec("fastGi", "lightPaths", false));
-    c.groups.push_back(groupSpec("lights", "", false));
-    c.groups.push_back(groupSpec("volumes", "", false));
-    c.groups.push_back(groupSpec("pathGuiding", "", false));
-    c.groups.push_back(groupSpec("lightContributions", "", false));
-    c.groups.push_back(groupSpec("advanced", "", false));
-    c.groups.push_back(groupSpec("sampleSubset", "advanced", false));
+    c.groups.push_back(groupSpec("sampling", "", true, "How long the render runs and how clean it gets. More samples mean less noise and more time."));
+    c.groups.push_back(groupSpec("denoise", "", true, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
+    c.groups.push_back(groupSpec("lightPaths", "", true, "How far light travels through the scene, and shortcuts that trade accuracy for less noise or time."));
+    c.groups.push_back(groupSpec("bounces", "lightPaths", true, "How many times light may bounce. More bounces give fuller, brighter light and take longer."));
+    c.groups.push_back(groupSpec("clamping", "lightPaths", true, "Limits very bright samples to remove fireflies, at the cost of some light energy."));
+    c.groups.push_back(groupSpec("caustics", "lightPaths", false, "Light focused by shiny or glassy surfaces. Pretty but noisy, so these controls can reduce or remove it."));
+    c.groups.push_back(groupSpec("fastGi", "lightPaths", false, "Replaces distant indirect light with a cheap approximation. Faster and cleaner, but less accurate."));
+    c.groups.push_back(groupSpec("lights", "", false, "How the render chooses which lights to sample. It affects noise in scenes with many lights."));
+    c.groups.push_back(groupSpec("volumes", "", false, "How rays travel through smoke, fog and other volumes, trading accuracy against noise and time."));
+    c.groups.push_back(groupSpec("pathGuiding", "", false, "Learns where light comes from and steers rays towards it. This build of Cycles has no path guiding, so nothing in this group has any effect."));
+    c.groups.push_back(groupSpec("lightContributions", "", false, "Switches kinds of light on and off to break down or debug an image. Leave them all on for a correct render."));
+    c.groups.push_back(groupSpec("advanced", "", false, "Rarely needed controls of the sampling pattern, path lengths and camera rays. The defaults suit most renders."));
+    c.groups.push_back(groupSpec("sampleSubset", "advanced", false, "Renders only part of the sample sequence, for example to split a render across runs. Only Sample Offset has any effect."));
 
     const auto add = [&c](const char* group,
                           RenderSettingsKnobs::CuratedSetting s) {
@@ -110,17 +112,17 @@ make()
         c.settings.push_back(s);
     };
 
-    add("sampling", ranged(setting("cycles:samples", "samples", "The samples per pixel a render takes before it stops.", VtValue(1024)), 1, 4096));
-    add("sampling", setting("cycles:integrator:use_adaptive_sampling", "useAdaptiveSampling", "Use Adaptive Sampling", VtValue(true)));
-    add("sampling", setting("cycles:integrator:adaptive_threshold", "adaptiveThreshold", "Adaptive Threshold", VtValue(0.01f)));
-    add("sampling", setting("cycles:integrator:adaptive_min_samples", "adaptiveMinSamples", "Adaptive Min Samples", VtValue(0)));
-    add("sampling", setting("cycles:time_limit", "timeLimit", "Time Limit", VtValue(0.0)));
-    add("sampling", setting("cycles:integrator:seed", "seed", "The seed of the sampling pattern: renders that differ only in it have different noise.", VtValue(0)));
+    add("sampling", ranged(setting("cycles:samples", "samples", "The most samples a pixel gets. More samples mean less noise and a longer render; try 64 to 256 with denoising and 1024 or more without.", VtValue(1024)), 1, 4096));
+    add("sampling", setting("cycles:integrator:use_adaptive_sampling", "useAdaptiveSampling", "Stops sampling a pixel once it is clean enough, so the time goes to the noisy parts. It usually saves a lot of time, so leave it on unless every pixel must get the same number of samples.", VtValue(true)));
+    add("sampling", setting("cycles:integrator:adaptive_threshold", "adaptiveThreshold", "How much noise a pixel may keep before it stops sampling. Lower is cleaner and slower; 0.01 is a good start, 0.001 suits very clean frames, and 0 picks a value from Samples.", VtValue(0.01f)));
+    add("sampling", setting("cycles:integrator:adaptive_min_samples", "adaptiveMinSamples", "The samples every pixel takes before it may stop. Raise it if small bright details get missed, at the cost of time. 0 picks a value from Adaptive Threshold, which is 64 at 0.01.", VtValue(0)));
+    add("sampling", setting("cycles:time_limit", "timeLimit", "Stops the render after this many seconds, however many samples it has. A short limit leaves more noise; 0 means no limit.", VtValue(0.0)));
+    add("sampling", setting("cycles:integrator:seed", "seed", "The starting point of the noise pattern. The same seed gives the same noise, and another seed gives different noise of the same strength, so any value is fine.", VtValue(0)));
 
-    add("denoise", setting("cycles:integrator:use_denoise", "useDenoise", "Denoises the render once it has its samples.", VtValue(false)));
+    add("denoise", setting("cycles:integrator:use_denoise", "useDenoise", "Removes noise from the image with OpenImageDenoise. It allows far fewer samples, but adds some time and can smear fine detail. Good for previews and low sample counts.", VtValue(false)));
     {
         RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:denoiser_type", "denoiserType",
-                                                        "The denoiser Use Denoise runs.", VtValue(0));
+                                                        "The denoiser Use Denoise runs. There is only one choice here.", VtValue(0));
         RenderSettingsKnobs::Choice oidn;
         oidn.id = "openimagedenoise";
         oidn.label = "OpenImageDenoise";
@@ -128,82 +130,85 @@ make()
         s.disabledReason = "OpenImageDenoise is the only denoiser: OptiX needs CUDA, which this build of Cycles lacks.";
         add("denoise", s);
     }
-    add("denoise", menu(setting("cycles:integrator:denoiser_quality", "denoiserQuality", "Denoiser Quality", VtValue(1)), { { "high", "High", VtValue(1) }, { "balanced", "Balanced", VtValue(2) }, { "fast", "Fast", VtValue(3) } }));
-    add("denoise", menu(setting("cycles:integrator:denoiser_prefilter", "denoiserPrefilter", "Denoiser Prefilter", VtValue(3)), { { "none", "None", VtValue(1) }, { "fast", "Fast", VtValue(2) }, { "accurate", "Accurate", VtValue(3) } }));
-    add("denoise", setting("cycles:integrator:denoiser_passes", "denoiserPasses", "Denoiser Passes", VtValue(5)));
-    add("denoise", setting("cycles:integrator:denoise_start_sample", "denoiseStartSample", "Start Sample to Denoise", VtValue(0)));
-    add("denoise", setting("cycles:integrator:denoiser_upscale_factor", "denoiserUpscaleFactor", "Denoiser Upscale Factor", VtValue(1.f)));
+    add("denoise", menu(setting("cycles:integrator:denoiser_quality", "denoiserQuality", "How much effort the denoiser spends. High keeps the most detail and is slowest, Fast suits quick previews, and Balanced sits in between. Use High for final frames.", VtValue(1)), { { "high", "High", VtValue(1) }, { "balanced", "Balanced", VtValue(2) }, { "fast", "Fast", VtValue(3) } }));
+    add("denoise", menu(setting("cycles:integrator:denoiser_prefilter", "denoiserPrefilter", "How the albedo and normal guides are cleaned before the denoiser uses them. Accurate cleans them first and takes longest, which keeps the most detail. Fast denoises them with the image for little extra time. None suits only guides that are already free of noise.", VtValue(3)), { { "none", "None", VtValue(1) }, { "fast", "Fast", VtValue(2) }, { "accurate", "Accurate", VtValue(3) } }));
+    add("denoise", setting("cycles:integrator:denoiser_passes", "denoiserPasses", "Which guide passes are rendered for the denoiser, as the sum of Albedo 1, Specular Albedo 2, Normal 4, Roughness 8, Depth 16, Motion 32 and Backward Motion 64. OpenImageDenoise reads only Albedo and Normal, and the others just use memory, so leave it at 5.", VtValue(5)));
+    add("denoise", setting("cycles:integrator:denoise_start_sample", "denoiseStartSample", "The sample at which progressive updates start to be denoised; earlier updates show the raw noise. Raising it saves time on early updates, and the final image is always denoised. 0 denoises from the start.", VtValue(0)));
+    add("denoise", setting("cycles:integrator:denoiser_upscale_factor", "denoiserUpscaleFactor", "Leave this at 1. The denoiser used here ignores it, so it never changes the resolution, and any other value only turns adaptive sampling off while Use Denoise is on.", VtValue(1.f)));
     {
-        RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:denoise_use_gpu", "denoiseUseGpu", "Denoise on GPU", VtValue(true));
+        RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:denoise_use_gpu", "denoiseUseGpu", "Runs the denoiser on the GPU rather than the CPU, which would be faster.", VtValue(true));
         s.disabledReason = "Cycles renders and denoises on the CPU here.";
         add("denoise", s);
     }
 
-    add("bounces", ranged(setting("cycles:integrator:max_bounce", "maxBounce", "The most bounces a path takes, whatever their kind.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:max_diffuse_bounce", "maxDiffuseBounce", "The most diffuse bounces a path takes.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:max_glossy_bounce", "maxGlossyBounce", "The most glossy bounces a path takes.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:max_transmission_bounce", "maxTransmissionBounce", "The most transmission bounces a path takes.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:max_volume_bounce", "maxVolumeBounce", "The most volume scattering bounces a path takes.", VtValue(7)), 0, 32));
-    add("bounces", ranged(setting("cycles:integrator:transparent_max_bounce", "transparentMaxBounce", "The most transparent surfaces a path passes through.", VtValue(7)), 0, 64));
+    add("bounces", ranged(setting("cycles:integrator:max_bounce", "maxBounce", "The most times light may bounce in total, whatever the kind, and a ceiling for the limits below. Higher gives fuller, brighter light and a longer render; 4 to 8 suits most shots and 0 gives direct light only.", VtValue(7)), 0, 32));
+    add("bounces", ranged(setting("cycles:integrator:max_diffuse_bounce", "maxDiffuseBounce", "The most bounces off matte surfaces. Higher brightens interiors and corners and takes longer; 2 to 4 suits most shots.", VtValue(7)), 0, 32));
+    add("bounces", ranged(setting("cycles:integrator:max_glossy_bounce", "maxGlossyBounce", "The most bounces off shiny surfaces. Higher shows reflections within reflections and takes longer; 2 to 4 suits most shots.", VtValue(7)), 0, 32));
+    add("bounces", ranged(setting("cycles:integrator:max_transmission_bounce", "maxTransmissionBounce", "The most times light may pass through glass and other refractive surfaces. Too low turns thick or layered glass black, and higher takes longer; try 8 to 12 with a lot of glass.", VtValue(7)), 0, 32));
+    add("bounces", ranged(setting("cycles:integrator:max_volume_bounce", "maxVolumeBounce", "The most times light may scatter inside a volume. Higher makes clouds and thick smoke brighter and softer and takes much longer; 0 scatters once, and 0 to 2 suits most shots.", VtValue(7)), 0, 32));
+    add("bounces", ranged(setting("cycles:integrator:transparent_max_bounce", "transparentMaxBounce", "The most transparent surfaces a ray may pass through, such as layers of alpha-mapped leaves. Too low leaves dark patches, and higher takes longer; 8 suits most shots and foliage may need 32 or more.", VtValue(7)), 0, 64));
 
-    add("clamping", ranged(setting("cycles:integrator:sample_clamp_direct", "sampleClampDirect", "The brightest a sample of direct light may be; 0 does not clamp.", VtValue(0.f)), 0, 100));
-    add("clamping", ranged(setting("cycles:integrator:sample_clamp_indirect", "sampleClampIndirect", "The brightest a sample of indirect light may be, against fireflies; 0 does not clamp.", VtValue(10.f)), 0, 100));
+    add("clamping", ranged(setting("cycles:integrator:sample_clamp_direct", "sampleClampDirect", "Limits the brightness of direct samples. Lower values remove fireflies but lose energy and can dull highlights; leave it at 0, which turns it off, unless direct light causes fireflies, then start around 10.", VtValue(0.f)), 0, 100));
+    add("clamping", ranged(setting("cycles:integrator:sample_clamp_indirect", "sampleClampIndirect", "Limits the brightness of indirect samples. Lower values remove fireflies but lose energy; 10 is a good start, 0 turns it off.", VtValue(10.f)), 0, 100));
 
-    add("caustics", setting("cycles:integrator:caustics_reflective", "causticsReflective", "Reflective Caustics", VtValue(true)));
-    add("caustics", setting("cycles:integrator:caustics_refractive", "causticsRefractive", "Refractive Caustics", VtValue(true)));
-    add("caustics", setting("cycles:integrator:filter_glossy", "filterGlossy", "Filter Glossy", VtValue(0.f)));
+    {
+        RenderSettingsKnobs::CuratedSetting s = setting("cycles:integrator:caustics_reflective", "causticsReflective", "Lets matte surfaces receive light reflected off shiny ones, such as the glints from a mirror. Turning it off removes a common source of noise but loses that light. Leave it on unless it causes noise.", VtValue(true));
+        s.sameRowAsNext = true;
+        add("caustics", s);
+    }
+    add("caustics", setting("cycles:integrator:caustics_refractive", "causticsRefractive", "Lets matte surfaces receive light focused through glass or water, such as the bright patterns under a glass. Turning it off removes a common source of noise but loses that light. Leave it on unless it causes noise.", VtValue(true)));
+    add("caustics", setting("cycles:integrator:filter_glossy", "filterGlossy", "Blurs sharp reflections seen after a blurry bounce, which removes caustic noise and fireflies but is less accurate. 0 turns it off, about 1 is a good start, and higher blurs more.", VtValue(0.f)));
 
-    add("fastGi", setting("cycles:integrator:ao_bounces", "aoBounces", "AO Bounces", VtValue(0)));
-    add("fastGi", setting("cycles:integrator:ao_factor", "aoFactor", "AO Factor", VtValue(0.f)));
-    add("fastGi", setting("cycles:integrator:ao_distance", "aoDistance", "AO Distance", VtValue(std::numeric_limits<float>::max())));
-    add("fastGi", setting("cycles:integrator:ao_additive_factor", "aoAdditiveFactor", "AO Additive Factor", VtValue(0.f)));
+    add("fastGi", setting("cycles:integrator:ao_bounces", "aoBounces", "After this many bounces, light is approximated: rays stop at AO Distance and the world light is scaled by AO Factor. Lower is faster and less accurate; try 1 or 2, and 0 turns it off. It has no effect while AO Factor is 0.", VtValue(0)));
+    add("fastGi", setting("cycles:integrator:ao_factor", "aoFactor", "How bright the world light is once AO Bounces has taken over. 1 is its full strength and is a good start; lower is darker. At 0, AO Bounces has no effect.", VtValue(0.f)));
+    add("fastGi", setting("cycles:integrator:ao_distance", "aoDistance", "How far rays reach once AO Bounces has taken over, in scene units. Shorter is faster but ignores distant objects, so more world light leaks in; start around the size of the room or set. The default is effectively no limit.", VtValue(std::numeric_limits<float>::max())));
+    add("fastGi", setting("cycles:integrator:ao_additive_factor", "aoAdditiveFactor", "Adds ambient occlusion on top of the lighting at each matte hit, separately from AO Bounces. It lifts dark areas cheaply, but the extra light is not physically correct and each hit costs an extra ray. 0 turns it off; try 0.1 to 1.", VtValue(0.f)));
 
     // direct_light_sampling_type has no entry: Cycles declares it only when built with
     // WITH_CYCLES_DEBUG, and a knob here would be a control the delegate ignores.
-    add("lights", setting("cycles:integrator:use_light_tree", "useLightTree", "Samples the lights that matter most to each point, which helps scenes with many "
-                                                                              "lights.",
-                          VtValue(true)));
-    add("lights", setting("cycles:integrator:light_sampling_threshold", "lightSamplingThreshold", "Light Sampling Threshold", VtValue(0.f)));
+    add("lights", setting("cycles:integrator:use_light_tree", "useLightTree", "Picks the lights that matter most to each point rather than treating them alike. It greatly reduces noise with many lights, at a small cost to prepare, so leave it on. Light Sampling Threshold works only with this off.", VtValue(true)));
+    add("lights", setting("cycles:integrator:light_sampling_threshold", "lightSamplingThreshold", "Skips most shadow rays to lights too weak to matter at a point. Higher is faster and can add noise; 0.01 is a good start and 0 turns it off.", VtValue(0.f)));
 
-    add("volumes", setting("cycles:integrator:volume_ray_marching", "volumeRayMarching", "Biased", VtValue(false)));
-    add("volumes", setting("cycles:integrator:volume_max_steps", "volumeMaxSteps", "Volume Max Steps", VtValue(1024)));
-    add("volumes", setting("cycles:integrator:volume_step_rate", "volumeStepRate", "Volume Step Rate", VtValue(1.f)));
+    add("volumes", setting("cycles:integrator:volume_ray_marching", "volumeRayMarching", "Steps through volumes in small increments rather than using the default unbiased method. It can be faster and less noisy but is less accurate. Leave it off unless a volume stays too noisy.", VtValue(false)));
+    add("volumes", setting("cycles:integrator:volume_max_steps", "volumeMaxSteps", "The most steps a ray may take through a volume of varying density. A ray that would need more takes larger steps, so raise it if a large volume looks coarse. 1024 is plenty for most scenes.", VtValue(1024)));
+    add("volumes", setting("cycles:integrator:volume_step_rate", "volumeStepRate", "Scales the step size worked out for each volume. Lower shows finer detail and takes longer, and higher is faster and coarser. 1 is a good start; try 0.1 to 0.5 for fine wisps.", VtValue(1.f)));
 
-    add("pathGuiding", setting("cycles:integrator:use_guiding", "useGuiding", "Guiding", VtValue(false)));
-    add("pathGuiding", setting("cycles:integrator:deterministic_guiding", "deterministicGuiding", "Deterministic Guiding", VtValue(true)));
-    add("pathGuiding", setting("cycles:integrator:use_surface_guiding", "useSurfaceGuiding", "Surface Guiding", VtValue(true)));
-    add("pathGuiding", setting("cycles:integrator:surface_guiding_probability", "surfaceGuidingProbability", "Surface Guiding Probability", VtValue(0.5f)));
-    add("pathGuiding", setting("cycles:integrator:use_volume_guiding", "useVolumeGuiding", "Volume Guiding", VtValue(true)));
-    add("pathGuiding", setting("cycles:integrator:volume_guiding_probability", "volumeGuidingProbability", "Volume Guiding Probability", VtValue(0.5f)));
-    add("pathGuiding", setting("cycles:integrator:guiding_training_samples", "guidingTrainingSamples", "Training Samples", VtValue(128)));
-    add("pathGuiding", setting("cycles:integrator:use_guiding_direct_light", "useGuidingDirectLight", "Guide Direct Light", VtValue(true)));
-    add("pathGuiding", setting("cycles:integrator:use_guiding_mis_weights", "useGuidingMisWeights", "Use MIS Weights", VtValue(true)));
-    add("pathGuiding", menu(setting("cycles:integrator:guiding_distribution_type", "guidingDistributionType", "Guiding Distribution Type", VtValue(0)), { { "PARALLAX_AWARE_VMM", "Parallax-Aware VMM", VtValue(0) }, { "DIRECTIONAL_QUAD_TREE", "Directional Quad Tree", VtValue(1) }, { "VMM", "VMM", VtValue(2) } }));
-    add("pathGuiding", menu(setting("cycles:integrator:guiding_directional_sampling_type", "guidingDirectionalSamplingType", "Guiding Directional Sampling Type", VtValue(1)), { { "MIS", "Product MIS", VtValue(0) }, { "RIS", "RIS", VtValue(1) }, { "ROUGHNESS", "Roughness", VtValue(2) } }));
-    add("pathGuiding", setting("cycles:integrator:guiding_roughness_threshold", "guidingRoughnessThreshold", "Guiding Roughness Threshold", VtValue(0.05f)));
+    const std::string noGuiding = " This build of Cycles has no path guiding, so it has no effect.";
+    add("pathGuiding", setting("cycles:integrator:use_guiding", "useGuiding", "Learns where light comes from during the render and steers rays towards it, which helps difficult indirect light at some cost in memory and time." + noGuiding, VtValue(false)));
+    add("pathGuiding", setting("cycles:integrator:deterministic_guiding", "deterministicGuiding", "Makes repeat renders give the same pixel values, at the cost of slower training. Leave it on when frames must match." + noGuiding, VtValue(true)));
+    add("pathGuiding", setting("cycles:integrator:use_surface_guiding", "useSurfaceGuiding", "Steers rays that bounce off surfaces. It is usually worth leaving on." + noGuiding, VtValue(true)));
+    add("pathGuiding", setting("cycles:integrator:surface_guiding_probability", "surfaceGuidingProbability", "The share of surface bounces that follow the guide. Higher relies on it more and lower is safer when it learns badly; 0.5 is a good start and 0 turns it off." + noGuiding, VtValue(0.5f)));
+    add("pathGuiding", setting("cycles:integrator:use_volume_guiding", "useVolumeGuiding", "Steers rays that scatter inside volumes. It is usually worth leaving on in scenes with volumes." + noGuiding, VtValue(true)));
+    add("pathGuiding", setting("cycles:integrator:volume_guiding_probability", "volumeGuidingProbability", "The share of volume scattering that follows the guide. Higher relies on it more and lower is safer when it learns badly; 0.5 is a good start and 0 turns it off." + noGuiding, VtValue(0.5f)));
+    add("pathGuiding", setting("cycles:integrator:guiding_training_samples", "guidingTrainingSamples", "How many samples teach the guide before it stops learning. More give a better guide and take longer; 128 is a good start and 0 keeps learning for the whole render." + noGuiding, VtValue(128)));
+    add("pathGuiding", setting("cycles:integrator:use_guiding_direct_light", "useGuidingDirectLight", "Teaches the guide about direct light as well as bounced light. It is usually worth leaving on." + noGuiding, VtValue(true)));
+    add("pathGuiding", setting("cycles:integrator:use_guiding_mis_weights", "useGuidingMisWeights", "Weights what directly visible lights teach the guide, by how likely each was to be found. It is usually worth leaving on." + noGuiding, VtValue(true)));
+    add("pathGuiding", menu(setting("cycles:integrator:guiding_distribution_type", "guidingDistributionType", "How the guide stores the directions light comes from. Parallax-Aware VMM is the default and copes best with nearby lights; VMM and Directional Quad Tree are alternatives to try if it struggles." + noGuiding, VtValue(0)), { { "PARALLAX_AWARE_VMM", "Parallax-Aware VMM", VtValue(0) }, { "DIRECTIONAL_QUAD_TREE", "Directional Quad Tree", VtValue(1) }, { "VMM", "VMM", VtValue(2) } }));
+    add("pathGuiding", menu(setting("cycles:integrator:guiding_directional_sampling_type", "guidingDirectionalSamplingType", "How the guide is combined with the surface's own reflection when choosing a direction. RIS is the default and a good start; Product MIS and Roughness are alternatives to try." + noGuiding, VtValue(1)), { { "MIS", "Product MIS", VtValue(0) }, { "RIS", "RIS", VtValue(1) }, { "ROUGHNESS", "Roughness", VtValue(2) } }));
+    add("pathGuiding", setting("cycles:integrator:guiding_roughness_threshold", "guidingRoughnessThreshold", "Surfaces smoother than this are not guided, since mirror-like surfaces gain little from it. Lower guides more surfaces and costs more; 0.05 is a good start." + noGuiding, VtValue(0.05f)));
 
-    add("lightContributions", setting("cycles:integrator:use_direct_light", "useDirectLight", "Use Direct Light", VtValue(true)));
-    add("lightContributions", setting("cycles:integrator:use_indirect_light", "useIndirectLight", "Use Indirect Light", VtValue(true)));
-    add("lightContributions", setting("cycles:integrator:use_diffuse", "useDiffuse", "Use Diffuse", VtValue(true)));
-    add("lightContributions", setting("cycles:integrator:use_glossy", "useGlossy", "Use Glossy", VtValue(true)));
-    add("lightContributions", setting("cycles:integrator:use_transmission", "useTransmission", "Use Transmission", VtValue(true)));
-    add("lightContributions", setting("cycles:integrator:use_emission", "useEmission", "Use Emission", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_direct_light", "useDirectLight", "Whether surfaces the camera sees show light arriving straight from lights. Turn it off only to break down or debug an image, since the result is not physically correct.", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_indirect_light", "useIndirectLight", "Whether light that has bounced counts. Off is the same as Max Bounce at 0, which is faster and darker. Turn it off only to break down or debug an image.", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_diffuse", "useDiffuse", "Whether surfaces the camera sees show their matte shading. Turn it off only to break down or debug an image, since the result is not physically correct.", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_glossy", "useGlossy", "Whether surfaces the camera sees show their shiny reflections. Turn it off only to break down or debug an image, since the result is not physically correct.", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_transmission", "useTransmission", "Whether surfaces the camera sees show light passing through them. Turn it off only to break down or debug an image, since the result is not physically correct.", VtValue(true)));
+    add("lightContributions", setting("cycles:integrator:use_emission", "useEmission", "Whether glowing surfaces and the world background give off light. Turn it off only to break down or debug an image, since it removes that light everywhere.", VtValue(true)));
 
     // The enum's values are not in the order Cycles lists them: Round is 4 and First is 3.
-    add("advanced", menu(setting("cycles:integrator:sampling_pattern", "samplingPattern", "Sampling Pattern", VtValue(1)), { { "sobol_burley", "Sobol-Burley", VtValue(0) }, { "tabulated_sobol", "Tabulated Sobol", VtValue(1) }, { "blue_noise_pure", "Blue Noise Pure", VtValue(2) }, { "blue_noise_round", "Blue Noise Round", VtValue(4) }, { "blue_noise_first", "Blue Noise First", VtValue(3) } }));
-    add("advanced", setting("cycles:integrator:scrambling_distance", "scramblingDistance", "Scrambling Distance", VtValue(1.f)));
-    add("advanced", setting("cycles:integrator:aa_samples", "aaSamples", "AA Samples", VtValue(0)));
-    add("advanced", setting("cycles:integrator:min_bounce", "minBounce", "Min Bounce", VtValue(0)));
-    add("advanced", setting("cycles:integrator:transparent_min_bounce", "transparentMinBounce", "Transparent Min Bounce", VtValue(0)));
-    add("advanced", setting("cycles:integrator:motion_blur", "motionBlur", "Motion Blur", VtValue(false)));
-    add("advanced", setting("cycles:integrator:use_pixel_jitter", "usePixelJitter", "Use Pixel Jitter", VtValue(false)));
-    add("advanced", setting("cycles:integrator:use_custom_pixel_jitter_sample", "useCustomPixelJitterSample", "Use custom pixel jitter sample value", VtValue(false)));
-    add("advanced", setting("cycles:integrator:custom_pixel_jitter_sample", "customPixelJitterSample", "Custom pixel jitter sample overwrite value", VtValue(VtFloatArray())));
+    add("advanced", menu(setting("cycles:integrator:sampling_pattern", "samplingPattern", "How samples are spread across each pixel, which changes the look of the noise. Tabulated Sobol is the default and a good start. Sobol-Burley computes them as it goes. Blue Noise makes the noise finer and even: Pure suits a fixed number of samples, Round uses the next power of two, and First keeps the first sample separate.", VtValue(1)), { { "sobol_burley", "Sobol-Burley", VtValue(0) }, { "tabulated_sobol", "Tabulated Sobol", VtValue(1) }, { "blue_noise_pure", "Blue Noise Pure", VtValue(2) }, { "blue_noise_round", "Blue Noise Round", VtValue(4) }, { "blue_noise_first", "Blue Noise First", VtValue(3) } }));
+    add("advanced", setting("cycles:integrator:scrambling_distance", "scramblingDistance", "Makes neighbouring pixels share a sampling pattern, which can speed up the render but shows artefacts if pushed too far. 1 turns it off, and try lowering it towards 0.5. It works only with Tabulated Sobol.", VtValue(1.f)));
+    add("advanced", setting("cycles:integrator:aa_samples", "aaSamples", "This has no effect: each render overwrites it from Samples, so set Samples instead.", VtValue(0)));
+    add("advanced", setting("cycles:integrator:min_bounce", "minBounce", "The bounces a path always takes before it may be ended early at random. Higher gives less noise in dark bounced light and takes longer; 0 is fine for most shots and 3 to 8 can help.", VtValue(0)));
+    add("advanced", setting("cycles:integrator:transparent_min_bounce", "transparentMinBounce", "The transparent surfaces a path always passes through before it may be ended early at random. Higher gives less noise in layered transparency and takes longer; 0 is fine for most shots and 3 to 8 can help.", VtValue(0)));
+    add("advanced", setting("cycles:integrator:motion_blur", "motionBlur", "Blurs what moves while the camera's shutter is open. It takes more time and memory; leave it off for sharp frames and previews.", VtValue(false)));
+    add("advanced", setting("cycles:integrator:use_pixel_jitter", "usePixelJitter", "Shifts the camera rays within each pixel by an offset that changes at each update, for effects that combine several frames. Most renders leave it off. With Use Custom Pixel Jitter Sample on as well, Custom Pixel Jitter Sample must hold two numbers or Natron crashes.", VtValue(false)));
+    add("advanced", setting("cycles:integrator:use_custom_pixel_jitter_sample", "useCustomPixelJitterSample", "Uses the offset in Custom Pixel Jitter Sample rather than one that changes. Most renders leave it off. Fill in Custom Pixel Jitter Sample with two numbers first: with Use Pixel Jitter on as well and fewer than two, Natron crashes.", VtValue(false)));
+    add("advanced", setting("cycles:integrator:custom_pixel_jitter_sample", "customPixelJitterSample", "The offset within the pixel, as two numbers separated by a space, for example 0.5 0.5. Use it to place a sample exactly. It needs two numbers before Use Pixel Jitter and Use Custom Pixel Jitter Sample are both on, or Natron crashes.", VtValue(VtFloatArray())));
 
-    add("sampleSubset", setting("cycles:sample_offset", "sampleOffset", "Sample Offset", VtValue(0)));
-    add("sampleSubset", setting("cycles:integrator:use_sample_subset", "useSampleSubset", "Use Sample Subset", VtValue(false)));
-    add("sampleSubset", setting("cycles:integrator:sample_subset_offset", "sampleSubsetOffset", "Sample Subset Offset", VtValue(0)));
-    add("sampleSubset", setting("cycles:integrator:sample_subset_length", "sampleSubsetLength", "Sample Subset Length", VtValue(1 << 24)));
+    add("sampleSubset", setting("cycles:sample_offset", "sampleOffset", "Skips this many samples and renders the rest up to Samples, so a later run can add to an earlier one without repeating its noise. An offset of Samples or more renders nothing; 0 renders them all. This is the control to use in this group.", VtValue(0)));
+    add("sampleSubset", setting("cycles:integrator:use_sample_subset", "useSampleSubset", "This has no effect: each update overwrites it from Sample Offset, so use Sample Offset instead.", VtValue(false)));
+    add("sampleSubset", setting("cycles:integrator:sample_subset_offset", "sampleSubsetOffset", "This has no effect: each update overwrites it from Sample Offset, so use Sample Offset instead.", VtValue(0)));
+    add("sampleSubset", setting("cycles:integrator:sample_subset_length", "sampleSubsetLength", "This has no effect: each update overwrites it, so use Samples and Sample Offset instead.", VtValue(1 << 24)));
 
     const auto enabledBy = [&c](const char* key,
                                 const char* controller,

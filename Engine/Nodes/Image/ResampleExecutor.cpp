@@ -376,14 +376,14 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
                         const GpuImageView& dst,
                         const RectI& rect)
 {
-    const Resampler::FilterEnum filter = draftMode ? Resampler::eFilterImpulse : settings.filter;
+    const Resampler::FilterSpec filter = draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : settings.filter;
     gpu::GpuResample resample;
     if (source.buffer) {
         resample.src = PassExec::toGpuBlurImage(source);
     }
     resample.channels = (uint32_t)nComps;
-    resample.filter = (uint32_t)filter;
-    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter);
+    resample.filter = (uint32_t)filter.filter;
+    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
     resample.blackOutside = settings.blackOutside;
     resample.matrices.resize(transforms.invTransforms.size());
     for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
@@ -490,7 +490,7 @@ runResampleCpu(EffectInstance& effect,
         return eStatusOK;
     }
 
-    Resampler::FilterEnum filter = request.settings.filter;
+    Resampler::FilterSpec filter = request.settings.filter;
     if (args.draftMode) {
         filter = Resampler::eFilterImpulse;
     }
@@ -718,7 +718,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
             srcRoD = RectD();
         }
         const Resampler::RegionParams params = regionParams(request, stages);
-        Resampler::getRegionOfInterest(request.transform, renderWindow, srcRoD, projectRect(effect), time, srcPar, s.x, s.y, params, &srcRoI);
+        Resampler::getRegionOfInterest(request.transform, renderWindow, srcRoD, projectRect(effect), time, srcPar, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, params, &srcRoI);
         // Under concatenation the reference row is resampled with the op's filter, and the engine
         // maps this region through the concatenated transform.
         if (readsReference) {

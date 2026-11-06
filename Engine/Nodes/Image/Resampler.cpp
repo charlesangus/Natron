@@ -225,18 +225,14 @@ filterHonoursClamp(FilterEnum filter)
 }
 
 double
-filterRoIExpansion(FilterEnum filter)
+filterRoIExpansion(const FilterSpec& filter,
+                   double scale)
 {
-    switch (filter) {
-    case eFilterImpulse:
-    case eFilterBox:
+    if ((filter.filter == eFilterImpulse) || (filter.filter == eFilterBox)) {
         return 0.;
-    case eFilterBilinear:
-    case eFilterCubic:
-        return 0.5;
-    default:
-        return 1.5;
     }
+    // The pixel centre sits half a pixel inside the pixel the window's edge touches.
+    return filter.radius() * kernelScale(scale, 0.) - 0.5;
 }
 
 double
@@ -1803,6 +1799,106 @@ transformRegionFromRect(const RectD& rect,
     regionFromRect(rect, transform, p, out);
 }
 
+namespace {
+    typedef std::function<void(const Mat3&)> MatrixVisitor;
+
+    void
+    transformRegionVisiting(const CanonicalTransformFn& fn,
+                            const RectD& rectFrom,
+                            double time,
+                            bool invert,
+                            const BlurSettings& blur,
+                            bool isIdentity,
+                            RectD* rectTo,
+                            const MatrixVisitor& visit)
+    {
+        double rangeMin, rangeMax;
+        const bool hasmotionblur = ((blur.shutter != 0. || blur.directionalBlur) && blur.motionBlur != 0.);
+
+        if (hasmotionblur && !blur.directionalBlur) {
+            shutterRange(time, blur.shutter, blur.shutterOffset, blur.shutterCustomOffset, &rangeMin, &rangeMax);
+        } else {
+            if (isIdentity) {
+                *rectTo = rectFrom;
+                return;
+            }
+            rangeMin = rangeMax = time;
+        }
+
+        // Min and max swapped: an "empty" start that the first region replaces.
+        rectTo->x1 = kOfxFlagInfiniteMax;
+        rectTo->x2 = kOfxFlagInfiniteMin;
+        rectTo->y1 = kOfxFlagInfiniteMax;
+        rectTo->y2 = kOfxFlagInfiniteMin;
+        double t = rangeMin;
+        bool first = true;
+        bool last = !hasmotionblur;
+        bool finished = false;
+        double expand = 0.;
+        double amount = 1.;
+        int dirBlurIter = 0;
+        Point3 pPrev[4];
+        while (!finished) {
+            Mat3 transform;
+            if (!fn(t, blur.amountFrom + amount * (blur.amountTo - blur.amountFrom), invert, &transform)) {
+                rectTo->x1 = kOfxFlagInfiniteMin;
+                rectTo->x2 = kOfxFlagInfiniteMax;
+                rectTo->y1 = kOfxFlagInfiniteMin;
+                rectTo->y2 = kOfxFlagInfiniteMax;
+                return;
+            }
+            if (visit) {
+                visit(transform);
+            }
+            Point3 p[4];
+            RectD thisRoD;
+            regionFromRect(rectFrom, transform, p, &thisRoD);
+            rectBoundingBox(*rectTo, thisRoD, rectTo);
+
+            if (first) {
+                first = false;
+            } else {
+                for (int k = 0; k < 4; ++k) {
+                    expand = (std::max)(expand, std::fabs(pPrev[k].x - p[k].x));
+                    expand = (std::max)(expand, std::fabs(pPrev[k].y - p[k].y));
+                }
+            }
+
+            if (last) {
+                finished = true;
+            } else {
+                for (int k = 0; k < 4; ++k) {
+                    pPrev[k] = p[k];
+                }
+                if (blur.directionalBlur) {
+                    const int dirBlurIterMax = 8;
+                    ++dirBlurIter;
+                    amount = 1. - dirBlurIter / (double)dirBlurIterMax;
+                    last = dirBlurIter == dirBlurIterMax;
+                } else {
+                    t = std::floor(t * 4 + 1) / 4;
+                    if (t >= rangeMax) {
+                        t = rangeMax;
+                        last = true;
+                    }
+                }
+            }
+        }
+        if (rectTo->x1 > kOfxFlagInfiniteMin) {
+            rectTo->x1 -= expand;
+        }
+        if (rectTo->x2 < kOfxFlagInfiniteMax) {
+            rectTo->x2 += expand;
+        }
+        if (rectTo->y1 > kOfxFlagInfiniteMin) {
+            rectTo->y1 -= expand;
+        }
+        if (rectTo->y2 < kOfxFlagInfiniteMax) {
+            rectTo->y2 += expand;
+        }
+    }
+} // anon namespace
+
 void
 transformRegion(const CanonicalTransformFn& fn,
                 const RectD& rectFrom,
@@ -1812,87 +1908,7 @@ transformRegion(const CanonicalTransformFn& fn,
                 bool isIdentity,
                 RectD* rectTo)
 {
-    double rangeMin, rangeMax;
-    const bool hasmotionblur = ((blur.shutter != 0. || blur.directionalBlur) && blur.motionBlur != 0.);
-
-    if (hasmotionblur && !blur.directionalBlur) {
-        shutterRange(time, blur.shutter, blur.shutterOffset, blur.shutterCustomOffset, &rangeMin, &rangeMax);
-    } else {
-        if (isIdentity) {
-            *rectTo = rectFrom;
-            return;
-        }
-        rangeMin = rangeMax = time;
-    }
-
-    // Min and max swapped: an "empty" start that the first region replaces.
-    rectTo->x1 = kOfxFlagInfiniteMax;
-    rectTo->x2 = kOfxFlagInfiniteMin;
-    rectTo->y1 = kOfxFlagInfiniteMax;
-    rectTo->y2 = kOfxFlagInfiniteMin;
-    double t = rangeMin;
-    bool first = true;
-    bool last = !hasmotionblur;
-    bool finished = false;
-    double expand = 0.;
-    double amount = 1.;
-    int dirBlurIter = 0;
-    Point3 pPrev[4];
-    while (!finished) {
-        Mat3 transform;
-        if (!fn(t, blur.amountFrom + amount * (blur.amountTo - blur.amountFrom), invert, &transform)) {
-            rectTo->x1 = kOfxFlagInfiniteMin;
-            rectTo->x2 = kOfxFlagInfiniteMax;
-            rectTo->y1 = kOfxFlagInfiniteMin;
-            rectTo->y2 = kOfxFlagInfiniteMax;
-            return;
-        }
-        Point3 p[4];
-        RectD thisRoD;
-        regionFromRect(rectFrom, transform, p, &thisRoD);
-        rectBoundingBox(*rectTo, thisRoD, rectTo);
-
-        if (first) {
-            first = false;
-        } else {
-            for (int k = 0; k < 4; ++k) {
-                expand = (std::max)(expand, std::fabs(pPrev[k].x - p[k].x));
-                expand = (std::max)(expand, std::fabs(pPrev[k].y - p[k].y));
-            }
-        }
-
-        if (last) {
-            finished = true;
-        } else {
-            for (int k = 0; k < 4; ++k) {
-                pPrev[k] = p[k];
-            }
-            if (blur.directionalBlur) {
-                const int dirBlurIterMax = 8;
-                ++dirBlurIter;
-                amount = 1. - dirBlurIter / (double)dirBlurIterMax;
-                last = dirBlurIter == dirBlurIterMax;
-            } else {
-                t = std::floor(t * 4 + 1) / 4;
-                if (t >= rangeMax) {
-                    t = rangeMax;
-                    last = true;
-                }
-            }
-        }
-    }
-    if (rectTo->x1 > kOfxFlagInfiniteMin) {
-        rectTo->x1 -= expand;
-    }
-    if (rectTo->x2 < kOfxFlagInfiniteMax) {
-        rectTo->x2 += expand;
-    }
-    if (rectTo->y1 > kOfxFlagInfiniteMin) {
-        rectTo->y1 -= expand;
-    }
-    if (rectTo->y2 < kOfxFlagInfiniteMax) {
-        rectTo->y2 += expand;
-    }
+    transformRegionVisiting(fn, rectFrom, time, invert, blur, isIdentity, rectTo, MatrixVisitor());
 }
 
 void
@@ -1929,10 +1945,12 @@ expandRoI(const RectD& roi,
           double par,
           double sx,
           double sy,
-          FilterEnum filter,
+          const FilterSpec& filter,
           bool doMasking,
           double mix,
-          RectD* srcRoI)
+          RectD* srcRoI,
+          double scaleX,
+          double scaleY)
 {
     if ((roi.x2 <= roi.x1) || (roi.y2 <= roi.y1)) {
         *srcRoI = roi;
@@ -1940,19 +1958,22 @@ expandRoI(const RectD& roi,
     }
     const double pixelSizeX = par / sx;
     const double pixelSizeY = 1. / sy;
-    const double e = filterRoIExpansion(filter);
-    if (e > 0.) {
+    const double ex = filterRoIExpansion(filter, scaleX) * pixelSizeX;
+    const double ey = filterRoIExpansion(filter, scaleY) * pixelSizeY;
+    if (ex > 0.) {
         if (srcRoI->x1 > kOfxFlagInfiniteMin) {
-            srcRoI->x1 -= e * pixelSizeX;
+            srcRoI->x1 -= ex;
         }
         if (srcRoI->x2 < kOfxFlagInfiniteMax) {
-            srcRoI->x2 += e * pixelSizeX;
+            srcRoI->x2 += ex;
         }
+    }
+    if (ey > 0.) {
         if (srcRoI->y1 > kOfxFlagInfiniteMin) {
-            srcRoI->y1 -= e * pixelSizeY;
+            srcRoI->y1 -= ey;
         }
         if (srcRoI->y2 < kOfxFlagInfiniteMax) {
-            srcRoI->y2 += e * pixelSizeY;
+            srcRoI->y2 += ey;
         }
     }
     if (doMasking || (mix != 1.)) {
@@ -2005,6 +2026,7 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
                     const RectD& projectRect,
                     double time,
                     double srcPar,
+                    double dstPar,
                     double sx,
                     double sy,
                     const RegionParams& params,
@@ -2015,8 +2037,42 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
         return;
     }
 
-    transformRegion(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI);
-    expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, params.mix, srcRoI);
+    const bool kernelFilter = (params.filter.filter != eFilterImpulse) && (params.filter.filter != eFilterBox);
+    double scaleX = 1.;
+    double scaleY = 1.;
+    bool cornerBehind = false;
+    MatrixVisitor visit;
+    if (kernelFilter && (roi.x2 > roi.x1) && (roi.y2 > roi.y1)) {
+        const Mat3 toSrc = TransformMath::canonicalToPixel(srcPar, sx, sy);
+        const Mat3 fromDst = TransformMath::pixelToCanonical(dstPar, sx, sy);
+        // The window's corners in output pixels.
+        const double cx[2] = { roi.x1 * sx / dstPar, roi.x2 * sx / dstPar };
+        const double cy[2] = { roi.y1 * sy, roi.y2 * sy };
+        visit = [&](const Mat3& M) {
+            const Mat3 H = toSrc * M * fromDst;
+            for (int i = 0; i < 2; ++i) {
+                for (int j = 0; j < 2; ++j) {
+                    const Point3 p = H * Point3(cx[i], cy[j], 1);
+                    if (!(p.z > 0.)) {
+                        cornerBehind = true;
+                        continue;
+                    }
+                    const double z2 = p.z * p.z;
+                    scaleX = (std::max)(scaleX, kernelScale((H(0, 0) * p.z - p.x * H(2, 0)) / z2, (H(0, 1) * p.z - p.x * H(2, 1)) / z2));
+                    scaleY = (std::max)(scaleY, kernelScale((H(1, 0) * p.z - p.y * H(2, 0)) / z2, (H(1, 1) * p.z - p.y * H(2, 1)) / z2));
+                }
+            }
+        };
+    }
+    transformRegionVisiting(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI, visit);
+    if (cornerBehind && !rectIsEmpty(srcRoD)) {
+        *srcRoI = srcRoD;
+        if (params.doMasking || (params.mix != 1.)) {
+            rectBoundingBox(*srcRoI, roi, srcRoI);
+        }
+    } else {
+        expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, params.mix, srcRoI, scaleX, scaleY);
+    }
 
     if (rectIsInfinite(*srcRoI)) {
         // An RoI cannot be infinite: fall back to what the source and the project can show.

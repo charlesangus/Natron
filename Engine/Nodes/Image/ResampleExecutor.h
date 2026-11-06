@@ -54,7 +54,7 @@ struct StagePlan;
  * can differ from the op's own identity, which also looks at the blur.
  **/
 struct ResampleSettings {
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter = Resampler::eFilterCubic;
     bool clamp = false;
     bool blackOutside = true;
     bool invert = false;

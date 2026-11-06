@@ -174,10 +174,12 @@ bool filterHonoursClamp(FilterEnum filter);
 double kernelScale(double a, double b);
 
 /**
- * @brief How far, in source pixels, a filter reads beyond the back-transformed window:
- * 0 (impulse, box), 0.5 (bilinear, cubic) or 1.5 (the 4-tap filters).
+ * @brief How far, in source pixels, a filter reads beyond the back-transformed window along one
+ * source axis whose kernel scale is `scale` (kernelScale() of that axis's Jacobian row):
+ * radius * scale - 0.5, so 0.5 for bilinear and cubic and 1.5 for the 4-tap filters at scale 1.
+ * 0 for impulse and box. A scale below 1 or not finite counts as 1.
  **/
-double filterRoIExpansion(FilterEnum filter);
+double filterRoIExpansion(const FilterSpec& filter, double scale = 1.);
 
 ///////////////////////////////////////////////////////////////////////////////
 // 1-D filters. Ip, Ic, In, Ia are the samples at offsets -1, 0, +1, +2 from the
@@ -685,10 +687,10 @@ void expandRoD(double par, double sx, double sy, bool blackOutside, RectD* rod);
 
 /**
  * @brief Grows srcRoI, the back-transformed roi, by filterRoIExpansion() source pixels on each
- * finite side, then unions it with roi when masking or mixing (mix != 1), which read the
- * source under the output pixel. An empty roi gives srcRoI = roi.
+ * finite side (scaleX along x, scaleY along y), then unions it with roi when masking or mixing
+ * (mix != 1), which read the source under the output pixel. An empty roi gives srcRoI = roi.
  **/
-void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum filter, bool doMasking, double mix, RectD* srcRoI);
+void expandRoI(const RectD& roi, double par, double sx, double sy, const FilterSpec& filter, bool doMasking, double mix, RectD* srcRoI, double scaleX = 1., double scaleY = 1.);
 
 /**
  * @brief The knob state the region actions depend on. invert is the node's invert knob;
@@ -699,7 +701,7 @@ void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum fi
 struct RegionParams {
     bool invert;
     BlurSettings blur;
-    FilterEnum filter;
+    FilterSpec filter;
     bool blackOutside;
     bool isIdentity;
     bool doMasking;
@@ -737,8 +739,12 @@ void getRegionOfDefinition(const CanonicalTransformFn& fn,
 /**
  * @brief The source RoI for an output roi, as the OFX Transform3x3 computes it: roi itself for
  * mix 0 under a mask; otherwise the back-transformed roi (transformRegion() with the render's
- * inverse matrix), expanded by expandRoI(). An infinite result is replaced by its intersection
- * with srcRoD, unioned with the project rectangle projectRect. srcPar is the source's PAR.
+ * inverse matrix), expanded by expandRoI(). The expansion follows the kernel's widening: the
+ * scale per source axis is the largest kernelScale() of the pixel matrix's Jacobian over the
+ * corners of roi and over every matrix of a blur. A kernel filter whose corner falls at or behind
+ * z = 0 reads the whole of srcRoD. An infinite result is replaced by its intersection with
+ * srcRoD, unioned with the project rectangle projectRect. srcPar and dstPar are the source's and
+ * the output's PAR.
  **/
 void getRegionOfInterest(const CanonicalTransformFn& fn,
                          const RectD& roi,
@@ -746,6 +752,7 @@ void getRegionOfInterest(const CanonicalTransformFn& fn,
                          const RectD& projectRect,
                          double time,
                          double srcPar,
+                         double dstPar,
                          double sx,
                          double sy,
                          const RegionParams& params,

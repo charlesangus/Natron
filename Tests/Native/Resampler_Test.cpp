@@ -1064,9 +1064,13 @@ TEST(Resampler, MinifiedBlackOutsideFadesAtTheSourceEdge)
     const SourceImage src(&data.front(), bounds, 1);
     std::vector<float> row;
 
-    renderRows(scaling(4.), eFilterLanczos3, false, true, src, 16, 0, 24, &row);
-    EXPECT_LT(row[0], 0.9f);
-    EXPECT_NEAR(row[16], 1.f, 1e-4);
+    // Output pixel -1 is centred past the source, so its zeroed row takes the plain kernel, which
+    // reaches only the nearest source column. Pixel 0, 1.5 source pixels in, loses just the
+    // kernel's tail: the fade spans one output pixel, not the wide footprint.
+    renderRows(scaling(4.), eFilterLanczos3, false, true, src, 16, -1, 24, &row);
+    EXPECT_NEAR(row[0], 0.0245f, 1e-3);
+    EXPECT_NEAR(row[1], 0.9353f, 1e-3);
+    EXPECT_NEAR(row[17], 1.f, 1e-4);
 }
 
 TEST(Resampler, MinificationRemovesAliasing)

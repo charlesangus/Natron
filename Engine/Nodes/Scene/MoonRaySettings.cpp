@@ -54,14 +54,15 @@ sceneVariable(const char* variable,
 
 RenderSettingsKnobs::CuratedSetting
 declared(const char* key,
-         const char* tooltip)
+         const char* tooltip,
+         const VtValue& defaultValue)
 {
     RenderSettingsKnobs::CuratedSetting s;
 
     s.key = key;
     s.name = key;
     s.tooltip = tooltip;
-    s.defaultValue = VtValue(false);
+    s.defaultValue = defaultValue;
 
     return s;
 }
@@ -79,30 +80,67 @@ filter(const char* id,
     return c;
 }
 
+RenderSettingsKnobs::Choice
+executionMode(const char* id,
+              const char* label)
+{
+    RenderSettingsKnobs::Choice c;
+
+    c.id = id;
+    c.label = label;
+    c.value = VtValue(std::string(id));
+
+    return c;
+}
+
+RenderSettingsKnobs::GroupSpec
+groupSpec(const char* name,
+          const char* parent,
+          bool open)
+{
+    RenderSettingsKnobs::GroupSpec g;
+
+    g.name = name;
+    g.parent = parent;
+    g.open = open;
+
+    return g;
+}
+
 RenderSettingsKnobs::Curated
 make()
 {
     RenderSettingsKnobs::Curated c;
 
-    c.tooltip = "The MoonRay settings most renders change. Every other setting hdMoonray declares is under Other Settings.";
-    c.settings.push_back(sceneVariable("pixel_samples", "pixelSamples",
-                                       "The square root of the camera samples per pixel: 8 takes 64.", VtValue(8), 1, 32));
-    c.settings.push_back(sceneVariable("light_samples", "lightSamples",
-                                       "The square root of the samples each light gets at each hit.", VtValue(2), 0, 16));
-    c.settings.push_back(sceneVariable("bsdf_samples", "bsdfSamples",
-                                       "The square root of the samples each BSDF lobe gets at each hit.", VtValue(2), 0, 16));
-    c.settings.push_back(sceneVariable("bssrdf_samples", "bssrdfSamples",
-                                       "The square root of the subsurface scattering samples at each hit.", VtValue(2), 0, 16));
-    c.settings.push_back(sceneVariable("max_depth", "maxDepth",
-                                       "The most bounces a path takes, whatever their kind.", VtValue(5), 0, 32));
-    c.settings.push_back(sceneVariable("max_diffuse_depth", "maxDiffuseDepth",
-                                       "The most diffuse bounces a path takes.", VtValue(2), 0, 32));
-    c.settings.push_back(sceneVariable("max_glossy_depth", "maxGlossyDepth",
-                                       "The most glossy bounces a path takes.", VtValue(2), 0, 32));
-    c.settings.push_back(sceneVariable("max_mirror_depth", "maxMirrorDepth",
-                                       "The most mirror bounces a path takes.", VtValue(3), 0, 32));
-    c.settings.push_back(sceneVariable("max_volume_depth", "maxVolumeDepth",
-                                       "The most volume scattering bounces a path takes.", VtValue(1), 0, 32));
+    c.tooltip = "The settings hdMoonray declares.";
+    c.pageLabel = "MoonRay";
+    c.groups.push_back(groupSpec("sampling", "", true));
+    c.groups.push_back(groupSpec("depth", "", true));
+    c.groups.push_back(groupSpec("filtering", "", true));
+    c.groups.push_back(groupSpec("denoise", "", true));
+    c.groups.push_back(groupSpec("sceneToggles", "", false));
+    c.groups.push_back(groupSpec("prune", "sceneToggles", false));
+    c.groups.push_back(groupSpec("performance", "", false));
+    c.groups.push_back(groupSpec("remote", "", false));
+    c.groups.push_back(groupSpec("logging", "", false));
+
+    const auto add = [&c](const char* group,
+                          RenderSettingsKnobs::CuratedSetting s) {
+        s.group = group;
+        c.settings.push_back(s);
+    };
+
+    add("sampling", sceneVariable("pixel_samples", "pixelSamples", "The square root of the camera samples per pixel: 8 takes 64.", VtValue(8), 1, 32));
+    add("sampling", sceneVariable("light_samples", "lightSamples", "The square root of the samples each light gets at each hit.", VtValue(2), 0, 16));
+    add("sampling", sceneVariable("bsdf_samples", "bsdfSamples", "The square root of the samples each BSDF lobe gets at each hit.", VtValue(2), 0, 16));
+    add("sampling", sceneVariable("bssrdf_samples", "bssrdfSamples", "The square root of the subsurface scattering samples at each hit.", VtValue(2), 0, 16));
+
+    add("depth", sceneVariable("max_depth", "maxDepth", "The most bounces a path takes, whatever their kind.", VtValue(5), 0, 32));
+    add("depth", sceneVariable("max_diffuse_depth", "maxDiffuseDepth", "The most diffuse bounces a path takes.", VtValue(2), 0, 32));
+    add("depth", sceneVariable("max_glossy_depth", "maxGlossyDepth", "The most glossy bounces a path takes.", VtValue(2), 0, 32));
+    add("depth", sceneVariable("max_mirror_depth", "maxMirrorDepth", "The most mirror bounces a path takes.", VtValue(3), 0, 32));
+    add("depth", sceneVariable("max_volume_depth", "maxVolumeDepth", "The most volume scattering bounces a path takes.", VtValue(1), 0, 32));
+
     {
         RenderSettingsKnobs::CuratedSetting s = sceneVariable("pixel_filter", "pixelFilter",
                                                               "The filter that weighs each sample by its distance to the pixel's centre.",
@@ -111,26 +149,62 @@ make()
         s.choices.push_back(filter("box", "Box"));
         s.choices.push_back(filter("cubic b-spline", "Cubic B-Spline"));
         s.choices.push_back(filter("quadratic b-spline", "Quadratic B-Spline"));
-        c.settings.push_back(s);
+        add("filtering", s);
     }
-    c.settings.push_back(sceneVariable("pixel_filter_width", "pixelFilterWidth",
-                                       "The width, in pixels, of the pixel filter: wider is softer.", VtValue(3.f), 0, 8));
-    c.settings.push_back(declared("enableDenoise", "Denoises the render with OpenImageDenoise."));
+    add("filtering", sceneVariable("pixel_filter_width", "pixelFilterWidth", "The width, in pixels, of the pixel filter: wider is softer.", VtValue(3.f), 0, 8));
+
+    add("denoise", declared("enableDenoise", "Denoises the render with OpenImageDenoise.", VtValue(false)));
     {
-        RenderSettingsKnobs::CuratedSetting s = declared("enableOIDN", "Denoises with OpenImageDenoise rather than OptiX.");
+        RenderSettingsKnobs::CuratedSetting s = declared("enableOIDN", "Denoises with OpenImageDenoise rather than OptiX.", VtValue(false));
         s.follows = "enableDenoise";
         s.disabledReason = "OpenImageDenoise is the only denoiser: OptiX needs CUDA, which this build of MoonRay lacks. "
                            "It follows Enable Denoise.";
-        c.settings.push_back(s);
+        add("denoise", s);
     }
-    c.settings.push_back(declared("denoiseAlbedoGuiding", "Guides the denoiser by the albedo, keeping texture detail."));
-    c.settings.push_back(declared("denoiseNormalGuiding", "Guides the denoiser by the normals, keeping geometric detail."));
+    add("denoise", declared("denoiseAlbedoGuiding", "Guides the denoiser by the albedo, keeping texture detail.", VtValue(false)));
+    add("denoise", declared("denoiseNormalGuiding", "Guides the denoiser by the normals, keeping geometric detail.", VtValue(false)));
+
+    add("sceneToggles", declared("enableMotionBlur", "Enable Motion Blur", VtValue(true)));
+    add("sceneToggles", declared("disableLighting", "Disable Lighting", VtValue(false)));
+    add("sceneToggles", declared("doubleSided", "DoubleSided", VtValue(false)));
+    add("sceneToggles", declared("decodeNormals", "Decode Normals", VtValue(false)));
+    add("sceneToggles", declared("forcePolygon", "Force Polygon", VtValue(false)));
+
+    add("prune", declared("pruneWillow", "Prune Willow", VtValue(false)));
+    add("prune", declared("pruneFurDeform", "Prune FurDeform", VtValue(false)));
+    add("prune", declared("pruneVolume", "Prune Volumes", VtValue(false)));
+    add("prune", declared("pruneWrapDeform", "Prune WrapDeform", VtValue(false)));
+    add("prune", declared("pruneCurveDeform", "Prune CurveDeform", VtValue(false)));
+
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("executionMode", "Execution Mode", VtValue(std::string("auto")));
+        s.choices.push_back(executionMode("auto", "Auto"));
+        s.choices.push_back(executionMode("vectorized", "Vectorized"));
+        s.choices.push_back(executionMode("xpu", "XPU"));
+        s.choices.push_back(executionMode("scalar", "Scalar"));
+        add("performance", s);
+    }
+    add("performance", declared("maxFps", "Max FPS", VtValue(12.f)));
+
     // Natron gives hdMoonray its thread budget and runs it on this machine only.
     c.excludedKeys.push_back("localReservedCores");
     c.excludedKeys.push_back("maxConnectRetries");
-    const std::string local("Natron renders MoonRay on this machine only.");
-    c.disabledKeys.push_back(std::make_pair(std::string("useRemoteHosts"), local));
-    c.disabledKeys.push_back(std::make_pair(std::string("remoteHosts"), local));
+    const char* const local = "Natron renders MoonRay on this machine only.";
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("useRemoteHosts", "Use Remote Hosts", VtValue(false));
+        s.disabledReason = local;
+        add("remote", s);
+    }
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("remoteHosts", "Remote Hosts", VtValue(5));
+        s.disabledReason = local;
+        add("remote", s);
+    }
+
+    add("logging", declared("logLevel", "Log Level(1-5)", VtValue(1)));
+    add("logging", declared("debug", "Show Debug Messages", VtValue(false)));
+    add("logging", declared("info", "Show Info Messages", VtValue(false)));
+    add("logging", declared("rdlOutput", "Rdla output", VtValue(std::string())));
 
     return c;
 } // make

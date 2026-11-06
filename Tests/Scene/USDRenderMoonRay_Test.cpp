@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -723,7 +724,206 @@ nudgeMoonRayKnob(KnobI* k)
 
     return true;
 }
+// The script name of each declared key's knob. Saved projects and scripts name these knobs, so a
+// layout must not rename one.
+const std::map<std::string, std::string>&
+moonRayScriptNames()
+{
+    static const std::map<std::string, std::string> names = {
+        { "moonray:sceneVariable:pixel_samples", "moonrayPixelSamples" },
+        { "moonray:sceneVariable:light_samples", "moonrayLightSamples" },
+        { "moonray:sceneVariable:bsdf_samples", "moonrayBsdfSamples" },
+        { "moonray:sceneVariable:bssrdf_samples", "moonrayBssrdfSamples" },
+        { "moonray:sceneVariable:max_depth", "moonrayMaxDepth" },
+        { "moonray:sceneVariable:max_diffuse_depth", "moonrayMaxDiffuseDepth" },
+        { "moonray:sceneVariable:max_glossy_depth", "moonrayMaxGlossyDepth" },
+        { "moonray:sceneVariable:max_mirror_depth", "moonrayMaxMirrorDepth" },
+        { "moonray:sceneVariable:max_volume_depth", "moonrayMaxVolumeDepth" },
+        { "moonray:sceneVariable:pixel_filter", "moonrayPixelFilter" },
+        { "moonray:sceneVariable:pixel_filter_width", "moonrayPixelFilterWidth" },
+        { "enableDenoise", "moonrayEnableDenoise" },
+        { "enableOIDN", "moonrayEnableOIDN" },
+        { "denoiseAlbedoGuiding", "moonrayDenoiseAlbedoGuiding" },
+        { "denoiseNormalGuiding", "moonrayDenoiseNormalGuiding" },
+        { "enableMotionBlur", "moonrayEnableMotionBlur" },
+        { "disableLighting", "moonrayDisableLighting" },
+        { "doubleSided", "moonrayDoubleSided" },
+        { "decodeNormals", "moonrayDecodeNormals" },
+        { "forcePolygon", "moonrayForcePolygon" },
+        { "pruneWillow", "moonrayPruneWillow" },
+        { "pruneFurDeform", "moonrayPruneFurDeform" },
+        { "pruneVolume", "moonrayPruneVolume" },
+        { "pruneWrapDeform", "moonrayPruneWrapDeform" },
+        { "pruneCurveDeform", "moonrayPruneCurveDeform" },
+        { "executionMode", "moonrayExecutionMode" },
+        { "maxFps", "moonrayMaxFps" },
+        { "useRemoteHosts", "moonrayUseRemoteHosts" },
+        { "remoteHosts", "moonrayRemoteHosts" },
+        { "logLevel", "moonrayLogLevel" },
+        { "debug", "moonrayDebug" },
+        { "info", "moonrayInfo" },
+        { "rdlOutput", "moonrayRdlOutput" },
+    };
+
+    return names;
+}
+
+struct MoonRayGroupLayout {
+    const char* group;
+    const char* parent;
+    bool open;
+    std::vector<std::string> children;
+};
+
+const std::vector<MoonRayGroupLayout>&
+moonRayLayout()
+{
+    static const std::vector<MoonRayGroupLayout> layout = {
+        { "moonraySampling", "moonray", true, { "moonrayPixelSamples", "moonrayLightSamples", "moonrayBsdfSamples", "moonrayBssrdfSamples" } },
+        { "moonrayDepth", "moonray", true, { "moonrayMaxDepth", "moonrayMaxDiffuseDepth", "moonrayMaxGlossyDepth", "moonrayMaxMirrorDepth", "moonrayMaxVolumeDepth" } },
+        { "moonrayFiltering", "moonray", true, { "moonrayPixelFilter", "moonrayPixelFilterWidth" } },
+        { "moonrayDenoise", "moonray", true, { "moonrayEnableDenoise", "moonrayEnableOIDN", "moonrayDenoiseAlbedoGuiding", "moonrayDenoiseNormalGuiding" } },
+        { "moonraySceneToggles", "moonray", false, { "moonrayEnableMotionBlur", "moonrayDisableLighting", "moonrayDoubleSided", "moonrayDecodeNormals", "moonrayForcePolygon", "moonrayPrune" } },
+        { "moonrayPrune", "moonraySceneToggles", false, { "moonrayPruneWillow", "moonrayPruneFurDeform", "moonrayPruneVolume", "moonrayPruneWrapDeform", "moonrayPruneCurveDeform" } },
+        { "moonrayPerformance", "moonray", false, { "moonrayExecutionMode", "moonrayMaxFps" } },
+        { "moonrayRemote", "moonray", false, { "moonrayUseRemoteHosts", "moonrayRemoteHosts" } },
+        { "moonrayLogging", "moonray", false, { "moonrayLogLevel", "moonrayDebug", "moonrayInfo", "moonrayRdlOutput" } },
+    };
+
+    return layout;
+}
+
+std::vector<std::string>
+knobNames(const std::vector<KnobIPtr>& knobs)
+{
+    std::vector<std::string> names;
+
+    for (const KnobIPtr& k : knobs) {
+        names.push_back(k->getName());
+    }
+
+    return names;
+}
+
+void
+collectGroups(const std::vector<KnobIPtr>& knobs,
+              std::map<std::string, KnobIPtr>* groups)
+{
+    for (const KnobIPtr& k : knobs) {
+        if (KnobGroup* group = dynamic_cast<KnobGroup*>(k.get())) {
+            (*groups)[k->getName()] = k;
+            collectGroups(group->getChildren(), groups);
+        }
+    }
+}
 } // anon namespace
+
+// The script names survive the table: no key is lost, gained or renamed, and the groups are valid.
+TEST_F(USDRenderMoonRayTest, TableKeepsEveryScriptName)
+{
+    const RenderSettingsKnobs::Curated& curated = MoonRaySettings::curated();
+    std::string error;
+
+    EXPECT_TRUE(RenderSettingsKnobs::validateGroups(curated, &error)) << error;
+    std::map<std::string, std::string> names;
+    for (const RenderSettingsKnobs::CuratedSetting& c : curated.settings) {
+        names[c.key] = "moonray" + std::string(1, (char)std::toupper((unsigned char)c.name[0])) + c.name.substr(1);
+        EXPECT_FALSE(c.group.empty()) << c.key;
+    }
+    EXPECT_EQ(curated.settings.size(), names.size());
+    EXPECT_EQ(moonRayScriptNames(), names);
+    EXPECT_TRUE(curated.disabledKeys.empty());
+    EXPECT_EQ(std::string("MoonRay"), curated.pageLabel);
+}
+
+// Every knob sits in its group, in order, and each group has its parent, open state and label.
+TEST_F(USDRenderMoonRayTest, KnobsAreLaidOutInGroups)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = moonRaySettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobPagePtr page = settings->page(kMoonRayRendererId);
+    ASSERT_TRUE(bool(page));
+    EXPECT_EQ(std::string("MoonRay"), page->getLabel());
+
+    std::vector<std::string> topLevel;
+    for (const MoonRayGroupLayout& expected : moonRayLayout()) {
+        if (std::string(expected.parent) == page->getName()) {
+            topLevel.push_back(expected.group);
+        }
+    }
+    EXPECT_EQ(topLevel, knobNames(page->getChildren()));
+
+    std::map<std::string, KnobIPtr> groups;
+    collectGroups(page->getChildren(), &groups);
+    EXPECT_EQ(moonRayLayout().size(), groups.size());
+    for (const MoonRayGroupLayout& expected : moonRayLayout()) {
+        ASSERT_EQ(1u, groups.count(expected.group)) << expected.group;
+        KnobIPtr k = groups[expected.group];
+        KnobGroup* group = dynamic_cast<KnobGroup*>(k.get());
+        ASSERT_TRUE(group != nullptr) << expected.group;
+        ASSERT_TRUE(bool(k->getParentKnob())) << expected.group;
+        EXPECT_EQ(std::string(expected.parent), k->getParentKnob()->getName()) << expected.group;
+        EXPECT_EQ(expected.open, group->getValue()) << expected.group;
+        EXPECT_EQ(expected.children, knobNames(group->getChildren())) << expected.group;
+    }
+}
+
+// The table's types and defaults are the delegate's, Execution Mode is a menu that sends
+// MoonRay's own strings, and the remote controls stay off with their reason.
+TEST_F(USDRenderMoonRayTest, TableMatchesTheDelegate)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = moonRaySettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    std::map<std::string, PXR_NS::VtValue> declared;
+    for (const RenderSettingsKnobs::Descriptor& d : RenderSettingsKnobs::descriptors(kMoonRayRendererId)) {
+        declared[d.key] = d.defaultValue;
+    }
+
+    for (const RenderSettingsKnobs::CuratedSetting& c : MoonRaySettings::curated().settings) {
+        KnobIPtr k = settings->knob(kMoonRayRendererId, c.key);
+        ASSERT_TRUE(bool(k)) << c.key;
+        if (declared.count(c.key) == 0) {
+            // A scene variable, which hdMoonray takes without declaring.
+            EXPECT_NE(c.key.find("moonray:sceneVariable:"), std::string::npos) << c.key;
+            continue;
+        }
+        const PXR_NS::VtValue& declaredDefault = declared[c.key];
+        EXPECT_EQ(declaredDefault.GetTypeName(), c.defaultValue.GetTypeName()) << c.key;
+        if (c.choices.empty()) {
+            EXPECT_EQ(declaredDefault, c.defaultValue) << c.key;
+            continue;
+        }
+        KnobChoice* choice = dynamic_cast<KnobChoice*>(k.get());
+        ASSERT_TRUE(choice != nullptr) << c.key;
+        ASSERT_EQ((int)c.choices.size(), choice->getNumEntries()) << c.key;
+        EXPECT_EQ(std::string("executionMode"), c.key);
+        const int index = choice->getDefaultValue(0);
+        ASSERT_TRUE((index >= 0) && (index < (int)c.choices.size())) << c.key;
+        EXPECT_EQ(index, choice->getValue()) << c.key;
+        EXPECT_EQ(declaredDefault, c.choices[index].value) << c.key;
+        std::vector<std::string> sent;
+        for (const RenderSettingsKnobs::Choice& e : c.choices) {
+            EXPECT_FALSE(e.label.empty()) << c.key;
+            sent.push_back(e.value.Get<std::string>());
+        }
+        EXPECT_EQ((std::vector<std::string> { "auto", "vectorized", "xpu", "scalar" }), sent);
+    }
+    for (const char* key : { "useRemoteHosts", "remoteHosts" }) {
+        KnobIPtr k = settings->knob(kMoonRayRendererId, key);
+        ASSERT_TRUE(bool(k)) << key;
+        EXPECT_FALSE(k->isEnabled(0)) << key;
+    }
+}
 
 // MoonRay's pixel samples knob changes the node's hash, and the next render is made with the new
 // count, as MoonRay's engine reports it.
@@ -796,7 +996,7 @@ TEST_F(USDRenderMoonRayTest, APrimDoesNotOverrideReservedSettings)
     EXPECT_EQ(PXR_NS::VtValue(0), moonRayReported(node, "maxConnectRetries"));
 }
 
-// Each knob of the MoonRay group sends its setting, which MoonRay's engine reports back.
+// Each knob of the MoonRay page sends its setting, which MoonRay's engine reports back.
 TEST_F(USDRenderMoonRayTest, CuratedKnobsReachTheDelegate)
 {
     if (!moonRayOrSkip()) {
@@ -812,13 +1012,13 @@ TEST_F(USDRenderMoonRayTest, CuratedKnobsReachTheDelegate)
     for (const RenderSettingsKnobs::CuratedSetting& c : MoonRaySettings::curated().settings) {
         KnobIPtr k = settings->knob(kMoonRayRendererId, c.key);
         ASSERT_TRUE(bool(k)) << c.key;
-        EXPECT_EQ(std::string("moonraySettings"), k->getParentKnob() ? k->getParentKnob()->getName() : std::string()) << c.key;
         if (!c.disabledReason.empty()) {
             EXPECT_FALSE(k->isEnabled(0)) << c.key;
             continue;
         }
         // Denoising is checked on its own: it needs OpenImageDenoise in MoonRay's build.
-        if ((c.key == denoise) || (c.key == MoonRaySettings::samplesKey())) {
+        // A text knob is not nudged, and a path set on rdlOutput would make MoonRay write a file.
+        if ((c.key == denoise) || (c.key == MoonRaySettings::samplesKey()) || (c.key == "rdlOutput")) {
             continue;
         }
         ASSERT_TRUE(nudgeMoonRayKnob(k.get())) << c.key;

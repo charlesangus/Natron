@@ -105,6 +105,8 @@ public:
     struct Curated {
         // The group's tooltip.
         std::string tooltip;
+        // The page's label; empty for the delegate's own display name.
+        std::string pageLabel;
         std::vector<CuratedSetting> settings;
         // The sections settings name in CuratedSetting::group. One is made when its first setting
         // (or a setting of a group inside it) is added, so the order of settings sets the order of groups.

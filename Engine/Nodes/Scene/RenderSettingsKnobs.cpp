@@ -1194,7 +1194,10 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
     renderer.id = rendererId;
     const std::vector<std::string> namespaces = RenderSettingsPrim::namespaces(rendererId);
     RenderDelegates::Delegate delegate;
-    const std::string pageLabel = RenderDelegates::find(rendererId, &delegate) ? delegate.displayName : labelFromScriptName(prefix, std::string());
+    std::string pageLabel = RenderDelegates::find(rendererId, &delegate) ? delegate.displayName : labelFromScriptName(prefix, std::string());
+    if (curated && !curated->pageLabel.empty()) {
+        pageLabel = curated->pageLabel;
+    }
     KnobPagePtr page = AppManager::createKnob<KnobPage>(_imp->holder, pageLabel);
     page->setName(prefix);
     renderer.page = page;

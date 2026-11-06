@@ -353,6 +353,112 @@ struct Declared {
 std::mutex gDescriptorsMutex;
 std::map<std::string, Declared> gDescriptors;
 std::map<std::string, RenderSettingsKnobs::DescriptorList> gTestDescriptors;
+struct ClassRule {
+    const char* group;
+    std::vector<std::string> prefixes;
+};
+
+// In priority order: the first rule with a matching token wins.
+const std::vector<ClassRule>&
+classRules()
+{
+    static const std::vector<ClassRule> rules = {
+        { "denoise", { "denois", "oidn" } },
+        { "pathGuiding", { "guiding" } },
+        { "volumes", { "volume", "raymarch" } },
+        { "bounces", { "bounce", "depth" } },
+        { "clamping", { "clamp" } },
+        { "lights", { "light", "shadow" } },
+        { "sampling", { "sample", "sampling", "seed", "adaptive", "noise" } },
+        { "filtering", { "filter" } },
+        { "motion", { "motion", "shutter", "blur" } },
+        { "performance", { "thread", "memory", "cache", "cull", "cores", "fps", "execution", "tile", "bucket" } },
+        { "logging", { "log", "debug", "verbose" } },
+    };
+
+    return rules;
+}
+
+// The order the classified groups take on the page.
+const char* const kClassifiedOrder[] = {
+    "sampling", "denoise", "bounces", "clamping", "lights", "volumes", "pathGuiding", "filtering", "motion", "performance", "logging"
+};
+
+const char*
+classifiedTooltip(const std::string& group)
+{
+    if (group == "sampling") {
+        return "How many samples are taken and when sampling stops.";
+    }
+    if (group == "denoise") {
+        return "Removing the noise left in the render.";
+    }
+    if (group == "bounces") {
+        return "How far light paths are followed.";
+    }
+    if (group == "clamping") {
+        return "Limits on how bright a single sample can be.";
+    }
+    if (group == "lights") {
+        return "How lights and shadows are sampled.";
+    }
+    if (group == "volumes") {
+        return "How volumes are marched and stored.";
+    }
+    if (group == "pathGuiding") {
+        return "Learning where light comes from to sample it better.";
+    }
+    if (group == "filtering") {
+        return "How samples are filtered into pixels.";
+    }
+    if (group == "motion") {
+        return "Motion blur and shutter.";
+    }
+    if (group == "performance") {
+        return "Trading speed and memory.";
+    }
+
+    return "Logging and debugging output.";
+}
+
+std::vector<std::string>
+keyTokens(const std::string& key)
+{
+    std::string segment = key;
+    const std::size_t cut = segment.find_last_of(":./");
+
+    if (cut != std::string::npos) {
+        segment = segment.substr(cut + 1);
+    }
+    std::vector<std::string> tokens;
+    std::string word;
+    for (std::size_t i = 0; i < segment.size(); ++i) {
+        const unsigned char c = (unsigned char)segment[i];
+        if (!std::isalnum(c)) {
+            if (!word.empty()) {
+                tokens.push_back(word);
+                word.clear();
+            }
+            continue;
+        }
+        const bool upper = std::isupper(c) != 0;
+        if (upper && !word.empty()) {
+            const unsigned char prev = (unsigned char)segment[i - 1];
+            const bool nextLower = (i + 1 < segment.size()) && std::islower((unsigned char)segment[i + 1]);
+            if (std::islower(prev) || std::isdigit(prev) || (std::isupper(prev) && nextLower)) {
+                tokens.push_back(word);
+                word.clear();
+            }
+        }
+        word.push_back((char)std::tolower(c));
+    }
+    if (!word.empty()) {
+        tokens.push_back(word);
+    }
+
+    return tokens;
+}
+
 std::map<std::string, RenderSettingsKnobs::Curated> gTestCurated;
 
 Declared
@@ -471,6 +577,24 @@ RenderSettingsKnobs::setCuratedForTests(const std::string& rendererId,
     } else {
         gTestCurated.erase(rendererId);
     }
+}
+
+std::string
+RenderSettingsKnobs::classifyKey(const std::string& key)
+{
+    const std::vector<std::string> tokens = keyTokens(key);
+
+    for (const ClassRule& rule : classRules()) {
+        for (const std::string& token : tokens) {
+            for (const std::string& prefix : rule.prefixes) {
+                if (token.compare(0, prefix.size(), prefix) == 0) {
+                    return rule.group;
+                }
+            }
+        }
+    }
+
+    return std::string();
 }
 
 bool
@@ -1220,11 +1344,57 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         }
     }
 
-    KnobGroupPtr other;
+    std::vector<const Descriptor*> leftover;
     for (const Descriptor& d : declared) {
-        if (handled.count(d.key) || !isSupported(d.defaultValue)) {
+        if (!handled.count(d.key) && isSupported(d.defaultValue)) {
+            leftover.push_back(&d);
+        }
+    }
+
+    // A renderer with a table has laid itself out; the others are sorted by what their keys say.
+    const bool allOpen = leftover.size() <= 20;
+    std::map<std::string, std::vector<const Descriptor*>> classified;
+    if (!curated) {
+        std::set<std::string> natural;
+        for (const Descriptor* d : leftover) {
+            natural.insert(prefix + capitalized(camelCaseFromKey(d->key, false)));
+        }
+        std::vector<const Descriptor*> unclaimed;
+        for (const Descriptor* d : leftover) {
+            const std::string group = classifyKey(d->key);
+            if (!group.empty() && !natural.count(prefix + capitalized(group)) && !names.count(prefix + capitalized(group))) {
+                classified[group].push_back(d);
+            } else {
+                unclaimed.push_back(d);
+            }
+        }
+        leftover = unclaimed;
+    }
+    bool first = true;
+    for (const char* groupName : kClassifiedOrder) {
+        std::map<std::string, std::vector<const Descriptor*>>::const_iterator members = classified.find(groupName);
+        if (members == classified.end()) {
             continue;
         }
+        const std::string scriptName = prefix + capitalized(groupName);
+        names.insert(scriptName);
+        KnobGroupPtr group = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(scriptName, prefix));
+        group->setName(scriptName);
+        group->setHintToolTip(classifiedTooltip(groupName));
+        group->setDefaultValue(allOpen || first);
+        page->addKnob(group);
+        first = false;
+        for (const Descriptor* d : members->second) {
+            std::map<std::string, std::string>::const_iterator off = disabled.find(d->key);
+            addSetting(group, d->key, prefix + capitalized(camelCaseFromKey(d->key, false)), d->name, d->defaultValue, d->defaultValue,
+                       std::vector<Choice>(), std::string(), (off == disabled.end()) ? std::string() : off->second, nullptr);
+            handled.insert(d->key);
+        }
+    }
+
+    KnobGroupPtr other;
+    for (const Descriptor* dp : leftover) {
+        const Descriptor& d = *dp;
         if (!other) {
             const std::string groupName = prefix + "OtherSettings";
             other = AppManager::createKnob<KnobGroup>(_imp->holder, labelFromScriptName(groupName, prefix));

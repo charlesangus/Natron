@@ -635,6 +635,99 @@ TEST_F(RenderSettingsKnobsTest, GroupsDoNotMoveTheDigestOrTheValues)
     EXPECT_EQ(values[0], values[1]);
 }
 
+// Each rule matches on the token prefixes of the key's last segment, the earlier rule wins when
+// several match, and a key no rule matches is left for Other Settings.
+TEST_F(RenderSettingsKnobsTest, KeysAreClassifiedByTheirTokens)
+{
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        { "denoiseEnabled", "denoise" },
+        { "arras:oidn_mode", "denoise" },
+        { "guidingEnabled", "pathGuiding" },
+        { "volumeRaymarchingStepSize", "volumes" },
+        { "raymarchSteps", "volumes" },
+        { "maxBounces", "bounces" },
+        { "max_depth", "bounces" },
+        { "sampleClamp", "clamping" },
+        { "clampValue", "clamping" },
+        { "maxLights", "lights" },
+        { "shadowBias", "lights" },
+        { "pixelSamples", "sampling" },
+        { "seed", "sampling" },
+        { "adaptiveThreshold", "sampling" },
+        { "noiseFloor", "sampling" },
+        { "pixelFilterWidth", "filtering" },
+        { "shutterOpen", "motion" },
+        { "motionBlur", "motion" },
+        { "threadCount", "performance" },
+        { "enableTinyPrimCulling", "performance" },
+        { "volumeMaxTextureMemoryPerField", "volumes" },
+        { "executionMode", "performance" },
+        { "bucketSize", "performance" },
+        { "logLevel", "logging" },
+        { "debugOutput", "logging" },
+        { "verbose", "logging" },
+        { "denoiseLightSamples", "denoise" },
+        { "guidingBounceSamples", "pathGuiding" },
+        { "lightVolumeSamples", "volumes" },
+        { "bounceClamp", "bounces" },
+        { "clampLight", "clamping" },
+        { "lightSampleCount", "lights" },
+        { "sampleFilter", "sampling" },
+        { "filterBlur", "filtering" },
+        { "blurCache", "motion" },
+        { "AOBounces", "bounces" },
+        { "gain", "" },
+        { "test:offset", "" },
+        { "tint", "" },
+    };
+
+    for (const std::pair<std::string, std::string>& c : cases) {
+        EXPECT_EQ(c.second, RenderSettingsKnobs::classifyKey(c.first)) << c.first;
+    }
+}
+
+// A renderer without a table gets only the groups its keys fill, in a fixed order with Other
+// Settings last and closed; all open up to 20 knobs, only the first beyond that.
+TEST_F(RenderSettingsKnobsTest, GeneratedSettingsAreGrouped)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    for (int many = 0; many < 2; ++many) {
+        RenderSettingsKnobs::DescriptorList list;
+        list.push_back(descriptor("test:logLevel", VtValue(1)));
+        list.push_back(descriptor("test:gain", VtValue(0.5f)));
+        list.push_back(descriptor("test:pixelSamples", VtValue(8)));
+        list.push_back(descriptor("test:maxLights", VtValue(4)));
+        for (int i = 0; many && i < 20; ++i) {
+            list.push_back(descriptor(("test:other" + std::to_string(i)).c_str(), VtValue(i)));
+        }
+        RenderSettingsKnobs::setDescriptorsForTests(kRenderer, list);
+        NodePtr node = createSettings();
+        ASSERT_TRUE(bool(node));
+        const RenderSettingsKnobs* settings = settingsOf(node);
+        ASSERT_TRUE(settings != nullptr);
+        KnobPagePtr page = settings->page(kRenderer);
+        ASSERT_TRUE(bool(page));
+
+        EXPECT_EQ((std::vector<std::string> { prefix + "Sampling", prefix + "Lights", prefix + "Logging", prefix + "OtherSettings" }), childNames(page));
+        EXPECT_EQ(prefix + "Sampling", settings->knob(kRenderer, "test:pixelSamples")->getParentKnob()->getName());
+        EXPECT_EQ(prefix + "Lights", settings->knob(kRenderer, "test:maxLights")->getParentKnob()->getName());
+        EXPECT_EQ(prefix + "Logging", settings->knob(kRenderer, "test:logLevel")->getParentKnob()->getName());
+        EXPECT_EQ(prefix + "OtherSettings", settings->knob(kRenderer, "test:gain")->getParentKnob()->getName());
+        EXPECT_EQ(prefix + "PixelSamples", settings->knob(kRenderer, "test:pixelSamples")->getName());
+        const char* const groups[] = { "Sampling", "Lights", "Logging", "OtherSettings" };
+        const bool open[2][4] = { { true, true, true, false }, { true, false, false, false } };
+        for (int g = 0; g < 4; ++g) {
+            KnobGroup* group = dynamic_cast<KnobGroup*>(node->getKnobByName(prefix + groups[g]).get());
+            ASSERT_TRUE(group != nullptr) << groups[g];
+            EXPECT_EQ(open[many][g], group->getValue()) << groups[g] << (many ? " with many" : " with few");
+        }
+        for (const std::pair<std::string, std::string>& reach : settings->audit(kRenderer)) {
+            EXPECT_FALSE(reach.second.empty()) << reach.first;
+        }
+        getApp()->getProject()->reset(false, true);
+    }
+}
+
 // Prints every installed delegate's declared settings: the list the curated groups are built from.
 TEST_F(RenderSettingsKnobsTest, DumpEveryDelegatesDescriptors)
 {

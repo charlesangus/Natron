@@ -124,6 +124,13 @@ public:
     // What the same delegate returns from HdRenderDelegate::GetRenderSettingsNamespaces().
     static std::vector<std::string> declaredNamespaces(const std::string& rendererId);
 
+    /**
+     * @brief The name of the group a renderer without a curated table puts a setting of this
+     * key in, from the token prefixes of the key's last segment (split on '_' and camel case);
+     * empty when no rule matches, which means "Other Settings".
+     **/
+    static std::string classifyKey(const std::string& key);
+
     // The curated group of the renderer: Cycles' or MoonRay's, null for any other.
     static const Curated* curatedFor(const std::string& rendererId);
 

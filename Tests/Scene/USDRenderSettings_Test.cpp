@@ -296,6 +296,46 @@ TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
     }
 }
 
+// Storm declares few settings, each placed by its name: volumes, lights and performance, all open.
+TEST_F(USDRenderSettingsTest, StormSettingsAreGroupedByTheirNames)
+{
+    NodePtr node = settings(NodePtr());
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    const std::string id = kRenderDelegateStormId;
+    const std::map<std::string, std::string> expected = {
+        { "volumeRaymarchingStepSize", "Volumes" },
+        { "volumeRaymarchingStepSizeLighting", "Volumes" },
+        { "volumeMaxTextureMemoryPerField", "Volumes" },
+        { "maxLights", "Lights" },
+        { "enableTinyPrimCulling", "Performance" },
+    };
+    const std::string prefix = knobs->page(id) ? knobs->page(id)->getName() : std::string();
+    ASSERT_FALSE(prefix.empty());
+    std::set<std::string> groupsSeen;
+    for (const std::pair<const std::string, std::string>& e : expected) {
+        KnobIPtr k = knobs->knob(id, e.first);
+        if (!k) {
+            std::printf("[  SKIPPED ] Storm declares no %s\n", e.first.c_str());
+            continue;
+        }
+        KnobIPtr group = k->getParentKnob();
+        ASSERT_TRUE(bool(group)) << e.first;
+        EXPECT_EQ(prefix + e.second, group->getName()) << e.first;
+        EXPECT_EQ(knobs->page(id), group->getParentKnob()) << e.first;
+        KnobGroup* g = dynamic_cast<KnobGroup*>(group.get());
+        ASSERT_TRUE(g != nullptr);
+        EXPECT_TRUE(g->getValue()) << e.second << " starts open";
+        groupsSeen.insert(e.second);
+    }
+    for (const std::string& name : { "Sampling", "Denoise", "Bounces", "PathGuiding", "OtherSettings" }) {
+        EXPECT_FALSE(bool(node->getKnobByName(prefix + name))) << name;
+    }
+}
+
 namespace {
 // Moves an int, float or bool knob to a value it did not have.
 bool

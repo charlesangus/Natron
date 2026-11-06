@@ -78,3 +78,8 @@ the numbers that settle how draw states reach Hydra. Design:
   - size: M
 
 **Verification gate:** fixtures and harness merged; both mechanisms and both engine costs have numbers from a stripped release build on a GPU host; the user has chosen a mechanism; prototypes are not merged.
+
+## Decisions
+
+- 2026-11-05 — M327.P1.T1 verified in natron-dev: city 3,901 prims with LoadNone, 997,501 with LoadAll; flat file 1,000,001 either way; 344 s to generate, 43 MB under build/bench.
+- 2026-11-06 — P2.T1 (fd58be8e9) and P2.T2 (1abadeb0e) written on `spike/m327-hydra-filter`, worktree `.worktrees/m327-filter`, both selected at run time by `NATRON_DRAW_STATE_MECHANISM`, so one build gives one comparison table. `usdImagingGL/engine.cpp` isn't on the host or in the container, so engine claims come from library strings and symbols and are marked `UNDOCUMENTED` in the code: that `%p` in `UsdImagingGLEngine_%s_%p` is the engine, that the render index builds synchronously in the constructor, and that the earliest insertion sits ahead of Storm's filters.

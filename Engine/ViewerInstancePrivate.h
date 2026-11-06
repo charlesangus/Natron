@@ -404,6 +404,27 @@ public:
     }
 
     /**
+     * @brief Same as checkAndUpdateDisplayAge() for a render that ended without an image and was
+     * not failed or black, but only when no newer request exists: a newer one is still on its way
+     * to the display, and raising the display age past an older render that is still running would
+     * make the display drop it.
+     **/
+    bool checkAndUpdateDisplayAgeIfNewest(int texIndex,
+                                          U64 age)
+    {
+        QMutexLocker k(&renderAgeMutex);
+
+        const U64 next = (age == std::numeric_limits<U64>::max()) ? 0 : age + 1;
+        if ((next != renderAge[texIndex]) || (age <= displayAge[texIndex])) {
+            return false;
+        }
+        displayAge[texIndex] = age;
+        updateStaleLocked();
+
+        return true;
+    }
+
+    /**
      * @brief True while either input has a request newer than the last one it displayed or
      * failed. renderAge is the age the next request will get, so the newest request is renderAge - 1.
      **/

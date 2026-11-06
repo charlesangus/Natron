@@ -1444,6 +1444,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();
+                    renderEndedWithoutImage(i, abortInfo->getRenderAge());
 
                     return eViewerRenderRetCodeRedraw;
                 }
@@ -1474,6 +1475,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
 
 
         if ( (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack) ) {
+            _imp->checkAndUpdateDisplayAge(i, abortInfo->getRenderAge());
             disconnectTextureRequest(i, status[i] == eViewerRenderRetCodeFail);
         } else {
             assert(args[i] && args[i]->params);
@@ -2254,6 +2256,8 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     }
 
     if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+        renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -2381,6 +2385,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ///Check that we were not aborted already
     if ( !isSequentialRender && ( (inArgs.activeInputToRender->getHash() != inArgs.activeInputHash) ||
                                   ( inArgs.params->time != getTimeline()->currentFrame() ) ) ) {
+        renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -2652,6 +2658,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                        for example when an effect returns a NULL RoD at some point. Don't fail but
                        display a black image
                      */
+                    renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                     return eViewerRenderRetCodeRedraw;
                 }
             }
@@ -2659,6 +2667,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             ///If the plug-in was aborted, this is probably not a failure due to render but because of abortion.
             ///Don't forward the exception in that case.
             if ( inArgs.activeInputToRender->aborted() ) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             throw;
@@ -2876,6 +2886,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RectI tileBounds(0, 0, inArgs.params->tileSize, inArgs.params->tileSize);
             assert(!tileBounds.isNull());
             if (tileBounds.isNull()) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
@@ -5101,6 +5113,21 @@ ViewerInstance::requestRenderForTests(int textureIndex,
                                       bool isSequential)
 {
     return _imp->createNewRenderRequest(textureIndex, canAbort, isSequential)->getRenderAge();
+}
+
+void
+ViewerInstance::renderFailed(int textureIndex,
+                             U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
+    _imp->removeOngoingRender(textureIndex, renderAge);
+}
+
+void
+ViewerInstance::renderEndedWithoutImage(int textureIndex,
+                                        U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
 }
 
 void

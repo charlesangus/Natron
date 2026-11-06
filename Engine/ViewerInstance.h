@@ -316,6 +316,19 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
+    /**
+     * @brief A render request that will not produce an image because it failed outside the
+     * render itself (an exception, a lost UI context): like renderEndedWithoutImage(), and the
+     * render also leaves the viewer's list of ongoing renders.
+     **/
+    void renderFailed(int textureIndex, U64 renderAge);
+
+    /**
+     * @brief A render request that ended aborted or with no image to show. It counts as shown
+     * unless a newer request exists, in which case that one decides what the viewer shows.
+     **/
+    void renderEndedWithoutImage(int textureIndex, U64 renderAge);
+
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;

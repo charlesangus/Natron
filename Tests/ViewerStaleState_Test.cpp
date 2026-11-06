@@ -168,3 +168,50 @@ TEST_F(ViewerStaleStateTest, PausedViewerStaysStaleUntilARefreshLands)
     viewer->renderShownForTests(0, refresh);
     EXPECT_FALSE(viewer->isStale());
 }
+
+TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageIsCurrentWhenNothingIsNewer)
+{
+    const U64 age = viewer->requestRenderForTests(0, true, false);
+    EXPECT_TRUE(viewer->isStale());
+    viewer->renderEndedWithoutImage(0, age);
+    EXPECT_FALSE(viewer->isStale());
+}
+
+TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageStaysStaleWhileANewerOneIsQueued)
+{
+    const U64 aborted = viewer->requestRenderForTests(0, true, false);
+    const U64 newer = viewer->requestRenderForTests(0, true, false);
+    viewer->renderEndedWithoutImage(0, aborted);
+    EXPECT_TRUE(viewer->isStale());
+    viewer->renderEndedWithoutImage(0, newer);
+    EXPECT_FALSE(viewer->isStale());
+    drain();
+    ASSERT_EQ(2u, transitions.size());
+}
+
+TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageOnOneInputLeavesTheOtherStale)
+{
+    const U64 a = viewer->requestRenderForTests(0, true, false);
+    const U64 b = viewer->requestRenderForTests(1, true, false);
+    viewer->renderEndedWithoutImage(0, a);
+    EXPECT_TRUE(viewer->isStale());
+    viewer->renderEndedWithoutImage(1, b);
+    EXPECT_FALSE(viewer->isStale());
+}
+
+TEST_F(ViewerStaleStateTest, RenderFailedOutsideTheRenderIsCurrent)
+{
+    const U64 age = viewer->requestRenderForTests(0, false, false);
+    viewer->renderFailed(0, age);
+    EXPECT_FALSE(viewer->isStale());
+}
+
+TEST_F(ViewerStaleStateTest, SettlingTwiceKeepsTheViewerCurrent)
+{
+    const U64 age = viewer->requestRenderForTests(0, true, false);
+    viewer->renderEndedWithoutImage(0, age);
+    viewer->renderFailed(0, age);
+    EXPECT_FALSE(viewer->isStale());
+    drain();
+    EXPECT_EQ(2u, transitions.size());
+}

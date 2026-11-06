@@ -400,7 +400,7 @@ future core work has solid ground to build on.
 | M317 | Traditional Keyer | todo | M95 |  | E3 | | | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
 | M318 | LensCorrect Bounded Input Region | todo | M160 |  | E3 | | | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
 | M319 | Group Node Direct Render | todo | - |  | E14 | | | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
-| M320 | Write All Input Metadata | doing | - | misty-marten | E3 | | | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
+| M320 | Write All Input Metadata | doing | - | misty-marten | E3 | | uat | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
 | M321 | Render Thread Count Race | done | - | bosley-native-nodes | E2 | | | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |
 | M322 | NVIDIA Exit Deadlock Fix | doing | - | misty-marten | E14 | | uat | [M322-nvidia-exit-deadlock-fix.md](PLAN/MILESTONES/M322-nvidia-exit-deadlock-fix.md) |
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | | | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |

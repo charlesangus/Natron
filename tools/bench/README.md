@@ -335,3 +335,15 @@ after (`BENCH_LABEL=after`). The record keeps nothing about the machine: note th
 numbers. `Tests/BezierEditScaling_Test.cpp` prints the same single-shape figures from the engine
 directly, without the Python binding's overhead, and fails a release build when keying stops
 scaling linearly with the keyframe count.
+
+## Heavy scene fixtures
+
+`heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under
+`build/bench`: a payload city (about 300 blocks of buildings, one `.usdc` payload per building,
+about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine in ten
+buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
+container. The fixtures are never committed; only the generator is.
+
+```
+docker exec natron-dev bash -lc "cd $PWD && python3 tools/bench/heavy_scene_make.py"
+```

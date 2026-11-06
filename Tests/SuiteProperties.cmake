@@ -93,12 +93,14 @@ if(NATRON_MOONRAY_BUNDLED)
     set_tests_properties(MoonRayDelegate PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_MOONRAY=1")
 endif()
 
-# CyclesDelegate skips when the Cycles plug-in is missing, which would hide a bundling or plug-in
+# These suites skip when the Cycles plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry Cycles.
 if(NATRON_CYCLES_BUNDLED)
-    if(NOT "CyclesDelegate" IN_LIST NATRON_GTEST_SUITE_TESTS)
-        message(FATAL_ERROR "SuiteProperties.cmake: 'CyclesDelegate' is not a registered test; "
-                            "update the suite name or it would silently lose its properties.")
-    endif()
-    set_tests_properties(CyclesDelegate PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_CYCLES=1")
+    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest)
+        if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
+            message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
+                                "update the suite name or it would silently lose its properties.")
+        endif()
+        set_tests_properties(${_suite} PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_CYCLES=1")
+    endforeach()
 endif()

@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -663,6 +664,7 @@ struct SceneViewportRenderer::Implementation {
     std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
     std::string rendererError;
+    std::string renderError;
     // Whether the last render that kept its renderer found Scene Default naming another.
     bool rendererSwitchPending = false;
     // The stage's active render settings prim as of an edit count: its path, empty without one,
@@ -1210,6 +1212,15 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
+    // them. Hydra's state after an exception is unknown, so the engine goes and the next render
+    // makes another.
+    void discardFailedEngine(const std::string& what)
+    {
+        engine.reset();
+        renderError = "The " + rendererId + " render failed: " + what;
+    }
+
     // Needs the GL context current and stageMutex. False if there is nothing to draw. The engine
     // is made once per GL context and kept through every edit of the stage: it hears of them
     // through the stage's notices and updates on its next render.
@@ -1249,6 +1260,9 @@ struct SceneViewportRenderer::Implementation {
 
                 return false;
             }
+        }
+        if (RenderDelegates::isStorm(rendererId)) {
+            applyStormPtexBudget(engine->GetHgi());
         }
         // Without a render output Storm draws straight into the bound framebuffer and the colour
         // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
@@ -2825,7 +2839,24 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
-        _imp->engine->Render(stage->GetPseudoRoot(), params);
+        std::string what;
+        bool failed = false;
+        try {
+            RenderDelegates::runRenderFaultHook();
+            _imp->engine->Render(stage->GetPseudoRoot(), params);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return eRenderStatusDone;
+        }
         converged = _imp->engine->IsConverged();
     }
 
@@ -3166,6 +3197,17 @@ const std::string&
 SceneViewportRenderer::getActiveRendererId() const
 {
     return _imp->rendererId;
+}
+
+std::string
+SceneViewportRenderer::takeRenderError()
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    std::string error;
+
+    error.swap(_imp->renderError);
+
+    return error;
 }
 
 const std::string&
@@ -4967,6 +5009,11 @@ SceneViewport::paintGL()
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    const QString renderError = QString::fromStdString(_imp->renderer.takeRenderError());
+    if (!renderError.isEmpty()) {
+        _imp->error = renderError;
+        publishState();
+    }
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
     if (_imp->announcedRenderer != _imp->renderer.getActiveRendererId()) {

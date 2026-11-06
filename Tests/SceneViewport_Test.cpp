@@ -35,6 +35,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -68,6 +69,12 @@
 #include "Tests/Scene/CyclesTestUtils.h"
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/driver.h>
+#include <pxr/imaging/hdSt/renderDelegate.h>
+#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 
 NATRON_NAMESPACE_USING
 
@@ -1447,4 +1454,54 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
     ASSERT_TRUE(refineTo(9));
     EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
+}
+
+TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRenderMakesAnother)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(_renderer.hasEngine());
+    const std::string error = _renderer.takeRenderError();
+    EXPECT_NE(std::string::npos, error.find("texture commit failed")) << error;
+    EXPECT_TRUE(_renderer.takeRenderError().empty());
+
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// applyStormPtexBudget reaches the engine's resource registry through a delegate of its own given
+// the engine's Hgi, which only works while Storm shares one registry per Hgi. Neither the engine's
+// delegate nor the registry's per-type memory request can be read back, so the sharing is all that
+// can be checked.
+TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
+{
+    if (_skip) {
+        return;
+    }
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine(new PXR_NS::UsdImagingGLEngine(parameters));
+    PXR_NS::Hgi* hgi = engine->GetHgi();
+    ASSERT_TRUE(hgi != nullptr);
+
+    PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
+    PXR_NS::HdStRenderDelegate first;
+    PXR_NS::HdStRenderDelegate second;
+    first.SetDrivers({ &driver });
+    second.SetDrivers({ &driver });
+
+    ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
+    EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+
+    engine.reset();
 }

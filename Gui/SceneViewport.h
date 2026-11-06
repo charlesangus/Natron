@@ -551,6 +551,9 @@ public:
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
     const std::string& getRendererError() const;
 
+    // The error of a render that threw, which discarded the engine; cleared by reading it.
+    std::string takeRenderError();
+
     // The delegate of the engine held, empty if none is.
     std::string getEngineRendererId() const;
 

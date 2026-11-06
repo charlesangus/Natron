@@ -27,6 +27,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 
 ## Decisions
 
+- 2026-11-06 — P2.T1 counts GPU executions from `RegionReport::memberNs`, filled on every device, not `memberIntervals`. The CPU counter's increment goes after `renderRoI` using M276 - Upstream Reuse On Edits' `takeLastRenderCacheState()`, a hit meaning no execution, so P2.T3 picks it up once M276 merges into the Feature branch; P2.T2 and P2.T3 also wait for M118 - Large Graph GUI Responsiveness.
 - 2026-11-06 — The first GUI failure was a too-short test render (Blur 400 is stale only 150-250 ms); the script now uses IDefocus at size 500, and the border itself worked with 15 checks passing 4 runs of 4. Reading the render paths found Redraw returns that left a viewer stuck stale; they now settle unless a newer request exists. Not fixed, outside scope: `renderCurrentFrame` and the playback `renderFrame` test `clearTexture[0]` in both texture-clear blocks where the second should test `[1]`.
 - 2026-11-06 — Freshness check: P1.T1 rebriefed onto the existing ages. M118 - Large Graph GUI Responsiveness replaced the idle poll with a dirty set (`NodeGraph::scheduleNodeRenderStateRefresh`, `NodeGraph35.cpp:174`, feeding `refreshRenderStateTimer`; `NodeGui::refreshRenderingIndicator`, `NodeGui.cpp:2850`), so Phase 302.2's dot and edge tasks wait for it and hook that path, not the 300 ms loop their briefs describe. M116 - GPU Region Overlay's dry run must leave `renderAge` alone.
 - 2026-11-01 — **Coloured viewer border, stale and current states only (user).**
@@ -49,7 +50,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 
 ## Phase 302.2: Truthful node highlights
 
-- [ ] M302.P2.T1 — Light GPU region members that execute
+- [x] M302.P2.T1 — Light GPU region members that execute
   - files: `Engine/GpuRegionTask.cpp`, `Engine/Node.cpp`, `Engine/Node.h`, `Engine/RenderScheduler.cpp`
   - approach: Count executions per node per device. A GPU region increments the GPU count for each member that actually runs, using the member intervals it already records; members served from a store or a cache don't count. Executions since the last poll are latched, so a 5 ms render still shows once.
   - verify: A unit test runs a two-member GPU region and reads one GPU execution per member; a cache-served member reads zero.

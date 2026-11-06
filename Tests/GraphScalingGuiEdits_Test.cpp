@@ -48,7 +48,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kGradePluginID = "Grade";
 
 NodePtr
 createNamedNode(const AppInstancePtr& app,

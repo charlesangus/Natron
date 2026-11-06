@@ -1039,8 +1039,8 @@ try:
         # fit the view, and is re-rendered shortly after a node is added out of view.
         gt.section("navigator")
         gt.close_all_panels()
-        nav_a = create("net.sf.cimg.CImgBlur", 6200, 1500)
-        nav_b = create("net.sf.cimg.CImgBlur", 6600, 1500)
+        nav_a = create("Blur", 6200, 1500)
+        nav_b = create("Blur", 6600, 1500)
         app.clearSelection()
         graph_n = root_graph()
         frame_nodes(graph_n, [nav_a])
@@ -1063,7 +1063,7 @@ try:
         check(distinct_colours(before) > 2,
               "navigator: the thumbnail draws the graph when it does not fit the view")
         graph_shot(graph_n, "navigator-01-before")
-        create("net.sf.cimg.CImgBlur", 6200, -6000)
+        create("Blur", 6200, -6000)
         app.clearSelection()
         yield ("sleep", NAVIGATOR_SETTLE_MS)
         after = navigator_region()

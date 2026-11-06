@@ -67,6 +67,13 @@ public:
         PXR_NS::VtValue value;
     };
 
+    // A condition on another curated setting of the same renderer: a bool holds when true, a
+    // number when above zero; inverted flips it.
+    struct EnabledBy {
+        std::string key;
+        bool inverted = false;
+    };
+
     struct CuratedSetting {
         std::string key;
         // Without the renderer's prefix, which the knob's script name gains.
@@ -84,6 +91,9 @@ public:
         // The key of another curated setting of the same renderer, listed before this one, whose
         // value this one takes.
         std::string follows;
+        // The knob is enabled only while every condition holds. Ignored with disabledReason, which
+        // keeps the knob disabled.
+        std::vector<EnabledBy> enabledBy;
         double minimum = 0.;
         double displayMaximum = 0.;
         bool hasRange = false;
@@ -184,6 +194,10 @@ public:
 
     // Sets the knobs of the settings that follow knob's; true if knob is one of the settings'.
     bool knobChanged(KnobI* knob);
+
+    // Enables or disables each knob with enabledBy conditions by the current values of the knobs
+    // they name. Only the knob is disabled, never its group, and values() is unaffected.
+    void refreshEnabled();
 
     // The settings of rendererId to send its delegate: those that differ from the delegate's default.
     Values values(const std::string& rendererId) const;

@@ -206,6 +206,23 @@ make()
     add("logging", declared("info", "Show Info Messages", VtValue(false)));
     add("logging", declared("rdlOutput", "Rdla output", VtValue(std::string())));
 
+    const auto enabledBy = [&c](const char* key,
+                                const char* controller) {
+        for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+            if (s.key == key) {
+                RenderSettingsKnobs::EnabledBy condition;
+                condition.key = controller;
+                s.enabledBy.push_back(condition);
+            }
+        }
+    };
+
+    for (const char* key : { "max_diffuse_depth", "max_glossy_depth", "max_mirror_depth" }) {
+        enabledBy((std::string("moonray:sceneVariable:") + key).c_str(), "moonray:sceneVariable:max_depth");
+    }
+    enabledBy("denoiseAlbedoGuiding", "enableDenoise");
+    enabledBy("denoiseNormalGuiding", "enableDenoise");
+
     return c;
 } // make
 } // anon namespace

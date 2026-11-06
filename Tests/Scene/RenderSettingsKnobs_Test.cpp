@@ -586,6 +586,86 @@ TEST_F(RenderSettingsKnobsTest, CuratedGroupsNestInTableOrder)
     }
 }
 
+namespace {
+RenderSettingsKnobs::Curated
+switchTable()
+{
+    RenderSettingsKnobs::Curated t;
+    RenderSettingsKnobs::CuratedSetting sw = curatedSetting("test:sw", "sw", "");
+    sw.defaultValue = VtValue(true);
+    RenderSettingsKnobs::CuratedSetting count = curatedSetting("test:count", "count", "");
+    RenderSettingsKnobs::EnabledBy bySwitch;
+    bySwitch.key = "test:sw";
+    RenderSettingsKnobs::EnabledBy bySwitchOff = bySwitch;
+    bySwitchOff.inverted = true;
+    RenderSettingsKnobs::EnabledBy byCount;
+    byCount.key = "test:count";
+    RenderSettingsKnobs::CuratedSetting dependent = curatedSetting("test:dependent", "dependent", "");
+    dependent.enabledBy = { bySwitch };
+    RenderSettingsKnobs::CuratedSetting inverse = curatedSetting("test:inverse", "inverse", "");
+    inverse.enabledBy = { bySwitchOff };
+    RenderSettingsKnobs::CuratedSetting both = curatedSetting("test:both", "both", "");
+    both.enabledBy = { bySwitch, byCount };
+    RenderSettingsKnobs::CuratedSetting locked = curatedSetting("test:locked", "locked", "");
+    locked.enabledBy = { bySwitch };
+    locked.disabledReason = "Never available.";
+    t.settings = { sw, count, dependent, inverse, both, locked };
+
+    return t;
+}
+} // namespace
+
+TEST_F(RenderSettingsKnobsTest, SwitchesGreyTheirDependents)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    const RenderSettingsKnobs::Curated table = switchTable();
+    RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    NodePtr node = createSettings();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = settingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const auto enabled = [&](const char* name) {
+        KnobIPtr k = node->getKnobByName(prefix + name);
+        EXPECT_TRUE(bool(k)) << name;
+
+        return k && k->isEnabled(0);
+    };
+
+    EXPECT_TRUE(enabled("Dependent"));
+    EXPECT_FALSE(enabled("Inverse"));
+    EXPECT_FALSE(enabled("Both"));
+    EXPECT_FALSE(enabled("Locked"));
+
+    setKnob(node, prefix + "Count", VtValue(2));
+    EXPECT_TRUE(enabled("Both"));
+    const U64 hash = node->getHashValue();
+    const RenderSettingsKnobs::Values values = settings->values(kRenderer);
+
+    setKnob(node, prefix + "Sw", VtValue(false));
+    EXPECT_FALSE(enabled("Dependent"));
+    EXPECT_TRUE(enabled("Inverse"));
+    EXPECT_FALSE(enabled("Both"));
+    EXPECT_FALSE(enabled("Locked"));
+    setKnob(node, prefix + "Sw", VtValue(true));
+    EXPECT_TRUE(enabled("Dependent"));
+    EXPECT_TRUE(enabled("Both"));
+    EXPECT_FALSE(enabled("Locked"));
+    EXPECT_EQ(hash, node->getHashValue());
+    EXPECT_EQ(values, settings->values(kRenderer));
+
+    setKnob(node, prefix + "Sw", VtValue(false));
+    const std::string name = node->getScriptName();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_TRUE(saveResetLoad(tmp));
+    NodePtr loaded = getApp()->getProject()->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    node = loaded;
+    EXPECT_FALSE(enabled("Dependent"));
+    EXPECT_TRUE(enabled("Inverse"));
+    EXPECT_FALSE(enabled("Locked"));
+}
+
 // A table whose groups are invalid is ignored: every setting lands in the curated group.
 TEST_F(RenderSettingsKnobsTest, InvalidGroupTableFallsBackToTheCuratedGroup)
 {

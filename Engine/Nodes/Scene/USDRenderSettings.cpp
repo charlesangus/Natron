@@ -190,6 +190,9 @@ void
 USDRenderSettings::onKnobsLoaded()
 {
     NativeEffectBase::onKnobsLoaded();
+    if (_settings) {
+        _settings->refreshEnabled();
+    }
     keepLoadedRenderer();
     scheduleCameraMenuRefresh();
 }

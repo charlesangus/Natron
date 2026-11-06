@@ -858,6 +858,7 @@ struct RenderSettingsKnobs::Impl {
         VtValue delegateDefault;
         std::vector<Choice> choices;
         std::string follows;
+        std::vector<EnabledBy> enabledBy;
         KnobIWPtr knob;
     };
 
@@ -1063,6 +1064,34 @@ struct RenderSettingsKnobs::Impl {
         }
         }
     } // setKnobValue
+
+    // Whether the knob of the setting named key, a bool or a number, satisfies the condition; a
+    // setting that is missing or neither leaves its dependents enabled.
+    bool conditionHolds(const std::string& renderer,
+                        const EnabledBy& condition) const
+    {
+        const Setting* controller = find(renderer, condition.key);
+        if (!controller) {
+            return true;
+        }
+        const VtValue v = knobValue(*controller);
+        bool on = true;
+        if (v.IsHolding<bool>()) {
+            on = v.UncheckedGet<bool>();
+        } else if (v.IsHolding<int>()) {
+            on = v.UncheckedGet<int>() > 0;
+        } else if (v.IsHolding<unsigned int>()) {
+            on = v.UncheckedGet<unsigned int>() > 0;
+        } else if (v.IsHolding<float>()) {
+            on = v.UncheckedGet<float>() > 0.f;
+        } else if (v.IsHolding<double>()) {
+            on = v.UncheckedGet<double>() > 0.;
+        } else {
+            return true;
+        }
+
+        return on != condition.inverted;
+    }
 
     // Sets the knobs of the settings that follow the one at index to its value.
     void syncFollowers(std::size_t index)
@@ -1275,6 +1304,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.delegateDefault = delegateDefault;
         setting.choices = choices;
         setting.follows = follows;
+        if (range && disabledReason.empty()) {
+            setting.enabledBy = range->enabledBy;
+        }
         setting.knob = k;
         _imp->byKnob[k.get()] = _imp->settings.size();
         _imp->settings.push_back(setting);
@@ -1412,6 +1444,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         handled.insert(d.key);
     }
     _imp->renderers.push_back(renderer);
+    refreshEnabled();
 } // RenderSettingsKnobs::addRenderer
 
 KnobPagePtr
@@ -1436,8 +1469,31 @@ RenderSettingsKnobs::knobChanged(KnobI* knob)
     if (!_imp->applying) {
         _imp->syncFollowers(found->second);
     }
+    refreshEnabled();
 
     return true;
+}
+
+void
+RenderSettingsKnobs::refreshEnabled()
+{
+    for (const Impl::Setting& s : _imp->settings) {
+        if (s.enabledBy.empty()) {
+            continue;
+        }
+        KnobIPtr k = s.knob.lock();
+        if (!k) {
+            continue;
+        }
+        bool enabled = true;
+        for (const EnabledBy& condition : s.enabledBy) {
+            if (!_imp->conditionHolds(s.renderer, condition)) {
+                enabled = false;
+                break;
+            }
+        }
+        k->setAllDimensionsEnabled(enabled);
+    }
 }
 
 RenderSettingsKnobs::Values

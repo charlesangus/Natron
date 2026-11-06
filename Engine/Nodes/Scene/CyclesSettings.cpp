@@ -205,6 +205,41 @@ make()
     add("sampleSubset", setting("cycles:integrator:sample_subset_offset", "sampleSubsetOffset", "Sample Subset Offset", VtValue(0)));
     add("sampleSubset", setting("cycles:integrator:sample_subset_length", "sampleSubsetLength", "Sample Subset Length", VtValue(1 << 24)));
 
+    const auto enabledBy = [&c](const char* key,
+                                const char* controller,
+                                bool inverted = false) {
+        for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+            if (s.key == std::string("cycles:integrator:") + key) {
+                RenderSettingsKnobs::EnabledBy condition;
+                condition.key = std::string("cycles:integrator:") + controller;
+                condition.inverted = inverted;
+                s.enabledBy.push_back(condition);
+            }
+        }
+    };
+
+    enabledBy("adaptive_threshold", "use_adaptive_sampling");
+    enabledBy("adaptive_min_samples", "use_adaptive_sampling");
+    for (const char* key : { "denoiser_quality", "denoiser_prefilter", "denoiser_passes", "denoise_start_sample", "denoiser_upscale_factor" }) {
+        enabledBy(key, "use_denoise");
+    }
+    for (const char* key : { "max_diffuse_bounce", "max_glossy_bounce", "max_transmission_bounce", "max_volume_bounce" }) {
+        enabledBy(key, "max_bounce");
+    }
+    enabledBy("light_sampling_threshold", "use_light_tree", true);
+    enabledBy("volume_max_steps", "volume_ray_marching");
+    enabledBy("volume_step_rate", "volume_ray_marching");
+    for (const char* key : { "deterministic_guiding", "use_surface_guiding", "surface_guiding_probability", "use_volume_guiding", "volume_guiding_probability",
+                             "guiding_training_samples", "use_guiding_direct_light", "use_guiding_mis_weights", "guiding_distribution_type",
+                             "guiding_directional_sampling_type", "guiding_roughness_threshold" }) {
+        enabledBy(key, "use_guiding");
+    }
+    enabledBy("surface_guiding_probability", "use_surface_guiding");
+    enabledBy("volume_guiding_probability", "use_volume_guiding");
+    enabledBy("custom_pixel_jitter_sample", "use_custom_pixel_jitter_sample");
+    enabledBy("sample_subset_offset", "use_sample_subset");
+    enabledBy("sample_subset_length", "use_sample_subset");
+
     return c;
 } // make
 } // anon namespace

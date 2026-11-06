@@ -73,7 +73,7 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
 
 ## Phase 116.2: Publish and plan
 
-- [ ] M116.P2.T1 — Per-viewer snapshot
+- [x] M116.P2.T1 — Per-viewer snapshot
   - files: `Engine/ViewerInstance.h`, `Engine/ViewerInstance.cpp`, `Engine/ViewerInstancePrivate.h`, `Tests/Native/ViewerRootOnDevice_Test.cpp`
   - approach: Build the snapshot from both placements plus the fallbacks, under its own lock, in `submitViewerFrameToRenderScheduler` (:1301-1309), only while the overlay is on. Merge the split-rect graphs (submitted at ~2558) and the A/B calls into one snapshot, tagging disagreement "mixed". Ignore the Write path at `OutputSchedulerThread.cpp:2594`.
   - verify: with the overlay off, no shadow plan and no snapshot; split rects that disagree produce "mixed".

@@ -102,13 +102,13 @@ public:
 };
 
 /**
- * @brief The selected prim's tabs: Attributes, Relationships and Metadata at the given frame, each
+ * @brief The selected prim's tabs: Attributes, Relationships, Metadata and Composition at the given frame, each
  * row naming the node or file that authored it. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. Nothing is read while the inspector is hidden.
  *
  * Scripts find its widgets by object name: sceneGraphInspector, sceneGraphInspectorTabs,
- * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships and sceneGraphMetadata.
+ * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata and sceneGraphComposition.
  * It mirrors its state into the natronSceneGraphInspectorPath (the prim of the rows shown),
  * natronSceneGraphInspectorBusy, natronSceneGraphInspectorStale,
  * natronSceneGraphInspectorReadsStarted, natronSceneGraphInspectorReadsFinished and

@@ -1002,6 +1002,104 @@ authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
 }
 
 namespace {
+    ScenePrimArc::Type
+    arcTypeOf(PXR_NS::PcpArcType type)
+    {
+        switch (type) {
+        case PXR_NS::PcpArcTypeInherit:
+            return ScenePrimArc::eInherit;
+        case PXR_NS::PcpArcTypeVariant:
+            return ScenePrimArc::eVariant;
+        case PXR_NS::PcpArcTypeRelocate:
+            return ScenePrimArc::eRelocate;
+        case PXR_NS::PcpArcTypeReference:
+            return ScenePrimArc::eReference;
+        case PXR_NS::PcpArcTypePayload:
+            return ScenePrimArc::ePayload;
+        case PXR_NS::PcpArcTypeSpecialize:
+            return ScenePrimArc::eSpecialize;
+        default:
+            break;
+        }
+
+        return ScenePrimArc::eRoot;
+    }
+
+    std::string
+    identifierOf(const PXR_NS::SdfLayerHandle& layer)
+    {
+        return layer ? layer->GetIdentifier() : std::string();
+    }
+} // anonymous namespace
+
+ScenePrimComposition
+getPrimComposition(const PXR_NS::UsdPrim& prim)
+{
+    ScenePrimComposition composition;
+
+    if (!prim) {
+        return composition;
+    }
+    if (prim.IsPrototype()) {
+        composition.isPrototype = true;
+
+        return composition;
+    }
+    if (prim.IsInstanceProxy()) {
+        composition.isInstanceProxy = true;
+        composition.prototypePath = prim.GetPrimInPrototype().GetPath().GetString();
+
+        return composition;
+    }
+    PXR_NS::UsdPrimCompositionQuery query(prim);
+    for (const PXR_NS::UsdPrimCompositionQueryArc& queried : query.GetCompositionArcs()) {
+        ScenePrimArc arc;
+        arc.type = arcTypeOf(queried.GetArcType());
+        for (PXR_NS::PcpNodeRef node = queried.GetTargetNode().GetParentNode(); node; node = node.GetParentNode()) {
+            ++arc.depth;
+        }
+        arc.ancestral = queried.IsAncestral();
+        arc.implicit = queried.IsImplicit();
+        arc.targetPath = queried.GetTargetPrimPath().GetString();
+        const PXR_NS::SdfLayerHandle target = queried.GetTargetLayer();
+        arc.targetLayer = identifierOf(target);
+        arc.targetOwner = getLayerOwner(target);
+        if (arc.type != ScenePrimArc::eRoot) {
+            const PXR_NS::SdfLayerHandle introducing = queried.GetIntroducingLayer();
+            arc.introducingLayer = identifierOf(introducing);
+            arc.introducingOwner = getLayerOwner(introducing);
+        }
+        composition.arcs.push_back(std::move(arc));
+    }
+    if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+        PXR_NS::SdfLayerHandle introducing;
+        for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+            if (spec && spec->HasField(PXR_NS::SdfFieldKeys->Payload)) {
+                introducing = spec->GetLayer();
+                break;
+            }
+        }
+        PXR_NS::VtValue value;
+        prim.GetMetadata(PXR_NS::SdfFieldKeys->Payload, &value);
+        if (value.IsHolding<PXR_NS::SdfPayloadListOp>()) {
+            for (const PXR_NS::SdfPayload& payload : value.UncheckedGet<PXR_NS::SdfPayloadListOp>().GetAppliedItems()) {
+                ScenePrimArc arc;
+                arc.type = ScenePrimArc::ePayload;
+                arc.depth = 1;
+                arc.loaded = false;
+                arc.targetPath = payload.GetPrimPath().GetString();
+                arc.targetLayer = payload.GetAssetPath();
+                arc.introducingLayer = identifierOf(introducing);
+                arc.introducingOwner = getLayerOwner(introducing);
+                composition.arcs.push_back(std::move(arc));
+            }
+        }
+    }
+
+    return composition;
+}
+
+namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under
     // them its link index lists whose composed targets leave their root. Pure overs define nothing
     // to graft, and classes stay where the input's inherits expect them.

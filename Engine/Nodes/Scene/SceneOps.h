@@ -420,6 +420,52 @@ NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
 NodePtr authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
                         PXR_NS::UsdTimeCode time,
                         std::string* layerIdentifier);
+
+/**
+ * @brief One arc of a prim's composition, strongest first, as the inspector shows it.
+ **/
+struct ScenePrimArc {
+    enum Type {
+        eRoot,
+        eInherit,
+        eVariant,
+        eRelocate,
+        eReference,
+        ePayload,
+        eSpecialize
+    };
+
+    Type type = eRoot;
+    // Steps from the root node, so the arcs form a tree in strength order.
+    int depth = 0;
+    // Introduced by an ancestor prim rather than the prim itself.
+    bool ancestral = false;
+    bool implicit = false;
+    // False for an authored payload that is not loaded, which has no target in the prim index.
+    bool loaded = true;
+    // Variant arcs carry the selection, as in /Asset{shadingVariant=red}.
+    std::string targetPath;
+    std::string targetLayer;
+    std::string introducingLayer;
+    // Null for a file or an anonymous layer no node recorded.
+    NodePtr targetOwner;
+    NodePtr introducingOwner;
+};
+
+struct ScenePrimComposition {
+    std::vector<ScenePrimArc> arcs;
+    // Set for a prototype or an instance proxy, which have no prim index of their own to walk.
+    std::string prototypePath;
+    bool isPrototype = false;
+    bool isInstanceProxy = false;
+};
+
+/**
+ * @brief The arcs composing prim: its prim index in strength order, then the payloads authored on
+ * it that are not loaded. Constructs a UsdPrimCompositionQuery, which recomputes the arcs every
+ * time, so call it for the selected prim only. Caller holds the stage lock.
+ **/
+ScenePrimComposition getPrimComposition(const PXR_NS::UsdPrim& prim);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

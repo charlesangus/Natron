@@ -210,3 +210,132 @@ TEST_F(SceneProvenanceTest, AFileReadInReportsItsPath)
     ASSERT_GE(identifier.size(), suffix.size()) << identifier;
     EXPECT_EQ(suffix, identifier.substr(identifier.size() - suffix.size()));
 }
+
+namespace {
+const ScenePrimArc*
+findArc(const ScenePrimComposition& composition,
+        ScenePrimArc::Type type)
+{
+    for (const ScenePrimArc& arc : composition.arcs) {
+        if (arc.type == type) {
+            return &arc;
+        }
+    }
+
+    return nullptr;
+}
+} // anonymous namespace
+
+TEST_F(SceneProvenanceTest, ACompositionReportsEveryArcAndLayer)
+{
+    const PXR_NS::SdfLayerRefPtr referenced = PXR_NS::SdfLayer::CreateAnonymous("referenced.usda");
+    ASSERT_TRUE(referenced->ImportFromString("#usda 1.0\ndef Xform \"Ref\" { }\n"));
+    const PXR_NS::SdfLayerRefPtr payloaded = PXR_NS::SdfLayer::CreateAnonymous("payloaded.usda");
+    ASSERT_TRUE(payloaded->ImportFromString("#usda 1.0\ndef Xform \"Pay\" { }\n"));
+    const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("root.usda");
+    const std::string text = "#usda 1.0\n"
+                             "class Xform \"_cls\" { }\n"
+                             "def Xform \"Prim\" (\n"
+                             "    inherits = </_cls>\n"
+                             "    references = @"
+        + referenced->GetIdentifier() + "@</Ref>\n"
+                                        "    payload = @"
+        + payloaded->GetIdentifier() + "@</Pay>\n"
+                                       "    variants = { string look = \"red\" }\n"
+                                       "    prepend variantSets = \"look\"\n"
+                                       ")\n"
+                                       "{\n"
+                                       "    variantSet \"look\" = {\n"
+                                       "        \"red\" { }\n"
+                                       "    }\n"
+                                       "}\n";
+    ASSERT_TRUE(root->ImportFromString(text));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::SdfPath primPath("/Prim");
+
+    ScenePrimComposition composition = SceneOps::getPrimComposition(stage->GetPrimAtPath(primPath));
+    EXPECT_FALSE(composition.isPrototype);
+    ASSERT_TRUE(findArc(composition, ScenePrimArc::eRoot) != nullptr);
+    EXPECT_EQ(root->GetIdentifier(), findArc(composition, ScenePrimArc::eRoot)->targetLayer);
+
+    const ScenePrimArc* reference = findArc(composition, ScenePrimArc::eReference);
+    ASSERT_TRUE(reference != nullptr);
+    EXPECT_EQ("/Ref", reference->targetPath);
+    EXPECT_EQ(referenced->GetIdentifier(), reference->targetLayer);
+    EXPECT_EQ(root->GetIdentifier(), reference->introducingLayer);
+    EXPECT_TRUE(reference->loaded);
+    EXPECT_FALSE(reference->ancestral);
+
+    const ScenePrimArc* payload = findArc(composition, ScenePrimArc::ePayload);
+    ASSERT_TRUE(payload != nullptr);
+    EXPECT_EQ("/Pay", payload->targetPath);
+    EXPECT_EQ(payloaded->GetIdentifier(), payload->targetLayer);
+    EXPECT_TRUE(payload->loaded);
+
+    const ScenePrimArc* variant = findArc(composition, ScenePrimArc::eVariant);
+    ASSERT_TRUE(variant != nullptr);
+    EXPECT_EQ("/Prim{look=red}", variant->targetPath);
+
+    const ScenePrimArc* inherit = findArc(composition, ScenePrimArc::eInherit);
+    ASSERT_TRUE(inherit != nullptr);
+    EXPECT_EQ("/_cls", inherit->targetPath);
+    EXPECT_EQ(root->GetIdentifier(), inherit->introducingLayer);
+
+    // An unloaded payload keeps its authored arc, with no target in the prim index.
+    stage->Unload(primPath);
+    composition = SceneOps::getPrimComposition(stage->GetPrimAtPath(primPath));
+    payload = findArc(composition, ScenePrimArc::ePayload);
+    ASSERT_TRUE(payload != nullptr);
+    EXPECT_FALSE(payload->loaded);
+    EXPECT_EQ("/Pay", payload->targetPath);
+    EXPECT_EQ(payloaded->GetIdentifier(), payload->targetLayer);
+    EXPECT_EQ(root->GetIdentifier(), payload->introducingLayer);
+    EXPECT_TRUE(findArc(composition, ScenePrimArc::eReference) != nullptr);
+}
+
+TEST_F(SceneProvenanceTest, ACompositionMapsLayersToNodesAndHandlesPrototypes)
+{
+    NodePtr world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    ASSERT_TRUE(world && a);
+    setString(world, kSceneParamPrimPath, "/World");
+    setString(a, kSceneParamPrimPath, "/A");
+    ASSERT_TRUE(world->connectInput(a, 0));
+
+    PXR_NS::UsdStageRefPtr stage = compose(world);
+    ASSERT_TRUE(bool(stage));
+    const ScenePrimComposition grafted = SceneOps::getPrimComposition(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")));
+    bool targetsA = false;
+    for (const ScenePrimArc& arc : grafted.arcs) {
+        targetsA = targetsA || ((arc.type == ScenePrimArc::eReference) && (arc.targetOwner == a));
+    }
+    EXPECT_TRUE(targetsA);
+
+    const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("instances.usda");
+    ASSERT_TRUE(root->ImportFromString("#usda 1.0\n"
+                                       "def Xform \"Source\" { def Xform \"Child\" { } }\n"
+                                       "def Xform \"Instance\" (\n"
+                                       "    instanceable = true\n"
+                                       "    references = </Source>\n"
+                                       ") { }\n"));
+    PXR_NS::UsdStageRefPtr instances = PXR_NS::UsdStage::Open(root);
+    ASSERT_TRUE(bool(instances));
+    const PXR_NS::UsdPrim instance = instances->GetPrimAtPath(PXR_NS::SdfPath("/Instance"));
+    ASSERT_TRUE(instance.IsInstance());
+
+    const ScenePrimComposition own = SceneOps::getPrimComposition(instance);
+    EXPECT_TRUE(own.prototypePath.empty());
+    EXPECT_FALSE(own.arcs.empty());
+
+    const ScenePrimComposition prototype = SceneOps::getPrimComposition(instance.GetPrototype());
+    EXPECT_TRUE(prototype.isPrototype);
+    EXPECT_TRUE(prototype.arcs.empty());
+
+    const PXR_NS::UsdPrim proxy = instance.GetChild(PXR_NS::TfToken("Child"));
+    ASSERT_TRUE(proxy.IsInstanceProxy());
+    const ScenePrimComposition viaProxy = SceneOps::getPrimComposition(proxy);
+    EXPECT_TRUE(viaProxy.isInstanceProxy);
+    EXPECT_EQ(proxy.GetPrimInPrototype().GetPath().GetString(), viaProxy.prototypePath);
+    EXPECT_TRUE(viaProxy.arcs.empty());
+}

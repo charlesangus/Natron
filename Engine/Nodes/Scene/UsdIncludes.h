@@ -83,6 +83,7 @@
 #include <pxr/usd/usd/modelAPI.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/primCompositionQuery.h>
 #include <pxr/usd/usd/primDefinition.h>
 #include <pxr/usd/usd/primFlags.h>
 #include <pxr/usd/usd/primRange.h>

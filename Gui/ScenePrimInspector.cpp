@@ -361,6 +361,65 @@ readMetadata(const ScenePrimInspectorRead& read,
     return true;
 }
 
+QString
+arcLabel(ScenePrimArc::Type type)
+{
+    switch (type) {
+    case ScenePrimArc::eRoot:
+        return ScenePrimInspector::tr("Root");
+    case ScenePrimArc::eInherit:
+        return ScenePrimInspector::tr("Inherit");
+    case ScenePrimArc::eVariant:
+        return ScenePrimInspector::tr("Variant");
+    case ScenePrimArc::eRelocate:
+        return ScenePrimInspector::tr("Relocate");
+    case ScenePrimArc::eReference:
+        return ScenePrimInspector::tr("Reference");
+    case ScenePrimArc::ePayload:
+        return ScenePrimInspector::tr("Payload");
+    case ScenePrimArc::eSpecialize:
+        return ScenePrimInspector::tr("Specialize");
+    }
+
+    return QString();
+}
+
+bool
+readComposition(const ScenePrimInspectorRead& read,
+                std::vector<InspectorRow>* rows)
+{
+    ScenePrimComposition composition;
+
+    if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) { composition = SceneOps::getPrimComposition(prim); })) {
+        return false;
+    }
+    if (composition.isPrototype) {
+        rows->push_back({ cellOf(ScenePrimInspector::tr("Prototype")), cellOf(ScenePrimInspector::tr("This prim is a prototype")), InspectorCell(), InspectorCell(), InspectorCell() });
+    } else if (composition.isInstanceProxy) {
+        rows->push_back({ cellOf(ScenePrimInspector::tr("Instance Proxy")), cellOf(QString::fromStdString(composition.prototypePath)), InspectorCell(), InspectorCell(), InspectorCell() });
+    }
+    for (const ScenePrimArc& arc : composition.arcs) {
+        QStringList notes;
+        if (arc.ancestral) {
+            notes << ScenePrimInspector::tr("Ancestral");
+        }
+        if (arc.implicit) {
+            notes << ScenePrimInspector::tr("Implicit");
+        }
+        if (!arc.loaded) {
+            notes << ScenePrimInspector::tr("Not loaded");
+        }
+        const QString indent(arc.depth * 2, QLatin1Char(' '));
+        rows->push_back({ cellOf(indent + arcLabel(arc.type)),
+                          cellOf(QString::fromStdString(arc.targetPath)),
+                          authorCell(arc.targetOwner, arc.targetLayer, false),
+                          authorCell(arc.introducingOwner, arc.introducingLayer, false),
+                          cellOf(notes.join(QString::fromUtf8(", "))) });
+    }
+
+    return true;
+}
+
 class InspectorTableModel
     : public QAbstractTableModel {
 public:
@@ -779,6 +838,9 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
     addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Metadata"), QString::fromUtf8("sceneGraphMetadata"),
                                                                         QStringList() << tr("Field") << tr("Value") << tr("Authored By"),
                                                                         readMetadata)));
+    addTab(std::unique_ptr<ScenePrimInspectorTab>(new InspectorTableTab(tr("Composition"), QString::fromUtf8("sceneGraphComposition"),
+                                                                        QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"),
+                                                                        readComposition)));
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }

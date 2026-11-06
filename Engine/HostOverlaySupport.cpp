@@ -161,14 +161,13 @@ HostOverlayKnobsTransform::describeOverlayKnobs()
 {
     describeKnob(eKnobsEnumerationTranslate, KnobDouble::typeNameStatic(), 2);
     describeKnob(eKnobsEnumerationScale, KnobDouble::typeNameStatic(), 2);
-    describeKnob(eKnobsEnumerationUniform, KnobBool::typeNameStatic(), 1);
+    describeKnob(eKnobsEnumerationUniform, KnobBool::typeNameStatic(), 1, true);
     describeKnob(eKnobsEnumerationRotate, KnobDouble::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationSkewx, KnobDouble::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationSkewy, KnobDouble::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationSkewOrder, KnobChoice::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationCenter, KnobDouble::typeNameStatic(), 2);
     describeKnob(eKnobsEnumerationInvert, KnobBool::typeNameStatic(), 1, true);
-    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
 }
 
 void
@@ -188,7 +187,6 @@ HostOverlayKnobsCornerPin::describeOverlayKnobs()
     describeKnob(eKnobsEnumerationEnable4, KnobBool::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationOverlayPoints, KnobChoice::typeNameStatic(), 1);
     describeKnob(eKnobsEnumerationInvert, KnobBool::typeNameStatic(), 1, true);
-    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
 }
 
 void
@@ -203,8 +201,15 @@ HostOverlayKnobsRectangle::describeOverlayKnobs()
 {
     describeKnob(eKnobsEnumerationBottomLeft, KnobDouble::typeNameStatic(), 2);
     describeKnob(eKnobsEnumerationSize, KnobDouble::typeNameStatic(), 2);
-    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
     describeKnob(eKnobsEnumerationEnable, KnobBool::typeNameStatic(), 1, true);
+}
+
+void
+HostOverlayKnobsRamp::describeOverlayKnobs()
+{
+    describeKnob(eKnobsEnumerationPoint0, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationPoint1, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
 }
 
 NATRON_NAMESPACE_EXIT

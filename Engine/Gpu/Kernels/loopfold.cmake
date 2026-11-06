@@ -1,0 +1,7 @@
+slang_add_kernel(loopfold_mean Kernels/loopfold.slang ENTRY loopfold_mean REGISTRY NatronGpu)
+slang_add_kernel(loopfold_sum Kernels/loopfold.slang ENTRY loopfold_sum REGISTRY NatronGpu)
+slang_add_kernel(loopfold_min Kernels/loopfold.slang ENTRY loopfold_min REGISTRY NatronGpu)
+slang_add_kernel(loopfold_max Kernels/loopfold.slang ENTRY loopfold_max REGISTRY NatronGpu)
+slang_add_kernel(loopfold_over Kernels/loopfold.slang ENTRY loopfold_over REGISTRY NatronGpu)
+slang_add_kernel(loopfold_under Kernels/loopfold.slang ENTRY loopfold_under REGISTRY NatronGpu)
+slang_add_kernel(loopfold_copy Kernels/loopfold.slang ENTRY loopfold_copy REGISTRY NatronGpu)

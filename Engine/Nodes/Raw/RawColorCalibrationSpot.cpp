@@ -479,7 +479,7 @@ RawColorCalibration::initializeKnobs()
     ImageNode<RawColorCalibrationOp>::initializeKnobs();
 
     if (NodePtr node = getNode()) {
-        node->addRectangleInteract(op().spotBottomLeft.lock(), op().spotSize.lock(), KnobBoolPtr(), KnobBoolPtr());
+        node->addRectangleInteract(op().spotBottomLeft.lock(), op().spotSize.lock(), KnobBoolPtr());
 
         const RawColorCalibrationOp& o = op();
         const KnobDoublePtr corners[4] = { o.checkerCorners[0].lock(), o.checkerCorners[1].lock(), o.checkerCorners[2].lock(), o.checkerCorners[3].lock() };
@@ -488,7 +488,7 @@ RawColorCalibration::initializeKnobs()
                                    corners[0], corners[1], corners[2], corners[3],
                                    o.checkerCornerEnable[0].lock(), o.checkerCornerEnable[1].lock(),
                                    o.checkerCornerEnable[2].lock(), o.checkerCornerEnable[3].lock(),
-                                   o.checkerOverlayPoints.lock(), KnobBoolPtr(), KnobBoolPtr());
+                                   o.checkerOverlayPoints.lock(), KnobBoolPtr());
     }
 }
 

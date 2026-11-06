@@ -64,7 +64,7 @@ namespace {
 // diffuse (0, 1, 0) and specular (0, 0, 1), so one pixel stands for all.
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kGradePluginID = "Grade";
 
 std::set<std::string>
 channelSet(const FlatExrImage& image)

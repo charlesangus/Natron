@@ -30,8 +30,8 @@ SETTLE_MS = 400
 DIALOG_APPEAR_S = 30.0
 DIALOG_CLOSE_S = 15.0
 DIALOG_TOTAL_S = 60.0
-BLUR = "net.sf.cimg.CImgBlur"
-WRITE = "fr.inria.built-in.Write"
+BLUR = "Blur"
+WRITE = "Write"
 LABEL = "kept label"
 EXPRESSION = "3.5"
 PRESET_USER = "presetUser"
@@ -438,9 +438,9 @@ try:
         require(ok, "node graph widget is up")
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
-        viewers = [n for n in app.getChildren() if n.getPluginID() == "fr.inria.built-in.Viewer"]
+        viewers = [n for n in app.getChildren() if n.getPluginID() == "Viewer"]
         if not viewers:
-            require(app.createNode("fr.inria.built-in.Viewer") is not None, "created a viewer for the empty project")
+            require(app.createNode("Viewer") is not None, "created a viewer for the empty project")
 
         yield from blur_section()
         gt.close_all_panels()

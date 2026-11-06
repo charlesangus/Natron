@@ -54,46 +54,46 @@ def animate(prm, base, per_frame):
 # key: (plugin id, params, generator). Params leave the node doing work: an identity would be
 # passed through. A tuple sets several dimensions of one parameter.
 NODES = {
-    "grade": ("net.sf.openfx.GradePlugin", {"multiply": (1.1, 1.05, 1.0, 1.0), "offset": (0.01, 0.0, 0.0, 0.0)}, False),
-    "colorcorrect": ("net.sf.openfx.ColorCorrectPlugin",
+    "grade": ("Grade", {"multiply": (1.1, 1.05, 1.0, 1.0), "offset": (0.01, 0.0, 0.0, 0.0)}, False),
+    "colorcorrect": ("ColorCorrect",
                      {"MasterSaturation": (1.2, 1.2, 1.2, 1.0), "MasterGain": (1.1, 1.1, 1.1, 1.0)}, False),
-    "invert": ("net.sf.openfx.Invert", {}, False),
-    "clamp": ("net.sf.openfx.Clamp", {"minimum": (0.1, 0.1, 0.1, 0.1), "maximum": (0.9, 0.9, 0.9, 0.9)}, False),
-    "add": ("net.sf.openfx.AddPlugin", {"value": (0.05, 0.05, 0.05, 0.0)}, False),
-    "multiply": ("net.sf.openfx.MultiplyPlugin", {"value": (1.1, 1.1, 1.1, 1.0)}, False),
-    "gamma": ("net.sf.openfx.GammaPlugin", {"value": (1.2, 1.2, 1.2, 1.0)}, False),
-    "saturation": ("net.sf.openfx.SaturationPlugin", {"saturation": 1.3}, False),
-    "colorlookup": ("net.sf.openfx.ColorLookupPlugin", {"clampBlack": True, "clampWhite": True}, False),
-    "keyer": ("net.sf.openfx.KeyerPlugin", {"mode": 1, "keyColor": (0.5, 0.5, 0.5, 1.0)}, False),
-    "chromakeyer": ("net.sf.openfx.ChromaKeyerPlugin", {"keyColor": (0.1, 0.9, 0.1, 1.0)}, False),
-    "erode": ("net.sf.cimg.CImgErode", {"size": (6, 6)}, False),
-    "erode21": ("net.sf.cimg.CImgErode", {"size": (21, 21)}, False),
-    "dilate": ("net.sf.cimg.CImgDilate", {"size": (6, 6)}, False),
-    "transform": ("net.sf.openfx.TransformPlugin",
+    "invert": ("Invert", {}, False),
+    "clamp": ("Clamp", {"minimum": (0.1, 0.1, 0.1, 0.1), "maximum": (0.9, 0.9, 0.9, 0.9)}, False),
+    "add": ("Add", {"value": (0.05, 0.05, 0.05, 0.0)}, False),
+    "multiply": ("Multiply", {"value": (1.1, 1.1, 1.1, 1.0)}, False),
+    "gamma": ("Gamma", {"value": (1.2, 1.2, 1.2, 1.0)}, False),
+    "saturation": ("Saturation", {"saturation": 1.3}, False),
+    "colorlookup": ("ColorLookup", {"clampBlack": True, "clampWhite": True}, False),
+    "keyer": ("Keyer", {"keySource": 2}, False),
+    "chromakeyer": ("ChromaKeyer", {"keyColor": (0.1, 0.9, 0.1, 1.0)}, False),
+    "erode": ("ErodeDilate", {"size": (6, 6)}, False),
+    "erode21": ("ErodeDilate", {"size": (21, 21)}, False),
+    "dilate": ("ErodeDilate", {"size": (-6, -6)}, False),
+    "transform": ("Transform",
                   {"translate": (10.5, 7.25), "rotate": 1.0, "center": (1920.0, 1080.0)}, False),
-    "transform_mb1": ("net.sf.openfx.TransformPlugin", {"center": (1920.0, 1080.0), "motionBlur": 1.0, "shutter": 1.0}, False),
-    "transform_mb4": ("net.sf.openfx.TransformPlugin", {"center": (1920.0, 1080.0), "motionBlur": 4.0, "shutter": 1.0}, False),
-    "blur_fir3": ("net.sf.cimg.CImgBlur", {"size": (7.2, 7.2)}, False),
-    "blur_fir25": ("net.sf.cimg.CImgBlur", {"size": (60.0, 60.0)}, False),
-    "blur_fir100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0)}, False),
-    "blur_qg100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 0}, False),
-    "blur_gauss100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 1}, False),
-    "blur_box100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 2}, False),
-    "blur": ("net.sf.cimg.CImgBlur", {"size": (12.0, 12.0)}, False),
+    "transform_mb1": ("Transform", {"center": (1920.0, 1080.0), "motionBlur": 1.0, "shutter": 1.0}, False),
+    "transform_mb4": ("Transform", {"center": (1920.0, 1080.0), "motionBlur": 4.0, "shutter": 1.0}, False),
+    "blur_fir3": ("Blur", {"size": (7.2, 7.2)}, False),
+    "blur_fir25": ("Blur", {"size": (60.0, 60.0)}, False),
+    "blur_fir100": ("Blur", {"size": (240.0, 240.0)}, False),
+    "blur_qg100": ("Blur", {"size": (240.0, 240.0), "filter": 0}, False),
+    "blur_gauss100": ("Blur", {"size": (240.0, 240.0), "filter": 1}, False),
+    "blur_box100": ("Blur", {"size": (240.0, 240.0), "filter": 2}, False),
+    "blur": ("Blur", {"size": (12.0, 12.0)}, False),
     "iblur": ("IBlur", {"size": (60.0, 60.0)}, False),
-    "ierode": ("IErode", {"size": (6.0, 6.0)}, False),
-    "idilate": ("IDilate", {"size": (6.0, 6.0)}, False),
+    "ierode": ("IErodeDilate", {"size": (6.0, 6.0)}, False),
+    "idilate": ("IErodeDilate", {"size": (-6.0, -6.0)}, False),
     "sharpen": ("Sharpen", {"size": (6.0, 6.0), "amount": 1.5, "threshold": 0.01}, False),
     "edgeextend": ("EdgeExtend", {"size": 40.0, "slices": 5}, False),
     "bloom": ("Bloom", {"size": (24.0, 24.0), "ratio": 2.0, "count": 5}, False),
     "glow": ("Glow", {"threshold": 0.25, "knee": 0.2, "size": 24.0, "count": 7, "brightness": 1.5,
                       "tint": (1.0, 0.9, 0.8, 1.0)}, False),
     "edgeblur": ("EdgeBlur", {"size": 12.0, "edgeMult": 2.0}, False),
-    "dissolve": ("net.sf.openfx.DissolvePlugin", {"which": 0.5}, False),
-    "crop": ("net.sf.openfx.CropPlugin",
+    "dissolve": ("Dissolve", {"which": 0.5}, False),
+    "crop": ("Crop",
              {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
-    "reformat": ("net.sf.openfx.Reformat", {"reformatType": 1, "boxFixed": True, "boxSize": (1920, 1080)}, False),
-    "position": ("net.sf.openfx.Position", {"translate": (12.6, 7.4)}, False),
+    "reformat": ("Reformat", {"reformatType": 1, "boxFixed": True, "boxSize": (1920, 1080)}, False),
+    "position": ("Position", {"translate": (12.6, 7.4)}, False),
     "premult": ("Premult", {}, False),
     "unpremult": ("Unpremult", {}, False),
     "colorspace": ("Colorspace", {"colorspace_in": 0, "colorspace_out": 1}, False),
@@ -105,9 +105,8 @@ NODES = {
     "despill": ("Despill", {"screenColor": (0.1, 0.9, 0.1, 1.0), "strength": 1.0}, False),
     "threshold": ("Threshold", {"level": (0.5, 0.5, 0.5, 0.5), "softness": (0.1, 0.1, 0.1, 0.1)}, False),
     "posterize": ("Posterize", {"levels": 6}, False),
-    "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
-    "solid": ("net.sf.openfx.Solid", {}, True),
-    "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+    "constant": ("Constant", {}, True),
+    "checkerboard": ("CheckerBoard", {}, True),
     "noise": ("Noise", {"type": "simplex", "fractal": "fbm", "octaves": 6, "lacunarity": 2.0, "gain": 0.5,
                         "noiseSize": (64.0, 64.0), "warpType": "perlin", "warpAmount": 0.5}, True),
     "itransform": ("ITransform", {"translate": (10.5, 7.25), "rotate": 1.0, "center": (1920.0, 1080.0)}, False),
@@ -118,14 +117,14 @@ NODES = {
     "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
     "merge": ("Merge", {"operation": "over"}, False),
     "merge_plus": ("Merge", {"operation": "plus"}, False),
-    "ocio_colorspace": ("OCIOColorSpace", {"in_colorspace": "ACES2065-1", "out_colorspace": "ACEScg"}, False),
-    "ocio_display": ("OCIODisplay", {"in_colorspace": "ACEScg", "display": "sRGB - Display",
+    "ocio_colorspace": ("OCIOColorSpace", {"inputColorspace": "ACES2065-1", "outputColorspace": "ACEScg"}, False),
+    "ocio_display": ("OCIODisplay", {"inputColorspace": "ACEScg", "display": "sRGB - Display",
                                      "view": "ACES 2.0 - SDR 100 nits (Rec.709)", "gain": 1.1}, False),
     "ocio_cdl": ("OCIOCDLTransform", {"slope": (1.1, 0.9, 1.0), "offset": (0.01, 0.0, -0.01),
                                       "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
     "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
-    "ocio_look": ("OCIOLookTransform", {"in_colorspace": "ACEScg", "out_colorspace": "ACEScg",
-                                        "single_look": True, "look": "@LOOK@"}, False),
+    "ocio_look": ("OCIOLookTransform", {"inputColorspace": "ACEScg", "outputColorspace": "ACEScg",
+                                        "singleLook": True, "look": "@LOOK@"}, False),
 }
 
 
@@ -193,7 +192,7 @@ def configure(name, index):
             param(node, key).set(*value)
         else:
             param(node, key).set(value)
-    if plugin_id == "net.sf.openfx.TransformPlugin" and "translate" not in values:
+    if plugin_id == "Transform" and "translate" not in values:
         animate(param(node, "translate"), (0.0, 0.0), (14.0, 6.0))
         animate(param(node, "rotate"), (0.0,), (0.8,))
     if name == "huecorrect":
@@ -220,28 +219,28 @@ def main():
         last = configure(NODE, 0)
         count = 1
     else:
-        source = make("net.sf.openfx.Ramp", "np_source")
+        source = make("Ramp", "np_source")
         param(source, "point0").set(0.0, 0.0)
         param(source, "point1").set(3840.0, 2160.0)
         animate(param(source, "color0"), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
         param(source, "color1").set(0.9, 0.8, 0.7, 1.0)
         other = None
         if NODE in TWO_INPUTS:
-            other = make("net.sf.openfx.Ramp", "np_source2")
+            other = make("Ramp", "np_source2")
             param(other, "point0").set(3840.0, 0.0)
             param(other, "point1").set(0.0, 2160.0)
             param(other, "color0").set(0.8, 0.1, 0.2, 1.0)
             param(other, "color1").set(0.1, 0.7, 0.9, 1.0)
         size_map = None
         if NODE in MAP_INPUTS:
-            size_map = make("net.sf.openfx.Ramp", "np_map")
+            size_map = make("Ramp", "np_map")
             param(size_map, "point0").set(0.0, 0.0)
             param(size_map, "point1").set(3840.0, 0.0)
             param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
             param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
         uv = None
         if NODE in UV_INPUTS:
-            uv = make("net.sf.openfx.Ramp", "np_uv")
+            uv = make("Ramp", "np_uv")
             param(uv, "point0").set(0.0, 0.0)
             param(uv, "point1").set(3840.0, 2160.0)
             param(uv, "color0").set(0.0, 0.0, 0.0, 1.0)

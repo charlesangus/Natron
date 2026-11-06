@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 200
 SETTLE_MS = 400
-BLUR = "net.sf.cimg.CImgBlur"
+BLUR = "Blur"
 PARAM = "size"
 
 try:

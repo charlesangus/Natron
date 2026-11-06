@@ -244,13 +244,13 @@ try:
         yield ("sleep", SETTLE_MS)
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 2400)
 
         gt.section("setup")
-        hosts = [build_host("fr.inria.built-in.Roto", 100.0, 100.0, 0),
-                 build_host("fr.inria.built-in.RotoPaint", 100.0, 400.0, 400)]
+        hosts = [build_host("Roto", 100.0, 100.0, 0),
+                 build_host("RotoPaint", 100.0, 400.0, 400)]
         expected = [(1, [(SHAPE_KEYS, 1), (SHAPE_KEYS, 1)]) for _h in hosts]
         initial = key_state(hosts)
         report("NOTE keys %r" % (initial,))

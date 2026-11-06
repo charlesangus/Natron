@@ -38,6 +38,7 @@ struct GroupKnobSerialization;
 struct GuiLayoutSerialization;
 struct KeyFrameSerialization;
 struct KnobDimensionSerialization;
+struct KnobDriverSerialization;
 struct KnobMasterSerialization;
 struct KnobSerialization;
 struct LayerRegistryEntrySerialization;

@@ -51,6 +51,7 @@
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
 
@@ -672,6 +673,12 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
         if (group) {
             _imp->restoreKnobLinksRecursive(allNodes, group, oldNewScriptNamesMapping, throwOnFailure);
         }
+    }
+
+    // Curve points linked to tracks resolve them by name once every tracker exists.
+    RotoCurveContextPtr curves = getCurveContext();
+    if (curves) {
+        curves->resolveTrackLinks();
     }
 }
 

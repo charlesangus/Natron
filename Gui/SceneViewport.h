@@ -41,6 +41,8 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <OpenColorIO/OpenColorIO.h>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
 
@@ -54,6 +56,7 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class SceneStage;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -85,7 +88,8 @@ public:
 
     // What lights the shaded mode: the stage's own lights when it has any, else a light at the
     // camera (auto); always the stage's lights, dark when it has none (scene); or always the
-    // light at the camera (headlight).
+    // light at the camera (headlight). Scene until set; the viewer sets it from the Viewer 3D
+    // Lighting preference.
     enum LightingModeEnum {
         eLightingModeAuto = 0,
         eLightingModeScene,
@@ -159,6 +163,10 @@ public:
      **/
     bool syncScene(const ScenePayload& payload, std::string* error, U64 serial = 0);
 
+    // syncScene(), and shows the stage at frame from then on: a paint never sees one without the
+    // other.
+    bool syncScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error, U64 serial = 0);
+
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
      * camera is framed on the scene the first time a scene is shown, and kept for later scenes.
@@ -173,6 +181,15 @@ public:
     void clearScene();
 
     bool hasScene() const;
+
+    /**
+     * @brief Calls read under the lock that keeps syncs and paints out of the stage, with the
+     * stage shown, or null when no scene is. read must not call back into the renderer.
+     **/
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    // The shown stage's edit count, without the lock: 0 before the first sync.
+    U64 getStageEditCount() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -195,6 +212,34 @@ public:
     void setDrawMode(DrawModeEnum mode);
 
     DrawModeEnum getDrawMode() const;
+
+    // How what Storm draws reaches the screen: the display and view of config, from colorSpace,
+    // as the 2D viewer shows images, with its gain multiplied in before them and its gamma
+    // applied after.
+    struct DisplayTransform {
+        OCIO_NAMESPACE::ConstConfigRcPtr config;
+        std::string colorSpace;
+        std::string display;
+        std::string view;
+        double gain = 1.;
+        double gamma = 1.;
+    };
+
+    /**
+     * @brief Applies transform from the next render() on. Hydra's colour correction only uses
+     * OpenColorIO when $OCIO is set, so without it, without a config, or when the config cannot
+     * build the transform, the sRGB transform is applied instead. A transform that needs 1D or 2D
+     * LUT textures on the GPU (e.g. ACES 2.0 output transforms), which Hydra's colour correction
+     * cannot bind, is approximated by a log2 shaper and a 65-point 3D LUT baked from it. That
+     * bake, or a transform with a gain or gamma other than 1, reaches Hydra as one view, gain,
+     * display transform and gamma in turn, made current as part of a copy of the config. Without
+     * a usable config, a gain or gamma other than 1 goes with the sRGB transform the same way,
+     * as long as $OCIO is set.
+     **/
+    void setDisplayTransform(const DisplayTransform& transform);
+
+    // Whether render() goes through OpenColorIO rather than Hydra's own sRGB transform.
+    bool isUsingOpenColorIO() const;
 
     // The ground grid, drawn over the scene by default.
     void setShowGrid(bool show);
@@ -468,8 +513,8 @@ public:
     // The delegate of the engine held, empty if none is.
     std::string getEngineRendererId() const;
 
-    // The background colour render() clears to.
-    static void getBackgroundColor(float rgb[3]);
+    // The background colour render() clears to, as it shows through the display transform.
+    void getBackgroundColor(float rgb[3]) const;
 
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
@@ -520,6 +565,8 @@ public:
 
     void setDrawMode(SceneViewportRenderer::DrawModeEnum mode);
 
+    void setDisplayTransform(const SceneViewportRenderer::DisplayTransform& transform);
+
     // Renders with the Hydra render delegate id, whatever any USDRender node renders with.
     void setRendererId(const QString& id);
     void setShowGrid(bool show);
@@ -529,6 +576,7 @@ public:
     // Whether prims of the proxy, render and guide purposes are drawn.
     void setShowPurposes(bool proxy, bool render, bool guide);
 
+    // Sets the Viewer 3D Lighting preference, which every 3D view follows.
     void setLightingMode(SceneViewportRenderer::LightingModeEnum mode);
 
     void setLookThroughCamera(const QString& path);
@@ -587,6 +635,18 @@ public:
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
 
+    /**
+     * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
+     * paths now, or nothing when it can.
+     **/
+    struct SelectionActions {
+        std::function<QString(const QStringList& paths)> setOnNodeBlocker;
+        std::function<void(const QStringList& paths)> setOnNode;
+        std::function<void(const QStringList& paths)> createFromSelection;
+    };
+
+    void setSelectionActions(const SelectionActions& actions);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 
@@ -622,13 +682,18 @@ public:
     /**
      * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
      * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
-     * again would mean syncing the whole scene again. Main thread; waits for a sync under way.
+     * again would mean syncing the whole scene again. A scene showing live textures is requested
+     * again, as the store they live in is emptied alongside, and the repaint waits for that sync.
+     * Main thread; waits for a sync under way.
      **/
     void releaseEngine();
 
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
+
+    // The renderer's stage holds the latest requested scene, or none (main thread).
+    void sceneSynced();
 
 protected:
     void initializeGL() override;

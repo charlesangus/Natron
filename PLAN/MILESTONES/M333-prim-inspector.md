@@ -42,7 +42,7 @@ USD API use (`usdviewq/appController.py:4298-4314,4441-4509,4604-4607`).
   - verify: gtest — a prim with a reference, a payload, a variant and an inherit reports each arc and layer; an unloaded payload reports "not loaded". Screenshot shared.
   - size: M
 
-- [ ] M333.P1.T3 — Opinion stack
+- [x] M333.P1.T3 — Opinion stack
   - files: `Gui/ScenePrimInspector.cpp`, `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Tests/Scene/SceneProvenance_Test.cpp`
   - approach: for a selected attribute, `GetPropertyStack(time)`; for a prim, `GetPrimStackWithLayerOffsets`. List strongest to weakest with layer, node or file, and value where there is one. Double-clicking a node row opens its settings panel.
   - verify: gtest — USDCamera → USDEditTransform → USDSetAttribute on one attribute lists those nodes in strength order with their values; GUI script — double-click opens the right panel.

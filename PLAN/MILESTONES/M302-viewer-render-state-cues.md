@@ -27,6 +27,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 
 ## Decisions
 
+- 2026-11-06 — The first GUI failure was a too-short test render (Blur 400 is stale only 150-250 ms); the script now uses IDefocus at size 500, and the border itself worked with 15 checks passing 4 runs of 4. Reading the render paths found Redraw returns that left a viewer stuck stale; they now settle unless a newer request exists. Not fixed, outside scope: `renderCurrentFrame` and the playback `renderFrame` test `clearTexture[0]` in both texture-clear blocks where the second should test `[1]`.
 - 2026-11-06 — Freshness check: P1.T1 rebriefed onto the existing ages. M118 - Large Graph GUI Responsiveness replaced the idle poll with a dirty set (`NodeGraph::scheduleNodeRenderStateRefresh`, `NodeGraph35.cpp:174`, feeding `refreshRenderStateTimer`; `NodeGui::refreshRenderingIndicator`, `NodeGui.cpp:2850`), so Phase 302.2's dot and edge tasks wait for it and hook that path, not the 300 ms loop their briefs describe. M116 - GPU Region Overlay's dry run must leave `renderAge` alone.
 - 2026-11-01 — **Coloured viewer border, stale and current states only (user).**
 - 2026-11-01 — **The border delay is a user preference (user);** default 150 ms (planner).

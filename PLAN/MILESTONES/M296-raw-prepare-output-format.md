@@ -28,7 +28,7 @@ Deps: M80 - Native RAW Support.
 
 ## Phase 296.1: Prepared format
 
-- [ ] M296.P1.T1 — RawPrepare sets its output format to the kept crop
+- [x] M296.P1.T1 — RawPrepare sets its output format to the kept crop
   - files: `Engine/Nodes/Raw/RawPrepare.h`, `Engine/Nodes/Raw/RawPrepare.cpp`
   - approach: Add a `getPreferredMetadataAt` override. It first calls `StagedImageEffect::getPreferredMetadataAt`, which handles the Black route. Then, when `resolveSettings` succeeds and the node is not passing through, it calls `metadata.setOutputFormat(RectI(0, 0, kept.width(), kept.height()))`. Follow the native Crop with Reformat (`Engine/Nodes/Transform/Crop.cpp` ~:549, where the crop becomes the format). Mark `_cropOverride` and the four crop-margin knobs `setIsMetadataSlave(true)`, as `Crop.cpp` ~:283 does. Confirm that `resolveSettings` doesn't re-enter metadata computation when called from this override. If it does, compute the kept rectangle from the input's metadata crop and the knobs directly.
   - verify: In `Tests/Native/NativeRawPrepare_Test.cpp`, extend `AnOddCropKeepsTheColourOfEveryPhotosite`, or add a sibling case on the synthetic `RawTestSource.h`. Assert that `getTimeInvariantMetadata()->getOutputFormat()` equals `RectI(0,0,crop.width(),crop.height())`, once for the metadata crop and once for the override-margin crop (the assertion style is in `NativeReadTime_Test.cpp` ~:672). Add a case that changes the override margins and checks that the format follows. Add a case where a RawDemosaic after RawPrepare reports the same format.

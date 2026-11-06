@@ -44,11 +44,11 @@ try:
     from PySide6.QtWidgets import QApplication
     import NatronEngine
 
-    from guitest import HOST_DISPLAY, OUT, check, finish, report, require, run, widgets_of
+    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, widgets_of
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
-    require(fixture in ("flat", "city"), "BENCH_FIXTURE is flat or city, not %r" % fixture)
+    require(fixture in ("flat", "city"), "BENCH_FIXTURE %r is one of flat, city" % fixture)
     default_files = {"flat": "heavy_flat.usdc", "city": "heavy_city.usda"}
     path = os.environ.get("BENCH_FILE", os.path.join(ROOT, "build", "bench", default_files[fixture]))
     require(os.path.isfile(path), "the fixture exists: " + path)
@@ -96,10 +96,15 @@ try:
 
     heartbeat = Heartbeat()
 
-    usd = app.createNode("USDRead")
-    require(usd is not None, "create USDRead")
-    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
-    require(viewer is not None, "a Viewer exists")
+    def create(plugin_id, x, y):
+        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)}
+        node = app.createNode(plugin_id, -1, None, props)
+        require(node is not None, "create " + plugin_id, plugin_problem(plugin_id))
+        node.setPosition(x, y)
+        return node
+
+    usd = create("USDRead", 0, 0)
+    viewer = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 0, 150)
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
@@ -243,7 +248,6 @@ try:
             record.update(m.values)
             line = json.dumps(record)
             print(line)
-            sys.stdout.flush()
             with open(result_path, "a") as f:
                 f.write(line + "\n")
             report("RESULT " + line)

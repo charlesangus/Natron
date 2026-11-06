@@ -347,8 +347,18 @@ struct SceneGraphPanel::Implementation {
     bool changedHereRowsAsked = false;
     bool changedHereBusy = false;
     // The viewer's selection moved while the lazy tree was off screen. Selecting there can read a
-    // whole sibling list, so it waits until that page shows again.
+    // whole sibling list, so it waits until that page shows again and the worker has read the rows.
     bool treeSelectionOwed = false;
+    struct OwedRowsRequest {
+        SceneGraphStageSourcePtr source;
+        QStringList paths;
+        U64 editCount = 0;
+        U64 generation = 0;
+    };
+
+    std::atomic<U64> owedRowsGeneration { 0 };
+    bool hasOwedRowsRequest = false;
+    OwedRowsRequest owedRowsRequest;
     std::atomic<U64> changedHereGeneration { 0 };
     std::mutex changedHereMutex;
     std::condition_variable changedHereQueued;
@@ -715,12 +725,68 @@ struct SceneGraphPanel::Implementation {
 
     void onChangedHereStackPageShown()
     {
+        ++owedRowsGeneration;
         if (stack->currentWidget() == changedHereTree) {
             selectChangedHereRows(selectionOrder);
         } else if ((stack->currentWidget() == tree) && treeSelectionOwed) {
-            treeSelectionOwed = false;
-            selectTreeRows(selectionOrder);
+            askForOwedRows();
         }
+    }
+
+    void askForOwedRows()
+    {
+        const SceneGraphStageSourcePtr source = model->getSource();
+
+        if (!source || selectionOrder.isEmpty()) {
+            selectTreeRows(selectionOrder);
+
+            return;
+        }
+        OwedRowsRequest request;
+        request.source = source;
+        request.paths = selectionOrder.mid(std::max(0, (int)selectionOrder.size() - kShownSelectionCap));
+        request.editCount = source->getEditCount();
+        request.generation = ++owedRowsGeneration;
+        {
+            std::lock_guard<std::mutex> lock(changedHereMutex);
+            owedRowsRequest = std::move(request);
+            hasOwedRowsRequest = true;
+        }
+        changedHereQueued.notify_one();
+    }
+
+    void readOwedRows(const OwedRowsRequest& request)
+    {
+        const U64 generation = request.generation;
+        SceneGraphPathRowsBuilder builder(request.paths);
+
+        while (!builder.isDone() && (owedRowsGeneration == generation)) {
+            request.source->readStage([&](const SceneStage* stage) {
+                if (owedRowsGeneration == generation) {
+                    builder.readBatch(stage);
+                }
+            });
+        }
+        if (owedRowsGeneration != generation) {
+            return;
+        }
+        QMetaObject::invokeMethod(panel, [this, generation, source = request.source, editCount = request.editCount, rows = builder.take()]() { onOwedRowsRead(generation, source, editCount, rows); }, Qt::QueuedConnection);
+    }
+
+    void onOwedRowsRead(U64 generation,
+                        const SceneGraphStageSourcePtr& source,
+                        U64 editCount,
+                        const SceneGraphPathRowsPtr& rows)
+    {
+        if (owedRowsGeneration != generation) {
+            return;
+        }
+        // Rows read across an edit may not be the model's. What they leave out is read below, on
+        // this thread, as selecting always could.
+        if ((source == model->getSource()) && (source->getEditCount() == editCount)) {
+            model->addPathRows(rows);
+        }
+        selectTreeRows(selectionOrder);
     }
 
     // Asks the worker for the prims the shown node's own layers have specs for, and for the filter's
@@ -792,9 +858,17 @@ struct SceneGraphPanel::Implementation {
             ChangedHereRequest next;
             {
                 std::unique_lock<std::mutex> lock(changedHereMutex);
-                changedHereQueued.wait(lock, [this]() { return changedHereQuit || hasChangedHereRequest; });
+                changedHereQueued.wait(lock, [this]() { return changedHereQuit || hasChangedHereRequest || hasOwedRowsRequest; });
                 if (changedHereQuit) {
                     return;
+                }
+                if (hasOwedRowsRequest) {
+                    const OwedRowsRequest owed = std::move(owedRowsRequest);
+                    owedRowsRequest = OwedRowsRequest();
+                    hasOwedRowsRequest = false;
+                    lock.unlock();
+                    readOwedRows(owed);
+                    continue;
                 }
                 next = std::move(changedHereRequest);
                 changedHereRequest = ChangedHereRequest();
@@ -854,6 +928,7 @@ struct SceneGraphPanel::Implementation {
     void stopChangedHere()
     {
         ++changedHereGeneration;
+        ++owedRowsGeneration;
         {
             std::lock_guard<std::mutex> lock(changedHereMutex);
             changedHereQuit = true;
@@ -962,6 +1037,7 @@ struct SceneGraphPanel::Implementation {
         syncingSelection = true;
         restoringExpansion = true;
         treeSelectionOwed = false;
+        ++owedRowsGeneration;
         // A path shown twice keeps its last place, so the current prim stays last.
         const QStringList ordered = paths;
         selectionOrder.clear();
@@ -1436,6 +1512,8 @@ SceneGraphPanel::onTreeSelectionChanged()
     if (_imp->syncingSelection) {
         return;
     }
+    _imp->treeSelectionOwed = false;
+    ++_imp->owedRowsGeneration;
     _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->tree));
     if (!_imp->sharesViewerSelection()) {
         return;

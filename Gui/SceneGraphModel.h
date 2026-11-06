@@ -104,6 +104,9 @@ private:
     std::unique_ptr<Implementation> _imp;
 };
 
+struct SceneGraphPathRows;
+typedef std::shared_ptr<SceneGraphPathRows> SceneGraphPathRowsPtr;
+
 /**
  * @brief The prims of a composed stage as a tree: active, defined, non-abstract prims, instance
  * proxies included, in the stage's order. Children are read only when a view asks for them, in
@@ -159,6 +162,13 @@ public:
 
     // The index of the prim at path, column 0, reading the children on the way when populate.
     QModelIndex indexOfPath(const QString& path, bool populate);
+
+    /**
+     * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that
+     * indexOfPath() finds their paths without reading them. A parent whose children differ from what
+     * the builder saw is passed over, as are all of them when the model shows another stage.
+     **/
+    void addPathRows(const SceneGraphPathRowsPtr& rows);
 
     QString pathOf(const QModelIndex& index) const;
 
@@ -222,6 +232,28 @@ struct SceneChangedHereRows {
 };
 
 typedef std::shared_ptr<const SceneChangedHereRows> SceneChangedHereRowsPtr;
+
+/**
+ * @brief Reads, on any thread, the rows SceneGraphModel::indexOfPath() would read for paths, which
+ * can be a whole sibling list, a batch at a time so that the stage's lock is let go in between.
+ **/
+class SceneGraphPathRowsBuilder {
+public:
+    explicit SceneGraphPathRowsBuilder(const QStringList& paths);
+
+    ~SceneGraphPathRowsBuilder();
+
+    bool isDone() const;
+
+    // Called with stage's lock held; a null stage ends the read with no rows.
+    void readBatch(const SceneStage* stage);
+
+    SceneGraphPathRowsPtr take();
+
+private:
+    SceneGraphPathRowsPtr _rows;
+    std::size_t _nextParent = 0;
+};
 
 /**
  * @brief Reads the rows of the Changed Here filter from the marked paths alone, one prim by path at

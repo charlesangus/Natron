@@ -22,6 +22,8 @@ Checks:
     which follows the selection;
   - a new prim leaves no attribute row selected;
   - frame changes run no new composition query or definition read, and a new prim runs one each;
+  - a frame change leaves a read under way running, and a tab that varies with the frame then reads
+    the latest frame;
   - a large array's tooltip stays short and a double-click shows all of it in a window;
   - selecting a prim, and showing a large definition as text, keep the main thread's heartbeat within
     HEARTBEAT_BUDGET_MS of CPU and HEARTBEAT_BLOCKED_BUDGET_MS with blocking, while a slow
@@ -575,6 +577,57 @@ try:
         check(ok and int(state("DefinitionReads")) == reads + 1, "a new prim reads its definition once (%d, was %d)" % (int(state("DefinitionReads")), reads))
         show_tab(0)
 
+    def read_counts():
+        return int(state("ReadsStarted")), int(state("ReadsFinished")), int(state("ReadsCancelled"))
+
+    def frames_under_way_section(py_viewer):
+        """A held read stands in for a slow one: without this, each new frame would replace it."""
+        select(find(SMALL))
+        show_tab(COMPOSITION_TAB)
+        ok = yield ("until", lambda: settled_on(SMALL), POLL_TIMEOUT_S)
+        require(ok, "the composition tab shows the small prim")
+        queries = int(state("CompositionQueries"))
+        started, finished, cancelled = read_counts()
+        hold_reads(True)
+        select(find(OTHER))
+        ok = yield ("until", lambda: int(state("ReadsStarted")) > started, POLL_TIMEOUT_S)
+        require(ok, "the composition read to keep is under way")
+        started = int(state("ReadsStarted"))
+        for frame in (7, 8, 9):
+            py_viewer.seek(frame)
+            yield ("sleep", SETTLE_MS)
+        check(read_counts() == (started, finished, cancelled),
+              "frame changes leave a composition read under way (%r, was %r)" % (read_counts(), (started, finished, cancelled)))
+        hold_reads(False)
+        ok = yield ("until", lambda: settled_on(OTHER), POLL_TIMEOUT_S)
+        check(ok, "the composition read under way finishes (got %r)" % (state("Path"),))
+        check(read_counts() == (started, finished + 1, cancelled) and int(state("CompositionQueries")) == queries + 1,
+              "that one read shows the prim (%r, %d queries, was %d)" % (read_counts(), int(state("CompositionQueries")), queries))
+
+        show_tab(0)
+        py_viewer.seek(1)
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: settled_on(OTHER) and "otherValue" in table(ATTRIBUTES), POLL_TIMEOUT_S)
+        require(ok, "the attributes tab shows the other prim")
+        started, finished, cancelled = read_counts()
+        hold_reads(True)
+        select(find(SMALL))
+        ok = yield ("until", lambda: int(state("ReadsStarted")) > started, POLL_TIMEOUT_S)
+        require(ok, "the attributes read to keep is under way")
+        started = int(state("ReadsStarted"))
+        py_viewer.seek(10)
+        yield ("sleep", SETTLE_MS)
+        py_viewer.seek(20)
+        yield ("sleep", SETTLE_MS)
+        check(read_counts() == (started, finished, cancelled),
+              "frame changes leave an attributes read under way (%r, was %r)" % (read_counts(), (started, finished, cancelled)))
+        hold_reads(False)
+        ok = yield ("until", lambda: int(state("ReadsFinished")) >= finished + 2 and settled_on(SMALL), POLL_TIMEOUT_S)
+        check(ok, "the attributes read finishes and the latest frame is read after it (%r)" % (read_counts(),))
+        check(int(state("ReadsCancelled")) == cancelled, "neither read is cancelled (%d, was %d)" % (int(state("ReadsCancelled")), cancelled))
+        animated = float(table(ATTRIBUTES).get("animated", ["", "", "nan"])[2])
+        check(animated == 200.0, "the rows end at the latest frame (got %r)" % (animated,))
+
     def full_value_section():
         """Run with the large arrays on the Attributes tab."""
         name = "heavy_0"
@@ -743,6 +796,7 @@ try:
         yield from layer_prim_switch_section()
         yield from selection_section()
         yield from frame_reads_section(py_viewer)
+        yield from frames_under_way_section(py_viewer)
 
         # Pinned, a selection does not reach the viewer, whose repaint is not what is measured.
         pin = child(QToolButton, "sceneGraphPin")

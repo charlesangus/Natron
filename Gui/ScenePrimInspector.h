@@ -121,6 +121,9 @@ public:
 
     // Whether a read needs no prim, so an empty path leaves it reading. Main thread.
     virtual bool readsWithoutPrim() const { return false; }
+
+    // Whether what a read returns varies with the frame. Main thread.
+    virtual bool readsAtFrame() const { return true; }
 };
 
 /**
@@ -129,7 +132,8 @@ public:
  * and behind the attribute or relationship last selected on it, strongest first. The Layer tab shows
  * the shown node's own layers as USDA, or the selected prim's composed definition. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
- * the last result stays up, greyed. Nothing is read while the inspector is hidden.
+ * the last result stays up, greyed. A new frame lets the read under way finish, and a tab that varies
+ * with the frame then reads the latest one. Nothing is read while the inspector is hidden.
  *
  * A value too long for its cell shows the start of it, and as much as a tooltip can hold; a
  * double-click opens the whole of it in a window, whose text arrives a slice at a time, as the Layer

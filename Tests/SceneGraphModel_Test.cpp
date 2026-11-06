@@ -292,6 +292,27 @@ TEST(SceneGraphModel, FindsAPathByReadingTheWayDown)
     EXPECT_EQ(QString::fromUtf8("World"), ball.parent().data().toString());
 }
 
+TEST(SceneGraphModel, AddsRowsAWorkerReadForAPath)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(referenceScene());
+    SceneGraphModel model;
+    const QString path = QString::fromUtf8("/World/Ball");
+
+    model.setSource(source);
+    SceneGraphPathRowsBuilder builder({ path, QString::fromUtf8("/World/Nothing") });
+    while (!builder.isDone()) {
+        source->readStage([&builder](const SceneStage* stage) { builder.readBatch(stage); });
+    }
+    model.addPathRows(builder.take());
+
+    const QModelIndex ball = model.indexOfPath(path, false);
+    ASSERT_TRUE(ball.isValid());
+    EXPECT_EQ(QString::fromUtf8("Ball"), ball.data().toString());
+    EXPECT_EQ(QString::fromUtf8("World"), ball.parent().data().toString());
+    EXPECT_FALSE(model.indexOfPath(QString::fromUtf8("/World/Nothing"), true).isValid());
+}
+
 // Swapping one node's layer for another resyncs only what the two author: rows elsewhere keep
 // their indexes, and the model is not reset.
 TEST(SceneGraphModel, AnEditResyncsOnlyItsSubtree)

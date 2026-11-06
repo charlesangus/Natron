@@ -99,7 +99,8 @@ struct InspectorCell {
 typedef std::vector<InspectorCell> InspectorRow;
 
 QString
-wrappedForTip(const QString& text)
+wrappedForTip(const QString& text,
+              const std::atomic<bool>* cancelled = nullptr)
 {
     if (text.size() <= kTipLineLength) {
         return text;
@@ -108,6 +109,9 @@ wrappedForTip(const QString& text)
     wrapped.reserve(text.size() + text.size() / kTipLineLength + 1);
     int lineLength = 0;
     for (const QChar c : text) {
+        if (cancelled && *cancelled) {
+            break;
+        }
         wrapped += c;
         lineLength = (c == QLatin1Char('\n')) ? 0 : (lineLength + 1);
         if (lineLength == kTipLineLength) {
@@ -423,25 +427,45 @@ arcLabel(ScenePrimArc::Type type)
     return QString();
 }
 
-// Whether a read of the same prim of the same stage at the same edit count may reuse the last result.
-// The edit count is taken before the read's lock, so an edit landing during the read misses next time.
+// A drag preview authors the stage without counting as an edit, and can go again with no sync, so a
+// result read under one would outlive it. Zero for a cancelled read, whose result nobody keeps.
+U64
+previewGenerationOf(const ScenePrimInspectorRead& read)
+{
+    U64 generation = 0;
+
+    read.readStage([&generation](const SceneStage* stage) {
+        if (stage) {
+            generation = stage->getPreviewGeneration();
+        }
+    });
+
+    return generation;
+}
+
+// Whether a read of the same prim of the same stage at the same edit count and drag preview may reuse
+// the last result. Both counts are taken before the read's locks, so a change landing during the read
+// misses next time.
 class InspectorReadKey {
 public:
     bool matches(const ScenePrimInspectorRead& read,
-                 U64 editCount) const
+                 U64 editCount,
+                 U64 previewGeneration) const
     {
         const SceneGraphStageSourcePtr& source = read.getSource();
 
-        return _valid && !_source.owner_before(source) && !source.owner_before(_source) && (_path == read.getPath()) && (_editCount == editCount);
+        return _valid && !_source.owner_before(source) && !source.owner_before(_source) && (_path == read.getPath()) && (_editCount == editCount) && (_previewGeneration == previewGeneration);
     }
 
     void set(const ScenePrimInspectorRead& read,
-             U64 editCount)
+             U64 editCount,
+             U64 previewGeneration)
     {
         _valid = true;
         _source = read.getSource();
         _path = read.getPath();
         _editCount = editCount;
+        _previewGeneration = previewGeneration;
     }
 
 private:
@@ -449,6 +473,7 @@ private:
     std::weak_ptr<SceneGraphStageSource> _source;
     QString _path;
     U64 _editCount = 0;
+    U64 _previewGeneration = 0;
 };
 
 struct CompositionCache {
@@ -465,8 +490,9 @@ readComposition(const ScenePrimInspectorRead& read,
                 std::atomic<qulonglong>* queries)
 {
     const U64 editCount = read.getEditCount();
+    const U64 previewGeneration = previewGenerationOf(read);
 
-    if (cache->key.matches(read, editCount)) {
+    if (cache->key.matches(read, editCount, previewGeneration)) {
         *rows = cache->rows;
 
         return true;
@@ -505,7 +531,7 @@ readComposition(const ScenePrimInspectorRead& read,
                           authorCell(arc.introducingOwner, arc.introducingLayer, false),
                           cellOf(notes.join(QString::fromUtf8(", "))) });
     }
-    cache->key.set(read, editCount);
+    cache->key.set(read, editCount, previewGeneration);
     cache->rows = *rows;
 
     return true;
@@ -602,7 +628,10 @@ public:
             if (_cancelled) {
                 return;
             }
-            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(full));
+            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(full, &_cancelled));
+            if (_cancelled) {
+                return;
+            }
             QMetaObject::invokeMethod(this, [this, wrapped]() { _loader.show(wrapped); }, Qt::QueuedConnection);
         });
     }
@@ -731,9 +760,11 @@ public:
     InspectorTableTab(const QString& title,
                       const QString& objectName,
                       const QStringList& headers,
-                      const ReadRowsFunc& readRows)
+                      const ReadRowsFunc& readRows,
+                      bool readsAtFrame)
         : _title(title)
         , _readRows(readRows)
+        , _readsAtFrame(readsAtFrame)
         , _view(new QTreeView)
         , _model(new InspectorTableModel(headers, _view))
     {
@@ -775,6 +806,11 @@ public:
     void setRowSelected(const std::function<void(const QString&)>& rowSelected)
     {
         _rowSelected = rowSelected;
+    }
+
+    bool readsAtFrame() const override
+    {
+        return _readsAtFrame;
     }
 
     QString getTitle() const override
@@ -819,6 +855,7 @@ public:
 private:
     QString _title;
     ReadRowsFunc _readRows;
+    bool _readsAtFrame;
     QTreeView* _view;
     InspectorTableModel* _model;
     std::function<void(const NodePtr&)> _openNode;
@@ -910,6 +947,11 @@ public:
         return _modeValue == eLayerModeNodeContribution;
     }
 
+    bool readsAtFrame() const override
+    {
+        return false;
+    }
+
     std::function<void()> read(const ScenePrimInspectorRead& read) override
     {
         const int mode = _modeValue;
@@ -984,8 +1026,9 @@ private:
     std::shared_ptr<const std::string> readPrimDefinition(const ScenePrimInspectorRead& read)
     {
         const U64 editCount = read.getEditCount();
+        const U64 previewGeneration = previewGenerationOf(read);
 
-        if (_definitionKey.matches(read, editCount)) {
+        if (_definitionKey.matches(read, editCount, previewGeneration)) {
             return _cachedDefinition;
         }
         const std::string path = read.getPath().toStdString();
@@ -1014,7 +1057,7 @@ private:
         if (read.isCancelled()) {
             return std::shared_ptr<const std::string>();
         }
-        _definitionKey.set(read, editCount);
+        _definitionKey.set(read, editCount, previewGeneration);
         _cachedDefinition = text;
 
         return text;
@@ -1186,6 +1229,10 @@ struct ScenePrimInspector::Implementation {
     std::function<void(const NodePtr&)> openNode;
     double frame = 0.;
     double framesPerSecond = 24.;
+    // What the read under way was asked for, with no tab when none is under way.
+    Request running;
+    U64 runningEditCount = 0;
+    bool rereadWhenDone = false;
     bool readOwed = false;
     bool busy = false;
     bool stale = false;
@@ -1242,6 +1289,8 @@ struct ScenePrimInspector::Implementation {
     void cancelRead()
     {
         ++generation;
+        running = Request();
+        rereadWhenDone = false;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             hasRequest = false;
@@ -1259,8 +1308,22 @@ struct ScenePrimInspector::Implementation {
         queueChanged.notify_all();
     }
 
+    bool readUnderWayIsFor(const ScenePrimInspectorTab* tab) const
+    {
+        return running.tab && (running.tab == tab) && (running.source == source) && (running.path == path) && (running.property == property) && (running.node == node) && (runningEditCount == source->getEditCount());
+    }
+
     void startRead()
     {
+        const int shownTab = tabWidget->currentIndex();
+
+        // Caches fill only when a read completes, so a slow read replaced on every frame of playback
+        // would never show anything.
+        if (inspector->isVisible() && (shownTab >= 0) && readUnderWayIsFor(tabs[shownTab].get())) {
+            rereadWhenDone = tabs[shownTab]->readsAtFrame() && ((running.frame != frame) || (running.framesPerSecond != framesPerSecond));
+
+            return;
+        }
         cancelRead();
         if (!inspector->isVisible()) {
             readOwed = true;
@@ -1300,7 +1363,9 @@ struct ScenePrimInspector::Implementation {
             request.tab = tabs[current].get();
             request.generation = generation;
             hasRequest = true;
+            running = request;
         }
+        runningEditCount = source->getEditCount();
         queueChanged.notify_one();
         publishState();
     }
@@ -1309,6 +1374,9 @@ struct ScenePrimInspector::Implementation {
                      const QString& readPath,
                      const std::function<void()>& show)
     {
+        if (readGeneration == generation) {
+            running = Request();
+        }
         if (!show || (readGeneration != generation)) {
             ++readsCancelled;
             publishState();
@@ -1321,6 +1389,10 @@ struct ScenePrimInspector::Implementation {
         greyTimer.stop();
         setShownPath(readPath);
         setStale(false);
+        if (rereadWhenDone) {
+            rereadWhenDone = false;
+            startRead();
+        }
     }
 
     void run()
@@ -1388,8 +1460,9 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
                                     const char* objectName,
                                     const QStringList& headers,
                                     const InspectorTableTab::ReadRowsFunc& readRows,
-                                    bool selectsProperty) {
-        InspectorTableTab* tab = new InspectorTableTab(title, QString::fromUtf8(objectName), headers, readRows);
+                                    bool selectsProperty,
+                                    bool readsAtFrame) {
+        InspectorTableTab* tab = new InspectorTableTab(title, QString::fromUtf8(objectName), headers, readRows, readsAtFrame);
         tab->setOpenNode([this](const NodePtr& node) {
             if (_imp->openNode) {
                 _imp->openNode(node);
@@ -1401,15 +1474,15 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
         addTab(std::unique_ptr<ScenePrimInspectorTab>(tab));
     };
     addTableTab(tr("Attributes"), "sceneGraphAttributes",
-                QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Source") << tr("Authored By"), readAttributes, true);
+                QStringList() << tr("Attribute") << tr("Type") << tr("Value") << tr("Source") << tr("Authored By"), readAttributes, true, true);
     addTableTab(tr("Relationships"), "sceneGraphRelationships",
-                QStringList() << tr("Relationship") << tr("Targets") << tr("Authored By"), readRelationships, true);
+                QStringList() << tr("Relationship") << tr("Targets") << tr("Authored By"), readRelationships, true, false);
     addTableTab(tr("Metadata"), "sceneGraphMetadata",
-                QStringList() << tr("Field") << tr("Value") << tr("Authored By"), readMetadata, false);
+                QStringList() << tr("Field") << tr("Value") << tr("Authored By"), readMetadata, false, false);
     const std::shared_ptr<CompositionCache> compositionCache = std::make_shared<CompositionCache>();
-    addTableTab(tr("Composition"), "sceneGraphComposition", QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), [this, compositionCache](const ScenePrimInspectorRead& read, std::vector<InspectorRow>* rows) { return readComposition(read, rows, compositionCache.get(), &_imp->compositionQueries); }, false);
+    addTableTab(tr("Composition"), "sceneGraphComposition", QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), [this, compositionCache](const ScenePrimInspectorRead& read, std::vector<InspectorRow>* rows) { return readComposition(read, rows, compositionCache.get(), &_imp->compositionQueries); }, false, false);
     addTableTab(tr("Opinions"), "sceneGraphOpinions",
-                QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false);
+                QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false, true);
     addTab(std::make_unique<LayerTextTab>(&_imp->definitionReads));
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
@@ -1453,7 +1526,10 @@ ScenePrimInspector::addTab(std::unique_ptr<ScenePrimInspectorTab> tab)
 
     // Before the tab widget knows it: adding the first tab changes the current tab at once.
     _imp->tabs.push_back(std::move(tab));
-    added->setReadRequester([this]() { _imp->startRead(); });
+    added->setReadRequester([this]() {
+        _imp->cancelRead();
+        _imp->startRead();
+    });
     _imp->tabWidget->addTab(added->getWidget(), added->getTitle());
 }
 

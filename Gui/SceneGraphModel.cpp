@@ -283,6 +283,21 @@ struct SceneGraphModelItem {
 
 typedef SceneGraphModelItem Item;
 
+std::unique_ptr<Item>
+makeItem(const SdfPath& parentPath,
+         const TfToken& name,
+         const PrimData& data)
+{
+    std::unique_ptr<Item> item(new Item);
+
+    item->path = parentPath.AppendChild(name);
+    item->nameToken = name;
+    item->pathString = QString::fromStdString(item->path.GetString());
+    item->data = data;
+
+    return item;
+}
+
 // What one item reads from the stage, gathered under the stage's lock and applied after it.
 struct ItemUpdate {
     Item* item = nullptr;
@@ -297,6 +312,22 @@ struct ItemUpdate {
 };
 
 } // anon namespace
+
+struct SceneGraphPathRows {
+    struct Parent {
+        SdfPath path;
+        std::unordered_set<TfToken, TfToken::HashFunctor> wanted;
+        bool namesRead = false;
+        TfTokenVector names;
+        // How many of names have to be read to reach the last one wanted.
+        std::size_t rowCount = 0;
+        std::vector<std::unique_ptr<Item>> rows;
+    };
+
+    const UsdStage* stage = nullptr;
+    // A parent before its children: its rows are what the children's parent is found in.
+    std::vector<Parent> parents;
+};
 
 struct SceneGraphModel::Implementation {
     SceneGraphModel* model;
@@ -393,13 +424,9 @@ struct SceneGraphModel::Implementation {
                                     const TfToken& name,
                                     const PrimData& data)
     {
-        std::unique_ptr<Item> child(new Item);
+        std::unique_ptr<Item> child = makeItem(parent->path, name, data);
 
         child->parent = parent;
-        child->path = parent->path.AppendChild(name);
-        child->nameToken = name;
-        child->pathString = QString::fromStdString(child->path.GetString());
-        child->data = data;
 
         return child;
     }
@@ -829,6 +856,115 @@ SceneGraphModel::indexOfPath(const QString& path,
     }
 
     return _imp->indexOf(item);
+}
+
+void
+SceneGraphModel::addPathRows(const SceneGraphPathRowsPtr& rows)
+{
+    if (!rows || !rows->stage || _imp->changing || (rows->stage != get_pointer(_imp->listenedStage))) {
+        return;
+    }
+    for (SceneGraphPathRows::Parent& parent : rows->parents) {
+        Item* item = _imp->findItem(parent.path);
+        if (!item || !parent.namesRead || (item->namesRead && (item->childNames != parent.names))) {
+            continue;
+        }
+        Implementation::ChangeScope scope(_imp.get());
+        if (!item->namesRead) {
+            item->namesRead = true;
+            item->childNames = std::move(parent.names);
+        }
+        const std::size_t first = item->children.size();
+        if (first >= parent.rows.size()) {
+            continue;
+        }
+        beginInsertRows(_imp->indexOf(item), (int)first, (int)parent.rows.size() - 1);
+        _imp->itemCount += (int)(parent.rows.size() - first);
+        for (std::size_t i = first; i < parent.rows.size(); ++i) {
+            std::unique_ptr<Item>& child = parent.rows[i];
+            child->parent = item;
+            child->row = (int)i;
+            item->children.push_back(std::move(child));
+        }
+        item->rowOfValid = false;
+        endInsertRows();
+    }
+}
+
+SceneGraphPathRowsBuilder::SceneGraphPathRowsBuilder(const QStringList& paths)
+    : _rows(std::make_shared<SceneGraphPathRows>())
+{
+    std::map<SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>> wanted;
+
+    for (const QString& path : paths) {
+        const std::string pathString = path.toStdString();
+        if (!SdfPath::IsValidPathString(pathString)) {
+            continue;
+        }
+        const SdfPath sdfPath(pathString);
+        if (!sdfPath.IsAbsolutePath() || !sdfPath.IsPrimPath()) {
+            continue;
+        }
+        for (const SdfPath& prefix : sdfPath.GetPrefixes()) {
+            if (!prefix.IsAbsoluteRootPath()) {
+                wanted[prefix.GetParentPath()].insert(prefix.GetNameToken());
+            }
+        }
+    }
+    for (std::pair<const SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>>& entry : wanted) {
+        SceneGraphPathRows::Parent parent;
+        parent.path = entry.first;
+        parent.wanted = std::move(entry.second);
+        _rows->parents.push_back(std::move(parent));
+    }
+}
+
+SceneGraphPathRowsBuilder::~SceneGraphPathRowsBuilder() = default;
+
+bool
+SceneGraphPathRowsBuilder::isDone() const
+{
+    return _nextParent >= _rows->parents.size();
+}
+
+void
+SceneGraphPathRowsBuilder::readBatch(const SceneStage* stage)
+{
+    const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+
+    if (!usdStage) {
+        _rows->stage = nullptr;
+        _nextParent = _rows->parents.size();
+
+        return;
+    }
+    _rows->stage = get_pointer(usdStage);
+    SceneGraphPathRows::Parent& parent = _rows->parents[_nextParent];
+    if (!parent.namesRead) {
+        const UsdPrim prim = usdStage->GetPrimAtPath(parent.path);
+        if (prim) {
+            parent.names = prim.GetFilteredChildrenNames(childPredicate());
+        }
+        parent.namesRead = true;
+        for (std::size_t i = 0; i < parent.names.size(); ++i) {
+            if (parent.wanted.find(parent.names[i]) != parent.wanted.end()) {
+                parent.rowCount = i + 1;
+            }
+        }
+    }
+    const std::size_t end = std::min(parent.rowCount, parent.rows.size() + SceneGraphModel::kFetchBatchSize);
+    for (std::size_t i = parent.rows.size(); i < end; ++i) {
+        parent.rows.push_back(makeItem(parent.path, parent.names[i], readPrimData(usdStage->GetPrimAtPath(parent.path.AppendChild(parent.names[i])))));
+    }
+    if (parent.rows.size() >= parent.rowCount) {
+        ++_nextParent;
+    }
+}
+
+SceneGraphPathRowsPtr
+SceneGraphPathRowsBuilder::take()
+{
+    return std::move(_rows);
 }
 
 QString

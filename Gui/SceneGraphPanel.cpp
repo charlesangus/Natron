@@ -1512,6 +1512,7 @@ void
 SceneGraphPanel::refreshInspector()
 {
     _imp->updateChangedHere();
+    _imp->inspector->setNode(getShownNode());
     _imp->inspector->setPrim(_imp->model->getSource(), _imp->currentPath(), _imp->currentFrame(), _imp->framesPerSecond());
 }
 

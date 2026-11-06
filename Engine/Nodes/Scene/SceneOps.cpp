@@ -1000,6 +1000,114 @@ getAuthoredPrimPaths(const ScenePayload& payload,
     return result;
 }
 
+std::vector<PXR_NS::SdfLayerRefPtr>
+getOwnedLayers(const ScenePayload& payload,
+               const NodePtr& owner)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+
+    if (!owner) {
+        return layers;
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        if (entry.layer && (getLayerOwner(entry.layer) == owner)) {
+            layers.push_back(entry.layer);
+        }
+    }
+
+    return layers;
+}
+
+std::string
+exportLayersText(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::string text;
+
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        std::string layerText;
+
+        if (!layer->ExportToString(&layerText)) {
+            continue;
+        }
+        if (!text.empty()) {
+            text += "\n";
+        }
+        text += "# Layer: " + layer->GetIdentifier() + "\n" + layerText;
+    }
+
+    return text;
+}
+
+PXR_NS::UsdStageRefPtr
+beginPrimDefinition(const PXR_NS::UsdPrim& prim)
+{
+    if (!prim) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+    const PXR_NS::UsdStageRefPtr definition = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdPrim copy;
+
+    switch (prim.GetSpecifier()) {
+    case PXR_NS::SdfSpecifierClass:
+        copy = definition->CreateClassPrim(prim.GetPath());
+        break;
+    case PXR_NS::SdfSpecifierOver:
+        copy = definition->OverridePrim(prim.GetPath());
+        break;
+    default:
+        copy = definition->DefinePrim(prim.GetPath(), prim.GetTypeName());
+        break;
+    }
+    if (!copy) {
+        return definition;
+    }
+    static const std::set<PXR_NS::TfToken> arcFields = {
+        PXR_NS::SdfFieldKeys->Specifier,
+        PXR_NS::SdfFieldKeys->TypeName,
+        PXR_NS::SdfFieldKeys->References,
+        PXR_NS::SdfFieldKeys->Payload,
+        PXR_NS::SdfFieldKeys->InheritPaths,
+        PXR_NS::SdfFieldKeys->Specializes,
+        PXR_NS::SdfFieldKeys->VariantSetNames,
+        PXR_NS::SdfFieldKeys->VariantSelection,
+        PXR_NS::SdfFieldKeys->PrimOrder,
+        PXR_NS::SdfFieldKeys->PropertyOrder,
+    };
+    for (const auto& field : prim.GetAllAuthoredMetadata()) {
+        if (arcFields.find(field.first) == arcFields.end()) {
+            copy.SetMetadata(field.first, field.second);
+        }
+    }
+
+    return definition;
+}
+
+void
+flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                    const PXR_NS::UsdProperty& property)
+{
+    if (!definition || !property) {
+        return;
+    }
+    const PXR_NS::UsdPrim target = definition->GetPrimAtPath(property.GetPrimPath());
+
+    if (target) {
+        property.FlattenTo(target);
+    }
+}
+
+std::string
+exportDefinitionText(const PXR_NS::UsdStageRefPtr& definition)
+{
+    std::string text;
+
+    if (definition) {
+        definition->GetRootLayer()->ExportToString(&text);
+    }
+
+    return text;
+}
+
 NodePtr
 authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
                 PXR_NS::UsdTimeCode time,

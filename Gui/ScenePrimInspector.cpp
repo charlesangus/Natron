@@ -25,6 +25,7 @@
 
 #include "ScenePrimInspector.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <sstream>
@@ -34,11 +35,15 @@
 #include <vector>
 
 #include <QAbstractTableModel>
+#include <QApplication>
 #include <QColor>
+#include <QComboBox>
+#include <QFontDatabase>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QPalette>
+#include <QPlainTextEdit>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTimer>
@@ -691,6 +696,190 @@ private:
     std::function<void(const QString&)> _rowSelected;
 };
 
+enum LayerMode {
+    eLayerModeNodeContribution,
+    eLayerModePrimDefinition
+};
+
+// The USDA of the shown node's layers, or of the selected prim's composed definition. The text is
+// built only by read(), which the inspector calls while this tab is the one showing.
+class LayerTextTab
+    : public ScenePrimInspectorTab {
+public:
+    LayerTextTab()
+        : _widget(new QWidget)
+        , _mode(new QComboBox(_widget))
+        , _text(new QPlainTextEdit(_widget))
+    {
+        _widget->setObjectName(QString::fromUtf8("sceneGraphLayer"));
+        _mode->setObjectName(QString::fromUtf8("sceneGraphLayerMode"));
+        _mode->addItem(ScenePrimInspector::tr("Node Contribution"), (int)eLayerModeNodeContribution);
+        _mode->addItem(ScenePrimInspector::tr("Prim Composed"), (int)eLayerModePrimDefinition);
+        _mode->setToolTip(ScenePrimInspector::tr("Node Contribution: the shown node's own layers as USDA. "
+                                                 "Prim Composed: the selected prim's composed definition as USDA, without its descendants."));
+        _text->setObjectName(QString::fromUtf8("sceneGraphLayerText"));
+        _text->setReadOnly(true);
+        _text->setLineWrapMode(QPlainTextEdit::NoWrap);
+        _text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        QVBoxLayout* layout = new QVBoxLayout(_widget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(2);
+        layout->addWidget(_mode);
+        layout->addWidget(_text, 1);
+        QObject::connect(_mode, &QComboBox::currentIndexChanged, _widget, [this]() {
+            _modeValue = _mode->currentData().toInt();
+            if (_requestRead) {
+                _requestRead();
+            }
+        });
+    }
+
+    QString getTitle() const override
+    {
+        return ScenePrimInspector::tr("Layer");
+    }
+
+    QWidget* getWidget() const override
+    {
+        return _widget;
+    }
+
+    void setReadRequester(const std::function<void()>& requestRead) override
+    {
+        _requestRead = requestRead;
+    }
+
+    std::function<void()> read(const ScenePrimInspectorRead& read) override
+    {
+        const int mode = _modeValue;
+        std::shared_ptr<const std::string> text;
+
+        if (mode == eLayerModeNodeContribution) {
+            text = readNodeContribution(read);
+        } else {
+            text = readPrimDefinition(read);
+        }
+        if (!text) {
+            return std::function<void()>();
+        }
+
+        return [this, text, mode]() { show(*text, mode); };
+    }
+
+    void setStale(bool stale) override
+    {
+        QPalette palette = _text->palette();
+        QColor color = QApplication::palette().color(QPalette::Text);
+
+        if (stale) {
+            color.setAlphaF(0.4);
+        }
+        palette.setColor(QPalette::Text, color);
+        _text->setPalette(palette);
+    }
+
+    void clear() override
+    {
+        _shownMode = -1;
+        _text->clear();
+    }
+
+private:
+    // Null when the read was cancelled.
+    std::shared_ptr<const std::string> readNodeContribution(const ScenePrimInspectorRead& read)
+    {
+        ScenePayload payload;
+
+        if (!read.readStage([&payload](const SceneStage* stage) {
+                if (stage) {
+                    payload = stage->getPayload();
+                }
+            })) {
+            return std::shared_ptr<const std::string>();
+        }
+        const std::vector<SdfLayerRefPtr> layers = SceneOps::getOwnedLayers(payload, read.getNode());
+        std::vector<const SdfLayer*> identity;
+
+        identity.reserve(layers.size());
+        for (const SdfLayerRefPtr& layer : layers) {
+            identity.push_back(get_pointer(layer));
+        }
+        const U64 editCount = read.getEditCount();
+
+        if (_cachedText && (_cachedIdentity == identity) && (_cachedEditCount == editCount)) {
+            return _cachedText;
+        }
+        std::shared_ptr<const std::string> text = std::make_shared<const std::string>(SceneOps::exportLayersText(layers));
+
+        if (read.isCancelled()) {
+            return std::shared_ptr<const std::string>();
+        }
+        _cachedText = text;
+        _cachedIdentity = identity;
+        _cachedEditCount = editCount;
+
+        return text;
+    }
+
+    // The lock is held per property: an attribute can hold millions of samples, and the main
+    // thread may be waiting for it.
+    static std::shared_ptr<const std::string> readPrimDefinition(const ScenePrimInspectorRead& read)
+    {
+        UsdStageRefPtr definition;
+        std::vector<TfToken> names;
+
+        if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
+                definition = SceneOps::beginPrimDefinition(prim);
+                for (const UsdProperty& property : prim.GetAuthoredProperties()) {
+                    names.push_back(property.GetName());
+                }
+            })) {
+            return std::shared_ptr<const std::string>();
+        }
+        for (const TfToken& name : names) {
+            if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) { SceneOps::flattenPropertyInto(definition, prim.GetProperty(name)); })) {
+                return std::shared_ptr<const std::string>();
+            }
+        }
+        const std::string text = SceneOps::exportDefinitionText(definition);
+
+        if (read.isCancelled()) {
+            return std::shared_ptr<const std::string>();
+        }
+
+        return std::make_shared<const std::string>(text);
+    }
+
+    void show(const std::string& text,
+              int mode)
+    {
+        QString shown = QString::fromStdString(text);
+
+        if (shown.isEmpty()) {
+            shown = (mode == eLayerModeNodeContribution) ? ScenePrimInspector::tr("# The shown node authors no layer.")
+                                                         : ScenePrimInspector::tr("# The selected prim has no composed definition.");
+        }
+        if ((mode == _shownMode) && (shown == _shownText)) {
+            return;
+        }
+        _shownMode = mode;
+        _shownText = shown;
+        _text->setPlainText(shown);
+    }
+
+    QWidget* _widget;
+    QComboBox* _mode;
+    QPlainTextEdit* _text;
+    std::function<void()> _requestRead;
+    std::atomic<int> _modeValue { eLayerModeNodeContribution };
+    int _shownMode = -1;
+    QString _shownText;
+    // Worker only.
+    std::shared_ptr<const std::string> _cachedText;
+    std::vector<const SdfLayer*> _cachedIdentity;
+    U64 _cachedEditCount = 0;
+};
+
 } // anon namespace
 
 ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& source,
@@ -699,7 +888,8 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
                                                double frame,
                                                double framesPerSecond,
                                                const std::atomic<U64>& latestGeneration,
-                                               U64 generation)
+                                               U64 generation,
+                                               const NodePtr& node)
     : _source(source)
     , _path(path)
     , _property(property)
@@ -707,6 +897,7 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
     , _framesPerSecond(framesPerSecond)
     , _latestGeneration(latestGeneration)
     , _generation(generation)
+    , _node(node)
 {
 }
 
@@ -720,6 +911,18 @@ const QString&
 ScenePrimInspectorRead::getProperty() const
 {
     return _property;
+}
+
+const NodePtr&
+ScenePrimInspectorRead::getNode() const
+{
+    return _node;
+}
+
+U64
+ScenePrimInspectorRead::getEditCount() const
+{
+    return _source->getEditCount();
 }
 
 double
@@ -764,6 +967,7 @@ struct ScenePrimInspector::Implementation {
         QString property;
         double frame = 0.;
         double framesPerSecond = 24.;
+        NodePtr node;
         ScenePrimInspectorTab* tab = nullptr;
         U64 generation = 0;
     };
@@ -776,6 +980,7 @@ struct ScenePrimInspector::Implementation {
 
     SceneGraphStageSourcePtr source;
     QString path;
+    NodePtr node;
     // The property the Opinions tab lists the specs of, besides the prim's.
     QString property;
     std::function<void(const NodePtr&)> openNode;
@@ -872,6 +1077,7 @@ struct ScenePrimInspector::Implementation {
             std::lock_guard<std::mutex> lock(queueMutex);
             request.source = source;
             request.path = path;
+            request.node = node;
             request.property = property;
             request.frame = frame;
             request.framesPerSecond = framesPerSecond;
@@ -917,10 +1123,11 @@ struct ScenePrimInspector::Implementation {
             }
             std::function<void()> show;
             {
-                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation);
+                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node);
                 show = next.tab->read(read);
             }
             next.source.reset();
+            next.node.reset();
             const U64 readGeneration = next.generation;
             const QString readPath = next.path;
             QMetaObject::invokeMethod(inspector, [this, readGeneration, readPath, show]() { onReadEnded(readGeneration, readPath, show); }, Qt::QueuedConnection);
@@ -983,6 +1190,7 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
                 QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), readComposition, false);
     addTableTab(tr("Opinions"), "sceneGraphOpinions",
                 QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false);
+    addTab(std::make_unique<LayerTextTab>());
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }
@@ -1013,12 +1221,19 @@ ScenePrimInspector::setNodeOpener(const std::function<void(const NodePtr& node)>
 }
 
 void
+ScenePrimInspector::setNode(const NodePtr& node)
+{
+    _imp->node = node;
+}
+
+void
 ScenePrimInspector::addTab(std::unique_ptr<ScenePrimInspectorTab> tab)
 {
     ScenePrimInspectorTab* added = tab.get();
 
     // Before the tab widget knows it: adding the first tab changes the current tab at once.
     _imp->tabs.push_back(std::move(tab));
+    added->setReadRequester([this]() { _imp->startRead(); });
     _imp->tabWidget->addTab(added->getWidget(), added->getTitle());
 }
 

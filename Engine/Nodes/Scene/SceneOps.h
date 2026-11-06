@@ -420,6 +420,36 @@ std::vector<std::string> getAuthoredPrimPaths(const ScenePayload& payload,
                                               const NodePtr& owner);
 
 /**
+ * @brief The layers of payload recorded as owner's, in payload order. Empty when none is.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> getOwnedLayers(const ScenePayload& payload,
+                                                   const NodePtr& owner);
+
+/**
+ * @brief layers as USDA, one after the other, each under a comment naming its identifier. Reads
+ * the layers only, whatever their size.
+ **/
+std::string exportLayersText(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
+
+/**
+ * @brief A new in-memory stage holding prim's composed definition at its path: specifier, type,
+ * and the metadata that is not a composition arc. Its properties are added by
+ * flattenPropertyInto(), so a caller can release the stage lock between them. Null when prim is
+ * invalid. Caller holds the stage lock.
+ **/
+PXR_NS::UsdStageRefPtr beginPrimDefinition(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief Copies property's composed opinion onto the prim of definition at the same path.
+ * Caller holds the lock of property's stage.
+ **/
+void flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                         const PXR_NS::UsdProperty& property);
+
+// definition as USDA. Needs no stage lock.
+std::string exportDefinitionText(const PXR_NS::UsdStageRefPtr& definition);
+
+/**
  * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
  * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
  * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty

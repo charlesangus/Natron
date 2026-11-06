@@ -54,12 +54,19 @@ public:
                            double frame,
                            double framesPerSecond,
                            const std::atomic<U64>& latestGeneration,
-                           U64 generation);
+                           U64 generation,
+                           const NodePtr& node);
 
     const QString& getPath() const;
 
     // The attribute or relationship selected on the prim, or empty.
     const QString& getProperty() const;
+
+    // The node whose scene is shown, or null.
+    const NodePtr& getNode() const;
+
+    // How many edits the source's stage has had.
+    U64 getEditCount() const;
 
     double getFrame() const;
 
@@ -80,6 +87,7 @@ private:
     double _framesPerSecond;
     const std::atomic<U64>& _latestGeneration;
     U64 _generation;
+    const NodePtr& _node;
 };
 
 /**
@@ -100,6 +108,10 @@ public:
      **/
     virtual std::function<void()> read(const ScenePrimInspectorRead& read) = 0;
 
+    // Called once, when the tab is added. The tab calls it, on the main thread, when its own
+    // setting changes what a read returns; the inspector then reads the tab again.
+    virtual void setReadRequester(const std::function<void()>& /*requestRead*/) { }
+
     // Shows the last result greyed, as no longer current. Main thread.
     virtual void setStale(bool stale) = 0;
 
@@ -108,14 +120,15 @@ public:
 };
 
 /**
- * @brief The selected prim's tabs: Attributes, Relationships, Metadata, Composition and Opinions at the given frame, each
+ * @brief The selected prim's tabs: Attributes, Relationships, Metadata, Composition, Opinions and Layer at the given frame, each
  * row naming the node or file that authored it. The Opinions tab lists the specs behind the prim
- * and behind the attribute or relationship last selected on it, strongest first. Reads run on a worker; a new prim cancels the read
+ * and behind the attribute or relationship last selected on it, strongest first. The Layer tab shows
+ * the shown node's own layers as USDA, or the selected prim's composed definition. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. Nothing is read while the inspector is hidden.
  *
  * Scripts find its widgets by object name: sceneGraphInspector, sceneGraphInspectorTabs,
- * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition and sceneGraphOpinions.
+ * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition, sceneGraphOpinions, sceneGraphLayerMode and sceneGraphLayerText.
  * It mirrors its state into the natronSceneGraphInspectorPath (the prim of the rows shown),
  * natronSceneGraphInspectorBusy, natronSceneGraphInspectorStale,
  * natronSceneGraphInspectorReadsStarted, natronSceneGraphInspectorReadsFinished and
@@ -133,6 +146,9 @@ public:
     ~ScenePrimInspector() override;
 
     void addTab(std::unique_ptr<ScenePrimInspectorTab> tab);
+
+    // The node whose scene the prim belongs to. Takes effect with the next setPrim().
+    void setNode(const NodePtr& node);
 
     // Called on the main thread when a row naming a node is double-clicked.
     void setNodeOpener(const std::function<void(const NodePtr& node)>& openNode);

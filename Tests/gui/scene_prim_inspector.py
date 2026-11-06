@@ -17,6 +17,9 @@ Checks:
   - the Composition tab lists the camera's root arc;
   - the Opinions tab lists the specs behind the camera prim and the selected focal length, strongest
     first, and double-clicking a row naming the USDEditTransform opens that node's settings panel;
+  - the Layer tab shows the viewed USDEditTransform's layer as USDA with its authored over, and
+    switching it to the composed mode shows the selected prim's definition, which follows the
+    selection;
   - selecting a prim keeps a heartbeat on the main thread within HEARTBEAT_BUDGET_MS, while a slow
     read shows the last result greyed, and a new selection cancels the read under way.
 
@@ -54,8 +57,11 @@ RELATIONSHIPS = "sceneGraphRelationships"
 METADATA = "sceneGraphMetadata"
 COMPOSITION = "sceneGraphComposition"
 OPINIONS = "sceneGraphOpinions"
+LAYER_MODE = "sceneGraphLayerMode"
+LAYER_TEXT = "sceneGraphLayerText"
 COMPOSITION_TAB = 3
 OPINIONS_TAB = 4
+LAYER_TAB = 5
 
 LONG_VALUE = "".join(chr(ord("a") + n % 26) for n in range(LONG_VALUE_LENGTH))
 
@@ -88,7 +94,7 @@ def write_scene(path):
 try:
     import NatronEngine
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
-    from PySide6.QtWidgets import QLineEdit, QTabWidget, QToolButton, QTreeView, QWidget
+    from PySide6.QtWidgets import QComboBox, QLineEdit, QPlainTextEdit, QTabWidget, QToolButton, QTreeView, QWidget
 
     from guitest import OUT, check, close_all_panels, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -362,6 +368,47 @@ try:
         check(camera_label not in open_panel_labels(), "the USDCamera's panel stays closed")
         show_tab(0)
 
+    def layer_section():
+        show_tab(LAYER_TAB)
+        mode = child(QComboBox, LAYER_MODE)
+        text_view = child(QPlainTextEdit, LAYER_TEXT)
+        require(mode is not None and text_view is not None, "the layer tab has its mode box and text view")
+        mode.setCurrentIndex(0)
+        ok = yield ("until", lambda: "over " in text_view.toPlainText() and settled_on(camera_prim), POLL_TIMEOUT_S)
+        contribution = text_view.toPlainText()
+        check(ok, "the node contribution holds the authored over (got %r)" % (contribution[:200],))
+        check(contribution.lstrip().startswith("# Layer:") or "#usda" in contribution,
+              "the node contribution is USDA (got %r)" % (contribution[:80],))
+        check(transform_attribute in contribution,
+              "the node contribution holds the transform op the USDEditTransform authored")
+        check(text_view.isReadOnly(), "the text view is read-only")
+        yield ("sleep", SETTLE_MS)
+        shot("scene-prim-inspector-layer.png")
+
+        mode.setCurrentIndex(1)
+        ok = yield ("until", lambda: "focalLength" in text_view.toPlainText(), POLL_TIMEOUT_S)
+        composed = text_view.toPlainText()
+        check(ok, "the composed mode holds the camera's focalLength (got %r)" % (composed[:200],))
+        check(transform_attribute in composed, "the composed definition holds the edit's transform op too")
+        check("#usda" in composed, "the composed definition is USDA")
+
+        show_tab(0)
+
+    def layer_prim_switch_section():
+        show_tab(LAYER_TAB)
+        text_view = child(QPlainTextEdit, LAYER_TEXT)
+        select(find(SMALL))
+        ok = yield ("until", lambda: "longValue" in text_view.toPlainText() and settled_on(SMALL), POLL_TIMEOUT_S)
+        small = text_view.toPlainText()
+        check(ok, "the composed mode shows the small prim (got %r)" % (small[:200],))
+        check(LONG_VALUE in small, "a long value is shown whole")
+        check("otherValue" not in small and "Heavy" not in small, "the composed mode leaves out other prims")
+        select(find(OTHER))
+        ok = yield ("until", lambda: "otherValue" in text_view.toPlainText() and settled_on(OTHER), POLL_TIMEOUT_S)
+        check(ok, "switching the prim updates the composed mode (got %r)" % (text_view.toPlainText()[:200],))
+        check("longValue" not in text_view.toPlainText(), "the composed mode no longer shows the previous prim")
+        show_tab(0)
+
     def file_section(py_viewer):
         select(find(SMALL))
         ok = yield ("until", lambda: "size" in table(ATTRIBUTES) and settled_on(SMALL), POLL_TIMEOUT_S)
@@ -504,12 +551,14 @@ try:
         yield from camera_section()
         yield from composition_section()
         yield from opinions_section()
+        yield from layer_section()
 
         py_viewer = hold(app.getViewer(viewer.getScriptName()))
         require(view_input(usd), "switch the Viewer to the USDRead")
         ok = yield ("until", lambda: ROOT in top_paths(), LOAD_TIMEOUT_S)
         require(ok, "the tree shows the file's scene (got %r)" % (top_paths(),))
         yield from file_section(py_viewer)
+        yield from layer_prim_switch_section()
 
         # Pinned, a selection does not reach the viewer, whose repaint is not what is measured.
         pin = child(QToolButton, "sceneGraphPin")

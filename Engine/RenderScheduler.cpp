@@ -1315,13 +1315,18 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             const std::vector<int>& members = frame->graph.regions[region].members;
             const bool ok = retCode == EffectInstance::eRenderRoIRetCodeOk;
             std::string lines;
+            GpuRegionTimes times;
             for (std::size_t i = 0; i < members.size(); ++i) {
                 const FrameGraph::Task& member = frame->graph.tasks[members[i]];
                 const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
                 const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
-                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok, !report.cpuFallback.empty());
+                const EffectInstance::RenderCacheStateEnum memberState = (i < report.memberCache.size()) ? report.memberCache[i] : EffectInstance::eRenderCacheStateBypass;
+                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok, !report.cpuFallback.empty(), memberState);
+                const bool ran = report.cpuFallback.empty() || ((i < report.memberCache.size()) && (memberState != EffectInstance::eRenderCacheStateHit));
+                if (ran) {
+                    times.executed.push_back(members[i]);
+                }
             }
-            GpuRegionTimes times;
             times.uploadMs = report.uploadMs;
             times.uploadBytes = report.uploadBytes;
             times.kernelMs = report.kernelMs;

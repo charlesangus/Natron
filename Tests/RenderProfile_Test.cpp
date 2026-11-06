@@ -261,7 +261,7 @@ TEST_F(RenderProfileTest, SecondRenderOfTheSameGraphServesTheSharedSourceFromThe
     std::string line;
     while (std::getline(in, line)) {
         const Record r = parseRecord(line);
-        EXPECT_FALSE(r.cache.empty()) << line;
+        EXPECT_TRUE(r.cache == "hit" || r.cache == "partial" || r.cache == "miss" || r.cache == "bypass") << line;
         if (r.node == sourceName) {
             sourceRecords.push_back(r);
         }
@@ -391,7 +391,7 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
               "\"downloads\":[{\"strip\":0,\"bytes\":16,\"deviceMs\":0.250000,\"queueFamily\":1,\"queueIndex\":2,"
               "\"comps\":4,\"format\":\"f32\",\"staged\":1,\"pinned\":0},{\"strip\":-1,\"bytes\":16,\"deviceMs\":null,"
               "\"queueFamily\":0,\"queueIndex\":0,\"comps\":0,\"format\":\"f32\",\"staged\":0,\"pinned\":1}],"
-              "\"fallback\":\"\",\"retries\":0}\n");
+              "\"fallback\":\"\",\"retries\":0,\"executed\":[]}\n");
 
     times.predictedTransferMs = std::numeric_limits<double>::infinity();
     const std::string unpriced = formatRegionRecord(7, 3, tasks, times);
@@ -425,7 +425,11 @@ TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)
     times.retries = 3;
 
     const std::string line = formatRegionRecord(2, 1, tasks, times);
-    EXPECT_NE(line.find("\"fallback\":\"out of device memory\",\"retries\":3}\n"), std::string::npos) << line;
+    EXPECT_NE(line.find("\"fallback\":\"out of device memory\",\"retries\":3,\"executed\":[]}\n"), std::string::npos) << line;
+
+    times.executed.push_back(4);
+    times.executed.push_back(6);
+    EXPECT_NE(formatRegionRecord(2, 1, tasks, times).find("\"retries\":3,\"executed\":[4,6]}\n"), std::string::npos);
 
     times.fallback = "a \"quoted\" \\ reason";
     EXPECT_NE(formatRegionRecord(2, 1, tasks, times).find("\"fallback\":\"a \\\"quoted\\\" \\\\ reason\""), std::string::npos);

@@ -1132,6 +1132,15 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         }
     }
 
+    bool partlyCachedBeforeWidening = false;
+    const auto leftToRenderArea = [](const std::list<RectI>& rects) {
+        U64 area = 0;
+        for (std::list<RectI>::const_iterator it = rects.begin(); it != rects.end(); ++it) {
+            area += static_cast<U64>(it->area());
+        }
+
+        return area;
+    };
 
     ///In the event where we had the image from the cache, but it wasn't completely rendered over the RoI but the cache was almost full,
     ///we don't hold a pointer to it, allowing the cache to free it.
@@ -1237,7 +1246,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///Note that it should NEVER happen because if it doesn't support tiles in the first place, it would
         ///have rendered the rod already.
         if (!frameArgs->tilesSupported && !rectsLeftToRender.empty() && isLayerCached) {
-            ///if the effect doesn't support tiles, just render the whole rod again even though
+            /// if the effect doesn't support tiles, just render the whole rod again even though
+            // The widening below makes every partial hit cover the whole RoI, so the state has to be read before it.
+            partlyCachedBeforeWidening = leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area());
             rectsLeftToRender.clear();
             rectsLeftToRender.push_back(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds);
         }
@@ -1345,18 +1356,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     bool hasSomethingToRender = !layersToRender->rectsToRender.empty();
+    bool allIdentity = hasSomethingToRender;
+    for (std::list<RectToRender>::const_iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
+        allIdentity = allIdentity && it->isIdentity;
+    }
 
-    if (byPassCache || !createInCache) {
+    if (byPassCache || !createInCache || allIdentity) {
         cacheStateRecorder.set(eRenderCacheStateBypass);
     } else if (!hasSomethingToRender) {
         cacheStateRecorder.set(eRenderCacheStateHit);
     } else {
         // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
-        U64 leftArea = 0;
-        for (std::list<RectI>::const_iterator it = rectsLeftToRender.begin(); it != rectsLeftToRender.end(); ++it) {
-            leftArea += static_cast<U64>(it->area());
-        }
-        cacheStateRecorder.set(leftArea < static_cast<U64>(roi.area()) ? eRenderCacheStatePartial : eRenderCacheStateMiss);
+        const bool partial = partlyCachedBeforeWidening || leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area());
+        cacheStateRecorder.set(partial ? eRenderCacheStatePartial : eRenderCacheStateMiss);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

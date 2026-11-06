@@ -152,7 +152,7 @@ def summarise(frames, edited_node):
         }
         if not executed:
             hits += 1
-        elif t != root and rec["node"] != edited_node:
+        elif t != root and rec["node"] != edited_node and not did_no_work(rec):
             upstream_executed += 1
     return {
         "frame": seq,
@@ -181,16 +181,34 @@ CAUSES = collections.OrderedDict([
 NO_WORK_MS = 0.5
 
 
+def on_device(rec):
+    return rec.get("device") == "gpu" or rec.get("regionId", -1) >= 0
+
+
+def did_no_work(rec):
+    # A region member's bypass is the default of a task that never reached renderRoI, not an identity return.
+    return rec.get("cache", "bypass") == "bypass" and not on_device(rec) and rec["wallNs"] / 1e6 < NO_WORK_MS
+
+
 def behind_a_hit(tasks):
-    """The tasks some cached image downstream made unnecessary."""
+    """The tasks no executing consumer needs: every consumer is a hit or itself behind one. A dependency that
+    also feeds a task that ran stays out, since that task needed it."""
     by_index = {rec["task"]: rec for rec in tasks}
+    consumers = collections.defaultdict(list)
+    for rec in tasks:
+        for dep in rec.get("deps", []):
+            if dep in by_index:
+                consumers[dep].append(rec["task"])
+    unneeded = {t for t, rec in by_index.items() if rec.get("cache") == "hit"}
     behind = set()
-    stack = [rec["task"] for rec in tasks if rec.get("cache") == "hit"]
-    while stack:
-        for dep in by_index[stack.pop()].get("deps", []):
-            if dep in by_index and dep not in behind:
-                behind.add(dep)
-                stack.append(dep)
+    changed = True
+    while changed:
+        changed = False
+        for t, users in consumers.items():
+            if t not in behind and all(u in unneeded for u in users):
+                behind.add(t)
+                unneeded.add(t)
+                changed = True
     return behind
 
 
@@ -202,7 +220,8 @@ def classify_task(rec, edit, history, behind):
     node = rec["node"]
     wall_ms = rec["wallNs"] / 1e6
     state = rec.get("cache", "bypass")
-    on_device = rec.get("device") == "gpu" or rec.get("regionId", -1) >= 0
+    if did_no_work(rec):
+        return None
     before = edit.get("hashes_before", {}).get(node)
     after = edit.get("hashes", {}).get(node)
     if before is None or after is None:
@@ -211,10 +230,10 @@ def classify_task(rec, edit, history, behind):
         return "hash_change"
     if rec["task"] in behind and wall_ms >= NO_WORK_MS:
         return "behind_hit"
-    if on_device:
+    if on_device(rec):
         return "placement_iscached_miss" if any(mip == rec["mipmapLevel"] for mip, _ in history) else "gpu_region_member"
     if state == "bypass":
-        return None if wall_ms < NO_WORK_MS else "not_admitted"
+        return "not_admitted"
     if state == "partial":
         return "partial_roi"
     if state == "miss":
@@ -241,6 +260,14 @@ def load_profile(path):
 def classify_run(profile_path, edits, edited_node):
     """(per-cause execution counts, per-cause wall ms, per-node cause counts, tasks that did no work)
     of the recorded edits, for one configuration."""
+    # A timed-out edit has no frame, so the frames after the last edit before it cannot be told apart from its own.
+    ordered = sorted(edits, key=lambda e: e.get("edit", 0))
+    unattributable = []
+    for i, e in enumerate(ordered):
+        if e.get("frame") is None:
+            before = [p["frame"] for p in ordered[:i] if p.get("frame") is not None]
+            after = [n["frame"] for n in ordered[i + 1:] if n.get("frame") is not None]
+            unattributable.append((max(before) if before else -1, min(after) if after else float("inf")))
     edits = sorted((e for e in edits if e.get("frame") is not None), key=lambda e: e["frame"])
     counts = collections.Counter()
     wall = collections.Counter()
@@ -252,6 +279,9 @@ def classify_run(profile_path, edits, edited_node):
         for candidate in edits:
             if candidate["frame"] <= seq:
                 edit = candidate
+        if any(low < seq < high for low, high in unattributable):
+            edit = None
+            counts["unclassified"] += len(tasks)
         behind = behind_a_hit(tasks)
         depended = set()
         for rec in tasks:

@@ -1019,7 +1019,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
     }
 
     // Probes the keys renderRoI looks up: the non-draft one, and the draft one when the frame is a draft frame and the
-    // node varies with it. Not knowing which full-scale flag renderRoI will key with, either counts; a false hit only
+    // node uses draft mode. Not knowing which full-scale flag renderRoI will key with, either counts; a false hit only
     // keeps a task on the CPU.
     inputs.isCached = [context](const FrameGraph::Task& task) -> bool {
         if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {

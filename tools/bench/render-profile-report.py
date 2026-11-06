@@ -23,7 +23,7 @@ import tempfile
 
 
 CACHE_STATES = ("hit", "partial", "miss", "bypass")
-REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs")
+REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs", "cache")
 
 
 def load_records(paths):
@@ -50,7 +50,6 @@ def load_records(paths):
             if not rec.get("ok", True):
                 continue
             rec.setdefault("device", "cpu")
-            rec.setdefault("cache", "bypass")
             rec.setdefault("regionId", -1)
             frames.setdefault((path, rec["frame"]), {})[rec["task"]] = rec
     return frames
@@ -313,18 +312,18 @@ def self_test(args):
         with open(gpu_path, "w", encoding="utf-8") as out:
             out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0]}\n')
             out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true,"cache":"bypass"}\n')
         rec = load_records([gpu_path])[(gpu_path, 0)][0]
         assert rec["device"] == "gpu" and rec["regionId"] == 3, rec
         assert analyse(load_records([gpu_path]), args)[0]["gpu_fallbacks"] == {}
         fb_path = os.path.join(tmp, "fallback.jsonl")
         with open(fb_path, "w", encoding="utf-8") as out:
             out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true,"cache":"bypass"}\n')
             out.write('{"frame":0,"task":1,"plugin":"Grade","node":"G","deps":[0],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true,"cache":"bypass"}\n')
             out.write('{"frame":0,"task":2,"plugin":"Blur","node":"B2","deps":[1],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":-1,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":-1,"ok":true,"cache":"bypass"}\n')
             out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0,1],"fallback":"out of device memory",'
                       '"retries":2}\n')
         assert analyse(load_records([fb_path]), args)[0]["gpu_fallbacks"] == {"Blur": 1, "Grade": 1}

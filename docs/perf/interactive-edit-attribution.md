@@ -29,11 +29,11 @@ Checks run in this order, and the first match wins.
 | Class | Evidence in the records | Code path | Owner | Software host | Lavapipe |
 |---|---|---|---|---|---|
 | `hash_change` | the node's content hash differs across the edit | `Effect::getContentHash` (`Engine/PyNode.cpp:575`) | none: the render is required | 0 | 0 |
-| `behind_hit` | a task downstream in the same frame is `hit` | every dependency runs: `RenderScheduler::executeTask` (`Engine/RenderScheduler.cpp:1223`); the only cache probe outside `renderRoI` is placement's | M300 - Unified Tiered Cache, by its gate; no task yet | 320 | 48 |
+| `behind_hit` | every consumer in the same frame is a `hit` or itself behind one | every dependency runs: `RenderScheduler::executeTask` (`Engine/RenderScheduler.cpp:1223`); the only cache probe outside `renderRoI` is placement's | M300 - Unified Tiered Cache, by its gate; no task yet | 320 | 48 |
 | `placement_iscached_miss` | on the device, with a host image stored earlier at this mip | `isCached` (`Engine/GpuPlacement.cpp:1024`, draft key fixed by M276.P2.T1) | M301 - GPU Cache Tier | unmeasured | unmeasured |
 | `gpu_region_member` | on the device, or in a region, with no host image | `storeOutputs` (`Engine/GpuRegionTask.cpp:2978`) writes only the per-frame store, and skips interior members (`:2985`) | M301 - GPU Cache Tier | unmeasured | unmeasured |
-| `not_admitted` | CPU, state `bypass`, real work done | `Node::shouldCacheOutput` (`Engine/Node.cpp:8652`), called at `Engine/EffectInstanceRenderRoI.cpp:933`; state set at `:1349` | M300 - Unified Tiered Cache | 400 | 60 |
-| `partial_roi` | CPU, state `partial` | `Engine/EffectInstanceRenderRoI.cpp:1359` | M300 - Unified Tiered Cache | 0 | 0 |
+| `not_admitted` | CPU, state `bypass`, real work done | `Node::shouldCacheOutput` (`Engine/Node.cpp:8652`), called at `Engine/EffectInstanceRenderRoI.cpp:933`; state set at `:1366` | M300 - Unified Tiered Cache | 400 | 60 |
+| `partial_roi` | CPU, state `partial` | `Engine/EffectInstanceRenderRoI.cpp:1372` | M300 - Unified Tiered Cache | 0 | 0 |
 | `first_store` | CPU, state `miss`, no earlier cached image of the node | as above; nothing to reuse yet | none | 0 | 0 |
 | `eviction` | CPU, state `miss`, an image stored earlier at this mip or finer, hash unchanged | blind LRU past 90% (`Engine/Cache.h:67`) | M300 - Unified Tiered Cache | 0 | 0 |
 | `mip_or_draft_key` | CPU, state `miss`, earlier images only at coarser mips | draft in `ImageKey` (`Engine/EffectInstanceRenderRoI.cpp:~940`, `Engine/ImageKey.cpp:89`), draft mip (`Engine/ViewerInstance.cpp:1769`) | M303 - Interactive Edit Latency | 0, drag unmeasured | 0, drag unmeasured |
@@ -50,6 +50,16 @@ node or an empty RoI before it sets a state; none occurred upstream in a recorde
   the tasks ran on the CPU and upstream hashes did not move, but the profile does not record the reason.
 - The profile has no draft flag. A draft key change at an unchanged mip would read as `eviction`. That cannot
   happen in this benchmark, and it must be revisited when a drag is added.
+- The two GPU classes separate only by history: a host image stored earlier at this mip makes a device task
+  `placement_iscached_miss`, none makes it `gpu_region_member`. That is an inference like `not_admitted`, and
+  neither row is established until a GPU run supplies data. A region member that fell back to the CPU still counts
+  as a device task, and now carries its real cache state; the region record's `executed` list names the members
+  that rendered.
+- A timed-out edit has no frame. Frames after the last framed edit before it, up to the next framed edit,
+  cannot be attributed, so the classifier counts their tasks as `unclassified` and exits 1.
+- A task whose cache state is `partial` or `miss` is read after the fact: a non-tiled effect with part of its RoI
+  cached is widened to the whole RoI, and the state is taken before that, so it reads `partial`. A frame whose
+  rectangles are all identity reads `bypass`.
 - Only `not_admitted` and `behind_hit` occurred in real data. The other branches were checked on 11 synthetic
   records, not on real renders.
 - The content hash is read on the main thread around the edit, not recorded per frame.

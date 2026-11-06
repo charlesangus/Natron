@@ -328,6 +328,9 @@ struct GpuRegionTimes {
     // Why the members rendered on the CPU instead; empty for a region that rendered on the GPU.
     std::string fallback;
     int retries = 0;
+
+    // The task IDs of the members that rendered: all of them on the GPU, the ones the cache did not serve on the CPU.
+    std::vector<int> executed;
 };
 
 /**

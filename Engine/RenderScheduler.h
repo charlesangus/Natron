@@ -328,6 +328,10 @@ public:
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
 
+        // The cache state each CPU-fallback member rendered with, in Region::members order; shorter than the
+        // members when a member failed or the frame aborted, and empty when the GPU ran them.
+        std::vector<EffectInstance::RenderCacheStateEnum> memberCache;
+
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
     };

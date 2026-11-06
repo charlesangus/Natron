@@ -769,6 +769,17 @@ TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
     cached->markForRendered(task.renderedRoI);
 
     EXPECT_TRUE(inputs.isCached(task));
+
+    FrameRun plain;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &plain, &error)) << error;
+    const int plainIndex = taskOf(plain.graph, _grade);
+    ASSERT_GE(plainIndex, 0);
+    FrameGraph::Task plainTask = plain.graph.tasks[plainIndex];
+    plainTask.sharesCachedOutput = true;
+    plainTask.renderedRoI = RectI(0, 0, kWidth, kHeight);
+    const PlacementInputs plainInputs = makeRenderPlacementInputs(plain.context);
+    ASSERT_TRUE(bool(plainInputs.isCached));
+    EXPECT_FALSE(plainInputs.isCached(plainTask));
 }
 
 // A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once

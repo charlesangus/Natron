@@ -99,19 +99,19 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - verify: `ctest -R "NativeTransformGpu|NativeReformatGpu|NativeCornerPinGpu|NativeAutoStraightenGpu|StagedResample"` passes on lavapipe at the phase build.
   - size: M
 
-- [ ] M270.P2.T3 — Carry the kernel through coordmap, STMap, IDistort and the variable warps
+- [x] M270.P2.T3 — Carry the kernel through coordmap, STMap, IDistort and the variable warps
   - files: `Engine/Gpu/Kernels/coordmap.slang`, `Engine/Gpu/Kernels/stmap.slang`, `Engine/Gpu/Kernels/iwarp.slang`, `Engine/Nodes/Transform/WarpGpu.h`, `Engine/Nodes/Transform/IWarp.cpp`
   - approach: `sampleAt` takes the core's `FilterSpec`; drop `jacobianState`. Append lobes, B, C to `WarpGpuParams` (43 to 46 words, update the `static_assert`) and to IWarp's header (`IWarp.cpp:1141`, read at `iwarp.slang:47`), filled from `FilterSpec(settings.filter)` until Phase 270.3. Kernels read the same words the C++ writes.
   - verify: `ctest -R "CoordMapGpu|NativeIWarpGpu|NativeIDistort"` passes on lavapipe at the phase build.
   - size: M
 
-- [ ] M270.P2.T4 — Carry the kernel through the lens and SplineWarp kernels
+- [x] M270.P2.T4 — Carry the kernel through the lens and SplineWarp kernels
   - files: `Engine/Gpu/Kernels/lensdistortion.slang`, `Engine/Gpu/Kernels/lenscorrect.slang`, `Engine/Gpu/Kernels/splinewarp.slang`, `Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h`, `Engine/Nodes/Transform/LensDistortion.cpp`, `Engine/Nodes/Transform/LensCorrect.cpp`
   - approach: As T3 for each params block (`LensDistortion.cpp:1234`, `LensCorrect.cpp:1446`, `SplineWarpGpuParams` 20 to 23 words). `SplineWarp.cpp:2183` fills the new words too. Then remove the `uint filter` overload of `sampleAt` once `coordmap_test.slang` is updated.
   - verify: `ctest -R "NativeLensDistortionGpu|NativeLensCorrectGpu|NativeSplineWarpGpu"` passes on lavapipe at the phase build.
   - size: M
 
-- [ ] M270.P2.T5 — Test coord-map CPU and GPU parity for the new filters
+- [x] M270.P2.T5 — Test coord-map CPU and GPU parity for the new filters
   - files: `Tests/Native/CoordMapGpu_Test.cpp`, `Tests/Native/NativeIWarpGpu_Test.cpp`, `Tests/Native/NativeLensDistortionGpu_Test.cpp`, `Tests/Native/NativeLensCorrectGpu_Test.cpp`, `Engine/Gpu/Kernels/coordmap_test.slang`
   - approach: Replace the supersampling cases at `CoordMapGpu_Test.cpp:479` with minifying Jacobians, axis-aligned and rotated, for all seventeen filters with Clamp, Sinc lobes and Bicubic (B, C) set. Add per-filter loops, as `NativeTransformGpu_Test.cpp:583` does, to the three node tests.
   - verify: `ctest -R "CoordMapGpu|NativeIWarpGpu|NativeLensDistortionGpu|NativeLensCorrectGpu"` passes on lavapipe at the phase build.

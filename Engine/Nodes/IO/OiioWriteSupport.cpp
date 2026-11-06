@@ -883,7 +883,7 @@ namespace {
             if (name == "FramesPerSecond") {
                 setRational(spec, name, *d);
             } else if (keepDouble) {
-                spec.attribute(name, OIIO::TypeDouble, d);
+                spec.attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::DOUBLE), d);
             } else {
                 // The standard tags of every format take a float.
                 spec.attribute(name, (float)*d);

@@ -30,7 +30,7 @@ USD API use (`usdviewq/appController.py:4298-4314,4441-4509,4604-4607`).
 
 ## Phase 333.1: Inspector
 
-- [ ] M333.P1.T1 — Tabbed inspector with attributes, relationships and metadata
+- [x] M333.P1.T1 — Tabbed inspector with attributes, relationships and metadata
   - files: `Gui/ScenePrimInspector.{h,cpp}` (new), `Gui/SceneGraphPanel.cpp`, `Gui/CMakeLists.txt`, `Tests/gui/scene_prim_inspector.py`
   - approach: move the attribute view out of `SceneGraphPanel.cpp:1160,1648-1671` into its own widget with a tab list, reading on a worker under the stage lock and posting results. Add relationships (`GetRelationships`, targets) and metadata (`GetAllMetadata`). Keep `authoringNodeOf` for the source column. Add `GetResolveInfo` source kind (default, value, samples, fallback).
   - verify: GUI script — on USDCamera → USDEditTransform, focal length names USDCamera and the transform names USDEditTransform; relationships and metadata list; no read runs on main (heartbeat within budget on a selection change on the flat file).

@@ -680,6 +680,23 @@ namespace {
         { "openexr:", "exr/" }
     };
 
+    const char* const kMetadataNamespaces[] = {
+        "ofx/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/"
+    };
+
+    bool
+    isNamespacedKey(const std::string& name)
+    {
+        for (const char* ns : kMetadataNamespaces) {
+            const std::size_t length = std::strlen(ns);
+            if (name.size() > length && name.compare(0, length, ns) == 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool
     isOpenExrPath(const std::string& path)
     {
@@ -710,6 +727,9 @@ namespace {
             if (name.compare(0, length, prefix.attribute) == 0) {
                 return std::string(prefix.key) + name.substr(length);
             }
+        }
+        if (isNamespacedKey(name)) {
+            return name;
         }
         if (name.empty() || name.find(':') != std::string::npos) {
             return std::string();

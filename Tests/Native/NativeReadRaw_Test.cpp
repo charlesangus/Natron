@@ -55,6 +55,7 @@
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/IO/RawspeedRuntime.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -102,6 +103,11 @@ protected:
         NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
 
         return effect ? effect->getOutputMetadata(time, ViewIdx(0)) : ImageMetadata();
+    }
+
+    static RectI outputFormat(const NodePtr& node)
+    {
+        return node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
     }
 
     static RectI regionOfDefinition(const NodePtr& node)
@@ -187,6 +193,46 @@ TEST_F(NativeReadRawTest, EachFixtureReadsAsRawWithItsChannelsMetadataAndPixels)
         }
         EXPECT_EQ(0u, mismatches);
         EXPECT_FALSE(read->hasPersistentMessage()) << persistentMessage(read);
+    }
+}
+
+TEST_F(NativeReadRawTest, RawPrepareFormatIsTheWindowSizeAtTheOrigin)
+{
+    const std::string paths[] = {
+        bayerFixture().path(),
+        std::string(NATRON_TESTS_FIXTURES_DIR "/raw/reference/highlights-bayer.dng"),
+    };
+
+    for (const std::string& path : paths) {
+        SCOPED_TRACE(path);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(path, &error);
+        ASSERT_TRUE(bool(header)) << error;
+        const RectI window = header->window;
+
+        NodePtr read = createRead(path);
+        ASSERT_TRUE(bool(read));
+        NodePtr prepare = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWPREPARE));
+        ASSERT_TRUE(bool(prepare));
+        connectNodes(read, prepare, 0, true);
+
+        EXPECT_TRUE(header->format == outputFormat(read));
+        EXPECT_TRUE(window == regionOfDefinition(read));
+
+        const RectI kept(0, 0, window.width(), window.height());
+        EXPECT_TRUE(kept == outputFormat(prepare));
+        EXPECT_TRUE(kept == regionOfDefinition(prepare));
+
+        // Margins are taken from the window, and the format follows them.
+        EffectInstancePtr effect = prepare->getEffectInstance();
+        effect->getKnobByNameAndType<KnobBool>(kRawPrepareParamCropOverride)->setValue(true);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropLeft)->setValue(3);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropBottom)->setValue(2);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropRight)->setValue(5);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropTop)->setValue(4);
+        const RectI trimmed(0, 0, window.width() - 8, window.height() - 6);
+        EXPECT_TRUE(trimmed == outputFormat(prepare));
+        EXPECT_TRUE(trimmed == regionOfDefinition(prepare));
     }
 }
 

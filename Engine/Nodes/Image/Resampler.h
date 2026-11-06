@@ -51,6 +51,16 @@
 #define kResamplerParamFilterBlackOutsideLabel "Black outside"
 #define kResamplerParamFilterBlackOutsideHint "Fill the area outside the source image with black"
 
+#define kResamplerParamLobes "lobes"
+#define kResamplerParamLobesLabel "Lobes"
+#define kResamplerParamLobesHint "The lobes of the Sinc filter, which are also its radius in source pixels. More lobes are sharper, ring more and read more of the source."
+#define kResamplerParamBicubicB "bicubicB"
+#define kResamplerParamBicubicBLabel "Bicubic B"
+#define kResamplerParamBicubicBHint "The B parameter of the Bicubic filter. Higher values blur more."
+#define kResamplerParamBicubicC "bicubicC"
+#define kResamplerParamBicubicCLabel "Bicubic C"
+#define kResamplerParamBicubicCHint "The C parameter of the Bicubic filter. Higher values sharpen more."
+
 #define kResamplerParamShutterOffset "shutterOffset"
 #define kResamplerParamShutterOffsetLabel "Shutter Offset"
 #define kResamplerParamShutterOffsetHint "Controls when the shutter should be open/closed. Ignored if there is no motion blur (i.e. shutter=0 or motionBlur=0)."
@@ -726,6 +736,21 @@ void getRegionOfDefinition(const CanonicalTransformFn& fn,
                            double sy,
                            const RegionParams& params,
                            RectD* rod);
+
+/**
+ * @brief Raises *scaleX and *scaleY to the largest kernelScale() per source axis of canonical
+ * matrix's Jacobian in pixels, over the corners of roi. Sets *cornerBehind when a corner falls at
+ * or behind z = 0, which has no footprint to measure.
+ **/
+void growKernelScales(const TransformMath::Mat3& matrix,
+                      const RectD& roi,
+                      double srcPar,
+                      double dstPar,
+                      double sx,
+                      double sy,
+                      double* scaleX,
+                      double* scaleY,
+                      bool* cornerBehind);
 
 /**
  * @brief The source RoI for an output roi, as the OFX Transform3x3 computes it: roi itself for

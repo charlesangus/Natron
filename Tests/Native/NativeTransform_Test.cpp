@@ -200,6 +200,34 @@ protected:
     }
 };
 
+TEST_F(NativeTransformTest, FilterParameterKnobsAndTheirDefaults)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(node));
+
+    KnobIntPtr lobes = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kResamplerParamLobes));
+    KnobDoublePtr b = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicB));
+    KnobDoublePtr c = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicC));
+    KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
+    ASSERT_TRUE(lobes && b && c && clamp);
+
+    EXPECT_EQ("Lobes", lobes->getLabel());
+    EXPECT_EQ("Bicubic B", b->getLabel());
+    EXPECT_EQ("Bicubic C", c->getLabel());
+    EXPECT_EQ(4, lobes->getDefaultValue(0));
+    EXPECT_EQ(2, lobes->getMinimum(0));
+    EXPECT_EQ(8, lobes->getMaximum(0));
+    EXPECT_DOUBLE_EQ(1. / 3., b->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(1. / 3., c->getDefaultValue(0));
+
+    // The default Cubic reads none of them and is never clamped.
+    EXPECT_FALSE(lobes->isEnabled(0));
+    EXPECT_FALSE(b->isEnabled(0));
+    EXPECT_FALSE(c->isEnabled(0));
+    EXPECT_FALSE(clamp->isEnabled(0));
+}
+
 TEST_F(NativeTransformTest, CubicMinifyingAndRotated)
 {
     resetProject();

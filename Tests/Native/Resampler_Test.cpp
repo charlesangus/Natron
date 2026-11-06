@@ -987,6 +987,9 @@ TEST(Resampler, KernelsWithADoubleRootAtTheEdgeVanishInTheBand)
         FilterSpec(eFilterRifman),
         FilterSpec(eFilterMitchell),
         FilterSpec(eFilterBicubic),
+        FilterSpec(eFilterBicubic, 4, 1., 0.),
+        FilterSpec(eFilterBicubic, 4, 0.25, 0.),
+        FilterSpec(eFilterBicubic, 4, 0., 0.5),
         FilterSpec(eFilterSinc, 2),
         FilterSpec(eFilterSinc, 4),
         FilterSpec(eFilterSinc, 8),
@@ -1080,6 +1083,44 @@ TEST(Resampler, ConstantImagesStayConstantWhenMinified)
             }
         }
     }
+}
+
+TEST(Resampler, BicubicOuterLobeFollowsItsFactoredForm)
+{
+    const double pairs[][2] = { { 1., 0. }, { 0.25, 0. }, { 0., 0.5 }, { 1. / 3., 1. / 3. }, { 0.7, 0.2 } };
+
+    for (const auto& pair : pairs) {
+        const FilterSpec spec(eFilterBicubic, 4, pair[0], pair[1]);
+        for (double e : { 0x1p-25, 0x1p-20, 0x1p-18, 0x1p-10, 0.25, 0.5, 0.75 }) {
+            const double expected = e * e * (pair[0] * e + 6. * pair[1] * (e - 1.)) / 6.;
+            EXPECT_DOUBLE_EQ(spec.weight(2. - e), expected) << "B " << pair[0] << " C " << pair[1] << " e " << e;
+            EXPECT_NE(spec.weight(2. - e), 0.) << "B " << pair[0] << " C " << pair[1] << " e " << e;
+        }
+    }
+}
+
+TEST(Resampler, BicubicWithBAndCZeroHasNoOuterLobe)
+{
+    const FilterSpec spec(eFilterBicubic, 4, 0., 0.);
+
+    for (double a : { 1., 1. + 0x1p-40, 1.25, 1.5, 1.75, 2. - 0x1p-20, 2. - 0x1p-30 }) {
+        EXPECT_EQ(spec.weight(a), 0.) << "a " << a;
+    }
+    EXPECT_DOUBLE_EQ(spec.weight(0.25), FilterSpec(eFilterCubic).weight(0.25));
+    EXPECT_DOUBLE_EQ(spec.weight(0.75), FilterSpec(eFilterCubic).weight(0.75));
+
+    // A bright pixel under the outer lobe has no say: the result is where the plain cubic puts it.
+    const int w = 8;
+    const int h = 8;
+    std::vector<float> pixels((std::size_t)w * h, 0.25f);
+    pixels[(std::size_t)4 * w + 3] = 10.f;
+    pixels[(std::size_t)4 * w + 5] = 0.75f;
+    const SourceImage src(pixels.data(), RectI(0, 0, w, h), 1);
+    float clamped = 0.f;
+    float plain = 0.f;
+    ASSERT_TRUE(interpolate(spec, true, 4.75, 4.5, src, false, &clamped));
+    ASSERT_TRUE(interpolate(FilterSpec(eFilterCubic), false, 4.75, 4.5, src, false, &plain));
+    EXPECT_NEAR(clamped, plain, 1e-6f);
 }
 
 TEST(Resampler, MinifiedBlackOutsideFadesAtTheSourceEdge)

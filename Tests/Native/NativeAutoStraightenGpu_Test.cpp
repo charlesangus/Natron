@@ -38,6 +38,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
@@ -398,6 +399,52 @@ TEST_F(NativeAutoStraightenGpuTest, EveryCaseMatchesTheCpuRender)
             return;
         }
     }
+    EXPECT_GT(nCompared, 0);
+}
+
+TEST_F(NativeAutoStraightenGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    const bool hasGpu = createRuntime(runtime);
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+
+    const auto make = [&]() {
+        NodePtr n = makeNode();
+        if (n) {
+            connectNodes(source, n, 0, true);
+            EXPECT_TRUE(setCase(n, kCases[1]));
+        }
+
+        return n;
+    };
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    NodePtr node = make();
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+
+    if (!hasGpu) {
+        return;
+    }
+    int nCompared = 0;
+    for (double lobes : { 2., 8. }) {
+        NodePtr sinc = make();
+        ASSERT_TRUE(bool(sinc));
+        ASSERT_TRUE(selectFilter(sinc, Resampler::eFilterSinc));
+        ASSERT_TRUE(setKnobValues(sinc, kResamplerParamLobes, { lobes }));
+        expectGpuMatchesCpu(*runtime, source, sinc, "sinc " + std::to_string((int)lobes), &nCompared);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    NodePtr bicubic = make();
+    ASSERT_TRUE(bool(bicubic));
+    ASSERT_TRUE(selectFilter(bicubic, Resampler::eFilterBicubic));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicB, { 0. }));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicC, { 0.5 }));
+    expectGpuMatchesCpu(*runtime, source, bicubic, "bicubic b0 c0.5", &nCompared);
     EXPECT_GT(nCompared, 0);
 }
 

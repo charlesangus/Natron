@@ -475,7 +475,7 @@ struct FilterCase {
 };
 
 // The seven filters of M270 at their default parameters, Sinc at its two extreme lobe counts and
-// Bicubic at two (B, C) pairs besides the default.
+// Bicubic at three (B, C) pairs besides the default, one with no outer lobe.
 const FilterCase kNewFilters[] = {
     { "lanczos2", Resampler::eFilterLanczos2 },
     { "lanczos3", Resampler::eFilterLanczos3 },
@@ -488,6 +488,7 @@ const FilterCase kNewFilters[] = {
     { "sinc-lobes8", Resampler::FilterSpec(Resampler::eFilterSinc, 8) },
     { "bicubic-b0-c05", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.5) },
     { "bicubic-b1-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 1., 0.) },
+    { "bicubic-b0-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.) },
 };
 
 struct ScaleCase {

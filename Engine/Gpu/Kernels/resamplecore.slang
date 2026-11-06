@@ -546,7 +546,10 @@ float filterValue(FilterSpec spec, FF a, bool onZero)
         const float C = spec.C;
         if (af < 1.0)
             return (6.0 - 2.0 * B + af * af * ((-18.0 + 12.0 * B + 6.0 * C) + af * (12.0 - 9.0 * B - 6.0 * C))) / 6.0;
-        return (8.0 * B + 24.0 * C + af * ((-12.0 * B - 48.0 * C) + af * ((6.0 * B + 30.0 * C) + af * (-B - 6.0 * C)))) / 6.0;
+        // Factored at the edge, as Resampler.cpp's mitchellNetravali, from the two-float distance.
+        const FF edge = ffAddF(ffNeg(a), 2.0);
+        const float e = edge.hi + edge.lo;
+        return e * e * (B * e + 6.0 * C * (e - 1.0)) / 6.0;
     }
     default:
     {
@@ -561,6 +564,13 @@ float filterValue(FilterSpec spec, FF a, bool onZero)
 // A tap inside the support that floats round to zero weight, but the CPU's doubles do not, still
 // counts towards the clamp range; so small a weight moves no result.
 static const float kCountedWeight = 1e-30;
+
+// Bicubic at B = C = 0 has no outer lobe: the CPU's doubles give those taps exactly zero, so they
+// stay out of the clamp range here too.
+bool bicubicOuterLobeIsZero(FilterSpec spec, FF a)
+{
+    return spec.filter == kFilterBicubic && spec.B == 0.0 && spec.C == 0.0 && !ffLess(a, ffMake(1.0, 0.0));
+}
 
 // Resampler.cpp's kEdgeZeroBand and vanishesInEdgeBand.
 static const float kEdgeZeroBand = 1.4901161193847656e-08;
@@ -602,7 +612,7 @@ float tapWeight(FilterSpec spec, FF offset, FF scale)
         onInteger = diff.hi == 0.0 && diff.lo == 0.0;
     }
     const float w = filterValue(spec, a, onInteger);
-    return (w == 0.0 && !onInteger) ? kCountedWeight : w;
+    return (w == 0.0 && !onInteger && !bicubicOuterLobeIsZero(spec, a)) ? kCountedWeight : w;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

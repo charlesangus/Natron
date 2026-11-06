@@ -122,7 +122,10 @@ namespace {
         if (a < 1.) {
             return ((12. - 9. * B - 6. * C) * a3 + (-18. + 12. * B + 6. * C) * a2 + (6. - 2. * B)) / 6.;
         }
-        return ((-B - 6. * C) * a3 + (6. * B + 30. * C) * a2 + (-12. * B - 48. * C) * a + (8. * B + 24. * C)) / 6.;
+        // Factored at the edge: expanded, the terms cancel and a C of 0 rounds to 0 about 2^-18 from
+        // the edge, outside the band, which would drop those taps from the clamp range.
+        const double e = 2. - a;
+        return e * e * (B * e + 6. * C * (e - 1.)) / 6.;
     }
 
     inline int
@@ -2021,6 +2024,35 @@ getRegionOfDefinition(const CanonicalTransformFn& fn,
 }
 
 void
+growKernelScales(const Mat3& matrix,
+                 const RectD& roi,
+                 double srcPar,
+                 double dstPar,
+                 double sx,
+                 double sy,
+                 double* scaleX,
+                 double* scaleY,
+                 bool* cornerBehind)
+{
+    const Mat3 H = TransformMath::canonicalToPixel(srcPar, sx, sy) * matrix * TransformMath::pixelToCanonical(dstPar, sx, sy);
+    const double cx[2] = { roi.x1 * sx / dstPar, roi.x2 * sx / dstPar };
+    const double cy[2] = { roi.y1 * sy, roi.y2 * sy };
+
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            const Point3 p = H * Point3(cx[i], cy[j], 1);
+            if (!(p.z > 0.)) {
+                *cornerBehind = true;
+                continue;
+            }
+            const double z2 = p.z * p.z;
+            *scaleX = (std::max)(*scaleX, kernelScale((H(0, 0) * p.z - p.x * H(2, 0)) / z2, (H(0, 1) * p.z - p.x * H(2, 1)) / z2));
+            *scaleY = (std::max)(*scaleY, kernelScale((H(1, 0) * p.z - p.y * H(2, 0)) / z2, (H(1, 1) * p.z - p.y * H(2, 1)) / z2));
+        }
+    }
+}
+
+void
 getRegionOfInterest(const CanonicalTransformFn& fn,
                     const RectD& roi,
                     const RectD& srcRoD,
@@ -2044,25 +2076,8 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
     bool cornerBehind = false;
     MatrixVisitor visit;
     if (kernelFilter && (roi.x2 > roi.x1) && (roi.y2 > roi.y1)) {
-        const Mat3 toSrc = TransformMath::canonicalToPixel(srcPar, sx, sy);
-        const Mat3 fromDst = TransformMath::pixelToCanonical(dstPar, sx, sy);
-        // The window's corners in output pixels.
-        const double cx[2] = { roi.x1 * sx / dstPar, roi.x2 * sx / dstPar };
-        const double cy[2] = { roi.y1 * sy, roi.y2 * sy };
         visit = [&](const Mat3& M) {
-            const Mat3 H = toSrc * M * fromDst;
-            for (int i = 0; i < 2; ++i) {
-                for (int j = 0; j < 2; ++j) {
-                    const Point3 p = H * Point3(cx[i], cy[j], 1);
-                    if (!(p.z > 0.)) {
-                        cornerBehind = true;
-                        continue;
-                    }
-                    const double z2 = p.z * p.z;
-                    scaleX = (std::max)(scaleX, kernelScale((H(0, 0) * p.z - p.x * H(2, 0)) / z2, (H(0, 1) * p.z - p.x * H(2, 1)) / z2));
-                    scaleY = (std::max)(scaleY, kernelScale((H(1, 0) * p.z - p.y * H(2, 0)) / z2, (H(1, 1) * p.z - p.y * H(2, 1)) / z2));
-                }
-            }
+            growKernelScales(M, roi, srcPar, dstPar, sx, sy, &scaleX, &scaleY, &cornerBehind);
         };
     }
     transformRegionVisiting(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI, visit);

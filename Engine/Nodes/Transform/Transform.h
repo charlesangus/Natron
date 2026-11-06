@@ -32,6 +32,7 @@
 #include <optional>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
@@ -63,7 +64,7 @@ NATRON_NAMESPACE_ENTER
 struct TransformNodeParams {
     TransformMath::TransformParams transform;
     bool invert = false;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = true;
     Resampler::BlurSettings blur;
@@ -158,6 +159,7 @@ struct TransformOp {
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
     KnobBoolWPtr blackOutside;
+    Resampler::FilterKnobs filterKnobs;
     KnobDoubleWPtr motionBlur;
     KnobBoolWPtr directionalBlur;
     KnobDoubleWPtr shutter;

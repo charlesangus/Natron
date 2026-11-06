@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -51,6 +52,7 @@
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
+#include "Engine/TimeLine.h"
 #endif
 
 NATRON_NAMESPACE_ENTER
@@ -420,6 +422,8 @@ LensDistortion::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
     cropToFormat->setName(kLensDistortionParamCropToFormat);
     cropToFormat->setHintToolTip(tr("If the source is inside its format and the distortion extends it outside of the output "
@@ -444,6 +448,7 @@ LensDistortion::initializeKnobs()
     addStageKnobs(page);
     _extentKnobs.finishKnobs();
     updateModelVisibility();
+    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // LensDistortion::initializeKnobs
 
 void
@@ -464,12 +469,13 @@ LensDistortion::onKnobsLoaded()
 {
     _extentKnobs.updateVisibility();
     updateModelVisibility();
+    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
 LensDistortion::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
-                            ViewSpec /*view*/,
+                            ViewSpec view,
                             double time,
                             bool /*originatedFromMainThread*/)
 {
@@ -479,6 +485,12 @@ LensDistortion::knobChanged(KnobI* k,
     KnobChoicePtr model = _model.lock();
     if (model && (k == model.get())) {
         updateModelVisibility();
+
+        return true;
+    }
+    KnobChoicePtr filter = _filter.lock();
+    if (filter && (k == filter.get())) {
+        _filterKnobs.updateEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -570,10 +582,7 @@ LensDistortion::readSettings(double time,
     if (outputMode) {
         settings->stmap = (outputMode->getValueAtTime(time, 0, view) == 1);
     }
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        settings->filter = (Resampler::FilterEnum)filter->getValueAtTime(time, 0, view);
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -992,7 +1001,7 @@ LensDistortion::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
+    const bool jacobians = (settings.filter.filter != Resampler::eFilterImpulse);
 
     Geometry geometry;
     getGeometry(args.time, args.view, false, &geometry);
@@ -1240,7 +1249,7 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
     if (model.valid) {
         if (!settings.stmap) {
             params.flags |= kLensDistortionGpuSample;

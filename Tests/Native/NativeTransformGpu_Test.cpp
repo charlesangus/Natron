@@ -49,6 +49,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
@@ -1074,6 +1075,60 @@ TEST_F(NativeTransformGpuTest, RotatedStripsMatchTheWholeRegionExactly)
 
 // A Transform reading another one concatenates both matrices on the CPU, which the GPU path cannot,
 // so it stays on the CPU and renders as the CPU frame does.
+TEST_F(NativeTransformGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    const bool hasGpu = createRuntime(runtime);
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+
+    const auto makeMoved = [&](const NodePtr& input) {
+        NodePtr node = makeNode();
+        if (node) {
+            connectNodes(input, node, 0, true);
+            EXPECT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { 3.25, -2.75 }));
+            EXPECT_TRUE(setKnobValues(node, kTransformNodeParamScale, { 0.7, 0.7 }));
+        }
+
+        return node;
+    };
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    NodePtr node = makeMoved(source);
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+
+    // A concatenated chain resamples once, with the last node's filter.
+    NodePtr upstream = makeMoved(source);
+    ASSERT_TRUE(bool(upstream));
+    NodePtr last = makeMoved(upstream);
+    ASSERT_TRUE(bool(last));
+    EXPECT_TRUE(sincLobesChangeTheRender(last, window, kTime));
+
+    if (!hasGpu) {
+        return;
+    }
+    int nCompared = 0;
+    for (double lobes : { 2., 8. }) {
+        NodePtr sinc = makeMoved(source);
+        ASSERT_TRUE(bool(sinc));
+        ASSERT_TRUE(selectFilter(sinc, Resampler::eFilterSinc));
+        ASSERT_TRUE(setKnobValues(sinc, kResamplerParamLobes, { lobes }));
+        expectGpuMatchesCpu(*runtime, source, NodePtr(), sinc, "sinc " + std::to_string((int)lobes), &nCompared);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    NodePtr bicubic = makeMoved(source);
+    ASSERT_TRUE(bool(bicubic));
+    ASSERT_TRUE(selectFilter(bicubic, Resampler::eFilterBicubic));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicB, { 0. }));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicC, { 0.5 }));
+    expectGpuMatchesCpu(*runtime, source, NodePtr(), bicubic, "bicubic b0 c0.5", &nCompared);
+    EXPECT_GT(nCompared, 0);
+}
+
 TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
@@ -1113,8 +1168,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// What the test op samples with. No knob carries the Sinc lobes or the Bicubic (B, C) pair yet, so
-// they can only reach the render through ResampleSettings.
+// What the test op samples with; it has no filter knobs.
 ResampleSettings gFilterSpecSettings;
 
 constexpr InputSpec kFilterSpecInputs[] = {
@@ -1273,7 +1327,7 @@ struct FilterSpecCase {
 };
 
 // The seven new filters at their default parameters, Sinc at its two extreme lobe counts and
-// Bicubic at two (B, C) pairs besides the default.
+// Bicubic at three (B, C) pairs besides the default, one with no outer lobe.
 const FilterSpecCase kNewFilterSpecs[] = {
     { "lanczos2", Resampler::eFilterLanczos2 },
     { "lanczos3", Resampler::eFilterLanczos3 },
@@ -1286,6 +1340,7 @@ const FilterSpecCase kNewFilterSpecs[] = {
     { "sinc-lobes8", Resampler::FilterSpec(Resampler::eFilterSinc, 8) },
     { "bicubic-b0-c05", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.5) },
     { "bicubic-b1-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 1., 0.) },
+    { "bicubic-b0-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.) },
 };
 
 struct FilterScaleCase {

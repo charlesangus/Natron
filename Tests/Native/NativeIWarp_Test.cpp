@@ -547,6 +547,43 @@ TEST_F(NativeIWarpTest, DisconnectedMapWarns)
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+// Lanczos 3 reads 3 x scale pixels around each sample, far past the transform's reach at a step in
+// the Map or under a strong minification; a tile that read less would differ from the whole frame.
+TEST_F(NativeIWarpTest, TilesMatchTheWholeFrameUnderASteepMapAndMinification)
+{
+    NodePtr source = makeParitySource();
+    NodePtr step = makeConstant(RectI(-200, 24, 264, 400), { 1., 1., 1., 1. });
+    NodePtr mapped = makeITransform(source, step);
+    NodePtr unmapped = makeITransform(source, NodePtr());
+    ASSERT_TRUE(bool(source) && bool(step) && bool(mapped) && bool(unmapped));
+    EXPECT_TRUE(setKnobValues(mapped, kTransformNodeParamTranslate, { 30., 0. }));
+    EXPECT_TRUE(setKnobValues(unmapped, kTransformNodeParamScale, { 0.1, 0.1 }));
+
+    const int midX = kWindow.x1 + kWindow.width() / 2;
+    const RectI tiles[] = {
+        RectI(kWindow.x1, kWindow.y1, midX, kWindow.y2),
+        RectI(midX, kWindow.y1, kWindow.x2, kWindow.y2),
+    };
+    for (const NodePtr& node : { mapped, unmapped }) {
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterLanczos3].id)));
+        RenderedPlane whole;
+        ASSERT_TRUE(renderRGBA(node, kWindow, &whole));
+        for (const RectI& tile : tiles) {
+            RenderedPlane part;
+            ASSERT_TRUE(renderRGBA(node, tile, &part));
+            const int partWidth = tile.width();
+            const int wholeWidth = kWindow.width();
+            for (int y = 0; y < tile.height(); ++y) {
+                for (int x = 0; x < partWidth * 4; ++x) {
+                    const std::size_t inPart = (std::size_t)y * partWidth * 4 + x;
+                    const std::size_t inWhole = (std::size_t)(y + tile.y1 - kWindow.y1) * wholeWidth * 4 + (tile.x1 - kWindow.x1) * 4 + x;
+                    ASSERT_EQ(whole.pixels[inWhole], part.pixels[inPart]) << node->getScriptName() << " tile x1 " << tile.x1 << " at " << x / 4 << ", " << y;
+                }
+            }
+        }
+    }
+}
+
 // Motion blur over the shutter with no Map averages as the base node does.
 TEST_F(NativeIWarpTest, MotionBlurMatchesTheBaseNode)
 {

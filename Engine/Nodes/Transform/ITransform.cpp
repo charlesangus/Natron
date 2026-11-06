@@ -136,13 +136,7 @@ void
 ITransform::updateClampEnabled(double time,
                                ViewSpec view)
 {
-    KnobChoicePtr filter = _op.filter.lock();
-    KnobBoolPtr clamp = _op.clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _op.filterKnobs.updateEnabled(time, view);
 }
 
 void

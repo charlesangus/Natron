@@ -34,6 +34,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 
@@ -402,6 +403,26 @@ TEST_F(NativeIWarpGpuTest, CornerPinMatchesTheCpu)
 
     ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamBlackOutside, { 0. }));
     expectParity(std::vector<NodePtr>({ node }), node, "no black outside");
+}
+
+TEST_F(NativeIWarpGpuTest, ICornerPinFilterParameterKnobsReachTheCpuAndGpuRenders)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr node = makeICornerPin(source, map);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(node));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, kWindow, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, kWindow, kTime));
+
+    for (double lobes : { 2., 8. }) {
+        ASSERT_TRUE(selectFilter(node, Resampler::eFilterSinc));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamLobes, { lobes }));
+        expectParity(std::vector<NodePtr>({ node }), node, "sinc " + std::to_string((int)lobes));
+    }
+    ASSERT_TRUE(selectFilter(node, Resampler::eFilterBicubic));
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamBicubicB, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamBicubicC, { 0.5 }));
+    expectParity(std::vector<NodePtr>({ node }), node, "bicubic b0 c0.5");
 }
 
 // One test per filter, as the wider kernels make the whole sweep slow on a loaded runner.

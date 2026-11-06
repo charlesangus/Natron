@@ -154,7 +154,7 @@ ReformatOp::bake(const KnobReader& reader) const
     p.view = reader.view();
     const bool moved = reader.value(center) || reader.value(flip) || reader.value(flop) || reader.value(turn);
     p.identity = !moved && ((Reformat::ResizeEnum)reader.value(resize) == Reformat::eResizeNone);
-    p.filter = (Resampler::FilterEnum)reader.value(filter);
+    p.filter = filterKnobs.read(reader);
     p.clamp = reader.value(clamp);
     p.blackOutside = reader.value(blackOutside);
 
@@ -461,6 +461,8 @@ Reformat::initializeKnobs()
     page->addKnob(blackOutside);
     op().blackOutside = blackOutside;
 
+    op().filterKnobs.create(this, page, filter, clamp);
+
     addStageKnobs(page);
 
     refreshVisibility();
@@ -514,13 +516,7 @@ Reformat::refreshVisibility()
 void
 Reformat::updateClampEnabled(double time, ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateEnabled(time, view);
 }
 
 void

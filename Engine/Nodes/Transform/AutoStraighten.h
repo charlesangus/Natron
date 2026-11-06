@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -102,7 +103,7 @@ struct AutoStraightenParams {
     ViewIdx view;
     Ashift::Model model;
     Ashift::CropModeEnum crop = Ashift::eCropLargest;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = false;
 };
@@ -173,6 +174,7 @@ struct AutoStraightenOp {
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
     KnobBoolWPtr blackOutside;
+    Resampler::FilterKnobs filterKnobs;
 };
 
 static_assert(GpuResampleOp<AutoStraightenOp>);

@@ -34,6 +34,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Filter/MapInput.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
@@ -143,7 +144,7 @@ public:
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
-        Resampler::FilterEnum filter = Resampler::eFilterCubic;
+        Resampler::FilterSpec filter;
         bool clamp = false;
         bool blackOutside = false;
         double uOffset = 0.;
@@ -230,6 +231,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    Resampler::FilterKnobs _filterKnobs;
     MapInput _map;
 };
 

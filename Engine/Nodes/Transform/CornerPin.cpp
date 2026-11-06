@@ -311,6 +311,8 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     page->addKnob(blackOutsideKnob);
     blackOutside = blackOutsideKnob;
 
+    filterKnobs.create(holder, page, filterKnob, clampKnob);
+
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
     motionBlurKnob->setName(kCornerPinNodeParamMotionBlur);
     motionBlurKnob->setHintToolTip(EffectInstance::tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
@@ -382,7 +384,7 @@ CornerPinOp::bake(const KnobReader& reader) const
     }
 
     params.invert = reader.value(invert);
-    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
     params.blackOutside = reader.value(blackOutside);
 
@@ -752,13 +754,7 @@ void
 CornerPinNode::updateClampEnabled(double time,
                                   ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateEnabled(time, view);
 }
 
 void

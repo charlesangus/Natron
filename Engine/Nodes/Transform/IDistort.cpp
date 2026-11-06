@@ -197,6 +197,8 @@ IDistort::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     _map.createKnobs(this, page, kMapWarpKnobHints);
 
     addStageKnobs(page);
@@ -215,13 +217,7 @@ void
 IDistort::updateClampEnabled(double time,
                              ViewIdx view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _filterKnobs.updateEnabled(time, view);
 }
 
 void
@@ -252,13 +248,7 @@ IDistort::readSettings(double time,
                        ViewIdx view,
                        Settings* settings) const
 {
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        const int value = filter->getValueAtTime(time, 0, view);
-        if ((value >= (int)Resampler::eFilterImpulse) && (value <= (int)Resampler::eFilterNotch)) {
-            settings->filter = (Resampler::FilterEnum)value;
-        }
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -431,7 +421,7 @@ IDistort::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool impulse = settings.filter == Resampler::eFilterImpulse;
+    const bool impulse = settings.filter.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double uScale = settings.uScale * s.x;
     const double vScale = settings.vScale * s.y;
@@ -873,7 +863,7 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
     setWarpGpuDouble(settings.uScale * s.x, params.uScale);

@@ -286,7 +286,8 @@ IWarp::warpRegion(const RectD& from,
                   double time,
                   ViewIdx view,
                   bool forward,
-                  RectD* to) const
+                  RectD* to,
+                  const std::function<void(const Mat3&)>& visitMatrix) const
 {
     WarpSettings settings;
     readWarpSettings(time, view, &settings);
@@ -357,6 +358,11 @@ IWarp::warpRegion(const RectD& from,
             }
         }
         box = boundingBox(box, region);
+        if (visitMatrix) {
+            for (int k = 0; k <= curve.segments(); ++k) {
+                visitMatrix(curve.knot(k));
+            }
+        }
         if (knots) {
             knots->resize((std::size_t)curve.segments() + 1);
             for (int k = 0; k <= curve.segments(); ++k) {
@@ -388,6 +394,9 @@ IWarp::warpRegion(const RectD& from,
             RectD region;
             Resampler::transformRegionFromRect(from, matrix, &region);
             box = boundingBox(box, region);
+            if (visitMatrix) {
+                visitMatrix(matrix);
+            }
             corners.push_back(projectCorners(from, matrix));
         }
         if (previousTime.size() == corners.size()) {
@@ -495,8 +504,27 @@ IWarp::getRegionsOfInterest(double time,
             WarpSettings settings;
             readWarpSettings(time, view, &settings);
             const OfxPointD s = scale.toOfxPointD();
-            warpRegion(renderWindow, time, view, false, &srcRoI);
-            Resampler::expandRoI(renderWindow, getRenderMetadata(time, view)->getPixelAspectRatio(kIWarpInputSource), s.x, s.y, settings.filter, doMasking, mix, &srcRoI);
+            const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+            const double srcPar = metadata->getPixelAspectRatio(kIWarpInputSource);
+            const double dstPar = metadata->getPixelAspectRatio(-1);
+            const bool kernelFilter = (settings.filter.filter != Resampler::eFilterImpulse) && (settings.filter.filter != Resampler::eFilterBox);
+            const bool measurable = kernelFilter && (renderWindow.x2 > renderWindow.x1) && (renderWindow.y2 > renderWindow.y1);
+            double scaleX = 1.;
+            double scaleY = 1.;
+            bool cornerBehind = false;
+            warpRegion(renderWindow, time, view, false, &srcRoI, [&](const Mat3& matrix) {
+                if (measurable) {
+                    Resampler::growKernelScales(matrix, renderWindow, srcPar, dstPar, s.x, s.y, &scaleX, &scaleY, &cornerBehind);
+                }
+            });
+            if ((getInput(kIWarpInputMap) || cornerBehind) && !srcRoD.isNull()) {
+                srcRoI = srcRoD;
+                if (doMasking || (mix != 1.)) {
+                    srcRoI.merge(renderWindow);
+                }
+            } else {
+                Resampler::expandRoI(renderWindow, srcPar, s.x, s.y, settings.filter, doMasking, mix, &srcRoI, scaleX, scaleY);
+            }
             if (rectIsInfinite(srcRoI)) {
                 // An RoI cannot be infinite: fall back to what the source and the project can show.
                 srcRoI = boundingBox(intersection(srcRoI, srcRoD), projectRect(*this));
@@ -573,7 +601,7 @@ IWarp::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool impulse = settings.filter == Resampler::eFilterImpulse;
+    const bool impulse = settings.filter.filter == Resampler::eFilterImpulse;
     const Resampler::BlurSettings& blur = settings.blur;
 
     // The matrix curves: one per shutter time for a time blur (one when they are all equal),
@@ -1119,7 +1147,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
 
     // The header, word for word as iwarp.slang loads it, then the curve.
     uint32_t header[kGpuHeaderWords] = {};
-    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kIWarpGpuClamp : 0u) | (settings.blackOutside ? kIWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
+    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.blackOutside ? kIWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;

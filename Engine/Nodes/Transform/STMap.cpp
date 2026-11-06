@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -48,6 +49,7 @@
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
+#include "Engine/TimeLine.h"
 #endif
 
 NATRON_NAMESPACE_ENTER
@@ -274,6 +276,8 @@ STMap::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     _map.createKnobs(this, page, kMapWarpKnobHints);
 
     NodePtr node = getNode();
@@ -284,17 +288,39 @@ STMap::initializeKnobs()
     _map.declareLayerKnob(node, kSTMapInputMap);
 
     addStageKnobs(page);
+
+    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // STMap::initializeKnobs
+
+void
+STMap::onKnobsLoaded()
+{
+    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+}
+
+bool
+STMap::knobChanged(KnobI* k,
+                   ValueChangedReasonEnum /*reason*/,
+                   ViewSpec view,
+                   double time,
+                   bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr filter = _filter.lock();
+    if (filter && (k == filter.get())) {
+        _filterKnobs.updateEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
+
+    return false;
+}
 
 void
 STMap::readSettings(double time,
                     ViewIdx view,
                     Settings* settings) const
 {
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        settings->filter = (Resampler::FilterEnum)filter->getValueAtTime(time, 0, view);
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -565,7 +591,7 @@ STMap::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
+    const bool jacobians = (settings.filter.filter != Resampler::eFilterImpulse);
 
     RectI domain;
     const bool hasDomain = getSourceDomain(args.time, args.view, args.mappedScale, &domain);
@@ -915,7 +941,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
     params.wrapU = (uint32_t)settings.wrapU;
     params.wrapV = (uint32_t)settings.wrapV;
     if (hasDomain) {

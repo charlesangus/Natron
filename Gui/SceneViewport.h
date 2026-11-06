@@ -499,6 +499,14 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    // Main thread. A command applies at the start of the next render, as "prune <path>",
+    // "restore <path>", "reveal <path> <primsPerFrame>", "cancel" or "boxes <pathDepth> <maxBoxes>".
+    void queueSpikeCommand(const std::string& command);
+    bool spikeNeedsFrame() const;
+    int getSpikeBoxesDrawn() const;
+    // A JSON object of the filter's and this frame's numbers.
+    QString getSpikeStats() const;
+
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. A change destroys the engine, so it needs the context of render() current.

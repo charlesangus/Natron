@@ -43,8 +43,12 @@
 #include <QCursor>
 #include <QDateTime>
 #include <QDoubleSpinBox>
+#include <QDynamicPropertyChangeEvent>
 #include <QFocusEvent>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -89,6 +93,7 @@
 #include <pxr/base/gf/camera.h>
 #include <pxr/base/gf/frustum.h>
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/matrix4f.h>
 #include <pxr/base/gf/range1f.h>
 #include <pxr/base/gf/range3d.h>
 #include <pxr/base/gf/rect2i.h>
@@ -126,6 +131,7 @@
 #include "Gui/Menu.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
+#include "Gui/SceneHydraFilter.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneTransformWidget.h"
 #include "Gui/UndoHistory.h"
@@ -536,6 +542,41 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
 
 std::atomic<U64> engineConstructionCount(0);
 
+namespace {
+class SpikeStageListener
+    : public TfWeakBase {
+public:
+    void onObjectsChanged(const UsdNotice::ObjectsChanged&)
+    {
+        ++count;
+    }
+
+    std::atomic<U64> count { 0 };
+};
+
+double
+elapsedMs(SceneHydraFilter::Clock::time_point from,
+          SceneHydraFilter::Clock::time_point to)
+{
+    return std::chrono::duration<double, std::milli>(to - from).count();
+}
+
+const char* const kBoxVertexShader = "#version 330 core\n"
+                                     "uniform mat4 viewProjection;\n"
+                                     "layout(location = 0) in vec3 corner;\n"
+                                     "layout(location = 1) in vec3 boxMin;\n"
+                                     "layout(location = 2) in vec3 boxMax;\n"
+                                     "void main() { gl_Position = viewProjection * vec4(mix(boxMin, boxMax, corner), 1.0); }\n";
+const char* const kBoxFragmentShader = "#version 330 core\n"
+                                       "out vec4 colour;\n"
+                                       "void main() { colour = vec4(0.55, 0.75, 0.95, 1.0); }\n";
+const GLfloat kBoxEdges[] = {
+    0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1,
+    0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1
+};
+} // anon namespace
+
 struct SceneViewportRenderer::Implementation {
     // The viewer lock: held while sync edits the stage, and while anything reads the stage or
     // touches the engine (whose stage scene index queues the stage's change notices without a
@@ -596,6 +637,43 @@ struct SceneViewportRenderer::Implementation {
     // look-through camera's.
     std::vector<int> guideBatches[3];
     bool guideBatchesValid = false;
+
+    // The filter belongs to the engine's render index, so its pruned set goes with the engine.
+    SceneHydraFilter::WeakPtr spikeFilter;
+    std::string spikeInstanceId;
+    std::unique_ptr<SpikeStageListener> spikeListener;
+    const UsdImagingGLEngine* spikeRenderedEngine = nullptr;
+    std::vector<std::string> spikeCommands;
+    SceneHydraFilter::Clock::time_point spikeQueuedAt;
+    U64 spikeDone = 0;
+    bool spikeRanCommand = false;
+    U64 spikeAddedSentBefore = 0;
+    double spikeApplyMs = 0.;
+    double spikeFrameMs = 0.;
+    double spikeTotalMs = 0.;
+    U64 spikeAddedSent = 0;
+    double spikeFirstRenderMs = -1.;
+    double spikePopulateMs = -1.;
+    std::size_t spikeRevealBatch = 0;
+    bool spikeRevealStepped = false;
+    SceneHydraFilter::Clock::time_point spikeRevealStart;
+    U64 spikeRevealFrames = 0;
+    U64 spikeRevealPrims = 0;
+    double spikeRevealMs = 0.;
+    double spikeRevealWorstFrameMs = 0.;
+
+    // Worldspace min and max per box. Written by boxThread and read by paints, both under stageMutex.
+    std::thread boxThread;
+    std::atomic<bool> boxesBuilding { false };
+    std::atomic<int> boxesReady { 0 };
+    std::atomic<double> boxesBuildMs { 0. };
+    std::vector<GLfloat> boxData;
+    bool boxDataDirty = false;
+    int boxesDrawn = 0;
+    GLuint boxProgram = 0;
+    GLuint boxVao = 0;
+    GLuint boxEdgeBuffer = 0;
+    GLuint boxInstanceBuffer = 0;
 
     DisplayTransform displayTransform;
     // What Hydra is given: displayTransform, or a baked copy of it when Hydra cannot draw it.
@@ -987,6 +1065,8 @@ struct SceneViewportRenderer::Implementation {
         if (!rendererError.empty()) {
             return false;
         }
+        SceneHydraFilter::registerForAllRenderers();
+        (void)SceneHydraFilter::takeAppendedInstanceId();
         // Named even for Storm: with no id the engine takes the first delegate by priority that
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
@@ -1007,6 +1087,17 @@ struct SceneViewportRenderer::Implementation {
 
                 return false;
             }
+        }
+        spikeInstanceId = SceneHydraFilter::takeAppendedInstanceId();
+        spikeFilter = SceneHydraFilter::find(spikeInstanceId);
+        if (!spikeListener) {
+            spikeListener.reset(new SpikeStageListener);
+            TfNotice::Register(TfCreateWeakPtr(spikeListener.get()), &SpikeStageListener::onObjectsChanged, UsdStageWeakPtr(currentStage()));
+        }
+        // Applied before the first render, so that the first population meets the prefix already.
+        const std::string initialPrune = TfGetenv("NATRON_HYDRA_SPIKE_PRUNE");
+        if (spikeFilter && !initialPrune.empty()) {
+            spikeFilter->prune(SdfPath(initialPrune));
         }
         // Without a render output Storm draws straight into the bound framebuffer and the colour
         // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
@@ -1459,6 +1550,219 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     } // drawGuides
+
+    // Worldspace boxes of up to maxBoxes prims spread evenly over those at a path depth. Waits for
+    // stageMutex on its own thread, so paints meanwhile keep the last frame and the main thread
+    // stays free. The caller holds stageMutex.
+    void startBoxes(int depth,
+                    int maxBoxes)
+    {
+        const UsdStageRefPtr stage = currentStage();
+        if (boxesBuilding || !stage) {
+            return;
+        }
+        if (boxThread.joinable()) {
+            boxThread.join();
+        }
+        boxesBuilding = true;
+        const UsdTimeCode time(timeCode());
+        boxThread = std::thread([this, stage, depth, maxBoxes, time]() {
+            std::lock_guard<std::mutex> lock(stageMutex);
+            const SceneHydraFilter::Clock::time_point start = SceneHydraFilter::Clock::now();
+            std::vector<UsdPrim> prims;
+            UsdPrimRange range = stage->Traverse();
+            for (UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+                if (int(it->GetPath().GetPathElementCount()) == depth) {
+                    prims.push_back(*it);
+                    it.PruneChildren();
+                }
+            }
+            const std::size_t step = std::max<std::size_t>(1, prims.size() / std::size_t(std::max(1, maxBoxes)));
+            UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+            std::vector<GLfloat> data;
+            for (std::size_t i = 0; (i < prims.size()) && (int(data.size() / 6) < maxBoxes); i += step) {
+                const GfRange3d box = bboxes.ComputeWorldBound(prims[i]).ComputeAlignedRange();
+                if (box.IsEmpty()) {
+                    continue;
+                }
+                for (int axis = 0; axis < 3; ++axis) {
+                    data.push_back(GLfloat(box.GetMin()[axis]));
+                }
+                for (int axis = 0; axis < 3; ++axis) {
+                    data.push_back(GLfloat(box.GetMax()[axis]));
+                }
+            }
+            boxData.swap(data);
+            boxDataDirty = true;
+            boxesReady = int(boxData.size() / 6);
+            boxesBuildMs = elapsedMs(start, SceneHydraFilter::Clock::now());
+            // Cleared with the lock still held, so whoever next holds it can join this thread.
+            boxesBuilding = false;
+        });
+    } // startBoxes
+
+    // Commands run between renders, on the thread and under the lock that render on, because they
+    // make the filter send notices straight into the render index.
+    void beginSpikeFrame()
+    {
+        SceneHydraFilter* const filter = get_pointer(spikeFilter);
+        const SceneHydraFilter::Clock::time_point start = SceneHydraFilter::Clock::now();
+
+        spikeRanCommand = !spikeCommands.empty();
+        spikeAddedSentBefore = filter ? filter->getAddedSentCount() : 0;
+        for (const std::string& command : spikeCommands) {
+            std::istringstream words(command);
+            std::string verb, argument;
+            int first = 0, second = 0;
+            words >> verb;
+            if (verb == "boxes") {
+                words >> first >> second;
+                startBoxes(first, second);
+            } else if (filter && (verb == "cancel")) {
+                filter->cancelReveal();
+            } else if (filter) {
+                words >> argument >> first;
+                const SdfPath path(argument);
+                if (verb == "prune") {
+                    filter->prune(path);
+                } else if (verb == "restore") {
+                    filter->restore(path);
+                } else if ((verb == "reveal") && filter->beginReveal(path)) {
+                    spikeRevealBatch = std::size_t(std::max(1, first));
+                    spikeRevealStart = start;
+                    spikeRevealFrames = 0;
+                    spikeRevealPrims = 0;
+                    spikeRevealMs = 0.;
+                    spikeRevealWorstFrameMs = 0.;
+                }
+            }
+            ++spikeDone;
+        }
+        spikeCommands.clear();
+        spikeApplyMs = elapsedMs(start, SceneHydraFilter::Clock::now());
+        spikeRevealStepped = filter && filter->isRevealing();
+        if (spikeRevealStepped) {
+            spikeRevealPrims += filter->stepReveal(spikeRevealBatch);
+        }
+    } // beginSpikeFrame
+
+    void endSpikeFrame(SceneHydraFilter::Clock::time_point frameStart)
+    {
+        SceneHydraFilter* const filter = get_pointer(spikeFilter);
+        const SceneHydraFilter::Clock::time_point now = SceneHydraFilter::Clock::now();
+        const double frameMs = elapsedMs(frameStart, now);
+
+        if (spikeRenderedEngine != engine.get()) {
+            spikeRenderedEngine = engine.get();
+            spikeFirstRenderMs = frameMs;
+            // UNDOCUMENTED: the stage scene index walks the stage inside the engine's first
+            // PrepareBatch, so the last added-prims notice to reach the filter during this frame
+            // bounds the walk and the upstream filters. It holds even with every prim pruned.
+            spikePopulateMs = (filter && (filter->getLastInputAddedTime() >= frameStart)) ? elapsedMs(frameStart, filter->getLastInputAddedTime()) : -1.;
+        }
+        if (spikeRanCommand) {
+            spikeFrameMs = frameMs;
+            spikeTotalMs = elapsedMs(spikeQueuedAt, now);
+            spikeAddedSent = filter ? (filter->getAddedSentCount() - spikeAddedSentBefore) : 0;
+        }
+        if (spikeRevealStepped) {
+            ++spikeRevealFrames;
+            spikeRevealMs = elapsedMs(spikeRevealStart, now);
+            spikeRevealWorstFrameMs = std::max(spikeRevealWorstFrameMs, frameMs);
+        }
+    }
+
+    bool ensureBoxProgram()
+    {
+        if (boxProgram) {
+            return true;
+        }
+        const GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+        const GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(vertex, 1, &kBoxVertexShader, nullptr);
+        glShaderSource(fragment, 1, &kBoxFragmentShader, nullptr);
+        glCompileShader(vertex);
+        glCompileShader(fragment);
+        const GLuint program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            glDeleteProgram(program);
+
+            return false;
+        }
+        boxProgram = program;
+        glGenVertexArrays(1, &boxVao);
+        glGenBuffers(1, &boxEdgeBuffer);
+        glGenBuffers(1, &boxInstanceBuffer);
+        glBindVertexArray(boxVao);
+        glBindBuffer(GL_ARRAY_BUFFER, boxEdgeBuffer);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(kBoxEdges), kBoxEdges, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), nullptr);
+        glVertexAttribDivisor(1, 1);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
+        glVertexAttribDivisor(2, 1);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        boxDataDirty = true;
+
+        return true;
+    } // ensureBoxProgram
+
+    // One draw call however many boxes, depth-tested against Storm's presented depth like the
+    // guides. Needs stageMutex.
+    void drawBoxes(const GfFrustum& frustum)
+    {
+        boxesDrawn = 0;
+        if (boxData.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        if (boxDataDirty) {
+            glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            boxDataDirty = false;
+        }
+        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
+        // with column vectors, and view * projection here is projection * view there.
+        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+        glUseProgram(boxProgram);
+        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glLineWidth(1.f);
+        glBindVertexArray(boxVao);
+        boxesDrawn = int(boxData.size() / 6);
+        glDrawArraysInstanced(GL_LINES, 0, 24, boxesDrawn);
+        glBindVertexArray(0);
+        glUseProgram(0);
+    }
+
+    void releaseBoxesGL()
+    {
+        if (boxProgram) {
+            glDeleteProgram(boxProgram);
+            glDeleteVertexArrays(1, &boxVao);
+            glDeleteBuffers(1, &boxEdgeBuffer);
+            glDeleteBuffers(1, &boxInstanceBuffer);
+            boxProgram = 0;
+            boxVao = 0;
+            boxEdgeBuffer = 0;
+            boxInstanceBuffer = 0;
+        }
+    }
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -1473,6 +1777,9 @@ SceneViewportRenderer::SceneViewportRenderer()
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
+    if (_imp->boxThread.joinable()) {
+        _imp->boxThread.join();
+    }
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->engine) {
@@ -2525,14 +2832,17 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     _imp->setCamera(frustum, width, height, fbo);
     _imp->prepareColorCorrection();
     const UsdImagingGLRenderParams params = _imp->renderParams();
+    const SceneHydraFilter::Clock::time_point spikeFrameStart = SceneHydraFilter::Clock::now();
+    _imp->beginSpikeFrame();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
         _imp->engine->Render(stage->GetPseudoRoot(), params);
         converged = _imp->engine->IsConverged();
     }
+    _imp->endSpikeFrame(spikeFrameStart);
 
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || !_imp->boxData.empty()) {
         // Storm leaves its own program, vertex array and framebuffer bound.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -2546,6 +2856,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
+        _imp->drawBoxes(frustum);
         _imp->drawTransformHandles(frustum, width, height);
     }
 
@@ -2670,6 +2981,68 @@ SceneViewportRenderer::releaseGL()
     StormGLSection section;
 
     _imp->engine.reset();
+    _imp->releaseBoxesGL();
+}
+
+void
+SceneViewportRenderer::queueSpikeCommand(const std::string& command)
+{
+    _imp->spikeCommands.push_back(command);
+    _imp->spikeQueuedAt = SceneHydraFilter::Clock::now();
+}
+
+bool
+SceneViewportRenderer::spikeNeedsFrame() const
+{
+    const SceneHydraFilter* const filter = get_pointer(_imp->spikeFilter);
+
+    return !_imp->spikeCommands.empty() || _imp->boxesBuilding || (_imp->boxesReady != _imp->boxesDrawn) || (filter && filter->isRevealing());
+}
+
+int
+SceneViewportRenderer::getSpikeBoxesDrawn() const
+{
+    return _imp->boxesDrawn;
+}
+
+QString
+SceneViewportRenderer::getSpikeStats() const
+{
+    const SceneHydraFilter* const filter = get_pointer(_imp->spikeFilter);
+    QJsonObject stats;
+
+    stats[QStringLiteral("filterBound")] = (filter != nullptr);
+    stats[QStringLiteral("renderInstanceId")] = QString::fromStdString(_imp->spikeInstanceId);
+    stats[QStringLiteral("done")] = double(_imp->spikeDone);
+    stats[QStringLiteral("applyMs")] = _imp->spikeApplyMs;
+    stats[QStringLiteral("frameMs")] = _imp->spikeFrameMs;
+    stats[QStringLiteral("totalMs")] = _imp->spikeTotalMs;
+    stats[QStringLiteral("addedSent")] = double(_imp->spikeAddedSent);
+    stats[QStringLiteral("firstRenderMs")] = _imp->spikeFirstRenderMs;
+    stats[QStringLiteral("populateMs")] = _imp->spikePopulateMs;
+    stats[QStringLiteral("revealActive")] = filter && filter->isRevealing();
+    stats[QStringLiteral("revealFrames")] = double(_imp->spikeRevealFrames);
+    stats[QStringLiteral("revealPrims")] = double(_imp->spikeRevealPrims);
+    stats[QStringLiteral("revealMs")] = _imp->spikeRevealMs;
+    stats[QStringLiteral("revealWorstFrameMs")] = _imp->spikeRevealWorstFrameMs;
+    stats[QStringLiteral("boxesBuilding")] = bool(_imp->boxesBuilding);
+    stats[QStringLiteral("boxesReady")] = int(_imp->boxesReady);
+    stats[QStringLiteral("boxesBuildMs")] = double(_imp->boxesBuildMs);
+    stats[QStringLiteral("boxesDrawn")] = _imp->boxesDrawn;
+    stats[QStringLiteral("stageNotices")] = _imp->spikeListener ? double(_imp->spikeListener->count) : 0.;
+    stats[QStringLiteral("stageEdits")] = double(_imp->stageEditCount);
+    if (filter) {
+        stats[QStringLiteral("inputAdded")] = double(filter->getInputAddedCount());
+        stats[QStringLiteral("inputRemoved")] = double(filter->getInputRemovedCount());
+        stats[QStringLiteral("inputDirtied")] = double(filter->getInputDirtiedCount());
+        QJsonArray pruned;
+        for (const SdfPath& path : filter->getPruned()) {
+            pruned.append(QString::fromStdString(path.GetString()));
+        }
+        stats[QStringLiteral("pruned")] = pruned;
+    }
+
+    return QString::fromUtf8(QJsonDocument(stats).toJson(QJsonDocument::Compact));
 }
 
 void
@@ -4320,11 +4693,20 @@ SceneViewport::paintGL()
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
+    if (_imp->renderer.spikeNeedsFrame()) {
+        update();
+    }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done.
         return;
     }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    setProperty("natronHydraSpikeStats", _imp->renderer.getSpikeStats());
+    const int boxesDrawn = _imp->renderer.getSpikeBoxesDrawn();
+    setProperty("natronSceneBoxCount", boxesDrawn);
+    if ((boxesDrawn > 0) && !property("natronSceneFirstBoxesMs").isValid()) {
+        setProperty("natronSceneFirstBoxesMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+    }
     publishTransformState();
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
@@ -4762,6 +5144,11 @@ SceneViewport::wheelEvent(QWheelEvent* e)
 bool
 SceneViewport::event(QEvent* e)
 {
+    // Scripts only reach this widget as a QWidget, so a dynamic property is their way to call in.
+    if ((e->type() == QEvent::DynamicPropertyChange) && (static_cast<QDynamicPropertyChangeEvent*>(e)->propertyName() == "natronHydraSpikeCommand")) {
+        _imp->renderer.queueSpikeCommand(property("natronHydraSpikeCommand").toString().toStdString());
+        update();
+    }
     // The 3D viewer's keys win over the window shortcuts of the viewer tab around it.
     if (e->type() == QEvent::ShortcutOverride) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);

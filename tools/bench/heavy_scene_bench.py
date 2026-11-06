@@ -10,6 +10,13 @@
                          heavy_city_payloads)
         BENCH_GPU        1 when the display is a real GPU; otherwise frame-dependent budgets are
                          reported as not valid (llvmpipe and GitHub runners do not count)
+        BENCH_BRANCH     prim path prune_restore, noedit and reveal_cancel act on (default city
+                         /World/Block0, flat /World)
+        BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
+        BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
+        BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
+        BENCH_BOXES      boxes orbit10k draws (default 10000)
+        BENCH_BOX_DEPTH  path depth of the prims that get a box (default city 4, flat 2)
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_RESULT     JSON-lines file the results are appended to
@@ -20,6 +27,10 @@ the longest gap between heartbeats, the layers loaded by the action, and the act
 each judged against the design's budgets as pass, fail, not_valid (measured, but not a number the
 display can vouch for) or not_applicable. Actions are the ACTIONS table; a later milestone adds its
 own (twirl, reveal, draw state) by adding an entry.
+
+The Hydra filter actions need a binary with SceneHydraFilter. populate_pruned and populate_full open
+the file themselves, so one of them comes first in place of open, once per process. An action
+restarts the heartbeat after its setup, so stall_ms covers only what it measures.
 
 Budgets: main-thread stall under 100 ms; first boxes under 2 s on the payload city; no payload file
 opened that the action did not request; orbit at or above 30 fps.
@@ -184,7 +195,148 @@ try:
         m.values["orbit_fps"] = round(len(paints) / elapsed, 1) if elapsed > 0 else None
         m.values["boxes_drawn"] = prop("natronSceneBoxCount")
 
-    ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit}
+    root_prim = "/World"
+    branch = os.environ.get("BENCH_BRANCH", {"city": "/World/Block0", "flat": root_prim}[fixture])
+    reveal_branch = os.environ.get("BENCH_REVEAL_BRANCH", root_prim)
+    reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
+    reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
+    box_count = int(os.environ.get("BENCH_BOXES", "10000"))
+    box_depth = int(os.environ.get("BENCH_BOX_DEPTH", {"city": "4", "flat": "2"}[fixture]))
+
+    def spike_stats():
+        text = prop("natronHydraSpikeStats")
+        return json.loads(text) if text else {}
+
+    def spike(command):
+        """Runs one filter command, up to the end of the frame that rendered it; returns the stats."""
+        v = view()
+        require(v is not None, "%s: a scene view is visible" % command)
+        target = spike_stats().get("done", 0) + 1
+        v.setProperty("natronHydraSpikeCommand", command)
+        ok = yield ("until", lambda: spike_stats().get("done", 0) >= target, TIMEOUT_S)
+        check(ok, "%s: rendered" % command)
+        return spike_stats()
+
+    def clear_pruned(*paths):
+        """Restores whatever hides paths; a prefix above them has to go too."""
+        for prefix in list(spike_stats().get("pruned", [])):
+            if any(p == prefix or p.startswith(prefix + "/") or prefix.startswith(p + "/") for p in paths):
+                yield from spike("restore " + prefix)
+
+    def prepare_pruned(path):
+        if path not in spike_stats().get("pruned", []):
+            yield from clear_pruned(path)
+            yield from spike("prune " + path)
+
+    def populate(m):
+        yield from action_open(m)
+        stats = spike_stats()
+        check(stats.get("filterBound"), "populate: the filter was appended to this viewer's engine (%r)" % (stats.get("renderInstanceId"),))
+        m.values["render_instance_id"] = stats.get("renderInstanceId")
+        m.values["first_render_ms"] = round(stats.get("firstRenderMs", -1), 1)
+        m.values["stage_scene_index_population_ms"] = round(stats.get("populateMs", -1), 1)
+        m.values["prims_added_upstream"] = stats.get("inputAdded")
+
+    def action_populate_pruned(m):
+        # The first render must already find the prefix, and no scene view exists to send it to.
+        os.environ["NATRON_HYDRA_SPIKE_PRUNE"] = root_prim
+        try:
+            yield from populate(m)
+        finally:
+            del os.environ["NATRON_HYDRA_SPIKE_PRUNE"]
+
+    def action_populate_full(m):
+        yield from populate(m)
+
+    def action_prune_restore(m):
+        yield from clear_pruned(branch)
+        heartbeat.start()
+        pruned = yield from spike("prune " + branch)
+        restored = yield from spike("restore " + branch)
+        m.values["branch"] = branch
+        m.values["branch_prims"] = restored.get("addedSent")
+        for name, stats in (("prune", pruned), ("restore", restored)):
+            m.values[name + "_apply_ms"] = round(stats["applyMs"], 2)
+            m.values[name + "_frame_ms"] = round(stats["frameMs"], 2)
+            m.values[name + "_total_ms"] = round(stats["totalMs"], 2)
+
+    def action_reveal(m):
+        yield from prepare_pruned(reveal_branch)
+        heartbeat.start()
+        yield from spike("reveal %s %d" % (reveal_branch, reveal_batch))
+        finished = yield ("until", lambda: not spike_stats().get("revealActive", True), reveal_max_s)
+        stats = spike_stats()
+        if not finished:
+            yield from spike("cancel")
+        m.values["reveal_branch"] = reveal_branch
+        m.values["reveal_batch"] = reveal_batch
+        m.values["reveal_complete"] = bool(finished)
+        m.values["reveal_prims"] = stats["revealPrims"]
+        m.values["reveal_frames"] = stats["revealFrames"]
+        m.values["reveal_ms"] = round(stats["revealMs"], 1)
+        m.values["reveal_fps"] = round(stats["revealFrames"] * 1000.0 / stats["revealMs"], 1) if stats["revealMs"] > 0 else None
+        m.values["reveal_worst_frame_ms"] = round(stats["revealWorstFrameMs"], 1)
+
+    def action_reveal_cancel(m):
+        yield from prepare_pruned(branch)
+        heartbeat.start()
+        started = yield from spike("reveal %s 50" % branch)
+        ok = yield ("until", lambda: spike_stats().get("revealFrames", 0) >= 3 or not spike_stats().get("revealActive", True), TIMEOUT_S)
+        check(ok, "reveal_cancel: the reveal advanced")
+        active = spike_stats().get("revealActive")
+        cancelled = yield from spike("cancel")
+        settled = yield from spike("cancel")
+        m.values["cancel_branch"] = branch
+        m.values["cancel_was_active"] = bool(active)
+        m.values["cancel_total_ms"] = round(cancelled["totalMs"], 2)
+        m.values["cancel_prims_before"] = cancelled["revealPrims"]
+        m.values["cancel_stopped"] = not settled["revealActive"] and settled["revealPrims"] == cancelled["revealPrims"]
+        m.values["reveal_first_frame_ms"] = round(started["frameMs"], 2)
+
+    def action_orbit10k(m):
+        # Pruning first leaves only boxes for the frame rate to pay for.
+        yield from prepare_pruned(root_prim)
+        yield from spike("boxes %d %d" % (box_depth, box_count))
+        ok = yield ("until", lambda: not spike_stats().get("boxesBuilding", True) and spike_stats().get("boxesDrawn", 0) == spike_stats().get("boxesReady", -1), TIMEOUT_S)
+        check(ok, "orbit10k: the boxes were built and drawn")
+        stats = spike_stats()
+        m.values["boxes_requested"] = box_count
+        m.values["boxes_build_ms"] = round(stats["boxesBuildMs"], 1)
+        heartbeat.start()
+        yield from action_orbit(m)
+
+    def action_noedit(m):
+        def edits():
+            stats = spike_stats()
+            return stats["stageNotices"], stats["stageEdits"]
+
+        yield from clear_pruned(branch)
+        heartbeat.start()
+        before = edits()
+        yield from spike("prune " + branch)
+        yield from spike("restore " + branch)
+        yield from spike("prune " + branch)
+        yield from spike("reveal %s 50" % branch)
+        yield from spike("cancel")
+        yield from spike("restore " + branch)
+        yield ("sleep", 200)
+        after = edits()
+        m.values["stage_notices"] = after[0] - before[0]
+        m.values["stage_edit_count"] = after[1] - before[1]
+        m.values["stage_edits"] = m.values["stage_notices"] + m.values["stage_edit_count"]
+
+    ACTIONS = {
+        "open": action_open,
+        "edit": action_edit,
+        "orbit": action_orbit,
+        "populate_pruned": action_populate_pruned,
+        "populate_full": action_populate_full,
+        "prune_restore": action_prune_restore,
+        "reveal": action_reveal,
+        "reveal_cancel": action_reveal_cancel,
+        "orbit10k": action_orbit10k,
+        "noedit": action_noedit,
+    }
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -208,6 +360,8 @@ try:
             unrequested = sorted(i for i in new_layers if payload_mark in i and i not in m.requested_layers)
             budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
+        if "stage_edits" in m.values:
+            budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
         if "orbit_fps" in m.values:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
         return budgets

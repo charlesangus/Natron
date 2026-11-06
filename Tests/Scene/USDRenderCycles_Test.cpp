@@ -84,6 +84,7 @@ const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
 // A mesh card filling the centre, ten units from the camera, beside two cylinder lights, which
 // Cycles 5.2's delegate does not make.
 const char* const kUnsupportedFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-unsupported.usda";
+const char* const kMdlOnlyFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-mdl-only.usda";
 const float kCardDistance = 10.f;
 const char* const kCamera = "/World/Cam";
 const int kSize = 64;
@@ -95,6 +96,29 @@ const int kFarX = 57;
 const int kFarY = 32;
 const float kNearDistance = 9.f;
 const float kFarDistance = 10.5f;
+
+// A card lit by a distant light, bound to a UsdPreviewSurface whose normal is a bump texture
+// authored with scale (2, 2, 2, 1) and bias (-1, -1, -1, 0).
+const char* const kNormalMapFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-normalmap.usda";
+const char* const kNormalMapGoldenCase = "CyclesNormalMapReference";
+const float kNormalMapContrast = 0.02f;
+
+// A black card whose only light is its emissiveColor (2, 0.5, 0), in a scene without lights.
+const char* const kEmissionFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-emission.usda";
+const char* const kEmissionGoldenCase = "CyclesEmissionReference";
+// Two cards of opacity 0.3 (left, centred on pixel 16) and 0.7 (right, on 48) under an
+// opacityThreshold of 0.5.
+const char* const kCutoutFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-cutout.usda";
+const char* const kCutoutGoldenCase = "CyclesCutoutReference";
+const int kCutoutLeftX = 16;
+const int kCutoutRightX = 48;
+// Two black spheres, at pixels 16 and 48 on the middle row, the right one with a clearcoat.
+const char* const kClearcoatFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-clearcoat.usda";
+const char* const kClearcoatGoldenCase = "CyclesClearcoatReference";
+const int kClearcoatPlainX = 16;
+const int kClearcoatCoatedX = 48;
+const int kClearcoatHalfWidth = 8;
+const float kClearcoatGain = 0.005f;
 
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "CyclesReference";
@@ -479,6 +503,27 @@ TEST_F(USDRenderCyclesTest, WarnsOncePerUnsupportedPrimType)
     ASSERT_TRUE(renderAll(node, &planes));
 }
 
+// A material authored only for another render context gets Cycles' fallback shader, and the
+// node's warning names it.
+TEST_F(USDRenderCyclesTest, WarnsOfAMaterialWithNoSurfaceForCycles)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kMdlOnlyFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error)) << error;
+
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_NE(std::string::npos, message.toStdString().find("/World/MdlOnly")) << message.toStdString();
+}
+
 // A render that would take minutes is aborted: render() returns within a second, and once the
 // engine is gone the process has no more threads than after an earlier render was aborted the
 // same way (the TBB workers Cycles renders on outlive it, as they serve every TBB user).
@@ -603,30 +648,12 @@ TEST_F(USDRenderCyclesTest, LaterEngineFollowsASmallerThreadBudget)
     EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
 }
 
-// The fixture's rgba against the reference, within the tolerances above, and a second render on
-// this host bit for bit equal to the first.
-TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
+// Records rgba as the golden case when NATRON_GOLDEN_RECORD_DIR is set, otherwise compares it to the
+// recorded one within the tolerances above.
+static void
+matchGolden(const RenderedPlane& rgba,
+            const char* goldenCase)
 {
-    if (!cyclesOrSkip()) {
-        return;
-    }
-    NodePtr node = createGraph();
-    ASSERT_TRUE(bool(node));
-    std::vector<RenderedPlane> planes;
-    ASSERT_TRUE(renderAll(node, &planes));
-    const RenderedPlane& rgba = planes[0];
-
-    // An engine made again renders the same samples.
-    HydraRender::releaseAllCpuEngines();
-    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
-    std::vector<RenderedPlane> again;
-    ASSERT_TRUE(renderAll(node, &again));
-    std::size_t repeatDiffers = 0;
-    for (std::size_t i = 0; i < rgba.pixels.size(); ++i) {
-        repeatDiffers += (bitsOf(rgba.pixels[i]) != bitsOf(again[0].pixels[i])) ? 1 : 0;
-    }
-    EXPECT_EQ(0u, repeatDiffers) << "values differ between two renders on this host";
-
     const ImageLayerDesc layer = ImageLayerDesc::getRGBAComponents();
     const std::string recordDir = goldenRecordDir();
     if (!recordDir.empty()) {
@@ -635,7 +662,7 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
         image.height = rgba.window.height();
         image.nComps = (int)rgba.channels.size();
         image.pixels = rgba.pixels;
-        const std::string path = parityReferencePath(recordDir, kGoldenGroup, kGoldenCase, 0, layer);
+        const std::string path = parityReferencePath(recordDir, kGoldenGroup, goldenCase, 0, layer);
         std::string error;
         EXPECT_TRUE(writeParityF32(path, image, &error)) << "cannot record: " << error;
         std::cout << "[ golden ] recorded " << path << std::endl;
@@ -643,7 +670,7 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
         return;
     }
     const std::string refDir = goldenReferenceDir();
-    const std::string path = parityReferencePath(refDir, kGoldenGroup, kGoldenCase, 0, layer);
+    const std::string path = parityReferencePath(refDir, kGoldenGroup, goldenCase, 0, layer);
     ParityF32Image reference;
     std::string error;
     if (!readParityF32(path, &reference, &error)) {
@@ -675,6 +702,130 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
     const double mean = sum / (double)reference.pixels.size();
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from " << path << "; worst " << worst;
     EXPECT_LE(mean, kMeanTolerance) << "mean difference from " << path << "; worst " << worst;
+}
+
+// The fixture's rgba against the reference, within the tolerances above, and a second render on
+// this host bit for bit equal to the first.
+TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    // An engine made again renders the same samples.
+    HydraRender::releaseAllCpuEngines();
+    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
+    std::vector<RenderedPlane> again;
+    ASSERT_TRUE(renderAll(node, &again));
+    std::size_t repeatDiffers = 0;
+    for (std::size_t i = 0; i < rgba.pixels.size(); ++i) {
+        repeatDiffers += (bitsOf(rgba.pixels[i]) != bitsOf(again[0].pixels[i])) ? 1 : 0;
+    }
+    EXPECT_EQ(0u, repeatDiffers) << "values differ between two renders on this host";
+
+    matchGolden(rgba, kGoldenCase);
+}
+
+// A normal map on UsdPreviewSurface.normal, stored 0..1 and decoded by the texture's scale and bias,
+// shades the card the way the recorded render does, and the card is not flat.
+TEST_F(USDRenderCyclesTest, NormalMapMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kNormalMapFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    // The bump leans its normals both ways across the card; an undecoded map (0..1 read as a
+    // vector) or an ignored one gives a card as even as a flat one.
+    float lowest = 1e30f;
+    float highest = -1e30f;
+    for (int y = kSize / 4; y < kSize - kSize / 4; ++y) {
+        for (int x = kSize / 4; x < kSize - kSize / 4; ++x) {
+            const float v = rgba.pixels[pixelIndex(x, y) * 4];
+            lowest = std::min(lowest, v);
+            highest = std::max(highest, v);
+        }
+    }
+    EXPECT_GT(highest - lowest, kNormalMapContrast);
+
+    matchGolden(rgba, kNormalMapGoldenCase);
+}
+
+// The emissiveColor of a black card is what it renders: red well above green, both near the
+// authored (2, 0.5), which only the emission can supply.
+TEST_F(USDRenderCyclesTest, EmissionMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kEmissionFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    const std::size_t centre = pixelIndex(kNearX, kNearY) * 4;
+    EXPECT_NEAR(2.f, rgba.pixels[centre], 0.2f);
+    EXPECT_NEAR(0.5f, rgba.pixels[centre + 1], 0.1f);
+
+    matchGolden(rgba, kEmissionGoldenCase);
+}
+
+// An opacity under the opacityThreshold leaves nothing of the card, one over it is solid.
+TEST_F(USDRenderCyclesTest, OpacityThresholdCutsOut)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kCutoutFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    EXPECT_NEAR(0.f, rgba.pixels[pixelIndex(kCutoutLeftX, kNearY) * 4 + 3], 1e-3f);
+    EXPECT_NEAR(1.f, rgba.pixels[pixelIndex(kCutoutRightX, kNearY) * 4 + 3], 1e-3f);
+
+    matchGolden(rgba, kCutoutGoldenCase);
+}
+
+// The coated sphere reflects the environment in a second layer, so it is brighter than the same
+// sphere without a clearcoat.
+TEST_F(USDRenderCyclesTest, ClearcoatMatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kClearcoatFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const RenderedPlane& rgba = planes[0];
+
+    const auto mean = [&rgba](int centreX) {
+        double sum = 0.;
+        int count = 0;
+        for (int y = kNearY - kClearcoatHalfWidth; y <= kNearY + kClearcoatHalfWidth; ++y) {
+            for (int x = centreX - kClearcoatHalfWidth; x <= centreX + kClearcoatHalfWidth; ++x) {
+                sum += rgba.pixels[pixelIndex(x, y) * 4];
+                ++count;
+            }
+        }
+
+        return (float)(sum / count);
+    };
+    EXPECT_GT(mean(kClearcoatCoatedX), mean(kClearcoatPlainX) + kClearcoatGain);
+
+    matchGolden(rgba, kClearcoatGoldenCase);
 }
 
 namespace {

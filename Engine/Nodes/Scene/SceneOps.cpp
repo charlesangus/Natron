@@ -27,8 +27,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
 #include <mutex>
+#include <ostream>
 #include <set>
+#include <streambuf>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -39,6 +42,7 @@
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
@@ -1325,11 +1329,7 @@ getPropertyOpinions(const PXR_NS::UsdPrim& prim,
         }
         const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
         SceneOpinion opinion = opinionOf(layer, entry.second);
-        if (spec->HasDefaultValue()) {
-            opinion.value = spec->GetDefaultValue();
-        } else if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
-            opinion.value = spec->GetField(PXR_NS::SdfFieldKeys->TargetPaths);
-        }
+        opinion.propertySpec = spec;
         if (layer) {
             opinion.numTimeSamples = layer->GetNumTimeSamplesForPath(spec->GetPath());
         }
@@ -1339,6 +1339,400 @@ getPropertyOpinions(const PXR_NS::UsdPrim& prim,
     }
 
     return opinions;
+}
+
+void
+readOpinionValue(SceneOpinion* opinion)
+{
+    const PXR_NS::SdfPropertySpecHandle& spec = opinion->propertySpec;
+
+    if (!spec) {
+        return;
+    }
+    if (spec->HasDefaultValue()) {
+        opinion->value = spec->GetDefaultValue();
+    } else if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
+        opinion->value = spec->GetField(PXR_NS::SdfFieldKeys->TargetPaths);
+    }
+}
+
+namespace {
+    struct ValueTextStopped {
+    };
+
+    // Throwing is the only way out of a value's stream operator, which otherwise goes on formatting
+    // every element of an array after the stream has failed.
+    class BoundedTextBuffer
+        : public std::streambuf {
+    public:
+        BoundedTextBuffer(std::size_t maxLength,
+                          const std::atomic<bool>* cancelled)
+            : _maxLength(maxLength)
+            , _cancelled(cancelled)
+        {
+        }
+
+        std::string text;
+        bool cut = false;
+
+    protected:
+        int_type overflow(int_type c) override
+        {
+            if (!traits_type::eq_int_type(c, traits_type::eof())) {
+                const char asChar = traits_type::to_char_type(c);
+                xsputn(&asChar, 1);
+            }
+
+            return traits_type::not_eof(c);
+        }
+
+        std::streamsize xsputn(const char* s,
+                               std::streamsize n) override
+        {
+            if (_cancelled && *_cancelled) {
+                throw ValueTextStopped();
+            }
+            const std::size_t room = _maxLength - text.size();
+            if (room >= (std::size_t)n) {
+                text.append(s, (std::size_t)n);
+
+                return n;
+            }
+            text.append(s, room);
+            cut = true;
+            throw ValueTextStopped();
+        }
+
+    private:
+        std::size_t _maxLength;
+        const std::atomic<bool>* _cancelled;
+    };
+
+    PXR_NS::UsdPrim
+    primAt(const SceneStage& stage,
+           const std::string& primPath)
+    {
+        if (!stage.getStage() || !PXR_NS::SdfPath::IsValidPathString(primPath)) {
+            return PXR_NS::UsdPrim();
+        }
+
+        return stage.getStage()->GetPrimAtPath(PXR_NS::SdfPath(primPath));
+    }
+
+    SceneAuthor
+    authorOfLayer(const PXR_NS::SdfLayerHandle& layer,
+                  bool schemaFallback)
+    {
+        SceneAuthor author;
+
+        author.node = getLayerOwner(layer);
+        author.layerIdentifier = identifierOf(layer);
+        author.schemaFallback = !layer && schemaFallback;
+
+        return author;
+    }
+
+    SceneValueSource
+    valueSourceOf(PXR_NS::UsdResolveInfoSource source)
+    {
+        switch (source) {
+        case PXR_NS::UsdResolveInfoSourceFallback:
+            return eSceneValueSourceFallback;
+        case PXR_NS::UsdResolveInfoSourceDefault:
+            return eSceneValueSourceDefault;
+        case PXR_NS::UsdResolveInfoSourceTimeSamples:
+            return eSceneValueSourceTimeSamples;
+        case PXR_NS::UsdResolveInfoSourceValueClips:
+            return eSceneValueSourceValueClips;
+        case PXR_NS::UsdResolveInfoSourceSpline:
+            return eSceneValueSourceSpline;
+        case PXR_NS::UsdResolveInfoSourceNone:
+            break;
+        }
+
+        return eSceneValueSourceNone;
+    }
+
+    // The strongest spec authoring targets, else the strongest declaring the relationship.
+    PXR_NS::SdfLayerHandle
+    targetsLayer(const PXR_NS::UsdRelationship& relationship)
+    {
+        PXR_NS::SdfLayerHandle declaring;
+
+        for (const PXR_NS::SdfPropertySpecHandle& spec : relationship.GetPropertyStack()) {
+            if (!spec) {
+                continue;
+            }
+            if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
+                return spec->GetLayer();
+            }
+            if (!declaring) {
+                declaring = spec->GetLayer();
+            }
+        }
+
+        return declaring;
+    }
+
+    // A prim's specifier composes to its strongest non-over, whichever layer last wrote an over.
+    PXR_NS::SdfLayerHandle
+    metadataLayer(const PXR_NS::SdfPrimSpecHandleVector& stack,
+                  const PXR_NS::TfToken& key)
+    {
+        const bool isSpecifier = (key == PXR_NS::SdfFieldKeys->Specifier);
+        PXR_NS::SdfLayerHandle strongest;
+
+        for (const PXR_NS::SdfPrimSpecHandle& spec : stack) {
+            if (!spec || !spec->HasField(key)) {
+                continue;
+            }
+            if (!strongest) {
+                strongest = spec->GetLayer();
+            }
+            if (!isSpecifier || (spec->GetSpecifier() != PXR_NS::SdfSpecifierOver)) {
+                return spec->GetLayer();
+            }
+        }
+
+        return strongest;
+    }
+} // anonymous namespace
+
+std::string
+valueText(const PXR_NS::VtValue& value,
+          std::size_t maxLength,
+          const std::atomic<bool>* cancelled,
+          bool* cut)
+{
+    if (cut) {
+        *cut = false;
+    }
+    if (value.IsEmpty()) {
+        return std::string();
+    }
+    BoundedTextBuffer buffer(maxLength, cancelled);
+    std::ostream stream(&buffer);
+
+    // Without this the stream swallows the buffer's exception and the operator carries on.
+    stream.exceptions(std::ios::badbit);
+    try {
+        stream << value;
+    } catch (const ValueTextStopped&) {
+    } catch (const std::exception&) {
+    }
+    if (buffer.cut) {
+        // The cut may split a UTF-8 sequence, which would not convert to text.
+        while (!buffer.text.empty() && ((buffer.text.back() & 0xC0) == 0x80)) {
+            buffer.text.pop_back();
+        }
+        if (!buffer.text.empty() && (buffer.text.back() & 0x80)) {
+            buffer.text.pop_back();
+        }
+    }
+    if (cut) {
+        *cut = buffer.cut;
+    }
+
+    return std::move(buffer.text);
+}
+
+std::string
+layerFileOf(const std::string& layerIdentifier)
+{
+    if (layerIdentifier.empty() || PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(layerIdentifier)) {
+        return std::string();
+    }
+
+    return PXR_NS::SdfLayer::SplitIdentifier(layerIdentifier).first;
+}
+
+std::vector<std::string>
+getAttributeNames(const SceneStage& stage,
+                  const std::string& primPath)
+{
+    std::vector<std::string> names;
+
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        for (const PXR_NS::UsdAttribute& attribute : prim.GetAttributes()) {
+            names.push_back(attribute.GetName().GetString());
+        }
+    }
+
+    return names;
+}
+
+bool
+readAttribute(const SceneStage& stage,
+              const std::string& primPath,
+              const std::string& name,
+              double frame,
+              double framesPerSecond,
+              ScenePrimAttribute* attribute)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+    const PXR_NS::UsdAttribute usdAttribute = prim ? prim.GetAttribute(PXR_NS::TfToken(name)) : PXR_NS::UsdAttribute();
+
+    if (!usdAttribute.IsDefined()) {
+        return false;
+    }
+    const PXR_NS::UsdTimeCode time(frameToTimeCode(stage.getPayload(), frame, framesPerSecond));
+
+    attribute->typeName = usdAttribute.GetTypeName().GetAsToken().GetString();
+    usdAttribute.Get(&attribute->value, time);
+    attribute->source = valueSourceOf(usdAttribute.GetResolveInfo(time).GetSource());
+    attribute->author.node = authoringNodeOf(usdAttribute, time, &attribute->author.layerIdentifier);
+    attribute->author.schemaFallback = (attribute->source == eSceneValueSourceFallback);
+
+    return true;
+}
+
+std::vector<std::string>
+getRelationshipNames(const SceneStage& stage,
+                     const std::string& primPath)
+{
+    std::vector<std::string> names;
+
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        for (const PXR_NS::UsdRelationship& relationship : prim.GetRelationships()) {
+            names.push_back(relationship.GetName().GetString());
+        }
+    }
+
+    return names;
+}
+
+bool
+readRelationship(const SceneStage& stage,
+                 const std::string& primPath,
+                 const std::string& name,
+                 ScenePrimRelationship* relationship)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+    const PXR_NS::UsdRelationship usdRelationship = prim ? prim.GetRelationship(PXR_NS::TfToken(name)) : PXR_NS::UsdRelationship();
+
+    if (!usdRelationship.IsDefined()) {
+        return false;
+    }
+    PXR_NS::SdfPathVector targets;
+    usdRelationship.GetTargets(&targets);
+    for (const PXR_NS::SdfPath& target : targets) {
+        relationship->targets.push_back(target.GetString());
+    }
+    relationship->author = authorOfLayer(targetsLayer(usdRelationship), true);
+
+    return true;
+}
+
+bool
+readMetadata(const SceneStage& stage,
+             const std::string& primPath,
+             ScenePrimMetadata* metadata)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    const PXR_NS::UsdMetadataValueMap all = prim.GetAllMetadata();
+    const PXR_NS::SdfPrimSpecHandleVector stack = prim.GetPrimStack();
+    // A prototype has no prim index, so its empty stack says nothing of who authored its metadata.
+    const bool schemaFallback = !prim.IsPrototype();
+
+    metadata->fields.reserve(all.size());
+    for (const auto& item : all) {
+        metadata->fields.push_back({ item.first.GetString(), item.second, authorOfLayer(metadataLayer(stack, item.first), schemaFallback) });
+    }
+    metadata->isPrototype = prim.IsPrototype();
+    if (prim.IsInstance()) {
+        metadata->prototypePath = prim.GetPrototype().GetPath().GetString();
+    } else if (prim.IsInstanceProxy()) {
+        metadata->prototypePath = prim.GetPrimInPrototype().GetPath().GetString();
+    }
+
+    return true;
+}
+
+bool
+getPrimComposition(const SceneStage& stage,
+                   const std::string& primPath,
+                   ScenePrimComposition* composition)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    *composition = getPrimComposition(prim);
+
+    return true;
+}
+
+bool
+getPrimOpinions(const SceneStage& stage,
+                const std::string& primPath,
+                std::vector<SceneOpinion>* opinions)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    *opinions = getPrimOpinions(prim);
+
+    return true;
+}
+
+std::vector<SceneOpinion>
+getPropertyOpinions(const SceneStage& stage,
+                    const std::string& primPath,
+                    const std::string& name,
+                    double frame,
+                    double framesPerSecond)
+{
+    const PXR_NS::UsdTimeCode time(frameToTimeCode(stage.getPayload(), frame, framesPerSecond));
+
+    return getPropertyOpinions(primAt(stage, primPath), PXR_NS::TfToken(name), time);
+}
+
+PXR_NS::UsdStageRefPtr
+beginPrimDefinition(const SceneStage& stage,
+                    const std::string& primPath,
+                    std::vector<std::string>* propertyNames)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+    for (const PXR_NS::UsdProperty& property : prim.GetAuthoredProperties()) {
+        propertyNames->push_back(property.GetName().GetString());
+    }
+
+    return beginPrimDefinition(prim);
+}
+
+void
+flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                    const SceneStage& stage,
+                    const std::string& primPath,
+                    const std::string& name)
+{
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        flattenPropertyInto(definition, prim.GetProperty(PXR_NS::TfToken(name)));
+    }
+}
+
+std::vector<const void*>
+getLayerIdentities(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::vector<const void*> identities;
+
+    identities.reserve(layers.size());
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        identities.push_back(get_pointer(layer));
+    }
+
+    return identities;
 }
 
 namespace {

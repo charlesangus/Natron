@@ -145,6 +145,40 @@ iconForType(const QString& type)
     return QIcon();
 }
 
+QVariant
+columnHeader(int section,
+             Qt::Orientation orientation,
+             int role)
+{
+    if ((orientation != Qt::Horizontal) || (role != Qt::DisplayRole)) {
+        return QVariant();
+    }
+    switch (section) {
+    case SceneGraphModel::eColumnName:
+        return SceneGraphModel::tr("Name");
+    case SceneGraphModel::eColumnType:
+        return SceneGraphModel::tr("Type");
+    case SceneGraphModel::eColumnKind:
+        return SceneGraphModel::tr("Kind");
+    default:
+        return QVariant();
+    }
+}
+
+QMimeData*
+mimeDataOfPaths(const QStringList& paths)
+{
+    if (paths.isEmpty()) {
+        return nullptr;
+    }
+    QMimeData* mime = new QMimeData;
+    const QString joined = paths.join(QLatin1Char('\n'));
+    mime->setData(SceneGraphModel::primPathsMimeType(), joined.toUtf8());
+    mime->setText(joined);
+
+    return mime;
+}
+
 // Collects what the stage's edits resynced, on whichever thread edits the stage.
 class StageListener
     : public TfWeakBase {
@@ -825,12 +859,6 @@ SceneGraphModel::getChangedHereCount() const
     return _imp->changedHere.size();
 }
 
-QStringList
-SceneGraphModel::getChangedHerePaths() const
-{
-    return _imp->changedHere.values();
-}
-
 int
 SceneGraphModel::getItemCount() const
 {
@@ -956,19 +984,7 @@ SceneGraphModel::headerData(int section,
                             Qt::Orientation orientation,
                             int role) const
 {
-    if ((orientation != Qt::Horizontal) || (role != Qt::DisplayRole)) {
-        return QVariant();
-    }
-    switch (section) {
-    case eColumnName:
-        return tr("Name");
-    case eColumnType:
-        return tr("Type");
-    case eColumnKind:
-        return tr("Kind");
-    default:
-        return QVariant();
-    }
+    return columnHeader(section, orientation, role);
 }
 
 Qt::ItemFlags
@@ -1025,19 +1041,267 @@ SceneGraphModel::mimeData(const QModelIndexList& indexes) const
             paths << item->pathString;
         }
     }
-    if (paths.isEmpty()) {
-        return nullptr;
-    }
-    QMimeData* mime = new QMimeData;
-    const QString joined = paths.join(QLatin1Char('\n'));
-    mime->setData(primPathsMimeType(), joined.toUtf8());
-    mime->setText(joined);
 
-    return mime;
+    return mimeDataOfPaths(paths);
 }
 
 Qt::DropActions
 SceneGraphModel::supportedDragActions() const
+{
+    return Qt::CopyAction;
+}
+
+bool
+SceneChangedHereRows::hasSameRows(const SceneChangedHereRows& other) const
+{
+    return rows == other.rows;
+}
+
+SceneChangedHereRowsBuilder::SceneChangedHereRowsBuilder(const QSet<QString>& paths)
+    : _paths(paths.values())
+    , _rows(std::make_shared<SceneChangedHereRows>())
+{
+    // A parent's path is a prefix of its children's, so it sorts first and is read before them.
+    std::sort(_paths.begin(), _paths.end());
+}
+
+SceneChangedHereRowsBuilder::~SceneChangedHereRowsBuilder() = default;
+
+bool
+SceneChangedHereRowsBuilder::isDone() const
+{
+    return _next >= _paths.size();
+}
+
+void
+SceneChangedHereRowsBuilder::readBatch(const SceneStage* stage)
+{
+    const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+
+    for (int i = 0; (i < kBatchSize) && !isDone(); ++i) {
+        const QString& path = _paths.at(_next++);
+        const int separator = (int)path.lastIndexOf(QLatin1Char('/'));
+        int parent = -1;
+
+        if (separator > 0) {
+            const auto found = _rows->rowOfPath.constFind(path.left(separator));
+            if (found == _rows->rowOfPath.constEnd()) {
+                continue;
+            }
+            parent = found.value();
+        }
+        const std::string pathString = path.toStdString();
+        const UsdPrim prim = (usdStage && SdfPath::IsValidPathString(pathString)) ? usdStage->GetPrimAtPath(SdfPath(pathString)) : UsdPrim();
+        if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+            continue;
+        }
+        const PrimData data = readPrimData(prim);
+        const int row = (int)_rows->rows.size();
+        SceneChangedHereRow added;
+
+        added.path = path;
+        added.name = data.name;
+        added.type = data.type;
+        added.kind = data.kind;
+        added.parent = parent;
+        std::vector<int>& siblings = (parent >= 0) ? _rows->rows[parent].children : _rows->topLevel;
+        added.rowInParent = (int)siblings.size();
+        siblings.push_back(row);
+        _rows->rows.push_back(std::move(added));
+        _rows->rowOfPath.insert(path, row);
+    }
+}
+
+SceneChangedHereRowsPtr
+SceneChangedHereRowsBuilder::take()
+{
+    SceneChangedHereRowsPtr rows = std::move(_rows);
+
+    _rows = std::make_shared<SceneChangedHereRows>();
+
+    return rows;
+}
+
+SceneChangedHereModel::SceneChangedHereModel(QObject* parent)
+    : QAbstractItemModel(parent)
+{
+}
+
+SceneChangedHereModel::~SceneChangedHereModel() = default;
+
+void
+SceneChangedHereModel::setRows(const SceneChangedHereRowsPtr& rows)
+{
+    beginResetModel();
+    _rows = rows;
+    endResetModel();
+}
+
+const SceneChangedHereRowsPtr&
+SceneChangedHereModel::getRows() const
+{
+    return _rows;
+}
+
+int
+SceneChangedHereModel::getRowCount() const
+{
+    return _rows ? (int)_rows->rows.size() : 0;
+}
+
+bool
+SceneChangedHereModel::contains(const QString& path) const
+{
+    return _rows && _rows->rowOfPath.contains(path);
+}
+
+QModelIndex
+SceneChangedHereModel::indexOfPath(const QString& path) const
+{
+    if (!contains(path)) {
+        return QModelIndex();
+    }
+    const int row = _rows->rowOfPath.value(path);
+
+    return createIndex(_rows->rows[row].rowInParent, 0, (quintptr)row);
+}
+
+QModelIndex
+SceneChangedHereModel::index(int row,
+                             int column,
+                             const QModelIndex& parent) const
+{
+    if (!hasIndex(row, column, parent)) {
+        return QModelIndex();
+    }
+    const std::vector<int>& siblings = parent.isValid() ? _rows->rows[parent.internalId()].children : _rows->topLevel;
+
+    return createIndex(row, column, (quintptr)siblings[row]);
+}
+
+QModelIndex
+SceneChangedHereModel::parent(const QModelIndex& index) const
+{
+    if (!index.isValid()) {
+        return QModelIndex();
+    }
+    const int parentRow = _rows->rows[index.internalId()].parent;
+
+    if (parentRow < 0) {
+        return QModelIndex();
+    }
+
+    return createIndex(_rows->rows[parentRow].rowInParent, 0, (quintptr)parentRow);
+}
+
+int
+SceneChangedHereModel::rowCount(const QModelIndex& parent) const
+{
+    if (!_rows || (parent.column() > 0)) {
+        return 0;
+    }
+
+    return (int)(parent.isValid() ? _rows->rows[parent.internalId()].children.size() : _rows->topLevel.size());
+}
+
+int
+SceneChangedHereModel::columnCount(const QModelIndex& /*parent*/) const
+{
+    return SceneGraphModel::eColumnCount;
+}
+
+QVariant
+SceneChangedHereModel::data(const QModelIndex& index,
+                            int role) const
+{
+    if (!index.isValid()) {
+        return QVariant();
+    }
+    const SceneChangedHereRow& row = _rows->rows[index.internalId()];
+
+    switch (role) {
+    case Qt::DisplayRole:
+        switch (index.column()) {
+        case SceneGraphModel::eColumnName:
+            return row.name;
+        case SceneGraphModel::eColumnType:
+            return row.type;
+        case SceneGraphModel::eColumnKind:
+            return row.kind;
+        default:
+            return QVariant();
+        }
+    case Qt::ToolTipRole:
+        return SceneGraphModel::tr("%1\nChanged here").arg(row.path);
+    case Qt::DecorationRole:
+        if (index.column() == SceneGraphModel::eColumnName) {
+            const QIcon icon = iconForType(row.type);
+            if (!icon.isNull()) {
+                return icon;
+            }
+        }
+
+        return QVariant();
+    case SceneGraphModel::ePrimPathRole:
+        return row.path;
+    case SceneGraphModel::eChangedHereRole:
+        return true;
+    case Qt::FontRole:
+        if (index.column() == SceneGraphModel::eColumnName) {
+            QFont font;
+            font.setBold(true);
+
+            return font;
+        }
+
+        return QVariant();
+    default:
+        return QVariant();
+    }
+}
+
+QVariant
+SceneChangedHereModel::headerData(int section,
+                                  Qt::Orientation orientation,
+                                  int role) const
+{
+    return columnHeader(section, orientation, role);
+}
+
+Qt::ItemFlags
+SceneChangedHereModel::flags(const QModelIndex& index) const
+{
+    if (!index.isValid()) {
+        return Qt::NoItemFlags;
+    }
+
+    return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled;
+}
+
+QStringList
+SceneChangedHereModel::mimeTypes() const
+{
+    return QStringList() << SceneGraphModel::primPathsMimeType() << QString::fromUtf8("text/plain");
+}
+
+QMimeData*
+SceneChangedHereModel::mimeData(const QModelIndexList& indexes) const
+{
+    QStringList paths;
+    QSet<quintptr> seen;
+
+    for (const QModelIndex& index : indexes) {
+        if (index.isValid() && !seen.contains(index.internalId())) {
+            seen.insert(index.internalId());
+            paths << _rows->rows[index.internalId()].path;
+        }
+    }
+
+    return mimeDataOfPaths(paths);
+}
+
+Qt::DropActions
+SceneChangedHereModel::supportedDragActions() const
 {
     return Qt::CopyAction;
 }

@@ -59,20 +59,18 @@ public:
 
     const QString& getPath() const;
 
-    // The attribute or relationship selected on the prim, or empty.
     const QString& getProperty() const;
 
-    // The node whose scene is shown, or null.
     const NodePtr& getNode() const;
 
-    // How many edits the source's stage has had.
+    const SceneGraphStageSourcePtr& getSource() const;
+
     U64 getEditCount() const;
 
     double getFrame() const;
 
     double getFramesPerSecond() const;
 
-    // Whether another read has replaced this one, so its result would not be shown.
     bool isCancelled() const;
 
     // Calls read with the stage, or null when there is none. Returns false, without calling
@@ -117,6 +115,12 @@ public:
 
     // Main thread.
     virtual void clear() = 0;
+
+    // Forgets the selected row, whose prim is no longer the one shown. Main thread.
+    virtual void clearSelection() { }
+
+    // Whether a read needs no prim, so an empty path leaves it reading. Main thread.
+    virtual bool readsWithoutPrim() const { return false; }
 };
 
 /**
@@ -127,12 +131,21 @@ public:
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. Nothing is read while the inspector is hidden.
  *
+ * A value too long for its cell shows the start of it, and as much as a tooltip can hold; a
+ * double-click opens the whole of it in a window, whose text arrives a slice at a time, as the Layer
+ * tab's does.
+ *
  * Scripts find its widgets by object name: sceneGraphInspector, sceneGraphInspectorTabs,
- * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition, sceneGraphOpinions, sceneGraphLayerMode and sceneGraphLayerText.
+ * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition, sceneGraphOpinions, sceneGraphLayerMode, sceneGraphLayerText,
+ * sceneGraphFullValue and sceneGraphFullValueText. Those last two text edits say whether their text
+ * is still arriving in a natronSceneGraphTextLoading property.
  * It mirrors its state into the natronSceneGraphInspectorPath (the prim of the rows shown),
  * natronSceneGraphInspectorBusy, natronSceneGraphInspectorStale,
- * natronSceneGraphInspectorReadsStarted, natronSceneGraphInspectorReadsFinished and
- * natronSceneGraphInspectorReadsCancelled properties.
+ * natronSceneGraphInspectorReadsStarted, natronSceneGraphInspectorReadsFinished,
+ * natronSceneGraphInspectorReadsCancelled, natronSceneGraphInspectorCompositionQueries (how many
+ * UsdPrimCompositionQuery the Composition tab has run) and
+ * natronSceneGraphInspectorDefinitionReads (how many times the Layer tab has flattened a prim)
+ * properties.
  **/
 class ScenePrimInspector
     : public QWidget {
@@ -153,7 +166,7 @@ public:
     // Called on the main thread when a row naming a node is double-clicked.
     void setNodeOpener(const std::function<void(const NodePtr& node)>& openNode);
 
-    // An empty path or a null source clears the tabs.
+    // A null source clears the tabs, as does an empty path unless the tab showing reads without a prim.
     void setPrim(const SceneGraphStageSourcePtr& source,
                  const QString& path,
                  double frame,

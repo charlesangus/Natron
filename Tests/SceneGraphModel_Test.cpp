@@ -569,3 +569,83 @@ TEST(SceneGraphPrimWalk, ARecompositionTheEditCountMissesIsSurvived)
     finishWalk(*source, &walk, 0, &found);
     EXPECT_EQ((QStringList { QString::fromUtf8("/Other") }), found);
 }
+
+namespace {
+
+SceneChangedHereRowsPtr
+buildChangedHereRows(const TestStageSource& source,
+                     const QSet<QString>& paths)
+{
+    SceneChangedHereRowsBuilder builder(paths);
+
+    while (!builder.isDone()) {
+        source.readStage([&builder](const SceneStage* stage) { builder.readBatch(stage); });
+    }
+
+    return builder.take();
+}
+
+} // anonymous namespace
+
+TEST(SceneChangedHereRows, HoldsOnlyTheMarkedPathsAndTheirAncestors)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Root", { "A", "B", "C" }), 1));
+
+    const SceneChangedHereRowsPtr rows = buildChangedHereRows(*source, { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/C"), QString::fromUtf8("/Root/A") });
+
+    SceneChangedHereModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+
+    model.setRows(rows);
+    EXPECT_EQ(3, model.getRowCount());
+    EXPECT_TRUE(model.contains(QString::fromUtf8("/Root/A")));
+    EXPECT_FALSE(model.contains(QString::fromUtf8("/Root/B")));
+
+    ASSERT_EQ(1, model.rowCount());
+    const QModelIndex root = model.index(0, 0);
+    EXPECT_EQ(QString::fromUtf8("Root"), model.data(root).toString());
+    ASSERT_EQ(2, model.rowCount(root));
+    const QModelIndex a = model.index(0, 0, root);
+    EXPECT_EQ(QString::fromUtf8("A"), model.data(a).toString());
+    EXPECT_EQ(QString::fromUtf8("C"), model.data(model.index(1, 0, root)).toString());
+    EXPECT_EQ(root, model.parent(a));
+    EXPECT_EQ(a, model.indexOfPath(QString::fromUtf8("/Root/A")));
+    EXPECT_FALSE(model.indexOfPath(QString::fromUtf8("/Root/B")).isValid());
+
+    model.setRows(SceneChangedHereRowsPtr());
+    EXPECT_EQ(0, model.rowCount());
+}
+
+TEST(SceneChangedHereRows, DropsAPathTheSceneDoesNotList)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Root", { "A" }), 1));
+
+    const SceneChangedHereRowsPtr rows = buildChangedHereRows(*source, { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/Gone"), QString::fromUtf8("/Root/Gone/Below") });
+
+    ASSERT_EQ(1u, rows->rows.size());
+    EXPECT_EQ(QString::fromUtf8("/Root"), rows->rows[0].path);
+}
+
+TEST(SceneChangedHereRows, ReadsNoPrimWithoutAStage)
+{
+    SceneChangedHereRowsBuilder builder({ QString::fromUtf8("/Root") });
+
+    while (!builder.isDone()) {
+        builder.readBatch(nullptr);
+    }
+    EXPECT_TRUE(builder.take()->rows.empty());
+}
+
+TEST(SceneChangedHereRows, ComparesByWhatTheyShow)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Root", { "A", "B" }), 1));
+
+    const QSet<QString> paths { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/A") };
+    const SceneChangedHereRowsPtr first = buildChangedHereRows(*source, paths);
+
+    EXPECT_TRUE(first->hasSameRows(*buildChangedHereRows(*source, paths)));
+    EXPECT_FALSE(first->hasSameRows(*buildChangedHereRows(*source, { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/B") })));
+}

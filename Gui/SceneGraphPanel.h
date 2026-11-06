@@ -51,14 +51,16 @@ class SceneGraphModel;
  * lists the matching prims instead of the tree. Below the tree, a ScenePrimInspector on the current
  * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
  *
- * Scripts find its widgets by object name: sceneGraphTree, sceneGraphResults, sceneGraphFilter,
- * sceneGraphPin, sceneGraphFollow, sceneGraphNode, sceneGraphChangedHere and sceneGraphStatus, and
- * the inspector's. Rows the shown node's own layers author something on, and their ancestors, are
- * marked (SceneGraphModel::eChangedHereRole); the Changed Here button lists only those. It
- * mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow ("viewer" or
- * "selection"), natronSceneGraphNode, natronSceneGraphHasScene, natronSceneGraphFilterBusy,
- * natronSceneGraphStageEditCount, natronSceneGraphStageNotices, natronSceneGraphChangedHereOnly,
- * natronSceneGraphChangedHereBusy and natronSceneGraphChangedHereCount properties.
+ * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
+ * sceneGraphResults, sceneGraphFilter, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
+ * sceneGraphChangedHere and sceneGraphStatus, and the inspector's. Rows the shown node's own layers
+ * author something on, and their ancestors, are marked (SceneGraphModel::eChangedHereRole); the
+ * Changed Here button swaps the tree for one listing only those (SceneChangedHereModel), leaving
+ * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow
+ * ("viewer" or "selection"), natronSceneGraphNode, natronSceneGraphHasScene,
+ * natronSceneGraphFilterBusy, natronSceneGraphStageEditCount, natronSceneGraphStageNotices,
+ * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount
+ * and natronSceneGraphChangedHereRows properties.
  **/
 class SceneGraphPanel
     : public QWidget,
@@ -108,6 +110,7 @@ private Q_SLOTS:
     void onSceneSynced();
     void onViewportSelectionChanged(const QStringList& paths);
     void onTreeSelectionChanged();
+    void onChangedHereSelectionChanged();
     void onResultsSelectionChanged();
     void onResultActivated(const QModelIndex& index);
     void onFilterEdited();

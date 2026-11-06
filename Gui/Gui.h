@@ -612,6 +612,9 @@ public Q_SLOTS:
 
     void putSettingsPanelFirst(DockablePanel* panel);
 
+    // Opens the node's settings panel, creating it if need be, and puts it first in the properties bin.
+    void showNodeSettingsPanel(const NodeGuiPtr& node);
+
     void buildTabFocusOrderPropertiesBin();
 
     void rebuildNodesToolBox();

@@ -17,11 +17,14 @@ Checks:
   - the Composition tab lists the camera's root arc;
   - the Opinions tab lists the specs behind the camera prim and the selected focal length, strongest
     first, and double-clicking a row naming the USDEditTransform opens that node's settings panel;
-  - the Layer tab shows the viewed USDEditTransform's layer as USDA with its authored over, and
-    switching it to the composed mode shows the selected prim's definition, which follows the
-    selection;
-  - selecting a prim keeps the main thread's heartbeat within HEARTBEAT_BUDGET_MS of CPU and
-    HEARTBEAT_BLOCKED_BUDGET_MS with blocking, while a slow
+  - the Layer tab shows the viewed USDEditTransform's layer as USDA with its authored over, also with
+    no prim selected, and switching it to the composed mode shows the selected prim's definition,
+    which follows the selection;
+  - a new prim leaves no attribute row selected;
+  - frame changes run no new composition query or definition read, and a new prim runs one each;
+  - a large array's tooltip stays short and a double-click shows all of it in a window;
+  - selecting a prim, and showing a large definition as text, keep the main thread's heartbeat within
+    HEARTBEAT_BUDGET_MS of CPU and HEARTBEAT_BLOCKED_BUDGET_MS with blocking, while a slow
     read shows the last result greyed, and a new selection cancels the read under way.
 
 Screenshots go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off. Run through
@@ -48,10 +51,12 @@ HEAVY_ATTRIBUTES = 200
 HEAVY_ELEMENTS = 10000
 LONG_VALUE_LENGTH = 600
 MAX_CELL_LENGTH = 200
+MAX_TIP_LENGTH = 2000
 
 ROOT = "/Inspect"
 SMALL = ROOT + "/Small"
 OTHER = ROOT + "/Other"
+PROTO = ROOT + "/Proto"
 FLAT = ROOT + "/Flat"
 HEAVY = ROOT + "/Heavy"
 INSTANCE = ROOT + "/Inst"
@@ -98,7 +103,7 @@ def write_scene(path):
 try:
     import NatronEngine
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
-    from PySide6.QtWidgets import QComboBox, QLineEdit, QPlainTextEdit, QTabWidget, QToolButton, QTreeView, QWidget
+    from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QPlainTextEdit, QTabWidget, QToolButton, QTreeView, QWidget
 
     from guitest import OUT, check, close_all_panels, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -398,6 +403,9 @@ try:
         edit_row = [r for r in range(opinions_model.rowCount())
                     if str(opinions_model.index(r, 0).data()) == "Prim" and str(opinions_model.index(r, 1).data()) == edit.getScriptName()]
         require(bool(edit_row), "the opinions tab has a row naming the USDEditTransform")
+        opinions_view.doubleClicked.emit(opinions_model.index(edit_row[0], 2))
+        yield ("sleep", SETTLE_MS)
+        check(edit_label not in open_panel_labels(), "double-clicking the row's layer cell opens no node")
         opinions_view.doubleClicked.emit(opinions_model.index(edit_row[0], 1))
         ok = yield ("until", lambda: edit_label in open_panel_labels(), POLL_TIMEOUT_S)
         check(ok, "double-clicking a row opens the USDEditTransform's settings panel (open: %r)" % (open_panel_labels(),))
@@ -421,7 +429,15 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("scene-prim-inspector-layer.png")
 
+        tree().selectionModel().clear()
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: not state("Busy"), POLL_TIMEOUT_S)
+        check(ok and transform_attribute in text_view.toPlainText(), "the node contribution stays up with no prim selected")
         mode.setCurrentIndex(1)
+        ok = yield ("until", lambda: not text_view.toPlainText(), POLL_TIMEOUT_S)
+        check(ok, "the composed mode shows nothing with no prim selected (got %r)" % (text_view.toPlainText()[:80],))
+        select(find(camera_prim))
+
         ok = yield ("until", lambda: "focalLength" in text_view.toPlainText(), POLL_TIMEOUT_S)
         composed = text_view.toPlainText()
         check(ok, "the composed mode holds the camera's focalLength (got %r)" % (composed[:200],))
@@ -507,6 +523,97 @@ try:
         ok = yield ("until", lambda: "Prototype" in table(METADATA) and settled_on(INSTANCE), POLL_TIMEOUT_S)
         prototype = table(METADATA).get("Prototype", ["", "", ""])[1]
         check(ok and prototype.startswith("/__Prototype"), "an instance shows its prototype (got %r)" % (prototype,))
+        show_tab(0)
+
+    def selection_section():
+        select(find(PROTO))
+        ok = yield ("until", lambda: "visibility" in table(ATTRIBUTES) and settled_on(PROTO), POLL_TIMEOUT_S)
+        require(ok, "the prototype's attributes are listed")
+        attributes = child(QTreeView, ATTRIBUTES)
+        rows_model = attributes.model()
+        row = [r for r in range(rows_model.rowCount()) if str(rows_model.index(r, 0).data()) == "visibility"]
+        attributes.selectionModel().select(rows_model.index(row[0], 0), QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        check(bool(attributes.selectionModel().selectedRows()), "an attribute is selected")
+        select(find(PROTO + "/Child"))
+        ok = yield ("until", lambda: settled_on(PROTO + "/Child"), POLL_TIMEOUT_S)
+        check(ok, "the child prim is shown (got %r)" % (state("Path"),))
+        check(not attributes.selectionModel().selectedRows(), "a new prim shows no attribute selected")
+
+    def frames_leave_count_alone(py_viewer, counter, what):
+        count = int(state(counter))
+        for frame in range(2, 6):
+            finished = int(state("ReadsFinished"))
+            py_viewer.seek(frame)
+            ok = yield ("until", lambda: int(state("ReadsFinished")) > finished and not state("Busy"), POLL_TIMEOUT_S)
+            check(ok, "frame %d is read for %s" % (frame, what))
+        check(int(state(counter)) == count, "frame changes do not read %s again (%d, was %d)" % (what, int(state(counter)), count))
+
+    def frame_reads_section(py_viewer):
+        select(find(SMALL))
+        show_tab(COMPOSITION_TAB)
+        ok = yield ("until", lambda: any(k.strip() == "Root" for k in table(COMPOSITION)) and settled_on(SMALL), POLL_TIMEOUT_S)
+        require(ok, "the composition tab shows the small prim")
+        yield from frames_leave_count_alone(py_viewer, "CompositionQueries", "the composition")
+        queries = int(state("CompositionQueries"))
+        select(find(OTHER))
+        ok = yield ("until", lambda: settled_on(OTHER), POLL_TIMEOUT_S)
+        check(ok and int(state("CompositionQueries")) == queries + 1, "a new prim queries its composition once (%d, was %d)" % (int(state("CompositionQueries")), queries))
+
+        select(find(SMALL))
+        show_tab(LAYER_TAB)
+        text_view = child(QPlainTextEdit, LAYER_TEXT)
+        child(QComboBox, LAYER_MODE).setCurrentIndex(1)
+        ok = yield ("until", lambda: "longValue" in text_view.toPlainText() and settled_on(SMALL), POLL_TIMEOUT_S)
+        require(ok, "the composed mode shows the small prim")
+        yield from frames_leave_count_alone(py_viewer, "DefinitionReads", "the prim's definition")
+        reads = int(state("DefinitionReads"))
+        select(find(OTHER))
+        ok = yield ("until", lambda: "otherValue" in text_view.toPlainText() and settled_on(OTHER), POLL_TIMEOUT_S)
+        check(ok and int(state("DefinitionReads")) == reads + 1, "a new prim reads its definition once (%d, was %d)" % (int(state("DefinitionReads")), reads))
+        show_tab(0)
+
+    def full_value_section():
+        """Run with the large arrays on the Attributes tab."""
+        name = "heavy_0"
+        tip = tooltip(ATTRIBUTES, name, 2)
+        check(len(tip) < 2 * MAX_TIP_LENGTH, "a large array's tooltip stays short (got %d characters)" % (len(tip),))
+        check(tip.endswith("Double-click to show the whole value."), "the tooltip says how to see the rest (got %r)" % (tip[-60:],))
+        attributes = child(QTreeView, ATTRIBUTES)
+        rows_model = attributes.model()
+        row = [r for r in range(rows_model.rowCount()) if str(rows_model.index(r, 0).data()) == name]
+        require(bool(row), "the large array has a row")
+        attributes.doubleClicked.emit(rows_model.index(row[0], 2))
+        window = attributes.findChild(QDialog, "sceneGraphFullValue")
+        require(window is not None, "double-clicking the large array opens its full value")
+        text = window.findChild(QPlainTextEdit, "sceneGraphFullValueText")
+        require(text is not None, "the full value window has its text")
+        ok = yield ("until", lambda: not text.property("natronSceneGraphTextLoading"), LOAD_TIMEOUT_S)
+        check(ok, "the full value arrives")
+        count = text.toPlainText().replace("\n", "").count("1.25")
+        check(count == HEAVY_ELEMENTS, "the window holds every element (got %d)" % (count,))
+        window.close()
+
+    def layer_text_section(beat):
+        """A large text goes up without holding the main thread."""
+        show_tab(LAYER_TAB)
+        mode = child(QComboBox, LAYER_MODE)
+        text_view = child(QPlainTextEdit, LAYER_TEXT)
+        mode.setCurrentIndex(1)
+        select(find(SMALL))
+        ok = yield ("until", lambda: settled_on(SMALL) and not text_view.property("natronSceneGraphTextLoading"), POLL_TIMEOUT_S)
+        require(ok, "the small prim's definition is up before the measurement")
+
+        beat.start()
+        select(find(HEAVY))
+        ok = yield ("until", lambda: settled_on(HEAVY) and not text_view.property("natronSceneGraphTextLoading"), LOAD_TIMEOUT_S)
+        worst = beat.stop()
+        check(ok, "the large arrays' definition is read (got %r)" % (state("Path"),))
+        report("NOTE worst main-thread gap showing the large definition: %.1f ms on a CPU, %.1f ms with blocking, %.1f ms with waiting for a CPU"
+               % (beat.worst_cpu_ms, worst, beat.worst_wall_ms))
+        check(beat.worst_cpu_ms <= HEARTBEAT_BUDGET_MS, "showing a large text leaves the main thread idle (%.1f ms)" % (beat.worst_cpu_ms,))
+        check(worst <= HEARTBEAT_BLOCKED_BUDGET_MS, "showing a large text does not block the main thread (%.1f ms)" % (worst,))
+        shown = text_view.toPlainText()
+        check("heavy_%d" % (HEAVY_ATTRIBUTES - 1,) in shown, "the large text is shown whole (%d characters)" % (len(shown),))
         show_tab(0)
 
     def responsiveness_section():
@@ -596,6 +703,9 @@ try:
         check(beat.worst_cpu_ms <= HEARTBEAT_BUDGET_MS, "reading large arrays leaves the main thread idle (%.1f ms)" % (beat.worst_cpu_ms,))
         check(worst <= HEARTBEAT_BLOCKED_BUDGET_MS, "reading large arrays does not block the main thread (%.1f ms)" % (worst,))
 
+        yield from full_value_section()
+        yield from layer_text_section(beat)
+
     def steps():
         require(viewer.connectInput(0, edit), "connect the Viewer to the USDEditTransform")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -626,6 +736,8 @@ try:
         require(ok, "the tree shows the file's scene (got %r)" % (top_paths(),))
         yield from file_section(py_viewer)
         yield from layer_prim_switch_section()
+        yield from selection_section()
+        yield from frame_reads_section(py_viewer)
 
         # Pinned, a selection does not reach the viewer, whose repaint is not what is measured.
         pin = child(QToolButton, "sceneGraphPin")

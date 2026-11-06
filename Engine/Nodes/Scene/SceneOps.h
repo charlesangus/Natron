@@ -28,7 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -144,6 +147,8 @@ struct SceneMetricsCorrection {
     // Maps the source stage's times to the target layer's, for the time samples it rescales.
     PXR_NS::SdfLayerOffset sourceToLayer;
 };
+
+class SceneStage;
 
 /**
  * @brief The thin interface scene nodes use to author layers, stack them into payloads and
@@ -474,9 +479,7 @@ struct ScenePrimArc {
     };
 
     Type type = eRoot;
-    // Steps from the root node, so the arcs form a tree in strength order.
     int depth = 0;
-    // Introduced by an ancestor prim rather than the prim itself.
     bool ancestral = false;
     bool implicit = false;
     // False for an authored payload that is not loaded, which has no target in the prim index.
@@ -514,12 +517,13 @@ struct SceneOpinion {
     std::string layerIdentifier;
     // "def Xform" for a prim spec, empty for a property spec.
     std::string primDescription;
-    // The default value of an attribute spec, or the target paths of a relationship spec; empty
-    // when the spec holds neither.
+    // Null for a prim spec. Lets readOpinionValue() read the value under a later lock.
+    PXR_NS::SdfPropertySpecHandle propertySpec;
+    // Set by readOpinionValue(): the default value of an attribute spec, or the target paths of a
+    // relationship spec; empty when the spec holds neither.
     PXR_NS::VtValue value;
     std::size_t numTimeSamples = 0;
     bool hasSpline = false;
-    // Maps the layer's time to the stage's.
     double layerOffset = 0.;
     double layerScale = 1.;
 };
@@ -531,12 +535,130 @@ struct SceneOpinion {
 std::vector<SceneOpinion> getPrimOpinions(const PXR_NS::UsdPrim& prim);
 
 /**
- * @brief The specs composing the property of prim named name, strongest first, as of time. Empty
- * when the prim has no such property. Caller holds the stage lock.
+ * @brief The specs composing the property of prim named name, strongest first, as of time, without
+ * their values, which can hold millions of elements: see readOpinionValue(). Empty when the prim
+ * has no such property. Caller holds the stage lock.
  **/
 std::vector<SceneOpinion> getPropertyOpinions(const PXR_NS::UsdPrim& prim,
                                               const PXR_NS::TfToken& name,
                                               PXR_NS::UsdTimeCode time);
+
+/**
+ * @brief Fills opinion's value from its property spec, doing nothing for a prim spec or a spec gone
+ * since it was listed. One spec per call, so that a caller can release the stage lock between
+ * them. Caller holds the stage lock.
+ **/
+void readOpinionValue(SceneOpinion* opinion);
+
+/**
+ * @brief value as text, at most maxLength bytes of it, stopping there rather than formatting the
+ * rest and cutting it, so that the cost follows maxLength whatever the value's size. Sets *cut if
+ * the text stops short of the value's end. Also stops once *cancelled is set. A VtValue shares its
+ * data by reference counts, so this needs no stage lock.
+ **/
+std::string valueText(const PXR_NS::VtValue& value,
+                      std::size_t maxLength = std::numeric_limits<std::size_t>::max(),
+                      const std::atomic<bool>* cancelled = nullptr,
+                      bool* cut = nullptr);
+
+// The file of a layer identifier, without its arguments, or empty for an anonymous layer.
+std::string layerFileOf(const std::string& layerIdentifier);
+
+struct SceneAuthor {
+    // Null for a file or an unrecorded layer.
+    NodePtr node;
+    std::string layerIdentifier;
+    bool schemaFallback = false;
+};
+
+enum SceneValueSource {
+    eSceneValueSourceNone,
+    eSceneValueSourceFallback,
+    eSceneValueSourceDefault,
+    eSceneValueSourceTimeSamples,
+    eSceneValueSourceValueClips,
+    eSceneValueSourceSpline
+};
+
+struct ScenePrimAttribute {
+    std::string typeName;
+    PXR_NS::VtValue value;
+    SceneValueSource source = eSceneValueSourceNone;
+    SceneAuthor author;
+};
+
+struct ScenePrimRelationship {
+    std::vector<std::string> targets;
+    SceneAuthor author;
+};
+
+struct ScenePrimMetadata {
+    struct Field {
+        std::string key;
+        PXR_NS::VtValue value;
+        SceneAuthor author;
+    };
+
+    std::vector<Field> fields;
+    // The prototype of an instance or of an instance proxy's prim.
+    std::string prototypePath;
+    bool isPrototype = false;
+};
+
+/*
+ * The reads below address a prim by path, so a caller needs no pxr call to make them. Each is one
+ * short read for one row: an attribute can hold millions of points and the main thread may be
+ * waiting for the lock, so a caller takes the lock once per row. Caller holds the stage lock. A
+ * path naming no prim, or a name it does not have, reads as empty or false.
+ */
+std::vector<std::string> getAttributeNames(const SceneStage& stage,
+                                           const std::string& primPath);
+
+bool readAttribute(const SceneStage& stage,
+                   const std::string& primPath,
+                   const std::string& name,
+                   double frame,
+                   double framesPerSecond,
+                   ScenePrimAttribute* attribute);
+
+std::vector<std::string> getRelationshipNames(const SceneStage& stage,
+                                              const std::string& primPath);
+
+bool readRelationship(const SceneStage& stage,
+                      const std::string& primPath,
+                      const std::string& name,
+                      ScenePrimRelationship* relationship);
+
+bool readMetadata(const SceneStage& stage,
+                  const std::string& primPath,
+                  ScenePrimMetadata* metadata);
+
+bool getPrimComposition(const SceneStage& stage,
+                        const std::string& primPath,
+                        ScenePrimComposition* composition);
+
+bool getPrimOpinions(const SceneStage& stage,
+                     const std::string& primPath,
+                     std::vector<SceneOpinion>* opinions);
+
+std::vector<SceneOpinion> getPropertyOpinions(const SceneStage& stage,
+                                              const std::string& primPath,
+                                              const std::string& name,
+                                              double frame,
+                                              double framesPerSecond);
+
+// beginPrimDefinition(), with the names of the properties to flatten into it. Null if no such prim.
+PXR_NS::UsdStageRefPtr beginPrimDefinition(const SceneStage& stage,
+                                           const std::string& primPath,
+                                           std::vector<std::string>* propertyNames);
+
+void flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                         const SceneStage& stage,
+                         const std::string& primPath,
+                         const std::string& name);
+
+// One address per layer, to tell whether two reads got the same layers.
+std::vector<const void*> getLayerIdentities(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

@@ -27,7 +27,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <atomic>
+#include <limits>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -42,6 +46,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -390,6 +395,9 @@ TEST_F(SceneProvenanceTest, OpinionsListEveryNodeStrongestFirstWithTheirValues)
     }
     ASSERT_EQ(2u, focal.size());
     EXPECT_EQ(setter, focal[0].owner);
+    EXPECT_TRUE(focal[0].value.IsEmpty());
+    SceneOps::readOpinionValue(&focal[0]);
+    SceneOps::readOpinionValue(&focal[1]);
     ASSERT_TRUE(focal[0].value.IsHolding<float>());
     EXPECT_FLOAT_EQ(99.f, focal[0].value.UncheckedGet<float>());
     EXPECT_EQ(camera, focal[1].owner);
@@ -430,5 +438,84 @@ TEST_F(SceneProvenanceTest, OpinionsCarryLayerOffsetsAndTimeSamples)
     const std::vector<SceneOpinion> animated = SceneOps::getPropertyOpinions(prim, PXR_NS::TfToken("animated"), PXR_NS::UsdTimeCode(12.));
     ASSERT_EQ(1u, animated.size());
     EXPECT_EQ(2u, animated[0].numTimeSamples);
-    EXPECT_TRUE(animated[0].value.IsEmpty());
+    SceneOpinion read = animated[0];
+    SceneOps::readOpinionValue(&read);
+    EXPECT_TRUE(read.value.IsEmpty());
+}
+
+TEST_F(SceneProvenanceTest, ValueTextStopsAtItsLength)
+{
+    bool cut = true;
+
+    EXPECT_EQ("1.5", SceneOps::valueText(PXR_NS::VtValue(1.5), 100, nullptr, &cut));
+    EXPECT_FALSE(cut);
+    EXPECT_EQ("1.5", SceneOps::valueText(PXR_NS::VtValue(1.5), 3, nullptr, &cut));
+    EXPECT_FALSE(cut);
+
+    const PXR_NS::VtValue big(PXR_NS::VtFloatArray(1000000, 1.25f));
+    const std::string start = SceneOps::valueText(big, 100, nullptr, &cut);
+    EXPECT_TRUE(cut);
+    EXPECT_LE(start.size(), 100u);
+    EXPECT_EQ('[', start[0]);
+    EXPECT_GT(SceneOps::valueText(big).size(), 1000000u);
+
+    const std::atomic<bool> cancelled(true);
+    EXPECT_LE(SceneOps::valueText(big, std::numeric_limits<std::size_t>::max(), &cancelled).size(), 1u);
+
+    EXPECT_TRUE(SceneOps::valueText(PXR_NS::VtValue()).empty());
+}
+
+TEST_F(SceneProvenanceTest, ReadsThePrimRowsByPath)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneProvenanceTest");
+    ASSERT_TRUE(layer->ImportFromString("#usda 1.0\n"
+                                        "def Xform \"Prim\" (\n"
+                                        "    kind = \"component\"\n"
+                                        ") {\n"
+                                        "    custom double size = 3\n"
+                                        "    custom double animated.timeSamples = { 1: 5, 2: 6 }\n"
+                                        "    custom rel links = </Other>\n"
+                                        "}\n"
+                                        "def Scope \"Other\" { }\n"));
+    SceneStage stage;
+    stage.sync(SceneOps::appendLayer(ScenePayload(), layer, 0x5ce0b5ULL));
+
+    const std::vector<std::string> attributes = SceneOps::getAttributeNames(stage, "/Prim");
+    EXPECT_NE(attributes.end(), std::find(attributes.begin(), attributes.end(), "size"));
+    EXPECT_NE(attributes.end(), std::find(attributes.begin(), attributes.end(), "animated"));
+    EXPECT_TRUE(SceneOps::getAttributeNames(stage, "/Missing").empty());
+
+    SceneOps::ScenePrimAttribute attribute;
+    ASSERT_TRUE(SceneOps::readAttribute(stage, "/Prim", "size", 1., 24., &attribute));
+    EXPECT_EQ("double", attribute.typeName);
+    EXPECT_EQ(SceneOps::eSceneValueSourceDefault, attribute.source);
+    ASSERT_TRUE(attribute.value.IsHolding<double>());
+    EXPECT_DOUBLE_EQ(3., attribute.value.UncheckedGet<double>());
+    ASSERT_TRUE(SceneOps::readAttribute(stage, "/Prim", "animated", 2., 24., &attribute));
+    EXPECT_EQ(SceneOps::eSceneValueSourceTimeSamples, attribute.source);
+    ASSERT_TRUE(SceneOps::readAttribute(stage, "/Prim", "visibility", 1., 24., &attribute));
+    EXPECT_EQ(SceneOps::eSceneValueSourceFallback, attribute.source);
+    EXPECT_TRUE(attribute.author.schemaFallback);
+    EXPECT_FALSE(SceneOps::readAttribute(stage, "/Prim", "noSuchAttribute", 1., 24., &attribute));
+
+    const std::vector<std::string> relationships = SceneOps::getRelationshipNames(stage, "/Prim");
+    EXPECT_NE(relationships.end(), std::find(relationships.begin(), relationships.end(), "links"));
+    SceneOps::ScenePrimRelationship relationship;
+    ASSERT_TRUE(SceneOps::readRelationship(stage, "/Prim", "links", &relationship));
+    EXPECT_EQ(std::vector<std::string> { "/Other" }, relationship.targets);
+
+    SceneOps::ScenePrimMetadata metadata;
+    ASSERT_TRUE(SceneOps::readMetadata(stage, "/Prim", &metadata));
+    const auto kind = std::find_if(metadata.fields.begin(), metadata.fields.end(),
+                                   [](const SceneOps::ScenePrimMetadata::Field& field) { return field.key == "kind"; });
+    ASSERT_NE(metadata.fields.end(), kind);
+    EXPECT_EQ(layer->GetIdentifier(), kind->author.layerIdentifier);
+
+    std::vector<std::string> names;
+    EXPECT_TRUE(bool(SceneOps::beginPrimDefinition(stage, "/Prim", &names)));
+    EXPECT_NE(names.end(), std::find(names.begin(), names.end(), "size"));
+    EXPECT_FALSE(bool(SceneOps::beginPrimDefinition(stage, "/Missing", &names)));
+
+    EXPECT_EQ("/some/where/shot.usda", SceneOps::layerFileOf("/some/where/shot.usda"));
+    EXPECT_TRUE(SceneOps::layerFileOf(PXR_NS::SdfLayer::CreateAnonymous("x.usda")->GetIdentifier()).empty());
 }

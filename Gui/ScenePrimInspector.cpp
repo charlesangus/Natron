@@ -25,10 +25,11 @@
 
 #include "ScenePrimInspector.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -38,6 +39,8 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QDialog>
+#include <QElapsedTimer>
 #include <QFontDatabase>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -46,6 +49,8 @@
 #include <QPlainTextEdit>
 #include <QStringList>
 #include <QTabWidget>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTimer>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -53,9 +58,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
-#include "Engine/Nodes/Scene/UsdIncludes.h"
-
-PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,8 +69,19 @@ using SceneOps::ScenePrimComposition;
 
 const int kMaxCellLength = 200;
 
+// A tooltip lays its whole text out on the main thread each time it shows; this much fills a
+// 1080 pixel screen at most.
+const int kMaxTipLength = 2000;
+
 // A plain-text tooltip never wraps by itself, so a long value would run off a 1920 pixel screen.
 const int kTipLineLength = 160;
+
+// A text edit lays a line out whole, so one line of millions of characters stalls the main thread
+// however slowly it is added.
+const int kMaxShownLineLength = 4096;
+
+const int kTextSliceMs = 8;
+const int kTextChunkLength = 16 * 1024;
 
 // Long enough that a read finishing normally does not flicker the rows.
 const int kGreyAfterMs = 100;
@@ -76,7 +89,9 @@ const int kGreyAfterMs = 100;
 struct InspectorCell {
     QString text;
     QString tip;
-    // The node a double-click opens the settings of.
+    // Formatted when asked for, past the cell's own text: it can hold millions of elements.
+    PXR_NS::VtValue value;
+    bool cut = false;
     NodeWPtr node;
 };
 
@@ -103,47 +118,74 @@ wrappedForTip(const QString& text)
     return wrapped;
 }
 
+QString
+tipOf(const InspectorCell& cell)
+{
+    QString text;
+    bool cut = false;
+
+    if (cell.value.IsEmpty()) {
+        cut = cell.tip.size() > kMaxTipLength;
+        text = cell.tip.left(kMaxTipLength);
+    } else {
+        text = QString::fromStdString(SceneOps::valueText(cell.value, kMaxTipLength, nullptr, &cut));
+    }
+    if (text.isEmpty()) {
+        return QString();
+    }
+    QString tip = wrappedForTip(text);
+
+    if (cut) {
+        tip += QString::fromUtf8("...\n") + ScenePrimInspector::tr("Double-click to show the whole value.");
+    }
+
+    return tip;
+}
+
 InspectorCell
 cellOf(const QString& full)
 {
     InspectorCell cell;
-    const bool cut = full.size() > kMaxCellLength;
 
-    cell.text = cut ? (full.left(kMaxCellLength) + QString::fromUtf8("...")) : full;
+    cell.cut = full.size() > kMaxCellLength;
+    cell.text = cell.cut ? (full.left(kMaxCellLength) + QString::fromUtf8("...")) : full;
     // Uniform row heights would clip a value's later lines.
     cell.text.replace(QLatin1Char('\n'), QLatin1Char(' '));
-    cell.tip = wrappedForTip(full);
+    cell.tip = full;
+
+    return cell;
+}
+
+InspectorCell
+valueCell(const PXR_NS::VtValue& value)
+{
+    InspectorCell cell;
+
+    cell.text = QString::fromStdString(SceneOps::valueText(value, kMaxCellLength, nullptr, &cell.cut));
+    if (cell.cut) {
+        cell.text += QString::fromUtf8("...");
+    }
+    cell.text.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    cell.value = value;
 
     return cell;
 }
 
 QString
-valueText(const VtValue& value)
-{
-    if (value.IsEmpty()) {
-        return QString();
-    }
-    std::ostringstream os;
-    os << value;
-
-    return QString::fromStdString(os.str());
-}
-
-QString
-sourceLabel(UsdResolveInfoSource source)
+sourceLabel(SceneOps::SceneValueSource source)
 {
     switch (source) {
-    case UsdResolveInfoSourceFallback:
+    case SceneOps::eSceneValueSourceFallback:
         return ScenePrimInspector::tr("Fallback");
-    case UsdResolveInfoSourceDefault:
+    case SceneOps::eSceneValueSourceDefault:
         return ScenePrimInspector::tr("Default Value");
-    case UsdResolveInfoSourceTimeSamples:
+    case SceneOps::eSceneValueSourceTimeSamples:
         return ScenePrimInspector::tr("Time Samples");
-    case UsdResolveInfoSourceValueClips:
+    case SceneOps::eSceneValueSourceValueClips:
         return ScenePrimInspector::tr("Value Clips");
-    case UsdResolveInfoSourceSpline:
+    case SceneOps::eSceneValueSourceSpline:
         return ScenePrimInspector::tr("Spline");
-    case UsdResolveInfoSourceNone:
+    case SceneOps::eSceneValueSourceNone:
         break;
     }
 
@@ -161,8 +203,8 @@ authorCell(const NodePtr& node,
         cell.text = QString::fromStdString(node->getFullyQualifiedName());
     } else if (schemaFallback) {
         cell.text = ScenePrimInspector::tr("Schema Fallback");
-    } else if (!layerIdentifier.empty() && !SdfLayer::IsAnonymousLayerIdentifier(layerIdentifier)) {
-        cell.text = QString::fromStdString(SdfLayer::SplitIdentifier(layerIdentifier).first);
+    } else {
+        cell.text = QString::fromStdString(SceneOps::layerFileOf(layerIdentifier));
     }
     cell.tip = QString::fromStdString(layerIdentifier);
     cell.node = node;
@@ -171,28 +213,9 @@ authorCell(const NodePtr& node,
 }
 
 InspectorCell
-layerAuthorCell(const SdfLayerHandle& layer,
-                bool schemaFallback)
+authorCell(const SceneOps::SceneAuthor& author)
 {
-    return authorCell(SceneOps::getLayerOwner(layer), layer ? layer->GetIdentifier() : std::string(), !layer && schemaFallback);
-}
-
-// The prim is valid only inside the callback: with the lock released, a sync can recompose it away.
-bool
-readPrim(const ScenePrimInspectorRead& read,
-         const std::function<void(const SceneStage& stage, const UsdPrim& prim)>& readThePrim)
-{
-    const std::string pathString = read.getPath().toStdString();
-
-    return read.readStage([&](const SceneStage* sceneStage) {
-        if (!sceneStage || !SdfPath::IsValidPathString(pathString)) {
-            return;
-        }
-        const UsdPrim prim = sceneStage->getStage()->GetPrimAtPath(SdfPath(pathString));
-        if (prim) {
-            readThePrim(*sceneStage, prim);
-        }
-    });
+    return authorCell(author.node, author.layerIdentifier, author.schemaFallback);
 }
 
 // The lock is taken per row, and a value is turned into text outside it: an attribute can hold
@@ -202,173 +225,97 @@ bool
 readAttributes(const ScenePrimInspectorRead& read,
                std::vector<InspectorRow>* rows)
 {
-    std::vector<TfToken> names;
+    const std::string path = read.getPath().toStdString();
+    std::vector<std::string> names;
 
-    if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
-            for (const UsdAttribute& attribute : prim.GetAttributes()) {
-                names.push_back(attribute.GetName());
+    if (!read.readStage([&](const SceneStage* stage) {
+            if (stage) {
+                names = SceneOps::getAttributeNames(*stage, path);
             }
         })) {
         return false;
     }
     rows->reserve(names.size());
-    for (const TfToken& name : names) {
+    for (const std::string& name : names) {
         bool defined = false;
-        QString type;
-        QString source;
-        VtValue value;
-        InspectorCell author;
-        if (!readPrim(read, [&](const SceneStage& stage, const UsdPrim& prim) {
-                const UsdAttribute attribute = prim.GetAttribute(name);
-                if (!attribute.IsDefined()) {
-                    return;
-                }
-                defined = true;
-                const UsdTimeCode time(SceneOps::frameToTimeCode(stage.getPayload(), read.getFrame(), read.getFramesPerSecond()));
-                type = QString::fromStdString(attribute.GetTypeName().GetAsToken().GetString());
-                attribute.Get(&value, time);
-                const UsdResolveInfoSource resolved = attribute.GetResolveInfo(time).GetSource();
-                source = sourceLabel(resolved);
-                std::string layerIdentifier;
-                const NodePtr node = SceneOps::authoringNodeOf(attribute, time, &layerIdentifier);
-                author = authorCell(node, layerIdentifier, resolved == UsdResolveInfoSourceFallback);
+        SceneOps::ScenePrimAttribute attribute;
+        if (!read.readStage([&](const SceneStage* stage) {
+                defined = stage && SceneOps::readAttribute(*stage, path, name, read.getFrame(), read.getFramesPerSecond(), &attribute);
             })) {
             return false;
         }
         if (defined) {
-            rows->push_back({ cellOf(QString::fromStdString(name.GetString())), cellOf(type), cellOf(valueText(value)), cellOf(source), author });
+            rows->push_back({ cellOf(QString::fromStdString(name)),
+                              cellOf(QString::fromStdString(attribute.typeName)),
+                              valueCell(attribute.value),
+                              cellOf(sourceLabel(attribute.source)),
+                              authorCell(attribute.author) });
         }
     }
 
     return true;
-}
-
-// The strongest spec authoring targets, else the strongest declaring the relationship.
-SdfLayerHandle
-targetsLayer(const UsdRelationship& relationship)
-{
-    SdfLayerHandle declaring;
-
-    for (const SdfPropertySpecHandle& spec : relationship.GetPropertyStack()) {
-        if (!spec) {
-            continue;
-        }
-        if (spec->HasField(SdfFieldKeys->TargetPaths)) {
-            return spec->GetLayer();
-        }
-        if (!declaring) {
-            declaring = spec->GetLayer();
-        }
-    }
-
-    return declaring;
 }
 
 bool
 readRelationships(const ScenePrimInspectorRead& read,
                   std::vector<InspectorRow>* rows)
 {
-    std::vector<TfToken> names;
+    const std::string path = read.getPath().toStdString();
+    std::vector<std::string> names;
 
-    if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
-            for (const UsdRelationship& relationship : prim.GetRelationships()) {
-                names.push_back(relationship.GetName());
+    if (!read.readStage([&](const SceneStage* stage) {
+            if (stage) {
+                names = SceneOps::getRelationshipNames(*stage, path);
             }
         })) {
         return false;
     }
     rows->reserve(names.size());
-    for (const TfToken& name : names) {
+    for (const std::string& name : names) {
         bool defined = false;
-        QStringList targetTexts;
-        InspectorCell author;
-        if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
-                const UsdRelationship relationship = prim.GetRelationship(name);
-                if (!relationship.IsDefined()) {
-                    return;
-                }
-                defined = true;
-                SdfPathVector targets;
-                relationship.GetTargets(&targets);
-                for (const SdfPath& target : targets) {
-                    targetTexts << QString::fromStdString(target.GetString());
-                }
-                author = layerAuthorCell(targetsLayer(relationship), true);
+        SceneOps::ScenePrimRelationship relationship;
+        if (!read.readStage([&](const SceneStage* stage) {
+                defined = stage && SceneOps::readRelationship(*stage, path, name, &relationship);
             })) {
             return false;
         }
         if (defined) {
-            rows->push_back({ cellOf(QString::fromStdString(name.GetString())), cellOf(targetTexts.join(QString::fromUtf8(", "))), author });
+            QStringList targets;
+            for (const std::string& target : relationship.targets) {
+                targets << QString::fromStdString(target);
+            }
+            rows->push_back({ cellOf(QString::fromStdString(name)), cellOf(targets.join(QString::fromUtf8(", "))), authorCell(relationship.author) });
         }
     }
 
     return true;
 }
 
-// A prim's specifier composes to its strongest non-over, whichever layer last wrote an over.
-SdfLayerHandle
-metadataLayer(const SdfPrimSpecHandleVector& stack,
-              const TfToken& key)
-{
-    const bool isSpecifier = (key == SdfFieldKeys->Specifier);
-    SdfLayerHandle strongest;
-
-    for (const SdfPrimSpecHandle& spec : stack) {
-        if (!spec || !spec->HasField(key)) {
-            continue;
-        }
-        if (!strongest) {
-            strongest = spec->GetLayer();
-        }
-        if (!isSpecifier || (spec->GetSpecifier() != SdfSpecifierOver)) {
-            return spec->GetLayer();
-        }
-    }
-
-    return strongest;
-}
-
 bool
 readMetadata(const ScenePrimInspectorRead& read,
              std::vector<InspectorRow>* rows)
 {
-    struct Entry {
-        std::string key;
-        VtValue value;
-        InspectorCell author;
-    };
-    std::vector<Entry> entries;
-    QString prototype;
+    const std::string path = read.getPath().toStdString();
+    SceneOps::ScenePrimMetadata metadata;
 
-    if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
-            const UsdMetadataValueMap metadata = prim.GetAllMetadata();
-            const SdfPrimSpecHandleVector stack = prim.GetPrimStack();
-            // A prototype has no prim index, so its empty stack says nothing of who authored its
-            // metadata.
-            const bool schemaFallback = !prim.IsPrototype();
-            entries.reserve(metadata.size());
-            for (const auto& item : metadata) {
-                entries.push_back({ item.first.GetString(), item.second, layerAuthorCell(metadataLayer(stack, item.first), schemaFallback) });
-            }
-            if (prim.IsInstance()) {
-                prototype = QString::fromStdString(prim.GetPrototype().GetPath().GetString());
-            } else if (prim.IsInstanceProxy()) {
-                prototype = QString::fromStdString(prim.GetPrimInPrototype().GetPath().GetString());
-            } else if (prim.IsPrototype()) {
-                prototype = ScenePrimInspector::tr("This prim is a prototype");
+    if (!read.readStage([&](const SceneStage* stage) {
+            if (stage) {
+                SceneOps::readMetadata(*stage, path, &metadata);
             }
         })) {
         return false;
     }
-    rows->reserve(entries.size() + 1);
-    if (!prototype.isEmpty()) {
-        rows->push_back({ cellOf(ScenePrimInspector::tr("Prototype")), cellOf(prototype), InspectorCell() });
+    rows->reserve(metadata.fields.size() + 1);
+    if (metadata.isPrototype) {
+        rows->push_back({ cellOf(ScenePrimInspector::tr("Prototype")), cellOf(ScenePrimInspector::tr("This prim is a prototype")), InspectorCell() });
+    } else if (!metadata.prototypePath.empty()) {
+        rows->push_back({ cellOf(ScenePrimInspector::tr("Prototype")), cellOf(QString::fromStdString(metadata.prototypePath)), InspectorCell() });
     }
-    for (const Entry& entry : entries) {
+    for (const SceneOps::ScenePrimMetadata::Field& field : metadata.fields) {
         if (read.isCancelled()) {
             return false;
         }
-        rows->push_back({ cellOf(QString::fromStdString(entry.key)), cellOf(valueText(entry.value)), entry.author });
+        rows->push_back({ cellOf(QString::fromStdString(field.key)), valueCell(field.value), authorCell(field.author) });
     }
 
     return true;
@@ -384,26 +331,30 @@ layerOffsetText(const SceneOpinion& opinion)
     return ScenePrimInspector::tr("Offset %1, Scale %2").arg(opinion.layerOffset).arg(opinion.layerScale);
 }
 
+InspectorCell
+opinionValueCell(const SceneOpinion& opinion)
+{
+    if (!opinion.primDescription.empty()) {
+        return cellOf(QString::fromStdString(opinion.primDescription));
+    }
+    if (opinion.numTimeSamples > 0) {
+        return cellOf(ScenePrimInspector::tr("%n time sample(s)", nullptr, (int)opinion.numTimeSamples));
+    }
+    if (opinion.hasSpline) {
+        return cellOf(ScenePrimInspector::tr("Spline"));
+    }
+
+    return valueCell(opinion.value);
+}
+
 InspectorRow
 opinionRow(const QString& scope,
            const SceneOpinion& opinion)
 {
-    QString value;
-
-    if (!opinion.primDescription.empty()) {
-        value = QString::fromStdString(opinion.primDescription);
-    } else if (opinion.numTimeSamples > 0) {
-        value = ScenePrimInspector::tr("%n time sample(s)", nullptr, (int)opinion.numTimeSamples);
-    } else if (opinion.hasSpline) {
-        value = ScenePrimInspector::tr("Spline");
-    } else {
-        value = valueText(opinion.value);
-    }
-
     return { cellOf(scope),
              authorCell(opinion.owner, opinion.layerIdentifier, false),
              cellOf(QString::fromStdString(opinion.layerIdentifier)),
-             cellOf(value),
+             opinionValueCell(opinion),
              cellOf(layerOffsetText(opinion)) };
 }
 
@@ -411,18 +362,30 @@ bool
 readOpinions(const ScenePrimInspectorRead& read,
              std::vector<InspectorRow>* rows)
 {
+    const std::string path = read.getPath().toStdString();
+    const std::string property = read.getProperty().toStdString();
     std::vector<SceneOpinion> primOpinions;
     std::vector<SceneOpinion> propertyOpinions;
-    const std::string property = read.getProperty().toStdString();
 
-    if (!readPrim(read, [&](const SceneStage& stage, const UsdPrim& prim) {
-            primOpinions = SceneOps::getPrimOpinions(prim);
+    if (!read.readStage([&](const SceneStage* stage) {
+            if (!stage) {
+                return;
+            }
+            SceneOps::getPrimOpinions(*stage, path, &primOpinions);
             if (!property.empty()) {
-                const UsdTimeCode time(SceneOps::frameToTimeCode(stage.getPayload(), read.getFrame(), read.getFramesPerSecond()));
-                propertyOpinions = SceneOps::getPropertyOpinions(prim, TfToken(property), time);
+                propertyOpinions = SceneOps::getPropertyOpinions(*stage, path, property, read.getFrame(), read.getFramesPerSecond());
             }
         })) {
         return false;
+    }
+    for (SceneOpinion& opinion : propertyOpinions) {
+        if (!read.readStage([&opinion](const SceneStage* stage) {
+                if (stage) {
+                    SceneOps::readOpinionValue(&opinion);
+                }
+            })) {
+            return false;
+        }
     }
     rows->reserve(propertyOpinions.size() + primOpinions.size());
     const QString propertyScope = ScenePrimInspector::tr("Property %1").arg(QString::fromStdString(property));
@@ -459,13 +422,63 @@ arcLabel(ScenePrimArc::Type type)
     return QString();
 }
 
+// Whether a read of the same prim of the same stage at the same edit count may reuse the last result.
+// The edit count is taken before the read's lock, so an edit landing during the read misses next time.
+class InspectorReadKey {
+public:
+    bool matches(const ScenePrimInspectorRead& read,
+                 U64 editCount) const
+    {
+        const SceneGraphStageSourcePtr& source = read.getSource();
+
+        return _valid && !_source.owner_before(source) && !source.owner_before(_source) && (_path == read.getPath()) && (_editCount == editCount);
+    }
+
+    void set(const ScenePrimInspectorRead& read,
+             U64 editCount)
+    {
+        _valid = true;
+        _source = read.getSource();
+        _path = read.getPath();
+        _editCount = editCount;
+    }
+
+private:
+    bool _valid = false;
+    std::weak_ptr<SceneGraphStageSource> _source;
+    QString _path;
+    U64 _editCount = 0;
+};
+
+struct CompositionCache {
+    InspectorReadKey key;
+    std::vector<InspectorRow> rows;
+};
+
+// A UsdPrimCompositionQuery recomputes the arcs each time and they do not vary with the frame, so
+// playback must not pay for one per frame.
 bool
 readComposition(const ScenePrimInspectorRead& read,
-                std::vector<InspectorRow>* rows)
+                std::vector<InspectorRow>* rows,
+                CompositionCache* cache,
+                std::atomic<qulonglong>* queries)
 {
+    const U64 editCount = read.getEditCount();
+
+    if (cache->key.matches(read, editCount)) {
+        *rows = cache->rows;
+
+        return true;
+    }
+    const std::string path = read.getPath().toStdString();
     ScenePrimComposition composition;
 
-    if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) { composition = SceneOps::getPrimComposition(prim); })) {
+    if (!read.readStage([&](const SceneStage* stage) {
+            if (stage) {
+                ++*queries;
+                SceneOps::getPrimComposition(*stage, path, &composition);
+            }
+        })) {
         return false;
     }
     if (composition.isPrototype) {
@@ -491,9 +504,120 @@ readComposition(const ScenePrimInspectorRead& read,
                           authorCell(arc.introducingOwner, arc.introducingLayer, false),
                           cellOf(notes.join(QString::fromUtf8(", "))) });
     }
+    cache->key.set(read, editCount);
+    cache->rows = *rows;
 
     return true;
 }
+
+// Adds a text of any size to a read-only text edit a slice per event loop pass, so the main thread
+// keeps painting. What the loader last showed goes away with the new one all at once: a document
+// can only be emptied in one call.
+class SlicedTextLoader {
+public:
+    explicit SlicedTextLoader(QPlainTextEdit* edit)
+        : _edit(edit)
+    {
+        _edit->document()->setUndoRedoEnabled(false);
+        _edit->setProperty("natronSceneGraphTextLoading", false);
+        _timer.setInterval(0);
+        QObject::connect(&_timer, &QTimer::timeout, _edit, [this]() { step(); });
+    }
+
+    void show(const std::shared_ptr<const QString>& text)
+    {
+        _edit->clear();
+        _text = text;
+        _next = 0;
+        step();
+        // The edit's own cursor moved along with the first insertion.
+        _edit->moveCursor(QTextCursor::Start);
+    }
+
+    void clear()
+    {
+        _text.reset();
+        _timer.stop();
+        _edit->setProperty("natronSceneGraphTextLoading", false);
+        _edit->clear();
+    }
+
+private:
+    void step()
+    {
+        QElapsedTimer elapsed;
+        QTextCursor cursor(_edit->document());
+
+        elapsed.start();
+        cursor.movePosition(QTextCursor::End);
+        cursor.beginEditBlock();
+        do {
+            const qsizetype lineEnd = _text->indexOf(QLatin1Char('\n'), std::min(_next + kTextChunkLength, _text->size()));
+            const qsizetype end = (lineEnd < 0) ? _text->size() : (lineEnd + 1);
+            cursor.insertText(_text->mid(_next, end - _next));
+            _next = end;
+        } while ((_next < _text->size()) && (elapsed.elapsed() < kTextSliceMs));
+        cursor.endEditBlock();
+        const bool loading = _next < _text->size();
+        _edit->setProperty("natronSceneGraphTextLoading", loading);
+        if (loading) {
+            _timer.start();
+        } else {
+            _timer.stop();
+            _text.reset();
+        }
+    }
+
+    QPlainTextEdit* _edit;
+    QTimer _timer;
+    std::shared_ptr<const QString> _text;
+    qsizetype _next = 0;
+};
+
+// The whole of a value too long for its cell and its tooltip.
+class FullValueWindow
+    : public QDialog {
+public:
+    FullValueWindow(const InspectorCell& cell,
+                    QWidget* parent)
+        : QDialog(parent)
+        , _text(new QPlainTextEdit(this))
+        , _loader(_text)
+    {
+        setAttribute(Qt::WA_DeleteOnClose);
+        setObjectName(QString::fromUtf8("sceneGraphFullValue"));
+        setWindowTitle(ScenePrimInspector::tr("Full Value"));
+        resize(800, 600);
+        _text->setObjectName(QString::fromUtf8("sceneGraphFullValueText"));
+        _text->setReadOnly(true);
+        _text->setLineWrapMode(QPlainTextEdit::NoWrap);
+        _text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        _text->setProperty("natronSceneGraphTextLoading", true);
+        QVBoxLayout* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(_text);
+        _worker = std::thread([this, value = cell.value, tip = cell.tip]() {
+            const QString full = value.IsEmpty() ? tip : QString::fromStdString(SceneOps::valueText(value, std::numeric_limits<std::size_t>::max(), &_cancelled));
+            if (_cancelled) {
+                return;
+            }
+            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(full));
+            QMetaObject::invokeMethod(this, [this, wrapped]() { _loader.show(wrapped); }, Qt::QueuedConnection);
+        });
+    }
+
+    ~FullValueWindow() override
+    {
+        _cancelled = true;
+        _worker.join();
+    }
+
+private:
+    QPlainTextEdit* _text;
+    SlicedTextLoader _loader;
+    std::atomic<bool> _cancelled { false };
+    std::thread _worker;
+};
 
 class InspectorTableModel
     : public QAbstractTableModel {
@@ -525,8 +649,10 @@ public:
         if (role == Qt::DisplayRole) {
             return cell.text;
         }
-        if ((role == Qt::ToolTipRole) && !cell.tip.isEmpty()) {
-            return cell.tip;
+        if (role == Qt::ToolTipRole) {
+            const QString tip = tipOf(cell);
+
+            return tip.isEmpty() ? QVariant() : QVariant(tip);
         }
         if ((role == Qt::ForegroundRole) && _stale) {
             return _staleColor;
@@ -546,23 +672,13 @@ public:
         return QAbstractTableModel::headerData(section, orientation, role);
     }
 
-    // The node of the cell at index, else of the first cell of its row that has one.
-    NodePtr getNode(const QModelIndex& index) const
+    const InspectorCell* cellAt(const QModelIndex& index) const
     {
-        if (!index.isValid() || (index.row() >= (int)_rows.size())) {
-            return NodePtr();
-        }
-        const InspectorRow& row = _rows[index.row()];
-        if ((index.column() < (int)row.size()) && row[index.column()].node.lock()) {
-            return row[index.column()].node.lock();
-        }
-        for (const InspectorCell& cell : row) {
-            if (NodePtr node = cell.node.lock()) {
-                return node;
-            }
+        if (!index.isValid() || (index.row() >= (int)_rows.size()) || (index.column() >= (int)_rows[index.row()].size())) {
+            return nullptr;
         }
 
-        return NodePtr();
+        return &_rows[index.row()][index.column()];
     }
 
     // The same rows at another frame or after a sync keep the view's scroll position and selection.
@@ -628,9 +744,17 @@ public:
         _view->setSelectionBehavior(QAbstractItemView::SelectRows);
         _view->header()->setSectionResizeMode(QHeaderView::Interactive);
         QObject::connect(_view, &QTreeView::doubleClicked, _view, [this](const QModelIndex& index) {
-            const NodePtr node = _model->getNode(index);
-            if (node && _openNode) {
-                _openNode(node);
+            const InspectorCell* cell = _model->cellAt(index);
+            if (!cell) {
+                return;
+            }
+            const NodePtr node = cell->node.lock();
+            if (node) {
+                if (_openNode) {
+                    _openNode(node);
+                }
+            } else if (cell->cut) {
+                (new FullValueWindow(*cell, _view))->show();
             }
         });
         QObject::connect(_view->selectionModel(), &QItemSelectionModel::selectionChanged, _view, [this]() {
@@ -647,7 +771,6 @@ public:
         _openNode = openNode;
     }
 
-    // Called with the first column of the selected row, or empty when none is.
     void setRowSelected(const std::function<void(const QString&)>& rowSelected)
     {
         _rowSelected = rowSelected;
@@ -687,6 +810,11 @@ public:
         _model->setRows(std::vector<InspectorRow>());
     }
 
+    void clearSelection() override
+    {
+        _view->selectionModel()->clear();
+    }
+
 private:
     QString _title;
     ReadRowsFunc _readRows;
@@ -701,15 +829,42 @@ enum LayerMode {
     eLayerModePrimDefinition
 };
 
+QString
+withLongLinesBroken(const QString& text)
+{
+    QString broken;
+    qsizetype start = 0;
+
+    broken.reserve(text.size() + text.size() / kMaxShownLineLength + 1);
+    while (start < text.size()) {
+        const qsizetype newline = text.indexOf(QLatin1Char('\n'), start);
+        const qsizetype end = (newline < 0) ? text.size() : newline;
+        for (qsizetype i = start; i < end; i += kMaxShownLineLength) {
+            if (i > start) {
+                broken += QLatin1Char('\n');
+            }
+            broken += QStringView(text).mid(i, std::min<qsizetype>(kMaxShownLineLength, end - i));
+        }
+        if (newline >= 0) {
+            broken += QLatin1Char('\n');
+        }
+        start = end + 1;
+    }
+
+    return broken;
+}
+
 // The USDA of the shown node's layers, or of the selected prim's composed definition. The text is
 // built only by read(), which the inspector calls while this tab is the one showing.
 class LayerTextTab
     : public ScenePrimInspectorTab {
 public:
-    LayerTextTab()
+    explicit LayerTextTab(std::atomic<qulonglong>* definitionReads)
         : _widget(new QWidget)
         , _mode(new QComboBox(_widget))
         , _text(new QPlainTextEdit(_widget))
+        , _loader(_text)
+        , _definitionReads(definitionReads)
     {
         _widget->setObjectName(QString::fromUtf8("sceneGraphLayer"));
         _mode->setObjectName(QString::fromUtf8("sceneGraphLayerMode"));
@@ -749,21 +904,26 @@ public:
         _requestRead = requestRead;
     }
 
+    bool readsWithoutPrim() const override
+    {
+        return _modeValue == eLayerModeNodeContribution;
+    }
+
     std::function<void()> read(const ScenePrimInspectorRead& read) override
     {
         const int mode = _modeValue;
-        std::shared_ptr<const std::string> text;
+        const std::shared_ptr<const std::string> source = (mode == eLayerModeNodeContribution) ? readNodeContribution(read) : readPrimDefinition(read);
 
-        if (mode == eLayerModeNodeContribution) {
-            text = readNodeContribution(read);
-        } else {
-            text = readPrimDefinition(read);
+        if (!source) {
+            return std::function<void()>();
         }
-        if (!text) {
+        const std::shared_ptr<const QString> shown = shownTextOf(source, mode);
+
+        if (read.isCancelled()) {
             return std::function<void()>();
         }
 
-        return [this, text, mode]() { show(*text, mode); };
+        return [this, shown, mode]() { show(shown, mode); };
     }
 
     void setStale(bool stale) override
@@ -781,13 +941,15 @@ public:
     void clear() override
     {
         _shownMode = -1;
-        _text->clear();
+        _shownText.reset();
+        _loader.clear();
     }
 
 private:
     // Null when the read was cancelled.
     std::shared_ptr<const std::string> readNodeContribution(const ScenePrimInspectorRead& read)
     {
+        const U64 editCount = read.getEditCount();
         ScenePayload payload;
 
         if (!read.readStage([&payload](const SceneStage* stage) {
@@ -797,14 +959,8 @@ private:
             })) {
             return std::shared_ptr<const std::string>();
         }
-        const std::vector<SdfLayerRefPtr> layers = SceneOps::getOwnedLayers(payload, read.getNode());
-        std::vector<const SdfLayer*> identity;
-
-        identity.reserve(layers.size());
-        for (const SdfLayerRefPtr& layer : layers) {
-            identity.push_back(get_pointer(layer));
-        }
-        const U64 editCount = read.getEditCount();
+        const auto layers = SceneOps::getOwnedLayers(payload, read.getNode());
+        const std::vector<const void*> identity = SceneOps::getLayerIdentities(layers);
 
         if (_cachedText && (_cachedIdentity == identity) && (_cachedEditCount == editCount)) {
             return _cachedText;
@@ -822,62 +978,99 @@ private:
     }
 
     // The lock is held per property: an attribute can hold millions of samples, and the main
-    // thread may be waiting for it.
-    static std::shared_ptr<const std::string> readPrimDefinition(const ScenePrimInspectorRead& read)
+    // thread may be waiting for it. A prim's definition does not vary with the frame, so playback
+    // reuses it.
+    std::shared_ptr<const std::string> readPrimDefinition(const ScenePrimInspectorRead& read)
     {
-        UsdStageRefPtr definition;
-        std::vector<TfToken> names;
+        const U64 editCount = read.getEditCount();
 
-        if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) {
-                definition = SceneOps::beginPrimDefinition(prim);
-                for (const UsdProperty& property : prim.GetAuthoredProperties()) {
-                    names.push_back(property.GetName());
+        if (_definitionKey.matches(read, editCount)) {
+            return _cachedDefinition;
+        }
+        const std::string path = read.getPath().toStdString();
+        PXR_NS::UsdStageRefPtr definition;
+        std::vector<std::string> names;
+
+        if (!read.readStage([&](const SceneStage* stage) {
+                if (stage) {
+                    ++*_definitionReads;
+                    definition = SceneOps::beginPrimDefinition(*stage, path, &names);
                 }
             })) {
             return std::shared_ptr<const std::string>();
         }
-        for (const TfToken& name : names) {
-            if (!readPrim(read, [&](const SceneStage&, const UsdPrim& prim) { SceneOps::flattenPropertyInto(definition, prim.GetProperty(name)); })) {
+        for (const std::string& name : names) {
+            if (!read.readStage([&](const SceneStage* stage) {
+                    if (stage) {
+                        SceneOps::flattenPropertyInto(definition, *stage, path, name);
+                    }
+                })) {
                 return std::shared_ptr<const std::string>();
             }
         }
-        const std::string text = SceneOps::exportDefinitionText(definition);
+        std::shared_ptr<const std::string> text = std::make_shared<const std::string>(SceneOps::exportDefinitionText(definition));
 
         if (read.isCancelled()) {
             return std::shared_ptr<const std::string>();
         }
+        _definitionKey.set(read, editCount);
+        _cachedDefinition = text;
 
-        return std::make_shared<const std::string>(text);
+        return text;
     }
 
-    void show(const std::string& text,
+    // Reuses the last result's pointer for the same text, which is all show() has to compare.
+    std::shared_ptr<const QString> shownTextOf(const std::shared_ptr<const std::string>& source,
+                                               int mode)
+    {
+        if ((source == _convertedSource) && (mode == _convertedMode)) {
+            return _converted;
+        }
+        QString text = QString::fromStdString(*source);
+
+        if (text.isEmpty()) {
+            text = (mode == eLayerModeNodeContribution) ? ScenePrimInspector::tr("# The shown node authors no layer.")
+                                                        : ScenePrimInspector::tr("# The selected prim has no composed definition.");
+        }
+        text = withLongLinesBroken(text);
+        _convertedSource = source;
+        if (!_converted || (mode != _convertedMode) || (text != *_converted)) {
+            _converted = std::make_shared<const QString>(std::move(text));
+            _convertedMode = mode;
+        }
+
+        return _converted;
+    }
+
+    void show(const std::shared_ptr<const QString>& text,
               int mode)
     {
-        QString shown = QString::fromStdString(text);
-
-        if (shown.isEmpty()) {
-            shown = (mode == eLayerModeNodeContribution) ? ScenePrimInspector::tr("# The shown node authors no layer.")
-                                                         : ScenePrimInspector::tr("# The selected prim has no composed definition.");
-        }
-        if ((mode == _shownMode) && (shown == _shownText)) {
+        if ((mode == _shownMode) && (text == _shownText)) {
             return;
         }
         _shownMode = mode;
-        _shownText = shown;
-        _text->setPlainText(shown);
+        _shownText = text;
+        _loader.show(text);
     }
 
     QWidget* _widget;
     QComboBox* _mode;
     QPlainTextEdit* _text;
+    SlicedTextLoader _loader;
+    std::atomic<qulonglong>* _definitionReads;
     std::function<void()> _requestRead;
     std::atomic<int> _modeValue { eLayerModeNodeContribution };
     int _shownMode = -1;
-    QString _shownText;
+    std::shared_ptr<const QString> _shownText;
     // Worker only.
     std::shared_ptr<const std::string> _cachedText;
-    std::vector<const SdfLayer*> _cachedIdentity;
+    std::vector<const void*> _cachedIdentity;
     U64 _cachedEditCount = 0;
+    InspectorReadKey _definitionKey;
+    std::shared_ptr<const std::string> _cachedDefinition;
+    std::shared_ptr<const std::string> _convertedSource;
+    std::shared_ptr<const QString> _converted;
+    int _convertedMode = -1;
 };
 
 } // anon namespace
@@ -917,6 +1110,12 @@ const NodePtr&
 ScenePrimInspectorRead::getNode() const
 {
     return _node;
+}
+
+const SceneGraphStageSourcePtr&
+ScenePrimInspectorRead::getSource() const
+{
+    return _source;
 }
 
 U64
@@ -986,7 +1185,6 @@ struct ScenePrimInspector::Implementation {
     std::function<void(const NodePtr&)> openNode;
     double frame = 0.;
     double framesPerSecond = 24.;
-    // A read is owed for when the inspector is shown again.
     bool readOwed = false;
     bool busy = false;
     bool stale = false;
@@ -994,6 +1192,8 @@ struct ScenePrimInspector::Implementation {
     qulonglong readsStarted = 0;
     qulonglong readsFinished = 0;
     qulonglong readsCancelled = 0;
+    std::atomic<qulonglong> compositionQueries { 0 };
+    std::atomic<qulonglong> definitionReads { 0 };
 
     std::atomic<U64> generation { 0 };
     std::mutex queueMutex;
@@ -1016,6 +1216,8 @@ struct ScenePrimInspector::Implementation {
         inspector->setProperty("natronSceneGraphInspectorReadsStarted", readsStarted);
         inspector->setProperty("natronSceneGraphInspectorReadsFinished", readsFinished);
         inspector->setProperty("natronSceneGraphInspectorReadsCancelled", readsCancelled);
+        inspector->setProperty("natronSceneGraphInspectorCompositionQueries", compositionQueries.load());
+        inspector->setProperty("natronSceneGraphInspectorDefinitionReads", definitionReads.load());
     }
 
     void setStale(bool newStale)
@@ -1056,7 +1258,7 @@ struct ScenePrimInspector::Implementation {
         }
         readOwed = false;
         const int current = tabWidget->currentIndex();
-        if (!source || path.isEmpty() || (current < 0)) {
+        if (!source || (current < 0) || (path.isEmpty() && !tabs[current]->readsWithoutPrim())) {
             busy = false;
             greyTimer.stop();
             for (const std::unique_ptr<ScenePrimInspectorTab>& tab : tabs) {
@@ -1186,11 +1388,11 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
                 QStringList() << tr("Relationship") << tr("Targets") << tr("Authored By"), readRelationships, true);
     addTableTab(tr("Metadata"), "sceneGraphMetadata",
                 QStringList() << tr("Field") << tr("Value") << tr("Authored By"), readMetadata, false);
-    addTableTab(tr("Composition"), "sceneGraphComposition",
-                QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), readComposition, false);
+    const std::shared_ptr<CompositionCache> compositionCache = std::make_shared<CompositionCache>();
+    addTableTab(tr("Composition"), "sceneGraphComposition", QStringList() << tr("Arc") << tr("Target Prim") << tr("Target Layer") << tr("Introduced By") << tr("Notes"), [this, compositionCache](const ScenePrimInspectorRead& read, std::vector<InspectorRow>* rows) { return readComposition(read, rows, compositionCache.get(), &_imp->compositionQueries); }, false);
     addTableTab(tr("Opinions"), "sceneGraphOpinions",
                 QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false);
-    addTab(std::make_unique<LayerTextTab>());
+    addTab(std::make_unique<LayerTextTab>(&_imp->definitionReads));
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }
@@ -1246,6 +1448,9 @@ ScenePrimInspector::setPrim(const SceneGraphStageSourcePtr& source,
     _imp->source = source;
     if (path != _imp->path) {
         _imp->property.clear();
+        for (const std::unique_ptr<ScenePrimInspectorTab>& tab : _imp->tabs) {
+            tab->clearSelection();
+        }
     }
     _imp->path = path;
     _imp->frame = frame;

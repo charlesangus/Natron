@@ -326,7 +326,7 @@ buildGraph(const AppInstancePtr& app,
     GoldenGraph graph;
 
     resetGoldenProject(app);
-    NodePtr node = createNodeAtMajor(app, spec.pluginID, spec.major);
+    NodePtr node = createNodeAtMajor(app, spec.pluginID, spec.major, spec.allowNonUserCreatable);
     if (!node) {
         return graph;
     }

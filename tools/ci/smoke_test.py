@@ -596,10 +596,10 @@ def _render_constant_through(effect_id, configure, png_name, description):
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-misc-")
     out_path = os.path.join(tmpdir, png_name)
 
-    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    constant = app.createNode("Constant")
     if constant is None:
         raise AssertionError(
-            "app.createNode('net.sf.openfx.ConstantPlugin') returned None")
+            "app.createNode('Constant') returned None")
     constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)
     constant.getParam("extent").set("size")
     constant.getParam("NatronParamFormatSize").set(16, 16)
@@ -727,7 +727,7 @@ def check_misc_effect_render():
         effect.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
 
     _render_color_bars()
-    _render_constant_through("net.sf.openfx.GradePlugin", configure_grade,
+    _render_constant_through("Grade", configure_grade,
                              "graded.png", "Grade")
 
 
@@ -743,15 +743,15 @@ def check_deep_write_render():
     in_path = os.path.join(_repo_root(), "Tests", "fixtures", "deep-scanline.exr")
     out_path = os.path.join(tmpdir, "deep-out.exr")
 
-    reader = app.createNode("fr.natron.DeepRead")
+    reader = app.createNode("DeepRead")
     if reader is None:
-        raise AssertionError("app.createNode('fr.natron.DeepRead') returned None")
+        raise AssertionError("app.createNode('DeepRead') returned None")
     reader.getParam("filename").set(in_path)
     _mark("[smoke] created DeepRead pointed at %r" % (in_path,))
 
-    writer = app.createNode("fr.natron.DeepWrite")
+    writer = app.createNode("DeepWrite")
     if writer is None:
-        raise AssertionError("app.createNode('fr.natron.DeepWrite') returned None")
+        raise AssertionError("app.createNode('DeepWrite') returned None")
     writer.getParam("filename").set(out_path)
     if not writer.connectInput(0, reader):
         raise AssertionError(
@@ -792,11 +792,11 @@ def _repo_root():
 def _write_time_offset_fixture_copy(dir_path, output_dir):
     fixture_path = os.path.join(_repo_root(), "Tests", "fixtures",
                                  "read-time-offset.ntpz")
-    # Read1's timeOffset knob in this fixture is 50, not 0. A first attempt
+    # Read1's frameOffset knob in this fixture is 50, not 0. A first attempt
     # at this check used the default offset of 0 and passed green against
     # the broken -i code path -- i.e. it tested nothing, since with
-    # timeOffset==0 there is nothing stale for GenericReaderPlugin's
-    # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
+    # frameOffset==0 there is nothing stale for GenericReaderPlugin's
+    # sequenceTime = t - frameOffset to get wrong. Do not "simplify" this
     # fixture to a zero offset.
     # tools/ci/regen_read_time_offset.py regenerates the fixture.
     #
@@ -821,9 +821,9 @@ def check_reader_cli_time_offset_regression():
 
     Engine/AppInstance.cpp applies -i's filename with a bare
     KnobFile::setValue(): the reader's own filename handler refreshes
-    originalFrameRange/firstFrame/lastFrame/startingTime from the new file,
-    but never timeOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
-    carries a non-zero timeOffset for exactly this reason (see
+    originalFrameRange/firstFrame/lastFrame/startAt from the new file,
+    but never frameOffset. Tests/fixtures/read-time-offset.ntpz's Read1 node
+    carries a non-zero frameOffset for exactly this reason (see
     _write_time_offset_fixture_copy() above): with the stale offset, every
     requested time maps outside the sequence domain and the reader's
     before/after hold collapses frames 1-3 onto one held input frame, so
@@ -876,7 +876,7 @@ def check_reader_cli_time_offset_regression():
         raise AssertionError(
             "rendering frames 1-3 through `%s` produced byte-identical "
             "output for %r even though the 3 input frames at %r differ. "
-            "Read1's timeOffset (50, non-zero by design -- see "
+            "Read1's frameOffset (50, non-zero by design -- see "
             "Tests/fixtures/read-time-offset.ntpz) was not refreshed when -i "
             "set a new filename, so every requested frame time maps "
             "outside the sequence domain and the reader's before/after "
@@ -884,7 +884,7 @@ def check_reader_cli_time_offset_regression():
             % (" ".join(cmd), matches, in_dir)
         )
     _mark("[smoke] OK: -i Read1 <file> rendered 3 distinct frames %r "
-          "despite a stale non-zero timeOffset" % (frame_paths,))
+          "despite a stale non-zero frameOffset" % (frame_paths,))
 
 
 def _call_capturing_native_output(func):
@@ -925,8 +925,8 @@ def check_project_bundle_round_trip():
     path = os.path.join(tmpdir, "round-trip.ntpz")
 
     app.resetProject()
-    constant = app.createNode("net.sf.openfx.ConstantPlugin")
-    grade = app.createNode("net.sf.openfx.GradePlugin")
+    constant = app.createNode("Constant")
+    grade = app.createNode("Grade")
     if constant is None or grade is None:
         raise AssertionError("cannot create the Constant -> Grade graph to save")
     constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)

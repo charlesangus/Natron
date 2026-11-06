@@ -60,6 +60,8 @@ OCIOFileTransformOp::createKnobs(KnobHolder* holder,
     interpolationKnob->setDefaultValue(1);
     page->addKnob(interpolationKnob);
     interpolation = interpolationKnob;
+
+    ocio.addContext(holder, page);
 }
 
 OCIO_NAMESPACE::ConstTransformRcPtr

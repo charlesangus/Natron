@@ -521,6 +521,12 @@ NeuralDenoise::onKnobsLoaded()
 }
 
 void
+NeuralDenoise::appendNodeContentHash(ContentHasher& h) const
+{
+    _colourspace.appendHash(h);
+}
+
+void
 NeuralDenoise::purgeCaches()
 {
     releaseFrame();

@@ -451,7 +451,6 @@ TEST_F(NativeCornerPinTest, KnobsUseTheSharedNames)
         kCornerPinNodeParamAmount,
         kCornerPinNodeParamExtraMatrix,
         kCornerPinNodeParamInvert,
-        kCornerPinNodeParamInteractive,
         kCornerPinNodeParamFilter,
         kCornerPinNodeParamClamp,
         kCornerPinNodeParamBlackOutside,
@@ -467,6 +466,7 @@ TEST_F(NativeCornerPinTest, KnobsUseTheSharedNames)
     for (const char* name : names) {
         EXPECT_TRUE(bool(node->getKnobByName(name))) << name;
     }
+    EXPECT_FALSE(bool(node->getKnobByName("interactive")));
     KnobIPtr extra = node->getKnobByName(kCornerPinNodeParamExtraMatrix);
     ASSERT_TRUE(bool(extra));
     EXPECT_EQ(9, extra->getDimension());

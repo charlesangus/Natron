@@ -69,10 +69,10 @@ MIN_TEXT_PX = 15
 # filled with the text colour reach 0.4 to 0.8.
 SOLID_MAX_FRACTION = 0.15
 ALL_SECTIONS = ("viewer", "timeline", "histogram", "curve", "dopesheet", "param-interact", "host-overlay")
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-GRADE_ID = "net.sf.openfx.GradePlugin"
-POSITION_ID = "net.sf.openfx.Position"
-VIEWER_ID = "fr.inria.built-in.Viewer"
+CONSTANT_ID = "Constant"
+GRADE_ID = "Grade"
+POSITION_ID = "Position"
+VIEWER_ID = "Viewer"
 # Natron gives a parametric parameter's interact to its curve widget, not to a CustomParamInteract,
 # and the bundled plugins put interacts only on parametric parameters (ColorLookup, HueCorrect).
 PARAM_INTERACT_SKIP = ("no bundled or test plugin has a non-parametric parameter with a custom OFX "

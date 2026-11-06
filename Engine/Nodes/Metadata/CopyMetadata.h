@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_COPYMETADATA "fr.natron.CopyMetadata"
+#define PLUGINID_NATRON_COPYMETADATA "CopyMetadata"
 
 NATRON_NAMESPACE_ENTER
 

@@ -16,7 +16,6 @@
  * You should have received a copy of the GNU General Public License
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
-
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -28,7 +27,10 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -38,20 +40,35 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const char* const kKnobOCIOConfigFile = "ocioConfigFile";
 const char* const kKnobOCIOWorkingSpace = "ocioWorkingSpace";
-const char* const kKnobOCIOContext = "Context";
+const char* const kProjectDefaultID = "projectDefault";
 } // anonymous namespace
+
+const char*
+OcioSpaceKnobs::projectDefaultID()
+{
+    return kProjectDefaultID;
+}
+
+ChoiceOption
+OcioSpaceKnobs::projectDefaultOption(const std::string& resolved,
+                                     const QString& hint)
+{
+    const QString label = resolved.empty() ? tr("Project default") : tr("Project default (%1)").arg(QString::fromStdString(resolved));
+
+    return ChoiceOption(kProjectDefaultID, label.toStdString(), hint.toStdString());
+}
 
 OcioSpaceKnobs::OcioSpaceKnobs()
     : _holder(nullptr)
     , _automaticSpace()
     , _choiceMade()
+    , _defaultHint()
     , _configFile()
     , _workingSpace()
-    , _space()
     , _menu()
-    , _spaceSet()
     , _context()
-    , _hidden(false)
+    , _defaultMutex()
+    , _defaultSpace()
 {
 }
 
@@ -65,6 +82,7 @@ OcioSpaceKnobs::create(KnobHolder* holder,
     _holder = holder;
     _automaticSpace = automaticSpace;
     _choiceMade = choiceMade;
+    _defaultHint = description.defaultHint;
 
     KnobStringPtr configFile = AppManager::createKnob<KnobString>(holder, tr("OCIO Config File"));
     configFile->setName(kKnobOCIOConfigFile);
@@ -83,79 +101,71 @@ OcioSpaceKnobs::create(KnobHolder* holder,
     page->addKnob(workingSpace);
     _workingSpace = workingSpace;
 
-    createSpaceKnobs(holder, page, description, -1);
+    createMenu(holder, page, description, -1);
 
+    createContext(holder, page);
+
+    refreshMenu();
+}
+
+void
+OcioSpaceKnobs::createContextOnly(KnobHolder* holder,
+                                  const KnobPagePtr& page)
+{
+    _holder = holder;
+    createContext(holder, page);
+}
+
+void
+OcioSpaceKnobs::createContext(KnobHolder* holder,
+                              const KnobPagePtr& page)
+{
     const QString contextHint = tr("OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"
                                    "Here you can specify the context name (key) and its corresponding value.\n"
                                    "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n"
                                    "http://opencolorio.org/userguide/contexts.html");
     KnobGroupPtr context = AppManager::createKnob<KnobGroup>(holder, tr("OCIO Context"));
-    context->setName(kKnobOCIOContext);
+    context->setName(kNatronOcioParamContext);
     context->setHintToolTip(contextHint);
     context->setDefaultValue(false);
     page->addKnob(context);
     _context = context;
     for (int i = 0; i < 4; ++i) {
         const std::string n = std::to_string(i + 1);
-        KnobStringPtr key = AppManager::createKnob<KnobString>(holder, "key" + n);
-        key->setName("key" + n);
+        KnobStringPtr key = AppManager::createKnob<KnobString>(holder, tr("Context Key %1").arg(i + 1));
+        key->setName("contextKey" + n);
         key->setHintToolTip(contextHint);
         key->setAddNewLine(false);
         context->addKnob(key);
         _contextKeys[i] = key;
 
-        KnobStringPtr value = AppManager::createKnob<KnobString>(holder, "value" + n);
-        value->setName("value" + n);
+        KnobStringPtr value = AppManager::createKnob<KnobString>(holder, tr("Context Value %1").arg(i + 1));
+        value->setName("contextValue" + n);
         value->setHintToolTip(contextHint);
         context->addKnob(value);
         _contextValues[i] = value;
     }
-
-    refreshMenu();
 }
 
 void
-OcioSpaceKnobs::createSpaceKnobs(KnobHolder* holder,
-                                 const KnobPagePtr& page,
-                                 const Description& description,
-                                 int index)
+OcioSpaceKnobs::createMenu(KnobHolder* holder,
+                           const KnobPagePtr& page,
+                           const Description& description,
+                           int index)
 {
-    const auto add = [&page, &index](const KnobIPtr& knob) {
-        if (index < 0) {
-            page->addKnob(knob);
-        } else {
-            page->insertKnob(index++, knob);
-        }
-    };
-
-    KnobStringPtr space = AppManager::createKnob<KnobString>(holder, description.label);
-    space->setName(description.prefix);
-    space->setHintToolTip(description.spaceHint);
-    space->setAnimationEnabled(false);
-    space->setSecret(true);
-    add(space);
-    _space = space;
-
+    // Persistent and evaluating: the menu alone records the choice, so it decides the render.
     KnobChoicePtr menu = AppManager::createKnob<KnobChoice>(holder, description.label);
-    menu->setName(description.prefix + "Index");
-    menu->setHintToolTip(description.menuHint);
+    menu->setName(description.name);
+    menu->setHintToolTip(description.hint);
     menu->setAnimationEnabled(false);
     menu->setCascading(true);
-    menu->setNotifiesOnReselect(true);
-    menu->setIsPersistent(false);
-    // Only the space string it sets decides the render.
-    menu->setEvaluateOnChange(false);
-    add(menu);
+    menu->setDefaultValue(0);
+    if (index < 0) {
+        page->addKnob(menu);
+    } else {
+        page->insertKnob(index, menu);
+    }
     _menu = menu;
-
-    KnobBoolPtr spaceSet = AppManager::createKnob<KnobBool>(holder, description.setLabel);
-    spaceSet->setName(description.prefix + "Set");
-    spaceSet->setDefaultValue(false);
-    spaceSet->setAnimationEnabled(false);
-    spaceSet->setEvaluateOnChange(false);
-    spaceSet->setSecret(true);
-    add(spaceSet);
-    _spaceSet = spaceSet;
 }
 
 void
@@ -169,6 +179,7 @@ OcioSpaceKnobs::createSharing(const OcioSpaceKnobs& first,
     _holder = holder;
     _automaticSpace = automaticSpace;
     _choiceMade = choiceMade;
+    _defaultHint = description.defaultHint;
     _configFile = first._configFile;
     _workingSpace = first._workingSpace;
     _context = first._context;
@@ -187,7 +198,7 @@ OcioSpaceKnobs::createSharing(const OcioSpaceKnobs& first,
             }
         }
     }
-    createSpaceKnobs(holder, page, description, index);
+    createMenu(holder, page, description, index);
 
     refreshMenu();
 }
@@ -203,9 +214,62 @@ OcioSpaceKnobs::project() const
 std::string
 OcioSpaceKnobs::space() const
 {
-    KnobStringPtr knob = _space.lock();
+    KnobChoicePtr menu = _menu.lock();
+    const std::string chosen = menu ? menu->getActiveEntry().id : std::string();
 
-    return knob ? knob->getValue() : std::string();
+    if (!chosen.empty() && (chosen != kProjectDefaultID)) {
+        return chosen;
+    }
+    std::lock_guard<std::mutex> lock(_defaultMutex);
+
+    return _defaultSpace;
+}
+
+bool
+OcioSpaceKnobs::isProjectDefault() const
+{
+    KnobChoicePtr menu = _menu.lock();
+    const std::string chosen = menu ? menu->getActiveEntry().id : std::string();
+
+    return chosen.empty() || (chosen == kProjectDefaultID);
+}
+
+void
+OcioSpaceKnobs::appendHash(ContentHasher& h) const
+{
+    if (!isProjectDefault()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_defaultMutex);
+    h.appendString(_defaultSpace);
+}
+
+void
+OcioSpaceKnobs::refreshProjectDefault()
+{
+    if (!_automaticSpace) {
+        return;
+    }
+    const std::optional<std::string> automatic = _automaticSpace();
+    if (!automatic) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_defaultMutex);
+        if (*automatic == _defaultSpace) {
+            return;
+        }
+        _defaultSpace = *automatic;
+    }
+    refreshMenu();
+    if (!isProjectDefault()) {
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(_holder);
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (node) {
+        node->markHashDirty();
+    }
 }
 
 std::string
@@ -252,37 +316,28 @@ void
 OcioSpaceKnobs::refreshMenu()
 {
     KnobChoicePtr menu = _menu.lock();
-    KnobStringPtr space = _space.lock();
     ProjectPtr p = project();
     ProjectColorManagementPtr colorManagement = p ? p->getColorManagement() : ProjectColorManagementPtr();
 
-    if (!menu || !space || !colorManagement) {
+    if (!menu || !colorManagement) {
         return;
     }
-    const std::vector<ChoiceOption> options = Project::colorSpaceOptions(*colorManagement);
+    std::string resolved;
+    {
+        std::lock_guard<std::mutex> lock(_defaultMutex);
+        resolved = _defaultSpace;
+    }
+    // A role or alias is shown as the colourspace it designates, as the menu lists it.
+    const std::string named = resolved.empty() ? std::string() : IoColorSpace::nameInConfig(colorManagement->getConfig(), resolved);
+    std::vector<ChoiceOption> options(1, projectDefaultOption(named.empty() ? resolved : named, _defaultHint));
+    const std::vector<ChoiceOption> spaces = Project::colorSpaceOptions(*colorManagement);
+    options.insert(options.end(), spaces.begin(), spaces.end());
     menu->populateChoices(options);
-
-    // An empty space converts nothing, which the menu shows as the working space.
-    const std::string value = space->getValue();
-    const std::string shown = IoColorSpace::nameInConfig(colorManagement->getConfig(), value.empty() ? workingSpace() : value);
-    int index = -1;
-    for (std::size_t i = 0; i < options.size(); ++i) {
-        if (!shown.empty() && options[i].id == shown) {
-            index = (int)i;
-            break;
-        }
-    }
-    if (index >= 0 && menu->getValue() != index) {
-        menu->setValue(index);
-    }
-    // A name the config lacks cannot be shown by the menu, so the string itself is shown.
-    space->setSecret(_hidden || value.empty() || index >= 0);
 }
 
 void
 OcioSpaceKnobs::setHidden(bool hidden)
 {
-    _hidden = hidden;
     if (KnobChoicePtr menu = _menu.lock()) {
         menu->setSecret(hidden);
     }
@@ -296,49 +351,17 @@ OcioSpaceKnobs::setHidden(bool hidden)
             }
         }
     }
-    refreshMenu();
 }
 
 void
 OcioSpaceKnobs::sourceChanged()
 {
-    KnobStringPtr space = _space.lock();
-    KnobBoolPtr spaceSet = _spaceSet.lock();
-
-    if (!space || !spaceSet || spaceSet->getValue() || !_automaticSpace) {
-        return;
-    }
     AppInstancePtr app = _holder ? _holder->getApp() : AppInstancePtr();
     const bool restoring = app && (app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject()));
-    if (restoring) {
-        return;
-    }
-    const std::optional<std::string> automatic = _automaticSpace();
-    if (automatic && !automatic->empty() && *automatic != space->getValue()) {
-        space->setValue(*automatic);
-    }
-}
 
-void
-OcioSpaceKnobs::reset()
-{
-    KnobStringPtr space = _space.lock();
-    KnobBoolPtr spaceSet = _spaceSet.lock();
-
-    if (!space || !spaceSet) {
-        return;
+    if (!restoring) {
+        refreshProjectDefault();
     }
-    spaceSet->setValue(false);
-    const std::optional<std::string> automatic = _automaticSpace ? _automaticSpace() : std::optional<std::string>();
-    if (automatic) {
-        if (automatic->empty()) {
-            space->setValue(std::string());
-        } else if (*automatic != space->getValue()) {
-            space->setValue(*automatic);
-        }
-    }
-    // The space may already hold the default, so nothing else re-selects it in the menu.
-    refreshMenu();
 }
 
 bool
@@ -347,47 +370,24 @@ OcioSpaceKnobs::knobChanged(KnobI* k,
 {
     KnobStringPtr configFile = _configFile.lock();
     KnobStringPtr workingSpace = _workingSpace.lock();
-    KnobStringPtr space = _space.lock();
     KnobChoicePtr menu = _menu.lock();
-    KnobBoolPtr spaceSet = _spaceSet.lock();
 
-    if (!configFile || !workingSpace || !space || !menu || !spaceSet || reason == eValueChangedReasonTimeChanged) {
+    if (!configFile || !workingSpace || !menu || reason == eValueChangedReasonTimeChanged) {
         return false;
     }
-    const bool byUser = reason == eValueChangedReasonUserEdited;
-
     if (k == configFile.get() || k == workingSpace.get()) {
         refreshMenu();
-
-        return true;
-    }
-    if ((k == menu.get() || k == space.get()) && reason == eValueChangedReasonRestoreDefault) {
-        reset();
-        if (_choiceMade) {
-            _choiceMade();
-        }
+        // The config's file rules and the working space are what a default may stand for.
+        refreshProjectDefault();
 
         return true;
     }
     if (k == menu.get()) {
-        const int index = menu->getValue();
-        if (byUser && index >= 0 && index < menu->getNumEntries()) {
-            spaceSet->setValue(true);
-            space->setValue(menu->getEntry(index).id);
+        if ((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonRestoreDefault)) {
+            refreshProjectDefault();
             if (_choiceMade) {
                 _choiceMade();
             }
-        }
-
-        return true;
-    }
-    if (k == space.get()) {
-        if (byUser) {
-            spaceSet->setValue(true);
-        }
-        refreshMenu();
-        if (byUser && _choiceMade) {
-            _choiceMade();
         }
 
         return true;

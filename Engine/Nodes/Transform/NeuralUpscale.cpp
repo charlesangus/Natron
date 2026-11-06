@@ -432,6 +432,12 @@ NeuralUpscale::onKnobsLoaded()
 }
 
 void
+NeuralUpscale::appendNodeContentHash(ContentHasher& h) const
+{
+    _colourspace.appendHash(h);
+}
+
+void
 NeuralUpscale::onEffectCreated(bool /*mayCreateFileDialog*/,
                                const CreateNodeArgs& args)
 {

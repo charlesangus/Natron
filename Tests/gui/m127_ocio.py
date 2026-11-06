@@ -24,8 +24,8 @@ SETTLE_MS = 600
 POLL_TIMEOUT_S = 25.0
 ALL_SECTIONS = ("config-switch", "chain", "cdl-file", "retired-ids")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_VIEWER = "Viewer"
 PLUGIN_COLORSPACE = "OCIOColorSpace"
 PLUGIN_DISPLAY = "OCIODisplay"
 PLUGIN_CDL = "OCIOCDLTransform"
@@ -37,9 +37,9 @@ RETIRED_IDS = ("fr.inria.openfx.OCIOCDLTransform", "fr.inria.openfx.OCIOColorSpa
                "fr.inria.openfx.OCIOLogConvert", "fr.inria.openfx.OCIOLookTransform")
 
 CONFIG_PARAM = "ocioConfig"
-IN_SPACE = "in_colorspace"
-OUT_SPACE = "out_colorspace"
-IN_SPACE_MENU = "in_colorspaceIndex"
+IN_SPACE = "inputColorspace"
+OUT_SPACE = "outputColorspace"
+IN_SPACE_MENU = IN_SPACE
 SPACE_A = "ACES2065-1"
 SPACE_B = "ACEScg"
 
@@ -241,7 +241,7 @@ try:
         node = create(PLUGIN_COLORSPACE, 0, 0, panel=True)
         yield ("sleep", SETTLE_MS * 2)
         before = menu_options(node, IN_SPACE_MENU)
-        check(len(before) > 10, "the default config fills the in_colorspace menu (%d entries)" % len(before))
+        check(len(before) > 10, "the default config fills the inputColorspace menu (%d entries)" % len(before))
         check(has_option(before, SPACE_A) and has_option(before, SPACE_B),
               "the default config's menu lists %s and %s" % (SPACE_A, SPACE_B))
         gt.shot("ocio-menu-default.png")
@@ -251,13 +251,13 @@ try:
         check(current_config_label() != default_label, "the project config changed (%r)" % current_config_label())
         yield ("sleep", SETTLE_MS * 2)
         after = menu_options(node, IN_SPACE_MENU)
-        check(after != before, "the in_colorspace menu changed with the config (%d entries before, %d after)" %
+        check(after != before, "the inputColorspace menu changed with the config (%d entries before, %d after)" %
               (len(before), len(after)))
         check(len(after) > 10, "the new config fills the menu (%d entries)" % len(after))
         check(has_option(after, SPACE_A) and has_option(after, SPACE_B),
               "the new config's menu lists %s and %s" % (SPACE_A, SPACE_B))
-        out_after = menu_options(node, OUT_SPACE + "Index")
-        check(out_after == after, "the out_colorspace menu holds the same entries as in_colorspace")
+        out_after = menu_options(node, OUT_SPACE)
+        check(out_after == after, "the outputColorspace menu holds the same entries as inputColorspace")
 
         seen = open_menu_and_shoot("ocio-menu-aces.png")
         check(seen is not None, "a colour-space menu is on the settings panel")
@@ -283,9 +283,10 @@ try:
 
         param(space, IN_SPACE).set(SPACE_A)
         param(space, OUT_SPACE).set(SPACE_B)
-        check(str(param(space, IN_SPACE).get()) == SPACE_A and str(param(space, OUT_SPACE).get()) == SPACE_B,
-              "OCIOColorSpace converts %s to %s (got %r, %r)" %
-              (SPACE_A, SPACE_B, param(space, IN_SPACE).get(), param(space, OUT_SPACE).get()))
+        chosen_in = str(param(space, IN_SPACE).getOption(param(space, IN_SPACE).get()))
+        chosen_out = str(param(space, OUT_SPACE).getOption(param(space, OUT_SPACE).get()))
+        check(chosen_in == SPACE_A and chosen_out == SPACE_B,
+              "OCIOColorSpace converts %s to %s (got %r, %r)" % (SPACE_A, SPACE_B, chosen_in, chosen_out))
         displays = menu_options(display, "display")
         views = menu_options(display, "view")
         check(len(displays) > 0 and len(views) > 0,
@@ -345,8 +346,8 @@ try:
         check(all(abs(v - 1.0) < 1e-9 for v in defaults), "slope starts at 1 (%s)" % defaults)
 
         param(cdl, "file").set(path)
-        param(cdl, "cccid").set("natron_test_cdl")
-        param(cdl, "read_from_file").set(True)
+        param(cdl, "cccId").set("natron_test_cdl")
+        param(cdl, "readFromFile").set(True)
         yield ("sleep", SETTLE_MS * 2)
 
         # In file mode the knobs hold the file's values, which are shown and locked.
@@ -360,7 +361,7 @@ try:
 
         ok = yield ("until", knobs_match, POLL_TIMEOUT_S)
         check(ok, "the slope, offset, power and saturation knobs show the file's values")
-        check(str(param(cdl, "cccid").get()) == "natron_test_cdl", "the cccid knob holds the id")
+        check(str(param(cdl, "cccId").get()) == "natron_test_cdl", "the cccId knob holds the id")
 
         connect(viewer, 0, checker)
         yield ("sleep", SETTLE_MS * 2)
@@ -379,7 +380,7 @@ try:
 
         # With the file off, the node applies its own knobs, which are the identity again or the
         # values just shown; either way the picture must not be the file's grade unless the knobs equal it.
-        param(cdl, "read_from_file").set(False)
+        param(cdl, "readFromFile").set(False)
         yield ("sleep", SETTLE_MS * 2)
         param(cdl, "slope").set(1.0, 1.0, 1.0, 1.0)
         param(cdl, "offset").set(0.0, 0.0, 0.0, 1.0)

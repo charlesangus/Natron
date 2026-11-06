@@ -127,6 +127,10 @@ struct NodeSpec {
     // Names only: nothing reads reverse-flow variables yet, so nothing consumes this either.
     std::span<const std::string_view> rfvReads = {};
     std::span<const InputSpec> inputs = {};
+    // The script name of the KnobString naming the prims the node works on, for a node that has one.
+    std::string_view primPathKnob = {};
+    // Whether that knob takes a prim pattern, several prims, rather than a single prim path.
+    bool primPathKnobTakesPattern = false;
 
     /**
      * @brief The InputSpec an input number falls in, and for a Variadic one the input's index

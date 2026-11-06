@@ -34,7 +34,7 @@ USD_NODES = [
 ]
 # Every node's shared pages, laid out by the host rather than the node.
 COMMON_PAGES = ("Node", "Info")
-REFERENCE_NODES = [("Transform", "net.sf.openfx.TransformPlugin")]
+REFERENCE_NODES = [("Transform", "Transform")]
 
 try:
     from PySide6.QtCore import QMetaObject, QRect

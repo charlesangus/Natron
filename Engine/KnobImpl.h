@@ -781,6 +781,12 @@ Knob<T>::getValue(int dimension,
     if ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
     }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(getCurrentTime(), expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
+    }
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
         T ret;
@@ -817,6 +823,34 @@ Knob<T>::getValue(int dimension,
         } else {
             return _values[dimension];
         }
+    }
+}
+
+template <typename T>
+bool
+Knob<T>::getValueFromDriver(double time,
+                            ViewIdx view,
+                            int dimension,
+                            bool clamp,
+                            T* ret) const
+{
+    if constexpr (std::is_same<T, std::string>::value) {
+        return false;
+    } else {
+        double value;
+        if (!getDriverValue(time, view, dimension, &value)) {
+            return false;
+        }
+        if constexpr (std::is_same<T, int>::value) {
+            *ret = (int)std::lround(value);
+        } else {
+            *ret = (T)value;
+        }
+        if (clamp) {
+            *ret = clampToMinMax(*ret, dimension);
+        }
+
+        return true;
     }
 }
 
@@ -917,6 +951,12 @@ Knob<T>::getValueAtTime(double time,
     ExpressionReadRecorder::record(this, dimension);
     if  ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
+    }
+    {
+        T driven;
+        if (hasDrivers() && getValueFromDriver(time, expressionView(view), dimension, clamp, &driven)) {
+            return driven;
+        }
     }
 
     bool useGuiValues = QThread::currentThread() == qApp->thread();
@@ -2353,6 +2393,13 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool ret = curve->addKeyFrame(key);
 
     if (!useGuiCurve) {
+        // A slaved knob writes the master's curve, but its own values and key removals stay on its own
+        // curve; a holder that mirrors the slave back into the master (the roto context does, for the
+        // selected item) would otherwise copy back a curve missing this key.
+        CurvePtr ownCurve = getCurve(view, dimension, true);
+        if (ownCurve && (ownCurve != curve)) {
+            ownCurve->addKeyFrame(key);
+        }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
     }
@@ -2380,7 +2427,8 @@ Knob<T>::onTimeChanged(bool isPlayback,
     if ( getIsSecret() ) {
         return;
     }
-    bool shouldRefresh = false;
+    // A keyed driver start or end changes the value with the frame too.
+    bool shouldRefresh = hasAnimatedDriver();
     for (int i = 0; i < dims; ++i) {
         if ( _signalSlotHandler && ( isAnimated( i, ViewIdx(0) ) || !getExpression(i).empty() ) ) {
             shouldRefresh = true;
@@ -3256,20 +3304,23 @@ appendKnobValueToContentHash(ContentHasher& h,
 template <typename T>
 void
 Knob<T>::appendValueContentHash(ContentHasher& h,
-                                int dimension) const
+                                int dimension,
+                                bool withStaticValue) const
 {
-    T value;
-    {
-        QMutexLocker k(&_valueMutex);
-        value = _values[dimension];
-    }
     T mini, maxi;
     {
         QReadLocker k(&_minMaxMutex);
         mini = _minimums[dimension];
         maxi = _maximums[dimension];
     }
-    appendKnobValueToContentHash(h, value);
+    if (withStaticValue) {
+        T value;
+        {
+            QMutexLocker k(&_valueMutex);
+            value = _values[dimension];
+        }
+        appendKnobValueToContentHash(h, value);
+    }
     appendKnobValueToContentHash(h, mini);
     appendKnobValueToContentHash(h, maxi);
 }

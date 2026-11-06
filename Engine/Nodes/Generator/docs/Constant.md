@@ -6,4 +6,4 @@ Tolerance:
 |---|---|---|---|
 | Constant | exact | `kConstantTolerance` | |
 
-Constant and Solid hold their CPU class, exact, for every target layer and channel selection (`Tests/Native/NativeConstantGpu_Test.cpp`).
+Constant holds its CPU class, exact, for every target layer and channel selection (`Tests/Native/NativeConstantGpu_Test.cpp`).

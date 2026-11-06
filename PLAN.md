@@ -424,6 +424,7 @@ future core work has solid ground to build on.
 | M354 | MoonRay Native Shaders | todo | M352, M325, M343 |  | E9 | F2 | | [M354-moonray-native-shaders.md](PLAN/MILESTONES/M354-moonray-native-shaders.md) |
 | M355 | Shader Tweak Node | todo | M343, M353, M354 |  | E9 | F2 | | [M355-shader-tweak-node.md](PLAN/MILESTONES/M355-shader-tweak-node.md) |
 | M356 | Automatic Preview Shader | todo | M352 |  | E9 | F2 | | [M356-automatic-preview-shader.md](PLAN/MILESTONES/M356-automatic-preview-shader.md) |
+| M357 | Repo Cleanup | todo | - |  | E14 |  | | [M357-repo-cleanup.md](PLAN/MILESTONES/M357-repo-cleanup.md) |
 
 # Epics
 

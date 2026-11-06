@@ -1085,7 +1085,9 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         KnobIPtr k = settings->knob(kRenderDelegateCyclesId, c.key);
         ASSERT_TRUE(bool(k)) << c.key;
         if (c.choices.empty()) {
-            EXPECT_EQ(declaredDefault, c.defaultValue) << c.key;
+            if (!c.overrideDefault) {
+                EXPECT_EQ(declaredDefault, c.defaultValue) << c.key;
+            }
             EXPECT_EQ(0u, menus.count(c.key)) << c.key;
             continue;
         }

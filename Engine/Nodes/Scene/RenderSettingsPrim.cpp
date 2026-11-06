@@ -77,6 +77,12 @@ reservedAttributes(const std::string& rendererId)
     for (const std::pair<std::string, std::string>& disabled : curated->disabledKeys) {
         keys.push_back(disabled.first);
     }
+    for (const RenderSettingsKnobs::CuratedSetting& s : curated->settings) {
+        // A locked menu or follower still sends the value Natron picked for it, so only the rest are kept off.
+        if (!s.disabledReason.empty() && s.follows.empty() && s.choices.empty()) {
+            keys.push_back(s.key);
+        }
+    }
     const std::vector<std::string> spaces = RenderSettingsPrim::namespaces(rendererId);
     for (const std::string& key : keys) {
         for (const std::string& ns : spaces) {

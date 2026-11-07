@@ -118,6 +118,28 @@ TEST_F(FileKnobReloadSpecTest, NoRegisteredNodeShowsAReloadIconBesideAReloadButt
     }
 }
 
+TEST_F(FileKnobReloadSpecTest, AnOfxFileParamGivesItsIconToTheReloadButtonOnItsRow)
+{
+    NodePtr node = createNode(QString::fromUtf8("net.sf.openfx.Shadertoy"));
+    ASSERT_TRUE(bool(node));
+    KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName("imageShaderFileName").get());
+    ASSERT_TRUE(file);
+    KnobIPtr button = node->getKnobByName("imageShaderReload");
+    ASSERT_TRUE(bool(button)) << "the plugin keeps the button it declares";
+    EXPECT_FALSE(file->showsReloadButton());
+    EXPECT_EQ(button, file->getReloadButton());
+}
+
+TEST_F(FileKnobReloadSpecTest, AnOfxFileParamWithoutAReloadButtonKeepsItsIcon)
+{
+    NodePtr node = createNode(QString::fromUtf8("net.sf.openfx.LensDistortion"));
+    ASSERT_TRUE(bool(node));
+    KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName("pfFile").get());
+    ASSERT_TRUE(file);
+    EXPECT_TRUE(file->showsReloadButton());
+    EXPECT_FALSE(bool(file->getReloadButton()));
+}
+
 TEST_F(FileKnobReloadSpecTest, TheCheckSeesAnIconBesideAButton)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));

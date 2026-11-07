@@ -861,7 +861,8 @@ ViewerTab::refreshCompositingOperatorFromKnob()
     }
     _imp->compositingOperator->setCurrentIndex_no_emit((int)op);
     _imp->compositingOperator->setEnabled_natron(!noWipe);
-    _imp->secondInputImage->setEnabled_natron(op != eViewerCompositingOperatorNone);
+    // Stays open without a wipe, since picking a B input is one way to turn the wipe on.
+    _imp->secondInputImage->setEnabled_natron(!noWipe || (op != eViewerCompositingOperatorNone));
 
     if ((op == eViewerCompositingOperatorNone) || (_imp->secondInputImage->activeIndex() <= 0)) {
         manageSlotsForInfoWidget(1, false);

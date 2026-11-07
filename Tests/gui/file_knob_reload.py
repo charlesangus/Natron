@@ -115,8 +115,9 @@ try:
         gt.close_all_panels()
 
     def steps():
-        ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
-        require(ok, "viewer widget is up")
+        # A project started from a script has no Viewer node, so there is no viewer to wait for.
+        ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "node graph widget is up")
         win = main_window()
         require(win is not None, "found the main window")
         win.activateWindow()

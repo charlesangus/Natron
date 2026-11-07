@@ -191,7 +191,7 @@ try:
         field = None
         for w in panel.findChildren(QWidget):
             try:
-                if w.objectName() == "dim-0" and w.isVisible() and KEYED_PARAM in w.toolTip():
+                if w.objectName() == "dim-0" and w.isVisible() and "<b>%s</b>" % KEYED_PARAM in w.toolTip():
                     field = w
                     break
             except RuntimeError:
@@ -316,7 +316,9 @@ try:
         key_param(a).setValueAtTime(4.0, 15, 0)
         key_param(b).setValueAtTime(3.0, 15, 0)
         key_param(b).setValueAtTime(5.0, 25, 0)
-        require(key_times(a) == {5, 15} and key_times(b) == {15, 25}, "the Blurs have their keys")
+        # The Viewer just started rendering, and keys set during a render reach the curve Python reads after it.
+        ok = yield ("until", lambda: key_times(a) == {5, 15} and key_times(b) == {15, 25}, POLL_TIMEOUT_S)
+        require(ok, "the Blurs have their keys", "%r, %r" % (key_times(a), key_times(b)))
         yield ("sleep", SETTLE_MS)
 
         gt.section("panels")
@@ -386,19 +388,19 @@ try:
 
         py_viewer.seek(50)
         yield ("sleep", SETTLE_MS)
-        knob_menu(a, "Set Key")
+        # The size field shows its two dimensions as one until they differ, so the menu offers only the whole knob.
+        knob_menu(a, "Set Key (all dimensions)")
         ok = yield ("until", lambda: 50 in key_times(a), POLL_TIMEOUT_S)
         require(ok, "Set Key keys the size at frame 50", repr(key_times(a)))
         yield from expect("Set Key", [5, 15, 25, 50])
-        knob_menu(a, "Remove Key")
+        knob_menu(a, "Remove Key (all dimensions)")
         ok = yield ("until", lambda: 50 not in key_times(a), POLL_TIMEOUT_S)
         require(ok, "Remove Key removes the key at frame 50", repr(key_times(a)))
         yield from expect("Remove Key", [5, 15, 25])
 
         gt.section("dope-sheet")
-        editors = gt.widgets_of("DopeSheetEditor")
-        require(editors, "found the dope sheet")
-        require(make_tab_current(editors[0], "dope"), "brought the dope sheet's tab to the front")
+        # DopeSheetEditor has no Q_OBJECT, so its class name never reaches Python; its view does.
+        require(make_tab_current(dope_sheet_view(), "dope"), "brought the dope sheet's tab to the front")
         yield ("sleep", SETTLE_MS)
         view = dope_sheet_view()
         QMetaObject.invokeMethod(view, "onSelectedAllTriggered")
@@ -406,8 +408,7 @@ try:
         yield ("sleep", SETTLE_MS)
         QMetaObject.invokeMethod(view, "deleteSelectedKeyframes")
         ok = yield ("until", lambda: not key_times(a) and not key_times(b), POLL_TIMEOUT_S)
-        check(ok, "deleting every key in the dope sheet empties both Blurs",
-              "%r, %r" % (key_times(a), key_times(b)))
+        check(ok, "deleting every key in the dope sheet empties both Blurs (%r, %r)" % (key_times(a), key_times(b)))
         yield from expect("dope sheet deleted every key", [])
         timeline_shot("m305-timeline-dope-sheet-deleted.png")
         require(trigger_edit("undo"), "undo the dope sheet delete")
@@ -436,8 +437,8 @@ try:
         send_key(curve_widget, Qt.Key_A, Qt.ControlModifier)
         send_key(curve_widget, Qt.Key_Backspace)
         ok = yield ("until", lambda: not key_times(b), POLL_TIMEOUT_S)
-        check(ok, "deleting B's keys in the curve editor empties it", repr(key_times(b)))
-        check(key_times(a) == {5, 15}, "the curve editor edit left A's keys alone", repr(key_times(a)))
+        check(ok, "deleting B's keys in the curve editor empties it (%r)" % (key_times(b),))
+        check(key_times(a) == {5, 15}, "the curve editor edit left A's keys alone (%r)" % (key_times(a),))
         yield from expect("curve editor deleted B's keys", [5, 15])
         timeline_shot("m305-timeline-curve-editor-deleted.png")
         require(trigger_edit("undo"), "undo the curve editor delete")
@@ -480,8 +481,8 @@ try:
         started = time.time()
         got = markers()
         report("NOTE read %d markers in %.3f s" % (len(got or []), time.time() - started))
-        check(len(got or []) == BULK_KEYS + 3, "all %d keys show as markers right after the loop" % BULK_KEYS,
-              "%d markers" % len(got or []))
+        check(len(got or []) == BULK_KEYS + 3,
+              "all %d keys show as markers right after the loop (%d)" % (BULK_KEYS, len(got or [])))
         yield from expect("after the Python loop")
         bulk_param.removeAnimation(0)
         yield from expect("after removeAnimation", [5, 15, 25])
@@ -489,9 +490,14 @@ try:
         watched = (a, b)
 
         gt.section("project-close")
+        path = os.path.join(gt.OUT, "m305_keyframe_markers.ntpz")
+        require(app.saveProjectAs(path), "save the project to " + path)
         require(app.resetProject(), "reset the project")
-        ok = yield ("until", lambda: timeline() is not None and markers() == [], POLL_TIMEOUT_S)
-        check(ok, "resetting the project clears the markers", repr(markers()))
+        ok = yield ("until", lambda: markers() is None, POLL_TIMEOUT_S)
+        check(ok, "resetting the project takes the Viewer and its timeline away (%r)" % (markers(),))
+        require(app.createNode("Viewer") is not None, "a new Viewer in the reset project")
+        ok = yield ("until", lambda: markers() == [], POLL_TIMEOUT_S)
+        check(ok, "the new Viewer's timeline has no markers left from the old project (%r)" % (markers(),))
         gt.shot("m305-after-project-reset.png")
         faulthandler.cancel_dump_traceback_later()
 

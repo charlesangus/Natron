@@ -413,6 +413,9 @@ try:
     def brightness(p):
         return sum(sum(c) for c in p)
 
+    def shows_image(p):
+        return p is not None and brightness(p) > 0
+
     def viewer_px(name):
         gl = viewer_gl(name)
         return px(gl) if gl is not None else None
@@ -500,10 +503,12 @@ try:
               % (base1["aInput"], base1["bInput"]))
         check(knob_value(viewer1, "enableGain") is False and knob_value(viewer1, "gain") == 0.0,
               "gain starts off at 0 f-stops")
+        # Two equal grabs can both predate the first render, which on a slow machine takes seconds.
+        ok = yield ("until", lambda: shows_image(viewer_px(V1)) and same_px(viewer_px(V1), viewer_px(V2)), POLL_TIMEOUT_S)
+        check(ok, "both viewers show the same image to start with (%r, %r)" % (viewer_px(V1), viewer_px(V2)))
         p1 = yield from settle_px(V1)
         p2 = yield from settle_px(V2)
         require(p1 is not None and p2 is not None, "both viewers settle")
-        check(same_px(p1, p2), "both viewers show the same image to start with")
         gt.shot("m164-baseline.png")
 
         gt.section("second-row")
@@ -535,6 +540,9 @@ try:
                   % (chosen, knob_value(viewer2, "display")))
             check(chosen in str(knob_value(viewer2, "display")) or str(knob_value(viewer2, "display")) in chosen,
                   "the display knob names the chosen display")
+            # Two equal grabs can both predate the render with the new display.
+            ok = yield from px_until(V2, lambda p: p is not None and not same_px(p, p2))
+            check(ok, "Viewer2's pixels change with its own Display menu (still %r)" % (viewer_px(V2),))
         snap2 = snap(viewer2)
         check(not differences(snap(viewer1), base1), "Viewer1's knobs did not move with Viewer2's display (%r)"
               % differences(snap(viewer1), base1))
@@ -579,7 +587,7 @@ try:
               % differences(snap(viewer2), snap2))
         yield ("sleep", RENDER_MS)
         q2 = yield from settle_px(V2)
-        check(same_px(q2, p2), "Viewer2's pixels did not move with Viewer1's toolbar")
+        check(same_px(q2, p2), "Viewer2's pixels did not move with Viewer1's toolbar (%r, %r)" % (p2, q2))
         p1_wiped = yield from settle_px(V1)
         check(p1_wiped is not None and not same_px(p1_wiped, p1), "Viewer1's pixels changed with its own toolbar")
 

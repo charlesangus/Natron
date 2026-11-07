@@ -116,7 +116,8 @@ public:
 
     /**
      * @brief Hands this knob to a button another file knob's createReloadButton() made, for a node
-     * with one Reload over several files.
+     * with one Reload over several files, or to the Reload button an OFX plugin declares on the
+     * knob's row.
      **/
     void setReloadButton(const KnobButtonPtr& button)
     {

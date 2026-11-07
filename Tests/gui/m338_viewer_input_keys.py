@@ -48,6 +48,8 @@ try:
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
 
     host = app
+    # PySide invalidates a child wrapper once the wrapper of the parent it was found through is collected.
+    _held_tabs = []
 
     def create(plugin_id, x, y, group=None):
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
@@ -93,7 +95,7 @@ try:
     def trigger_edit_action(prefix):
         window = main_window()
         for act in window.menuBar().actions() if window is not None else []:
-            menu = act.menu()
+            menu = gt.menu_of(act)
             if menu is None or "edit" not in act.text().lower():
                 continue
             for action in menu.actions():
@@ -140,6 +142,7 @@ try:
 
     def input_menu(input_side):
         tab = viewer_tab()
+        _held_tabs.append(tab)
         tooltip = "Viewer input %s." % input_side
         for w in tab.findChildren(QWidget) if tab is not None else []:
             try:

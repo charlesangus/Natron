@@ -40,6 +40,7 @@
 // Their authoring is in SceneNodeAuthoring.h.
 
 #define kSceneParamPrimPath "primPath"
+#define kSceneParamDeletedTextureSources "deletedTextureSources"
 #define kSceneParamTranslate "translate"
 #define kSceneParamRotate "rotate"
 #define kSceneParamScale "scale"

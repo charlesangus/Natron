@@ -237,6 +237,7 @@ USDProject3D::initializeKnobs()
     frameHold->setAllDimensionsEnabled(false);
     page->addKnob(frameHold);
     _frameHold = frameHold;
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
 } // USDProject3D::initializeKnobs
 
 void
@@ -255,7 +256,15 @@ void
 USDProject3D::onInputChanged(int inputNo)
 {
     NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
     scheduleCameraMenuRefresh();
+}
+
+void
+USDProject3D::onInputSourceDeleted(int inputNo,
+                                   const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
 }
 
 void

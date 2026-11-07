@@ -109,7 +109,23 @@ USDEmissiveMaterial::initializeKnobs()
     useAlpha->setAnimationEnabled(false);
     page->addKnob(useAlpha);
     _useAlpha = useAlpha;
+
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
 } // USDEmissiveMaterial::initializeKnobs
+
+void
+USDEmissiveMaterial::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
+}
+
+void
+USDEmissiveMaterial::onInputSourceDeleted(int inputNo,
+                                          const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
+}
 
 bool
 USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
@@ -159,7 +175,7 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
 
-    const bool hasLive = bool(live.node.lock());
+    const bool hasLive = !live.nodeName.empty();
     const std::string file = hasLive ? std::string() : SceneNodeAuthoring::getAnchoredFilePath(textureKnob);
     if (!hasLive && file.empty()) {
         if (!authorValue(emissiveInput.GetAttr(), edit, colorAnimated, colorAt)) {

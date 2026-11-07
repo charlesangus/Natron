@@ -496,6 +496,7 @@ public:
         std::list<ViewerInstance*> viewers;
         collectViewers(node, &viewers);
         node->deactivate(outputs(), false, _autoReconnect, true, false);
+        node->notifyOutputsOfDeletion();
         _removed = true;
         refreshAfterGraphEdit(node, viewers);
     }

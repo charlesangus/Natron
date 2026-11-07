@@ -1458,8 +1458,7 @@ TEST_F(USDRenderMoonRayLiveTextureTest, AnAnimatedRampFollowsTheFrame)
     EXPECT_GT(tenth[1], 5. * tenth[0]) << tenth[0] << ", " << tenth[1];
 }
 
-// A source's texture is missing here because the main thread does not prepare it: deleting a source
-// re-authors the material with no texture, so it never reaches the render with its URI.
+// A source's texture is missing here because the main thread does not prepare it.
 TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsSource)
 {
     if (!moonRayOrSkip()) {
@@ -1482,6 +1481,37 @@ TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfIts
     EXPECT_NEAR(centre[0], centre[2], 0.25 * std::max(centre[0], centre[2]));
     ASSERT_TRUE(graph.material->hasPersistentMessage());
     EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderMoonRayLiveTextureTest, DeletingTheSourceShowsMagentaUntilUndone)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, false);
+    ASSERT_TRUE(bool(graph.render));
+    const std::string name = constant->getFullyQualifiedName();
+
+    // What the delete commands' redo and undo do, with the same arguments.
+    const NodesList outputs(1, graph.material);
+    constant->deactivate(outputs, false, false, true, false);
+    constant->notifyOutputsOfDeletion();
+    const std::array<double, 4> missing = centreAtFrame(graph.render, 1.);
+    // Lit, so the hue is checked, not the value.
+    EXPECT_GT(missing[0], 0.05) << missing[0] << ", " << missing[1] << ", " << missing[2];
+    EXPECT_GT(missing[0], 5. * missing[1]);
+    EXPECT_GT(missing[2], 5. * missing[1]);
+    EXPECT_NEAR(missing[0], missing[2], 0.25 * std::max(missing[0], missing[2]));
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(name)) << messageOf(graph.material);
+
+    constant->activate(outputs, false, false);
+    const std::array<double, 4> restored = centreAtFrame(graph.render, 1.);
+    EXPECT_GT(restored[1], 0.05) << restored[0] << ", " << restored[1] << ", " << restored[2];
+    EXPECT_GT(restored[1], 5. * restored[0]);
+    EXPECT_GT(restored[1], 5. * restored[2]);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
 }
 
 // The store's entries and the filter's holds are all that keep a file: with both gone, no frame of

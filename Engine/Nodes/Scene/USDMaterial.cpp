@@ -157,12 +157,13 @@ connectTexture(const PXR_NS::UsdStageRefPtr& stage,
         && output && input.ConnectToSource(output);
 }
 
-// The live texture of image input inputNb, or null when nothing is connected to it.
+// The live texture of image input inputNb, or null when it has none. Its node is null too when the
+// source was deleted, which still authors the texture.
 const LiveTextureSource*
 getLiveTexture(const LiveTextureSourceList& liveTextures,
                int inputNb)
 {
-    if ((inputNb < 0) || (inputNb >= (int)liveTextures.size()) || !liveTextures[inputNb].node.lock()) {
+    if ((inputNb < 0) || (inputNb >= (int)liveTextures.size()) || liveTextures[inputNb].nodeName.empty()) {
         return nullptr;
     }
 
@@ -235,7 +236,23 @@ USDMaterial::initializeKnobs()
     useAlpha->setAnimationEnabled(false);
     page->addKnob(useAlpha);
     _useAlpha = useAlpha;
+
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
 } // USDMaterial::initializeKnobs
+
+void
+USDMaterial::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
+}
+
+void
+USDMaterial::onInputSourceDeleted(int inputNo,
+                                  const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
+}
 
 std::string
 USDMaterial::getTexturePath(const KnobFilePtr& knob)
@@ -435,7 +452,7 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     }
     // Repeated here because a consumer's prepare() warns once, and this clears messages.
     for (const LiveTextureSource& source : liveTextures) {
-        if (!source.node.lock()) {
+        if (source.nodeName.empty()) {
             continue;
         }
         const std::string uri = source.getUri(args.time);

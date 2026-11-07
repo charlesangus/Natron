@@ -60,7 +60,9 @@ they draw a frame, and USD reads them through Natron's `natron` asset resolver. 
 image is always rendered in the project's first view, whichever view is drawn.
 Changing the connected image re-writes this node's material and no other layer.
 An image that cannot be rendered shows as magenta, and the
-node shows a warning that names it.
+node shows a warning that names it. That includes an input whose node was deleted,
+until something is connected to the input or the deletion is undone. Disconnecting
+an input is not a deletion: the material goes back to its own colour.
 
 The surface is lit only by the scene's lights, and by a renderer's headlight when
 one is turned on: with neither, only Emissive Color shows. For an unlit image on a

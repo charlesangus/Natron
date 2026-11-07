@@ -28,6 +28,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <map>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -863,6 +868,81 @@ getTransformMatrixAt(const SceneTransformKnobs& knobs,
                                   (SceneRotateOrderEnum)rotateOrder->getValue());
 }
 
+namespace {
+    // The knob's value: one "<input>\t<source name>\n" per input that lost its source.
+    std::map<int, std::string>
+    parseDeletedTextureSources(const std::string& value)
+    {
+        std::map<int, std::string> sources;
+        std::istringstream lines(value);
+
+        for (std::string line; std::getline(lines, line);) {
+            const std::size_t tab = line.find('\t');
+            if ((tab != std::string::npos) && (tab + 1 < line.size())) {
+                sources[std::atoi(line.c_str())] = line.substr(tab + 1);
+            }
+        }
+
+        return sources;
+    }
+
+    void
+    setDeletedTextureSources(const KnobStringPtr& knob,
+                             const std::map<int, std::string>& sources)
+    {
+        std::string value;
+
+        for (const std::pair<const int, std::string>& source : sources) {
+            value += std::to_string(source.first) + "\t" + source.second + "\n";
+        }
+        if (value != knob->getValue()) {
+            knob->setValue(value);
+        }
+    }
+} // anonymous namespace
+
+void
+createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                const KnobPagePtr& page)
+{
+    KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Deleted Texture Sources"));
+
+    knob->setName(kSceneParamDeletedTextureSources);
+    knob->setHintToolTip(EffectInstance::tr("The image inputs whose node was deleted, which show the missing-texture colour until something is connected to them."));
+    knob->setAnimationEnabled(false);
+    knob->setSecretByDefault(true);
+    page->addKnob(knob);
+}
+
+void
+recordDeletedTextureSource(const EffectInstance& consumer,
+                           int inputNb,
+                           const std::string& sourceName)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+
+    if (knob) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources[inputNb] = sourceName;
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
+void
+forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                      int inputNb)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+    const NodePtr node = consumer.getNode();
+
+    // The real input: a group's Input node counts as connected even with nothing outside the group.
+    if (knob && node && node->getRealInput(inputNb)) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources.erase(inputNb);
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
 bool
 getLiveTextureSource(const EffectInstance& consumer,
                      int inputNb,
@@ -870,7 +950,27 @@ getLiveTextureSource(const EffectInstance& consumer,
                      LiveTextureSource* source)
 {
     const EffectInstancePtr connected = consumer.getInput(inputNb);
-    NodePtr node = connected ? connected->getNode() : NodePtr();
+    if (!connected) {
+        const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+        const std::map<int, std::string> deleted = knob ? parseDeletedTextureSources(knob->getValue()) : std::map<int, std::string>();
+        const std::map<int, std::string>::const_iterator found = deleted.find(inputNb);
+        if (found == deleted.end()) {
+            return false;
+        }
+        source->node.reset();
+        source->consumer = consumer.getNode();
+        source->nodeName = found->second;
+        source->layer = layer;
+        source->contentHash = 0;
+        source->varying = false;
+        const AppInstancePtr app = consumer.getApp();
+        if (app && app->getProject()) {
+            app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
+        }
+
+        return true;
+    }
+    NodePtr node = connected->getNode();
     const double time = consumer.getCurrentTime();
     // A disabled node renders as its preferred input, so the texture shows what the render would.
     while (node && node->isNodeDisabled(time)) {

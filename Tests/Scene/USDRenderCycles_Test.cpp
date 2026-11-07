@@ -1473,8 +1473,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, AnAnimatedRampFollowsTheFrame)
     EXPECT_GT(tenth[1], 5. * tenth[0]) << tenth[0] << ", " << tenth[1];
 }
 
-// A source's texture is missing here because the main thread does not prepare it: a deleted source
-// never reaches the render with its URI, as the next test shows.
+// A source's texture is missing here because the main thread does not prepare it.
 TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsSource)
 {
     if (!cyclesOrSkip()) {
@@ -1496,7 +1495,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsS
     EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
 }
 
-TEST_F(USDRenderCyclesLiveTextureTest, DeletingTheSourceLeavesTheMaterialsOwnColour)
+TEST_F(USDRenderCyclesLiveTextureTest, DeletingTheSourceShowsMagentaAndWarnsOfIt)
 {
     if (!cyclesOrSkip()) {
         return;
@@ -1504,13 +1503,57 @@ TEST_F(USDRenderCyclesLiveTextureTest, DeletingTheSourceLeavesTheMaterialsOwnCol
     NodePtr constant = createConstant(0., 1., 0.);
     const Graph graph = createLiveTextureGraph(constant, true);
     ASSERT_TRUE(bool(graph.render));
+    const std::string name = constant->getFullyQualifiedName();
+    constant->destroyNode(true, false);
+    constant.reset();
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], centre[0], 0.1) << centre[0] << ", " << centre[1] << ", " << centre[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], centre[1], 0.05);
+    EXPECT_NEAR(kLiveTextureMissingColour[2], centre[2], 0.1);
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(name)) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, UndoingTheDeletionRestoresTheTexture)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    // What the delete commands' redo and undo do, with the same arguments.
+    const NodesList outputs(1, graph.material);
+    constant->deactivate(outputs, false, false, true, false);
+    constant->notifyOutputsOfDeletion();
+    const std::array<double, 4> missing = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], missing[0], 0.1) << missing[0] << ", " << missing[1] << ", " << missing[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], missing[1], 0.05);
+
+    constant->activate(outputs, false, false);
+    const std::array<double, 4> restored = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(restored[0], 0.05) << restored[0] << ", " << restored[1] << ", " << restored[2];
+    EXPECT_NEAR(1., restored[1], 0.1);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+// Disconnecting is not deleting: the input is cleared, and the material shows its own colour.
+TEST_F(USDRenderCyclesLiveTextureTest, DisconnectingTheSourceLeavesTheMaterialsOwnColour)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
     KnobColor* own = knob<KnobColor>(graph.material, kUSDEmissiveMaterialParamEmissiveColor);
     ASSERT_TRUE(own != nullptr);
     own->setValue(0.5, ViewSpec::all(), 0);
     own->setValue(0., ViewSpec::all(), 1);
     own->setValue(0., ViewSpec::all(), 2);
-    constant->destroyNode(true, false);
-    constant.reset();
+    ignore_result(graph.material->disconnectInput(kUSDEmissiveMaterialInputEmissive));
 
     const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
     EXPECT_NEAR(0.5, centre[0], 0.05);

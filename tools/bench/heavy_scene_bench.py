@@ -118,42 +118,43 @@ try:
     def shown():
         return bool(prop("natronSceneShown", False)) and not prop("natronSceneError")
 
-    def first_frame_drawn():
+    def first_frame_drawn(since_ms):
         painted = prop("natronSceneLastPaintMs")
-        return shown() and (painted is not None or prop("natronSceneSynced") is None)
+        return shown() and painted is not None and painted >= since_ms
 
     class Measure(object):
-        """What an action reports: its numbers, and the payload files it asked for."""
+        """What an action reports: its numbers."""
 
         def __init__(self):
             self.values = {}
-            self.requested_layers = set()
 
     def action_open(m):
-        t0 = time.time()
+        t0 = time.time() * 1000.0
         usd.getParam("filename").setValue(path)
         require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
-        ok = yield ("until", first_frame_drawn, TIMEOUT_S)
+        ok = yield ("until", lambda: first_frame_drawn(t0), TIMEOUT_S)
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
         # No viewer yet marks the first box frame, so the first finished frame stands in for it.
         boxes_at = prop("natronSceneFirstBoxesMs")
         end = boxes_at if boxes_at is not None else (painted if painted is not None else time.time() * 1000.0)
-        m.values["first_boxes_ms"] = round(end - t0 * 1000.0, 1)
+        m.values["first_boxes_ms"] = round(end - t0, 1)
         m.values["first_boxes_signal"] = "natronSceneFirstBoxesMs" if boxes_at is not None else "first_finished_frame"
 
     def action_edit(m):
         knob = usd.getParam("frameOffset")
         require(knob is not None, "USDRead has a frameOffset parameter")
+        require(view() is not None and shown(), "edit: a scene view is visible and showing the scene")
         t0 = time.time() * 1000.0
         knob.setValue(float(prop("natronSceneSyncRequests", 0) + 1))
-        ok = yield ("until", lambda: (prop("natronSceneSyncedAtMs", 0) >= t0 and prop("natronSceneLastPaintMs", 0) >= prop("natronSceneSyncedAtMs", 0)) or prop("natronSceneSyncedAtMs") is None, TIMEOUT_S)
+        ok = yield ("until", lambda: (prop("natronSceneSyncedAtMs", 0) >= t0 and prop("natronSceneLastPaintMs", 0) >= prop("natronSceneSyncedAtMs", 0)), TIMEOUT_S)
         check(ok, "edit: the edit reached the screen")
         m.values["edit_ms"] = round(prop("natronSceneLastPaintMs", time.time() * 1000.0) - t0, 1)
 
     def action_orbit(m):
         navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
         require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+        require(view() is not None and shown(), "orbit: a scene view is visible and showing the scene")
         original = navigation.getValue()
         maya = 1
         navigation.setValue(maya)
@@ -202,7 +203,7 @@ try:
             status = "pass" if ((value <= limit) if below_is_good else (value >= limit)) else "fail"
         return {"value": value, "limit": limit, "status": status}
 
-    def judge(action, m, stall_ms, new_layers):
+    def judge(m, stall_ms, new_layers):
         budgets = {"stall_ms": verdict(round(stall_ms, 1), STALL_BUDGET_MS, True)}
         if "first_boxes_ms" in m.values:
             budgets["first_boxes_ms"] = verdict(m.values["first_boxes_ms"], FIRST_BOXES_BUDGET_MS, True,
@@ -210,7 +211,7 @@ try:
         if new_layers is None:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_valid"}
         else:
-            unrequested = sorted(i for i in new_layers if payload_mark in i and i not in m.requested_layers)
+            unrequested = sorted(i for i in new_layers if payload_mark in i)
             budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "orbit_fps" in m.values:
@@ -230,7 +231,7 @@ try:
             stall_ms = heartbeat.stop()
             after = loaded_layers()
             new_layers = None if before is None or after is None else after - before
-            budgets = judge(name, m, stall_ms, new_layers)
+            budgets = judge(m, stall_ms, new_layers)
             record = {
                 "label": label,
                 "scenario": name,

@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — M300.P3.T1 at a6559a8e8, unbuilt. A failed publish keeps the RAM copy and backs off 30 s; only a failed demotion drops. Salted-hash entries still publish until M300.P3.T2.
 - 2026-11-07 — M300.P2.T5 at cffa62ab7, phase gate running. No pin between plan and use: a plan-wide hold would bypass the frame store's budget on modest machines, so an entry evicted in that window misses and pulls by recursion, costing time and never a wrong pixel. Worst plan is N x 144 short lock pairs; the edit-latency benchmark measures it in M300.P4.T1.
 - 2026-11-07 — M300.P2.T4 at 04999a33a, unbuilt until the phase gate. Provisional default `priorityFloor`, on the user's stated lean, until M300.P4.T1. The `maxDeepImageCache` and aggressive caching settings are retired. By reading only, both policies admit the raw chain on the viewer branch; M300.P2.T5 must separate may-be-probed from will-be-stored.
 - 2026-11-07 — M300.P2.T3 at 5aab87ed8, unbuilt until the phase gate. `CacheRetention::admit` is the one admission point; priorities and half-lives are unmeasured starting values, listed in the note.
@@ -115,7 +116,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Phase 300.3: Disk tier and pins
 
-- [ ] M300.P3.T1 — Add the peer-shared disk tier
+- [x] M300.P3.T1 — Add the peer-shared disk tier
   - files: `Engine/CacheDiskTier.h` (new), `Engine/CacheDiskTier.cpp` (new), `Engine/Settings.cpp`, `Engine/CacheHostTier.cpp`, `MemoryFile`, `Engine/Image.cpp`, `Engine/DeepImage.h`
   - approach: Per `docs/cache/tiered-cache.md`. Each entry is an immutable file under `<tier>/<build>/auto`, holding key, params, checksum and bitmap, published by rename and read by `pread`. Probes list one shard off the cache lock, with a short negative cache. An idle low-priority publisher and demotion both apply the recompute-versus-write test, with a per-file latency term. Budget comes from per-session ledgers plus a slow scan; eviction samples the persisted score. Write errors drop the entry with one warning per session. A retracted entry cancels its queued publish.
   - verify: A tiny RAM budget demotes an expensive entry and drops a cheap one; promotion returns identical pixels. A second process hits an entry the first published. A forged key misses.

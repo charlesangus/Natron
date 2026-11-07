@@ -148,7 +148,7 @@ MetadataTimeCode::initializeKnobs()
     rateFromMetadata->setName("rateFromMetadata");
     rateFromMetadata->setAnimationEnabled(false);
     rateFromMetadata->setDefaultValue(true);
-    rateFromMetadata->setHintToolTip(tr("Reads the frame rate from the ofx/framerate of Source rather than "
+    rateFromMetadata->setHintToolTip(tr("Reads the frame rate from the natron/framerate of Source rather than "
                                         "from Rate, falling back to Rate where Source carries none. The rate "
                                         "read is what the frames field counts to and what the start timecode "
                                         "is read at, so it moves the timecode as well as the rate published "
@@ -201,7 +201,7 @@ MetadataTimeCode::deriveOutputMetadata(double time,
     double rate = rateKnob ? rateKnob->getValueAtTime(time, 0, view) : 24.;
 
     if (rateFromMetadataKnob && rateFromMetadataKnob->getValueAtTime(time, 0, view)) {
-        const std::optional<double> upstreamRate = metadata.getDouble("ofx/framerate");
+        const std::optional<double> upstreamRate = metadata.getDouble(kNatronMetadataKeyFrameRate);
         if (upstreamRate) {
             rate = *upstreamRate;
         }
@@ -215,8 +215,8 @@ MetadataTimeCode::deriveOutputMetadata(double time,
     const std::string startTimecode = startTimecodeKnob ? startTimecodeKnob->getValueAtTime(time, 0, view) : std::string();
     const long long offset = (long long)std::floor(time - origin + 0.5);
 
-    metadata.setString("ofx/timecode", framesToTimecode(timecodeToFrames(startTimecode, counted) + offset, counted));
-    metadata.setDouble("ofx/framerate", rate);
+    metadata.setString(kNatronMetadataKeyTimecode, framesToTimecode(timecodeToFrames(startTimecode, counted) + offset, counted));
+    metadata.setDouble(kNatronMetadataKeyFrameRate, rate);
 
     return metadata;
 }

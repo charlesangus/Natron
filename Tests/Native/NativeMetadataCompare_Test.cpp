@@ -155,7 +155,7 @@ TEST_F(MetadataCompareTest, DisconnectedBListsEveryKeyOfAAsAOnly)
 
     EXPECT_EQ("A only: exr/origin=source\n"
               "A only: exr/tag=1\n"
-              "A only: ofx/frame=1",
+              "A only: natron/frame=1",
               displayAt(1.));
 }
 
@@ -163,8 +163,8 @@ TEST_F(MetadataCompareTest, DisplayFollowsTheFrame)
 {
     connectNodes(a, compare, 0, true);
 
-    EXPECT_NE(std::string::npos, displayAt(1.).find("A only: ofx/frame=1"));
-    EXPECT_NE(std::string::npos, displayAt(2.).find("A only: ofx/frame=2"));
+    EXPECT_NE(std::string::npos, displayAt(1.).find("A only: natron/frame=1"));
+    EXPECT_NE(std::string::npos, displayAt(2.).find("A only: natron/frame=2"));
 }
 
 TEST_F(MetadataCompareTest, DisplayFollowsAKnobEditOnASource)

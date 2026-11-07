@@ -69,8 +69,8 @@ protected:
         MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
         ASSERT_TRUE(sourceEffect != NULL);
         ImageMetadata extra;
-        extra.setString("ofx/sampletype", "float");
-        extra.setDouble("ofx/framerate", 24.);
+        extra.setString(kNatronMetadataKeySampleType, "float");
+        extra.setDouble(kNatronMetadataKeyFrameRate, 24.);
         sourceEffect->setExtraMetadata(extra);
         connectNodes(source, contribute, 0, true);
         effect = dynamic_cast<NativeEffectBase*>(contribute->getEffectInstance().get());
@@ -102,7 +102,7 @@ protected:
         EXPECT_EQ(std::optional<std::string>("reviewed, approved"), m.getString(kPrefix + "tags"));
         EXPECT_EQ(std::optional<std::vector<int>>(std::vector<int>({ 0, 0, 1280, 720 })), m.getIntVector(kPrefix + "renderRegion"));
         EXPECT_EQ(std::optional<std::vector<double>>(std::vector<double>({ 1., 0.5, 0.25 })), m.getDoubleVector(kPrefix + "weights"));
-        EXPECT_EQ(std::optional<double>(30.), m.getDouble("ofx/framerate"));
+        EXPECT_EQ(std::optional<double>(30.), m.getDouble(kNatronMetadataKeyFrameRate));
     }
 
     NodePtr source;
@@ -136,7 +136,7 @@ TEST_F(MetadataContributeTest, FrameRateIsThirtyWhateverUpstreamSays)
 {
     const ImageMetadata m = output();
 
-    EXPECT_EQ(std::optional<double>(30.), m.getDouble("ofx/framerate"));
+    EXPECT_EQ(std::optional<double>(30.), m.getDouble(kNatronMetadataKeyFrameRate));
 }
 
 TEST_F(MetadataContributeTest, NoteFollowsTheKnob)
@@ -156,8 +156,8 @@ TEST_F(MetadataContributeTest, InheritAllKeepsTheUpstreamKeys)
     expectOwnKeys(m);
     EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin"));
     EXPECT_EQ(std::optional<int>(1), m.getInt("exr/tag"));
-    EXPECT_EQ(std::optional<int>(1), m.getInt("ofx/frame"));
-    EXPECT_EQ(std::optional<std::string>("float"), m.getString("ofx/sampletype"));
+    EXPECT_EQ(std::optional<int>(1), m.getInt(kNatronMetadataKeySourceFrame));
+    EXPECT_EQ(std::optional<std::string>("float"), m.getString(kNatronMetadataKeySampleType));
     EXPECT_EQ(11u, m.size());
 }
 
@@ -167,17 +167,17 @@ TEST_F(MetadataContributeTest, DropOneKeyRemovesExactlyThatKey)
     const ImageMetadata m = output();
 
     expectOwnKeys(m);
-    EXPECT_FALSE(m.contains("ofx/sampletype"));
+    EXPECT_FALSE(m.contains(kNatronMetadataKeySampleType));
     EXPECT_TRUE(m.contains("exr/origin"));
     EXPECT_TRUE(m.contains("exr/tag"));
-    EXPECT_TRUE(m.contains("ofx/frame"));
+    EXPECT_TRUE(m.contains(kNatronMetadataKeySourceFrame));
     EXPECT_EQ(10u, m.size());
 
     setString("dropKey", "exr/origin");
     const ImageMetadata other = output();
 
     EXPECT_FALSE(other.contains("exr/origin"));
-    EXPECT_TRUE(other.contains("ofx/sampletype"));
+    EXPECT_TRUE(other.contains(kNatronMetadataKeySampleType));
     EXPECT_EQ(10u, other.size());
 }
 

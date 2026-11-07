@@ -69,7 +69,7 @@ private:
         .description = "Adds a fixed set of demonstration keys to the metadata of Source, one of each "
                        "type: MetadataContribute.note (the Note text), .revision (1), "
                        ".quality (0.75), .tags (\"reviewed, approved\"), .renderRegion (0, 0, 1280, 720) "
-                       "and .weights (1, 0.5, 0.25), and sets ofx/framerate to 30. Mode picks what it "
+                       "and .weights (1, 0.5, 0.25), and sets natron/framerate to 30. Mode picks what it "
                        "keeps of the metadata of Source: all of it, all but the Drop Key key, or nothing. "
                        "The image is passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,

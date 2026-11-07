@@ -110,7 +110,7 @@ TEST_F(MetadataViewTest, DisplayListsEveryKeyAndValue)
     EXPECT_TRUE(contains(text, "exr/tag"));
     EXPECT_TRUE(contains(text, "exr/origin"));
     EXPECT_TRUE(contains(text, "source"));
-    EXPECT_TRUE(contains(text, "ofx/frame"));
+    EXPECT_TRUE(contains(text, "natron/frame"));
     EXPECT_TRUE(contains(text, "exr/gain"));
     EXPECT_TRUE(contains(text, "0.1"));
     EXPECT_TRUE(contains(text, "dpx/size"));
@@ -126,7 +126,7 @@ TEST_F(MetadataViewTest, KeysAreSorted)
 
     EXPECT_LT(text.find("dpx/size"), text.find("exr/chroma"));
     EXPECT_LT(text.find("exr/chroma"), text.find("exr/tag"));
-    EXPECT_LT(text.find("exr/tag"), text.find("ofx/frame"));
+    EXPECT_LT(text.find("exr/tag"), text.find("natron/frame"));
 }
 
 TEST_F(MetadataViewTest, DisplayFollowsTheFrame)

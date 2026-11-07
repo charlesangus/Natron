@@ -570,7 +570,7 @@ TEST_F(NativeReadTimeTest, PurgingTheCachesFindsFramesAddedOnDisk)
     writeSequence(dir, "seq");
     NodePtr node = createRead(patternPath(dir, "seq"));
     ASSERT_EQ(kNotRendered, render(node, 3.));
-    ASSERT_FALSE(metadataOf(node, 3.).getString("ofx/filepath").has_value());
+    ASSERT_FALSE(metadataOf(node, 3.).getString("natron/filepath").has_value());
 
     ASSERT_TRUE(writeConstantFrame(framePath(dir, "seq", 3), 0.375f));
     ASSERT_TRUE(writeConstantFrame(framePath(dir, "seq", 5), 0.75f));
@@ -587,7 +587,7 @@ TEST_F(NativeReadTimeTest, PurgingTheCachesFindsFramesAddedOnDisk)
     EXPECT_EQ(5., last);
     EXPECT_EQ(0.375f, render(node, 3.));
     EXPECT_EQ(0.75f, render(node, 5.));
-    EXPECT_EQ(std::optional<std::string>(framePath(dir, "seq", 3)), metadataOf(node, 3.).getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "seq", 3)), metadataOf(node, 3.).getString("natron/filepath"));
 }
 
 TEST_F(NativeReadTimeTest, AListingScannedAcrossAPurgeIsNotKept)
@@ -701,7 +701,7 @@ TEST_F(NativeReadTimeTest, APatternMatchingOneFileKeepsItsFrameNumber)
     EXPECT_EQ(100., first);
     EXPECT_EQ(100., last);
     EXPECT_EQ(0.75f, render(node, 100.));
-    EXPECT_EQ(std::optional<int>(100), metadataOf(node, 100.).getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(100), metadataOf(node, 100.).getInt("natron/frame"));
 }
 
 TEST_F(NativeReadTimeTest, TheReadHasNoFrameRateKnobs)

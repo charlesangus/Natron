@@ -74,7 +74,7 @@ MetadataContribute::initializeKnobs()
     KnobStringPtr dropKey = createKnob<KnobString>(tr("Drop Key"));
     dropKey->setName("dropKey");
     dropKey->setAnimationEnabled(false);
-    dropKey->setDefaultValue("ofx/sampletype");
+    dropKey->setDefaultValue(kNatronMetadataKeySampleType);
     dropKey->setHintToolTip(tr("The key of Source dropped when Mode is Drop One Key. A key Source does not "
                                "hold drops nothing, and a key this node publishes is published anyway.")
                                 .toStdString());
@@ -117,7 +117,7 @@ MetadataContribute::deriveOutputMetadata(double time,
     metadata.setString(prefix + "tags", "reviewed, approved");
     metadata.setIntVector(prefix + "renderRegion", std::vector<int>({ 0, 0, 1280, 720 }));
     metadata.setDoubleVector(prefix + "weights", std::vector<double>({ 1., 0.5, 0.25 }));
-    metadata.setDouble("ofx/framerate", 30.);
+    metadata.setDouble(kNatronMetadataKeyFrameRate, 30.);
 
     return metadata;
 }

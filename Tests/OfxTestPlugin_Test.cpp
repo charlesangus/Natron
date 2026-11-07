@@ -747,7 +747,7 @@ expectKey(const OFX::Host::ImageEffect::MetadataSet& set,
 class OfxMetadataTestPluginTest
     : public OfxTestPluginTest {
 protected:
-    // A native metadata source carrying ofx/sampletype and an ofx/framerate of `rate` (none when
+    // A native metadata source carrying natron/sampletype and a natron/framerate of `rate` (none when
     // rate is 0), with `pluginID` under it and a MetadataView under that.
     void buildChain(const char* pluginID,
                     int major,
@@ -760,9 +760,9 @@ protected:
         MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
         ASSERT_TRUE(sourceEffect != nullptr);
         ImageMetadata extra;
-        extra.setString(kOfxMetadataKeySampleType, "float");
+        extra.setString(kNatronMetadataKeySampleType, "float");
         if (rate > 0.) {
-            extra.setDouble(kOfxMetadataKeyFrameRate, rate);
+            extra.setDouble(kNatronMetadataKeyFrameRate, rate);
         }
         sourceEffect->setExtraMetadata(extra);
         connectNodes(source, node, 0, true);
@@ -845,23 +845,23 @@ TEST_F(OfxMetadataTestPluginTest, ContributeModeChangesWhatDownstreamInherits)
     ASSERT_TRUE(mode != nullptr);
 
     ImageMetadata m = downstream(1.);
-    EXPECT_EQ(std::optional<std::string>("float"), m.getString(kOfxMetadataKeySampleType)) << "inherit all";
+    EXPECT_EQ(std::optional<std::string>("float"), m.getString(kNatronMetadataKeySampleType)) << "inherit all";
     EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin")) << "inherit all";
     EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "inherit all";
-    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kOfxMetadataKeyFrameRate)) << "inherit all";
+    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kNatronMetadataKeyFrameRate)) << "inherit all";
 
     mode->setValue(kNatronTestMetadataContributeModeDropOneKey, ViewSpec::all(), 0);
     m = downstream(1.);
-    EXPECT_FALSE(m.contains(kOfxMetadataKeySampleType)) << "drop one key drops its default key";
+    EXPECT_FALSE(m.contains(kNatronMetadataKeySampleType)) << "drop one key drops its default key";
     EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin")) << "drop one key keeps the rest";
     EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "drop one key";
 
     mode->setValue(kNatronTestMetadataContributeModeInheritNothing, ViewSpec::all(), 0);
     m = downstream(1.);
-    EXPECT_FALSE(m.contains(kOfxMetadataKeySampleType)) << "inherit nothing";
+    EXPECT_FALSE(m.contains(kNatronMetadataKeySampleType)) << "inherit nothing";
     EXPECT_FALSE(m.contains("exr/origin")) << "inherit nothing";
     EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "inherit nothing";
-    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kOfxMetadataKeyFrameRate)) << "inherit nothing";
+    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kNatronMetadataKeyFrameRate)) << "inherit nothing";
 }
 
 // Counted from 01:00:00:00 at frame 1, the frames field rolls into the seconds at the counted rate + 1.
@@ -888,7 +888,7 @@ TEST_F(OfxMetadataTestPluginTest, TimeCodeCountsAcrossTheSecondRollover)
         EXPECT_DOUBLE_EQ(frameRate, set.get()->getDoubleProperty(kOfxMetadataKeyFrameRate)) << what << " at " << expected.time;
     };
 
-    // Rate from Source's ofx/framerate of 24.
+    // Rate from Source's natron/framerate of 24.
     for (const Expected& e : { Expected { 1., "01:00:00:00" }, Expected { 24., "01:00:00:23" }, Expected { 25., "01:00:01:00" }, Expected { 26., "01:00:01:01" } }) {
         expectAt(e, 24., "rate from metadata");
     }
@@ -908,7 +908,7 @@ TEST_F(OfxMetadataTestPluginTest, TimeCodeCountsAcrossTheSecondRollover)
     }
 }
 
-// With no ofx/framerate on Source, the rate falls back to the param.
+// With no natron/framerate on Source, the rate falls back to the param.
 TEST_F(OfxMetadataTestPluginTest, TimeCodeFallsBackToTheRateParam)
 {
     buildChain(kNatronTestMetadataTimeCodePluginID, kNatronTestMetadataTimeCodeMajor, 0.);

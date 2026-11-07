@@ -100,7 +100,7 @@ public:
             hook(true);
         }
         m.setString("exr/origin", "source");
-        m.setInt("ofx/frame", static_cast<int>(time));
+        m.setInt("natron/frame", static_cast<int>(time));
         m.merge(_extra, ImageMetadata::eMergePreferOther);
         const std::map<int, ImageMetadata>::const_iterator viewExtra = _viewExtra.find(view.value());
         if (viewExtra != _viewExtra.end()) {

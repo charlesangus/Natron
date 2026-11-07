@@ -143,7 +143,7 @@ TEST_F(MetadataModifyTest, RemoveDropsOnlyTheKey)
 
     EXPECT_FALSE(result.contains("exr/origin"));
     EXPECT_EQ(std::optional<int>(1), result.getInt("exr/tag"));
-    EXPECT_EQ(std::optional<int>(1), result.getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
 }
 
 TEST_F(MetadataModifyTest, RenameMovesTheValue)

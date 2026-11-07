@@ -6,7 +6,7 @@ Tolerance: none recorded.
   under `MetadataContribute.`: `note` (string, the Note knob),
   `revision` (int 1), `quality` (double 0.75), `tags` (string
   `reviewed, approved`), `renderRegion` (int vector 0, 0, 1280, 720) and
-  `weights` (double vector 1, 0.5, 0.25), plus `ofx/framerate` = 30. Mode keeps
+  `weights` (double vector 1, 0.5, 0.25), plus `natron/framerate` = 30. Mode keeps
   all of Source's metadata, all of it but the Drop Key key (a key Source does
   not hold is a no-op), or none of it; the node's own keys always win. The image
   passes through unchanged.

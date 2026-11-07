@@ -98,7 +98,7 @@ TEST(MetadataTimeCodeHelpersTest, NegativeFramesWrapIntoThePreviousDay)
 class MetadataTimeCodeTest
     : public BaseTest {
 protected:
-    // A Source -> MetadataTimeCode chain; an upstreamRate adds ofx/framerate to the source.
+    // A Source -> MetadataTimeCode chain; an upstreamRate adds natron/framerate to the source.
     void build(std::optional<double> upstreamRate)
     {
         source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
@@ -109,7 +109,7 @@ protected:
         ASSERT_TRUE(sourceEffect != NULL);
         if (upstreamRate) {
             ImageMetadata extra;
-            extra.setDouble("ofx/framerate", *upstreamRate);
+            extra.setDouble(kNatronMetadataKeyFrameRate, *upstreamRate);
             sourceEffect->setExtraMetadata(extra);
         }
         connectNodes(source, timecode, 0, true);
@@ -119,12 +119,12 @@ protected:
 
     std::optional<std::string> timecodeAt(double time)
     {
-        return effect->getOutputMetadata(time, ViewIdx(0)).getString("ofx/timecode");
+        return effect->getOutputMetadata(time, ViewIdx(0)).getString(kNatronMetadataKeyTimecode);
     }
 
     std::optional<double> rateAt(double time)
     {
-        return effect->getOutputMetadata(time, ViewIdx(0)).getDouble("ofx/framerate");
+        return effect->getOutputMetadata(time, ViewIdx(0)).getDouble(kNatronMetadataKeyFrameRate);
     }
 
     template <typename KnobType, typename T>
@@ -175,7 +175,7 @@ TEST_F(MetadataTimeCodeTest, OtherUpstreamKeysPassThrough)
     const ImageMetadata m = effect->getOutputMetadata(3., ViewIdx(0));
 
     EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin"));
-    EXPECT_EQ(std::optional<int>(3), m.getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(3), m.getInt(kNatronMetadataKeySourceFrame));
 }
 
 TEST_F(MetadataTimeCodeTest, RateComesFromUpstreamWhenOn)

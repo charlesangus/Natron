@@ -40,7 +40,7 @@ inline constexpr InputSpec kMetadataRemoveInputs[] = {
     InputSpec { .label = "Source", .optional = false },
 };
 
-// No key is protected: the ofx/ keys the engine writes go too when matched.
+// No key is protected: the natron/ keys the engine writes go too when matched.
 class MetadataRemove
     : public NativeEffectBase {
 public:
@@ -63,7 +63,7 @@ private:
         .description = "Removes the metadata keys matching the Keys list, or every key when Remove All "
                        "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
                        "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
-                       "is protected, so the engine's ofx/ keys go too if matched. The image itself is "
+                       "is protected, so the engine's natron/ keys go too if matched. The image itself is "
                        "passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
         .majorVersion = PLUGIN_MAJOR_NATRON_METADATAREMOVE,

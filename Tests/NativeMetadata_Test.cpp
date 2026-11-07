@@ -96,8 +96,8 @@ TEST_F(BaseTest, NativeMetadataSurvivesShuffleAndMerge)
 
     EXPECT_EQ(expected, shuffleEffect->getOutputMetadata(3., ViewIdx(0)));
     EXPECT_EQ(expected, mergeEffect->getOutputMetadata(3., ViewIdx(0)));
-    EXPECT_EQ(std::optional<int>(3), mergeEffect->getOutputMetadata(3., ViewIdx(0)).getInt("ofx/frame"));
-    EXPECT_EQ(std::optional<int>(4), mergeEffect->getOutputMetadata(4., ViewIdx(0)).getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(3), mergeEffect->getOutputMetadata(3., ViewIdx(0)).getInt("natron/frame"));
+    EXPECT_EQ(std::optional<int>(4), mergeEffect->getOutputMetadata(4., ViewIdx(0)).getInt("natron/frame"));
 }
 
 TEST_F(BaseTest, NativeMetadataOfUnconnectedNodeIsEmpty)

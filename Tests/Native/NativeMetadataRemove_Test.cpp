@@ -122,17 +122,17 @@ TEST_F(MetadataRemoveTest, GlobRemovesMatchingKeysOnly)
 
     EXPECT_FALSE(result.contains("exr/tag"));
     EXPECT_FALSE(result.contains("exr/origin"));
-    EXPECT_EQ(std::optional<int>(1), result.getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
 }
 
 TEST_F(MetadataRemoveTest, ListRemovesEachEntryAndUnmatchedKeysSurvive)
 {
-    setKeys("exr/tag,\nofx/fra?e");
+    setKeys("exr/tag,\nnatron/fra?e");
 
     const ImageMetadata result = metadataOf(remove, 1.);
 
     EXPECT_FALSE(result.contains("exr/tag"));
-    EXPECT_FALSE(result.contains("ofx/frame"));
+    EXPECT_FALSE(result.contains("natron/frame"));
     EXPECT_EQ(std::optional<std::string>("source"), result.getString("exr/origin"));
 }
 

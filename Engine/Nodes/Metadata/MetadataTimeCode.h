@@ -84,12 +84,12 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_METADATATIMECODE,
         .label = "MetadataTimeCode",
-        .description = "Sets ofx/timecode to a non-drop-frame timecode counted on from Start Timecode, "
+        .description = "Sets natron/timecode to a non-drop-frame timecode counted on from Start Timecode, "
                        "which lands on frame 1 (or on Start Frame when Use Start Frame is on), one frame "
                        "per frame, wrapping back to 00:00:00:00 after 23:59:59. The frames field counts "
-                       "at Rate rounded to a whole number, or at the ofx/framerate of Source when Rate "
+                       "at Rate rounded to a whole number, or at the natron/framerate of Source when Rate "
                        "From Metadata is on and Source has one; that rate is also published as "
-                       "ofx/framerate. The image is passed through unchanged.",
+                       "natron/framerate. The image is passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
         .majorVersion = PLUGIN_MAJOR_NATRON_METADATATIMECODE,
         .minorVersion = 0,

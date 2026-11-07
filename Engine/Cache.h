@@ -507,6 +507,17 @@ private:
     mutable QMutex _lock; //protects _memoryCache & _diskCache
     mutable QMutex _getLock;  //prevents get() and getOrCreate() to be called simultaneously
 
+    // Holds no reference: a shared_ptr here would read as a pin.
+    struct EvictionCandidate {
+        const AbstractCacheEntryBase* entry;
+        hash_type hash;
+        std::uint64_t lastUse;
+        double score;
+    };
+
+    // Guarded by _lock.
+    bool _scoredEviction = false;
+    mutable std::vector<EvictionCandidate> _evictionBatch;
 
     /*These 2 are mutable because we need to modify the LRU list even
          when we call get() and we want this function to be const.*/
@@ -840,11 +851,12 @@ private:
             QMutexLocker locker(&_lock);
             std::list<StoredEntryPtr> entriesToBeDeleted;
             double occupationPercentage = (double)memoryCacheSize / maximumInMemorySize;
-            ///While the current cache size can't fit the new entry, erase the last recently used entries.
-            ///Also if the total free RAM is under the limit of the system free RAM to keep free, erase LRU entries.
+            int scansLeft = CacheEviction::kScansPerPass;
+            // The free RAM term of the high-water mark is not tested here: the reading it needs is only as fresh as
+            // the check at the top of this function, which has already evicted for it.
             while (occupationPercentage > NATRON_CACHE_LIMIT_PERCENT) {
                 std::list<StoredEntryPtr> deleted;
-                if ( !tryEvictInMemoryEntry(deleted) ) {
+                if (!tryEvictInMemoryEntry(deleted, &scansLeft)) {
                     break;
                 }
 
@@ -1182,9 +1194,10 @@ public:
             const U64 maximumInMemorySize = std::max((std::size_t)1, _hostTier.limit());
             _hostTier.trimIdlePool();
             double occupationPercentage = (double)memoryCacheSize / maximumInMemorySize;
+            int scansLeft = CacheEviction::kScansPerPass;
             while (occupationPercentage >= NATRON_CACHE_LIMIT_PERCENT) {
                 std::list<StoredEntryPtr> deleted;
-                if ( !tryEvictInMemoryEntry(deleted) ) {
+                if (!tryEvictInMemoryEntry(deleted, &scansLeft)) {
                     break;
                 }
 
@@ -1222,8 +1235,8 @@ public:
     }
 
     /**
-     * @brief Removes the last recently used entry from the in-memory cache.
-     * This is expensive since it takes the lock. Returns false
+     * @brief Removes one entry from the in-memory cache: the lowest score if useEvictionScore() was called, else the
+     * least recently used. This is expensive since it takes the lock. Returns false
      * if there's nothing left to evict.
      **/
     bool evictLRUInMemoryEntry() const
@@ -1234,7 +1247,8 @@ public:
         bool ret;
         {
             QMutexLocker locker(&_lock);
-            ret = tryEvictInMemoryEntry(entriesToBeDeleted);
+            int scansLeft = CacheEviction::kScansPerPass;
+            ret = tryEvictInMemoryEntry(entriesToBeDeleted, &scansLeft);
         }
 
         return ret;
@@ -1458,6 +1472,14 @@ public:
     CacheHostTier& hostTier() const
     {
         return _hostTier;
+    }
+
+    // Opt-in per cache: the score needs a recorded cost and a last use, which only NodeCache's renders supply.
+    void useEvictionScore()
+    {
+        QMutexLocker locker(&_lock);
+
+        _scoredEviction = true;
     }
 
     virtual bool dropFromHost(const CacheEntryPtr& entry) const OVERRIDE FINAL
@@ -1757,6 +1779,9 @@ private:
                 const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(*it);
                 if (typed && (typed->getKey() == key)) {
                     returnValue->push_back(typed);
+                    if (_scoredEviction) {
+                        markUsed(**it);
+                    }
 
                     ///Q_EMIT the added signal otherwise when first reading something that's already cached
                     ///the timeline wouldn't update
@@ -1808,10 +1833,11 @@ private:
                             U64 memoryCacheSize = _hostTier.liveBytes();
                             U64 maximumInMemorySize = _hostTier.limit();
                             std::list<StoredEntryPtr> entriesToBeDeleted;
+                            int scansLeft = CacheEviction::kScansPerPass;
 
                             //now clear extra entries from the disk cache so it doesn't exceed the RAM limit.
                             while (memoryCacheSize > maximumInMemorySize) {
-                                if ( !tryEvictInMemoryEntry(entriesToBeDeleted) ) {
+                                if (!tryEvictInMemoryEntry(entriesToBeDeleted, &scansLeft)) {
                                     break;
                                 }
 
@@ -1856,6 +1882,9 @@ private:
         typename EntryType::hash_type hash = entry->getHashKey();
 
         if (inMemory) {
+            if (_scoredEviction) {
+                markUsed(*entry);
+            }
             /*if the entry doesn't exist on the memory cache,make a new list and insert it*/
             CacheIterator existingEntry = _memoryCache(hash);
             if ( existingEntry == _memoryCache.end() ) {
@@ -1875,10 +1904,92 @@ private:
         }
     }
 
-    bool tryEvictInMemoryEntry(std::list<StoredEntryPtr>& entriesToBeDeleted) const
+    static void markUsed(const AbstractCacheEntryBase& entry)
+    {
+        CacheEntryHeader* header = entry.evictionHeader();
+
+        if (header) {
+            header->lastUse.store(CacheEviction::nowNs());
+        }
+    }
+
+    void refillEvictionBatch() const
+    {
+        assert(!_lock.tryLock());
+        _evictionBatch.clear();
+
+        const std::uint64_t now = CacheEviction::nowNs();
+        _memoryCache.scan(CacheEviction::kSample, [this, now](hash_type hash, const StoredEntryPtr& entry) {
+            // size() is read only here, past the pin test: on a held entry it would race a resize.
+            if (entry.use_count() != 1) {
+                return;
+            }
+            const CacheEntryHeader* header = entry->evictionHeader();
+            const std::uint64_t lastUse = header ? header->lastUse.load() : 0;
+            const float cost = header ? header->recomputeCostNs.load() : 0.f;
+            EvictionCandidate candidate;
+            candidate.entry = entry.get();
+            candidate.hash = hash;
+            candidate.lastUse = lastUse;
+            candidate.score = CacheEviction::score(CacheEviction::kNeutralPriority, cost, 0, now > lastUse ? now - lastUse : 0, entry->size());
+            _evictionBatch.push_back(candidate);
+        });
+
+        const auto byScore = [](const EvictionCandidate& a, const EvictionCandidate& b) { return a.score < b.score; };
+        if (_evictionBatch.size() > CacheEviction::kBatch) {
+            std::nth_element(_evictionBatch.begin(), _evictionBatch.begin() + CacheEviction::kBatch, _evictionBatch.end(), byScore);
+            _evictionBatch.resize(CacheEviction::kBatch);
+        }
+        // Consumed from the back, so that taking one is constant time.
+        std::sort(_evictionBatch.rbegin(), _evictionBatch.rend(), byScore);
+    }
+
+    std::pair<hash_type, StoredEntryPtr> takeLowestScore(int* scansLeft) const
+    {
+        assert(!_lock.tryLock());
+        // A table within the sample size gets an exact order for one scan per pass, whatever was inserted or released
+        // since the batch was taken. In a larger one, such an entry waits its turn for up to a batch, because rescanning
+        // on every create is what the batch exists to avoid.
+        if ((*scansLeft == CacheEviction::kScansPerPass) && (_memoryCache.size() <= CacheEviction::kSample)) {
+            _evictionBatch.clear();
+        }
+
+        for (;;) {
+            while (!_evictionBatch.empty()) {
+                const EvictionCandidate candidate = _evictionBatch.back();
+                _evictionBatch.pop_back();
+                // The candidate's pointer is only compared: the entry may have died since the scan. Comparing the
+                // last use also rejects an entry hit since then, whose score was computed for its old age.
+                StoredEntryPtr taken = _memoryCache.takeIf(candidate.hash, [&candidate](const StoredEntryPtr& entry) {
+                    if ((entry.get() != candidate.entry) || (entry.use_count() != 1)) {
+                        return false;
+                    }
+                    const CacheEntryHeader* header = entry->evictionHeader();
+
+                    return (header ? header->lastUse.load() : 0) == candidate.lastUse;
+                });
+                if (taken) {
+                    return std::make_pair(candidate.hash, std::move(taken));
+                }
+            }
+            if (*scansLeft <= 0) {
+                break;
+            }
+            --*scansLeft;
+            refillEvictionBatch();
+            if (_evictionBatch.empty()) {
+                break;
+            }
+        }
+
+        return _memoryCache.evict();
+    }
+
+    bool tryEvictInMemoryEntry(std::list<StoredEntryPtr>& entriesToBeDeleted,
+                               int* scansLeft) const
     {
         assert( !_lock.tryLock() );
-        std::pair<hash_type, StoredEntryPtr> evicted = _memoryCache.evict();
+        std::pair<hash_type, StoredEntryPtr> evicted = _scoredEviction ? takeLowestScore(scansLeft) : _memoryCache.evict();
         //if the cache couldn't evict that means all entries are used somewhere and we shall not remove them!
         //we'll let the user of these entries purge the extra entries left in the cache later on
         if (!evicted.second) {

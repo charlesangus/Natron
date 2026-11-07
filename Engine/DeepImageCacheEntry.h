@@ -82,6 +82,11 @@ public:
         return _header;
     }
 
+    virtual CacheEntryHeader* evictionHeader() const OVERRIDE FINAL
+    {
+        return _header.get();
+    }
+
     // False from construction until renderDeepRoI() has actually populated the sample table and
     // channels and called allocateMemory(): a cache lookup that finds this entry before then would
     // otherwise hand out an empty payload that just happens to have the right bounds.

@@ -34,7 +34,7 @@
 #include <limits>
 #include <memory>
 
-// Beyond that percentage of occupation, the cache will start evicting LRU entries
+// Beyond that percentage of occupation, the cache will start evicting entries
 #define NATRON_CACHE_LIMIT_PERCENT 0.9
 
 NATRON_NAMESPACE_ENTER
@@ -42,6 +42,84 @@ NATRON_NAMESPACE_ENTER
 class AbstractCacheEntryBase;
 
 typedef std::shared_ptr<AbstractCacheEntryBase> CacheEntryPtr;
+
+namespace CacheEviction {
+
+const double kReuseHalfLifeNs = 30. * 60. * 1e9;
+
+// Multiplying by one leaves the other terms to decide while no signal feeds the priority.
+const double kNeutralPriority = 1.;
+
+// One 60 Hz frame. An entry with no measurement is neither the first to go, as a zero would make it, nor protected
+// from cheaper-looking entries, as a large value would.
+const float kUnmeasuredCostNs = 16e6f;
+
+const std::size_t kBatch = 64;
+
+// The cache lock is held across a scan, so a table of hundreds of thousands of entries is sampled rather than walked.
+const std::size_t kSample = 1024;
+
+// A stream of large allocations against many small entries must still get back under the mark, so a pass does not
+// stop evicting when it runs out of scans: it goes on in recency order, which costs no scan.
+const int kScansPerPass = 4;
+
+std::uint64_t nowNs();
+
+// Lower goes first. An entry holding no bytes scores 0: keeping it saves no RAM, and nothing reads it once unheld.
+double score(double priority,
+             float recomputeCostNs,
+             std::uint32_t reuseCount,
+             std::uint64_t ageNs,
+             std::size_t bytes);
+
+// The stored cost after a render took ownNs over renderedPixels of an entry of wholePixels. Never returns 0, which
+// means no measurement.
+float costAfterRender(float previousNs,
+                      double ownNs,
+                      double wholePixels,
+                      double renderedPixels);
+
+} // namespace CacheEviction
+
+// Measures a render's own wall time. Each instance reports to the enclosing one on its thread, so a render pulling an
+// input from inside its action does not charge that input's time to itself.
+class CacheRecomputeStopwatch {
+public:
+    CacheRecomputeStopwatch();
+    ~CacheRecomputeStopwatch();
+
+    CacheRecomputeStopwatch(const CacheRecomputeStopwatch&) = delete;
+    CacheRecomputeStopwatch& operator=(const CacheRecomputeStopwatch&) = delete;
+
+    // Wall time so far, minus inputs rendered on this thread or on a worker. The two are not added: they overlap in
+    // wall time, and the caller of a parallel loop runs tiles itself, so its time would count twice.
+    double ownNs() const;
+
+    static CacheRecomputeStopwatch* current();
+
+private:
+    friend class CacheRecomputeWorkerScope;
+
+    const std::uint64_t _startNs;
+    const std::uint64_t _nestedAtStart;
+    std::atomic<std::uint64_t> _workerNestedNs;
+    CacheRecomputeStopwatch* const _enclosing;
+};
+
+// A tile running on another thread than its render: nested time lands in that thread's accumulator, which the render's
+// stopwatch cannot read. Only the longest one is kept, because workers overlap in wall time.
+class CacheRecomputeWorkerScope {
+public:
+    explicit CacheRecomputeWorkerScope(CacheRecomputeStopwatch* watch);
+    ~CacheRecomputeWorkerScope();
+
+    CacheRecomputeWorkerScope(const CacheRecomputeWorkerScope&) = delete;
+    CacheRecomputeWorkerScope& operator=(const CacheRecomputeWorkerScope&) = delete;
+
+private:
+    CacheRecomputeStopwatch* const _watch;
+    const std::uint64_t _nestedAtStart;
+};
 
 class CacheTier {
 public:

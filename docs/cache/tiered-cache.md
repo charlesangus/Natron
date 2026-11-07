@@ -121,15 +121,15 @@ pixels in RAM.
 | `bitmap` | `Bitmap`, absent for deep | under `_entryLock` | the trimap (`Engine/Image.h:67-169`); null in RAM while the entry is disk-resident |
 | `pending` | `ImageBeingRenderedPtr` | under the entry's `pendingLock` | the entry's slot in the being-rendered registry; see [A1](#assumptions-checked) for why not the stripe |
 | `residency` | atomic mask: host, disk, device | tier moves | which tiers hold a copy; a mask because a device and a host copy can coexist |
-| `bytes` | atomic `size_t` | allocation, resize | payload plus bitmap, as `Image::size` (`Engine/Image.h:293-304`) |
+| `bytes` | not stored | | payload plus bitmap, from `size()` (`Engine/Image.h`); the scan calls it only on entries nobody holds, where no resize can race it and its `tryLockForRead` cannot wait |
 | `state` | atomic enum: normal, demoting, promoting | tier moves | a move in flight, which a lookup can overtake |
 | `pinned` | bool | at creation | DiskCache node output |
 | `lastUse` | atomic wall-clock ns | real hits only | age term of the score; wall clock so it survives a restart |
-| `reuseCount` | atomic `U32` | real hits only | reuse multiplier; counted once per frame through `lastReuseFrame` |
-| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the file's stats block; the score itself recomputes it |
+| `reuseCount` | atomic `U32`, added by M300.P2.T3 | real hits only | reuse multiplier; counted once per frame through `lastReuseFrame`. Until it exists the score passes 0 |
+| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the file's stats block; the score itself recomputes it. Not written yet: the score uses a neutral 1 until M300.P2.T3 |
 | `recomputeCostNs` | atomic `float` | after each render | own render time scaled to the full bounds; see [Recompute cost](#recompute-cost) |
 
-The score scan reads atomics, so it takes no per-entry lock.
+The score scan reads atomics and the `size()` of unheld entries, so it waits on no per-entry lock.
 
 An `Image` always has a header, including uncached images built with `useBitmap` (`Engine/Image.h:191`), because
 `markImagesAsBeingRendered` accepts any image with a bitmap (`Engine/EffectInstancePrivate.cpp:881-919`). `Image` keeps
@@ -171,7 +171,7 @@ demotion cost, otherwise dropped. It requires that no render holds the entry.
 
 | Tier | `budget()` | `used()` | `demote` | `promote` |
 | --- | --- | --- | --- | --- |
-| Host (`Engine/CacheHostTier.cpp`) | `min(maxRAMPercent × total RAM, used + available RAM − keep-free RAM)`; defaults 50% and 20% (`Engine/Settings.cpp:1799-1800`), the second term replacing `checkCacheFreeMemoryIsGoodEnough` (`Engine/AppManager.cpp:3029-3035`) | live entries plus idle `HostImageMemory` pool, as today (`Engine/HostImageMemory.h`, class comment) | queue for the disk writer if worth it, else drop; the idle publisher also writes behind and keeps the RAM copy | allocate from `HostImageMemory`, `pread` the file, verify it, reload the bitmap |
+| Host (`Engine/CacheHostTier.cpp`) | `min(maxRAMPercent × total RAM, used + available RAM − keep-free RAM)`; defaults 50% and 20% (`Engine/Settings.cpp:1799-1800`), the second term fed by `checkCacheFreeMemoryIsGoodEnough` (`Engine/AppManager.cpp:3029-3035`) | live entries plus idle `HostImageMemory` pool (`Engine/HostImageMemory.h`, class comment). This is a reading for the tier's callers; eviction compares live bytes only, see [Score and high-water marks](#score-and-high-water-marks) | queue for the disk writer if worth it, else drop; the idle publisher also writes behind and keeps the RAM copy | allocate from `HostImageMemory`, `pread` the file, verify it, reload the bitmap |
 | Disk (`Engine/CacheDiskTier.cpp`) | the size preference, capped at 25% of free space; each process computes the cap and the smallest view wins | last scan plus the sum of the sessions' ledgers, refreshed each second | drop: unlink the file | not called: nothing lies below it |
 | Device (M301 - GPU Cache Tier) | see [Device tier hooks](#device-tier-hooks) | | | |
 
@@ -180,7 +180,8 @@ Host demotion is off the cache lock. The current path syncs under `_lock` (`tryE
 `demote` sets `state = demoting` and hands the entry to one writer thread, modelled on `DeleterThread`
 (`Engine/Cache.h:81`). Its RAM stays charged until the write completes, and a lookup in the meantime reads RAM and
 cancels the move. An allocation that finds the tier full waits on `_memoryFullCondition` as it does for the deleter
-(`Engine/Cache.h:876`). When the queue holds more than `demotionQueueFraction` of the host budget, `demote` drops
+(`Engine/Cache.h:890`). `createInternal` holds `_getLock` throughout, and `get` takes it too, so that wait stalls every
+lookup of the cache; the disk tier must not make it wait on a write. When the queue holds more than `demotionQueueFraction` of the host budget, `demote` drops
 instead, so a slow disk costs recomputes and not a stalled render.
 
 Promotion happens when a render reads the entry, on that render's thread, never during a probe. Pinned DiskCache
@@ -188,7 +189,22 @@ entries are read through their mapping and not copied on a local disk, and read 
 
 ## Score and high-water marks
 
-The score, per tier, is computed only once `used() > highWater × budget()`:
+The score, per tier, is computed only once occupancy passes the high-water mark, which for the host tier is
+`min(highWater × limit, used + available RAM − keep-free RAM)`. The mark is not `highWater × budget()`: that would scale
+the RAM term too, and start evicting once `available − keep-free` falls below about `0.11 × used`, where today nothing is
+evicted until available RAM is below keep-free.
+
+The two terms have separate drivers, and neither reads `used()`, so it can stay behind the pool mutex:
+
+- The limit term: `createInternal` and `clearExceedingEntries` compare live bytes to `highWater × limit`, after
+  `trimIdlePool`. The idle pool is not part of the comparison. It is trimmed first, to what the mark leaves above live
+  bytes, so live plus pool is under the mark whenever live is. A cache with a limit of 0 therefore still empties the
+  process-wide pool on every create. That is the behaviour before the score, and the score does not need it changed.
+- The RAM term: `used` cancels, so past the mark means available RAM below keep-free. The free-RAM check at the top of
+  `createInternal` evicts until the shortfall is covered (`evictMemoryCachesUntilShortfallCovered`). `createInternal`'s own
+  loop does not test it, because the reading goes stale as soon as that check has evicted.
+
+The formula:
 
 ```
 score = priority × recomputeCost × reuseMultiplier ÷ bytes
@@ -196,7 +212,7 @@ reuseMultiplier = (1 + log2(1 + reuseCount)) × 2^(−age / reuseHalfLife)
 ```
 
 No eviction happens below the mark. That is the user's decision ("just not evict stuff until we need to"), so there is
-no low-water mark: as today (`Engine/Cache.h:846`), eviction stops as soon as the incoming entry fits under the mark.
+no low-water mark: as today (`Engine/Cache.h:859`), eviction stops as soon as the incoming entry fits under the mark.
 
 **The age term is an interpretation.** The milestone's formula has no age term, but its header has `last use` with no
 stated role. Without one, an orphaned expensive entry (from an old file, an old hash) outranks live cheap entries
@@ -212,19 +228,54 @@ hitting the entry from before the edit.
 A hit is a reuse; a probe is not. Pruned tasks are not touched, so an entry shielded by a hit below it ages. That is
 intended: if the hit is lost, its own recompute hits whatever survives above it.
 
-Selection is a scan, cached. On crossing the mark, scan the tier's entries, keep the `evictionBatch` lowest with
-`nth_element`, consume them, rescan when they run out. It is O(entries) per batch, on atomics, and each candidate is
-rechecked for holds when taken. A heap would need a rebuild anyway, because scores move with time.
+Selection is a sampled scan, cached. On crossing the mark, score `evictionSample` entries from a cursor that continues
+where the last scan stopped, keep the `evictionBatch` lowest with `nth_element`, consume them, rescan when they run out. A
+walk over the whole table per batch is not acceptable here: the host tier's scan holds `_lock`, which every lookup takes,
+and the tier can hold hundreds of thousands of entries. The cursor makes successive scans cover the table, at most
+`⌈entries ÷ evictionSample⌉` of them, without bias toward recency; a hit that moves the cursor's own entry to the recent
+end skips ahead, and what it skips comes round on the next lap. A heap would need a rebuild anyway, because scores move
+with time.
+
+A candidate holds no reference, because a reference would read as a hold. When taken it is looked up by key without
+touching recency, and refused if it has gone, is held, or was hit since the scan. A table no larger than the sample gets
+an exact order, because each pass rescans; in a larger one, an entry that appeared after the scan waits for the next batch.
+
+Eviction work per pass (one `createInternal` or `clearExceedingEntries` call) is bounded: at most `evictionScansPerPass`
+scans of `evictionSample` visits each, plus one O(1) lookup and erase per eviction. Once a pass has used its scans, or a scan
+finds nothing unheld, the remaining evictions take the oldest unheld entry as before, because a hard cap on evictions would
+let a stream of large allocations overshoot RAM against many small entries. That fallback walks only the held prefix of the
+recency list, which is the cost eviction has always had. The free-RAM check runs one pass per eviction, releasing `_lock`
+between them. The number of evictions is what the bytes above the mark require, and each one removes an entry some earlier
+create paid to insert.
+
+Only `NodeCache` opts in (`useEvictionScore`). `ViewerCache` and `DiskCache` keep the recency order until M300.P3.T3.
 
 An entry that no longer fits under any budget is not rejected: it lives in RAM while held, as today, and is then the
 first to go.
 
+A large deep render no longer pushes out images in recency order. Its entry weighs nothing until `allocateMemory()`
+captures its size after the render; `clearExceedingEntries` then trims by score while the render still holds that entry, so
+what leaves is what costs least per byte, whichever payload it is. Once released, a large deep entry of modest cost is
+itself a low scorer.
+
 ### Recompute cost
 
-Recorded in `renderRoI` (`Engine/EffectInstanceRenderRoI.cpp`, M300.P2.T2), around the render action, for both
-schedulers: own wall time, minus time in nested `renderRoI` calls (a thread-local accumulator), scaled by
-`bounds area ÷ rendered area`. A hit records nothing. Each entry's cost is an exponentially weighted average when it
-re-renders in part; a per-node remembered cost, kept by `CacheRetention`, answers for an entry not rendered yet.
+Recorded in `renderRoI` (`Engine/EffectInstanceRenderRoI.cpp`, M300.P2.T2) and `renderDeepRoI`
+(`Engine/EffectInstanceRenderDeep.cpp`), around the render action, for both schedulers: own wall time, minus time in nested
+`renderRoI` and `renderDeepRoI` calls (a thread-local accumulator), scaled by `bounds area ÷ rendered area`. A hit, an
+abort or a failure records nothing. Each entry's cost is an exponentially weighted average (weight 0.5) when it re-renders
+in part. All planes of a render are charged the whole action, because recomputing any one of them runs it.
+
+Tiles on worker threads publish their nested time to the render's stopwatch. The stopwatch subtracts the longest single
+tile's nested time or the calling thread's, whichever is larger, and does not add them, because they overlap in wall time.
+That under-subtracts when one worker pulls two slow inputs in two tiles. The cost only has to rank nodes that differ by
+factors of hundreds.
+
+An entry with no recorded cost scores as `unmeasuredCost`, 16 ms, so it is neither first to go nor protected: restored
+entries, planes a plug-in adds on the fly, and members a GPU region publishes until M301 - GPU Cache Tier. An entry in
+flight has none either, but a render holds it, so it is not a candidate. A per-node remembered cost, kept by
+`CacheRetention` (M300.P2.T3), will answer for these instead. An entry holding no bytes scores 0: an unheld one is a render
+that never completed.
 
 Why not reuse the scheduler's task wall time: see [Assumptions](#assumptions-checked).
 
@@ -336,7 +387,7 @@ What removes a pin:
 A deleted project's pins are not removed by anything else: they hold their budget until a clear or a new build. This is
 the user's choice.
 
-Today the DiskCache instance evicts by LRU past its budget (`Engine/Cache.h:846`, `:893`); "never evicted" means that
+Today the DiskCache instance evicts by LRU past its budget (`Engine/Cache.h:859`, `:907`); "never evicted" means that
 stops, which leaves the question of a full pin budget. This note's answer:
 
 1. When a pin would exceed the budget, first drop this holder's pins at a different node hash. They are invalid, not
@@ -552,7 +603,7 @@ device. A mip-0 output of a non-scaling node is its own entry once mip is in the
 | Class | Today | Becomes |
 | --- | --- | --- |
 | `Cache<T>` (`Engine/Cache.h:396-397`) | One entry type per instance, constructed at `:919`; four instances (`Engine/AppManager.cpp:1105-1115`); LRU and RAM/disk split inside | `Cache<FrameEntry>` stays as it is for `ViewerCache`, tiles and own budget. `NodeCache`, `DeepImageCache` and `DiskCache` go into one non-template tiered cache with typed `Image` and `DeepImageCacheEntry` accessors, so `AppManager`'s getters keep their shape. As of M300.P1.T4 the deep entries are in `NodeCache`, which is still `Cache<Image>`: its containers hold `AbstractCacheEntryBase` pointers, and `get` and `getOrCreate` are member templates on the payload that filter by type. `DiskCache` and the non-template cache remain ahead |
-| `LRUHashTable` (`Engine/LRUHashTable.h`) | Active variant `BoostLRUHashTable` (`:578`), since `NATRON_CACHE_USE_HASH` and `NATRON_CACHE_USE_BOOST` are defined (`:67-69`); the milestone's `:199` is an inactive one. Any lookup moves to most recent; `evict` (`:646`) takes the front with `use_count() == 1` (`:651`) | Used only by `Cache<FrameEntry>`. The tiered cache uses a plain hash table of entry lists, with recency in the header. M300.P2.T2 lists this file; nothing changes in it |
+| `LRUHashTable` (`Engine/LRUHashTable.h`) | Active variant `BoostLRUHashTable` (`:476`), since `NATRON_CACHE_USE_HASH` and `NATRON_CACHE_USE_BOOST` are defined (`:67-69`); the milestone's `:199` is an inactive one. Any lookup moves to most recent; `evict` (`:544`) takes the front with `use_count() == 1` (`:549`). M300.P2.T2 added `scan`, the cursor of the sampled scan, and `takeIf`, a removal that leaves recency alone, to the active variant | Used only by `Cache<FrameEntry>`. The tiered cache uses a plain hash table of entry lists, with recency in the header |
 | `CacheEntryHolder` (`Engine/CacheEntryHolder.h:40-57`) | Interface with `getCacheID()`, a UUID on `Node` (`Engine/Node.cpp:912`) | Unchanged. Still owner identity for removal and stats, and now the key into `CacheRetention`, interned on the header |
 | `HostImageMemory` (`Engine/HostImageMemory.h`) | Pooled importable RAM; pool counts against the limit and is trimmed first (`trimTo`, `Engine/Cache.h:839`, `:1170-1176`) | The host tier's allocator, unchanged. The tier trims the idle pool before scoring anything. Promotion allocates here, so a promoted entry stays importable |
 | `DeepImageCacheEntry` (`Engine/DeepImageCacheEntry.h:58-59`) | `CacheEntryHelper<char, …>` with `DeepImagePtr` beside an unused generic buffer; size snapshot at `:86-90`; its own 2 GiB instance | A payload type with a header, without the buffer accounting (done in M300.P1.T4, its instance and setting retired). Its size is real bytes for the score. The old reason for its own budget (`Engine/AppManager.cpp:1112-1113`, a big deep render would evict all 2D) is answered by the score: large and cheap goes first, whatever the type |
@@ -584,7 +635,7 @@ applies on a small disk.
 **Deep graphs.** Pruning follows only what will run, and the edit touches direct inputs. The O(N²) upstream walks in the render
 scaling findings are not added to.
 
-**Broad graphs.** Many small entries: the scan is O(entries) per batch, a header is a few hundred bytes, and the bitmap of a
+**Broad graphs.** Many small entries: the scan is bounded by `evictionSample` per batch whatever the table holds, a header is a few hundred bytes, and the bitmap of a
 disk entry is not in RAM. The branch signal separates what is viewed from what is not. This is where `all` and `priorityFloor`
 differ.
 
@@ -628,7 +679,7 @@ measured nodes differ by factors of hundreds.
 
 | Constant | Start | What measurement would change it |
 | --- | --- | --- |
-| `highWater` | 0.9, all tiers (today's `NATRON_CACHE_LIMIT_PERCENT`, `Engine/Cache.h:67`) | Allocation waits or free-RAM evictions in the peak-RAM run of M300.P4.T1 lower it; a run where a tier sits unused above it raises it |
+| `highWater` | 0.9, all tiers (today's `NATRON_CACHE_LIMIT_PERCENT`, `Engine/CacheTier.h:38`) | Allocation waits or free-RAM evictions in the peak-RAM run of M300.P4.T1 lower it; a run where a tier sits unused above it raises it |
 | `reuseHalfLife` | 30 min | Eviction count in a scripted session that switches branches and returns: raise it if returning re-runs expensive nodes, lower it if orphans hold the budget |
 | Edit half-life, weight | 120 s, 8 | Upstream executions on the second edit after a pause, in a variant of the benchmark with memory pressure |
 | Panel half-life, weight | 60 s, 4 | As above, panel open, then closed |
@@ -637,6 +688,9 @@ measured nodes differ by factors of hundreds.
 | Expensive signal weight, `expensiveCostMs` | 1, 16 ms (one 60 Hz frame) | Measured walls straddle this: `RawDemosaic` 383.6 ms at fit, 7.1 at 100%. Move it if the signal separates nothing |
 | `admissionCostMs` | 16 ms | The off-branch graph in M300.P4.T1: lower if off-branch re-runs dominate latency; raise if off-branch writes dominate peak RAM |
 | `evictionBatch` | 64 | Scan time from a profile of a cache with many small entries; a scan over 1 ms of lock hold lowers the scan rate by raising it |
+| `evictionSample` | 1024 (the disk tier's sample) | The same profile lowers it if a scan holds the lock too long; eviction quality on a large table (an expensive entry evicted while cheaper ones wait outside the sample) raises it |
+| `evictionScansPerPass` | 4 | How often a pass falls back to recency order under a large allocation; raise it if that evicts expensive entries |
+| `unmeasuredCost` | 16 ms, as `expensiveCostMs` | How restored entries fare against measured ones once persistence lands |
 | `diskWriteBytesPerSecond` | 500 MB/s, then learned | Start value only; matters for the first writes. Set it from the median over the user's and a SATA host's first-minute rates |
 | `demotionQueueFraction` | 0.1 of host budget | Allocation stalls versus drops during a sustained run on a slow disk |
 | Negative-cache lifetime | 1 s; 2 s for a listing on a network mount | The bench of M300.P3.T4: raise it if misses cost more than 30 ms per 1000-node frame, lower it if a peer's publish is seen too late |

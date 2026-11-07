@@ -26,10 +26,124 @@
 #include "CacheTier.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 
 #include "Engine/HostImageMemory.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// How far a partial re-render moves the stored cost: its own scaling is noisier than a whole render's.
+const double kPartialRenderWeight = 0.5;
+
+// A measurement too short for the clock must still not read as no measurement.
+const double kMinimumCostNs = 1000.;
+
+thread_local std::uint64_t s_nestedRenderNs = 0;
+thread_local CacheRecomputeStopwatch* s_currentStopwatch = NULL;
+
+std::uint64_t
+monotonicNs()
+{
+    return (std::uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+
+namespace CacheEviction {
+
+std::uint64_t
+nowNs()
+{
+    return (std::uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+double
+score(double priority,
+      float recomputeCostNs,
+      std::uint32_t reuseCount,
+      std::uint64_t ageNs,
+      std::size_t bytes)
+{
+    if (bytes == 0) {
+        return 0.;
+    }
+
+    const double cost = recomputeCostNs > 0.f ? recomputeCostNs : kUnmeasuredCostNs;
+    const double reuseMultiplier = (1. + std::log2(1. + (double)reuseCount)) * std::pow(2., -(double)ageNs / kReuseHalfLifeNs);
+
+    return priority * cost * reuseMultiplier / (double)bytes;
+}
+
+float
+costAfterRender(float previousNs,
+                double ownNs,
+                double wholePixels,
+                double renderedPixels)
+{
+    const double scale = renderedPixels > 0. ? std::max(1., wholePixels / renderedPixels) : 1.;
+    const double cost = std::max(kMinimumCostNs, ownNs * scale);
+
+    if (previousNs <= 0.f) {
+        return (float)cost;
+    }
+
+    return (float)((double)previousNs + kPartialRenderWeight * (cost - (double)previousNs));
+}
+
+} // namespace CacheEviction
+
+CacheRecomputeStopwatch::CacheRecomputeStopwatch()
+    : _startNs(monotonicNs())
+    , _nestedAtStart(s_nestedRenderNs)
+    , _workerNestedNs(0)
+    , _enclosing(s_currentStopwatch)
+{
+    s_currentStopwatch = this;
+}
+
+CacheRecomputeStopwatch::~CacheRecomputeStopwatch()
+{
+    // Replaces rather than adds: this scope's wall time already contains whatever nested in it.
+    s_nestedRenderNs = _nestedAtStart + (monotonicNs() - _startNs);
+    s_currentStopwatch = _enclosing;
+}
+
+double
+CacheRecomputeStopwatch::ownNs() const
+{
+    const std::uint64_t wall = monotonicNs() - _startNs;
+    const std::uint64_t nested = std::max(s_nestedRenderNs - _nestedAtStart, _workerNestedNs.load());
+
+    return wall > nested ? (double)(wall - nested) : 0.;
+}
+
+CacheRecomputeStopwatch*
+CacheRecomputeStopwatch::current()
+{
+    return s_currentStopwatch;
+}
+
+CacheRecomputeWorkerScope::CacheRecomputeWorkerScope(CacheRecomputeStopwatch* watch)
+    : _watch(watch)
+    , _nestedAtStart(s_nestedRenderNs)
+{
+}
+
+CacheRecomputeWorkerScope::~CacheRecomputeWorkerScope()
+{
+    if (!_watch) {
+        return;
+    }
+
+    const std::uint64_t nested = s_nestedRenderNs - _nestedAtStart;
+    std::uint64_t longest = _watch->_workerNestedNs.load();
+
+    while (nested > longest && !_watch->_workerNestedNs.compare_exchange_weak(longest, nested)) {
+    }
+}
 
 CacheHostTier::CacheHostTier(const CacheHostStorage* storage,
                              std::size_t limit)

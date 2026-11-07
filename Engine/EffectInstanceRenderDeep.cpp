@@ -36,6 +36,7 @@
 #include <QThread>
 
 #include "Engine/AppManager.h"
+#include "Engine/CacheTier.h"
 #include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
@@ -213,6 +214,8 @@ EffectInstance::RenderRoIRetCode
 EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                               DeepImagePtr* outputDeepImage)
 {
+    CacheRecomputeStopwatch wholeCall;
+
     assert(outputDeepImage);
     if (!outputDeepImage) {
         return eRenderRoIRetCodeFailed;
@@ -508,12 +511,14 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
     actionArgs.byPassCache = args.byPassCache;
 
+    CacheRecomputeStopwatch renderWatch;
     StatusEnum st;
     try {
         st = renderDeep(actionArgs);
     } catch (...) {
         st = eStatusFailed;
     }
+    const double renderOwnNs = renderWatch.ownNs();
 
     if (aborted()) {
         if (cacheEntry) {
@@ -552,6 +557,8 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         // The one point at which the cache captures this entry's byte cost, so it must happen
         // after renderDeep() has populated the sample table and the channel buffers.
         cacheEntry->allocateMemory();
+        // A deep entry is all-or-nothing, so this render was of the whole of it.
+        cacheEntry->getEntryHeader()->recomputeCostNs.store(CacheEviction::costAfterRender(0.f, renderOwnNs, 1., 1.));
     }
 
     for (std::list<DeepImageCacheEntryPtr>::const_iterator it = supersededDeepEntries.begin(); it != supersededDeepEntries.end(); ++it) {

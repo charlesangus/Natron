@@ -520,6 +520,11 @@ public:
     virtual void reOpenFileMapping() const = 0;
     virtual void scheduleForDestruction() = 0;
 
+    virtual CacheEntryHeader* evictionHeader() const
+    {
+        return NULL;
+    }
+
 protected:
 
     AbstractCacheEntryBase(const AbstractCacheEntryBase&) = delete;

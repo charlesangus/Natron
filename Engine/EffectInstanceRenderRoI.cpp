@@ -49,6 +49,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/Cache.h"
+#include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
@@ -121,6 +122,42 @@ public:
 private:
     EffectInstance::RenderCacheStateEnum _state;
 };
+
+// Rerendering any plane of an action runs the whole action, so each image is charged all of it.
+template <typename LayersToRender>
+void
+recordRecomputeCost(const LayersToRender& layersToRender,
+                    double ownNs)
+{
+    double renderedPixels = 0.;
+    for (const auto& rect : layersToRender.rectsToRender) {
+        if (!rect.isIdentity) {
+            renderedPixels += (double)rect.rect.area();
+        }
+    }
+    if (renderedPixels <= 0.) {
+        return;
+    }
+
+    // The rectangles are in the coordinates of the image the action wrote, which a downscaled output is not.
+    const auto first = layersToRender.layers.begin();
+    if ((first == layersToRender.layers.end()) || !first->second.renderMappedImage) {
+        return;
+    }
+    const double wholePixels = (double)first->second.renderMappedImage->getBounds().area();
+
+    std::set<ImagePtr> rendered;
+    for (const auto& layer : layersToRender.layers) {
+        rendered.insert(layer.second.fullscaleImage);
+        rendered.insert(layer.second.downscaleImage);
+    }
+    for (const ImagePtr& image : rendered) {
+        if (image) {
+            std::atomic<float>& cost = image->getEntryHeader()->recomputeCostNs;
+            cost.store(CacheEviction::costAfterRender(cost.load(), ownNs, wholePixels, renderedPixels));
+        }
+    }
+}
 
 } // namespace
 
@@ -432,6 +469,8 @@ EffectInstance::RenderRoIRetCode
 EffectInstance::renderRoI(const RenderRoIArgs& args,
                           std::map<ImageLayerDesc, ImagePtr>* outputLayers)
 {
+    CacheRecomputeStopwatch wholeCall;
+
     //Do nothing if no components were requested
     if ( args.components.empty() ) {
         qDebug() << getScriptName_mt_safe().c_str() << "renderRoi: Early bail-out components requested empty";
@@ -1666,6 +1705,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             }
         }
         if (attachGLOK) {
+            CacheRecomputeStopwatch renderWatch;
             renderRetCode = renderRoIInternal(renderInstance.get(),
                                               args.time,
                                               frameArgs,
@@ -1684,6 +1724,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                               outputClipPrefComps,
                                               neededComps,
                                               processChannels);
+            if ((renderRetCode == eRenderRoIStatusImageRendered) && !aborted()) {
+                recordRecomputeCost(*layersToRender, renderWatch.ownNs());
+            }
             if (useOpenGL) {
                 // If the plug-in doesn't support concurrent OpenGL renders, release the lock that was taken in the call to attachOpenGLContext_public() above.
                 // For safe plug-ins, we call dettachOpenGLContext_public when the effect is destroyed in Node::deactivate() with the function EffectInstance::dettachAllOpenGLContexts().
@@ -2069,7 +2112,9 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
                 rects.push_back(&*it);
             }
             std::vector<EffectInstance::RenderingFunctorRetEnum> ret(rects.size(), EffectInstance::eRenderingFunctorRetFailed);
+            CacheRecomputeStopwatch* const renderWatch = CacheRecomputeStopwatch::current();
             const std::function<void(int)> render = [&](int i) {
+                CacheRecomputeWorkerScope workerScope(renderWatch);
                 ret[i] = self->_imp->tiledRenderingFunctor(*tiledArgs, *rects[i], currentThread);
             };
             parallelForOnGlobalPool((int)rects.size(), appPTR->getNCPUsAvailableForEffect(), render);

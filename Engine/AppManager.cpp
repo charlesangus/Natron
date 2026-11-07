@@ -1102,6 +1102,7 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
+        _imp->_nodeCache->useEvictionScore();
         _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
         _imp->setViewerCacheTileSize();

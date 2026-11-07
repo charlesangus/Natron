@@ -99,6 +99,8 @@ public:
 
     const CacheEntryHeaderPtr& getEntryHeader() const { return _header; }
 
+    virtual CacheEntryHeader* evictionHeader() const OVERRIDE FINAL { return _header.get(); }
+
     StorageModeEnum getStorageMode() const
     {
         return _params->getStorageInfo().mode;

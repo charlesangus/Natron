@@ -232,7 +232,7 @@ releaseLayerTableRefreshHold()
     ProjectPtr project = layerTableRefreshPending.lock();
     layerTableRefreshPending.reset();
     if (project && !project->isLoadingProject() && !project->isProjectClosing()) {
-        project->refreshLayersKnob();
+        project->queueLayersKnobRefresh();
     }
 }
 
@@ -4668,14 +4668,13 @@ namespace {
 template <typename Stop>
 void
 walkDownstreamUntil(const Node* start,
+                    std::unordered_set<const Node*>* visited,
                     Stop stop)
 {
-    std::unordered_set<const Node*> visited;
     std::vector<NodePtr> outputs;
     std::vector<NodePtr> stack;
 
-    visited.insert(start);
-    if (stop(start)) {
+    if (!visited->insert(start).second || stop(start)) {
         return;
     }
     start->appendOutputsWithGroupRedirection(&outputs);
@@ -4684,7 +4683,7 @@ walkDownstreamUntil(const Node* start,
         NodePtr node = std::move(stack.back());
         stack.pop_back();
         assert(node);
-        if (!visited.insert(node.get()).second || stop(node.get())) {
+        if (!visited->insert(node.get()).second || stop(node.get())) {
             continue;
         }
         outputs.clear();
@@ -4692,12 +4691,45 @@ walkDownstreamUntil(const Node* start,
         stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
     }
 }
+
+thread_local int removalBatchDepth = 0;
+thread_local std::unordered_set<const Node*> removalBatchOutputWalkVisited;
+
+bool
+collectViewer(std::list<ViewerInstance*>* viewers,
+              const Node* node)
+{
+    ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
+    if (viewer) {
+        viewers->push_back(viewer);
+
+        return true;
+    }
+
+    return false;
+}
 } // anonymous namespace
+
+Node::RemovalBatch::RemovalBatch()
+{
+    ++removalBatchDepth;
+}
+
+Node::RemovalBatch::~RemovalBatch()
+{
+    if (--removalBatchDepth == 0) {
+        removalBatchOutputWalkVisited.clear();
+    }
+}
 
 void
 Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 {
-    walkDownstreamUntil(this, [writers](const Node* node) {
+    std::unordered_set<const Node*> visited;
+
+    // Removing nodes only takes edges away, so what an earlier walk of the batch reached was all
+    // reachable before this walk, and the renders of its outputs have been aborted.
+    walkDownstreamUntil(this, (removalBatchDepth > 0) ? &removalBatchOutputWalkVisited : &visited, [writers](const Node* node) {
         OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
         if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
             writers->push_back(writer);
@@ -4712,16 +4744,24 @@ Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 void
 Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
 {
-    walkDownstreamUntil(this, [viewers](const Node* node) {
-        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
-        if (viewer) {
-            viewers->push_back(viewer);
+    std::unordered_set<const Node*> visited;
 
-            return true;
-        }
-
-        return false;
+    walkDownstreamUntil(this, &visited, [viewers](const Node* node) {
+        return collectViewer(viewers, node);
     });
+}
+
+void
+Node::getViewersDownstreamOf(const std::list<NodePtr>& nodes,
+                             std::list<ViewerInstance*>* viewers)
+{
+    std::unordered_set<const Node*> visited;
+
+    for (const NodePtr& start : nodes) {
+        walkDownstreamUntil(start.get(), &visited, [viewers](const Node* node) {
+            return collectViewer(viewers, node);
+        });
+    }
 }
 
 int
@@ -8132,7 +8172,7 @@ Node::Implementation::notifyLayerReferencesChanged()
 
         return;
     }
-    project->refreshLayersKnob();
+    project->queueLayersKnobRefresh();
 }
 
 bool

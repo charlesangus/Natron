@@ -333,7 +333,25 @@ struct NodeCollectionPrivate
         return name;
     }
 
-    NodePtr findNodeInternal(const std::string& name, const std::string& recurseName) const;
+    // The activated node of that script-name in the index of the open batch.
+    NodePtr findIndexedNode(const std::string& name)
+    {
+        buildNamingIndexIfNeeded();
+        std::unordered_map<std::string, std::vector<NodeWPtr>>::const_iterator found = namingIndex[eNodeNameKindScriptName].find(name);
+        if (found == namingIndex[eNodeNameKindScriptName].end()) {
+            return NodePtr();
+        }
+        for (const NodeWPtr& candidate : found->second) {
+            NodePtr node = candidate.lock();
+            if (node && namingMembers.count(node.get()) && node->isActivated() && (node->getScriptName_mt_safe() == name)) {
+                return node;
+            }
+        }
+
+        return NodePtr();
+    }
+
+    NodePtr findNodeInternal(const std::string& name, const std::string& recurseName);
 };
 
 NodeCollection::NodeCollection(const AppInstancePtr& app)
@@ -987,9 +1005,13 @@ NodeCollection::autoConnectNodes(const NodePtr& selected,
 
 NodePtr
 NodeCollectionPrivate::findNodeInternal(const std::string& name,
-                                        const std::string& recurseName) const
+                                        const std::string& recurseName)
 {
     QMutexLocker k(&nodesMutex);
+
+    if ((namingBatches > 0) && recurseName.empty()) {
+        return findIndexedNode(name);
+    }
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         if ( (*it)->isActivated() && (*it)->getScriptName_mt_safe() == name ) {
@@ -1013,6 +1035,29 @@ NodeCollectionPrivate::findNodeInternal(const std::string& name,
     }
 
     return NodePtr();
+}
+
+void
+NodeCollection::getActivatedNodesNamed(const std::unordered_set<std::string>& names,
+                                       NodesList* nodes) const
+{
+    QMutexLocker k(&_imp->nodesMutex);
+
+    if (_imp->namingBatches > 0) {
+        for (const std::string& name : names) {
+            NodePtr node = _imp->findIndexedNode(name);
+            if (node) {
+                nodes->push_back(node);
+            }
+        }
+
+        return;
+    }
+    for (const NodePtr& node : _imp->nodes) {
+        if (node->isActivated() && (names.find(node->getScriptName_mt_safe()) != names.end())) {
+            nodes->push_back(node);
+        }
+    }
 }
 
 NodePtr

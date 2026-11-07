@@ -341,6 +341,11 @@ Edge::computeVisibility() const
         return false;
     }
 
+    // A deactivated node keeps its edges in the scene, hidden until the node is shown again.
+    if (!dst->isVisibleTo(dst->parentItem())) {
+        return false;
+    }
+
     bool inputVisibleInternally = dst ? dst->getNode()->isInputVisible(_imp->inputNb) : true;
     if (!inputVisibleInternally) {
         return false;

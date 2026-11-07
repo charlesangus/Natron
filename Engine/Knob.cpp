@@ -3059,13 +3059,15 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         if (effect) {
             mentioned.insert(effect->getNode()->getScriptName_mt_safe());
         }
-        NodesList siblings = collection->getNodes();
+        NodesList siblings;
+        if (declareAll) {
+            siblings = collection->getNodes();
+        } else {
+            collection->getActivatedNodesNamed(mentioned, &siblings);
+        }
         for (NodesList::iterator it = siblings.begin(); it != siblings.end(); ++it) {
             if ( (*it)->isActivated() && !(*it)->getParentMultiInstance() ) {
                 std::string scriptName = (*it)->getScriptName_mt_safe();
-                if (!declareAll && (mentioned.find(scriptName) == mentioned.end())) {
-                    continue;
-                }
                 if ( NATRON_PYTHON_NAMESPACE::isKeyword(scriptName) ) {
                     throw std::runtime_error(scriptName + " is a Python keyword");
                 }
@@ -4346,43 +4348,28 @@ KnobHelper::removeExpressionDependencies(int dimension,
             if (!other) {
                 continue;
             }
-            ListenerDimsMap otherListeners;
-            {
-                QReadLocker otherMastersLocker(&other->_imp->mastersMutex);
-                otherListeners = other->_imp->listeners;
-            }
-
-            for (ListenerDimsMap::iterator it = otherListeners.begin(); it != otherListeners.end(); ++it) {
-                KnobIPtr knob = it->first.lock();
-                if (knob.get() == this) {
-                    //erase from the dimensions vector
-                    assert( dimension < (int)it->second.size() );
-                    it->second[dimension].isListening = false;
-
-                    //if it has no longer has a reference to this knob, erase it
-                    bool hasReference = false;
-                    for (std::size_t d = 0; d < it->second.size(); ++d) {
-                        if (it->second[d].isListening) {
-                            hasReference = true;
-                            break;
-                        }
-                    }
-                    if (!hasReference) {
-                        otherListeners.erase(it);
-                    }
-
-                    break;
-                }
-            }
-
             if ( getHolder() ) {
                 getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false, true);
             }
 
+            // In place: a driver read by many knobs would otherwise copy all of its listeners for
+            // each of them that stops reading it.
+            QWriteLocker otherMastersLocker(&other->_imp->mastersMutex);
+            ListenerDimsMap::iterator listener = other->_imp->listeners.find(thisShared);
+            if (listener != other->_imp->listeners.end()) {
+                assert(dimension < (int)listener->second.size());
+                listener->second[dimension].isListening = false;
 
-            {
-                QWriteLocker otherMastersLocker(&other->_imp->mastersMutex);
-                other->_imp->listeners = otherListeners;
+                bool hasReference = false;
+                for (std::size_t d = 0; d < listener->second.size(); ++d) {
+                    if (listener->second[d].isListening) {
+                        hasReference = true;
+                        break;
+                    }
+                }
+                if (!hasReference) {
+                    other->_imp->listeners.erase(listener);
+                }
             }
         }
     }

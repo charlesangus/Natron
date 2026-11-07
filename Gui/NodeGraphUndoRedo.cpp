@@ -353,11 +353,14 @@ RemoveMultipleNodesCommand::undo()
     std::list<ViewerInstance*> viewersToRefresh;
     std::list<SequenceTime> allKeysToAdd;
     std::list<NodeToRemove>::iterator next = _nodes.begin();
+    NodesList restored;
 
     if ( next != _nodes.end() ) {
         ++next;
     }
     {
+        // The rechecks at the end of the edit batch compile expressions, naming siblings by name.
+        const NodeCollection::NamingBatch namingBatch(_graph->getGroup());
         Node::InputEditBatch batch(_graph->getGui()->getApp());
         for (std::list<NodeToRemove>::iterator it = _nodes.begin();
              it != _nodes.end();
@@ -381,14 +384,7 @@ RemoveMultipleNodesCommand::undo()
             if (node->isSettingsPanelVisible()) {
                 node->getNode()->showKeyframesOnTimeline(next == _nodes.end());
             }
-            std::list<ViewerInstance*> viewers;
-            node->getNode()->hasViewersConnected(&viewers);
-            for (std::list<ViewerInstance*>::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
-                std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
-                if (foundViewer == viewersToRefresh.end()) {
-                    viewersToRefresh.push_back(*it2);
-                }
-            }
+            restored.push_back(node->getNode());
 
             // increment for next iteration
             if (next != _nodes.end()) {
@@ -396,6 +392,7 @@ RemoveMultipleNodesCommand::undo()
             }
         } // for(it)
     }
+    Node::getViewersDownstreamOf(restored, &viewersToRefresh);
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
         (*it)->renderCurrentFrame(true);
     }
@@ -418,6 +415,17 @@ RemoveMultipleNodesCommand::redo()
         ++next;
     }
     {
+        // Found before any edge is taken away, as a removed node leads to the viewers it fed.
+        NodesList removed;
+        for (std::list<NodeToRemove>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+            NodeGuiPtr node = it->node.lock();
+            if (node) {
+                removed.push_back(node->getNode());
+            }
+        }
+        Node::getViewersDownstreamOf(removed, &viewersToRefresh);
+
+        Node::RemovalBatch removalBatch;
         Node::InputEditBatch batch(_graph->getGui()->getApp());
         for (std::list<NodeToRemove>::iterator it = _nodes.begin();
              it != _nodes.end();
@@ -431,14 +439,6 @@ RemoveMultipleNodesCommand::redo()
             }
             /// Make a copy before calling deactivate which will modify the list
             NodesWList outputs = node->getNode()->getGuiOutputs();
-            std::list<ViewerInstance*> viewers;
-            node->getNode()->hasViewersConnected(&viewers);
-            for (std::list<ViewerInstance*>::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
-                std::list<ViewerInstance*>::iterator foundViewer = std::find(viewersToRefresh.begin(), viewersToRefresh.end(), *it2);
-                if (foundViewer == viewersToRefresh.end()) {
-                    viewersToRefresh.push_back(*it2);
-                }
-            }
 
             NodesList outputsToRestore;
             for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {

@@ -132,6 +132,7 @@ public:
     KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;
+    bool layersKnobRefreshQueued; // main thread only
     mutable QMutex isLoadingProjectMutex;
     bool isLoadingProject; //< true when the project is loading
     bool isLoadingProjectInternal; //< true when loading the internal project (not gui)

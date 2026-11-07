@@ -468,6 +468,12 @@ public:
     /*Returns in viewers the list of all the viewers connected to this node*/
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
+    /**
+     * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
+     * of what is downstream of them all.
+     **/
+    static void getViewersDownstreamOf(const std::list<NodePtr>& nodes, std::list<ViewerInstance*>* viewers);
+
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
     /**
@@ -1985,6 +1991,20 @@ public:
 
     private:
         AppInstancePtr _app;
+    };
+
+    /**
+     * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
+     * share what they visited, so deactivating many nodes walks what is downstream of them once.
+     * Open one only around removing nodes: connecting a node inside it would hide the new output.
+     **/
+    class RemovalBatch {
+    public:
+        RemovalBatch();
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
     };
 
     void markAllInputRelatedDataDirty();

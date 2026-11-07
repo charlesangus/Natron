@@ -2693,6 +2693,28 @@ Project::refreshLayersKnob()
 }
 
 void
+Project::queueLayersKnobRefresh()
+{
+    // Encoding the table visits every node and its widget is rebuilt, which a script creating or
+    // destroying nodes one call at a time would otherwise pay for each of them.
+    if (appPTR->isBackground()) {
+        refreshLayersKnob();
+
+        return;
+    }
+    if (_imp->layersKnobRefreshQueued) {
+        return;
+    }
+    _imp->layersKnobRefreshQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        _imp->layersKnobRefreshQueued = false;
+        if (!isLoadingProject() && !isProjectClosing()) {
+            refreshLayersKnob();
+        }
+    });
+}
+
+void
 Project::emitProjectLayersChangedSignal()
 {
     refreshLayersKnob();

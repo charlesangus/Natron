@@ -1155,7 +1155,11 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
     if (mustUpdate) {
         update();
     }
-    QGraphicsView::mouseMoveEvent(e);
+    // With nothing pressed Qt would only look up all the items under the cursor to deliver hover
+    // events, and no item of the graph handles those.
+    if ((_imp->_evtState != eEventStateNone) || (e->buttons() != Qt::NoButton)) {
+        QGraphicsView::mouseMoveEvent(e);
+    }
 } // mouseMoveEvent
 
 NATRON_NAMESPACE_EXIT

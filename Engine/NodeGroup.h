@@ -32,6 +32,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -206,6 +207,12 @@ public:
      * If no such node could be found, NULL is returned.
      **/
     NodePtr getNodeByName(const std::string & name) const;
+
+    /**
+     * @brief Appends the activated nodes of this collection having one of the given script-names,
+     * in no particular order.
+     **/
+    void getActivatedNodesNamed(const std::unordered_set<std::string>& names, NodesList* nodes) const;
 
     /**
      * @brief Given a fully specified name, e.g: Group1.Group2.Blur1.1, this function extracts the first node name (starting from the left)

@@ -2468,17 +2468,14 @@ NodeGui::showGui()
         return;
     }
     for (U32 i = 0; i < _inputEdges.size(); ++i) {
-        _graph->scene()->addItem(_inputEdges[i]);
-        _inputEdges[i]->setParentItem( parentItem() );
         if ( !node->getEffectInstance()->isInputRotoBrush(i) ) {
             _inputEdges[i]->setActive(true);
         }
     }
     if (_outputEdge) {
-        _graph->scene()->addItem(_outputEdge);
-        _outputEdge->setParentItem( parentItem() );
         _outputEdge->setActive(true);
     }
+    refreshOutputEdgeVisibility();
     refreshEdges();
     // An edge created while this node was hidden was force-hidden regardless of its real
     // connection state (see initializeInputs()); now that the node is shown again, recompute
@@ -2550,18 +2547,16 @@ NodeGui::hideGui()
     }
     hide();
     setActive(false);
+    // The edges stay in the scene, hidden: removing an item costs as much as the scene is large,
+    // which a removal of many nodes would pay for each of their edges.
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if ( (*it)->scene() ) {
-            (*it)->scene()->removeItem( (*it) );
-        }
         (*it)->setActive(false);
         (*it)->setSource( NodeGuiPtr() );
+        (*it)->hide();
     }
     if (_outputEdge) {
-        if ( _outputEdge->scene() ) {
-            _outputEdge->scene()->removeItem(_outputEdge);
-        }
         _outputEdge->setActive(false);
+        _outputEdge->hide();
     }
 
     for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
@@ -3382,7 +3377,7 @@ NodeGui::refreshOutputEdgeVisibility()
 {
     if (_outputEdge) {
         NodePtr node = getNode();
-        if ( node && node->getGuiOutputs().empty() ) {
+        if (node && node->getGuiOutputs().empty() && isVisibleTo(parentItem())) {
             if ( !_outputEdge->isVisible() ) {
                 _outputEdge->setActive(true);
                 _outputEdge->show();

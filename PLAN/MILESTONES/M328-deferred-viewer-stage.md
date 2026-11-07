@@ -60,13 +60,13 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 328.3: Payload rows
 
-- [ ] M328.P3.T1 — List unloaded prims and load on twirl
+- [x] M328.P3.T1 — List unloaded prims and load on twirl
   - files: `Gui/SceneGraphModel.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/Scene/SceneGraphModel_Test.cpp`, `Tests/gui/scene_graph_payloads.py`
   - approach: children come through `GetFilteredChildren` with a predicate that omits `IsLoaded`, as usdview does (`usdviewq/appController.py:3492-3508`). Payload rows get a badge from `HasAuthoredPayloads`, `IsLoaded`. Expanding an unloaded payload row calls `requestLoad` without descendants and shows a loading row until the resync arrives. Rows change incrementally.
   - verify: gtest with `QAbstractItemModelTester` — an unloaded payload row reports children possible and nothing else resets on its load; GUI script on the city — twirling one building opens only that building's layer, and other rows keep their expansion.
   - size: M
 
-- [ ] M328.P3.T2 — Explicit Unload action
+- [x] M328.P3.T2 — Explicit Unload action
   - files: `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_graph_payloads.py`
   - approach: row context menu Load, Load With Descendants, Unload on the selection, through `requestLoad` and `requestUnload`. Unload closes the row's descendants' rows.
   - verify: GUI script — Unload removes the building's prims from the stage and the row keeps its payload badge; undo is not offered because this isn't a scene edit.

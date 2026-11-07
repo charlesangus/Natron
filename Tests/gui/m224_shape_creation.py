@@ -29,7 +29,7 @@ SETTLE_MS = 300
 RENDER_MS = 1500
 ROUNDS = 5
 GAPS_MS = (0, 15, 40, 90)
-NODES = (("Roto", "fr.inria.built-in.Roto"), ("RotoPaint", "fr.inria.built-in.RotoPaint"))
+NODES = (("Roto", "Roto"), ("RotoPaint", "RotoPaint"))
 
 try:
     import NatronEngine
@@ -165,7 +165,7 @@ try:
         require(ok, "the main window is up")
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", lambda: rg.viewer_gl() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")

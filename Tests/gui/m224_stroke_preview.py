@@ -267,7 +267,7 @@ try:
         require(ok, "the main window is up")
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
@@ -276,8 +276,8 @@ try:
 
         # An open settings panel makes the node's viewer interact the active one.
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
-        rp = app.createNode("fr.inria.built-in.RotoPaint", -1, None, props)
-        require(rp is not None, "create RotoPaint", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
+        rp = app.createNode("RotoPaint", -1, None, props)
+        require(rp is not None, "create RotoPaint", gt.plugin_problem("RotoPaint"))
         require(rp.getRotoContext() is not None, "the RotoPaint node has a roto context")
         _keep["rp"] = rp
         rp.getParam("sizeSpinbox").setValue(BRUSH_PX)

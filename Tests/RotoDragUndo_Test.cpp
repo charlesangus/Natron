@@ -95,7 +95,7 @@ dumpPoints(std::ostringstream& os,
 
     for (std::list<Serialization::BezierCPSerialization>::const_iterator it = points.begin(); it != points.end(); ++it, ++index) {
         os << kind << " " << index << " static " << hex(it->x) << " " << hex(it->y) << " " << hex(it->leftX) << " " << hex(it->leftY) << " "
-           << hex(it->rightX) << " " << hex(it->rightY) << " broken " << it->broken << "\n";
+           << hex(it->rightX) << " " << hex(it->rightY) << "\n";
         dumpCurve(os, "x", it->xCurve);
         dumpCurve(os, "y", it->yCurve);
         dumpCurve(os, "leftX", it->leftXCurve);
@@ -126,7 +126,21 @@ dumpGuiPoints(std::ostringstream& os,
     }
 }
 
-// The serialized shape, its GUI copy and the orientation the renderer reads at each keyframe.
+// Bezier::toSerialization writes every point as unbroken, so the flag is read from the points.
+void
+dumpBrokenFlags(std::ostringstream& os,
+                const char* kind,
+                const std::list<BezierCPPtr>& points)
+{
+    int index = 0;
+
+    for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it, ++index) {
+        os << kind << " " << index << " broken " << (*it)->getBroken() << "\n";
+    }
+}
+
+// The serialized shape, its broken flags, its GUI copy and the orientation the renderer reads at each
+// keyframe.
 std::string
 dumpShape(const BezierPtr& shape)
 {
@@ -137,6 +151,8 @@ dumpShape(const BezierPtr& shape)
     os << "closed " << s.closed << " open " << s.isOpenBezier << "\n";
     dumpPoints(os, "cp", s.controlPoints);
     dumpPoints(os, "fp", s.featherPoints);
+    dumpBrokenFlags(os, "cp", shape->getControlPoints());
+    dumpBrokenFlags(os, "fp", shape->getFeatherPoints());
     std::set<double> keys;
     shape->getKeyframeTimes(&keys);
     dumpGuiPoints(os, "cp", shape->getControlPoints(), keys);

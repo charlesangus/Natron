@@ -166,15 +166,15 @@ try:
         require(ok, "the main window is up")
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", lambda: rg.viewer_gl() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
         gt.close_all_panels()
         rg.activate()
 
-        rp, ctx = rg.open_roto(app, "fr.inria.built-in.RotoPaint")
-        require(rp is not None, "create RotoPaint", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
+        rp, ctx = rg.open_roto(app, "RotoPaint")
+        require(rp is not None, "create RotoPaint", gt.plugin_problem("RotoPaint"))
         require(ctx is not None, "the RotoPaint node has a roto context")
         _keep["rp"] = rp
         rp.getParam("sizeSpinbox").setValue(BRUSH_PX)

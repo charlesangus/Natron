@@ -13,7 +13,8 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `sample_states.sh` | Counts running threads from `/proc` without stopping the process; use it for concurrency. |
 | `lib.sh` | Sourced by `run_matrix.sh` and `profile_run.sh`: cooldown, CPU frequency logging, and writing the clock into the result record. |
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
-| `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
+| `compare.py` | Compares two result files per (topology, n, resolution, named), or two edit-latency files per configuration; exits non-zero on a regression past `--threshold`. |
+| `baselines/edit-latency.jsonl` | The edit-latency baseline: all 32 configurations, 10 edits each, on the user's host. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
 | `page_fault_bench.c` | First-touch cost, huge-page coverage and THP counters of a fresh buffer allocated like `HostImageMemory`, with optional competing memcpy load. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
@@ -21,6 +22,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
+| `edit_latency.sh`, `edit_latency_bench.py` | Edit-to-viewer latency of Read(raw) -> Develop RAW chain -> Grade or HSVKeyer -> Viewer from a Natron AppImage, with each node's cache state and device per edit; see Edit latency. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
 
@@ -310,6 +312,56 @@ nothing about the machine: note the host with the numbers.
 
 The USDRender half of the gate (edit to rendered frame on a USDRender node) needs USDRender's
 per-node long-lived stage and is not covered here yet.
+
+## Edit latency
+
+`edit_latency.sh <Natron.AppImage> [out-dir]` (default `build/bench/edit-latency`) runs
+`edit_latency_bench.py` in the GUI through `Tests/gui/run-gui-test.sh`, once per configuration:
+edited node (`grade` or `hsv`), viewer zoom (`fit` or `100`), edited node's panel (`closed` or `open`),
+`NATRON_GPU` (`off` or `auto`) and the auto-proxy preference (`off` or `on`). Each run builds the Canon
+fixture -> RawPrepare -> RawTemperature -> RawHighlights -> RawDemosaic -> RawInputColor -> edited node
+-> Viewer, makes a few untimed edits, then changes one knob of the edited node `BENCH_EDITS` times
+(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE` and
+`NATRON_RENDER_SCHEDULER=taskgraph`.
+
+`<out-dir>/edit_latency.jsonl` gets one line per edit: `latency_ms` (knob set to the profile file
+being written with the first completed viewer frame; the file's modification time, so a few
+milliseconds of granularity), `detect_ms` (the same as seen by a 50 ms poll, an upper bound), the root
+node and mip level, `upstream_executed` and `nodes` (per node: device, cache state, executed, GPU
+region, wall time), `hashes_before` and `hashes` (each node's content hash across the edit) and `loadavg`.
+A summary table prints at the end, then the attribution table from
+`python3 -I tools/bench/edit_latency_bench.py --classify <out-dir>`, which reads the JSON lines and each
+configuration's render profile, gives every upstream execution a cause and exits 1 if any stays
+unclassified (causes and code paths: `docs/perf/interactive-edit-attribution.md`). Use a fresh out-dir per
+run: the JSON lines append, and the classifier expects one render profile per configuration. Edits are set
+programmatically, so the draft switch auto-proxy makes at the start of a pointer drag is not exercised.
+
+```
+tools/bench/edit_latency.sh build/appimages/Natron.AppImage build/bench/edit-latency
+BENCH_CASES=grade BENCH_ZOOMS=fit BENCH_PANELS=closed BENCH_GPUS=off BENCH_AUTOPROXYS=off BENCH_EDITS=5 \
+    tools/bench/edit_latency.sh build/appimages/Natron.AppImage build/bench/edit-latency-smoke
+```
+
+Under Xvfb the GPU is unused, so `NATRON_GPU=auto` only means something against a real display:
+set `GUI_TEST_HOST_DISPLAY=:0` (and `XAUTHORITY`) to run on the host's display. `BENCH_GPUS=force` also
+accepts lavapipe, a CPU Vulkan device; its region counts are usable and its timings are not.
+
+### Baseline and comparison
+
+`tools/bench/baselines/edit-latency.jsonl` is the `edit_latency.jsonl` of a full 32-configuration run with
+`BENCH_EDITS=10`, taken on a host with a Radeon RX 7900 XTX. To compare a fresh run, which needs the same
+hardware to mean anything:
+
+```
+python3 -I tools/bench/compare.py tools/bench/baselines/edit-latency.jsonl build/bench/edit-latency/edit_latency.jsonl
+```
+
+`compare.py` detects edit-latency files by their `upstream_executed` field. Per (case, zoom, panel, gpu,
+autoproxy) it prints median and p95 `latency_ms` and median `upstream_executed`, each as before->after with the
+delta, and the timed-out edits as before->after of the edits recorded. Timed-out edits are left out of the
+statistics. `--threshold` (default 1.5) flags a median, p95 or upstream ratio beyond it, and a configuration
+that has more timeouts after than before, no completed edit after, or is missing from the new file; any flag
+makes the exit status 1.
 
 ## Bezier keying cost
 

@@ -77,6 +77,7 @@ struct Record {
     bool pointOp = false;
     std::string device;
     std::string regionId;
+    std::string cache;
 };
 
 // The value after `key` up to the next ',' or '}' or ']'.
@@ -116,6 +117,7 @@ parseRecord(const std::string& line)
     r.pointOp = rawValue(line, "pointOp") == "true";
     r.device = stringValue(line, "device");
     r.regionId = rawValue(line, "regionId");
+    r.cache = stringValue(line, "cache");
     const std::size_t open = line.find("\"deps\":[");
     const std::size_t close = line.find(']', open);
     std::string list = line.substr(open + 8, close - open - 8);
@@ -242,6 +244,34 @@ TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
     EXPECT_EQ(records[blurTask].deps, std::vector<int>(1, gradeTask));
 }
 
+TEST_F(RenderProfileTest, SecondRenderOfTheSameGraphServesTheSharedSourceFromTheCache)
+{
+    buildScene();
+    RenderScheduler::setProfilePath(_dir + "/profile.jsonl");
+    const std::string file = RenderScheduler::getProfileFilePath();
+    ASSERT_FALSE(file.empty());
+
+    renderScene();
+    renderScene();
+
+    // The source feeds both the Grade and the Merge, so Node::shouldCacheOutput keeps it in the cache.
+    const std::string sourceName = source->getScriptName_mt_safe();
+    std::vector<Record> sourceRecords;
+    std::ifstream in(file.c_str());
+    std::string line;
+    while (std::getline(in, line)) {
+        const Record r = parseRecord(line);
+        EXPECT_TRUE(r.cache == "hit" || r.cache == "partial" || r.cache == "miss" || r.cache == "bypass") << line;
+        if (r.node == sourceName) {
+            sourceRecords.push_back(r);
+        }
+    }
+    ASSERT_EQ(sourceRecords.size(), 2u);
+    EXPECT_NE(sourceRecords[0].frame, sourceRecords[1].frame);
+    EXPECT_EQ(sourceRecords[0].cache, "miss");
+    EXPECT_EQ(sourceRecords[1].cache, "hit");
+}
+
 TEST_F(RenderProfileTest, OffWritesNoFile)
 {
     buildScene();
@@ -361,7 +391,7 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
               "\"downloads\":[{\"strip\":0,\"bytes\":16,\"deviceMs\":0.250000,\"queueFamily\":1,\"queueIndex\":2,"
               "\"comps\":4,\"format\":\"f32\",\"staged\":1,\"pinned\":0},{\"strip\":-1,\"bytes\":16,\"deviceMs\":null,"
               "\"queueFamily\":0,\"queueIndex\":0,\"comps\":0,\"format\":\"f32\",\"staged\":0,\"pinned\":1}],"
-              "\"fallback\":\"\",\"retries\":0}\n");
+              "\"fallback\":\"\",\"retries\":0,\"executed\":[]}\n");
 
     times.predictedTransferMs = std::numeric_limits<double>::infinity();
     const std::string unpriced = formatRegionRecord(7, 3, tasks, times);
@@ -395,7 +425,11 @@ TEST(RenderStatsGpuCounters, RegionRecordFormatCarriesTheFallbackAndRetries)
     times.retries = 3;
 
     const std::string line = formatRegionRecord(2, 1, tasks, times);
-    EXPECT_NE(line.find("\"fallback\":\"out of device memory\",\"retries\":3}\n"), std::string::npos) << line;
+    EXPECT_NE(line.find("\"fallback\":\"out of device memory\",\"retries\":3,\"executed\":[]}\n"), std::string::npos) << line;
+
+    times.executed.push_back(4);
+    times.executed.push_back(6);
+    EXPECT_NE(formatRegionRecord(2, 1, tasks, times).find("\"retries\":3,\"executed\":[4,6]}\n"), std::string::npos);
 
     times.fallback = "a \"quoted\" \\ reason";
     EXPECT_NE(formatRegionRecord(2, 1, tasks, times).find("\"fallback\":\"a \\\"quoted\\\" \\\\ reason\""), std::string::npos);

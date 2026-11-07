@@ -840,6 +840,19 @@ public:
     RenderRoIRetCode renderRoI(const RenderRoIArgs& args,
                                std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
+    enum RenderCacheStateEnum {
+        eRenderCacheStateBypass = 0, // not looked up or not stored: byPassCache, uncached output, or nothing to render
+        eRenderCacheStateMiss, // the whole RoI was rendered
+        eRenderCacheStatePartial, // part of the RoI was already in the cache
+        eRenderCacheStateHit // the cache held the whole RoI
+    };
+
+    /**
+     * @brief The cache state of the last renderRoI that finished on the calling thread, which is reset to
+     * eRenderCacheStateBypass. A nested renderRoI finishes before its caller, so the outermost call wins.
+     **/
+    static RenderCacheStateEnum takeLastRenderCacheState();
+
     /**
      * @brief Whether what this effect puts on its output is deep data, as the graph around it
      * resolves it: eDataKindDeep and unambiguously so. This is the predicate that decides which

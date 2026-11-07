@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Color/ToneEqualizerGpu.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/RectD.h"
@@ -105,22 +106,15 @@ const BandKnob kBandKnobs[kBands] = {
     { kToneEqualizerParamSpeculars, "Speculars", "speculars" },
 };
 
+// The whole frame the mask's filter runs over.
 bool
-effectRoDPixels(EffectInstance& effect,
-                double time,
-                const RenderScale& scale,
-                ViewIdx view,
-                RectI* out)
+framePixels(const StagedImageEffect& effect,
+            double time,
+            const RenderScale& scale,
+            ViewIdx view,
+            RectI* out)
 {
-    RectD rod;
-    bool isProjectFormat = false;
-
-    if (effect.getRegionOfDefinition_public(effect.getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    *out = PassExec::toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
-
-    return true;
+    return wholeFramePixels(effect, effect.getSourceInput(), time, view, scale, out);
 }
 
 double
@@ -443,10 +437,10 @@ ToneEqualizer::resolve(double time,
     r.output = (OutputEnum)std::clamp((int)reader.value(_output), 0, (int)eOutputCount - 1);
     r.stable = solveFactors(s.gains, s.smoothing, &r.factors);
 
-    RectI fullRoD;
-    if (RawNodeSupport::getInputPixelRoD(*this, getSourceInput(), time, view, &fullRoD)) {
-        r.fullWidth = fullRoD.width();
-        r.fullHeight = fullRoD.height();
+    RectI fullFrame;
+    if (framePixels(*this, time, RenderScale::identity, view, &fullFrame)) {
+        r.fullWidth = fullFrame.width();
+        r.fullHeight = fullFrame.height();
     }
 
     return r;
@@ -692,7 +686,7 @@ ToneEqualizer::colourMask(double time,
     }
 
     RectI rodPixel;
-    if (!effectRoDPixels(*this, time, scale, view, &rodPixel) || isEmptyRect(rodPixel)) {
+    if (!framePixels(*this, time, scale, view, &rodPixel) || isEmptyRect(rodPixel)) {
         return std::nullopt;
     }
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
@@ -981,16 +975,18 @@ ToneEqualizer::getRegionsOfInterest(double time,
 {
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
-    // The mask's filter runs over the whole frame.
+    // The mask's filter runs over the whole frame; the window outside it passes through.
     EffectInstancePtr input = getInput(getSourceInput());
-    if (!input) {
+    RectI frame;
+    if (!input || !framePixels(*this, time, scale, view, &frame)) {
         return;
     }
-    RectD sourceRoD;
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) {
-        (*ret)[input] = sourceRoD;
+    const RectD frameCanonical = PassExec::toCanonical(frame, scale, getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput()));
+    RectD need = renderWindow;
+    if (need.intersects(frameCanonical)) {
+        need.merge(frameCanonical);
     }
+    (*ret)[input] = need;
 }
 
 StatusEnum
@@ -1044,7 +1040,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
         return eStatusOK;
     }
     RectI rodPixel;
-    if (!effectRoDPixels(*this, args.time, args.mappedScale, args.view, &rodPixel)) {
+    if (!framePixels(*this, args.time, args.mappedScale, args.view, &rodPixel)) {
         return eStatusFailed;
     }
 
@@ -1209,15 +1205,12 @@ ToneEqualizer::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
     // The mask runs over the whole frame, in buffers of its size beside the divided source; a
-    // frame past the kernels' 32-bit indices renders on the CPU. The device's binding limit is
-    // only known when recording, where record() refuses a frame over it.
+    // frame past the kernels' 32-bit indices or the device's scratch renders on the CPU.
     RectI rodPixel;
-    if (!effectRoDPixels(*const_cast<ToneEqualizer*>(this), query.time, query.mappedScale, query.view, &rodPixel)) {
+    if (!framePixels(*this, query.time, query.mappedScale, query.view, &rodPixel)) {
         return false;
     }
-    const uint64_t floats = (uint64_t)std::max(0, rodPixel.width()) * (uint64_t)std::max(0, rodPixel.height()) * (uint64_t)std::max(4, query.nComps);
-
-    return floats <= UINT32_MAX;
+    return wholeFrameFitsGpu(rodPixel, std::max(4, query.nComps), query.maxScratchBytes);
 #else
     Q_UNUSED(query);
 
@@ -1249,7 +1242,7 @@ ToneEqualizer::getOpGpuInputRoI(int inputNb,
     }
     RectI need = outputRect;
     RectI rodPixel;
-    if (effectRoDPixels(*const_cast<ToneEqualizer*>(this), time, scale, view, &rodPixel)) {
+    if (framePixels(*this, time, scale, view, &rodPixel)) {
         need.merge(rodPixel);
     }
 
@@ -1288,7 +1281,7 @@ ToneEqualizer::renderOpGpu(const GpuRenderArgs& args)
     const double renderScale = scale.toOfxPointD().x;
 
     RectI rodPixel;
-    if (!effectRoDPixels(*this, time, scale, view, &rodPixel)) {
+    if (!framePixels(*this, time, scale, view, &rodPixel)) {
         return eStatusFailed;
     }
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;

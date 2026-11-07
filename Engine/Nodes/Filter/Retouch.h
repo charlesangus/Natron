@@ -326,7 +326,8 @@ private:
 
     RetouchCore::Params readParams(double time, ViewIdx view, float renderScale) const WARN_UNUSED_RETURN;
 
-    bool sourceRoD(double time, ViewIdx view, RectD* rod) const WARN_UNUSED_RETURN;
+    // The whole frame in pixels at scale: the source's region of definition, cut to the format when it is infinite.
+    bool framePixels(double time, ViewIdx view, const RenderScale& scale, RectI* pixels) const WARN_UNUSED_RETURN;
 
     // The region, parameters and capped scale count of a GPU render; false when the GPU cannot render it.
     bool gpuPlan(double time, ViewIdx view, const RenderScale& scale, RectI* full, RetouchCore::Params* params, int* scales) const WARN_UNUSED_RETURN;

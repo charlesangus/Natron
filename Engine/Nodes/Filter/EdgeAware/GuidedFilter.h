@@ -38,6 +38,11 @@ NATRON_NAMESPACE_ENTER
  *
  * Borders: the box means use darktable's shrinking window (see BoxFilter.h), and the
  * subsampling of the fast variants clamps to the last row and column.
+ *
+ * The colour filter's tiles, the subsampling grid and its bilinear resampling ratio are anchored
+ * to the buffer's origin and size, and the box means' running sums round by position in the
+ * buffer (see BoxFilter.h), so the results are not translation-invariant to the last bit. Pass
+ * the whole frame (EdgeAwareCommon.h).
  **/
 namespace EdgeAware {
 /// The subsampling factor of the fast guided filters.

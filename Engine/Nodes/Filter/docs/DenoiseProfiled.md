@@ -76,10 +76,13 @@ non-local means and wavelet knobs.
   gradation are rated under one EV, which changes nothing. The Read does not reach Olympus's
   gradation or a CR3's lighting optimizer, which rawspeed does not parse.
 - **Compute Variance** passes the image through and shows, in Variance, the red, green and blue
-  variance of the variance-stabilised image over the last region rendered: 1 where the profile
-  fits a perfectly uniform patch. darktable means to measure the same, but its
-  `process_variance()` sums an uninitialised scratch buffer instead of the stabilised pixels; the
-  stabilised pixels are measured here. The variance runs on the CPU, as darktable's does.
+  variance of the variance-stabilised image over the whole frame at the render scale, followed by
+  the frame's size and that scale, for example "over the whole frame (4000×3000 at 100%)": 1
+  where the profile fits a perfectly uniform patch. Panning the viewer does not change it; a
+  zoomed-out viewer renders at a lower scale and measures a smaller frame, and says so.
+  darktable means to measure the same, but its `process_variance()` sums an uninitialised scratch
+  buffer instead of the stabilised pixels; the stabilised pixels are measured here. The
+  variance runs on the CPU, as darktable's does.
 
 ## darktable controls
 

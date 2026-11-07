@@ -39,6 +39,11 @@ NATRON_NAMESPACE_ENTER
  * Borders: darktable's shrinking window. The mean at a pixel is over the window's samples that
  * lie inside the image, so nothing is mirrored or extended. A radius larger than the image makes
  * every output the mean of the whole row, then column, as in darktable.
+ *
+ * The running sums accumulate from the buffer's first row and column, so their rounding depends
+ * on a pixel's position in the buffer: the same pixels at another offset differ in the last bits.
+ * Under the whole-frame contract (EdgeAwareCommon.h) the buffer never moves, so this never
+ * reaches a node's output.
  **/
 namespace EdgeAware {
 /// The most interleaved channels the box filters accept.

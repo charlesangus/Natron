@@ -62,6 +62,7 @@
 #include "Engine/Nodes/Filter/DenoiseProfiledKernels.h"
 #include "Engine/Nodes/Filter/NoiseProfiles.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
 #define PLUGINID_NATRON_DENOISEPROFILED "DenoiseProfiled"
@@ -98,6 +99,8 @@
 
 // What RawNodeSupport::noteFrameComputed() names the wavelet path's whole-frame result.
 #define kDenoiseProfiledFrameWavelets "DenoiseProfiled.wavelets"
+// What it names Compute Variance's whole-frame measurement.
+#define kDenoiseProfiledFrameVariance "DenoiseProfiled.variance"
 
 NATRON_NAMESPACE_ENTER
 
@@ -147,8 +150,8 @@ public:
     static std::string cameraSpaceNotice(const ImageMetadata& metadata) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The red, green and blue variance of the variance-stabilised image the last Compute
-     * Variance render measured, which the Variance knob shows.
+     * @brief The red, green and blue variance of the variance-stabilised whole frame the last
+     * Compute Variance render measured, which the Variance knob shows.
      **/
     std::optional<std::array<double, 3>> lastVariance() const WARN_UNUSED_RETURN;
 
@@ -156,6 +159,14 @@ private:
     struct Resolved;
 
     std::optional<Resolved> resolve(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The whole frame the wavelets and Compute Variance work over (wholeFramePixels()).
+     **/
+    bool framePixels(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* pixels) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The profiles of camera, from the database, kept for the last camera asked.
@@ -185,9 +196,12 @@ private:
     void refreshVisibility();
 
     /**
-     * @brief Keeps a measured variance and shows it in the Variance knob, from the main thread.
+     * @brief Keeps a measured variance and shows it in the Variance knob, from the main thread,
+     * with the size of the frame it measured and the render scale.
      **/
-    void showVariance(const std::array<double, 3>& variance);
+    void showVariance(const std::array<double, 3>& variance,
+                      const RectI& frame,
+                      double renderScale);
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -248,6 +262,9 @@ private:
     bool _frameValid;
     std::string _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;
+
+    // Compute Variance's red, green and blue measurement of the whole frame.
+    WholeFrameCache _varianceFrame;
 
     mutable std::mutex _varianceMutex;
     std::optional<std::array<double, 3>> _lastVariance;

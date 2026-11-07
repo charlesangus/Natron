@@ -359,6 +359,24 @@ struct SceneGraphModel::Implementation {
     QSet<QString> loadingPaths;
     // By prim path, the USD error.
     QHash<QString, QString> loadFailures;
+    // Reads that found the stage busy: children by parent, up to how many, and the load's outcome.
+    std::map<SdfPath, std::size_t> owedFetches;
+    bool settleOwed = false;
+    struct RetiredListener {
+        SceneGraphStageSourcePtr source;
+        std::unique_ptr<StageListener> listener;
+        TfNotice::Key key;
+
+        // Needs the stage's lock.
+        void revoke()
+        {
+            if (key.IsValid()) {
+                TfNotice::Revoke(key);
+            }
+            listener.reset();
+        }
+    };
+    std::vector<RetiredListener> retiredListeners;
     // Set while the model changes rows: a slot connected to the change signals must not fetch,
     // since children are not yet a prefix of childNames and a nested insert would land inside
     // the change in flight.
@@ -420,6 +438,32 @@ struct SceneGraphModel::Implementation {
         }
         listener.reset();
         listenedStage = UsdStageWeakPtr();
+    }
+
+    // Without waiting for the stage: a listener revoked during an edit could be destroyed while
+    // that edit's notice is delivered to it, so one that finds the stage busy stays registered,
+    // kept with the source that can read its stage, until a later read gets the lock.
+    void stopListeningOrRetire()
+    {
+        if (source->tryReadStage([this](const SceneStage*) { stopListening(); })) {
+            return;
+        }
+        RetiredListener retired;
+        retired.source = source;
+        retired.listener = std::move(listener);
+        retired.key = key;
+        retiredListeners.push_back(std::move(retired));
+        listener.reset();
+        key = TfNotice::Key();
+        listenedStage = UsdStageWeakPtr();
+    }
+
+    void reapRetiredListeners()
+    {
+        retiredListeners.erase(std::remove_if(retiredListeners.begin(), retiredListeners.end(), [](RetiredListener& retired) {
+                                   return retired.source->tryReadStage([&retired](const SceneStage*) { retired.revoke(); });
+                               }),
+                               retiredListeners.end());
     }
 
     // Compares raw pointers: under C++20, a TfWeakPtr/TfRefPtr comparison resolves to Tf's
@@ -683,14 +727,29 @@ struct SceneGraphModel::Implementation {
         root.data = hasStage ? rootData : PrimData();
         loadingPaths.clear();
         loadFailures.clear();
+        owedFetches.clear();
         itemCount = 0;
         ++resetCount;
         model->endResetModel();
     }
 
+    // The read of item's children ran into an edit of the stage. A row with nothing to show yet
+    // says so rather than looking empty.
+    void oweFetch(Item* item,
+                  std::size_t upTo)
+    {
+        std::size_t& owed = owedFetches[item->path];
+
+        owed = std::max(owed, upTo);
+        if ((item != &root) && item->children.empty()) {
+            addLoadingRow(item);
+        }
+    }
+
     // Reads the next batch of item's children. Returns whether any were added.
     bool fetch(Item* item,
-               std::size_t upTo)
+               std::size_t upTo,
+               bool* busy = nullptr)
     {
         if (!source || changing) {
             return false;
@@ -698,7 +757,7 @@ struct SceneGraphModel::Implementation {
         std::vector<std::unique_ptr<Item>> fetched;
         bool namesRead = item->namesRead;
         TfTokenVector names;
-        source->readStage([&](const SceneStage* sceneStage) {
+        const bool read = source->tryReadStage([&](const SceneStage* sceneStage) {
             if (!sceneStage || !isListened(sceneStage->getStage())) {
                 return;
             }
@@ -717,6 +776,14 @@ struct SceneGraphModel::Implementation {
                 fetched.push_back(makeChild(item, allNames[i], readPrimData(stage->GetPrimAtPath(path))));
             }
         });
+        if (!read) {
+            oweFetch(item, upTo);
+            if (busy) {
+                *busy = true;
+            }
+
+            return false;
+        }
         ChangeScope scope(this);
         if (namesRead && !item->namesRead) {
             item->namesRead = true;
@@ -777,6 +844,9 @@ SceneGraphModel::~SceneGraphModel()
         // Notices are sent by whoever edits the stage, under its lock.
         _imp->source->readStage([this](const SceneStage*) { _imp->stopListening(); });
     }
+    for (Implementation::RetiredListener& retired : _imp->retiredListeners) {
+        retired.source->readStage([&retired](const SceneStage*) { retired.revoke(); });
+    }
 }
 
 void
@@ -788,9 +858,10 @@ SceneGraphModel::setSource(const SceneGraphStageSourcePtr& source)
         return;
     }
     if (_imp->source) {
-        _imp->source->readStage([this](const SceneStage*) { _imp->stopListening(); });
+        _imp->stopListeningOrRetire();
     }
     _imp->source = source;
+    _imp->settleOwed = false;
     _imp->changedHere.clear();
     _imp->resetTo(false, PrimData());
     refresh();
@@ -805,12 +876,50 @@ SceneGraphModel::getSource() const
 void
 SceneGraphModel::refresh()
 {
-    if (!_imp->source) {
+    _imp->reapRetiredListeners();
+    if (_imp->source && readEdits()) {
+        retryOwedReads();
+    }
+}
+
+bool
+SceneGraphModel::hasOwedReads() const
+{
+    return _imp->settleOwed || !_imp->owedFetches.empty();
+}
+
+void
+SceneGraphModel::retryOwedReads()
+{
+    if (_imp->settleOwed) {
+        settle();
+    }
+    if (_imp->owedFetches.empty()) {
         return;
     }
+    std::map<SdfPath, std::size_t> owed;
+    owed.swap(_imp->owedFetches);
+    for (const std::pair<const SdfPath, std::size_t>& entry : owed) {
+        Item* item = _imp->findItem(entry.first);
+        if (!item) {
+            continue;
+        }
+        _imp->fetch(item, entry.second);
+        if (!_imp->owedFetches.count(entry.first) && !_imp->loadingPaths.contains(item->pathString)) {
+            _imp->removeLoadingRow(item);
+        }
+    }
+    if (_imp->owedFetches.empty()) {
+        Q_EMIT deferredReadsDone();
+    }
+}
+
+bool
+SceneGraphModel::readEdits()
+{
     const U64 editCount = _imp->source->getEditCount();
     if (_imp->listener && (editCount == _imp->lastEditCount) && !_imp->listener->hasPending()) {
-        return;
+        return true;
     }
     enum {
         eNone,
@@ -821,7 +930,7 @@ SceneGraphModel::refresh()
         = eNone;
     PrimData rootData;
     std::vector<ItemUpdate> updates;
-    _imp->source->readStage([&](const SceneStage* sceneStage) {
+    const bool read = _imp->source->tryReadStage([&](const SceneStage* sceneStage) {
         _imp->lastEditCount = editCount;
         if (!sceneStage) {
             if (_imp->listener || _imp->root.data.hasChildren) {
@@ -890,6 +999,10 @@ SceneGraphModel::refresh()
             }
         }
     });
+    if (!read) {
+        // The notices stay queued and the edit count unread, so the next refresh reads them.
+        return false;
+    }
     switch (action) {
     case eNone:
         break;
@@ -903,11 +1016,14 @@ SceneGraphModel::refresh()
         _imp->applyUpdates(updates);
         break;
     }
-}
+
+    return true;
+} // SceneGraphModel::readEdits
 
 QModelIndex
 SceneGraphModel::indexOfPath(const QString& path,
-                             bool populate)
+                             bool populate,
+                             bool* busy)
 {
     const std::string pathString = path.toStdString();
 
@@ -927,13 +1043,13 @@ SceneGraphModel::indexOfPath(const QString& path,
         Item* child = item->findChild(name);
         if (!child && populate) {
             if (!item->namesRead) {
-                _imp->fetch(item, 0);
+                _imp->fetch(item, 0, busy);
             }
             const TfTokenVector::const_iterator found = std::find(item->childNames.begin(), item->childNames.end(), name);
             if (found == item->childNames.end()) {
                 return QModelIndex();
             }
-            _imp->fetch(item, (std::size_t)(found - item->childNames.begin()) + 1);
+            _imp->fetch(item, (std::size_t)(found - item->childNames.begin()) + 1, busy);
             child = item->findChild(name);
         }
         if (!child) {
@@ -1090,10 +1206,17 @@ SceneGraphModel::settleLoads()
     if (!_imp->source) {
         return;
     }
+    // Owed until read: the edit in the way may be a sync, which ends with a refresh().
+    _imp->settleOwed = true;
     refresh();
+}
+
+void
+SceneGraphModel::settle()
+{
     QHash<QString, QString> failures;
     bool outstanding = false;
-    _imp->source->readStage([&](const SceneStage* stage) {
+    const bool read = _imp->source->tryReadStage([&](const SceneStage* stage) {
         if (!stage) {
             return;
         }
@@ -1102,6 +1225,10 @@ SceneGraphModel::settleLoads()
         }
         outstanding = stage->hasOutstandingLoads();
     });
+    if (!read) {
+        return;
+    }
+    _imp->settleOwed = false;
     QSet<QString> touched;
     for (const QString& path : _imp->loadingPaths) {
         if (!outstanding || failures.contains(path)) {
@@ -1325,7 +1452,8 @@ SceneGraphModel::canFetchMore(const QModelIndex& parent) const
         return false;
     }
     const Item* item = _imp->itemOf(parent);
-    if (!item->data.hasChildren) {
+    // Asking again would only find the stage busy again; the owed read adds the rows.
+    if (!item->data.hasChildren || _imp->owedFetches.count(item->path)) {
         return false;
     }
 

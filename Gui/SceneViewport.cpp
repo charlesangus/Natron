@@ -591,6 +591,29 @@ struct SceneViewportRenderer::Implementation {
     // lock of its own, OpenUSD v26.08 usdImaging/stageSceneIndex.cpp). Shared by readers: OpenUSD
     // allows many, and a background frame is one that may run for seconds.
     std::shared_mutex stageMutex;
+
+    // A try for stageMutex to edit failed, and the holders may be readers that announce no end.
+    std::atomic<bool> exclusiveOwed { false };
+    std::function<void()> readEnded;
+
+    // For the main thread, and for work it waits on. Whoever made this fail lets the viewport know
+    // when it lets go: edits and frames by their signals, other readers by readEnded.
+    bool tryLockExclusive(std::unique_lock<std::shared_mutex>* lock)
+    {
+        *lock = std::unique_lock<std::shared_mutex>(stageMutex, std::try_to_lock);
+        if (lock->owns_lock()) {
+            return true;
+        }
+        exclusiveOwed = true;
+        // The last reader may have gone before it could see the flag.
+        if (lock->try_lock()) {
+            exclusiveOwed = false;
+
+            return true;
+        }
+
+        return false;
+    }
     // Created by the first sync and kept for the renderer's life: the engine binds the first
     // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
     std::unique_ptr<SceneStage> sceneStage;
@@ -966,11 +989,14 @@ struct SceneViewportRenderer::Implementation {
         return std::max(freeCamera.distance, 1e-9) * 500.;
     }
 
-    // Needs stageMutex.
+    // Needs stageMutex when looking through a camera.
     UsdGeomCamera lookThroughCamera() const
     {
+        if (lookThrough.empty() || !SdfPath::IsValidPathString(lookThrough)) {
+            return UsdGeomCamera();
+        }
         const UsdStageRefPtr stage = currentStage();
-        if (!stage || lookThrough.empty() || !SdfPath::IsValidPathString(lookThrough)) {
+        if (!stage) {
             return UsdGeomCamera();
         }
         UsdGeomCamera camera(stage->GetPrimAtPath(SdfPath(lookThrough)));
@@ -1796,9 +1822,35 @@ void
 SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stage)>& read) const
 {
     SceneWriteBarrier::ReadScope readScope;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    {
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
+        read(shown ? _imp->sceneStage.get() : nullptr);
+    }
+    if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
+        _imp->readEnded();
+    }
+}
+
+bool
+SceneViewportRenderer::tryReadStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
+
+    if (!lock.owns_lock()) {
+        return false;
+    }
     const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
     read(shown ? _imp->sceneStage.get() : nullptr);
+
+    return true;
+}
+
+void
+SceneViewportRenderer::setReadEndedCallback(const std::function<void()>& callback)
+{
+    _imp->readEnded = callback;
 }
 
 U64
@@ -2296,19 +2348,33 @@ storeMatrix(const GfMatrix4d& matrix,
 
     std::copy(values, values + 16, out);
 }
+
+void
+setBusy(bool* busy)
+{
+    if (busy) {
+        *busy = true;
+    }
+}
 } // anon namespace
 
 bool
 SceneViewportRenderer::getViewPose(int width,
                                    int height,
-                                   CameraPose* pose) const
+                                   CameraPose* pose,
+                                   bool* busy) const
 {
     const double aspect = double(std::max(width, 1)) / double(std::max(height, 1));
 
     pose->aspect = aspect;
     storeMatrix(GfMatrix4d(1.), pose->parentToWorld);
     if (!_imp->lookThrough.empty()) {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            setBusy(busy);
+
+            return false;
+        }
         const UsdGeomCamera camera = _imp->lookThroughCamera();
         if (!camera) {
             return false;
@@ -2607,10 +2673,16 @@ SceneViewportRenderer::hasTransformHandles() const
 }
 
 bool
-SceneViewportRenderer::hasSelectionHandles() const
+SceneViewportRenderer::hasSelectionHandles(bool* busy) const
 {
     SceneGizmo::Frame frame;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
+
+    if (!lock.owns_lock()) {
+        setBusy(busy);
+
+        return false;
+    }
 
     return _imp->computeSelectionFrame(&frame);
 }
@@ -2620,12 +2692,18 @@ SceneViewportRenderer::getDrawnTransformHandles(int width,
                                                 int height,
                                                 std::vector<int>* handles,
                                                 std::vector<double>* pixels,
-                                                std::vector<double>* frameValues) const
+                                                std::vector<double>* frameValues,
+                                                bool* busy) const
 {
     SceneGizmo::Frame frame;
     bool selection = false;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
 
+    if (!lock.owns_lock()) {
+        setBusy(busy);
+
+        return false;
+    }
     handles->clear();
     pixels->clear();
     frameValues->clear();
@@ -2655,12 +2733,18 @@ int
 SceneViewportRenderer::hitTestTransformHandles(double x,
                                                double y,
                                                int width,
-                                               int height) const
+                                               int height,
+                                               bool* busy) const
 {
     SceneGizmo::Frame frame;
     bool selection = false;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
 
+    if (!lock.owns_lock()) {
+        setBusy(busy);
+
+        return SceneGizmo::kNoHandle;
+    }
     if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection)) {
         return SceneGizmo::kNoHandle;
     }
@@ -2710,12 +2794,18 @@ SceneViewportRenderer::beginTransformDrag(int handle,
                                           double x,
                                           double y,
                                           int /*width*/,
-                                          int /*height*/)
+                                          int /*height*/,
+                                          bool* busy)
 {
     SceneGizmo::Frame frame;
     bool selection = false;
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    std::unique_lock<std::shared_mutex> lock;
 
+    if (!_imp->tryLockExclusive(&lock)) {
+        setBusy(busy);
+
+        return false;
+    }
     // A preview still waiting for its scene goes now: the new drag measures from the scene shown.
     _imp->clearPreviewLocked();
     _imp->dragHandle = SceneGizmo::kNoHandle;
@@ -2766,18 +2856,27 @@ SceneViewportRenderer::getTransformDragChange(double x,
                                               double y,
                                               int width,
                                               int height,
-                                              double* change) const
+                                              double* change,
+                                              bool* busy) const
 {
     if ((_imp->dragHandle == SceneGizmo::kNoHandle) || (width <= 0) || (height <= 0)) {
         return false;
     }
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex, std::defer_lock);
+
+    // The free camera's view reads no prim, so its drags follow the mouse through a load.
+    if (!_imp->lookThrough.empty() && !lock.try_lock()) {
+        setBusy(busy);
+
+        return false;
+    }
 
     return SceneGizmo::computeDragChange(_imp->makeView(width, height), _imp->dragFrame, _imp->dragHandle, _imp->dragPressPixel, GfVec2d(x, y), change);
 }
 
 bool
-SceneViewportRenderer::previewTransformDrag(double change)
+SceneViewportRenderer::previewTransformDrag(double change,
+                                            bool* busy)
 {
     if (_imp->dragHandle == SceneGizmo::kNoHandle) {
         return false;
@@ -2799,8 +2898,13 @@ SceneViewportRenderer::previewTransformDrag(double change)
             deltas.push_back(std::make_pair(target.first, target.second.GetInverse() * opInverse * changed * target.second));
         }
     }
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    std::unique_lock<std::shared_mutex> lock;
 
+    if (!_imp->tryLockExclusive(&lock)) {
+        setBusy(busy);
+
+        return false;
+    }
     _imp->dragChange = change;
     _imp->dragChanged = true;
     if (!_imp->sceneStage || deltas.empty()) {
@@ -2841,12 +2945,17 @@ SceneViewportRenderer::endTransformDrag()
     _imp->dragChanged = false;
 }
 
-void
+bool
 SceneViewportRenderer::clearTransformPreview()
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    std::unique_lock<std::shared_mutex> lock;
 
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
+    }
     _imp->clearPreviewLocked();
+
+    return true;
 }
 
 void
@@ -2941,12 +3050,18 @@ std::string
 SceneViewportRenderer::pick(int x,
                             int y,
                             int width,
-                            int height)
+                            int height,
+                            bool* busy)
 {
     if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
         return std::string();
     }
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    std::unique_lock<std::shared_mutex> lock;
+    if (!_imp->tryLockExclusive(&lock)) {
+        setBusy(busy);
+
+        return std::string();
+    }
     StormGLStateGuard guard;
     StormGLSection section;
 
@@ -2990,7 +3105,8 @@ SceneViewportRenderer::pickRect(int x0,
                                 int x1,
                                 int y1,
                                 int width,
-                                int height)
+                                int height,
+                                bool* busy)
 {
     std::vector<std::string> paths;
     if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
@@ -3003,7 +3119,12 @@ SceneViewportRenderer::pickRect(int x0,
     if ((left > right) || (top > bottom)) {
         return paths;
     }
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    std::unique_lock<std::shared_mutex> lock;
+    if (!_imp->tryLockExclusive(&lock)) {
+        setBusy(busy);
+
+        return paths;
+    }
     StormGLStateGuard guard;
     StormGLSection section;
 
@@ -3518,6 +3639,67 @@ struct SceneViewport::Implementation {
     QString pressPrim;
     bool menuOnRelease = false;
 
+    // What the view showed: a deferred pick means what was under the mouse then, or nothing.
+    struct PressView {
+        SceneViewportRenderer::FreeCamera camera;
+        std::string lookThrough;
+        int width = 0;
+        int height = 0;
+
+        bool operator==(const PressView& other) const
+        {
+            return std::equal(camera.pivot, camera.pivot + 3, other.camera.pivot) && (camera.distance == other.camera.distance)
+                && (camera.azimuth == other.camera.azimuth) && (camera.elevation == other.camera.elevation) && (camera.fovY == other.camera.fovY)
+                && (camera.viewMode == other.camera.viewMode) && (lookThrough == other.lookThrough) && (width == other.width) && (height == other.height);
+        }
+    };
+
+    PressView currentView(const QWidget* widget) const
+    {
+        PressView view;
+
+        view.camera = renderer.getFreeCamera();
+        view.lookThrough = renderer.getLookThroughCamera();
+        view.width = widget->width();
+        view.height = widget->height();
+
+        return view;
+    }
+
+    // The press under way found the stage held: it has yet to find out what it landed on.
+    bool pressOwedHandle = false;
+    bool pressOwedPick = false;
+    PressView pressView;
+
+    // A click or marquee released before the stage could say what it hit, oldest first.
+    struct DeferredSelection {
+        QPoint pos;
+        QRect rect;
+        bool marquee = false;
+        // A handle at pos would have taken the press, so the click selects nothing there.
+        bool checkHandle = false;
+        // A drag that no binding gives a role leaves the selection alone if it hit nothing.
+        bool emptySelects = true;
+        SelectionModeEnum mode = eSelectionModeReplace;
+        PressView view;
+    };
+    std::deque<DeferredSelection> deferredSelections;
+
+    // The handle drag found the stage held: the last move has yet to be drawn, or if changeStale,
+    // even measured, which the release needs before it can write the drag.
+    bool handleMoveOwed = false;
+    bool handleChangeStale = false;
+    QPoint handleMovePos;
+    bool handleEndOwed = false;
+
+    bool previewClearOwed = false;
+    bool cameraFromViewOwed = false;
+
+    void clearPreview()
+    {
+        previewClearOwed = !renderer.clearTransformPreview();
+    }
+
     // Space is down, while a binding of the 3D viewer uses it as a modifier.
     bool spaceHeld = false;
 
@@ -3906,9 +4088,11 @@ SceneViewport::SceneViewport(QWidget* parent)
             return;
         }
         _imp->previewAwaitsSync = false;
-        _imp->renderer.clearTransformPreview();
+        _imp->clearPreview();
         update();
     });
+    // Queued: it runs on the reader's thread, and readers end before the viewport goes.
+    _imp->renderer.setReadEndedCallback([this]() { QMetaObject::invokeMethod(this, [this]() { serviceDeferredInput(); }, Qt::QueuedConnection); });
 
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
     if (settings) {
@@ -4074,9 +4258,10 @@ SceneViewport::onSynced(U64 serial,
         // and one synced before the drag's write was known to the renderer.
         _imp->previewAwaitsSync = false;
         _imp->previewTimer->stop();
-        _imp->renderer.clearTransformPreview();
+        _imp->clearPreview();
         update();
     }
+    serviceDeferredInput();
     if (serial != _imp->requestedSerial) {
         // A newer request is on its way, but this one is drawn meanwhile: in playback each frame's
         // request is overtaken by the next before its sync ends, so drawing only caught-up syncs
@@ -4153,6 +4338,7 @@ SceneViewport::onBackgroundFrameDone()
     _imp->composingTimer->stop();
     // The stage may have changed again while the frame ran.
     startBackgroundFrame();
+    serviceDeferredInput();
     publishState();
     update();
 }
@@ -4165,10 +4351,103 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
         endLockOutsideLookThrough();
     }
     startBackgroundFrame();
+    serviceDeferredInput();
     publishState();
     update();
     Q_EMIT stageLoadsChanged();
 }
+
+void
+SceneViewport::serviceDeferredInput()
+{
+    if (_imp->previewClearOwed) {
+        _imp->clearPreview();
+        if (!_imp->previewClearOwed) {
+            update();
+        }
+    }
+    if (_imp->cameraFromViewOwed) {
+        _imp->cameraFromViewOwed = false;
+        createCameraFromView();
+    }
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        if (_imp->handleMoveOwed) {
+            dragHandle(_imp->handleMovePos);
+        }
+        if (_imp->handleEndOwed && !_imp->handleChangeStale) {
+            _imp->handleEndOwed = false;
+            endHandleDrag();
+        }
+    }
+    const Implementation::PressView view = _imp->currentView(this);
+    const qreal dpr = devicePixelRatio();
+    while (!_imp->deferredSelections.empty()) {
+        const Implementation::DeferredSelection deferred = _imp->deferredSelections.front();
+        bool busy = false;
+        if (deferred.view == view) {
+            if (deferred.checkHandle) {
+                const GfVec2d pixel = Implementation::toPixel(this, deferred.pos);
+                if (_imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &busy) != SceneGizmo::kNoHandle) {
+                    _imp->deferredSelections.pop_front();
+                    continue;
+                }
+                if (busy) {
+                    return;
+                }
+            }
+            QStringList paths;
+            if (deferred.marquee) {
+                paths = pickPrimsIn(deferred.rect, &busy);
+            } else {
+                const QString prim = pickPrimAt(deferred.pos, &busy);
+                if (!prim.isEmpty()) {
+                    paths.push_back(prim);
+                }
+            }
+            if (busy) {
+                return;
+            }
+            _imp->deferredSelections.pop_front();
+            if (!paths.isEmpty() || deferred.emptySelects) {
+                select(paths, deferred.mode);
+            }
+            continue;
+        }
+        // The view moved on: selecting what is there now is not what was clicked.
+        _imp->deferredSelections.pop_front();
+    }
+    if (_imp->button == Qt::NoButton) {
+        return;
+    }
+    const bool navigated = _imp->dragging && (_imp->dragRole != Implementation::eDragRoleMarquee) && (_imp->dragRole != Implementation::eDragRoleNone);
+    if (_imp->pressOwedHandle) {
+        if (navigated || !(_imp->pressView == view)) {
+            _imp->pressOwedHandle = false;
+        } else {
+            bool busy = false;
+            if (beginHandleDrag(_imp->pressPos, &busy)) {
+                const QPoint pos = _imp->lastPos;
+                clearGesture();
+                dragHandle(pos);
+
+                return;
+            }
+            if (busy) {
+                return;
+            }
+            _imp->pressOwedHandle = false;
+        }
+    }
+    // Left owed if the view moved: the release drops it with the view it remembers.
+    if (_imp->pressOwedPick && (_imp->pressView == view)) {
+        bool busy = false;
+        const QString prim = pickPrimAt(_imp->pressPos, &busy);
+        if (!busy) {
+            _imp->pressPrim = prim;
+            _imp->pressOwedPick = false;
+        }
+    }
+} // SceneViewport::serviceDeferredInput
 
 void
 SceneViewport::runWithEngineContext(const std::function<void()>& fn)
@@ -4278,7 +4557,7 @@ SceneViewport::setFrame(double frame,
     if ((frame != _imp->frame) && (_imp->handle == SceneGizmo::kNoHandle)) {
         _imp->previewAwaitsSync = false;
         _imp->previewTimer->stop();
-        _imp->renderer.clearTransformPreview();
+        _imp->clearPreview();
     }
     _imp->frame = frame;
     _imp->framesPerSecond = framesPerSecond;
@@ -4359,14 +4638,18 @@ SceneViewport::publishState()
     setProperty("natronSceneTransformPivot", QString::fromUtf8((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? "currentPrim" : "selectionCentre"));
 }
 
-// Takes the viewer lock: only from a paint that found the stage idle.
+// Keeps what it last published if an edit holds the stage; the paint that edit asks for publishes.
 void
 SceneViewport::publishTransformState()
 {
     const qreal dpr = devicePixelRatio();
     std::vector<int> handles;
     std::vector<double> pixels, frame;
-    _imp->renderer.getDrawnTransformHandles(int(width() * dpr), int(height() * dpr), &handles, &pixels, &frame);
+    bool busy = false;
+    _imp->renderer.getDrawnTransformHandles(int(width() * dpr), int(height() * dpr), &handles, &pixels, &frame, &busy);
+    if (busy) {
+        return;
+    }
     QVariantList drawn;
     for (std::size_t i = 0; i < handles.size(); ++i) {
         drawn.push_back(QVariantList { handles[i], pixels[2 * i] / dpr, pixels[2 * i + 1] / dpr });
@@ -4494,6 +4777,7 @@ void
 SceneViewport::onFramingComputed(U64 id,
                                  const SceneViewportRenderer::FrameBounds& bounds)
 {
+    serviceDeferredInput();
     // A later request was taken with this one or follows it, and its answer is on its way.
     if (id != _imp->framingRequested) {
         return;
@@ -4517,30 +4801,56 @@ SceneViewport::frameSelection()
     requestFraming(_imp->renderer.getSelectedPrims());
 }
 
+bool
+SceneViewport::pickMustWait()
+{
+    // The engine is busy for as long as a background frame runs, and a stage change not yet taken
+    // in would have the pick do that frame's work on the render thread, with the main thread
+    // waiting for it. Asking for the frame here brings the retry that follows it.
+    startBackgroundFrame();
+
+    return _imp->backgroundFrameRunning || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
+}
+
 QString
-SceneViewport::pickPrimAt(const QPoint& pos)
+SceneViewport::pickPrimAt(const QPoint& pos,
+                          bool* busy)
 {
     std::string path;
 
-    // The engine is busy for as long as a background frame runs, which a click must not wait for.
-    if (_imp->glInitialized && _imp->renderer.hasScene() && context() && !_imp->backgroundFrameRunning) {
+    if (_imp->glInitialized && _imp->renderer.hasScene() && context()) {
+        if (pickMustWait()) {
+            if (busy) {
+                *busy = true;
+            }
+
+            return QString();
+        }
         const qreal dpr = devicePixelRatio();
         const int x = int(pos.x() * dpr);
         const int y = int(pos.y() * dpr);
         const int w = int(width() * dpr);
         const int h = int(height() * dpr);
-        runWithEngineContext([&]() { path = _imp->renderer.pick(x, y, w, h); });
+        runWithEngineContext([&]() { path = _imp->renderer.pick(x, y, w, h, busy); });
     }
 
     return QString::fromStdString(path);
 }
 
 QStringList
-SceneViewport::pickPrimsIn(const QRect& rect)
+SceneViewport::pickPrimsIn(const QRect& rect,
+                           bool* busy)
 {
     std::vector<std::string> paths;
 
-    if (_imp->glInitialized && _imp->renderer.hasScene() && context() && !_imp->backgroundFrameRunning) {
+    if (_imp->glInitialized && _imp->renderer.hasScene() && context()) {
+        if (pickMustWait()) {
+            if (busy) {
+                *busy = true;
+            }
+
+            return QStringList();
+        }
         const qreal dpr = devicePixelRatio();
         const QRect r = rect.normalized();
         const int left = int(r.left() * dpr);
@@ -4549,7 +4859,7 @@ SceneViewport::pickPrimsIn(const QRect& rect)
         const int bottom = int((r.bottom() + 1) * dpr) - 1;
         const int w = int(width() * dpr);
         const int h = int(height() * dpr);
-        runWithEngineContext([&]() { paths = _imp->renderer.pickRect(left, top, right, bottom, w, h); });
+        runWithEngineContext([&]() { paths = _imp->renderer.pickRect(left, top, right, bottom, w, h, busy); });
     }
 
     return toStringList(paths);
@@ -4824,7 +5134,12 @@ SceneViewport::beginCameraLock()
     }
     const qreal dpr = devicePixelRatio();
     SceneViewportRenderer::CameraPose pose;
-    const bool havePose = _imp->renderer.getViewPose(int(width() * dpr), int(height() * dpr), &pose);
+    bool poseBusy = false;
+    const bool havePose = _imp->renderer.getViewPose(int(width() * dpr), int(height() * dpr), &pose, &poseBusy);
+    // Not refused: the next move of the drag or the wheel tries again.
+    if (poseBusy) {
+        return false;
+    }
     const double frame = _imp->frame;
     GfVec3d s(1.);
     if (scale && uniformScale) {
@@ -5017,8 +5332,11 @@ SceneViewport::createCameraFromView()
     AppInstancePtr app = viewed ? viewed->getApp() : AppInstancePtr();
     const qreal dpr = devicePixelRatio();
     SceneViewportRenderer::CameraPose pose;
+    bool poseBusy = false;
 
-    if (!app || !_imp->renderer.getViewPose(int(width() * dpr), int(height() * dpr), &pose)) {
+    if (!app || !_imp->renderer.getViewPose(int(width() * dpr), int(height() * dpr), &pose, &poseBusy)) {
+        _imp->cameraFromViewOwed = poseBusy;
+
         return NodePtr();
     }
     const GfMatrix4d cameraToWorld = loadMatrix(pose.cameraToWorld);
@@ -5299,10 +5617,24 @@ SceneViewport::paintGL()
 void
 SceneViewport::mousePressEvent(QMouseEvent* e)
 {
-    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && !_imp->spaceHeld && beginHandleDrag(e->position().toPoint())) {
+    // A handle drag is still to be written, and this press would start over it.
+    if (_imp->handleEndOwed) {
         e->accept();
 
         return;
+    }
+    // Clicks still waiting go first, whichever way this one turns out.
+    serviceDeferredInput();
+    const bool queued = !_imp->deferredSelections.empty();
+    bool handleOwed = false;
+    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && !_imp->spaceHeld) {
+        if (queued) {
+            handleOwed = true;
+        } else if (beginHandleDrag(e->position().toPoint(), &handleOwed)) {
+            e->accept();
+
+            return;
+        }
     }
     clearGesture();
     const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
@@ -5332,7 +5664,7 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
     if (clickSelects && (mode != eSelectionModeReplace) && (role == Implementation::eDragRoleNone)) {
         role = Implementation::eDragRoleMarquee;
     }
-    if ((role == Implementation::eDragRoleNone) && !clickSelects) {
+    if ((role == Implementation::eDragRoleNone) && !clickSelects && !handleOwed) {
         // A right press with no binding opens the context menu.
         QOpenGLWidget::mousePressEvent(e);
 
@@ -5341,9 +5673,17 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
     const QPoint pos = e->position().toPoint();
     // A marquee may start on a prim: a drag selects by rectangle wherever it starts,
     // and a release without a drag selects what is under the press.
+    bool pickOwed = false;
     if (clickSelects) {
-        _imp->pressPrim = pickPrimAt(pos);
+        if (queued) {
+            pickOwed = true;
+        } else {
+            _imp->pressPrim = pickPrimAt(pos, &pickOwed);
+        }
     }
+    _imp->pressOwedHandle = handleOwed;
+    _imp->pressOwedPick = pickOwed;
+    _imp->pressView = _imp->currentView(this);
     _imp->button = button;
     _imp->pressPos = pos;
     _imp->lastPos = pos;
@@ -5362,7 +5702,9 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     const QPoint pos = e->position().toPoint();
 
     if (_imp->handle != SceneGizmo::kNoHandle) {
-        dragHandle(pos);
+        if (!_imp->handleEndOwed) {
+            dragHandle(pos);
+        }
         e->accept();
 
         return;
@@ -5440,10 +5782,33 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
     const QString pressPrim = _imp->pressPrim;
     const bool menu = _imp->menuOnRelease;
     const QRect marquee = QRect(_imp->pressPos, e->position().toPoint()).normalized();
+    Implementation::DeferredSelection deferred;
+    deferred.pos = _imp->pressPos;
+    deferred.rect = marquee;
+    deferred.checkHandle = _imp->pressOwedHandle;
+    deferred.mode = mode;
+    deferred.view = _imp->pressView;
+    const bool owed = _imp->pressOwedPick || _imp->pressOwedHandle;
     clearGesture();
 
     if (dragged && (role == Implementation::eDragRoleMarquee)) {
-        select(pickPrimsIn(marquee), mode);
+        bool busy = !_imp->deferredSelections.empty();
+        QStringList paths;
+        if (!busy) {
+            paths = pickPrimsIn(marquee, &busy);
+        }
+        if (busy) {
+            deferred.marquee = true;
+            deferred.checkHandle = false;
+            _imp->deferredSelections.push_back(deferred);
+            serviceDeferredInput();
+        } else {
+            select(paths, mode);
+        }
+    } else if ((!dragged || (role == Implementation::eDragRoleNone)) && clickSelects && owed) {
+        deferred.emptySelects = !dragged;
+        _imp->deferredSelections.push_back(deferred);
+        serviceDeferredInput();
     } else if (!dragged && clickSelects) {
         select(pressPrim.isEmpty() ? QStringList() : QStringList(pressPrim), mode);
     } else if (dragged && clickSelects && (role == Implementation::eDragRoleNone) && !pressPrim.isEmpty()) {
@@ -5468,31 +5833,46 @@ SceneViewport::clearGesture()
     _imp->clickSelects = false;
     _imp->pressPrim.clear();
     _imp->menuOnRelease = false;
+    _imp->pressOwedHandle = false;
+    _imp->pressOwedPick = false;
     if (marquee) {
         update();
     }
 }
 
 bool
-SceneViewport::beginHandleDrag(const QPoint& pos)
+SceneViewport::beginHandleDrag(const QPoint& pos,
+                               bool* busy)
 {
     refreshTransformHandles();
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
     const GfVec2d pixel = Implementation::toPixel(this, pos);
-    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], w, h);
+    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], w, h, busy);
     if (handle == SceneGizmo::kNoHandle) {
         return false;
     }
-    const bool selection = _imp->renderer.hasSelectionHandles();
+    bool selectionBusy = false;
+    const bool selection = _imp->renderer.hasSelectionHandles(&selectionBusy);
+    if (selectionBusy) {
+        if (busy) {
+            *busy = true;
+        }
+
+        return false;
+    }
     NodePtr node;
     if (!selection && !_imp->getTransformNode(&node)) {
         return false;
     }
-    if (!_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h)) {
+    if (!_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h, busy)) {
         return false;
     }
+    _imp->previewClearOwed = false;
+    _imp->handleMoveOwed = false;
+    _imp->handleChangeStale = false;
+    _imp->handleEndOwed = false;
     _imp->previewTimer->stop();
     _imp->previewAwaitsSync = false;
     _imp->handle = handle;
@@ -5510,15 +5890,28 @@ SceneViewport::dragHandle(const QPoint& pos)
     const qreal dpr = devicePixelRatio();
     const GfVec2d pixel = Implementation::toPixel(this, pos);
     double change = 0.;
+    bool busy = false;
 
-    if ((_imp->handle == SceneGizmo::kNoHandle) || !_imp->renderer.getTransformDragChange(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &change)) {
+    _imp->handleMoveOwed = false;
+    _imp->handleChangeStale = false;
+    if ((_imp->handle == SceneGizmo::kNoHandle) || !_imp->renderer.getTransformDragChange(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &change, &busy)) {
+        if (busy) {
+            _imp->handleMoveOwed = true;
+            _imp->handleChangeStale = true;
+            _imp->handleMovePos = pos;
+        }
+
         return;
     }
     // Only drawn: writing the nodes on every move would evaluate the graph and sync the scene
     // each time, and the prims would only move as fast as that round trip.
     _imp->handleChange = change;
     _imp->handleChanged = true;
-    _imp->renderer.previewTransformDrag(change);
+    _imp->renderer.previewTransformDrag(change, &busy);
+    if (busy) {
+        _imp->handleMoveOwed = true;
+        _imp->handleMovePos = pos;
+    }
     update();
 }
 
@@ -5528,6 +5921,17 @@ SceneViewport::endHandleDrag()
     if (_imp->handle == SceneGizmo::kNoHandle) {
         return;
     }
+    if (_imp->handleChangeStale) {
+        dragHandle(_imp->handleMovePos);
+        // The drag can't be written until its last move is measured; it ends when that can be.
+        if (_imp->handleChangeStale) {
+            _imp->handleEndOwed = true;
+
+            return;
+        }
+    }
+    _imp->handleMoveOwed = false;
+    _imp->handleEndOwed = false;
     const double change = _imp->handleChange;
     const bool changed = _imp->handleChanged;
     // Before any write, which may request the scene that has it before returning.
@@ -5569,7 +5973,7 @@ SceneViewport::endHandleDrag()
         _imp->previewSerial = serial;
         _imp->previewTimer->start();
     } else {
-        _imp->renderer.clearTransformPreview();
+        _imp->clearPreview();
     }
     update();
 } // SceneViewport::endHandleDrag
@@ -5616,9 +6020,11 @@ SceneViewport::highlightHandleAt(const QPoint& pos)
 {
     const qreal dpr = devicePixelRatio();
     const GfVec2d pixel = Implementation::toPixel(this, pos);
-    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr));
+    bool busy = false;
+    const int handle = _imp->renderer.hitTestTransformHandles(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &busy);
 
-    if (handle != _imp->renderer.getHighlightedTransformHandle()) {
+    // The highlight stays as it is: it can't tell what is under the pointer.
+    if (!busy && (handle != _imp->renderer.getHighlightedTransformHandle())) {
         _imp->renderer.setHighlightedTransformHandle(handle);
         update();
     }

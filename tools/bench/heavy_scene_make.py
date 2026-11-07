@@ -5,7 +5,7 @@
 
 Needs the pxr Python module (the natron-dev image has it). Writes under --out:
 
-  heavy_city.usda          payload city: /World > Block_N (group) > B_M (assembly), one payload per building
+  heavy_city.usda          payload city: /World > BlockN (group) > BM (assembly), one payload per building
   heavy_city_payloads/     one .usdc per building, each holding floors (component) of cube leaves
   heavy_flat.usdc          the same prim count as one flat file with no payloads
 

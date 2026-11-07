@@ -71,6 +71,8 @@ public:
 
     void readStage(const std::function<void(const SceneStage* stage)>& read) const override;
 
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const override;
+
     U64 getEditCount() const override;
 
     NodePtr getNode() const;

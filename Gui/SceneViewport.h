@@ -192,6 +192,15 @@ public:
      **/
     void readStage(const std::function<void(const SceneStage* stage)>& read) const;
 
+    // readStage() unless an edit holds the stage: then false, without waiting or calling read.
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    /**
+     * @brief Called, on the reader's thread, when a readStage() that kept out a try for the lock
+     * to edit has ended. Readers announce nothing else, unlike syncs, loads and frames.
+     **/
+    void setReadEndedCallback(const std::function<void()>& callback);
+
     // The shown stage's edit count, without the lock: 0 before the first sync.
     U64 getStageEditCount() const;
 
@@ -363,7 +372,7 @@ public:
      * ahead of it of the scene's centre, as computeFrameBounds() last found it. False only for a
      * stage camera that cannot be read.
      **/
-    bool getViewPose(int width, int height, CameraPose* pose) const;
+    bool getViewPose(int width, int height, CameraPose* pose, bool* busy = nullptr) const;
 
     // What a framing frames, worked out apart from moving the camera.
     struct FrameBounds {
@@ -479,16 +488,21 @@ public:
     bool hasTransformHandles() const;
 
     // Whether the handles drawn are the transform widget's on the selection.
-    bool hasSelectionHandles() const;
+    bool hasSelectionHandles(bool* busy = nullptr) const;
+
+    /*
+     * The calls below taking busy are for the main thread, which must not wait out a load. They do
+     * not wait for the lock: when an edit holds it they set busy and return the empty result.
+     */
 
     /**
      * @brief The handles drawn, as pixels to aim at in a width x height view, and the frame they
      * point along: origin then the three axes, 12 values. False when none are drawn.
      **/
-    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame) const;
+    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame, bool* busy = nullptr) const;
 
     // The handle (a SceneGizmo handle) under the pixel (x, y) of a width x height view, or -1.
-    int hitTestTransformHandles(double x, double y, int width, int height) const;
+    int hitTestTransformHandles(double x, double y, int width, int height, bool* busy = nullptr) const;
 
     // The handle drawn highlighted, -1 for none.
     void setHighlightedTransformHandle(int handle);
@@ -503,7 +517,7 @@ public:
      * handles as they are now, and a drag of the selection's widget moves the prims it has now.
      * Clears any drag preview first. False if the handle is not drawn.
      **/
-    bool beginTransformDrag(int handle, double x, double y, int width, int height);
+    bool beginTransformDrag(int handle, double x, double y, int width, int height, bool* busy = nullptr);
 
     // Whether the drag under way moves the selection, rather than an op's values.
     bool isSelectionTransformDrag() const;
@@ -513,14 +527,14 @@ public:
      * added to the translate or rotate value of the handle's axis, or the factor its scale value
      * is multiplied by. False if the drag says nothing, as for a ring seen edge-on.
      **/
-    bool getTransformDragChange(double x, double y, int width, int height, double* change) const;
+    bool getTransformDragChange(double x, double y, int width, int height, double* change, bool* busy = nullptr) const;
 
     /**
      * @brief Draws the prims the drag under way moves as a change of change would leave them,
      * without editing any node: a transient transform on the renderer's own layer. Returns
      * whether any prim is drawn moved.
      **/
-    bool previewTransformDrag(double change);
+    bool previewTransformDrag(double change, bool* busy = nullptr);
 
     /**
      * @brief The selection drag under way, for a change, as a target writes it. False if the drag
@@ -530,8 +544,8 @@ public:
 
     void endTransformDrag();
 
-    // Drops the drag preview now.
-    void clearTransformPreview();
+    // Drops the drag preview now. False if an edit holds the stage: it is still there.
+    bool clearTransformPreview();
 
     // Drops the drag preview when a scene requested after serial is synced.
     void clearTransformPreviewAfter(U64 serial);
@@ -554,14 +568,14 @@ public:
      * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
      * behind it. Needs the context of render() current.
      **/
-    std::string pick(int x, int y, int width, int height);
+    std::string pick(int x, int y, int width, int height, bool* busy = nullptr);
 
     /**
      * @brief The paths of the prims and guides drawn in the rectangle with corners (x0, y0) and
      * (x1, y1), pixels of a width x height view counted from the top left, sorted. Needs the context of
      * render() current.
      **/
-    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
+    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height, bool* busy = nullptr);
 
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
@@ -663,11 +677,12 @@ public:
 
     void frameSelection();
 
-    // The prim drawn at pos (widget coordinates), empty for none.
-    QString pickPrimAt(const QPoint& pos);
+    // The prim drawn at pos (widget coordinates), empty for none. If the scene can't be picked
+    // without waiting, sets busy instead: an empty result then says nothing about pos.
+    QString pickPrimAt(const QPoint& pos, bool* busy = nullptr);
 
     // The prims drawn in rect (widget coordinates).
-    QStringList pickPrimsIn(const QRect& rect);
+    QStringList pickPrimsIn(const QRect& rect, bool* busy = nullptr);
 
     // How a click or marquee combines its prims with the selection.
     enum SelectionModeEnum {
@@ -812,8 +827,9 @@ private:
     // natronSceneShowGuides, natronScenePurposes and natronSceneLighting.
     void publishState();
 
-    // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
-    bool beginHandleDrag(const QPoint& pos);
+    // Starts dragging the transform handle at pos (widget coordinates). False if none is there, or
+    // with busy set if an edit holds the stage and it can't tell.
+    bool beginHandleDrag(const QPoint& pos, bool* busy = nullptr);
 
     void dragHandle(const QPoint& pos);
 
@@ -874,6 +890,12 @@ private:
 
     // Main thread: a batch of payload loads was committed.
     void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds);
+
+    // Whether a pick has to wait for a background frame, which this starts if it is due.
+    bool pickMustWait();
+
+    // Main thread: something that held the stage has let go; carries out the input that found it held.
+    void serviceDeferredInput();
 
     // Runs fn with the engine's context current, on whichever thread that context lives.
     void runWithEngineContext(const std::function<void()>& fn);

@@ -138,6 +138,20 @@ public:
         }
     }
 
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const override
+    {
+        SceneWriteBarrier::ReadScope scope;
+        std::shared_lock<std::shared_mutex> lock(_gate->mutex);
+
+        if (!_gate->renderer) {
+            read(nullptr);
+
+            return true;
+        }
+
+        return _gate->renderer->tryReadStage(read);
+    }
+
     U64 getEditCount() const override
     {
         std::shared_lock<std::shared_mutex> lock(_gate->mutex);
@@ -405,6 +419,12 @@ struct SceneGraphPanel::Implementation {
     // The viewer's selection moved while the lazy tree was off screen. Selecting there can read a
     // whole sibling list, so it waits until that page shows again and the worker has read the rows.
     bool treeSelectionOwed = false;
+    // Selecting or reopening tree rows found the stage held by an edit; both happen again once the
+    // model has read what it owes.
+    bool treeSelectionDeferred = false;
+    bool expansionDeferred = false;
+    // The filter's walk found the stage held by an edit. The edit's end restarts the filter.
+    bool filterDeferred = false;
     struct OwedRowsRequest {
         SceneGraphStageSourcePtr source;
         QStringList paths;
@@ -533,7 +553,7 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphChangedHereBusy", changedHereBusy);
         panel->setProperty("natronSceneGraphChangedHereCount", model->getChangedHereCount());
         panel->setProperty("natronSceneGraphChangedHereRows", changedHereModel->getRowCount());
-        panel->setProperty("natronSceneGraphFilterBusy", filterStep.isActive() || filterDebounce.isActive());
+        panel->setProperty("natronSceneGraphFilterBusy", filterStep.isActive() || filterDebounce.isActive() || filterDeferred);
         const SceneGraphStageSourcePtr& source = model->getSource();
         panel->setProperty("natronSceneGraphStageEditCount", QVariant::fromValue<qulonglong>(source ? source->getEditCount() : 0));
         // Twirling a row must not add to it: the rows' open state never reaches the stage.
@@ -614,6 +634,11 @@ struct SceneGraphPanel::Implementation {
             return;
         }
         model->setSource(wanted);
+        // The edit it was waiting out belongs to the stage just left.
+        if (filterDeferred) {
+            filterDeferred = false;
+            filterStep.start();
+        }
         if (pinned && (wanted == pinned)) {
             // Not evaluated while the viewer showed it.
             NodePtr node = pinned->getNode();
@@ -766,8 +791,12 @@ struct SceneGraphPanel::Implementation {
 
         std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) { return a.size() < b.size(); });
         restoringExpansion = true;
+        expansionDeferred = false;
         for (const QString& path : paths) {
-            const QModelIndex index = model->indexOfPath(path, true);
+            const QModelIndex index = model->indexOfPath(path, true, &expansionDeferred);
+            if (expansionDeferred) {
+                break;
+            }
             if (index.isValid()) {
                 tree->expand(index);
             }
@@ -1038,6 +1067,7 @@ struct SceneGraphPanel::Implementation {
     void startFilter()
     {
         filterStep.stop();
+        filterDeferred = false;
         filterMatches.clear();
         filterWalk.stop();
         filterCapped = false;
@@ -1073,9 +1103,14 @@ struct SceneGraphPanel::Implementation {
 
             return true;
         }
-        source->readStage([&](const SceneStage* sceneStage) {
-            filterWalk.step(sceneStage, kFilterStepMs, filterCap, [this](const QString& name) { return filterMatchesName(name); }, &filterMatches);
-        });
+        if (!source->tryReadStage([&](const SceneStage* sceneStage) {
+                filterWalk.step(sceneStage, kFilterStepMs, filterCap, [this](const QString& name) { return filterMatchesName(name); }, &filterMatches);
+            })) {
+            filterStep.stop();
+            filterDeferred = true;
+
+            return false;
+        }
         filterCapped = !filterWalk.isOver() && (filterMatches.size() >= filterCap);
 
         return filterWalk.isOver() || filterCapped;
@@ -1133,6 +1168,7 @@ struct SceneGraphPanel::Implementation {
         syncingSelection = true;
         restoringExpansion = true;
         treeSelectionOwed = false;
+        treeSelectionDeferred = false;
         ++owedRowsGeneration;
         // A path shown twice keeps its last place, so the current prim stays last.
         const QStringList ordered = paths;
@@ -1149,7 +1185,15 @@ struct SceneGraphPanel::Implementation {
         // The current prim is last; the cap keeps it.
         for (int i = std::max(0, (int)ordered.size() - kShownSelectionCap); i < ordered.size(); ++i) {
             const QString& path = ordered[i];
-            const QModelIndex index = model->indexOfPath(path, true);
+            const QModelIndex index = model->indexOfPath(path, true, &treeSelectionDeferred);
+            if (treeSelectionDeferred) {
+                // The rows keep showing the selection they had until the stage can be read.
+                treeSelectionOwed = true;
+                restoringExpansion = wasRestoring;
+                syncingSelection = wasSyncing;
+
+                return;
+            }
             if (!index.isValid()) {
                 continue;
             }
@@ -1276,6 +1320,14 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree = new QTreeView(_imp->stack);
     _imp->tree->setObjectName(QString::fromUtf8("sceneGraphTree"));
     _imp->tree->setModel(_imp->model);
+    QObject::connect(_imp->model, &SceneGraphModel::deferredReadsDone, this, [this]() {
+        if (_imp->expansionDeferred) {
+            _imp->restoreExpansion();
+        }
+        if (_imp->treeSelectionDeferred && (_imp->stack->currentWidget() == _imp->tree)) {
+            _imp->selectTreeRows(_imp->selectionOrder);
+        }
+    });
     _imp->tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _imp->tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     _imp->tree->setUniformRowHeights(true);
@@ -1648,6 +1700,7 @@ SceneGraphPanel::onTreeSelectionChanged()
         return;
     }
     _imp->treeSelectionOwed = false;
+    _imp->treeSelectionDeferred = false;
     ++_imp->owedRowsGeneration;
     _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->tree));
     if (!_imp->sharesViewerSelection()) {
@@ -1725,6 +1778,7 @@ SceneGraphPanel::onResultActivated(const QModelIndex& index)
     _imp->resultsModel->hasMoreRow = false;
     _imp->resultsModel->removeRows(index.row(), 1);
     _imp->syncingSelection = wasSyncing;
+    _imp->filterDeferred = false;
     _imp->filterStep.start();
     _imp->publishState();
 }

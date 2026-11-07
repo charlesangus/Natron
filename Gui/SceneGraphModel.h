@@ -58,6 +58,13 @@ public:
      **/
     virtual void readStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
 
+    /**
+     * @brief readStage() for the main thread, which must not wait for a load to commit: returns
+     * false without calling read while an edit holds the lock. The edit's end is announced by a
+     * signal of whoever owns the stage, on which to try again. MT-safe.
+     **/
+    virtual bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
+
     // Moves whenever the stage is edited; cheap, without the lock.
     virtual U64 getEditCount() const = 0;
 };
@@ -169,12 +176,20 @@ public:
 
     /**
      * @brief Brings the read items up to date with the stage. Does nothing when the stage's edit
-     * count has not moved and no notice came in; reads the edited subtrees otherwise.
+     * count has not moved and no notice came in; reads the edited subtrees otherwise. No read on the
+     * main thread waits for the stage: one that finds it held by an edit is owed, the row it was for
+     * shows the loading row meanwhile, and the next refresh() or settleLoads() reads it.
      **/
     void refresh();
 
-    // The index of the prim at path, column 0, reading the children on the way when populate.
-    QModelIndex indexOfPath(const QString& path, bool populate);
+    /**
+     * @brief The index of the prim at path, column 0, reading the children on the way when populate.
+     * Invalid with *busy set when an edit held the stage; deferredReadsDone() says when to ask again.
+     **/
+    QModelIndex indexOfPath(const QString& path, bool populate, bool* busy = nullptr);
+
+    // Whether a read that found the stage busy has yet to happen.
+    bool hasOwedReads() const;
 
     /**
      * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that
@@ -234,7 +249,18 @@ public:
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
     Qt::DropActions supportedDragActions() const override;
 
+Q_SIGNALS:
+    // Every read owed for rows has now happened: what asked for rows and found the stage busy can ask again.
+    void deferredReadsDone();
+
 private:
+    // Takes in the stage's edits. False if an edit held the stage, leaving them to read later.
+    bool readEdits();
+
+    void settle();
+
+    void retryOwedReads();
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

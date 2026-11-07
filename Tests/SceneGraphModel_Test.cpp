@@ -44,6 +44,7 @@
 #include <QElapsedTimer>
 #include <QMimeData>
 #include <QPersistentModelIndex>
+#include <QSignalSpy>
 #include <QStringList>
 
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -70,6 +71,16 @@ public:
         read(stage.isValid() && !stage.getPayload().isEmpty() ? &stage : nullptr);
     }
 
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const override
+    {
+        if (busy) {
+            return false;
+        }
+        readStage(read);
+
+        return true;
+    }
+
     U64 getEditCount() const override
     {
         return stage.getEditCount();
@@ -94,6 +105,8 @@ public:
 
     mutable std::mutex mutex;
     SceneStage stage;
+    // As if a commit held the stage's lock.
+    bool busy = false;
 };
 
 // On disk, /World holding the payload prims B0 and B1, and the group Other holding the payload prim
@@ -915,6 +928,70 @@ TEST(SceneGraphModelPayloads, TwirlingALoadedRowAsksNothing)
 
     EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB0));
     EXPECT_EQ(rows, fixture.model.rowCount(b0));
+}
+
+TEST(SceneGraphModelPayloads, ATwirlDuringACommitShowsLoadingAndReadsWhenItEnds)
+{
+    PayloadModel fixture;
+    const QPersistentModelIndex b1(fixture.row(kB1));
+    QSignalSpy done(&fixture.model, &SceneGraphModel::deferredReadsDone);
+
+    fixture.source->busy = true;
+    ASSERT_TRUE(fixture.model.canFetchMore(b1));
+    fixture.model.fetchMore(b1);
+    EXPECT_FALSE(fixture.model.canFetchMore(b1));
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    ASSERT_EQ(1, fixture.model.rowCount(b1));
+    EXPECT_EQ(QString::fromUtf8("Loading..."), fixture.model.index(0, 0, b1).data().toString());
+
+    // Still busy: nothing moves, and nothing is lost.
+    fixture.model.settleLoads();
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    EXPECT_EQ(0, done.count());
+
+    fixture.source->busy = false;
+    fixture.model.settleLoads();
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    EXPECT_EQ(1, done.count());
+    ASSERT_EQ(1, fixture.model.rowCount(b1));
+    EXPECT_EQ(QString::fromUtf8("Own"), fixture.model.index(0, 0, b1).data().toString());
+}
+
+TEST(SceneGraphModelPayloads, ACommitInTheWayKeepsALoadingRowUntilSettled)
+{
+    PayloadModel fixture;
+
+    fixture.twirl(kB0);
+    fixture.source->serviceLoads();
+    fixture.source->busy = true;
+    fixture.model.settleLoads();
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+
+    // Whichever edit was in the way, the refresh it ends with takes the outcome in.
+    fixture.source->busy = false;
+    fixture.model.refresh();
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB0));
+}
+
+TEST(SceneGraphModelPayloads, IndexOfPathReportsABusyStage)
+{
+    PayloadModel fixture;
+    QSignalSpy done(&fixture.model, &SceneGraphModel::deferredReadsDone);
+    const QString own = kB1 + QString::fromUtf8("/Own");
+    bool busy = false;
+
+    fixture.source->busy = true;
+    EXPECT_FALSE(fixture.model.indexOfPath(own, true, &busy).isValid());
+    EXPECT_TRUE(busy);
+
+    fixture.source->busy = false;
+    fixture.model.refresh();
+    EXPECT_EQ(1, done.count());
+    busy = false;
+    EXPECT_TRUE(fixture.model.indexOfPath(own, false, &busy).isValid());
+    EXPECT_FALSE(busy);
 }
 
 TEST(SceneGraphModelPayloads, UnloadRemovesRowsAndKeepsTheBadge)

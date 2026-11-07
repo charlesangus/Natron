@@ -85,6 +85,7 @@ public:
         , _nComps(1)
         , _value([](int, int, int) { return 0.f; })
         , _metadata()
+        , _par(1.)
     {
     }
 
@@ -122,6 +123,17 @@ public:
         invalidateOutputMetadata();
         // The component count is in no hash, so the cached metadata of this node and of those
         // below it describe the old count.
+        dropCachedMetadataDownstream();
+        refreshMetadataSideEffects();
+    }
+
+    void setPixelAspectRatio(double par)
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _par = par;
+        }
+        invalidateOutputMetadata();
         dropCachedMetadataDownstream();
         refreshMetadataSideEffects();
     }
@@ -171,6 +183,7 @@ private:
         std::lock_guard<std::mutex> lock(_mutex);
         metadata.setNComps(-1, _nComps);
         metadata.setBitDepth(-1, eImageBitDepthFloat);
+        metadata.setPixelAspectRatio(-1, _par);
         metadata.setIsFrameVarying(false);
 
         return eStatusOK;
@@ -225,6 +238,7 @@ private:
     int _nComps;
     ValueFn _value;
     ImageMetadata _metadata;
+    double _par;
 };
 
 /**

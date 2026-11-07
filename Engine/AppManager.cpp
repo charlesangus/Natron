@@ -151,6 +151,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -1813,6 +1815,11 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 
 #include "NativeRegistryAll.inc"
+
+    if (qgetenv(kNatronGuiTestNodesEnvVar) == "1") {
+        registerNativePlugin<OverlayTestNode>();
+        registerNativePlugin<OverlayImageGuiTestNode>();
+    }
 
     // Registered in the background too, so that a script that loads and saves a project keeps its
     // viewers. Without a viewer widget a viewer never renders.

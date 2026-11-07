@@ -429,6 +429,12 @@ public:
         U64 hash;
         std::string hashNamespace; //< empty for a knob of the content hash
     };
+    mutable QMutex overlayImageFrameMutex;
+    OverlayImageFrameConstPtr overlayImageFrame;
+    std::uint64_t overlayImageGeneration = 0;
+    // Shared with the tokens, which can outlive the node.
+    std::shared_ptr<std::atomic<int>> overlayImagePassesPending = std::make_shared<std::atomic<int>>(0);
+
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
     mutable bool knobsDigestValid = false;
     mutable U64 knobsDigestGeneration = 0;

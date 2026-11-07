@@ -21,12 +21,14 @@
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
+#include "OverlayImageTestEffect.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "SceneTestEffect.h"
@@ -143,6 +145,8 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to count, hold and fail an overlay image pass, which no shipped node can be made to do.
+    registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
@@ -209,6 +213,15 @@ registerNativeParityTestPlugins()
     // same deterministic multiplanar picture, with negatives, super-whites and exact alpha bands.
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
+}
+
+void
+registerOverlayTestPlugins()
+{
+    // The app already registered it when NATRON_GUI_TEST_NODES=1 is set.
+    if (appPTR->getPluginsList().count(kTestPluginIDOverlay) == 0) {
+        registerTestBuiltInPlugin<OverlayTestNode>();
+    }
 }
 
 void
@@ -281,6 +294,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerIdentityHopTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
+    registerOverlayTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerSplineWarpHostTestPlugins();

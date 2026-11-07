@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -1876,6 +1877,39 @@ public:
     void setCurrentViewportForHostOverlays(OverlaySupport* viewPort);
 
     bool hasHostOverlayForParam(const KnobI* knob) const;
+
+    /**
+     * @brief The overlay images of the node's last finished pass. Held on the node because a render
+     * clone produces them and the viewer reads them from the main instance.
+     **/
+    OverlayImageFrameConstPtr getOverlayImageFrame() const;
+
+    /**
+     * @brief What a pass captures before it reads the node's view knobs, to hand back to
+     * setOverlayImageFrame().
+     **/
+    std::uint64_t getOverlayImageGeneration() const;
+
+    /**
+     * @brief Publishes frame unless clearOverlayImageFrame() ran since generation was captured,
+     * and returns whether it did. Checked under the frame's lock, so a frame on the node is always
+     * of the current generation.
+     **/
+    bool setOverlayImageFrame(const OverlayImageFrameConstPtr& frame, std::uint64_t generation);
+
+    /**
+     * @brief Drops the overlay images and refuses the frames of passes already running. Returns
+     * whether there were any.
+     **/
+    bool clearOverlayImageFrame();
+
+    /**
+     * @brief Marks a pass as owed to the node until the returned token dies. While one is, the viewer
+     * keeps drawing the node's previous images.
+     **/
+    std::shared_ptr<void> markOverlayImagePassPending();
+
+    bool isOverlayImagePassPending() const;
 
     void setPluginIDAndVersionForGui(const std::list<std::string>& grouping,
                                      const std::string& pluginLabel,

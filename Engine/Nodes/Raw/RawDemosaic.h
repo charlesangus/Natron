@@ -59,13 +59,29 @@
 #define kRawDemosaicParamCaptureThreshold "captureContrastSensitivity"
 #define kRawDemosaicParamCaptureThresholdOverride "captureContrastSensitivityOverride"
 #define kRawDemosaicParamCaptureBoost "captureCornerBoost"
+#define kRawDemosaicParamMaskView "maskView"
 #define kRawDemosaicParamCaptureCenter "captureSharpCenter"
 
 // What RawNodeSupport::noteFrameComputed() names this node's whole-frame computations.
 #define kRawDemosaicFrameCaptureRadius "RawDemosaic.captureRadius"
 #define kRawDemosaicFrameGreenRatio "RawDemosaic.greenRatio"
 
+// The overlay image planes of the Mask View knob's views.
+#define kRawDemosaicMaskPlaneDual "maskDual"
+#define kRawDemosaicMaskPlaneSharpenedAreas "maskSharpenedAreas"
+#define kRawDemosaicMaskPlaneRadius "maskRadius"
+
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief What the Mask View knob overlays, one view at a time as darktable's mask buttons.
+ **/
+enum RawDemosaicMaskViewEnum {
+    eRawDemosaicMaskViewOff = 0,
+    eRawDemosaicMaskViewDual,
+    eRawDemosaicMaskViewSharpenedAreas,
+    eRawDemosaicMaskViewRadius
+};
 
 enum RawDemosaicBayerMethodEnum {
     eRawDemosaicBayerRCD = 0,
@@ -240,6 +256,8 @@ private:
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual bool isOverlayImageViewOn() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     KnobChoiceWPtr _bayerMethod;
     KnobChoiceWPtr _xtransMethod;
     KnobChoiceWPtr _greenEq;
@@ -254,6 +272,7 @@ private:
     KnobBoolWPtr _captureThresholdOverride;
     KnobDoubleWPtr _captureBoost;
     KnobDoubleWPtr _captureCenter;
+    KnobChoiceWPtr _maskView;
 
     // The ratio of full green equilibration, for the source and settings its key names.
     std::mutex _greenMutex;

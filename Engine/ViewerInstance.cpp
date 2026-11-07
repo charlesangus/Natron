@@ -464,6 +464,36 @@ public:
 private:
     int* _depth;
 };
+
+std::vector<EffectInstancePtr>
+effectsRequestingOverlayImagesUpstream(const NodePtr& viewerNode,
+                                       int inputNb)
+{
+    std::vector<EffectInstancePtr> effects;
+    std::set<Node*> visited;
+    // The real input keeps a group in the walk, the redirected one steps into it or out of a
+    // GroupInput.
+    std::list<NodePtr> queue = { viewerNode->getRealInput(inputNb), viewerNode->getInput(inputNb) };
+
+    while (!queue.empty()) {
+        const NodePtr node = queue.front();
+        queue.pop_front();
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData()) {
+            effects.push_back(effect);
+        }
+        const int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            queue.push_back(node->getRealInput(i));
+            queue.push_back(node->getInput(i));
+        }
+    }
+
+    return effects;
+}
 } // namespace
 
 void
@@ -1580,6 +1610,12 @@ ViewerInstance::renderViewer(ViewIdx view,
                 }
             }
             if (args[i]) {
+                for (const EffectInstancePtr& effect : args[i]->staleOverlayImageEffects) {
+                    // The A and B inputs can share a node: the first of them may have refreshed it.
+                    if (effect->overlayImagesStale(args[i]->overlayImageRequest)) {
+                        effect->renderOverlayImages(args[i]->overlayImageRequest, args[i]->params->abortInfo);
+                    }
+                }
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
                                                *args[i]);
@@ -2082,7 +2118,8 @@ ViewerInstance::getRoDAndLookupCache(const bool useOnlyRoDCache,
 {
     // We never use the texture cache when the user RoI is enabled or while painting or when auto-contrast is on, otherwise we would have
     // zillions of textures in the cache, each a few pixels different.
-    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates;
+    // A texture found in the cache would end the job here, before its overlay images get a pass.
+    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
 
     // If it's eSupportsMaybe and mipmapLevel!=0, don't forget to update
     // this after the first call to getRegionOfDefinition().
@@ -2234,6 +2271,26 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     // Fetch the render parameters from the Viewer UI
     setupMinimalUpdateViewerParams(time, view, textureIndex, abortInfo, isSequential, outArgs);
 
+    // Playback gets no overlay images: they serve a node being edited, and a pass per played frame
+    // would render every such node twice.
+    outArgs->staleOverlayImageEffects.clear();
+    outArgs->overlayImagePassesPending.clear();
+    if (!isSequential && !rotoPaintNode) {
+        const int maxCoord = std::numeric_limits<int>::max() / 2;
+        OverlayImageRequest& request = outArgs->overlayImageRequest;
+        request.time = time;
+        request.view = view;
+        request.draftMode = outArgs->draftModeEnabled;
+        request.mipmapLevel = outArgs->draftModeEnabled ? outArgs->mipmapLevelWithDraft : outArgs->mipmapLevelWithoutDraft;
+        request.visibleCanonical = _imp->uiContext->getImageRectangleDisplayed(RectI(-maxCoord, -maxCoord, maxCoord, maxCoord), 1., 0);
+        for (const EffectInstancePtr& effect : effectsRequestingOverlayImagesUpstream(getNode(), outArgs->activeInputIndex)) {
+            if (effect->overlayImagesStale(request)) {
+                outArgs->staleOverlayImageEffects.push_back(effect);
+                outArgs->overlayImagePassesPending.push_back(effect->getNode()->markOverlayImagePassPending());
+            }
+        }
+    }
+
     // A scene has no RoD or texture to look up; it is evaluated on the render thread.
     if (outArgs->sceneUpstream) {
         return eViewerRenderRetCodeRender;
@@ -2359,7 +2416,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
      * 3) Single frame non-abortable render: the canAbort flag is set to false and the isSequentialRender flag is set to false.
      */
 
-    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates;
+    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
     RectI roi = inArgs.params->roi;
 
     // We might already have some tiles cached, get their bounding box to see if it is less than the actual RoI

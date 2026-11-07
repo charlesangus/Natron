@@ -1221,9 +1221,12 @@ ViewerGL::drawPersistentMessage()
 
         glDisable(GL_BLEND);
 
-        if (_imp->persistentMessageType == 1) { // error
+        const bool isError = _imp->persistentMessageType == 1;
+        // Light text is unreadable on the yellow strip.
+        const QColor messageColor = isError ? _imp->textRenderingColor : QColor(20, 20, 20);
+        if (isError) {
             glColor4f(0.5, 0., 0., 1.);
-        } else { // warning
+        } else {
             glColor4f(0.65, 0.65, 0., 1.);
         }
         glBegin(GL_POLYGON);
@@ -1236,7 +1239,7 @@ ViewerGL::drawPersistentMessage()
 
         for (int j = 0; j < _imp->persistentMessages.size(); ++j) {
             assert(_imp->_textFont);
-            renderText(textPos.x(), textPos.y(), _imp->persistentMessages.at(j), _imp->textRenderingColor, *_imp->_textFont);
+            renderText(textPos.x(), textPos.y(), _imp->persistentMessages.at(j), messageColor, *_imp->_textFont);
             textPos.setY( textPos.y() - ( fmHeightZoomCoord + offsetZoomCoord.y() ) ); /*metrics.height() * 2 * zoomScreenPixelHeight*/
         }
         glCheckError();
@@ -3786,8 +3789,7 @@ ViewerGL::updatePersistentMessageToWidth(int w)
 
     _imp->persistentMessages.clear();
     QStringList allMessages;
-    int type = 0;
-    int nbNonEmpty = 0;
+    bool allWarnings = true;
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         QString mess;
         int nType = 0;
@@ -3796,10 +3798,11 @@ ViewerGL::updatePersistentMessageToWidth(int w)
             continue;
         }
         allMessages.append(mess);
-        ++nbNonEmpty;
-        type = (nbNonEmpty == 1 && nType == 2) ? 2 : 1;
+        if (nType != 2) {
+            allWarnings = false;
+        }
     }
-    _imp->persistentMessageType = type;
+    _imp->persistentMessageType = allMessages.isEmpty() ? 0 : (allWarnings ? 2 : 1);
     setProperty("natronPersistentMessages", QVariant(allMessages));
 
     assert(_imp->_textFont);

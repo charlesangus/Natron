@@ -846,6 +846,8 @@ struct CacheDiskTier::Imp {
     std::vector<WriteItemPtr> publishesInFlight;
     std::atomic<std::size_t> publishing;
     std::chrono::steady_clock::time_point publishBackoffUntil;
+    // A batch sampled before a cancellation and queued after it would outlive the cancellation.
+    std::uint64_t cancelEpoch = 0;
 
     std::array<ProbeStripe, kProbeStripes> probes;
     std::array<GateStripe, kGateStripes> gates;
@@ -1151,6 +1153,7 @@ struct CacheDiskTier::Imp {
             }
         }
         std::lock_guard<std::mutex> lock(publishMutex);
+        ++cancelEpoch;
         publishing.fetch_sub(publishQueue.size());
         publishQueue.clear();
         for (const WriteItemPtr& item : publishesInFlight) {
@@ -2093,11 +2096,13 @@ CacheDiskTier::Imp::offerPublishCandidates()
     if (!config.publish || !config.idlePublisher || !storage || (demoting.load() > 0) || (budget.load() == 0)) {
         return;
     }
+    std::uint64_t sampledEpoch;
     {
         std::lock_guard<std::mutex> lock(publishMutex);
         if ((publishing.load() > 0) || (std::chrono::steady_clock::now() < publishBackoffUntil)) {
             return;
         }
+        sampledEpoch = cancelEpoch;
     }
 
     std::vector<std::weak_ptr<AbstractCacheEntryBase>> candidates;
@@ -2123,6 +2128,9 @@ CacheDiskTier::Imp::offerPublishCandidates()
     }
 
     std::lock_guard<std::mutex> lock(publishMutex);
+    if (cancelEpoch != sampledEpoch) {
+        return;
+    }
     for (WriteItemPtr& item : items) {
         publishQueue.push_back(std::move(item));
         publishing.fetch_add(1);

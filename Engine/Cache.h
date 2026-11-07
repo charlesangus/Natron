@@ -1281,8 +1281,10 @@ public:
      **/
     void clear()
     {
+        // Queued demotions go before RAM empties, so that no lookup reclaims one into it, and the
+        // tier's files after, so that the idle publisher has no cleared entry left to write there.
         if (_diskTier) {
-            _diskTier->clearAuto();
+            _diskTier->cancelWrites();
         }
         {
             QMutexLocker k(&_tileCacheMutex);
@@ -1295,23 +1297,29 @@ public:
             ///block signals otherwise the we would be spammed of notifications
             _signalEmitter->blockSignals(true);
         }
-        QMutexLocker locker(&_lock);
-        std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
-        while (evictedFromMemory.second) {
-            if ( !_isTiled && evictedFromMemory.second->isStoredOnDisk() ) {
-                evictedFromMemory.second->removeAnyBackingFile();
-            }
-            evictedFromMemory = _memoryCache.evict();
-        }
-
-        if (_signalEmitter) {
-            _signalEmitter->blockSignals(false);
-            _signalEmitter->emitSignalClearedInMemoryPortion();
-        }
-
         {
-            QMutexLocker k(&_tileCacheMutex);
-            _clearingCache = false;
+            QMutexLocker locker(&_lock);
+            std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
+            while (evictedFromMemory.second) {
+                if (!_isTiled && evictedFromMemory.second->isStoredOnDisk()) {
+                    evictedFromMemory.second->removeAnyBackingFile();
+                }
+                evictedFromMemory = _memoryCache.evict();
+            }
+
+            if (_signalEmitter) {
+                _signalEmitter->blockSignals(false);
+                _signalEmitter->emitSignalClearedInMemoryPortion();
+            }
+
+            {
+                QMutexLocker k(&_tileCacheMutex);
+                _clearingCache = false;
+            }
+        }
+
+        if (_diskTier) {
+            _diskTier->clearAuto();
         }
     }
 

@@ -544,6 +544,10 @@ drops by the usual test. A retracted entry (dropped, replaced or cleared) cancel
 its result is invalid also unlinks the file it published, and a removal by key unlinks the key's files of every params
 variation, whichever session wrote them.
 
+A clear cancels the writes, empties RAM, then empties the tier, in that order: emptying the tier first would let the idle
+publisher sample an entry still in RAM and write it into the emptied tier, where a later lookup would take it for valid. A
+publish batch sampled before any cancellation is dropped rather than queued after it.
+
 A demotion's write failure drops the entry, as it must leave RAM. A publish-behind failure keeps the RAM copy, which is
 still valid, abandons the file and backs the publisher off for 30 s. Both warn once per session.
 

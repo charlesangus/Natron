@@ -256,6 +256,8 @@ public:
     void retract(const CacheEntryPtr& entry, bool removeFile);
     // Unlinks every params variation of a key, whether or not this session wrote or knows them.
     void retractFiles(const CacheDiskIdentity& identity);
+    // Call it once RAM no longer holds what is cleared: the idle publisher may otherwise sample an
+    // entry still in RAM and write it into the emptied tier.
     void clearAuto();
 
     enum PinOutcomeEnum {

@@ -79,7 +79,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
 
 ## Phase 219.1: Engine
 
-- [ ] M219.P1.T1 — Vector sampler
+- [x] M219.P1.T1 — Vector sampler
   - files: `Engine/VectorSampler.{h,cpp}` (new), `Engine/CMakeLists.txt`, `Tests/VectorSampler_Test.cpp` (new)
   - approach:
     - Given a node and a frame, render its Forward, Backward and (optional) `vectorConfidence` layers at scale 1 over its RoD through `renderRoI`, following `TrackerFrameAccessor.cpp:298-353`. Keep a small LRU of frames.
@@ -88,7 +88,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
   - verify: `ctest -R VectorSampler` passes. On a VectorGenerator over a translating fixture, samples equal the expected vector within 0.1 px, a node without motion layers is rejected, and a downstream source is rejected.
   - size: M
 
-- [ ] M219.P1.T2 — Trajectory integration and anchor bridging
+- [x] M219.P1.T2 — Trajectory integration and anchor bridging
   - files: `Engine/VectorFollow.{h,cpp}` (new), `Tests/VectorFollow_Test.cpp` (new)
   - approach:
     - Pure math over a sampler interface, so tests can feed an analytic field.
@@ -98,7 +98,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
   - verify: `ctest -R VectorFollow` passes. With an analytic rotation field, a 50-frame forward integration stays within 0.25 px. A bridge with a deliberately biased field lands exactly on both anchors and halves the mid-gap error of one-way tracking.
   - size: M
 
-- [ ] M219.P1.T3 — Motion models and occlusion inference
+- [x] M219.P1.T3 — Motion models and occlusion inference
   - files: `Engine/VectorFollowModels.{h,cpp}` (new), `Engine/VectorFollow.cpp`, `Tests/VectorFollowModels_Test.cpp` (new)
   - approach:
     - Implement per-point, plus Eigen-based IRLS/Huber fits for translate, affine and perspective (normalised DLT followed by IRLS). Weight samples by confidence.
@@ -111,7 +111,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
     - the stop rule fires.
   - size: L
 
-- [ ] M219.P1.T4 — Bake onto Beziers and strokes, with undo
+- [x] M219.P1.T4 — Bake onto Beziers and strokes, with undo
   - files: `Engine/VectorFollow.cpp`, `Engine/RotoCurveContext.{h,cpp}`, `Engine/RotoUndoCommand.{h,cpp}`, `Tests/VectorFollowBake_Test.cpp` (new)
   - approach:
     - Add `RotoCurveContext::followVectors(params) → report`.
@@ -126,7 +126,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
     - an aborted follow leaves only the completed frames.
   - size: L
 
-- [ ] M219.P1.T5 — Keyframe reduction
+- [x] M219.P1.T5 — Keyframe reduction
   - files: `Engine/VectorFollowReduce.{h,cpp}` (new), `Engine/VectorFollow.cpp`, `Tests/VectorFollowReduce_Test.cpp` (new)
   - approach:
     - Greedy removal: repeatedly drop the key whose removal gives the smallest maximum deviation, measured over every frame and every point of the shape (point keys) or the transformed bounding-box corners (transform keys), while that deviation stays within `tolerance`.
@@ -137,7 +137,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
 
 ## Phase 219.2: UI and Python
 
-- [ ] M219.P2.T1 — Follow Vectors toolbar group
+- [x] M219.P2.T1 — Follow Vectors toolbar group
   - files: `Engine/RotoCurveInteract.{h,cpp}`, `Engine/VectorFollowKnobs.{h,cpp}` (new), `Engine/RotoPaint.cpp`
   - approach:
     - Add the group through M146's toolbar builder:
@@ -150,7 +150,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
   - verify: at the phase build, the Xvfb pass in the gate shows the group and runs a follow. `ctest -R VectorFollowBake` still passes.
   - size: M
 
-- [ ] M219.P2.T2 — Background run, progress, abort and report
+- [x] M219.P2.T2 — Background run, progress, abort and report
   - files: `Engine/VectorFollowTask.{h,cpp}` (new), `Engine/RotoCurveInteract.cpp`, `Gui/RotoPanel.cpp`
   - approach:
     - Run `followVectors` off the GUI thread, mirroring the tracker's scheduler, with viewer progress and abort.
@@ -159,7 +159,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
   - verify: at the phase build, the gate's Xvfb pass covers progress, an abort keeping partial keys, the report message and the panel entry.
   - size: M
 
-- [ ] M219.P2.T3 — Python `Roto.followVectors`
+- [x] M219.P2.T3 — Python `Roto.followVectors`
   - files: `Engine/PyRoto.{h,cpp}`, `Engine/typesystem_engine.xml`, `Tests/Python/VectorFollow_Test.py` (new; follow the existing Python test registration)
   - approach:
     - Bind the call with the signature in `## Scope`. It runs synchronously and returns the report as a dict: per shape, the inferred ranges and the stop frame.

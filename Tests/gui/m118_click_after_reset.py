@@ -9,6 +9,10 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xv
 The root graph is the NodeGraph without an object name; a Group's graph is named after the group.
 The main window must be active: QGraphicsItem::isActive() is false in an inactive window and
 presses are dropped.
+
+Resetting queues a recentre of the graph, which moves the graph's root item so the top-left node
+sits at the scene origin. A node's position is in the root item's coordinates, so the test
+recentres itself once the nodes exist and reads the offset back from the positions.
 """
 import os
 import sys
@@ -17,16 +21,16 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STARTUP_TIMEOUT_S = 60.0
-SETTLE_MS = 400
 DRAG_STEPS = 4
 DRAG_DX = 160.0
 ROUNDS = 2
 CHAIN = ("Constant", "Grade", "Blur", "Grade")
 MARGIN = 80.0
+RECENTRE_QUEUED_MS = 50
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
@@ -65,9 +69,17 @@ try:
             nodes.append(node)
         return nodes
 
-    def frame(graph, nodes):
-        xs = [n.getPosition()[0] for n in nodes]
-        ys = [n.getPosition()[1] for n in nodes]
+    def recentre(graph):
+        """Fits the graph to all its nodes; afterwards the root item's offset is minus the top-left."""
+        app.clearSelection()
+        QMetaObject.invokeMethod(graph, "centerOnAllNodes")
+        QApplication.processEvents()
+        positions = [c.getPosition() for c in app.getChildren()]
+        return -min(p[0] for p in positions), -min(p[1] for p in positions)
+
+    def frame(graph, nodes, offset):
+        xs = [n.getPosition()[0] + offset[0] for n in nodes]
+        ys = [n.getPosition()[1] + offset[1] for n in nodes]
         bw = max(xs) - min(xs) + 2 * MARGIN + DRAG_DX + max(n.getSize()[0] for n in nodes)
         bh = max(ys) - min(ys) + 2 * MARGIN + max(n.getSize()[1] for n in nodes)
         vp = graph.viewport()
@@ -77,11 +89,11 @@ try:
         graph.centerOn(min(xs) + bw / 2.0 - MARGIN, (max(ys) + min(ys)) / 2.0)
         QApplication.processEvents()
 
-    def grab_point(node):
+    def grab_point(node, offset):
         """The node's left edge: the pipes between stacked nodes run through its middle."""
         x, y = node.getPosition()
         _w, h = node.getSize()
-        return x + 8.0, y + h / 2.0
+        return x + offset[0] + 8.0, y + offset[1] + h / 2.0
 
     def send(graph, etype, scene_pos, button, buttons):
         pos = graph.mapFromScene(QPointF(scene_pos[0], scene_pos[1]))
@@ -122,7 +134,11 @@ try:
         for round_no in range(1, ROUNDS + 1):
             label = "round%d" % round_no
             gt.section(label)
+            gt.require(app.saveProjectAs(os.path.join(gt.OUT, "%s.ntpz" % label)),
+                       "%s: save, so the reset does not ask to save" % label)
             gt.require(app.resetProject(), "%s: reset the project" % label)
+            # The reset queued a 25 ms recentre; a timer started now for as long fires after it.
+            yield ("sleep", RECENTRE_QUEUED_MS)
             ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
             gt.require(ok, "%s: the root graph is up after the reset" % label)
             win = activate()
@@ -133,18 +149,17 @@ try:
             names = [n.getScriptName() for n in nodes]
             wired = wiring(nodes)
             gt.close_all_panels()
-            app.clearSelection()
             graph = root_graph()
-            frame(graph, nodes)
-            yield ("sleep", SETTLE_MS)
+            offset = recentre(graph)
+            frame(graph, nodes, offset)
 
             target = nodes[1]
-            click(graph, grab_point(target))
+            click(graph, grab_point(target, offset))
             check(selected_names() == [target.getScriptName()],
                   "%s: a click selects only the node under it (got %r)" % (label, selected_names()))
 
             before = target.getPosition()
-            start = grab_point(target)
+            start = grab_point(target, offset)
             drag(graph, start, (start[0] + DRAG_DX, start[1]))
             after = target.getPosition()
             check(after[0] - before[0] > DRAG_DX / 2.0,

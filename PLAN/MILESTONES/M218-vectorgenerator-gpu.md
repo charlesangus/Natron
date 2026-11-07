@@ -89,6 +89,8 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Decisions
 
+- 2026-11-07 — A frame with a Matte input always solves twice on the GPU (user accepts).
+
 - 2026-11-07 — Pyramid levels are storage buffers with dedicated FIR kernels, because `GpuBlur`'s black edges wouldn't match the CPU's FIR. Away-frame, format-change and missing-source cases stay on the CPU. A submitted solve must abort quickly, per the user's rule that renders cancel quickly, so it is split into abortable submits.
 
 - 2026-10-25 — **The GPU is checked against ground truth plus a tolerance to the CPU, never bit-exactly (planner):** red-black SOR and parallel reductions order operations differently from the CPU. This is the iterative-solver case of the ulp-diff rule.

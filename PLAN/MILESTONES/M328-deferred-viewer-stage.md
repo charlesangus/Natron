@@ -76,6 +76,8 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Decisions
 
+- 2026-11-07 — User confirms: Unload closes the payload row itself, and twirling it loads again. One re-render per project open is accepted for now, revisit if the M300 - Unified Tiered Cache bench shows it matters.
+
 - 2026-11-07 — Phase 328.3 remote gate green at 7922475db; `heavy_scene_gpu_host.sh gate` waits on the user's GPU host. Unload also closes the payload row itself, since an open empty row can't twirl-load (PM default; asked in the UAT).
 
 - 2026-11-07 — Phase 328.2 remote gate green at c7cc54871.

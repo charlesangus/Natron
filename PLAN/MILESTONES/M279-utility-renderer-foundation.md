@@ -106,6 +106,8 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Decisions
 
+- 2026-11-07 — Golden (user): NatronUtility depth compares within about one window-depth ulp, since runner CPUs differ; colour and primId stay strict. No re-record.
+
 - 2026-11-07 — Viewer rendering (user): stalls are not acceptable. The UI stays responsive, and a render cancels quickly on abort or on a change that invalidates it, so Natron Utility can't hold the viewer for a whole frame. Viewers honour Display > Purposes on every delegate. Every renderer gets a settings tab, including one with no settings.
 
 - 2026-11-01 — **Meshes plus instancing first (user):** PointInstancer and native instances are in; BasisCurves and Points come in a later milestone.

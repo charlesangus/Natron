@@ -539,22 +539,22 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
     for (int frame : shape->anchorFrames) {
         VectorFollowAnchor anchor;
         anchor.frame = frame;
+        // Per-point needs these too: they decide when a shape stops, and move its unsure points.
+        anchor.samples = motionSamplesAt(*shape, frame);
+        if (anchor.samples.empty()) {
+            return nullptr;
+        }
         switch (shape->setup.model) {
         case VectorFollowModel::ePerPoint:
             anchor.points = trackedPointsAt(*shape, frame);
             break;
         case VectorFollowModel::eTranslate:
-            anchor.samples = motionSamplesAt(*shape, frame);
             anchor.transform = FollowMatrix::translation(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1));
             break;
         case VectorFollowModel::eAffine:
         case VectorFollowModel::ePerspective:
-            anchor.samples = motionSamplesAt(*shape, frame);
             anchor.transform = totalTransformAt(*item, frame);
             break;
-        }
-        if ((shape->setup.model != VectorFollowModel::ePerPoint) && anchor.samples.empty()) {
-            return nullptr;
         }
         shape->setup.anchors.push_back(anchor);
     }

@@ -63,6 +63,9 @@ public:
         NativeTimeNodeTest::SetUp();
         registerFollowTextureOnce();
         _generator = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(kTestPluginIDFollowTexture), 1));
+        // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
+        // frame, more than kFollowTolerance by frame +20. These tests measure the follower.
+        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
         _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
     }
 

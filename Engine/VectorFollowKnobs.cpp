@@ -360,13 +360,13 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     in->setDefaultValue(1);
     in->setAddNewLine(false);
     addToGroup(in, kFollowParamIn, kFollowParamInLabel, kFollowParamInHint, false);
-    in->setAllDimensionsEnabled(false);
+    in->setDefaultAllDimensionsEnabled(false);
     _imp->in = in;
 
     KnobIntPtr out = AppManager::createKnob<KnobInt>(host, std::string(kFollowParamOutLabel));
     out->setDefaultValue(100);
     addToGroup(out, kFollowParamOut, kFollowParamOutLabel, kFollowParamOutHint, false);
-    out->setAllDimensionsEnabled(false);
+    out->setDefaultAllDimensionsEnabled(false);
     _imp->out = out;
 }
 

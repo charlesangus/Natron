@@ -1340,9 +1340,44 @@ const char* const kHashScript = "import os\n"
                                 "with open(os.environ[\"NATRON_TEST_CACHE_TIER_HASH_FILE\"], \"w\") as f:\n"
                                 "    f.write(\"%x\" % blur.getContentHash())\n";
 
-// Runs each executable on the script at once and returns what they wrote. The exit code says
-// nothing: a script without a writer ends in an error after it has done its work.
-std::vector<std::string>
+struct BatchRun {
+    std::string hash;
+    std::string report;
+};
+
+std::string
+batchRunReport(const QString& executable,
+               const QProcess& process,
+               bool finished,
+               const QString& logPath)
+{
+    std::ostringstream report;
+
+    report << executable.toStdString() << ": ";
+    if (!finished) {
+        report << "did not finish: " << process.errorString().toStdString();
+    } else if (process.exitStatus() == QProcess::CrashExit) {
+        report << "died of signal " << process.exitCode();
+    } else {
+        report << "exited with " << process.exitCode();
+    }
+    report << "\n";
+
+    QFile log(logPath);
+    if (log.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> lines = log.readAll().split('\n');
+        const int kTailLines = 40;
+        for (int i = std::max(0, (int)lines.size() - kTailLines); i < (int)lines.size(); ++i) {
+            report << lines[i].constData() << "\n";
+        }
+    }
+
+    return report.str();
+}
+
+// Runs each executable on the script at once and returns what they wrote. The exit code only
+// explains a missing hash: a script without a writer ends in an error after it has done its work.
+std::vector<BatchRun>
 batchHashes(const std::vector<QString>& executables,
             const QString& scratch)
 {
@@ -1355,24 +1390,30 @@ batchHashes(const std::vector<QString>& executables,
 
     std::vector<std::unique_ptr<QProcess>> processes;
     std::vector<QString> files;
+    std::vector<QString> logs;
     for (std::size_t i = 0; i < executables.size(); ++i) {
         const QString name = QString::fromUtf8("batch-") + QString::number((qulonglong)i);
         files.push_back(scratch + QLatin1Char('/') + name + QString::fromUtf8(".hash"));
         processes.emplace_back(new QProcess);
-        processes.back()->setProcessChannelMode(QProcess::ForwardedChannels);
+        logs.push_back(scratch + QLatin1Char('/') + name + QString::fromUtf8(".log"));
+        // To files, since a process waiting on a full pipe would stall while the other is waited for.
+        processes.back()->setProcessChannelMode(QProcess::MergedChannels);
+        processes.back()->setStandardOutputFile(logs.back());
         processes.back()->setProcessEnvironment(hashEnvironment(scratch, name, files.back()));
         processes.back()->start(executables[i], { QString::fromUtf8("-b"), script });
     }
-    std::vector<std::string> hashes;
+    std::vector<BatchRun> runs;
     for (std::size_t i = 0; i < processes.size(); ++i) {
-        if (!processes[i]->waitForFinished(120000)) {
+        const bool finished = processes[i]->waitForFinished(120000);
+        const std::string report = batchRunReport(executables[i], *processes[i], finished, logs[i]);
+        if (!finished) {
             processes[i]->kill();
             processes[i]->waitForFinished(30000);
         }
-        hashes.push_back(fileText(files[i]));
+        runs.push_back({ fileText(files[i]), report });
     }
 
-    return hashes;
+    return runs;
 }
 
 std::string
@@ -1455,9 +1496,11 @@ TEST(CacheDiskTierProcessTest, ProcessesOfOneBuildAgreeOnContentHashes)
         std::printf("Natron could not be linked beside NatronRenderer, so the renderer was compared with itself.\n");
         executables = { renderer, renderer };
     }
-    const std::vector<std::string> hashes = batchHashes(executables, dir.path());
-    ASSERT_EQ(2U, hashes.size());
-    ASSERT_FALSE(hashes[0].empty()) << "the first batch process wrote no hash";
-    ASSERT_FALSE(hashes[1].empty()) << "the second batch process wrote no hash";
-    EXPECT_EQ(hashes[0], hashes[1]);
+    const std::vector<BatchRun> runs = batchHashes(executables, dir.path());
+    ASSERT_EQ(2U, runs.size());
+    ASSERT_FALSE(runs[0].hash.empty()) << "the first batch process wrote no hash\n"
+                                       << runs[0].report;
+    ASSERT_FALSE(runs[1].hash.empty()) << "the second batch process wrote no hash\n"
+                                       << runs[1].report;
+    EXPECT_EQ(runs[0].hash, runs[1].hash);
 }

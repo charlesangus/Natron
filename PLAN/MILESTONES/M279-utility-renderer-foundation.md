@@ -84,19 +84,19 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Phase 279.3: Host wiring
 
-- [ ] M279.P3.T1 — USDRender and viewer through Natron Utility
+- [x] M279.P3.T1 — USDRender and viewer through Natron Utility
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/RenderDelegates.cpp`, `Tests/Scene/USDRender_Test.cpp`, `Engine/Nodes/Scene/docs/USDRender.md`
   - approach: confirm the M248 non-Storm path picks the delegate up unchanged; fix only what it needs (AOV names, primId mapping through `primPathHash`). Document Natron Utility in the USDRender doc's renderer list.
   - verify: gtest — USDRender with Renderer = Natron Utility on `Tests/fixtures/scene-reference.usda` produces `rgba`, `depth.Z`, `primId.id`; `depth.Z` and `primId.id` match the Storm render (`USDRenderStorm_Test`'s reference) on interior pixels away from silhouettes, within 1e-4 relative depth.
   - size: M
 
-- [ ] M279.P3.T3 — Purpose through render tags and USDRender toggles
+- [x] M279.P3.T3 — Purpose through render tags and USDRender toggles
   - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/UtilityScene.{h,cpp}`, `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `Engine/Nodes/Scene/USDRender.cpp`, `Tests/Scene/NatronUtilityPurpose_Test.cpp`
   - approach: the render pass reads its render tags and builds the instance list only from rprims whose `GetRenderTag()` is included (cite how hdEmbree / HdSt filter by render tags in the pinned USD); changing tags only rebuilds the instance list. Add `HydraRender::Request` purpose flags passed to the engine's render params (`showRender`/`showProxy`/`showGuides`), hashed into the render key. USDRender gets `renderPurpose` ("Render Purpose", on), `proxyPurpose` ("Proxy Purpose", off), `guidePurpose` ("Guide Purpose", off). Read how M229 sets the viewer's purposes and reuse it.
   - verify: gtest on a `.usda` with a default, a render, a proxy and a guide prim — USDRender with Natron Utility at defaults shows default + render only; toggling proxy shows the proxy; the same toggles change Storm's output too; toggling a purpose leaves the geometry rebuild counter unchanged.
   - size: L
 
-- [ ] M279.P3.T2 — Golden and viewer GUI check
+- [x] M279.P3.T2 — Golden and viewer GUI check
   - files: `Tests/Scene/NatronUtilityGolden_Test.cpp`, `Tests/fixtures/native-golden/NatronUtility/` (≤256 px half-float crops), `Tests/gui/natron_utility_viewer.py`
   - approach: record a golden of the reference scene's color/depth/primId through the CPU path (crop per the LFS rule). A GUI script selects Natron Utility in the 3D viewer's dropdown, renders, and screenshots.
   - verify: golden test passes; the GUI script passes under the strict Xvfb runner and its screenshot shows the scene, and toggling the viewer's render purpose shows a render-purpose prim; screenshot shared with the user.

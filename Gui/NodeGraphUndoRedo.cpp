@@ -1469,9 +1469,7 @@ LoadNodePresetsCommand::redo()
             if (k > 0) {  /// this is a multi-instance child, create it
                 NodePtr newNode = panel->createNewInstance(false);
                 newNode->fromSerialization(**it);
-                std::list<SequenceTime> keys;
-                newNode->getAllKnobsKeyframes(&keys);
-                newNode->getApp()->addMultipleKeyframeIndicatorsAdded(keys, true);
+                newNode->showKeyframesOnTimeline(true);
                 _newChildren.push_back(newNode);
             }
         }

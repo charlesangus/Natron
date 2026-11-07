@@ -50,7 +50,7 @@ public:
     }
 
     /*
-     * @brief Clear all indicators
+     * @brief Clear all indicators, and the nodes shown on the timeline.
      */
     virtual void removeAllKeyframesIndicators() {}
 
@@ -101,6 +101,18 @@ public:
      * @brief Provided for convenience for a single node
      **/
     virtual void removeNodeKeyframesFromTimeline(Node* /*node*/) {}
+
+    /**
+     * @brief Adds or removes a node from those whose knobs' keyframes the timeline shows.
+     **/
+    virtual void setNodeShownOnTimeline(const NodePtr& /*node*/,
+                                        bool /*shown*/) { }
+
+    /**
+     * @brief Marks the keyframes of the shown nodes out of date. Callable from any thread at any
+     * rate: however many calls arrive, the main thread reads the knobs once.
+     **/
+    virtual void invalidateNodeKeyframeIndicators() { }
 
     /**
      * @brief Get all keyframes, there may be duplicates.

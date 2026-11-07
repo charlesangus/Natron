@@ -2161,8 +2161,12 @@ public:
      **/
     bool showsKeysOnTimeline() const;
 
+    /**
+     * @brief Tells the timeline this knob's keys changed. Callable from any thread.
+     **/
+    void invalidateTimelineMarkers() const;
+
 private:
-    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
 
 public:
@@ -3308,9 +3312,6 @@ public:
      * @brief Restore all knobs to their default values
      **/
     void restoreDefaultValues();
-    virtual void aboutToRestoreDefaultValues()
-    {
-    }
 
     /**
      * @brief When frozen is true all the knobs of this effect read-only so the user can't interact with it.

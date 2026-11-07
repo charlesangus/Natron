@@ -1230,6 +1230,24 @@ TimeLineGui::getVisibleRange(SequenceTime* left,
     *right = *left + curveWidth;
 }
 
+QVariantList
+TimeLineGui::keyframeMarkerTimes() const
+{
+    std::list<SequenceTime> keys;
+    std::list<SequenceTime> userKeys;
+    _imp->gui->getApp()->getKeyframes(&keys);
+    _imp->gui->getApp()->getUserKeyframes(&userKeys);
+    std::set<SequenceTime> markers(keys.begin(), keys.end());
+    markers.insert(userKeys.begin(), userKeys.end());
+
+    QVariantList times;
+    for (std::set<SequenceTime>::const_iterator it = markers.begin(); it != markers.end(); ++it) {
+        times.push_back(*it);
+    }
+
+    return times;
+}
+
 void
 TimeLineGui::centerOn(SequenceTime left,
                       SequenceTime right,

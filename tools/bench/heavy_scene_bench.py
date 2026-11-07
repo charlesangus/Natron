@@ -50,13 +50,15 @@ the longest gap between heartbeats, the layers loaded by the action, and the act
 each judged against the design's budgets as pass, fail, not_valid (measured, but not a number the
 display can vouch for) or not_applicable. Actions are the ACTIONS table; a later milestone adds its
 own (twirl, reveal, draw state) by adding an entry. Each record carries the GL renderer, the rows the
-scenario could act on and how they were chosen, wall_s and peak_rss_mb.
+scenario could act on and how they were chosen, wall_s, peak_rss_mb and peak_rss_gb (this process's
+high-water mark) and mem_available_min_gb (the lowest MemAvailable the watchdog saw during it).
 
 A record's result is pass or fail, or one with no budgets: skipped (with a reason: the scene has no
 such row, or the load state rules the scenario out), timed_out (over its wall-clock limit, with
 elapsed_s, main_thread_state and peak_rss_mb; the process is then ended and the scenarios left in it
-are recorded as skipped) or aborted (the process died during the scenario).
-heavy_scene_watchdog.sh writes the last two from outside Natron, so a hung run leaves a record.
+are recorded as skipped), out_of_memory (the watchdog's memory guard ended the process; the record has
+the peak RSS tree, MemAvailable and swap) or aborted (the process died during the scenario).
+heavy_scene_watchdog.sh writes the last three from outside Natron, so a hung run leaves a record.
 
 sibling_shot takes screen grabs around one state change on sibling_row and one on branch, into
 $NATRON_GUI_TEST_OUT: before, set as soon as the frame reported done, set a second later, restored.
@@ -868,6 +870,22 @@ try:
                     return int(status_line.split()[1]) // 1024
         return None
 
+    def available_gb_min(started):
+        # The watchdog samples once a second; the reading here covers the instant the scenario ends.
+        low = None
+        try:
+            with open("/proc/meminfo") as f:
+                for meminfo_line in f:
+                    if meminfo_line.startswith("MemAvailable:"):
+                        low = int(meminfo_line.split()[1])
+            with open(progress_path + ".mem") as f:
+                watched_start, watched_low, _ = f.read().split()
+            if int(watched_start) == int(started):
+                low = min(low, int(watched_low)) if low is not None else int(watched_low)
+        except (OSError, ValueError):
+            pass
+        return None if low is None else round(low / 1048576, 2)
+
     def start_watchdog():
         write_progress("idle\n")
         script = os.path.join(ROOT, "tools", "bench", "heavy_scene_watchdog.sh")
@@ -900,10 +918,13 @@ try:
             new_layers = None if before is None or after is None else after - before
             budgets = judge(name, m, stall_ms, new_layers)
             record = dict(common_fields)
+            peak_mb = peak_rss_mb()
             record.update({
                 "scenario": name,
                 "wall_s": round(time.time() - started, 1),
-                "peak_rss_mb": peak_rss_mb(),
+                "peak_rss_mb": peak_mb,
+                "peak_rss_gb": None if peak_mb is None else round(peak_mb / 1024, 2),
+                "mem_available_min_gb": available_gb_min(started),
                 "layers_before": None if before is None else len(before),
                 "layers_after": None if after is None else len(after),
                 "layers_loaded": None if new_layers is None else len(new_layers),

@@ -26,11 +26,32 @@
 # only while FIXTURE_DIR lacks the fixtures.
 #
 # Environment:
+#   BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB, BENCH_CITY_MIN_RAM_GB  see above
 #   FIXTURE_DIR        where fixtures and per-run output go (default build/bench-gpu)
 #   FIXTURE_MAKE_ARGS  extra heavy_scene_make.py arguments, split on spaces (default none: 1M prims)
 #   DEV_IMAGE          image that makes the fixtures (default what tools/ci/local/dev-image-tag.sh prints)
 #   SCENE_DIR          holds World_Lobby.usd and usd/island.usda (default .local of the main checkout)
 #   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 24)
+#
+# Memory guard: heavy_scene_watchdog.sh polls once a second and kills the run with SIGKILL when
+# MemAvailable falls under BENCH_MEM_FLOOR_GB (default the larger of 4 and 10% of MemTotal), when the
+# AppImage's process tree passes BENCH_MEM_LIMIT_GB RSS (default MemTotal minus the floor), or when
+# swap in use grows by more than BENCH_SWAP_GROWTH_GB (default 2) during a scenario. The scenario gets
+# an out_of_memory record, the rest of that run's scenarios get skipped, and the matrix moves on.
+# Every run starts under nice -n 5 and prints the host's MemTotal, MemAvailable, swap and VRAM first.
+# Every normal record carries peak_rss_gb and mem_available_min_gb.
+#
+# The guard cannot catch a GPU driver hang or reset: those stall the machine without using RAM, and
+# nothing in user space is left to run. After a reboot, tell the two apart with
+#   journalctl -b -1 -k | grep -iE 'out of memory|oom|amdgpu|gpu reset|hung'
+# An OOM-killer line points at memory; amdgpu, "gpu reset" or "hung task" lines point at the driver.
+#
+# The loaded-city session step of settle is refused, with a skipped record, when MemAvailable is under
+# BENCH_CITY_MIN_RAM_GB (default 32). That is an estimate: no record holds a RAM figure for the fully
+# loaded city under the filter (the results file has no peak_rss for it), so it is 1M composed prims
+# times about 12 KB a prim (the "12 GB at least" the 1M fixtures passed under llvmpipe, above), doubled
+# for session, which authors a spec per revealed child and runs Storm on top, then rounded up to leave
+# the guard's 4 GB floor free.
 #
 # Run it from a checkout of the bench's branch; it never builds anything.
 set -u
@@ -124,13 +145,37 @@ record_skip() {
     echo "=== $1: skipped: $2"
 }
 
+meminfo_kb() {
+    sed -n "s/^$1: *\\([0-9]*\\) kB/\\1/p" /proc/meminfo
+}
+
+# Whichever source answers first; none of them is required.
+vram_report() {
+    local card total
+    if command -v glxinfo > /dev/null 2>&1; then
+        total="$(timeout 5 glxinfo -B 2> /dev/null | sed -n 's/^ *Video memory: *//p' | head -n 1)"
+        [ -n "$total" ] && { echo "$total"; return; }
+    fi
+    for card in /sys/class/drm/card*/device/mem_info_vram_total; do
+        [ -r "$card" ] || continue
+        echo "$(($(cat "$card") / 1048576)) MB ($card)"
+        return
+    done
+    echo "unknown"
+}
+
+host_report() {
+    echo "    host: MemTotal $(($(meminfo_kb MemTotal) / 1024)) MB, MemAvailable $(($(meminfo_kb MemAvailable) / 1024)) MB, swap in use $((($(meminfo_kb SwapTotal) - $(meminfo_kb SwapFree)) / 1024)) MB, VRAM $(vram_report)"
+}
+
 # One fresh process per call: populate_pruned must be the only scenario, and the load actions
 # compare cold page caches only within a process.
 launch() {
     local label="$1" fixture="$2" file="$3" scenarios="$4" rc
     shift 4
     echo "=== $label"
-    env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
+    host_report
+    nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
         NATRON_GUI_TEST_OUT="$FIXTURE_DIR/out/$label" "$@" \
         Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > "$FIXTURE_DIR/out/$label.log" 2>&1
     rc=$?
@@ -184,7 +229,13 @@ run_scene() {
 LOBBY_ENV=(BENCH_REVEAL_BATCH=100)
 
 if [ "$MODE" = settle ]; then
-    run settle-city-session city "$SETTLE" NATRON_DRAW_STATE_MECHANISM=session NATRON_DRAW_STATE_LOAD_NONE=0
+    CITY_MIN_RAM_GB="${BENCH_CITY_MIN_RAM_GB:-32}"
+    CITY_AVAILABLE_GB=$(($(meminfo_kb MemAvailable) / 1048576))
+    if [ "$CITY_AVAILABLE_GB" -ge "$CITY_MIN_RAM_GB" ]; then
+        run settle-city-session city "$SETTLE" NATRON_DRAW_STATE_MECHANISM=session NATRON_DRAW_STATE_LOAD_NONE=0
+    else
+        record_skip settle-city-session "$CITY_AVAILABLE_GB GB available, under the $CITY_MIN_RAM_GB GB estimated for the loaded city under session (estimate, not measured; set BENCH_CITY_MIN_RAM_GB to override)"
+    fi
     if [ -f "$LOBBY" ]; then
         for mech in session filter; do
             launch "settle-lobby-$mech" scene "$LOBBY" "$SETTLE" \

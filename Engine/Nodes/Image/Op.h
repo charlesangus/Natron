@@ -232,6 +232,15 @@ public:
     }
 
     /**
+     * @brief Whether mask input inputNb is connected and its enable checkbox is on, so the host's
+     * mask stage reads it.
+     **/
+    bool isMaskApplied(int inputNb) const
+    {
+        return bool(_node.getInput(inputNb)) && _node.isMaskEnabled(inputNb);
+    }
+
+    /**
      * @brief The frame range input inputNb reports, false when it is not connected or its range
      * is unbounded at either end, as a generator's is.
      **/

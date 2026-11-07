@@ -39,7 +39,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 
-#define PLUGINID_NATRON_REMOVELAYERS "fr.natron.RemoveLayers"
+#define PLUGINID_NATRON_REMOVELAYERS "RemoveLayers"
 
 #define kRemoveLayersParamOperation "operation"
 #define kRemoveLayersParamChannels "channels"
@@ -219,7 +219,6 @@ private:
 
     KnobChoiceWPtr _operation;
     KnobChannelSetWPtr _channels;
-    KnobStringWPtr _subLabel;
 };
 
 NATRON_NAMESPACE_EXIT

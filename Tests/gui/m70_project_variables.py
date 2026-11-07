@@ -137,7 +137,7 @@ try:
 
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     _py_viewer = {}
 
     def seek(frame):

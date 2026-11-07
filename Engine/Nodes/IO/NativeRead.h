@@ -43,8 +43,8 @@
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGIN_MAJOR_NATRON_READ 2
-#define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
+#define PLUGIN_MAJOR_NATRON_READ 1
+#define kNatronReadParamColorspace "colorspace"
 #define kNatronReadParamReload "reload"
 
 NATRON_NAMESPACE_ENTER
@@ -53,8 +53,8 @@ NATRON_NAMESPACE_ENTER
  * @brief The native image reader: a still or a sequence pattern decoded through OpenImageIO,
  * producing the colour plane and every other layer and view of the file.
  *
- * Its knobs keep GenericReader's script names, because the host hooks and the DopeSheet look
- * reader knobs up by those names.
+ * The host hooks and the DopeSheet look its firstFrame, lastFrame, startAt, frameOffset and
+ * originalFrameRange knobs up by name.
  **/
 class NativeRead
     : public NativeEffectBase {
@@ -138,6 +138,12 @@ public:
      **/
     static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
 
+    /**
+     * @brief The colourspace the file is converted from: the one chosen, or the one Project
+     * default stands for now.
+     **/
+    std::string colorspace() const;
+
 private:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_READ,
@@ -170,6 +176,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;

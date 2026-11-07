@@ -1237,6 +1237,9 @@ RawColorCalibration::knobChanged(KnobI* k,
         return knob && (k == knob.get());
     };
 
+    if (is(o.checkerChart)) {
+        _checkerDeltaE.clear();
+    }
     if (is(o.pick)) {
         (void)pickSpot(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 

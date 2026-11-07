@@ -77,7 +77,7 @@ struct OcioDisplayAdjust {
 
 /**
  * @brief The OpenColorIO knobs every native OCIO node shares: one or more spaces, all on one
- * hidden ocioConfigFile and ocioWorkingSpace pair and one Context group, and the processor
+ * hidden ocioConfigFile and ocioWorkingSpace pair and one ocioContext group, and the processor
  * lookup through the project's ProjectColorManagement.
  **/
 class OcioNodeKnobs {
@@ -98,8 +98,15 @@ public:
     void attach(KnobHolder* holder);
 
     /**
-     * @brief Adds a space on \p page. The first creates the hidden config pair and the Context
-     * group; a later one shares them and goes before the Context group.
+     * @brief Adds the ocioContext group alone, last on \p page, for a node with no space whose
+     * transform still reads the context variables.
+     **/
+    void addContext(KnobHolder* holder,
+                    const KnobPagePtr& page);
+
+    /**
+     * @brief Adds a space on \p page. The first creates the hidden config pair and the ocioContext
+     * group; a later one shares them and goes before that group.
      **/
     void addSpace(KnobHolder* holder,
                   const KnobPagePtr& page,
@@ -107,17 +114,27 @@ public:
                   const OcioSpaceKnobs::AutomaticSpace& automaticSpace,
                   const OcioSpaceKnobs::ChoiceMade& choiceMade = OcioSpaceKnobs::ChoiceMade());
 
+    /**
+     * @brief As addSpace(), for a space whose Project default entry stands for the working space.
+     **/
+    void addWorkingSpace(KnobHolder* holder,
+                         const KnobPagePtr& page,
+                         const std::string& name,
+                         const QString& label,
+                         const QString& hint,
+                         const OcioSpaceKnobs::ChoiceMade& choiceMade = OcioSpaceKnobs::ChoiceMade());
+
     std::size_t spaceCount() const;
 
     std::string space(std::size_t index) const;
 
     /**
-     * @brief The space at \p index, or the working space while it is empty, as its menu shows.
+     * @brief The space at \p index, or the working space while it is empty.
      **/
     std::string spaceOrWorking(std::size_t index) const;
 
     /**
-     * @brief Puts \p knob, one of the node's own, on \p page before the shared Context group, or
+     * @brief Puts \p knob, one of the node's own, on \p page before the shared ocioContext group, or
      * at the end when there is none.
      **/
     void addKnob(const KnobPagePtr& page,
@@ -137,9 +154,26 @@ public:
                      ValueChangedReasonEnum reason);
 
     /**
-     * @brief Refreshes the space menus, then calls each refresher added, in order.
+     * @brief Refreshes the space menus and what their Project default entries stand for, then
+     * calls each refresher added, in order.
      **/
     void refreshMenus();
+
+    /**
+     * @brief Has every space take the working space for its Project default entry again.
+     **/
+    void refreshProjectDefaults();
+
+    /**
+     * @brief Appends what the Project default entries chosen stand for.
+     **/
+    void appendHash(ContentHasher& h) const;
+
+    /**
+     * @brief The automatic default of every space may have changed: each takes it unless the user
+     * chose one (OcioSpaceKnobs::sourceChanged()).
+     **/
+    void sourceChanged();
 
     /**
      * @brief Adds \p refresher, for menus of the node's own that list the project's config.
@@ -170,7 +204,7 @@ public:
     void reloadFile(const std::string& path) const;
 
     /**
-     * @brief The processor of \p transform with the Context variables at \p time. A null
+     * @brief The processor of \p transform with the context variables at \p time. A null
      * transform, or one whose processor is a no-op, is an identity and gives no processor.
      **/
     OcioProcessor processor(const OCIO_NAMESPACE::ConstTransformRcPtr& transform,
@@ -218,6 +252,7 @@ private:
 
     KnobHolder* _holder;
     std::vector<std::unique_ptr<OcioSpaceKnobs>> _spaces;
+    std::unique_ptr<OcioSpaceKnobs> _contextOnly;
     std::vector<std::function<void()>> _menuRefreshers;
     std::weak_ptr<ProjectColorManagement> _watched;
     int _watchId;
@@ -359,11 +394,18 @@ protected:
     virtual void initializeKnobs() OVERRIDE
     {
         ImageNode<OP>::initializeKnobs();
+        this->op().ocio.refreshProjectDefaults();
         _knobsReady = true;
         this->op().ocio.watchConfig([this]() {
             this->op().ocio.refreshMenus();
             refreshStatus();
         });
+    }
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE
+    {
+        ImageNode<OP>::appendNodeContentHash(h);
+        this->op().ocio.appendHash(h);
     }
 
     virtual void onKnobsLoaded() OVERRIDE

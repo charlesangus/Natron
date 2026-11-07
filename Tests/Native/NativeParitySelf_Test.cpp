@@ -54,7 +54,7 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kPointMatrixID = kNatronTestPointMatrixPluginID;
-const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
+const int kPointMatrixMajor = kNatronTestPointMatrixMajor;
 
 const ImageLayerDesc*
 findColorLayer(const std::list<ImageLayerDesc>& layers)
@@ -98,11 +98,11 @@ planeValue(const RenderedPlane& plane,
 class NativeParitySelfTest
     : public BaseTest {
 protected:
-    // Both sides are the OFX PointMatrix at its own major, so every difference the harness
-    // reports is one the test put there.
+    // The test PointMatrix plug-in stands in for the node under test: the harness renders any
+    // node, and its output depends only on the knobs the test sets.
     ParityPair makeSelfPair()
     {
-        return makeParityPair(getApp(), kPointMatrixID, kOfxPointMatrixMajor, kOfxPointMatrixMajor);
+        return makeParityPair(getApp(), kPointMatrixID, kPointMatrixMajor);
     }
 };
 
@@ -169,40 +169,6 @@ TEST_F(NativeParitySelfTest, ParitySourceRendersEveryPlaneDeterministically)
     EXPECT_EQ(1.f, paritySourceColorValue(3, 10, 4, time));
 }
 
-TEST_F(NativeParitySelfTest, OfxPointMatrixAgainstItselfMatchesExactly)
-{
-    ParityPair pair = makeSelfPair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live()) << "the OFX PointMatrix must be loadable at major " << kOfxPointMatrixMajor;
-    ASSERT_TRUE(setKnobOnBoth(pair, "outputRed", { 1.5, 0., 0., 0. }));
-
-    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-        const ParityResult r = compareParity(pair, "self", RectI(), mipmapLevel, ParityTolerance::exact(), false);
-        EXPECT_TRUE(r.ok) << "mipmap " << mipmapLevel << ": " << describe(r);
-        EXPECT_TRUE(r.live);
-        EXPECT_GE(r.planesCompared, 1);
-        EXPECT_EQ(0., r.maxAbsDiff);
-    }
-
-    EXPECT_TRUE(knobParityProblems(pair.ofx, pair.native).empty());
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeParitySelfTest, AKnobChangedOnOneSideIsReported)
-{
-    ParityPair pair = makeSelfPair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobValues(pair.native, "outputGreen", { 0., 0.5, 0., 0. }));
-
-    const ParityResult r = compareParity(pair, "green-one-side", RectI(), 0, ParityTolerance::transcendental(), false);
-    EXPECT_FALSE(r.ok) << describe(r);
-    EXPECT_FALSE(r.plane.empty());
-    EXPECT_FALSE(r.channel.empty());
-    EXPECT_NE(r.reference, r.native);
-    EXPECT_GT(r.maxAbsDiff, 0.);
-}
-
 TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
 {
     QTemporaryDir tmp;
@@ -211,7 +177,6 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
 
     ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "outputRed", { 1.5, 0., 0., 0. }));
     setParitySourceExtraLayer(pair.source, true);
 
@@ -219,26 +184,29 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
     recordOptions.recordDir = dir;
     ParityOptions replayOptions;
     replayOptions.referenceDir = dir;
-    replayOptions.forceReplay = true;
 
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const ParityResult recorded = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), true, recordOptions);
         ASSERT_TRUE(recorded.ok) << describe(recorded);
+        EXPECT_TRUE(recorded.recorded);
         EXPECT_GE(recorded.planesCompared, 2) << "the extra layer must be recorded too";
         EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kPointMatrixID, "recorded", mipmapLevel, ImageLayerDesc::getRGBAComponents()))));
         EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kPointMatrixID, "recorded", mipmapLevel, paritySourceExtraLayer()))));
 
         const ParityResult replayed = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), false, replayOptions);
         EXPECT_TRUE(replayed.ok) << "mipmap " << mipmapLevel << ": " << describe(replayed);
-        EXPECT_FALSE(replayed.live);
+        EXPECT_FALSE(replayed.recorded);
         EXPECT_EQ(recorded.planesCompared, replayed.planesCompared);
         EXPECT_EQ(0., replayed.maxAbsDiff);
     }
 
     ASSERT_TRUE(setKnobValues(pair.native, "outputGreen", { 0., 0.5, 0., 0. }));
-    const ParityResult diverged = compareParity(pair, "recorded", RectI(), 0, ParityTolerance::exact(), false, replayOptions);
+    const ParityResult diverged = compareParity(pair, "recorded", RectI(), 0, ParityTolerance::transcendental(), false, replayOptions);
     EXPECT_FALSE(diverged.ok) << describe(diverged);
-    EXPECT_FALSE(diverged.live);
+    EXPECT_FALSE(diverged.plane.empty());
+    EXPECT_FALSE(diverged.channel.empty());
+    EXPECT_NE(diverged.reference, diverged.native);
+    EXPECT_GT(diverged.maxAbsDiff, 0.);
 }
 
 TEST_F(NativeParitySelfTest, ReplayWithoutAReferenceFailsTheTest)
@@ -251,7 +219,6 @@ TEST_F(NativeParitySelfTest, ReplayWithoutAReferenceFailsTheTest)
 
     ParityOptions options;
     options.referenceDir = tmp.path().toStdString();
-    options.forceReplay = true;
 
     ::testing::TestPartResultArray failures;
     ParityResult r;

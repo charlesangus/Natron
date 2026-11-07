@@ -119,6 +119,13 @@ public:
 
     void centerOnItem(QGraphicsItem* item);
 
+    /**
+     * @brief Redraws the loop blocks once control returns to the event loop; topology also
+     * recomputes which nodes form each block, after a connection or a node came or went, and
+     * emits topologyChanged.
+     **/
+    void scheduleLoopBlockRefresh(bool topology);
+
     using PanelWidget::pushUndoCommand;
 
     /**
@@ -182,6 +189,14 @@ public:
     QPointF getRootPos() const;
 
     bool isDoingNavigatorRender() const;
+
+Q_SIGNALS:
+
+    /**
+     * @brief Emitted when a connection or a node of the graph came or went, which can change the
+     * nodes a loop's body holds.
+     **/
+    void topologyChanged();
 
 public Q_SLOTS:
 
@@ -285,6 +300,30 @@ private:
     void resetSplicePlan();
 
     void cancelSplice();
+
+    void setKissAiming(bool aiming);
+
+    void updateKissPreview();
+
+    void clearKissPreview();
+
+    void commitKiss();
+
+    void rollBackKisses();
+
+    QUndoCommand* takeKissCommand(NodesGuiList* touched);
+
+    void disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken, const std::set<NodeGuiPtr>& moving);
+
+    void extendCutLine(const QPointF& scenePos);
+
+    void clearCutLine();
+
+    void commitCut();
+
+    void cancelNodeDrag();
+
+    QUndoCommand* takeDragMoveCommand(QUndoCommand* parent, NodesGuiList* moved);
 
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 

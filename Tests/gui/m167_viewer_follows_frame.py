@@ -144,7 +144,7 @@ try:
         return node
 
     def make_constant(fmt):
-        node = create("net.sf.openfx.ConstantPlugin")
+        node = create("Constant")
         extent = node.getParam("extent")
         require(extent is not None, "Constant has an extent parameter")
         extent.setValue(0)
@@ -190,9 +190,9 @@ try:
         app.addFormat("%s %dx%d %g" % (K2[0], K2[1], K2[2], K2[3]))
         hd = make_constant(HD)
         k2 = make_constant(K2)
-        remove = create("fr.natron.RemoveLayers")
-        switch = create("fr.natron.Switch")
-        viewer = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer")
+        remove = create("RemoveLayers")
+        switch = create("Switch")
+        viewer = app.getNode("Viewer1") or create("Viewer")
         hd.setPosition(0, 0)
         remove.setPosition(0, 120)
         k2.setPosition(200, 0)

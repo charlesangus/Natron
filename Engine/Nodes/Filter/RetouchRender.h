@@ -1,0 +1,353 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_Filter_RetouchRender_h
+#define Engine_Nodes_Filter_RetouchRender_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+#include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
+
+NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The image processing of the Retouch node, ported from darktable's src/iop/retouch.c: the
+ * image is split into à-trous wavelet scales and each shape applies its algorithm on its scale,
+ * in order, before the scales are recomposed.
+ *
+ * Images are 4-channel interleaved floats, top row first, as in darktable. Shapes come
+ * rasterised, so this has no Natron dependency and the tests run it directly.
+ **/
+namespace RetouchCore {
+enum AlgorithmEnum {
+    eAlgorithmClone = 0,
+    eAlgorithmHeal,
+    eAlgorithmBlur,
+    eAlgorithmFill,
+};
+
+enum BlurTypeEnum {
+    eBlurTypeGaussian = 0,
+    eBlurTypeBilateral,
+};
+
+enum FillModeEnum {
+    eFillModeErase = 0,
+    eFillModeColor,
+};
+
+enum OutputEnum {
+    eOutputResult = 0,
+    eOutputCurrentScale,
+    eOutputResidual,
+};
+
+/// The most detail scales, as in darktable. Scale 0 is the image before the decomposition.
+const int kMaxScales = 15;
+/// darktable's preview levels range and defaults.
+const float kPreviewLevelMin = -3.f;
+const float kPreviewLevelMax = 3.f;
+
+/// A rectangle of pixels, top-down, as darktable's dt_iop_roi_t.
+struct Region {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+struct ShapeSettings {
+    AlgorithmEnum algorithm = eAlgorithmHeal;
+    /// 0 for the image, 1 to numScales for a detail scale, numScales + 1 (or more) for the residual.
+    int scale = 0;
+    BlurTypeEnum blurType = eBlurTypeGaussian;
+    /// In canonical pixels.
+    float blurRadius = 10.f;
+    FillModeEnum fillMode = eFillModeErase;
+    float fillColor[3] = { 0.f, 0.f, 0.f };
+    float fillBrightness = 0.f;
+    float opacity = 1.f;
+};
+
+/**
+ * @brief A heal shape's last solved dest - src over region, in the pixels of the full image
+ * (top-down), on wavelet layer scale of a render at renderScale. A draft heal starts from it.
+ **/
+struct HealWarmStart {
+    std::mutex mutex;
+    Region region;
+    float renderScale = 0.f;
+    int scale = -1;
+    std::vector<float> difference;
+};
+
+/**
+ * @brief One shape for one render. mask covers maskRoi (row 0 its top row) and is 0 outside the
+ * shape and its feather; maskRoi is the shape's bounding box with feather, darktable's form mask
+ * area, and may reach outside the image. maskRoi is in the pixels of the full image, not of the
+ * processed crop. dx, dy go from the source to the shape, in render-scale pixels, x right and y
+ * down. A heal shape with a warmStart stores each solve there, and a draft solve starts from it.
+ **/
+struct Shape {
+    ShapeSettings settings;
+    Region maskRoi;
+    std::vector<float> mask;
+    float dx = 0.f;
+    float dy = 0.f;
+    std::shared_ptr<HealWarmStart> warmStart;
+};
+
+/// A 64-bit key built from values and bytes; equal sequences give equal keys.
+class KeyHash {
+public:
+    void add(std::uint64_t value);
+    void addFloat(float value);
+    void addRegion(const Region& region);
+    void addBytes(const void* data, std::size_t size);
+
+    std::uint64_t value() const
+    {
+        return _hash;
+    }
+
+private:
+    std::uint64_t _hash = 0x84222325cbf29ce4ULL;
+};
+
+/**
+ * @brief Float arrays over a region, kept between renders under keys that name everything they
+ * depend on, the least recently used dropped past a byte budget. A caller that misses computes
+ * the entry while later callers of the same key wait for it, so concurrent renders of one shape
+ * compute it once. MT-safe.
+ **/
+class PatchCache {
+public:
+    struct Patch {
+        Region area;
+        std::vector<float> values;
+    };
+
+    explicit PatchCache(std::size_t maxBytes);
+
+    /**
+     * @brief The entry of key. Without one, and with no other caller computing it, returns null
+     * and leaves the caller to publish() or abandon() it; with one being computed, waits for it.
+     **/
+    std::shared_ptr<const Patch> acquire(std::uint64_t key);
+    void publish(std::uint64_t key, const std::shared_ptr<const Patch>& patch);
+    void abandon(std::uint64_t key);
+
+    void clear();
+    /// How many acquire() calls returned null: the entries computed or abandoned.
+    std::size_t misses() const;
+
+private:
+    struct Entry {
+        std::shared_ptr<const Patch> patch;
+        std::list<std::uint64_t>::iterator recent;
+        bool pending = true;
+    };
+
+    std::size_t bytesOf(const Patch& patch) const;
+
+    mutable std::mutex _mutex;
+    std::condition_variable _published;
+    std::unordered_map<std::uint64_t, Entry> _entries;
+    std::list<std::uint64_t> _recent;
+    std::size_t _bytes = 0;
+    std::size_t _maxBytes;
+    std::size_t _misses = 0;
+};
+
+/// A PatchCache::acquire() miss to fill: abandoned unless published before it goes.
+class CacheClaim {
+public:
+    CacheClaim(PatchCache* cache,
+               std::uint64_t key)
+        : _cache(cache)
+        , _key(key)
+    {
+    }
+
+    CacheClaim(const CacheClaim&) = delete;
+    CacheClaim& operator=(const CacheClaim&) = delete;
+
+    ~CacheClaim()
+    {
+        if (_cache) {
+            _cache->abandon(_key);
+        }
+    }
+
+    void publish(const std::shared_ptr<const PatchCache::Patch>& patch)
+    {
+        _cache->publish(_key, patch);
+        _cache = nullptr;
+    }
+
+private:
+    PatchCache* _cache;
+    std::uint64_t _key;
+};
+
+struct Params {
+    int numScales = 0;
+    int mergeFromScale = 0;
+    /// 0 for the result, 1 to numScales for a detail scale, numScales + 1 for the residual.
+    int returnLayer = 0;
+    float previewLevels[3] = { kPreviewLevelMin, 0.f, kPreviewLevelMax };
+    /// The most multigrid cycles a heal runs.
+    int maxHealIterations = 2000;
+    /// The render scale: the wavelet preview scale and the blur radius factor.
+    float renderScale = 1.f;
+    /// Above 0, a heal shape with a warm start for this render stops after this many cycles.
+    int draftHealCycles = 0;
+    /**
+     * Where the processed image sits in the full image, top-down, and the full image's extent,
+     * which caps the wavelet scales; a 0 extent makes the processed image the full one.
+     **/
+    int originX = 0;
+    int originY = 0;
+    int fullWidth = 0;
+    int fullHeight = 0;
+    /**
+     * With a cache and a non-zero inputKey, which names the unprocessed image, a shape's result
+     * is taken from the cache when the image, the shape, the layer and the shapes before it that
+     * can reach it are those of a cached result, and is stored in it otherwise, unless the solve
+     * was a draft or cancelled() turned true.
+     **/
+    PatchCache* cache = nullptr;
+    std::uint64_t inputKey = 0;
+    std::function<bool()> cancelled;
+};
+
+/// What pen pressure changes on a brush stroke: darktable's pressure_sensitivity preference.
+enum BrushPressureEnum {
+    eBrushPressureOff = 0,
+    eBrushPressureHardnessRelative,
+    eBrushPressureHardnessAbsolute,
+    eBrushPressureOpacityRelative,
+    eBrushPressureOpacityAbsolute,
+    eBrushPressureSizeRelative,
+};
+
+/// darktable's brush limits. kBrushBorderMin is a fraction of the image's smaller side.
+const float kBrushHardnessMin = 0.0005f;
+const float kBrushBorderMin = 0.00005f;
+const float kBrushDensityPressureMin = 0.05f;
+
+/**
+ * @brief One point of a brush stroke, darktable's dt_masks_point_brush_t, in the pixels of a
+ * Region frame (x right, y down). radius is the border, from the centre line to where the mask
+ * reaches 0.
+ **/
+struct BrushPoint {
+    float x = 0.f;
+    float y = 0.f;
+    float radius = 1.f;
+    float hardness = 1.f;
+    float density = 1.f;
+};
+
+/**
+ * @brief Applies pen pressure (0 to 1) to a point as darktable does when a stroke ends.
+ * minRadius is kBrushBorderMin times the image's smaller side, in the point's pixels.
+ **/
+void applyBrushPressure(BrushPressureEnum mode, float pressure, float minRadius, BrushPoint* point);
+
+/// The pixels a stroke can touch.
+Region brushBounds(const std::vector<BrushPoint>& points);
+
+/**
+ * @brief The mask of a brush stroke over roi, rows top-down, sampled at pixel centres:
+ * darktable's brush falloff, full density up to hardness times the border and falling linearly to
+ * 0 at the border, with round ends. Where segments overlap the larger value wins.
+ **/
+void rasterizeBrush(const std::vector<BrushPoint>& points, const Region& roi, std::vector<float>* mask);
+
+/// Raises mask, roi's pixels, to rasterizeBrush()'s values for points where those are larger.
+void accumulateBrush(const std::vector<BrushPoint>& points, const Region& roi, float* mask, const EdgeAware::ParallelFor& parallel);
+
+/// The returnLayer of an output mode.
+int returnLayerForOutput(OutputEnum output, int numScales, int currentScale);
+
+/**
+ * @brief Whether a shape on shapeScale is applied with numScales scales: a scale up to
+ * numScales + 1, the residual. As in darktable, a shape on a higher scale is skipped.
+ **/
+bool shapeScaleProcessed(int shapeScale, int numScales);
+
+/**
+ * @brief Runs the retouch on image (width x height x 4) in place: darktable's process() and
+ * rt_process_forms(), without the darkroom's mask display. The output is the recomposed image
+ * or the layer returnLayer asks for, a detail scale shown through the preview levels. image is
+ * the full image or, with params' full extent set, the crop of it at params' origin; a crop of
+ * processRegion() gives the full image's result inside its window.
+ **/
+void process(float* image,
+             int width,
+             int height,
+             const Params& params,
+             const std::vector<Shape>& shapes,
+             const EdgeAware::ParallelFor& parallel);
+
+/**
+ * @brief The region process() must be given, in the pixels of the full image (fullWidth x
+ * fullHeight, top-down), for its result to match the full image's over window: the shapes that
+ * reach window, directly or through the sources of other shapes, with their sources, grown by
+ * the wavelet scales' support and clipped to the full image. Only the shapes' maskRoi, offsets
+ * and settings are read.
+ **/
+Region processRegion(const Region& window, const std::vector<Shape>& shapes, const Params& params, int fullWidth, int fullHeight);
+
+/**
+ * @brief Applies the shapes on scale to layer, one wavelet layer of an image (width x height x 4),
+ * in order: rt_process_forms() for one layer. scales is the number of scales the decomposition
+ * has after capping.
+ **/
+void processLayer(float* layer,
+                  int width,
+                  int height,
+                  int scale,
+                  int scales,
+                  int returnLayer,
+                  int mergeFromScale,
+                  const Params& params,
+                  const std::vector<Shape>& shapes,
+                  const EdgeAware::ParallelFor& parallel);
+} // namespace RetouchCore
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_Filter_RetouchRender_h

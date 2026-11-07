@@ -112,7 +112,7 @@ struct EngineEntry {
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
     std::unique_ptr<UsdImagingGLEngine> engine;
-    // Whether the engine lights the stage with a headlight, as it does when the stage has no light.
+    // Whether the engine lights the stage with a light at the camera.
     bool headlight = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
@@ -214,20 +214,7 @@ takeGlError()
     return first;
 }
 
-// Whether stage has a light of its own; without one, renders get a light at the camera.
-bool
-hasSceneLight(const UsdStageRefPtr& stage)
-{
-    for (const UsdPrim& prim : stage->Traverse()) {
-        if (prim.HasAPI<UsdLuxLightAPI>()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// The light at the camera usdview and the viewer's scene view give a stage without lights.
+// The light at the camera usdview gives a stage, which the request may ask for.
 void
 setHeadlight(UsdImagingGLEngine* engine)
 {
@@ -777,13 +764,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.rendered = false;
     }
     const UsdStageRefPtr& stage = entry.stage->getStage();
-    bool headlight = entry.headlight;
-    if (edited || !entry.engine) {
-        headlight = !hasSceneLight(stage);
-    }
-    // A headlight once set cannot be taken back, so the engine is made again when the stage gains
-    // or loses its lights.
-    if (!entry.engine || (headlight != entry.headlight)) {
+    // A headlight once set cannot be taken back, so the engine is made again when the request
+    // drops it.
+    if (!entry.engine || (request.headlight != entry.headlight)) {
         entry.engine.reset();
         entry.rendered = false;
         UsdImagingGLEngine::Parameters parameters;
@@ -826,8 +809,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
             return nullptr;
         }
-        entry.headlight = headlight;
-        if (headlight) {
+        entry.headlight = request.headlight;
+        if (entry.headlight) {
             setHeadlight(entry.engine.get());
         }
     }

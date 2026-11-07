@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_TYPEDPASSTHROUGH "fr.natron.TypedPassthrough"
+#define PLUGINID_NATRON_TYPEDPASSTHROUGH "TypedPassthrough"
 
 NATRON_NAMESPACE_ENTER
 

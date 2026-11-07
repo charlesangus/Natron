@@ -40,11 +40,11 @@ try:
 
     reader_a = create_reader(os.path.join(FIXTURES, "flat-three-layers.exr"))
     reader_b = create_reader(os.path.join(FIXTURES, "flat-rgba-only.exr"))
-    switch = create("fr.natron.Switch")
-    shuffle = create("fr.natron.Shuffle")
+    switch = create("Switch")
+    shuffle = create("Shuffle")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = create("fr.inria.built-in.Viewer")
+        viewer = create("Viewer")
 
     require(switch.connectInput(0, reader_a), "connect Switch input 0 to the three-layer Read")
     require(switch.connectInput(1, reader_b), "connect Switch input 1 to the RGBA-only Read")

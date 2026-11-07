@@ -62,6 +62,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -727,8 +728,9 @@ Settings::initializeKnobsUserInterface()
 
     _renderOnEditingFinished = AppManager::createKnob<KnobBool>( this, tr("Refresh viewer only when editing is finished") );
     _renderOnEditingFinished->setName("renderOnEditingFinished");
-    _renderOnEditingFinished->setHintToolTip( tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
-                                                 " or the timeline. This setting doesn't apply to roto splines editing.") );
+    _renderOnEditingFinished->setHintToolTip(tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
+                                                " or the timeline. This setting doesn't apply to roto splines editing. "
+                                                "The Interactive Updates action in the Render menu toggles it."));
     _uiPage->addKnob(_renderOnEditingFinished);
 
     _maxPanelsOpened = AppManager::createKnob<KnobInt>( this, tr("Maximum number of open settings panels (0=\"unlimited\")") );
@@ -1374,6 +1376,36 @@ Settings::initializeKnobsViewers()
     _viewer3DGuideSize->setDisplayMinimum(0.1);
     _viewer3DGuideSize->setDisplayMaximum(100.);
     _viewersTab->addKnob(_viewer3DGuideSize);
+    _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
+    _viewer3DTransformTarget->setName("viewer3DTransformTarget");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("owner", "Owner, Else Edit Node", tr("The translate, rotate and scale of the node that made the prim, when it is in the viewed branch; "
+                                                                            "otherwise the USDEditTransform whose panel is open and that targets the prim, or a new one.")
+                                                                             .toStdString()));
+        entries.push_back(ChoiceOption("openEdit", "Open Edit Node", tr("The USDEditTransform whose panel is open, its pattern extended to the selection; a new one "
+                                                                        "when no panel is open.")
+                                                                         .toStdString()));
+        entries.push_back(ChoiceOption("alwaysEdit", "Always Edit Node", tr("A USDEditTransform after the viewed node, reused while the selection stays the same.").toStdString()));
+        _viewer3DTransformTarget->populateChoices(entries);
+    }
+    _viewer3DTransformTarget->setHintToolTip(tr("Where a drag of the viewer's 3D transform handles writes the change. A new USDEditTransform "
+                                                "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
+                                                "undo step."));
+    _viewersTab->addKnob(_viewer3DTransformTarget);
+
+    _viewer3DLighting = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Lighting"));
+    _viewer3DLighting->setName("viewer3DLighting");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("auto", "Auto", tr("The scene's lights when it has any, else a light at the camera.").toStdString()));
+        entries.push_back(ChoiceOption("scene", "Scene Lights", tr("Only the scene's lights: a scene with none shows its lit surfaces black, as USDRender does by default.").toStdString()));
+        entries.push_back(ChoiceOption("headlight", "Headlight", tr("Only a light at the camera.").toStdString()));
+        _viewer3DLighting->populateChoices(entries);
+    }
+    _viewer3DLighting->setHintToolTip(tr("What lights the shaded mode of the viewer's 3D views, all of them alike. Also chosen from "
+                                         "the 3D view's Display > Lighting menu."));
+    _viewersTab->addKnob(_viewer3DLighting);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1820,6 +1852,8 @@ Settings::setDefaultValues()
     _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
+    _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
+    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2512,6 +2546,7 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
         }
+        LoopFrameBudget::refreshShared();
         setCachingLabels();
     } else if (k == _diskCachePath.get()) {
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());
@@ -2540,6 +2575,15 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _renderOnEditingFinished.get()) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            NodesList nodes;
+            (*it)->getProject()->getNodes_recursive(nodes, false);
+            for (NodesList::const_iterator node = nodes.begin(); node != nodes.end(); ++node) {
+                (*node)->refreshHostDrivenOverlayParams();
+            }
+        }
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
@@ -2691,6 +2735,12 @@ Settings::isViewer3DNavigationKnob(const KnobI* knob) const
     return knob == _viewer3DNavigation.get();
 }
 
+Settings::Viewer3DTransformTargetEnum
+Settings::getViewer3DTransformTarget() const
+{
+    return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
+}
+
 bool
 Settings::viewerNumberKeys() const
 {
@@ -2707,6 +2757,19 @@ Settings::RotoShapeDragRenderEnum
 Settings::getRotoShapeDragRender() const
 {
     return (RotoShapeDragRenderEnum)_rotoShapeDragRender->getValue();
+}
+
+Settings::Viewer3DLightingEnum
+Settings::getViewer3DLighting() const
+{
+    return (Viewer3DLightingEnum)_viewer3DLighting->getValue();
+}
+
+void
+Settings::setViewer3DLighting(Viewer3DLightingEnum lighting)
+{
+    _viewer3DLighting->setValue((int)lighting);
+    saveSetting(_viewer3DLighting.get());
 }
 
 GpuComputeModeEnum
@@ -3517,6 +3580,7 @@ void
 Settings::setRenderOnEditingFinishedOnly(bool render)
 {
     _renderOnEditingFinished->setValue(render);
+    saveSetting(_renderOnEditingFinished.get());
 }
 
 std::string

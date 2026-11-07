@@ -406,7 +406,7 @@ RawTemperature::initializeKnobs()
 
     NodePtr node = getNode();
     if (node) {
-        node->addRectangleInteract(op().spotBottomLeft.lock(), op().spotSize.lock(), KnobBoolPtr(), KnobBoolPtr());
+        node->addRectangleInteract(op().spotBottomLeft.lock(), op().spotSize.lock(), KnobBoolPtr());
     }
 }
 

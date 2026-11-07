@@ -133,12 +133,20 @@ public:
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
 
     /**
      * @brief The viewer overlay state the roto undo commands act on. Tests use it to build those
      * commands without a viewer.
      **/
     RotoPaintInteractPtr getInteract() const;
+
+    /**
+     * @brief Stops the Object Select tool's encoding, if one runs. With wait, returns once its
+     * thread is done with the node graph. For quitting processing; any thread.
+     **/
+    void abortObjectSelectEncoding(bool wait);
+    bool isObjectSelectEncoding() const;
 
 public Q_SLOTS:
 

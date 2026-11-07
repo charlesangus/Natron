@@ -111,11 +111,16 @@ releaseViewerGLResources(ViewerGLImpl& imp)
         imp.iboTriangleStripId = 0;
         glDeleteTextures(1, &imp.checkerboardTextureID);
         imp.checkerboardTextureID = 0;
+        if (imp.overlayRenderer) {
+            imp.overlayRenderer->releaseGLResources();
+        }
+        imp.overlayImageRenderer.releaseGLResources();
         glCheckError();
     }
 
     // The glyph atlases are textures of this context: delete them here, and let the next context
     // build its own instead of binding these names.
+    imp.overlayRenderer.reset();
     std::destroy_at(&imp.textRenderer);
     std::construct_at(&imp.textRenderer);
 }
@@ -134,9 +139,6 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , shaderRGB()
     , shaderBlack()
     , shaderLoaded(false)
-    , displayName()
-    , viewName()
-    , lookName()
     , shaderCacheID()
     , ocioTextures()
     , ocioShaderDesc()
@@ -175,7 +177,6 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , buildUserRoIOnNextPress(false)
     , draggedUserRoI()
     , zoomCtx(0.01, 1024.) // protected by mutex
-    , clipToDisplayWindow(true) // protected by mutex
     , wipeControlsMutex()
     , mixAmount(1.) // protected by mutex
     , wipeAngle(M_PI_2) // protected by mutex
@@ -291,11 +292,7 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
     ///the RoD of the image in canonical coords.
     RectD rod = _this->getRoD(textureIndex);
 
-    bool clipToDisplayWindow;
-    {
-        QMutexLocker l(&this->clipToDisplayWindowMutex);
-        clipToDisplayWindow = this->clipToDisplayWindow;
-    }
+    const bool clipToDisplayWindow = _this->isClippingImageToFormat();
     RectD rectClippedToRoI(canonicalRoIRoundedToTileSize);
     rectClippedToRoI.clipIfOverlaps(rod);
 
@@ -864,13 +861,10 @@ ViewerGL::Implementation::getDisplayProcessor() const
     if (!colorManagement) {
         return ProjectColorManagement::DisplayProcessorPtr();
     }
-    std::string display = displayName;
-    std::string view = viewName;
-    if (display.empty() || view.empty()) {
-        project->getDefaultDisplayView(&display, &view);
-    }
+    std::string display, view, look;
+    node->getResolvedDisplayTransform(&display, &view, &look);
 
-    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, lookName);
+    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, look);
 }
 
 void

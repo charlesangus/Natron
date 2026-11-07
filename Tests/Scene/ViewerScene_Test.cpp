@@ -28,7 +28,6 @@
 #include <list>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,7 +35,6 @@
 #include <gtest/gtest.h>
 
 #include <QString>
-#include <QStringList>
 
 #include "BaseTest.h"
 
@@ -46,14 +44,11 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/OpenGLViewerI.h"
-#include "Engine/Plugin.h"
-#include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -67,45 +62,6 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-
-// AppManager registers the viewer only for a GUI session, and the tests run in the background. It
-// is registered for internal use only, so that the sweeps over every plug-in that run later in the
-// same process do not try to build it.
-void
-registerViewerPluginOnce()
-{
-    static std::once_flag once;
-
-    std::call_once(once, []() {
-        try {
-            if (appPTR->getPluginBinary(QString::fromUtf8(PLUGINID_NATRON_VIEWER), -1, -1, false)) {
-                return;
-            }
-        } catch (const std::exception&) {
-        }
-        EffectInstancePtr node(ViewerInstance::BuildEffect(NodePtr()));
-        std::map<std::string, void (*)()> functions;
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&ViewerInstance::BuildEffect));
-        LibraryBinary* binary = new LibraryBinary(functions);
-
-        std::list<std::string> grouping;
-        node->getPluginGrouping(&grouping);
-        QStringList qgrouping;
-        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
-            qgrouping.push_back(QString::fromUtf8(it->c_str()));
-        }
-
-        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
-                                           QString(), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe,
-                                           node->getMajorVersion(), node->getMinorVersion(), false);
-        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
-        std::list<PluginActionShortcut> shortcuts;
-        node->getPluginShortcuts(&shortcuts);
-        p->setShorcuts(shortcuts);
-        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
-        p->setForInternalUseOnly(true);
-    });
-}
 
 // Just enough of a viewer widget for the render path to run: a scene never reaches the texture
 // calls, so they do nothing.
@@ -246,7 +202,6 @@ protected:
     {
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
-        registerViewerPluginOnce();
         CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
         viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
         _viewerNode = getApp()->createNode(viewerArgs);

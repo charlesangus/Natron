@@ -188,6 +188,8 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataGeneration(0)
     , _metadataCacheHash(0)
     , _sceneLayerMemo()
+    , _sublabelMutex()
+    , _sublabel()
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -259,6 +261,30 @@ int
 NativeEffectBase::getMinorVersion() const
 {
     return nodeSpec()->minorVersion;
+}
+
+std::string
+NativeEffectBase::getSublabel() const
+{
+    std::lock_guard<std::mutex> lock(_sublabelMutex);
+
+    return _sublabel;
+}
+
+void
+NativeEffectBase::setSublabel(const std::string& sublabel)
+{
+    {
+        std::lock_guard<std::mutex> lock(_sublabelMutex);
+        if (sublabel == _sublabel) {
+            return;
+        }
+        _sublabel = sublabel;
+    }
+    NodePtr node = getNode();
+    if (node) {
+        node->refreshSublabel();
+    }
 }
 
 bool
@@ -990,6 +1016,7 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     key->framesPerSecond = app->getProject()->getProjectFrameRate();
     key->upAxis = app->getProject()->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
     key->metersPerUnit = app->getProject()->getProjectMetersPerUnit();
+    key->materialsScope = app->getProject()->getProjectMaterialsScope();
     key->upstreamRead = reads.upstream;
     key->factsDigest = reads.factsDigest;
     key->readsFrameRange = reads.frameRange;
@@ -1015,6 +1042,8 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
 
         return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
+
+    _sceneLayerMemo.setOwner(getNode());
 
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage, keyStillValid);
 }

@@ -35,6 +35,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/PyNode.h"
+#include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -185,14 +186,12 @@ Layer::removeItem(ItemBase* item)
     if (refusesShapeEdit(context)) {
         return;
     }
-    RotoItemPtr internal = item->getInternalItem();
-    if (!context || (internal->getParentLayer() != _layer)) {
-        _layer->removeItem(internal);
-
+    RotoItemPtr internalItem = item ? item->getInternalItem() : RotoItemPtr();
+    if (!context || !internalItem || (internalItem->getParentLayer() != _layer)) {
         return;
     }
-    // Through the context, so the item leaves the selection and the panel as well.
-    context->removeItem(internal);
+    // Through the context, so the item leaves the selection and the panel, and its host data goes with it.
+    context->removeItem(internalItem);
 }
 
 std::list<ItemBase*>
@@ -356,6 +355,35 @@ int
 BezierCurve::getNumControlPoints() const
 {
     return _bezier->getControlPointsCount();
+}
+
+void
+BezierCurve::linkPointToTrack(int index,
+                              Track* track)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    TrackMarkerPtr marker = track ? track->getInternalMarker() : TrackMarkerPtr();
+    try {
+        _bezier->linkPointToTrack(index, marker, _bezier->getContext()->getTimelineCurrentTime());
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+BezierCurve::unlinkPoint(int index,
+                         bool bake)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    try {
+        _bezier->unlinkPoint(index, bake);
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
 }
 
 void

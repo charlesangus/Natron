@@ -539,7 +539,7 @@ buildErode(const AppInstancePtr& app,
     setFormat(app);
     const NodeCollectionPtr root = app->getProject();
     const int source = paritySource(app, root, g, 0, 0);
-    const int erode = addNode(g, createIn(app, root, PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE));
+    const int erode = addNode(g, createIn(app, root, PLUGINID_NATRON_ERODEDILATE, PLUGIN_MAJOR_NATRON_ERODEDILATE));
 
     if ((source < 0) || (erode < 0)) {
         return fail(error, "could not create the nodes");
@@ -864,6 +864,12 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
             continue;
         }
         const NodePtr node = g.nodes[index];
+        // The Viewer draws into its own textures; a plane rendered from it directly is not an
+        // image it caches, so there is no cached render to compare. Its knobs' hash exemption is
+        // covered by ViewerKnobsTest.
+        if (node->isEffectViewer()) {
+            continue;
+        }
         if (!node->getEffectInstance() || (node->getEffectInstance()->getOutputDataKind() != eDataKindImage)) {
             continue;
         }

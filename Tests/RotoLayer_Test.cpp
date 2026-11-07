@@ -41,6 +41,8 @@ CLANG_DIAG_ON(deprecated)
 #include "BaseTest.h"
 #include "FlatExrReader.h"
 
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/CreateNodeArgs.h"
@@ -56,6 +58,11 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoObjectSelect.h"
+#include "Engine/RotoPaint.h"
+#include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -544,6 +551,8 @@ expectedCurveToolbar()
         "EditBezierToolButton/DrawBezierTool",
         "EditBezierToolButton/DrawEllipseTool",
         "EditBezierToolButton/DrawRectangleTool",
+        "ObjectSelectToolButton",
+        "ObjectSelectToolButton/ObjectSelectTool",
         "PaintBrushToolButton",
         "PaintBrushToolButton/PaintSolidTool",
         "PaintBrushToolButton/PencilTool",
@@ -591,6 +600,277 @@ TEST_F(RotoLayerTest, RotoPaintToolbarKnobsKeepTheirNamesAndOrder)
     };
     expected.insert(expected.end(), paintNames, paintNames + sizeof(paintNames) / sizeof(paintNames[0]));
     EXPECT_EQ(expected, listToolbar(roto));
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, ObjectSelectKnobsStayOutOfTheRenderHash)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    for (const char* pluginID : { PLUGINID_NATRON_ROTO, PLUGINID_NATRON_ROTOPAINT }) {
+        NodePtr roto = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(roto)) << pluginID;
+
+        KnobChoicePtr resolution = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("objectInferenceResolution"));
+        ASSERT_TRUE(bool(resolution)) << pluginID;
+        EXPECT_EQ("Object Inference Resolution", resolution->getLabel());
+        EXPECT_TRUE(resolution->isHashExempt());
+        EXPECT_FALSE(resolution->getEvaluateOnChange());
+        const std::vector<std::string> labels = { "Full", "50%", "25%", "1K", "2K", "4K" };
+        const std::vector<ChoiceOption> options = resolution->getEntries_mt_safe();
+        ASSERT_EQ(labels.size(), options.size());
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            EXPECT_EQ(labels[i], options[i].label);
+        }
+        EXPECT_EQ(4, resolution->getDefaultValue(0)) << "2K by default";
+
+        const U64 hashBefore = roto->getHashValue();
+        resolution->setValue(2);
+        EXPECT_EQ(hashBefore, roto->getHashValue()) << pluginID;
+        resolution->setValue(0);
+        EXPECT_EQ(hashBefore, roto->getHashValue()) << pluginID;
+
+        for (const char* name : { "objectThreshold", "objectDensity", "objectMinArea", "objectHoles", "objectSmooth", "objectFeather" }) {
+            KnobIPtr knob = roto->getKnobByName(name);
+            ASSERT_TRUE(bool(knob)) << name;
+            EXPECT_TRUE(knob->isHashExempt()) << name;
+        }
+    }
+
+    project->reset(false, true);
+}
+
+namespace {
+
+RotoObjectSelect*
+objectSelectOf(const NodePtr& node)
+{
+    RotoPaint* rotoPaint = node ? dynamic_cast<RotoPaint*>(node->getEffectInstance().get()) : NULL;
+    RotoPaintInteractPtr interact = rotoPaint ? rotoPaint->getInteract() : RotoPaintInteractPtr();
+
+    return interact ? interact->objectSelect.get() : NULL;
+}
+
+} // namespace
+
+// Creating a Roto must not look at model files: until the tool is picked the menu names the models only.
+TEST_F(RotoLayerTest, ObjectSelectModelMenuListsInstallStateOnlyOnceThePickerIsUsed)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    const ModelRegistry& registry = *ModelDownloader::process()->registry();
+    const std::vector<std::string> ids = registry.byTask(AiModelTask::eMaskObject);
+    ASSERT_FALSE(ids.empty());
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    RotoObjectSelect* objectSelect = objectSelectOf(roto);
+    ASSERT_TRUE(objectSelect != NULL);
+
+    std::vector<ChoiceOption> options = model->getEntries_mt_safe();
+    ASSERT_EQ(ids.size(), options.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const AiModelEntry* entry = registry.find(ids[i]);
+        ASSERT_TRUE(entry != NULL) << ids[i];
+        EXPECT_EQ(ids[i], options[i].id);
+        EXPECT_EQ(entry->name, options[i].label) << "no install state before the tool is picked";
+    }
+
+    objectSelect->setActive(true);
+    options = model->getEntries_mt_safe();
+    ASSERT_EQ(ids.size(), options.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const AiModelEntry* entry = registry.find(ids[i]);
+        ASSERT_TRUE(entry != NULL) << ids[i];
+        EXPECT_EQ(ids[i], options[i].id);
+        EXPECT_EQ(0u, options[i].label.find(entry->name)) << options[i].label;
+    }
+    objectSelect->setActive(false);
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, ObjectSelectModelChoiceSurvivesSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    const ModelRegistry& registry = *ModelDownloader::process()->registry();
+    const std::vector<std::string> ids = registry.byTask(AiModelTask::eMaskObject);
+    ASSERT_LE(2u, ids.size());
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(roto->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    const std::string picked = (model->getActiveEntry().id == ids.back()) ? ids.front() : ids.back();
+    model->setValueFromID(picked, 0);
+    ASSERT_EQ(picked, model->getActiveEntry().id);
+    const std::string rotoName = roto->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("object-select-model.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr restored = project->getNodeByName(rotoName);
+    ASSERT_TRUE(bool(restored));
+    KnobChoicePtr restoredModel = std::dynamic_pointer_cast<KnobChoice>(restored->getKnobByName("model"));
+    ASSERT_TRUE(bool(restoredModel));
+    EXPECT_EQ(picked, restoredModel->getActiveEntry().id);
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, ObjectSelectPutDownLeavesNoSelection)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoObjectSelect* objectSelect = objectSelectOf(roto);
+    ASSERT_TRUE(objectSelect != NULL);
+
+    objectSelect->setActive(true);
+    EXPECT_TRUE(objectSelect->isActive());
+    objectSelect->setActive(false);
+    EXPECT_FALSE(objectSelect->isActive());
+    EXPECT_FALSE(objectSelect->isEncoding());
+    EXPECT_TRUE(objectSelect->prompts().empty());
+    EXPECT_TRUE(objectSelect->previewContours().empty());
+    RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+    ASSERT_TRUE(rotoPaint != NULL);
+    EXPECT_FALSE(rotoPaint->isObjectSelectEncoding()) << "no encoding holds the node";
+
+    project->reset(false, true);
+}
+
+namespace {
+
+std::string
+activeOperatorOf(const KnobIPtr& knob)
+{
+    KnobChoice* choice = dynamic_cast<KnobChoice*>(knob.get());
+
+    return choice ? choice->getActiveEntry().id : std::string();
+}
+
+std::string
+strokeOperator(const RotoStrokeItemPtr& stroke)
+{
+    return activeOperatorOf(stroke->getOperatorKnob());
+}
+
+std::string
+strokeMergeOperator(const RotoStrokeItemPtr& stroke)
+{
+    return activeOperatorOf(stroke->getMergeNode()->getKnobByName(kNativeMergeParamOperation));
+}
+
+// These are the calls the action bar's knob notifications end in.
+void
+pickPaintTool(const RotoPaintInteractPtr& interact,
+              const KnobButtonPtr& tool,
+              const KnobGroupPtr& role)
+{
+    interact->setCurrentTool(tool);
+    interact->onRoleChangedInternal(role);
+    interact->onToolChangedInternal(tool);
+}
+
+RotoStrokeItemPtr
+paintStrokeWith(const RotoPaintInteractPtr& interact,
+                const KnobButtonPtr& tool,
+                const KnobGroupPtr& role)
+{
+    pickPaintTool(interact, tool, role);
+    interact->makeStroke(false, RotoPoint(10., 10., 1., 0.));
+
+    return interact->strokeBeingPaint;
+}
+
+} // namespace
+
+TEST_F(RotoLayerTest, NewCloneStrokeCompositesOverWithoutChangingOtherTools)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+    ASSERT_TRUE(rotoPaint != NULL);
+    RotoPaintInteractPtr interact = rotoPaint->getInteract();
+    ASSERT_TRUE(bool(interact));
+
+    const KnobButtonPtr clone = interact->cloneAction.lock();
+    const KnobButtonPtr reveal = interact->revealAction.lock();
+    const KnobButtonPtr brush = interact->brushAction.lock();
+    const KnobButtonPtr dodge = interact->dodgeAction.lock();
+    const KnobGroupPtr cloneRole = interact->cloneBrushToolGroup.lock();
+    const KnobGroupPtr paintRole = interact->paintBrushToolGroup.lock();
+    const KnobGroupPtr mergeRole = interact->mergeBrushToolGroup.lock();
+    const KnobChoicePtr toolbarOperator = interact->compositingOperatorChoice.lock();
+    ASSERT_TRUE(clone && reveal && brush && dodge && cloneRole && paintRole && mergeRole && toolbarOperator);
+
+    const std::string over = Merge::getOperatorString(eMergeOver);
+    const std::string copy = Merge::getOperatorString(eMergeCopy);
+
+    RotoStrokeItemPtr first = paintStrokeWith(interact, clone, cloneRole);
+    ASSERT_TRUE(bool(first));
+    EXPECT_EQ(eRotoStrokeTypeClone, first->getBrushType());
+    EXPECT_EQ((int)eMergeOver, toolbarOperator->getValue()) << "first use";
+    EXPECT_EQ(over, strokeOperator(first));
+    EXPECT_EQ(over, strokeMergeOperator(first)) << "what the stroke actually renders with";
+
+    RotoStrokeItemPtr brushStroke = paintStrokeWith(interact, brush, paintRole);
+    EXPECT_EQ(over, strokeOperator(brushStroke));
+
+    RotoStrokeItemPtr revealStroke = paintStrokeWith(interact, reveal, cloneRole);
+    EXPECT_EQ(eRotoStrokeTypeReveal, revealStroke->getBrushType());
+    EXPECT_EQ(copy, strokeOperator(revealStroke));
+    EXPECT_EQ(copy, strokeMergeOperator(revealStroke));
+
+    RotoStrokeItemPtr dodgeStroke = paintStrokeWith(interact, dodge, mergeRole);
+    EXPECT_EQ(Merge::getOperatorString(eMergeColorDodge), strokeOperator(dodgeStroke));
+
+    RotoStrokeItemPtr afterSwitches = paintStrokeWith(interact, clone, cloneRole);
+    EXPECT_NE(first, afterSwitches);
+    EXPECT_EQ(over, strokeOperator(afterSwitches)) << "back from another tool";
+    EXPECT_EQ(over, strokeMergeOperator(afterSwitches));
+
+    // The tool only picks the default: the toolbar's choice still reaches the stroke.
+    // Leaving the tool first: re-picking Clone would keep the empty stroke, already in the layer.
+    pickPaintTool(interact, brush, paintRole);
+    pickPaintTool(interact, clone, cloneRole);
+    toolbarOperator->setValue((int)eMergeCopy);
+    interact->makeStroke(false, RotoPoint(20., 20., 1., 0.));
+    EXPECT_NE(afterSwitches, interact->strokeBeingPaint);
+    EXPECT_EQ(copy, strokeOperator(interact->strokeBeingPaint));
+    EXPECT_EQ(copy, strokeMergeOperator(interact->strokeBeingPaint));
+
+    // A stroke the toolbar never touches keeps the type's own default.
+    RotoContextPtr context = roto->getRotoContext();
+    RotoStrokeItemPtr unpainted(new RotoStrokeItem(eRotoStrokeTypeClone, context, "UnpaintedClone", RotoLayerPtr()));
+    unpainted->createNodes(false);
+    EXPECT_EQ(over, strokeOperator(unpainted));
+    EXPECT_EQ(over, strokeMergeOperator(unpainted));
 
     project->reset(false, true);
 }

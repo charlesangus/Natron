@@ -30,6 +30,8 @@
 
 #include <list>
 #include <map>
+#include <memory>
+#include <utility>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -38,12 +40,14 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/Ai/MaskTrace.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
+class RotoCurveContextHostState;
 class RotoCurveInteract;
 class RotoPaintInteract;
 
@@ -216,6 +220,8 @@ private:
     BezierPtr _curve;
     int _index;
     double _t;
+    std::shared_ptr<RotoCurveContextHostState> _hostBefore;
+    std::shared_ptr<RotoCurveContextHostState> _hostAfter;
 };
 
 
@@ -260,6 +266,7 @@ private:
 
     bool _firstRedoCalled;
     std::list<CurveDesc > _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 
@@ -289,6 +296,7 @@ private:
     RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     std::list<RemovedCurve> _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 class AddStrokeUndoCommand
@@ -489,6 +497,7 @@ private:
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 // The commands below that override mergeWith() take the key of the interact's open undo gesture
@@ -715,6 +724,132 @@ private:
     double _fromx, _fromy;
     double _tox, _toy;
     double _time;
+};
+
+// The point tool's click: a finished open curve of one control point.
+class MakePointCurveUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(MakePointCurveUndoCommand)
+
+public:
+    MakePointCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                              double x,
+                              double y,
+                              double time);
+
+    virtual ~MakePointCurveUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    BezierPtr getCurve() const
+    {
+        return _curve;
+    }
+
+private:
+    bool _firstRedoCalled;
+    RotoCurveInteractWPtr _roto;
+    RotoLayerPtr _parentLayer;
+    int _indexInLayer;
+    BezierPtr _curve;
+    double _x, _y;
+    double _time;
+};
+
+/**
+ * @brief Links control points to a track, or unlinks them with or without baking. Undo puts back
+ * every point of the curves involved, since baking keys whole curves.
+ **/
+class TrackLinkUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(TrackLinkUndoCommand)
+
+public:
+    enum ActionEnum {
+        eActionLink,
+        eActionUnlink,
+        eActionUnlinkAndBake
+    };
+
+    // A control point by curve and index.
+    typedef std::pair<BezierPtr, int> PointRef;
+
+    TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
+                         const std::list<PointRef>& points,
+                         ActionEnum action,
+                         const TrackMarkerPtr& marker,
+                         double time);
+
+    virtual ~TrackLinkUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    struct CurveState {
+        BezierPtr curve;
+        std::list<BezierCPPtr> points, before, after;
+    };
+
+    void restore(bool after);
+
+    RotoCurveInteractWPtr _roto;
+    std::list<PointRef> _points;
+    ActionEnum _action;
+    TrackMarkerPtr _marker;
+    double _time;
+    bool _done;
+    std::list<CurveState> _curves;
+};
+
+struct RotoObjectSelectSession;
+
+/**
+ * @brief Turns traced outlines into Beziers in the selected layer, keyed at time: one per outline,
+ * holes with the stencil operator so that they cut what lies under them. Undo removes them all and
+ * hands session back to the object select tool, so that the selection can be adjusted and
+ * committed again; redo drops it again.
+ **/
+class CommitObjectMaskUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(CommitObjectMaskUndoCommand)
+
+public:
+    // contours are in canonical coordinates, enclosing shapes first. session may be null.
+    CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
+                                const std::vector<MaskTrace::Contour>& contours,
+                                double time,
+                                double feather,
+                                const std::shared_ptr<const RotoObjectSelectSession>& session = std::shared_ptr<const RotoObjectSelectSession>());
+
+    virtual ~CommitObjectMaskUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    // The shapes the first redo made, enclosing shapes first.
+    const std::list<BezierPtr>& shapes() const
+    {
+        return _shapes;
+    }
+
+private:
+    struct Placement {
+        RotoLayerPtr layer;
+        int index = -1;
+        BezierPtr shape;
+    };
+
+    RotoCurveInteractWPtr _roto;
+    std::vector<MaskTrace::Contour> _contours;
+    double _time;
+    double _feather;
+    std::shared_ptr<const RotoObjectSelectSession> _session;
+    bool _firstRedoCalled;
+    std::list<BezierPtr> _shapes;
+    // Where each shape sat, by increasing index, so that re-inserting in this order restores it.
+    std::vector<Placement> _placements;
 };
 
 NATRON_NAMESPACE_EXIT

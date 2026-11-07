@@ -36,12 +36,12 @@
 #define PLUGINID_NATRON_OCIOLOOKTRANSFORM "OCIOLookTransform"
 #define PLUGIN_MAJOR_NATRON_OCIOLOOKTRANSFORM 1
 
-#define kOCIOLookTransformParamInputSpace "in_colorspace"
-#define kOCIOLookTransformParamOutputSpace "out_colorspace"
+#define kOCIOLookTransformParamInputSpace "inputColorspace"
+#define kOCIOLookTransformParamOutputSpace "outputColorspace"
 #define kOCIOLookTransformParamLook "look"
 #define kOCIOLookTransformParamAppend "append"
-#define kOCIOLookTransformParamSingleLook "single_look"
-#define kOCIOLookTransformParamLookCombination "look_combination"
+#define kOCIOLookTransformParamSingleLook "singleLook"
+#define kOCIOLookTransformParamLookCombination "lookCombination"
 #define kOCIOLookTransformParamDirection "direction"
 
 NATRON_NAMESPACE_ENTER
@@ -53,7 +53,7 @@ inline constexpr InputSpec kOCIOLookTransformInputs[] = {
 
 /**
  * @brief OCIOLookTransform: applies one look of the project's config, or a combination of them,
- * on the way from an input to an output colourspace, empty ones being the working space. The
+ * on the way from an input to an output colourspace, Project default being the working space. The
  * inverse undoes the looks from the output back to the input, as OCIOLookTransform did.
  **/
 struct OCIOLookTransformOp
@@ -85,7 +85,7 @@ struct OCIOLookTransformOp
     void appendLook();
 
     /**
-     * @brief Enables the combination while single_look is off.
+     * @brief Enables the combination while singleLook is off.
      **/
     void refreshSingleLook();
 

@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -837,8 +838,8 @@ TEST(EdgeAwareGpu, FastGuidedFilterBelowTwoSubsamplingIsThePlainOne)
     }
 }
 
-// The error sum runs in another order on the device, so an iteration count near convergence may
-// differ by one; the tolerance is wider for it.
+// The sums run in float and in another order on the device, so a solve stopped short of
+// convergence may differ by more than rounding; the tolerance is wider for it.
 TEST(EdgeAwareGpu, PoissonHeal)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -848,52 +849,94 @@ TEST(EdgeAwareGpu, PoissonHeal)
     unsigned seed = 1100;
     for (const Size& s : kSizes) {
         for (ImageKind kind : { eImageRandom, eImageNonFinite }) {
-            for (int maxIter : { 1, 40, 300 }) {
+            for (int maxCycles : { 0, 1, 5, 400 }) {
                 const std::vector<float> src = makeImage(s.width, s.height, 4, seed++, eImageRandom);
                 const std::vector<float> dest = makeImage(s.width, s.height, 4, seed++, kind);
                 const std::vector<float> mask = discMask(s.width, s.height);
                 std::vector<float> want = dest;
-                poissonHeal(src.data(), want.data(), mask.data(), s.width, s.height, maxIter, kSerial);
+                poissonHealMultigrid(src.data(), want.data(), mask.data(), s.width, s.height, maxCycles, kSerial);
                 DeviceRun run(*runtime);
                 gpu::GpuBuffer* srcBuffer = run.upload(src);
                 gpu::GpuBuffer* destBuffer = run.upload(dest);
                 gpu::GpuBuffer* maskBuffer = run.upload(mask);
                 ASSERT_TRUE(srcBuffer && destBuffer && maskBuffer);
+                int dispatches = 0;
                 ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
-                    return recordPoissonHeal(ctx, *srcBuffer, *destBuffer, *maskBuffer, s.width, s.height, maxIter);
+                    return recordPoissonHeal(ctx, *srcBuffer, *destBuffer, *maskBuffer, mask.data(), s.width, s.height, maxCycles, &dispatches);
                 }));
                 std::vector<float> got;
                 ASSERT_TRUE(run.download(destBuffer, dest.size(), got));
                 std::ostringstream what;
-                what << sizeName(s) << " " << kindName(kind) << " dest, " << maxIter << " iterations";
+                what << sizeName(s) << " " << kindName(kind) << " dest, " << maxCycles << " cycles, " << dispatches << " dispatches";
                 expectMatch(want, got, kHealTolerance, what.str());
+                std::printf("PoissonHeal %s\n", what.str().c_str());
             }
         }
     }
 }
 
-// Without push descriptors each dispatch takes a descriptor set from the kernel's pool, which a long
-// heal would exhaust, so recording refuses it.
-TEST(EdgeAwareGpu, PoissonHealRefusesLongRunsWithoutPushDescriptors)
+// Each recorded cycle is the fine-level steps of conjugate gradients and a V-cycle in which only
+// levels of more than a few thousand cells take dispatches of their own.
+TEST(EdgeAwareGpu, PoissonHealDispatchesPerCycle)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
-    std::unique_ptr<gpu::GpuRecordContext> context;
-    const gpu::GpuStatus created = runtime->runtime().newRecordContext(context);
-    ASSERT_TRUE(bool(created)) << created.message;
-    if (context->device().info().pushDescriptor) {
-        return;
-    }
-    const std::vector<float> image = makeImage(8, 8, 4, 1200, eImageRandom);
+    const int width = 300;
+    const int height = 200;
+    const std::vector<float> image = makeImage(width, height, 4, 1200, eImageRandom);
+    const std::vector<float> mask = discMask(width, height);
     DeviceRun run(*runtime);
     gpu::GpuBuffer* src = run.upload(image);
     gpu::GpuBuffer* dest = run.upload(image);
-    gpu::GpuBuffer* mask = run.upload(discMask(8, 8));
-    ASSERT_TRUE(src && dest && mask);
-    const gpu::GpuStatus recorded = recordPoissonHeal(*context, *src, *dest, *mask, 8, 8, kPoissonHealGpuMaxIterationsWithoutPushDescriptors + 1);
-    EXPECT_FALSE(bool(recorded));
+    gpu::GpuBuffer* maskBuffer = run.upload(mask);
+    ASSERT_TRUE(src && dest && maskBuffer);
+    int one = 0;
+    int many = 0;
+    ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
+        gpu::GpuStatus status = recordPoissonHeal(ctx, *src, *dest, *maskBuffer, mask.data(), width, height, 1, &one);
+        if (!status) {
+            return status;
+        }
+        return recordPoissonHeal(ctx, *src, *dest, *maskBuffer, mask.data(), width, height, 100000, &many);
+    }));
+    const int perCycle = (many - one) / (kPoissonHealGpuMaxCycles - 1);
+    std::printf("PoissonHeal %dx%d: %d dispatches for 1 cycle, %d for %d, %d a cycle\n", width, height, one, many, kPoissonHealGpuMaxCycles, perCycle);
+    EXPECT_LT(perCycle, 50);
+    EXPECT_EQ(many - one, perCycle * (kPoissonHealGpuMaxCycles - 1));
+}
+
+// Without push descriptors every dispatch takes a descriptor set. A 512 x 512 disc keeps three
+// levels above the tail, so the 64 recorded cycles hold 1536 heal_relax dispatches, more than one
+// of the kernel's descriptor pools has sets for.
+TEST(EdgeAwareGpu, PoissonHealLongRunWithoutPushDescriptors)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime, false)) {
+        return;
+    }
+    ASSERT_FALSE(runtime->runtime().device().info().pushDescriptor);
+    const int width = 512;
+    const int height = 512;
+    const std::vector<float> src = makeImage(width, height, 4, 1300, eImageRandom);
+    const std::vector<float> dest = makeImage(width, height, 4, 1301, eImageRandom);
+    const std::vector<float> mask = discMask(width, height);
+    std::vector<float> want = dest;
+    poissonHealMultigrid(src.data(), want.data(), mask.data(), width, height, kPoissonHealGpuMaxCycles, kSerial);
+    DeviceRun run(*runtime);
+    gpu::GpuBuffer* srcBuffer = run.upload(src);
+    gpu::GpuBuffer* destBuffer = run.upload(dest);
+    gpu::GpuBuffer* maskBuffer = run.upload(mask);
+    ASSERT_TRUE(srcBuffer && destBuffer && maskBuffer);
+    int dispatches = 0;
+    ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
+        return recordPoissonHeal(ctx, *srcBuffer, *destBuffer, *maskBuffer, mask.data(), width, height, kPoissonHealGpuMaxCycles, &dispatches);
+    }));
+    EXPECT_GT(dispatches, 1536);
+    std::vector<float> got;
+    ASSERT_TRUE(run.download(destBuffer, dest.size(), got));
+    expectMatch(want, got, kHealTolerance, "512x512 disc without push descriptors");
 }
 
 #else // NATRON_HAVE_GPU

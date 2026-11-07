@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "Engine/Ai/ModelKnob.h"
 #include "Engine/EngineFwd.h"
@@ -48,8 +49,9 @@ const int kAiModelTestSize = 8;
 const float kAiModelTestOutput = 0.5f;
 
 /**
- * @brief A denoise-task generator with a ModelKnob: it renders a constant once the model resolves
- * and fails otherwise, so a test can watch the knob's errors come and go.
+ * @brief A generator with a ModelKnob, for the denoise task unless a test sets tasks(): it renders
+ * a constant once the model resolves and fails otherwise, so a test can watch the knob's errors
+ * come and go.
  **/
 class AiModelTestEffect
     : public NativeEffectBase {
@@ -70,6 +72,14 @@ public:
         static ModelDownloader* d = nullptr;
 
         return d;
+    }
+
+    // The tasks the next node created lists.
+    static std::vector<AiModelTask>& tasks()
+    {
+        static std::vector<AiModelTask> t { AiModelTask::eDenoise };
+
+        return t;
     }
 
     ModelKnob* modelKnob() const
@@ -140,7 +150,7 @@ private:
     {
         KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
 
-        _modelKnob = ModelKnob::create(this, page, AiModelTask::eDenoise, downloader());
+        _modelKnob = ModelKnob::create(this, page, tasks(), downloader());
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN

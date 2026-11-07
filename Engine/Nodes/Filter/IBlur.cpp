@@ -834,6 +834,8 @@ IBlur::opPassesInputLayer(int inputNb,
 
 RectI
 IBlur::opPassesInputRoI(int inputNb,
+                        double time,
+                        ViewIdx view,
                         const RectI& outputRect,
                         const RenderScale& scale) const
 {
@@ -841,7 +843,7 @@ IBlur::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+    return passListSourceRoI(outputRect, opPasses(time, view, scale));
 }
 
 bool

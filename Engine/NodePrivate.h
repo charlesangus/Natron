@@ -162,6 +162,7 @@ public:
         , app(app_)
         , isPartOfProject(true)
         , knobsInitialized(false)
+        , restoringKnobs(false)
         , inputsInitialized(false)
         , outputsMutex()
         , outputs()
@@ -350,6 +351,8 @@ public:
     AppInstanceWPtr app; // pointer to the app: needed to access the application's default-project's format
     bool isPartOfProject;
     bool knobsInitialized;
+    // Main thread only: set while fromSerialization() restores the knobs.
+    bool restoringKnobs;
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
@@ -422,6 +425,12 @@ public:
         KnobIWPtr liveKnob; //< null when hash below is memoized
         U64 hash;
     };
+    mutable QMutex overlayImageFrameMutex;
+    OverlayImageFrameConstPtr overlayImageFrame;
+    std::uint64_t overlayImageGeneration = 0;
+    // Shared with the tokens, which can outlive the node.
+    std::shared_ptr<std::atomic<int>> overlayImagePassesPending = std::make_shared<std::atomic<int>>(0);
+
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
     mutable bool knobsDigestValid = false;
     mutable U64 knobsDigestGeneration = 0;
@@ -585,9 +594,9 @@ public:
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
 
-    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
-    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
-    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (DenoiseSharpen collapses
+    // R/G/B into one flag, ClipTest ORs the selection into a zebra decision): adoptChannelQuad()
+    // leaves their quad alone instead of forcing it.
     bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose

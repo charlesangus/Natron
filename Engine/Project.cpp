@@ -99,6 +99,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
@@ -453,6 +454,7 @@ Project::loadProject(const QString & path,
         return false;
     }
 
+    Q_EMIT loaded();
     refreshViewersAndPreviews();
 
     return true;
@@ -474,12 +476,12 @@ Project::hasMissingPluginNode() const
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The parameter names the native Read and Write take from openfx-io's GenericOCIO
-// (see Engine/Nodes/IO/OcioSpaceKnobs.h). The native OCIO nodes share the config pair
-// and check their own colourspaces.
+// The parameter names of the config pair every node with OcioSpaceKnobs carries
+// (see Engine/Nodes/IO/OcioSpaceKnobs.h), and of the native Read's and Write's file colourspace.
+// The native OCIO nodes check their own colourspaces.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
-const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
+const char* const ioColorSpaceKnobName = "colorspace";
 
 // A "scheme://" source is a built-in config, not a file on disk.
 bool
@@ -488,21 +490,23 @@ isOCIOConfigFile(const std::string& source)
     return !source.empty() && (source.find("://") == std::string::npos);
 }
 
+// The colourspace a native Read or Write was set to, empty while it follows the project's
+// defaults, which always resolve.
 std::string
-getStringKnobValue(const NodePtr& node,
-                   const char* knobName)
+chosenFileColorSpace(const NodePtr& node)
 {
-    KnobIPtr knob = node->getKnobByName(knobName);
+    const std::string pluginID = node ? node->getPluginID() : std::string();
 
+    if ((pluginID != PLUGINID_NATRON_READ) && (pluginID != PLUGINID_NATRON_WRITE)) {
+        return std::string();
+    }
+    KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(ioColorSpaceKnobName));
     if (!knob) {
         return std::string();
     }
-    KnobStringBasePtr stringKnob = std::dynamic_pointer_cast<KnobStringBase>(knob);
-    if (!stringKnob) {
-        return std::string();
-    }
+    const std::string id = knob->getActiveEntry().id;
 
-    return stringKnob->getValue();
+    return (id == OcioSpaceKnobs::projectDefaultID()) ? std::string() : id;
 }
 
 void
@@ -567,13 +571,10 @@ Project::reportUnresolvedOCIOColorSpaces()
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         QStringList unresolved;
-        for (std::size_t i = 0; i < sizeof(ocioColorSpaceKnobNames) / sizeof(ocioColorSpaceKnobNames[0]); ++i) {
-            const std::string colorSpace = getStringKnobValue(*it, ocioColorSpaceKnobNames[i]);
-            if (colorSpace.empty() || config->getColorSpace(colorSpace.c_str())) {
-                continue;
-            }
+        const std::string colorSpace = chosenFileColorSpace(*it);
+        if (!colorSpace.empty() && !config->getColorSpace(colorSpace.c_str())) {
             unresolved.push_back(tr("%1 = \"%2\" is not a colorspace in the OpenColorIO config \"%3\".")
-                                     .arg(QString::fromUtf8(ocioColorSpaceKnobNames[i]))
+                                     .arg(QString::fromUtf8(ioColorSpaceKnobName))
                                      .arg(QString::fromUtf8(colorSpace.c_str()))
                                      .arg(QString::fromUtf8(config->getName())));
         }
@@ -1855,6 +1856,16 @@ Project::initializeKnobs()
     _imp->metersPerUnit->setDisplayMaximum(1.);
     page->addKnob(_imp->metersPerUnit);
 
+    _imp->materialsScope = AppManager::createKnob<KnobString>(this, tr("Materials Scope"));
+    _imp->materialsScope->setName("materialsScope");
+    _imp->materialsScope->setHintToolTip(tr("The root prim the project's 3D scenes share materials under, such as /materials. "
+                                            "Re-parenting nodes leave it at the top of the scene instead of grafting it, and "
+                                            "re-point bindings into it. Empty, or anything but a single absolute prim name, "
+                                            "turns shared materials off."));
+    _imp->materialsScope->setAnimationEnabled(false);
+    _imp->materialsScope->setDefaultValue("/materials");
+    page->addKnob(_imp->materialsScope);
+
     _imp->gpuSupport = AppManager::createKnob<KnobChoice>( this, tr("GPU Rendering") );
     _imp->gpuSupport->setName("gpuRendering");
     {
@@ -2279,6 +2290,8 @@ Project::refreshColorManagement(bool warnOnFallback,
     // environment overrides it.
     Node::invalidateAllHashes("OCIO config loaded");
     pushOCIOConfigToNodes();
+    // The config's file rules and the project's file defaults may both have moved.
+    Q_EMIT fileColorSpacesChanged();
     cm.notifyConfigChanged();
 
     reportUnresolvedOCIOColorSpaces();
@@ -2921,8 +2934,8 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->frameRate.get()) {
         forceComputeInputDependentDataOnAllTrees();
         shouldAutoSave = true;
-    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get())) {
-        // Both are in the project digest and every scene layer key, so each scene node re-authors
+    } else if ((knob == _imp->upAxis.get()) || (knob == _imp->metersPerUnit.get()) || (knob == _imp->materialsScope.get())) {
+        // All are in the project digest and every scene layer key, so each scene node re-authors
         // its layer when next evaluated.
         forceComputeInputDependentDataOnAllTrees();
         getApp()->renderAllViewers(true);
@@ -2940,6 +2953,12 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->ocioConfig.get() || knob == _imp->ocioConfigFile.get()) {
         if (!_imp->suppressColorManagementRefresh) {
             refreshColorManagement(true);
+        }
+        shouldAutoSave = true;
+    } else if (knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get()) {
+        if (!_imp->suppressColorManagementRefresh) {
+            Q_EMIT fileColorSpacesChanged();
+            getApp()->renderAllViewers(true);
         }
         shouldAutoSave = true;
     } else if (knob == _imp->viewerDisplay.get()) {
@@ -3569,6 +3588,7 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
     h.appendDouble(getProjectFrameRate());
     h.appendBool(isProjectUpAxisZ());
     h.appendDouble(getProjectMetersPerUnit());
+    h.appendString(getProjectMaterialsScope());
 
     const std::vector<std::string>& views = getProjectViewNames();
     h.appendU64(views.size());
@@ -4472,6 +4492,30 @@ double
 Project::getProjectMetersPerUnit() const
 {
     return _imp->metersPerUnit->getValue();
+}
+
+std::string
+Project::validateMaterialsScope(const std::string& path)
+{
+    if ((path.size() < 2) || (path[0] != '/')) {
+        return std::string();
+    }
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const char c = path[i];
+        const bool letter = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '_');
+        const bool digit = (c >= '0') && (c <= '9');
+        if (!letter && !(digit && (i > 1))) {
+            return std::string();
+        }
+    }
+
+    return path.substr(1);
+}
+
+std::string
+Project::getProjectMaterialsScope() const
+{
+    return validateMaterialsScope(_imp->materialsScope->getValue());
 }
 
 KnobPathPtr

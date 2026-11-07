@@ -85,6 +85,26 @@ public:
         eViewer3DNavigationCustom
     };
 
+    // Where a drag of the 3D viewer's transform widget writes its change.
+    enum Viewer3DTransformTargetEnum {
+        // The knobs of the node that made the prim, else an edit node.
+        eViewer3DTransformTargetOwner = 0,
+        // The USDEditTransform whose panel is open, else a new one.
+        eViewer3DTransformTargetOpenEdit,
+        // A USDEditTransform after the viewed node, reused while the selection stays the same.
+        eViewer3DTransformTargetAlwaysEdit
+    };
+
+    // What lights the 3D viewer's shaded mode, in the order of SceneViewportRenderer's lighting modes.
+    enum Viewer3DLightingEnum {
+        // The stage's lights when it has any, else a light at the camera.
+        eViewer3DLightingAuto = 0,
+        // Only the stage's lights: a stage with none shows its lit surfaces black.
+        eViewer3DLightingScene,
+        // Only a light at the camera.
+        eViewer3DLightingHeadlight
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -358,10 +378,18 @@ public:
     void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
 
     bool isViewer3DNavigationKnob(const KnobI* knob) const;
+
+    Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
 
     RotoShapeDragRenderEnum getRotoShapeDragRender() const;
+
+    // What lights the viewer's 3D views, shared by all of them.
+    Viewer3DLightingEnum getViewer3DLighting() const;
+
+    // Sets the preference and saves it.
+    void setViewer3DLighting(Viewer3DLightingEnum lighting);
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -675,6 +703,8 @@ private:
     KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
+    KnobChoicePtr _viewer3DTransformTarget;
+    KnobChoicePtr _viewer3DLighting;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

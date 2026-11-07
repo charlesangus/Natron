@@ -57,6 +57,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -71,9 +72,7 @@ const char* const kGamma22Space = "Gamma 2.2 Encoded Rec.709";
 const char* const kLinearRec709Space = "Linear Rec.709 (sRGB)";
 const char* const kOtherWorkingSpace = "ACES2065-1";
 
-const char* const kInputSpaceKnob = "ocioInputSpace";
-const char* const kInputSpaceMenuKnob = "ocioInputSpaceIndex";
-const char* const kInputSpaceSetKnob = "ocioInputSpaceSet";
+const char* const kInputSpaceMenuKnob = "colorspace";
 const char* const kWorkingSpaceKnob = "ocioWorkingSpace";
 
 const char* const kUnknownSpace = "Not A Colorspace";
@@ -225,13 +224,14 @@ protected:
         return knob ? knob->getValue() : std::string();
     }
 
-    bool userSet(const NodePtr& node) const
+    // The colourspace the Read converts from: the one picked, or the one Project default stands for.
+    std::string fileSpace(const NodePtr& node) const
     {
-        KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kInputSpaceSetKnob));
+        NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
 
-        EXPECT_TRUE(bool(knob));
+        EXPECT_TRUE(read != NULL);
 
-        return knob && knob->getValue();
+        return read ? read->colorspace() : std::string();
     }
 
     std::string menuValue(const NodePtr& node) const
@@ -240,7 +240,12 @@ protected:
 
         EXPECT_TRUE(bool(menu));
 
-        return menu ? menu->getEntry(menu->getValue()).id : std::string();
+        return menu ? menu->getActiveEntry().id : std::string();
+    }
+
+    bool userSet(const NodePtr& node) const
+    {
+        return menuValue(node) != OcioSpaceKnobs::projectDefaultID();
     }
 
     void userPicksInputSpace(const NodePtr& node,
@@ -265,7 +270,7 @@ protected:
         } else {
             menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
         }
-        ASSERT_EQ(std::string(space), stringValue(node, kInputSpaceKnob));
+        ASSERT_EQ(std::string(space), fileSpace(node));
     }
 
     void renderFile(const NodePtr& node,
@@ -356,10 +361,14 @@ TEST_F(NativeReadColorTest, AnExrTakesTheColourspaceOfTheConfigsFileRule)
     NodePtr node = createRead();
     setFile(node, path);
 
-    EXPECT_EQ(std::string(kOtherWorkingSpace), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kOtherWorkingSpace), menuValue(node));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), fileSpace(node));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(node));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(node, kWorkingSpaceKnob));
     EXPECT_FALSE(userSet(node));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kInputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_EQ("Project default (" + std::string(kOtherWorkingSpace) + ")", menu->getEntry(0).label);
+    EXPECT_EQ("Project default (" + std::string(kOtherWorkingSpace) + ")", menu->getActiveEntry().label);
 
     RenderedPlane plane;
     renderFile(node, OiioReadSupport::dataWindowOf(ref.spec), 3, &plane);
@@ -388,7 +397,7 @@ TEST_F(NativeReadColorTest, AUserPickOverridesTheFileRuleOnAnExrAndSticks)
 
     NodePtr node = createRead();
     setFile(node, path);
-    ASSERT_EQ(std::string(kOtherWorkingSpace), stringValue(node, kInputSpaceKnob));
+    ASSERT_EQ(std::string(kOtherWorkingSpace), fileSpace(node));
 
     userPicksInputSpace(node, kLinearRec709Space);
     EXPECT_TRUE(userSet(node));
@@ -397,7 +406,7 @@ TEST_F(NativeReadColorTest, AUserPickOverridesTheFileRuleOnAnExrAndSticks)
     setFile(node, path);
     setFile(node, fixture("png-8bit.png"));
     setFile(node, path);
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(node));
     EXPECT_EQ(std::string(kLinearRec709Space), menuValue(node));
     EXPECT_TRUE(userSet(node));
 
@@ -430,9 +439,9 @@ TEST_F(NativeReadColorTest, AFloatFileWithNoRuleOrTagTakesTheProjectFloatDefault
     NodePtr node = createRead();
     setFile(node, path);
 
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kLinearRec709Space), menuValue(node));
-    EXPECT_NE(project()->getWorkingColorSpace(), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(node));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(node));
+    EXPECT_NE(project()->getWorkingColorSpace(), fileSpace(node));
     EXPECT_FALSE(userSet(node));
 
     RenderedPlane plane;
@@ -467,8 +476,8 @@ TEST_F(NativeReadColorTest, AValidEmbeddedColourspaceWinsOverTheProjectDefault)
     NodePtr node = createRead();
     setFile(node, path);
 
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(node));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(node));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(node));
     EXPECT_FALSE(userSet(node));
 }
 
@@ -490,8 +499,8 @@ TEST_F(NativeReadColorTest, ATenBitDpxTakesTheSixteenBitDefault)
     NodePtr node = createRead();
     setFile(node, path);
 
-    EXPECT_EQ(std::string(kGamma22Space), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kGamma22Space), menuValue(node));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(node));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(node));
 }
 
 TEST_F(NativeReadColorTest, EveryFormatTakesTheCategoryOfItsPixelType)
@@ -560,7 +569,7 @@ TEST_F(NativeReadColorTest, AnEightBitPngTakesTheEightBitDefaultAndMatchesOcio)
 
     NodePtr node = createRead();
     setFile(node, path);
-    const std::string input = stringValue(node, kInputSpaceKnob);
+    const std::string input = fileSpace(node);
     EXPECT_EQ(project()->getFileColorSpace(eFileColorCategory8Bit), input);
     EXPECT_EQ(std::string(kSRGBSpace), input);
 
@@ -603,7 +612,7 @@ TEST_F(NativeReadColorTest, AWorkingSpaceChangeReRendersTheRead)
     RenderedPlane after;
     renderFile(node, window, 3, &after);
     EXPECT_NE(before.pixels, after.pixels);
-    const std::vector<float> want = reference(ref, stringValue(node, kInputSpaceKnob), kOtherWorkingSpace);
+    const std::vector<float> want = reference(ref, fileSpace(node), kOtherWorkingSpace);
     ASSERT_EQ(want.size(), after.pixels.size());
     std::size_t mismatches = 0;
     for (std::size_t i = 0; i < want.size(); ++i) {
@@ -619,7 +628,7 @@ TEST_F(NativeReadColorTest, AUserPickSurvivesAFilenameChangeAndAGuessDoesNot)
     setProjectSpace("colorSpace16Bit", kGamma22Space);
     NodePtr node = createRead();
     setFile(node, fixture("png-8bit.png"));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(node));
     ASSERT_FALSE(userSet(node));
 
     userPicksInputSpace(node, kLinearRec709Space);
@@ -627,47 +636,50 @@ TEST_F(NativeReadColorTest, AUserPickSurvivesAFilenameChangeAndAGuessDoesNot)
     EXPECT_EQ(std::string(kLinearRec709Space), menuValue(node));
 
     setFile(node, fixture("flat-rgb-only.exr"));
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(node));
 
-    KnobBoolPtr spaceSet = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kInputSpaceSetKnob));
-    ASSERT_TRUE(bool(spaceSet));
-    spaceSet->setValue(false);
+    restoreDefaultAsTheGuiDoes(node->getKnobByName(kInputSpaceMenuKnob));
     setFile(node, fixture("png-8bit.png"));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(node));
     setFile(node, fixture("flat-rgb-only.exr"));
-    EXPECT_EQ(std::string(kOtherWorkingSpace), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), fileSpace(node));
     EXPECT_FALSE(userSet(node));
 }
 
-TEST_F(NativeReadColorTest, ALoadedNodeKeepsItsSavedInputSpace)
+TEST_F(NativeReadColorTest, ALoadedNodeKeepsItsPickAndFollowsTheDefaultOtherwise)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
+
+    // The PNG fixtures are tagged sRGB, which outranks the project default, so the guess reads
+    // an untagged DPX.
+    setProjectSpace("colorSpace16Bit", kSRGBSpace);
+    const std::string untagged = writeImage(tmp, "ten-bit.dpx", OIIO::TypeDesc::UINT16, 10, false);
+    ASSERT_FALSE(untagged.empty());
 
     NodePtr picked = createRead();
     setFile(picked, fixture("png-8bit.png"));
     userPicksInputSpace(picked, kLinearRec709Space);
     NodePtr guessed = createRead();
-    setFile(guessed, fixture("png-8bit.png"));
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(guessed, kInputSpaceKnob));
+    setFile(guessed, untagged);
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(guessed));
     const std::string pickedName = picked->getScriptName();
     const std::string guessedName = guessed->getScriptName();
 
-    // A restored node that guessed again would take this new default.
-    setProjectSpace("colorSpace8Bit", kGamma22Space);
+    setProjectSpace("colorSpace16Bit", kGamma22Space);
 
     saveResetAndLoad(tmp, "native-read-colour.ntpz");
 
-    ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
+    ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory16Bit));
     picked = project()->getNodeByName(pickedName);
     guessed = project()->getNodeByName(guessedName);
     ASSERT_TRUE(bool(picked));
     ASSERT_TRUE(bool(guessed));
-    EXPECT_EQ(std::string(kLinearRec709Space), stringValue(picked, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kLinearRec709Space), fileSpace(picked));
     EXPECT_EQ(std::string(kLinearRec709Space), menuValue(picked));
     EXPECT_TRUE(userSet(picked));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(guessed, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(guessed));
+    EXPECT_EQ(std::string(kGamma22Space), fileSpace(guessed));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), menuValue(guessed));
     EXPECT_FALSE(userSet(guessed));
     EXPECT_EQ(project()->getWorkingColorSpace(), stringValue(guessed, kWorkingSpaceKnob));
 }
@@ -682,15 +694,15 @@ TEST_F(NativeReadColorTest, AnUnknownInputSpaceIsReported)
 
     NodePtr node = createRead();
     setFile(node, path);
-    KnobStringBasePtr space = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(kInputSpaceKnob));
-    ASSERT_TRUE(bool(space));
-    ASSERT_TRUE(space->getIsSecret());
-    space->setValue(std::string(kUnknownSpace));
-    EXPECT_FALSE(space->getIsSecret());
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kInputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    // A project saved against another config is how a Read meets a colourspace its menu lacks.
+    menu->setActiveEntry(ChoiceOption(kUnknownSpace, kUnknownSpace, ""));
+    ASSERT_EQ(std::string(kUnknownSpace), fileSpace(node));
 
     project()->reportUnresolvedOCIOColorSpaces();
     std::string message = persistentMessage(node);
-    EXPECT_NE(std::string::npos, message.find(kInputSpaceKnob)) << message;
+    EXPECT_NE(std::string::npos, message.find(kInputSpaceMenuKnob)) << message;
     EXPECT_NE(std::string::npos, message.find(kUnknownSpace)) << message;
 
     std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBComponents());
@@ -703,9 +715,9 @@ TEST_F(NativeReadColorTest, AnUnknownInputSpaceIsReported)
     saveResetAndLoad(tmp, "native-read-unknown-space.ntpz");
     node = project()->getNodeByName(name);
     ASSERT_TRUE(bool(node));
-    EXPECT_EQ(std::string(kUnknownSpace), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kUnknownSpace), fileSpace(node));
     message = persistentMessage(node);
-    EXPECT_NE(std::string::npos, message.find(kInputSpaceKnob)) << message;
+    EXPECT_NE(std::string::npos, message.find(kInputSpaceMenuKnob)) << message;
     EXPECT_NE(std::string::npos, message.find(kUnknownSpace)) << message;
 }
 
@@ -718,8 +730,11 @@ TEST_F(NativeReadColorTest, TheInputColourspaceMenuNestsTheConfigsFamilies)
     EXPECT_TRUE(menu->isCascading());
 
     const std::vector<std::string> names = project()->getColorManagement()->getColorSpaces();
-    const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
-    ASSERT_EQ(names.size(), entries.size());
+    std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+    ASSERT_EQ(names.size() + 1, entries.size());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), entries[0].id);
+    EXPECT_EQ(std::string("Project default"), entries[0].label);
+    entries.erase(entries.begin());
     std::set<std::string> labels;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         EXPECT_EQ(names[i], entries[i].id);
@@ -742,7 +757,7 @@ TEST_F(NativeReadColorTest, TheInputColourspaceMenuNestsTheConfigsFamilies)
     };
     for (std::size_t e = 0; e < sizeof(expected) / sizeof(expected[0]); ++e) {
         userPicksInputSpace(node, expected[e].id);
-        EXPECT_EQ(std::string(expected[e].id), stringValue(node, kInputSpaceKnob));
+        EXPECT_EQ(std::string(expected[e].id), fileSpace(node));
         EXPECT_EQ(std::string(expected[e].id), menuValue(node));
         EXPECT_EQ(std::string(expected[e].label), menu->getEntry(menu->getValue()).label);
         EXPECT_TRUE(userSet(node));
@@ -817,7 +832,7 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceMenuReturnsToTheAutomati
 
     NodePtr node = createRead();
     setFile(node, path);
-    ASSERT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    ASSERT_EQ(std::string(kSRGBSpace), fileSpace(node));
     userPicksInputSpace(node, kLinearRec709Space);
     ASSERT_TRUE(userSet(node));
     RenderedPlane picked;
@@ -826,8 +841,7 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceMenuReturnsToTheAutomati
     restoreDefaultAsTheGuiDoes(node->getKnobByName(kInputSpaceMenuKnob));
 
     EXPECT_FALSE(userSet(node));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(node));
+    EXPECT_EQ(std::string(kSRGBSpace), fileSpace(node));
 
     RenderedPlane reset;
     renderFile(node, window, 3, &reset);
@@ -843,23 +857,7 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceMenuReturnsToTheAutomati
     EXPECT_EQ(0u, mismatches);
 
     setFile(node, fixture("flat-rgb-only.exr"));
-    EXPECT_EQ(std::string(kOtherWorkingSpace), stringValue(node, kInputSpaceKnob));
-}
-
-TEST_F(NativeReadColorTest, ResettingTheInputColourspaceStringReturnsToTheAutomaticSpace)
-{
-    NodePtr node = createRead();
-    setFile(node, fixture("png-8bit.png"));
-    userPicksInputSpace(node, kLinearRec709Space);
-    ASSERT_TRUE(userSet(node));
-
-    KnobIPtr space = node->getKnobByName(kInputSpaceKnob);
-    restoreDefaultAsTheGuiDoes(space);
-
-    EXPECT_FALSE(userSet(node));
-    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(std::string(kSRGBSpace), menuValue(node));
-    EXPECT_TRUE(space->getIsSecret());
+    EXPECT_EQ(std::string(kOtherWorkingSpace), fileSpace(node));
 }
 
 TEST_F(NativeReadColorTest, ResettingTheInputColourspaceOfAReadWithoutAFileConvertsNothing)
@@ -871,8 +869,7 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceOfAReadWithoutAFileConve
     restoreDefaultAsTheGuiDoes(node->getKnobByName(kInputSpaceMenuKnob));
 
     EXPECT_FALSE(userSet(node));
-    EXPECT_EQ(std::string(), stringValue(node, kInputSpaceKnob));
-    EXPECT_EQ(project()->getWorkingColorSpace(), menuValue(node));
+    EXPECT_EQ(std::string(), fileSpace(node));
 }
 
 // A config whose "shot" colourspace applies the LUT file named by the $LUT context variable.
@@ -934,8 +931,8 @@ protected:
                     const char* value)
     {
         const std::string n = std::to_string(pair);
-        KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("key" + n));
-        KnobStringPtr valueKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("value" + n));
+        KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextKey" + n));
+        KnobStringPtr valueKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextValue" + n));
 
         ASSERT_TRUE(bool(keyKnob));
         ASSERT_TRUE(bool(valueKnob));
@@ -984,14 +981,14 @@ TEST_F(NativeReadContextTest, TheContextGroupHasFourKeyValuePairs)
 {
     NodePtr node = createRead();
 
-    EXPECT_TRUE(dynamic_cast<KnobGroup*>(node->getKnobByName("Context").get()) != NULL);
+    EXPECT_TRUE(dynamic_cast<KnobGroup*>(node->getKnobByName("ocioContext").get()) != NULL);
     for (int i = 1; i <= 4; ++i) {
         const std::string n = std::to_string(i);
-        KnobStringPtr key = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("key" + n));
-        KnobStringPtr value = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("value" + n));
+        KnobStringPtr key = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextKey" + n));
+        KnobStringPtr value = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("contextValue" + n));
 
-        ASSERT_TRUE(bool(key)) << "key" << n;
-        ASSERT_TRUE(bool(value)) << "value" << n;
+        ASSERT_TRUE(bool(key)) << "contextKey" << n;
+        ASSERT_TRUE(bool(value)) << "contextValue" << n;
         EXPECT_EQ(std::string(), key->getValue());
         EXPECT_EQ(std::string(), value->getValue());
         EXPECT_FALSE(key->getIsSecret());

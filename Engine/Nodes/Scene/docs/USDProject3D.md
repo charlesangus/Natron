@@ -47,7 +47,15 @@ Controls:
   up with the camera at the hold, not with a modelled pose. Frame Hold outside a cache's
   range reads USD's nearest sample. A prim whose topology changes over the project's
   frame range, or that USD cannot skin, stays rigid with a warning naming it, and slides.
-  Prims whose points do not move and are not skinned get no primvar. Each prim
+  Prims whose points do not move and are not skinned get no primvar. Projections at
+  one Frame Hold share a prim's placement. If a prim changes between two assigns of
+  different projections at one Frame Hold, as in USDAssignMaterial, USDEditTransform,
+  USDAssignMaterial, it can only keep one placement: the later assign's wins, so the
+  two projections cannot both be correct, and that assign warns, naming a few of the
+  prims and how many there are. A prim bound to the earlier projection for another
+  purpose then shows it misplaced. Assigning one projection twice, or projections that
+  agree on the prim's placement, gives no warning. To keep both, assign them before the
+  transform or hold them at different frames. Each prim
   bound to the material has its own placement, so one projection can lie on prims
   at different places, each showing the image where the camera sees it. The
   primitive nodes (USDCard, USDCube, USDSphere, USDCylinder) place what they create,

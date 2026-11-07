@@ -69,6 +69,7 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -91,6 +92,20 @@ PXR_NS::SdfPath
 getNodePath(const NodePtr& node)
 {
     return PXR_NS::SdfPath("/" + node->getScriptName_mt_safe());
+}
+
+// GetPrimvar answers a missing primvar with a null attribute, which HasValue and Get throw on.
+bool
+hasValue(const PXR_NS::UsdGeomPrimvar& primvar)
+{
+    return primvar.GetAttr() && primvar.HasValue();
+}
+
+bool
+readMatrix(const PXR_NS::UsdGeomPrimvar& primvar,
+           PXR_NS::GfMatrix4d* matrix)
+{
+    return primvar.GetAttr() && primvar.Get(matrix);
 }
 
 // The placement prim carries for the projection bound to it.
@@ -166,6 +181,7 @@ expectPointsNear(const PXR_NS::VtVec3fArray& expected,
                  const std::string& what)
 {
     PXR_NS::VtVec3fArray points;
+    ASSERT_TRUE(bool(primvar.GetAttr())) << what;
     ASSERT_TRUE(primvar.Get(&points)) << what;
     ASSERT_EQ(expected.size(), points.size()) << what;
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -347,6 +363,75 @@ protected:
         EXPECT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
 
         return assign;
+    }
+
+    // A file holding a rising quad at each of paths, all at x 0.
+    static QString writeRisingQuads(const QTemporaryDir& tmp,
+                                    const std::vector<std::string>& paths)
+    {
+        const QString file = tmp.path() + QString::fromUtf8("/scene.usda");
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
+
+        for (const std::string& path : paths) {
+            defineRisingQuad(stage, path, 0.f);
+        }
+        EXPECT_TRUE(stage->GetRootLayer()->Save());
+
+        return file;
+    }
+
+    // A second projection of the rig's plate through its camera, whose material lands at a path of its own.
+    NodePtr createOtherProjection(double frame)
+    {
+        NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+
+        if (!other) {
+            ADD_FAILURE() << "USDProject3D is not registered";
+
+            return NodePtr();
+        }
+        other->setScriptName("Project2");
+        EXPECT_TRUE(other->connectInput(plate, kUSDProject3DInputImage));
+        EXPECT_TRUE(other->connectInput(camera, kUSDProject3DInputCamera));
+        holdInGeometrySpace(other, frame);
+
+        return other;
+    }
+
+    NodePtr createAssign(const NodePtr& scene,
+                         const NodePtr& material,
+                         const std::string& pattern)
+    {
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+
+        if (!assign || !scene || !material) {
+            ADD_FAILURE() << "an assign lacks a node";
+
+            return NodePtr();
+        }
+        getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(pattern);
+        EXPECT_TRUE(assign->connectInput(scene, kUSDAssignMaterialInputScene));
+        EXPECT_TRUE(assign->connectInput(material, kUSDAssignMaterialInputMaterial));
+
+        return assign;
+    }
+
+    NodePtr createTranslate(const NodePtr& scene,
+                            const std::string& pattern,
+                            double x)
+    {
+        NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+
+        if (!transform || !scene) {
+            ADD_FAILURE() << "a transform lacks a node";
+
+            return NodePtr();
+        }
+        getKnob<KnobString>(transform, kUSDEditTransformParamPrimPattern)->setValue(pattern);
+        getKnob<KnobDouble>(transform, kSceneParamTranslate)->setValue(x, ViewSpec::all(), 0);
+        EXPECT_TRUE(transform->connectInput(scene, 0));
+
+        return transform;
     }
 
     static constexpr double kDistance = 50. / 18.;
@@ -918,7 +1003,7 @@ TEST_F(USDProject3DTest, InGeometrySpaceAHeldProjectionTakesTheGeometryAtTheHold
     EXPECT_EQ((int)USDProject3D::eProjectionSpaceGeometry, getInt(shader, kUSDProject3DInputProjectionSpace));
     EXPECT_TRUE(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)).HasConnectedSource());
     const PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
-    ASSERT_TRUE(frame.HasValue());
+    ASSERT_TRUE(hasValue(frame));
     EXPECT_EQ(PXR_NS::UsdGeomTokens->constant, frame.GetInterpolation());
     EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
     PXR_NS::GfMatrix4d geometryFrame(0.);
@@ -935,7 +1020,7 @@ TEST_F(USDProject3DTest, InGeometrySpaceAHeldProjectionTakesTheGeometryAtTheHold
     const PXR_NS::UsdPrim moved = stage->GetPrimAtPath(getNodePath(card));
     ASSERT_TRUE(moved.IsValid());
     const PXR_NS::UsdGeomPrimvar sampled = getFramePrimvar(moved);
-    ASSERT_TRUE(sampled.HasValue());
+    ASSERT_TRUE(hasValue(sampled));
     const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
     EXPECT_EQ(frames, sampled.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(sampled.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
@@ -1046,7 +1131,7 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
     PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
     ASSERT_TRUE(bool(prim));
     PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
-    ASSERT_TRUE(frame.HasValue());
+    ASSERT_TRUE(hasValue(frame));
     EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
     PXR_NS::GfMatrix4d geometryFrame(0.);
     ASSERT_TRUE(frame.Get(&geometryFrame));
@@ -1059,7 +1144,7 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
     prim = stage->GetPrimAtPath(getNodePath(card));
     ASSERT_TRUE(bool(prim));
     frame = getFramePrimvar(prim);
-    ASSERT_TRUE(frame.HasValue());
+    ASSERT_TRUE(hasValue(frame));
     const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
     EXPECT_EQ(frames, frame.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
@@ -1094,7 +1179,7 @@ TEST_F(USDProject3DTest, AnAssignedPlacementFollowsTheHoldFrameAndTheGeometry)
         const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(getNodePath(card)) : PXR_NS::UsdPrim();
         const PXR_NS::UsdGeomPrimvar frame = prim ? getFramePrimvar(prim) : PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute());
         PXR_NS::GfMatrix4d matrix(0.);
-        EXPECT_TRUE(frame.HasValue() && frame.Get(&matrix));
+        EXPECT_TRUE(hasValue(frame) && frame.Get(&matrix));
 
         return matrix.ExtractTranslation()[0];
     };
@@ -1135,7 +1220,7 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartEachTakesItsOwnPlace
     EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
     PXR_NS::UsdGeomPrimvar nearFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(near)));
     PXR_NS::UsdGeomPrimvar farFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(far)));
-    ASSERT_TRUE(nearFrame.HasValue() && farFrame.HasValue());
+    ASSERT_TRUE(hasValue(nearFrame) && hasValue(farFrame));
     // Only what moves is sampled.
     EXPECT_EQ((std::size_t)0, nearFrame.GetAttr().GetNumTimeSamples());
     EXPECT_GT(farFrame.GetAttr().GetNumTimeSamples(), (std::size_t)1);
@@ -1151,7 +1236,7 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartEachTakesItsOwnPlace
     ASSERT_TRUE(bool(stage));
     nearFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(near)));
     farFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(far)));
-    ASSERT_TRUE(nearFrame.HasValue() && farFrame.HasValue());
+    ASSERT_TRUE(hasValue(nearFrame) && hasValue(farFrame));
     EXPECT_EQ((std::size_t)0, farFrame.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(nearFrame.Get(&matrix));
     EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
@@ -1183,9 +1268,9 @@ TEST_F(USDProject3DTest, TwoAssignsSharingOneProjectionEachPlaceTheirOwnMatches)
     const PXR_NS::UsdStageRefPtr stage = composeNode(assignFar);
     ASSERT_TRUE(bool(stage));
     PXR_NS::GfMatrix4d matrix(0.);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))), &matrix));
     EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))), &matrix));
     EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
 }
 
@@ -1215,9 +1300,9 @@ TEST_F(USDProject3DTest, BoundByMaterialPathInGeometrySpaceItPlacesTheMatches)
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
     PXR_NS::GfMatrix4d matrix(0.);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))), &matrix));
     EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))), &matrix));
     EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
 }
 
@@ -1263,7 +1348,7 @@ TEST_F(USDProject3DTest, APrimAddedLaterIsPlacedToo)
     const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
     PXR_NS::GfMatrix4d matrix(0.);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))), &matrix));
     EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
 }
 
@@ -1289,8 +1374,14 @@ TEST_F(USDProject3DTest, AssignedToInstancesItWarnsWhatItCannotPlace)
                    "        double3 xformOp:translate = (3, 0, 0)\n"
                    "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
                    "    }\n"
-                   "    def PointInstancer \"Scatter\" {\n"
+                   "    def Xform \"Protos\" {\n"
                    "        def Mesh \"Shape\" {}\n"
+                   "    }\n"
+                   "    def PointInstancer \"Scatter\" {\n"
+                   "        rel prototypes = </World/Protos>\n"
+                   "        int[] protoIndices = [0, 0]\n"
+                   "        point3f[] positions = [(0, 0, 0), (1, 0, 0)]\n"
+                   "        def Mesh \"Unlisted\" {}\n"
                    "    }\n"
                    "}\n");
     }
@@ -1309,12 +1400,13 @@ TEST_F(USDProject3DTest, AssignedToInstancesItWarnsWhatItCannotPlace)
     ASSERT_TRUE(bool(stage));
     const QString message = getMessage(assign);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Left/Box"))) << message.toStdString();
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Scatter/Shape"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Protos/Shape"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Scatter/Unlisted"))) << message.toStdString();
     EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Plain"))) << message.toStdString();
     PXR_NS::GfMatrix4d matrix(0.);
-    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Plain"))).Get(&matrix));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Plain"))), &matrix));
     EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
-    EXPECT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Scatter/Shape"))).HasValue());
+    EXPECT_TRUE(hasValue(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Protos/Shape")))));
 }
 
 TEST_F(USDProject3DTest, HeldInGeometrySpaceAnAnimatedTransformLeavesEachPointOnTheImage)
@@ -1339,7 +1431,7 @@ TEST_F(USDProject3DTest, HeldInGeometrySpaceAnAnimatedTransformLeavesEachPointOn
     ASSERT_TRUE(PXR_NS::UsdGeomMesh(prim).GetPointsAttr().Get(&points));
     ASSERT_FALSE(points.empty());
     const PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
-    ASSERT_TRUE(frame.HasValue());
+    ASSERT_TRUE(hasValue(frame));
     for (const PXR_NS::GfVec3f& point : points) {
         PXR_NS::GfMatrix4d geometryFrame(0.);
         ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
@@ -1397,7 +1489,7 @@ TEST_F(USDProject3DTest, AssignedHeldToAMovingMeshItAuthorsThePointsAtTheHold)
     expectPointsNear(quadPoints(5.f, 0.f), primvars[0], "the mesh apart");
     const PXR_NS::UsdPrim still = stage->GetPrimAtPath(PXR_NS::SdfPath("/Still"));
     EXPECT_TRUE(getReferencePrimvars(still).empty());
-    EXPECT_TRUE(getFramePrimvar(still).HasValue());
+    EXPECT_TRUE(hasValue(getFramePrimvar(still)));
     SceneGeometryProjection projection;
     ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(PXR_NS::UsdShadeMaterialBindingAPI(moving).ComputeBoundMaterial().GetPrim(), &projection));
     EXPECT_EQ(std::string("natronReferencePointsHold1"), projection.referencePrimvar);
@@ -1455,6 +1547,143 @@ TEST_F(USDProject3DTest, TwoHoldsOnOneMeshGiveTwoPrimvarsAndOneHoldShares)
     stage = composeNode(second);
     ASSERT_TRUE(bool(stage));
     EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"))).size());
+}
+
+TEST_F(USDProject3DTest, TwoProjectionsAtOneHoldOverATransformWarnAndTheLaterWins)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr transform = createTranslate(first, "/Moving", 5.);
+    NodePtr other = createOtherProjection(1.);
+    NodePtr second = createAssign(transform, other, "/Moving");
+    ASSERT_TRUE(transform && other && second);
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(second);
+    ASSERT_TRUE(bool(stage));
+    const QString message = getMessage(second);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Moving"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Frame Hold 1"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("cannot both be correct"))) << message.toStdString();
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+    ASSERT_EQ((std::size_t)1, getReferencePrimvars(prim).size());
+    expectPointsNear(quadPoints(5.f, 0.f), getReferencePrimvars(prim)[0], "the later projection");
+
+    getKnob<KnobDouble>(transform, kSceneParamTranslate)->setValue(0., ViewSpec::all(), 0);
+    ASSERT_TRUE(bool(composeNode(second)));
+    EXPECT_TRUE(getMessage(second).isEmpty()) << getMessage(second).toStdString();
+}
+
+TEST_F(USDProject3DTest, TwoProjectionsAtOneHoldForDifferentPurposesWarnWhenTheyDiffer)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    getKnob<KnobChoice>(first, kUSDAssignMaterialParamPurpose)->setValue((int)USDAssignMaterial::ePurposeFull);
+    NodePtr transform = createTranslate(first, "/Moving", 5.);
+    NodePtr second = createAssign(transform, createOtherProjection(1.), "/Moving");
+    ASSERT_TRUE(transform && second);
+    getKnob<KnobChoice>(second, kUSDAssignMaterialParamPurpose)->setValue((int)USDAssignMaterial::ePurposePreview);
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(second);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(second).contains(QString::fromUtf8("cannot both be correct"))) << getMessage(second).toStdString();
+    const PXR_NS::UsdShadeMaterialBindingAPI binding(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    SceneGeometryProjection full;
+    SceneGeometryProjection preview;
+    ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(binding.ComputeBoundMaterial(PXR_NS::UsdShadeTokens->full).GetPrim(), &full));
+    ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(binding.ComputeBoundMaterial(PXR_NS::UsdShadeTokens->preview).GetPrim(), &preview));
+    EXPECT_EQ(full.framePrimvar, preview.framePrimvar);
+    EXPECT_EQ(full.referencePrimvar, preview.referencePrimvar);
+}
+
+TEST_F(USDProject3DTest, AWarningAboutClashingProjectionsNamesAFewPrimsAndTheCount)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern("/Quad0 /Quad1 /Quad2 /Quad3 /Quad4");
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Quad0", "/Quad1", "/Quad2", "/Quad3", "/Quad4" }), pattern);
+    ASSERT_TRUE(bool(first));
+    NodePtr second = createAssign(createTranslate(first, pattern, 5.), createOtherProjection(1.), pattern);
+    ASSERT_TRUE(bool(second));
+
+    ASSERT_TRUE(bool(composeNode(second)));
+    const QString message = getMessage(second);
+    EXPECT_EQ(3, message.count(QString::fromUtf8("/Quad"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("5 in all"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("and 2 more"))) << message.toStdString();
+}
+
+TEST_F(USDProject3DTest, TwoProjectionsAtOneHoldThatAgreeDoNotWarn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr second = createAssign(first, createOtherProjection(1.), "/Moving");
+    ASSERT_TRUE(bool(second));
+
+    ASSERT_TRUE(bool(composeNode(second)));
+    EXPECT_TRUE(getMessage(second).isEmpty()) << getMessage(second).toStdString();
+}
+
+TEST_F(USDProject3DTest, TwoProjectionsApartOnlyByRoundingDoNotWarn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr second = createAssign(createTranslate(first, "/Moving", 1e-7), createOtherProjection(1.), "/Moving");
+    ASSERT_TRUE(bool(second));
+
+    ASSERT_TRUE(bool(composeNode(second)));
+    EXPECT_TRUE(getMessage(second).isEmpty()) << getMessage(second).toStdString();
+}
+
+TEST_F(USDProject3DTest, TwoProjectionsAtDifferentHoldsOverATransformDoNotWarn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr second = createAssign(createTranslate(first, "/Moving", 5.), createOtherProjection(11.), "/Moving");
+    ASSERT_TRUE(bool(second));
+
+    ASSERT_TRUE(bool(composeNode(second)));
+    EXPECT_TRUE(getMessage(second).isEmpty()) << getMessage(second).toStdString();
+}
+
+TEST_F(USDProject3DTest, ANodeReauthoredDoesNotWarnAboutItself)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr assign = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving", "/Other" }), "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    ASSERT_TRUE(bool(composeNode(assign)));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/Moving /Other");
+    ASSERT_TRUE(bool(composeNode(assign)));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+}
+
+TEST_F(USDProject3DTest, OneProjectionAssignedTwiceOverATransformDoesNotWarn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first = createHeldAssignOf(writeRisingQuads(tmp, { "/Moving" }), "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr second = createAssign(createTranslate(first, "/Moving", 5.), projector, "/Moving");
+    ASSERT_TRUE(bool(second));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(second);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(second).isEmpty()) << getMessage(second).toStdString();
+    const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(quadPoints(5.f, 0.f), primvars[0], "the later assign");
 }
 
 TEST_F(USDProject3DTest, UnchangedTopologySampledOverTimeStillTakesReferencePoints)
@@ -1520,7 +1749,7 @@ TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
         EXPECT_TRUE(message.contains(QString::fromUtf8(name))) << name << ": " << message.toStdString();
         const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
         EXPECT_TRUE(getReferencePrimvars(prim).empty()) << name;
-        EXPECT_TRUE(getFramePrimvar(prim).HasValue()) << name;
+        EXPECT_TRUE(hasValue(getFramePrimvar(prim))) << name;
     }
 }
 
@@ -1656,7 +1885,7 @@ TEST_F(USDProject3DTest, AMeshUSDCannotSkinWarnsAndStaysRigid)
     EXPECT_TRUE(getMessage(assign).contains(QString::fromUtf8("/Loose/Skinned"))) << getMessage(assign).toStdString();
     const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Loose/Skinned"));
     EXPECT_TRUE(getReferencePrimvars(prim).empty());
-    EXPECT_TRUE(getFramePrimvar(prim).HasValue());
+    EXPECT_TRUE(hasValue(getFramePrimvar(prim)));
 }
 
 // Only the points are held: widths keep their samples.

@@ -25,6 +25,8 @@
 
 #include "USDAssignMaterial.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -50,6 +52,8 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+const int kMaxClashesNamed = 3;
+
 struct RootMatches {
     PXR_NS::SdfPath root;
     std::vector<PXR_NS::SdfPath> paths;
@@ -74,6 +78,8 @@ struct ProjectionPlacement {
     std::string pointInstanced;
     std::string topologyChanges;
     std::string cannotSkin;
+    // Prims whose placement already differs under another projection at the same hold.
+    std::vector<PXR_NS::SdfPath> clashes;
 };
 
 void
@@ -83,11 +89,32 @@ appendPath(const PXR_NS::SdfPath& path,
     *list += (list->empty() ? "" : ", ") + path.GetString();
 }
 
-bool
-isUnderPointInstancer(PXR_NS::UsdPrim prim)
+// Prototypes need not lie below their instancer, so only its relationship says which prims they are.
+PXR_NS::SdfPathSet
+getPointInstancerPrototypes(const PXR_NS::UsdStageRefPtr& stage)
 {
-    for (prim = prim.GetParent(); prim && !prim.IsPseudoRoot(); prim = prim.GetParent()) {
+    PXR_NS::SdfPathSet prototypes;
+
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
         if (prim.IsA<PXR_NS::UsdGeomPointInstancer>()) {
+            PXR_NS::SdfPathVector targets;
+            PXR_NS::UsdGeomPointInstancer(prim).GetPrototypesRel().GetForwardedTargets(&targets);
+            prototypes.insert(targets.begin(), targets.end());
+        }
+    }
+
+    return prototypes;
+}
+
+bool
+isUnderAny(const PXR_NS::SdfPath& path,
+           const PXR_NS::SdfPathSet& roots)
+{
+    if (roots.empty()) {
+        return false;
+    }
+    for (PXR_NS::SdfPath ancestor = path; !ancestor.IsAbsoluteRootPath() && !ancestor.IsEmpty(); ancestor = ancestor.GetParentPath()) {
+        if (roots.count(ancestor)) {
             return true;
         }
     }
@@ -95,10 +122,86 @@ isUnderPointInstancer(PXR_NS::UsdPrim prim)
     return false;
 }
 
+// Reads of one placement can part by a few float rounding steps, which grow with the coordinate.
+bool
+isSamePlacementValue(double a,
+                     double b)
+{
+    return std::abs(a - b) <= 1e-6 * std::max({ 1., std::abs(a), std::abs(b) });
+}
+
+// A different material reading the primvar is what marks a different projection. This node's own
+// layer is never in the scene it reads, so re-evaluating it finds nothing of its own; and one
+// projection assigned twice is one material, which the later values place correctly.
+bool
+isBoundToAnotherProjection(const PXR_NS::UsdPrim& prim,
+                           const SceneGeometryProjection& projection,
+                           const std::string& materialPath)
+{
+    const PXR_NS::UsdShadeMaterialBindingAPI binding(prim);
+
+    for (const PXR_NS::TfToken& purpose : { PXR_NS::UsdShadeTokens->allPurpose, PXR_NS::UsdShadeTokens->full, PXR_NS::UsdShadeTokens->preview }) {
+        const PXR_NS::UsdShadeMaterial material = binding.ComputeBoundMaterial(purpose);
+        SceneGeometryProjection bound;
+        if (material && (material.GetPath().GetString() != materialPath) && SceneNodeAuthoring::readGeometryProjection(material.GetPrim(), &bound) && (bound.framePrimvar == projection.framePrimvar)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+clashesWithAnotherProjection(const PXR_NS::UsdPrim& prim,
+                             const PlacedPrim& placed,
+                             const SceneGeometryProjection& projection,
+                             const std::string& materialPath)
+{
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdAttribute frame = primvars.GetPrimvar(PXR_NS::TfToken(projection.framePrimvar)).GetAttr();
+    const PXR_NS::UsdAttribute reference = (projection.referencePrimvar.empty() || placed.referencePoints.empty())
+        ? PXR_NS::UsdAttribute()
+        : primvars.GetPrimvar(PXR_NS::TfToken(projection.referencePrimvar)).GetAttr();
+    const bool hasFrame = frame && frame.HasAuthoredValue();
+    const bool hasReference = reference && reference.HasAuthoredValue();
+    if ((!hasFrame && !hasReference) || !isBoundToAnotherProjection(prim, projection, materialPath)) {
+        return false;
+    }
+
+    PXR_NS::GfMatrix4d matrix;
+    if (hasFrame && !placed.matrices.empty() && frame.Get(&matrix)) {
+        const double* const existing = matrix.data();
+        const double* const placing = placed.matrices.begin()->second.data();
+        for (int i = 0; i < 16; ++i) {
+            if (!isSamePlacementValue(existing[i], placing[i])) {
+                return true;
+            }
+        }
+    }
+    PXR_NS::VtVec3fArray points;
+    if (hasReference && reference.Get(&points)) {
+        if (points.size() != placed.referencePoints.size()) {
+            return true;
+        }
+        const PXR_NS::GfVec3f* const existing = points.cdata();
+        const PXR_NS::GfVec3f* const placing = placed.referencePoints.cdata();
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (!isSamePlacementValue(existing[i][axis], placing[i][axis])) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+} // clashesWithAnotherProjection
+
 ProjectionPlacement
 readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
                         const std::vector<RootMatches>& roots,
                         const SceneGeometryProjection& projection,
+                        const std::string& materialPath,
                         const ScenePayload& scene,
                         const SceneLayerEdit& range,
                         double framesPerSecond)
@@ -106,6 +209,7 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
     ProjectionPlacement placement;
     std::vector<PXR_NS::UsdPrim> gprims;
     PXR_NS::SdfPathSet seen;
+    const PXR_NS::SdfPathSet prototypes = getPointInstancerPrototypes(stage);
     for (const RootMatches& matches : roots) {
         for (const PXR_NS::SdfPath& path : matches.paths) {
             for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path), PXR_NS::UsdTraverseInstanceProxies())) {
@@ -116,7 +220,7 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
                     appendPath(prim.GetPath(), &placement.instanced);
                     continue;
                 }
-                if (isUnderPointInstancer(prim)) {
+                if (isUnderAny(prim.GetPath(), prototypes)) {
                     appendPath(prim.GetPath(), &placement.pointInstanced);
                 }
                 gprims.push_back(prim);
@@ -154,6 +258,9 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
             } else if (reference.status == SceneReferencePoints::eStatusCannotSkin) {
                 appendPath(prim.GetPath(), &placement.cannotSkin);
             }
+        }
+        if (projection.held && clashesWithAnotherProjection(prim, placed, projection, materialPath)) {
+            placement.clashes.push_back(prim.GetPath());
         }
         placement.prims.push_back(placed);
     }
@@ -445,6 +552,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             ContentHasher keyHasher;
             keyHasher.appendU64(upstream.getStackHash());
             SceneNodeAuthoring::appendUpstreamMetadata(upstream, &keyHasher);
+            keyHasher.appendString(materialPath);
             keyHasher.appendString(projection.framePrimvar);
             keyHasher.appendString(projection.referencePrimvar);
             keyHasher.appendBool(projection.held);
@@ -468,7 +576,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 }
             }
             if (!memoized) {
-                placement = std::make_shared<const ProjectionPlacement>(readProjectionPlacement(stage, roots, projection, upstream, range, framesPerSecond));
+                placement = std::make_shared<const ProjectionPlacement>(readProjectionPlacement(stage, roots, projection, materialPath, upstream, range, framesPerSecond));
                 std::lock_guard<std::mutex> l(_placementMemo->lock);
                 _placementMemo->valid = true;
                 _placementMemo->key = placementKey;
@@ -493,6 +601,23 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 warnings += tr("USD cannot skin these matches, which are bound to a skeleton: they take the projection "
                                "rigidly and slide through the image. %1")
                                 .arg(QString::fromStdString(placement->cannotSkin));
+            }
+            if (!placement->clashes.empty()) {
+                const int count = (int)placement->clashes.size();
+                QStringList named;
+                for (int i = 0; i < std::min(count, kMaxClashesNamed); ++i) {
+                    named += QString::fromStdString(placement->clashes[i].GetString());
+                }
+                QString list = named.join(QLatin1String(", "));
+                if (count > kMaxClashesNamed) {
+                    list = tr("%1 and %2 more").arg(list).arg(count - kMaxClashesNamed);
+                }
+                warnings += tr("Another projection at Frame Hold %1 has placed these prims differently, %2 in all: %3. "
+                               "Projections at one Frame Hold share a prim's placement, so they cannot both be correct: "
+                               "this node's placement wins.")
+                                .arg(projection.holdFrame)
+                                .arg(count)
+                                .arg(list);
             }
         }
     }

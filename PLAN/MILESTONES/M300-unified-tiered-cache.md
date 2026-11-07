@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — M300.P2.T4 at 04999a33a, unbuilt until the phase gate. Provisional default `priorityFloor`, on the user's stated lean, until M300.P4.T1. The `maxDeepImageCache` and aggressive caching settings are retired. By reading only, both policies admit the raw chain on the viewer branch; M300.P2.T5 must separate may-be-probed from will-be-stored.
 - 2026-11-07 — M300.P2.T3 at 5aab87ed8, unbuilt until the phase gate. `CacheRetention::admit` is the one admission point; priorities and half-lives are unmeasured starting values, listed in the note.
 - 2026-11-07 — M300.P2.T2 at 7d9bf662f, unbuilt until the phase gate. Eviction samples 1024 entries from a rotating cursor rather than scanning all, so the choice is approximate on large tables; work per eviction is bounded at about 16 visits, amortised. An unmeasured entry scores as 16 ms.
 - 2026-11-07 — M300.P2.T1 at 7f346336c, unbuilt until the phase gate. Corrections for later tasks: the high-water mark must be `min(0.9 x limit, RAM term)` or M28 changes; `createInternal` holds `_getLock`, so M300.P3 must never wait for a disk write there.
@@ -99,7 +100,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: A unit test checks the priority ordering for an edited node's input, an open panel's input, an off-branch node and a reused output.
   - size: L
 
-- [ ] M300.P2.T4 — Add the two admission policies
+- [x] M300.P2.T4 — Add the two admission policies
   - files: `Engine/Cache.h`, `Engine/CacheRetention.cpp`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderRoI.cpp` ~:1380 (retire `aggressiveCaching`)
   - approach: Add an advanced setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), with env override `NATRON_CACHE_ADMISSION`. `priorityFloor` admits an output only when it carries a priority signal or a recompute cost above a threshold. The default is set after P4.T1.
   - verify: A unit test checks that `all` admits a cheap unflagged output and `priorityFloor` refuses it.

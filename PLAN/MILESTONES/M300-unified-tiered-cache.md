@@ -128,7 +128,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: A restart gets hits, whichever session started first. Two identities run together with neither losing files. A dead build is reclaimed. Natron and NatronRenderer hash a project identically across processes.
   - size: L
 
-- [ ] M300.P3.T3 — Make the DiskCache node a pin
+- [x] M300.P3.T3 — Make the DiskCache node a pin
   - files: `Engine/DiskCacheNode.cpp`, `Engine/DiskCacheNode.h`, `Engine/CacheDiskTier.cpp`, `Engine/AppManager.cpp`
   - approach: Pins live under `pins/<cacheID>` on their own budget (the existing DiskCache size setting), excluded from sampling. A live session writes `.live-<session>` there. Deleting a node removes that session's marker and unlinks only if no live peer holds the holder. Clearing unlinks this session's holders' pins and never other holders'; a peer's mapping stays valid. Pins stay mapped on local disks and are read into RAM on network mounts. Retire the separate DiskCache `Cache<Image>` instance.
   - verify: Overfilling the automatic tier leaves pins intact, and a restart restores them. Deleting in session A keeps session B's pins; deleting in both removes them.

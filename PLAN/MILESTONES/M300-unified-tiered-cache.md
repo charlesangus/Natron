@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-06 — Design note at 126e17bb4 on milestone/m300-unified-tiered-cache. Assumption on recompute cost was false: the scheduler stores no cost and task wall time can include nested inputs, so a stopwatch inside `renderRoI` subtracts nested time. Five open points in the note await the user: `priorityFloor` wording, the age term, the disk cap's free space, a full pin budget, background renderer scratch.
 - 2026-11-06 — **A cached output skips its dependencies (user):** "that's pretty much the whole point of the cache". The task graph must not run a task's dependencies when the consumer's output is already served by the cache. M276 - Upstream Reuse On Edits measured the opposite as `behind_hit`.
 - 2026-11-01 — **One cache logic across RAM, disk and VRAM (user):** "keep more in the cache if there's budget… just not evict stuff until we need to". Cost-aware tiers with demotion replace blind LRU. See `DECISIONS/2026-11-01-unified-tiered-cache.md`.
 - 2026-11-01 — **Spill to disk only when cheaper than a recompute (user).**
@@ -45,14 +46,14 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Phase 300.1: Entry and key
 
-- [ ] M300.P1.T1 — Write the tiered-cache design note
+- [x] M300.P1.T1 — Write the tiered-cache design note
   - files: `docs/cache/tiered-cache.md` (new)
   - approach: Specify the entry header fields, the tier interface (`budget()`, `used()`, `demote(entry)`, `promote(entry)`), the score formula and the high-water marks, the priority signals with their decay, both admission policies, pin semantics, persistence (index format, binary identity, directory lock) and the device tier's hooks that M301 - GPU Cache Tier will fill. Map each existing class (`Cache<T>`, `LRUHashTable`, `CacheEntryHolder`, `HostImageMemory`, `DeepImageCacheEntry`, `MemoryFile`) to what it becomes. Every requirement in this milestone's `## Scope` appears.
   - verify: The note covers every `## Scope` In and Edge-case item; a reviewer checks it against the list.
   - size: L
 
 - [ ] M300.P1.T2 — Complete `ImageKey` with mip level, layer and bit depth
-  - files: `Engine/ImageKey.h`, `Engine/ImageKey.cpp`, `Engine/EffectInstance.cpp` (lookup filter ~:2053-2166), `Tests/CacheStress_Test.cpp`
+  - files: `Engine/ImageKey.h`, `Engine/ImageKey.cpp`, `Engine/EffectInstance.cpp` (lookup filter ~:2053-2166), `Engine/GpuPlacement.cpp` ~:1032, key serialization, `Tests/CacheStress_Test.cpp`
   - approach: Add the three fields to the key's hash and equality. Lookups ask for the exact key first. On a miss they fall back to the existing finer-mip-downscale path by probing the finer keys. Drop the per-entry filtering the key now makes redundant.
   - verify: A CacheStress case with RGB then RGBA requests of one node (I4, `RgbThenRgbaRequest`) and a mip0/mip1 pair passes, and existing cache suites pass.
   - size: L
@@ -64,7 +65,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - size: L
 
 - [ ] M300.P1.T4 — Make deep images a payload of the node cache
-  - files: `Engine/DeepImageCacheEntry.h`, `Engine/DeepImageCacheEntry.cpp`, `Engine/DeepImageKey.cpp`, `Engine/AppManager.cpp` (instances ~:1041), `Tests/DeepImageCache_Test.cpp`
+  - files: `Engine/DeepImageCacheEntry.h`, `Engine/DeepImageCacheEntry.cpp`, `Engine/DeepImageKey.cpp`, `Engine/AppManager.cpp` (instances ~:1041), `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepImageCache_Test.cpp`
   - approach: Deep entries use `CacheEntryHeader` and live in the node cache under the shared budget. Retire the DeepImageCache instance and its 2 GiB setting.
   - verify: `DeepImageCache_Test` and the deep compositing suites pass against the shared cache.
   - size: L
@@ -78,19 +79,19 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - size: L
 
 - [ ] M300.P2.T2 — Replace blind LRU with the cost-aware score
-  - files: `Engine/Cache.h` (`createInternal` ~:813-905), `Engine/LRUHashTable.h`, `Engine/EffectInstanceRenderRoI.cpp` (record recompute cost), `Tests/CacheStress_Test.cpp`
+  - files: `Engine/Cache.h` (`createInternal` ~:813-905), `Engine/LRUHashTable.h`, `Engine/EffectInstanceRenderRoI.cpp` (record recompute cost), `Engine/EffectInstance.cpp`, `Tests/CacheStress_Test.cpp`
   - approach: Record each entry's own render wall time as its recompute cost. Evict the entry with the lowest priority × cost × reuse multiplier ÷ bytes, and only once occupancy passes the high-water mark. Pinned entries are skipped as today.
   - verify: A unit test shows a cheap large entry evicted before an expensive small one of the same age, and no eviction below the high-water mark. CacheStress passes.
   - size: L
 
 - [ ] M300.P2.T3 — Turn `shouldCacheOutput` into a retention priority
-  - files: `Engine/Node.cpp` (`shouldCacheOutput` ~:8225-8343), `Engine/CacheRetention.h` (new), `Engine/CacheRetention.cpp` (new), `Engine/Knob.cpp` (edit notification hook)
+  - files: `Engine/Node.cpp` (`shouldCacheOutput` ~:8225-8343), `Engine/CacheRetention.h` (new), `Engine/CacheRetention.cpp` (new), `Engine/Knob.cpp` (edit notification hook), `Engine/RenderScheduler.cpp` ~:626
   - approach: A priority built from the signals in `## Scope` In. Edit recency comes from knob-change notifications, with a decaying boost on the edited node's inputs. A reuse count is kept per entry. Reasons that today force caching (temporal access, no tile support, multiple outputs, forced) map to a high priority.
   - verify: A unit test checks the priority ordering for an edited node's input, an open panel's input, an off-branch node and a reused output.
   - size: L
 
 - [ ] M300.P2.T4 — Add the two admission policies
-  - files: `Engine/Cache.h`, `Engine/CacheRetention.cpp`, `Engine/Settings.cpp`
+  - files: `Engine/Cache.h`, `Engine/CacheRetention.cpp`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderRoI.cpp` ~:1380 (retire `aggressiveCaching`)
   - approach: Add an advanced setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), with env override `NATRON_CACHE_ADMISSION`. `priorityFloor` admits an output only when it carries a priority signal or a recompute cost above a threshold. The default is set after P4.T1.
   - verify: A unit test checks that `all` admits a cheap unflagged output and `priorityFloor` refuses it.
   - size: M
@@ -104,13 +105,13 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 ## Phase 300.3: Disk tier and pins
 
 - [ ] M300.P3.T1 — Add the disk tier
-  - files: `Engine/CacheDiskTier.h` (new), `Engine/CacheDiskTier.cpp` (new), `Engine/Settings.cpp`, `Engine/CacheHostTier.cpp`
+  - files: `Engine/CacheDiskTier.h` (new), `Engine/CacheDiskTier.cpp` (new), `Engine/Settings.cpp`, `Engine/CacheHostTier.cpp`, `MemoryFile`, `Engine/Image.cpp`, `Engine/DeepImage.h`
   - approach: The host tier demotes to disk when the recompute cost exceeds the estimated write cost, and drops the entry otherwise. Entries are mmapped files, reusing the `MemoryFile` code. A disk hit promotes the entry back to RAM. Preferences: location (default `~/.cache/Natron/tier`) and size (default 20 GiB, capped at 25% of the free space at start). Disk full or a write error drops the entry with one warning per session.
   - verify: A unit test with a tiny RAM budget demotes an expensive entry to disk and drops a cheap one; a later lookup promotes it with identical pixels.
   - size: L
 
 - [ ] M300.P3.T2 — Persist the disk tier across sessions
-  - files: `Engine/CacheDiskTier.cpp`, `Engine/CacheSerialization.h`, `Engine/AppManager.cpp`
+  - files: `Engine/CacheDiskTier.cpp`, `Engine/CacheSerialization.h`, `Engine/AppManager.cpp`, `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp`
   - approach: An on-disk index of keys and headers is restored at start. A binary identity mismatch wipes the tier. The directory is locked, and a second instance falls back to a session-only scratch directory.
   - verify: A test writes entries, restarts the cache and gets hits. A changed binary identity gives misses and an empty tier. A second instance gets a scratch directory.
   - size: L
@@ -125,7 +126,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 - [ ] M300.P4.T1 — Benchmark both admission policies and set the default
   - files: `tools/bench/baselines/edit-latency.jsonl`, `docs/cache/tiered-cache.md` (results section), `Engine/Settings.cpp` (default)
-  - approach: Run M276 - Upstream Reuse On Edits' edit-latency benchmark with `NATRON_GPU=off` under each policy on the user's host. Record latency, upstream executions, peak RAM and disk writes. Put the numbers to the user; set the default they choose.
+  - approach: Run M276 - Upstream Reuse On Edits' edit-latency benchmark with `NATRON_GPU=off` under each policy on the user's host, plus an off-branch graph, since the viewer-branch signal admits the whole chain under both policies. Record latency, upstream executions, peak RAM and disk writes. Put the numbers to the user; set the default they choose.
   - verify: The results are recorded, the user's choice is in `## Decisions`, and the default matches it.
   - size: M
 
@@ -135,4 +136,4 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: The new cases pass in the debug (asserts on) and release presets.
   - size: M
 
-**Verification gate:** cache, CacheStress (including concurrent) and deep suites pass in debug and release. With `NATRON_GPU=off`, M276 - Upstream Reuse On Edits' benchmark shows no raw-chain execution on Grade or HSVKeyer edits after the first render. The admission default is the user's choice.
+**Verification gate:** cache, CacheStress (including concurrent) and deep suites pass in debug and release. With `NATRON_GPU=off`, M276 - Upstream Reuse On Edits' benchmark shows no raw-chain execution on Grade or HSVKeyer edits after the first render, and no records behind `RawInputColor`'s hit. The admission default is the user's choice.

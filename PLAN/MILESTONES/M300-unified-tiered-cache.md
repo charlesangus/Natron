@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — Tests and fixes at 3085d6170, gate running. Open: a Crop-style tile with source par 1 and output par 2 reads black outside `bounds ∩ RoI` unless a larger entry is cached, so its result can vary with cache contents; this predates M300, and fixing it changes the documented GPU contract.
 - 2026-11-07 — M300.P3.T1 at a6559a8e8, unbuilt. A failed publish keeps the RAM copy and backs off 30 s; only a failed demotion drops. Salted-hash entries still publish until M300.P3.T2.
 - 2026-11-07 — M300.P2.T5 at cffa62ab7, phase gate running. No pin between plan and use: a plan-wide hold would bypass the frame store's budget on modest machines, so an entry evicted in that window misses and pulls by recursion, costing time and never a wrong pixel. Worst plan is N x 144 short lock pairs; the edit-latency benchmark measures it in M300.P4.T1.
 - 2026-11-07 — M300.P2.T4 at 04999a33a, unbuilt until the phase gate. Provisional default `priorityFloor`, on the user's stated lean, until M300.P4.T1. The `maxDeepImageCache` and aggressive caching settings are retired. By reading only, both policies admit the raw chain on the viewer branch; M300.P2.T5 must separate may-be-probed from will-be-stored.
@@ -134,7 +135,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: Overfilling the automatic tier leaves pins intact, and a restart restores them. Deleting in session A keeps session B's pins; deleting in both removes them.
   - size: M
 
-- [ ] M300.P3.T4 — Prove the shared tier across real processes
+- [x] M300.P3.T4 — Prove the shared tier across real processes
   - files: `Tests/CacheDiskTierProcess_Test.cpp` (new), `tools/bench/` (probe bench), `docs/cache/tiered-cache.md`
   - approach: Spawn real processes for: hash equality including the renderer; peer visibility while both run; `kill -9` of a writer in a loop with no invalid read and `tmp/` reaped; unlink under an active `pread` and a mapped pin; four writers staying within budget; two fake builds with retention; the pin delete and clear matrix; `RLIMIT_FSIZE` giving one warning; an injected rename failure taking the fallback. Separately bench a 300,000-file probe and sampling run, and confirm the AppImage ships both executables in one directory.
   - verify: The cases pass in debug and release. The bench's miss cost per frame is recorded, and the 1 s negative cache keeps a 1000-node miss under the 30 ms estimate or the note says what changed.
@@ -148,7 +149,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: The results are recorded, the user's choice is in `## Decisions`, and the default matches it.
   - size: M
 
-- [ ] M300.P4.T2 — Add CacheStress cases for tiers, pins and persistence
+- [x] M300.P4.T2 — Add CacheStress cases for tiers, pins and persistence
   - files: `Tests/CacheStress_Test.cpp`, `Tests/CacheStressConcurrent_Test.cpp`, `Tests/CacheStress.cpp`
   - approach: Cases for concurrent demotion while a render waits on a pending region, promotion of a partially rendered entry, pinned entries under pressure, and a restart with a changed binary identity.
   - verify: The new cases pass in the debug (asserts on) and release presets.

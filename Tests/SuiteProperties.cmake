@@ -21,6 +21,7 @@ set(_natron_core_hogging_suites
     NativeDenoiseProfiledReferenceTest
     NativeDenoiseProfiledGpuTest
     NativeLoopFoldGpuTest
+    NativeVectorGeneratorGpuTest
 )
 
 # Suites whose cases add up to more than the default 300 s, at three times the slower of the
@@ -38,6 +39,8 @@ set(_natron_long_suite_timeouts
     NativeDenoiseProfiledGpuTest 900
     # Debug: about 440 s, almost all of it the 204,800 renders of the long feedback chain.
     NativeLoopFeedbackTest 1500
+    # Whole optical-flow solves on llvmpipe, several in each case.
+    NativeVectorGeneratorGpuTest 1800
 )
 
 set(_natron_long_suites "")

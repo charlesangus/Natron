@@ -3387,6 +3387,22 @@ TEST(GpuRegionStrips, WholeRegionWithLargeTransferStripsToOverlap)
     EXPECT_FALSE(overlapped);
 }
 
+TEST(GpuRegionStrips, WholeRegionReadingAnInputWholeInEveryStripStaysWhole)
+{
+    GpuStripGraph graph = planChain();
+    const RectI whole(0, 0, kPlanWidth, kPlanHeight);
+    graph.members[0].inputRoI = [whole](int, const RectI&) {
+        return whole;
+    };
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    bool overlapped = true;
+
+    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(graph, overlapLimits(), &strips, &rows, nullptr, &overlapped));
+    EXPECT_TRUE(strips.empty());
+    EXPECT_FALSE(overlapped);
+}
+
 TEST(GpuRegionStrips, WholeRegionKeepingAnOutputOnTheDeviceStaysWhole)
 {
     GpuStripGraph graph = planChain();

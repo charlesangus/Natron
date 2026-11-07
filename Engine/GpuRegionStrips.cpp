@@ -304,6 +304,16 @@ planOverlap(const GpuStripGraph& graph,
     if ((stripsOfRows(graph, limits, bands.y1, bands.y2, stripRows, kGpuStripMaxInFlight, &found) != StripsFit::Fits) || ((int)found.size() < kGpuStripMaxInFlight)) {
         return false;
     }
+    // An input every strip reads whole is uploaded once per strip, so stripping multiplies the transfer it means to hide.
+    for (std::size_t s = 0; s < graph.images.size(); ++s) {
+        const GpuStripSlot& slot = graph.images[s];
+        if (!slot.external || slot.resident) {
+            continue;
+        }
+        if (std::all_of(found.begin(), found.end(), [&](const GpuStrip& strip) { return strip.rects[s] == slot.bounds; })) {
+            return false;
+        }
+    }
     strips->swap(found);
     *rows = stripRows;
 

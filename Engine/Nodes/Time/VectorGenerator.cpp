@@ -39,9 +39,25 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+
+#ifdef NATRON_HAVE_GPU
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <utility>
+
+#include "Engine/Flow/DisFlow.h"
+#include "Engine/Flow/FlowPyramid.h"
+#include "Engine/Flow/TvL1Flow.h"
+#include "Engine/Flow/VariationalRefine.h"
+#include "Engine/Gpu/GpuFlow.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Nodes/Filter/BlurKernels.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -476,7 +492,7 @@ bool
 VectorGenerator::resolveMatteChannel(double time,
                                      ViewIdx view,
                                      ImageLayerDesc* layer,
-                                     int* channel)
+                                     int* channel) const
 {
     *channel = -1;
     KnobChannelSelectPtr channelKnob = _matteChannel.lock();
@@ -484,7 +500,7 @@ VectorGenerator::resolveMatteChannel(double time,
         return false;
     }
     std::list<ImageLayerDesc> present;
-    getPresentLayers(time, view, kVectorGeneratorInputMatte, &present);
+    const_cast<VectorGenerator*>(this)->getPresentLayers(time, view, kVectorGeneratorInputMatte, &present);
 
     return channelKnob->resolve(present, layer, channel) && (*channel >= 0);
 }
@@ -874,5 +890,434 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
 
     return cancel.check() ? eStatusFailed : eStatusOK;
 } // VectorGenerator::renderOp
+
+RectI
+VectorGenerator::solveWindow(double time,
+                             ViewIdx view,
+                             const RenderScale& scale) const
+{
+    EffectInstancePtr source = getInput(kVectorGeneratorInputSource);
+    if (!source) {
+        return RectI();
+    }
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(kVectorGeneratorInputSource) : 1.;
+    const RenderScale inputScale = source->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (source->getRegionOfDefinition_public(source->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        return RectI();
+    }
+
+    return rod.toPixelEnclosing(scale, par);
+}
+
+int
+VectorGenerator::framesRead(double time,
+                            const Settings& settings,
+                            double* times,
+                            int* slots) const
+{
+    EffectInstancePtr source = getInput(kVectorGeneratorInputSource);
+    if (!source) {
+        return 0;
+    }
+    double first = 0.;
+    double last = 0.;
+    source->getFrameRange_public(source->getRenderHash(), &first, &last);
+    const OffsetRange offsets = offsetsRead(settings.forward, settings.backward, settings.smoothing);
+    int count = 0;
+    for (int offset = offsets.first; offset <= offsets.last; ++offset) {
+        const double t = time + offset;
+        if ((offset == 0) || ((t >= first) && (t <= last))) {
+            times[count] = t;
+            slots[count] = offset + kMaxOffset;
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+static_assert(2 * (kFrameSlots - 1) <= kGpuMaxInputTimes, "every frame other than the current one is a view of the Source and of the Matte");
+
+// The float index of pixel (x, y) of v, false when the view does not fit the kernel's 32-bit
+// indices.
+bool
+gpuFloatIndex(const GpuImageView& v,
+              int x,
+              int y,
+              uint32_t* index)
+{
+    const uint64_t base = v.byteOffset / sizeof(float);
+    const uint64_t rows = (uint64_t)std::max(0, v.bounds.height());
+
+    if (base + rows * (uint64_t)v.rowStrideFloats > UINT32_MAX) {
+        return false;
+    }
+    *index = (uint32_t)(base + (uint64_t)(y - v.bounds.y1) * v.rowStrideFloats + (uint64_t)(x - v.bounds.x1) * v.nComps);
+
+    return true;
+}
+
+gpu::GpuFlowFormat
+gpuFormatOf(const RectI& window,
+            int nComps,
+            FlowChannels channels)
+{
+    const int packed = (nComps >= 3) ? 3 : 1;
+    gpu::GpuFlowFormat format;
+    format.width = (uint32_t)window.width();
+    format.height = (uint32_t)window.height();
+    format.depth = (uint32_t)flowPyramidDepthForSize(window.width(), window.height());
+    format.channels = (uint32_t)flowMatchedChannelCount(packed, channels);
+    format.luminance = (packed == 3) && (channels == eFlowChannelsLuminance);
+    format.matchingCurve = true;
+    const std::vector<float> weights = BlurKernels::LineFilter::firGaussianWeights(1.0);
+    std::copy_n(weights.begin(), std::min(weights.size(), format.downsampleWeights.size()), format.downsampleWeights.begin());
+
+    return format;
+}
+
+gpu::GpuFlowEstimateParams
+gpuEstimateParams(const FlowEstimateParams& params,
+                  const gpu::GpuFlowFormat& format)
+{
+    const DisParams dis = disParamsForQuality(params.quality);
+    const TvL1Params tvL1 = tvL1ParamsForQuality(params.quality);
+    const RefineParams refine;
+    gpu::GpuFlowEstimateParams out;
+    out.format = format;
+    out.tvL1 = (params.method == eFlowMethodTVL1);
+    out.dis.finestLevel = dis.finestLevel;
+    out.dis.patchSize = dis.patchSize;
+    out.dis.patchStride = dis.patchStride;
+    out.dis.searchIterations = dis.searchIterations;
+    out.dis.refineFixedPointIterations = dis.refineFixedPointIterations;
+    out.dis.refineSorIterations = dis.refineSorIterations;
+    out.dis.alpha = refine.alpha;
+    out.dis.gamma = refine.gamma;
+    out.dis.delta = refine.delta;
+    out.dis.omega = refine.omega;
+    out.tvL1Params.finestLevel = tvL1.finestLevel;
+    out.tvL1Params.warps = tvL1.warps;
+    out.tvL1Params.iterations = tvL1.iterations;
+    out.tvL1Params.lambda = tvL1.lambda;
+    out.tvL1Params.theta = tvL1.theta;
+    out.tvL1Params.tau = tvL1.tau;
+    out.confidenceSigma = params.confidenceSigma;
+
+    return out;
+}
+
+// A view as the flow kernels read it, placed in the window. channel picks a matte's one component.
+bool
+gpuFlowImageOf(const GpuImageView& view,
+               const RectI& window,
+               int channel,
+               gpu::GpuFlowImage* image)
+{
+    uint32_t offset = 0;
+    if (!gpuFloatIndex(view, view.bounds.x1, view.bounds.y1, &offset)) {
+        return false;
+    }
+    image->buffer = view.buffer;
+    image->offsetFloats = offset + (uint32_t)channel;
+    image->rowStrideFloats = (uint32_t)view.rowStrideFloats;
+    image->pixelStride = (uint32_t)view.nComps;
+    image->x0 = view.bounds.x1 - window.x1;
+    image->y0 = view.bounds.y1 - window.y1;
+    image->width = view.bounds.width();
+    image->height = view.bounds.height();
+
+    return true;
+}
+
+// The solve of one render. Each plane is a member of its own in a region, and all of a render's
+// planes come from one solve, as they do on the CPU. Its results live in scratch buffers of the
+// recorder that recorded it, so it is shared within that recorder only, and goes with it: a retry
+// after running out of memory, or the next strip, starts again.
+struct GpuSolve {
+    using Inputs = std::array<std::pair<const void*, uint32_t>, 2 * kFrameSlots>;
+
+    GpuSolve(const gpu::GpuFlowEstimateParams& params,
+             const std::function<bool()>& aborted)
+        : estimate(params, aborted)
+    {
+    }
+
+    const void* recorder = nullptr;
+    const void* effect = nullptr;
+    double time = 0.;
+    int view = 0;
+    RenderScale scale;
+    RectI window;
+    Inputs inputs {};
+    gpu::GpuFlowEstimate estimate;
+};
+} // anonymous namespace
+#endif // NATRON_HAVE_GPU
+
+bool
+VectorGenerator::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask) {
+        return false;
+    }
+    if (!sameLayer(query.plane, ImageLayerDesc::getForwardMotionComponents())
+        && !sameLayer(query.plane, ImageLayerDesc::getBackwardMotionComponents())
+        && !sameLayer(query.plane, confidenceLayer())) {
+        return false;
+    }
+    EffectInstancePtr source = getInput(kVectorGeneratorInputSource);
+    if (!source) {
+        return false;
+    }
+    const RectI window = solveWindow(query.time, query.view, query.mappedScale);
+    if (window.isNull()) {
+        return false;
+    }
+    const Settings s = settingsAt(query.time, query.view);
+    double times[kFrameSlots];
+    int slots[kFrameSlots];
+    const int frameCount = framesRead(query.time, s, times, slots);
+    std::string formatMessage;
+    if (!formatsMatch(query.time, times, frameCount, query.view, &formatMessage)) {
+        return false;
+    }
+
+    ImageLayerDesc matteLayer;
+    int matteChannel = -1;
+    const bool hasMatte = resolveMatteChannel(query.time, query.view, &matteLayer, &matteChannel);
+    EffectInstancePtr matte = hasMatte ? getInput(kVectorGeneratorInputMatte) : EffectInstancePtr();
+    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, kVectorGeneratorInputSource, query.time, query.view);
+    if (storage.getNumComponents() <= 0) {
+        return false;
+    }
+
+    const auto overlapsWindow = [&](const EffectInstancePtr& input, double t) {
+        const RenderScale inputScale = input->supportsRenderScale() ? query.mappedScale : RenderScale::identity;
+        const NodeMetadataConstPtr metadata = getRenderMetadata(query.time, query.view);
+        const double par = metadata ? metadata->getPixelAspectRatio(kVectorGeneratorInputSource) : 1.;
+        RectD rod;
+        bool isProjectFormat = false;
+        if ((input->getRegionOfDefinition_public(input->getRenderHash(), t, inputScale, query.view, &rod, &isProjectFormat) == eStatusFailed) || rod.isNull()) {
+            return false;
+        }
+
+        return rod.toPixelEnclosing(query.mappedScale, par).intersects(window);
+    };
+    const auto holdsView = [&](int inputNb, double t) {
+        if (t == query.time) {
+            return true;
+        }
+        for (const GpuInputTimes& entry : query.inputTimes) {
+            if ((entry.inputNb == inputNb) && (std::find(entry.times.begin(), entry.times.end(), t) != entry.times.end())) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    for (int i = 0; i < frameCount; ++i) {
+        const double t = times[i];
+        if (!holdsView(kVectorGeneratorInputSource, t) || !overlapsWindow(source, t)) {
+            return false;
+        }
+        const ImageLayerDesc frameStorage = ChannelCopy::metadataColorStorage(*this, kVectorGeneratorInputSource, t, query.view);
+        if (!sameLayer(frameStorage, storage) || (frameStorage.getNumComponents() != storage.getNumComponents())) {
+            return false;
+        }
+        if (matte && (!holdsView(kVectorGeneratorInputMatte, t) || !overlapsWindow(matte, t))) {
+            return false;
+        }
+    }
+
+    const uint64_t largest = gpu::gpuFlowLargestBufferBytes(gpuFormatOf(window, storage.getNumComponents(), s.params.channels));
+
+    return (largest != 0) && ((query.maxScratchBytes == 0) || (largest <= (uint64_t)query.maxScratchBytes));
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+} // VectorGenerator::canRenderOpOnGpu
+
+bool
+VectorGenerator::readsGpuInput(int inputNb,
+                               const ImageLayerDesc& /*plane*/,
+                               double time,
+                               ViewIdx view) const
+{
+    if (inputNb != kVectorGeneratorInputMatte) {
+        return true;
+    }
+    ImageLayerDesc layer;
+    int channel = -1;
+
+    return resolveMatteChannel(time, view, &layer, &channel);
+}
+
+bool
+VectorGenerator::getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const
+{
+    if (inputNb == kVectorGeneratorInputMatte) {
+        int channel = -1;
+        if (resolveMatteChannel(time, view, layer, &channel) && (layer->getNumComponents() > 0)) {
+            return true;
+        }
+        stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+        return true;
+    }
+    *layer = ChannelCopy::metadataColorStorage(*this, kVectorGeneratorInputSource, time, view);
+
+    return true;
+}
+
+RectI
+VectorGenerator::getOpGpuInputRoI(int /*inputNb*/,
+                                  double time,
+                                  ViewIdx view,
+                                  const RectI& /*outputRect*/,
+                                  const RenderScale& scale) const
+{
+    return solveWindow(time, view, scale);
+}
+
+StatusEnum
+VectorGenerator::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI window = solveWindow(query.time, query.view, query.mappedScale);
+    if (window.isNull() || args.outputRect.isNull() || !args.output.buffer) {
+        return eStatusFailed;
+    }
+    const Settings s = settingsAt(query.time, query.view);
+    double times[kFrameSlots];
+    int slots[kFrameSlots];
+    const int frameCount = framesRead(query.time, s, times, slots);
+
+    ImageLayerDesc matteLayer;
+    int matteChannel = -1;
+    const bool hasMatte = resolveMatteChannel(query.time, query.view, &matteLayer, &matteChannel);
+
+    gpu::GpuFlowImage images[kFrameSlots];
+    gpu::GpuFlowImage mattes[kFrameSlots];
+    bool present[kFrameSlots] = {};
+    bool matted[kFrameSlots] = {};
+    GpuSolve::Inputs inputs {};
+    int nComps = 0;
+    for (int i = 0; i < frameCount; ++i) {
+        const int slot = slots[i];
+        const GpuImageView* frame = args.inputAt(kVectorGeneratorInputSource, times[i]);
+        if (!frame || !frame->buffer || frame->bounds.isNull() || !gpuFlowImageOf(*frame, window, 0, &images[slot])) {
+            return eStatusFailed;
+        }
+        if ((nComps != 0) && (frame->nComps != nComps)) {
+            return eStatusFailed;
+        }
+        nComps = frame->nComps;
+        present[slot] = true;
+        inputs[2 * slot] = { images[slot].buffer, images[slot].offsetFloats };
+        const GpuImageView* matte = hasMatte ? args.inputAt(kVectorGeneratorInputMatte, times[i]) : nullptr;
+        if (matte && matte->buffer && !matte->bounds.isNull()) {
+            if ((matteChannel >= matte->nComps) || !gpuFlowImageOf(*matte, window, matteChannel, &mattes[slot])) {
+                return eStatusFailed;
+            }
+            matted[slot] = true;
+            inputs[2 * slot + 1] = { mattes[slot].buffer, mattes[slot].offsetFloats };
+        }
+    }
+    if (!present[kMaxOffset]) {
+        return eStatusFailed;
+    }
+
+    static thread_local std::weak_ptr<GpuSolve> lastSolve;
+    std::shared_ptr<GpuSolve> solve = lastSolve.lock();
+    const bool sameRender = solve && (solve->recorder == &args.context) && (solve->effect == this) && (solve->time == query.time)
+        && (solve->view == (int)query.view) && (solve->scale == query.mappedScale)
+        && (solve->window == window) && (solve->inputs == inputs);
+    if (!sameRender) {
+        const gpu::GpuFlowFormat format = gpuFormatOf(window, nComps, s.params.channels);
+        solve = std::make_shared<GpuSolve>(gpuEstimateParams(s.params, format), [this]() { return aborted(); });
+        solve->recorder = &args.context;
+        solve->effect = this;
+        solve->time = query.time;
+        solve->view = (int)query.view;
+        solve->scale = query.mappedScale;
+        solve->window = window;
+        solve->inputs = inputs;
+        for (int slot = 0; slot < kFrameSlots; ++slot) {
+            if (present[slot]) {
+                solve->estimate.setFrame(slot, images[slot], matted[slot] ? &mattes[slot] : nullptr);
+            }
+        }
+        args.context.hold(solve);
+        lastSolve = solve;
+    }
+
+    gpu::GpuFlowEstimate& estimate = solve->estimate;
+    gpu::GpuRecordContext& ctx = args.context;
+    const auto solved = [&](bool forward, bool withConfidence, gpu::GpuFlowField* field) {
+        if (!(forward ? s.forward : s.backward)) {
+            return gpu::GpuStatus();
+        }
+        if (s.smoothing) {
+            return estimate.smoothed(ctx, forward, s.smoothingStrength, field);
+        }
+
+        return estimate.direction(ctx, kMaxOffset, forward ? kMaxOffset + 1 : kMaxOffset - 1, withConfidence, field);
+    };
+
+    gpu::GpuFlowField first;
+    gpu::GpuFlowField second;
+    gpu::GpuStatus status;
+    const bool isConfidence = sameLayer(query.plane, confidenceLayer());
+    if (isConfidence) {
+        status = solved(true, true, &first);
+        if (status) {
+            status = solved(false, true, &second);
+        }
+    } else {
+        status = solved(sameLayer(query.plane, ImageLayerDesc::getForwardMotionComponents()), false, &first);
+    }
+
+    gpu::GpuFlow::Output output;
+    output.buffer = args.output.buffer;
+    output.rowStrideFloats = (uint32_t)args.output.rowStrideFloats;
+    output.nComps = (uint32_t)args.output.nComps;
+    output.x0 = args.outputRect.x1 - window.x1;
+    output.y0 = args.outputRect.y1 - window.y1;
+    output.width = (uint32_t)args.outputRect.width();
+    output.height = (uint32_t)args.outputRect.height();
+    output.windowWidth = (uint32_t)window.width();
+    output.windowHeight = (uint32_t)window.height();
+    if (status && !gpuFloatIndex(args.output, args.outputRect.x1, args.outputRect.y1, &output.offsetFloats)) {
+        return eStatusFailed;
+    }
+    if (status) {
+        status = estimate.flow().writeOutput(ctx, output, !isConfidence, first, second);
+    }
+    if (!status) {
+        return eStatusFailed;
+    }
+    updateFormatMessage(std::string());
+
+    return eStatusOK;
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // VectorGenerator::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

@@ -352,6 +352,33 @@ private:
         double tessellationScale;
     };
 
+    // What a stroke paints with, read when its pen goes down: that is what its preview shows, and the
+    // toolbar can change before the engine gets the stroke.
+    struct StrokeConfig {
+        RotoToolEnum tool = eRotoToolSolidBrush;
+        double color[3] = { 0., 0., 0. };
+        MergingFunctionEnum compOp = eMergeOver;
+        double opacity = 1.;
+        double size = 1.;
+        double hardness = 0.;
+        bool pressureOpacity = false;
+        bool pressureSize = false;
+        bool pressureHardness = false;
+        bool buildUp = false;
+        int timeOffset = 0;
+        int timeOffsetMode = 0;
+        int sourceType = 0;
+        double effect = 0.;
+        std::pair<double, double> cloneOffset = std::make_pair(0., 0.);
+        int frame = 0;
+        RotoLayerWPtr layer;
+        bool multiStroke = false;
+        quint64 multiStrokeBreak = 0;
+
+        /// Whether a multi-stroke item made with other can take a stroke with this configuration.
+        bool paintsSameItemAs(const StrokeConfig& other) const;
+    };
+
     struct DeferredPenEvent {
         enum TypeEnum {
             eTypeDown,
@@ -364,7 +391,17 @@ private:
         double pressure;
         double timestamp;
         RotoToolEnum tool;
+        StrokeConfig config; //< only for eTypeDown
     };
+
+    // The configuration strokeBeingPaint was last begun with.
+    StrokeConfig strokeBeingPaintConfig;
+
+    // Counts multi-stroke breaks, so that a pen-down knows whether one came between it and the last stroke.
+    quint64 multiStrokeBreak = 0;
+
+    StrokeConfig captureStrokeConfig();
+    void makeStroke(bool prepareForLater, const RotoPoint& p, const StrokeConfig& config);
 
     std::list<StrokePreview> strokePreviews;
 
@@ -385,7 +422,7 @@ private:
     static void tessellateStrokePreview(StrokePreview& preview, std::size_t firstDab, double pixelScale);
     void drawStrokePreviews();
 
-    void beginStroke(const QPointF& pos, double pressure, double timestamp);
+    void beginStroke(const QPointF& pos, double pressure, double timestamp, const StrokeConfig& config);
     bool continueStroke(const QPointF& pos, double pressure, double timestamp);
     void finishStroke();
     void onNeatRenderLanded();

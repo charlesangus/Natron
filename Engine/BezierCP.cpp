@@ -1038,13 +1038,11 @@ BezierCP::smoothPoint(bool useGuiCurves,
                       ViewIdx view,
                       bool autoKeying,
                       const RippleEditKeys& ripple,
+                      const Transform::Matrix3x3& transform,
                       const std::pair<double, double>& pixelScale)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
-
-    Transform::Matrix3x3 transform;
-    getBezier()->getTransformAtTime(time, &transform);
 
     Transform::Point3D pos, left, right;
     pos.z = left.z = right.z = 1.;
@@ -1160,7 +1158,7 @@ BezierCP::clone(const BezierCP & other)
         _imp->guiLeftY = other._imp->leftY;
         _imp->guiRightX = other._imp->rightX;
         _imp->guiRightY = other._imp->rightY;
-        _imp->broken = other._imp->broken;
+        _imp->broken = other._imp->broken.load();
 
         _imp->trackLink = other._imp->trackLink;
         _imp->trackOffsets = other._imp->trackOffsets;

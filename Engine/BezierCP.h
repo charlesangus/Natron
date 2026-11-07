@@ -110,8 +110,9 @@ public:
     ///returns true if a keyframe was set
     bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
-    ///returns true if a keyframe was set
-    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
+    /// returns true if a keyframe was set. transform is the curve's at time: the caller reads it
+    /// before taking itemMutex, because composing it may lock that mutex.
+    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const Transform::Matrix3x3& transform, const std::pair<double, double>& pixelScale);
 
     virtual bool isFeatherPoint() const
     {

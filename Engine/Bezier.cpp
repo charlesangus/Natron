@@ -1768,6 +1768,10 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
+
     const RippleEditKeys ripple = getContext()->getRippleEditKeys();
     bool rippleEdit = ripple.enabled;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
@@ -2029,6 +2033,9 @@ Bezier::scaleFeatherTangentsByIndex(int index,
     if ((leftScale == 1.) && (rightScale == 1.)) {
         return;
     }
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
     bool useGuiCurve = useGuiCurveForEdit();
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     const RippleEditKeys ripple = getContext()->getRippleEditKeys();
@@ -2105,6 +2112,10 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+
+    if (refusesBoundedRipple(cpParam ? cpParam : (fpParam ? fpParam : getControlPointAtIndex(index).get()))) {
+        return;
+    }
 
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool featherLink = getContext()->isFeatherLinkEnabled();
@@ -2366,6 +2377,9 @@ Bezier::setPointAtIndexInternal(bool setLeft,
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     const RippleEditKeys ripple = getContext()->getRippleEditKeys();
     bool rippleEdit = ripple.enabled;
@@ -2679,6 +2693,9 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
     bool keySet = false;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     const RippleEditKeys ripple = getContext()->getRippleEditKeys();
@@ -2686,6 +2703,10 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
     bool useGuiCurve = useGuiCurveForEdit();
     bool keyedAllPoints = false;
     BezierCPPtr editedCp, editedFp;
+
+    // A context's composeItemTransform may lock this item's itemMutex, which is not recursive.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
 
     {
         QMutexLocker l(&itemMutex);
@@ -2707,23 +2728,18 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         if (useFeather) {
             editedFp = *fp;
         }
-    }
 
-    // Outside itemMutex: smoothPoint() reads the curve transform, and a context's
-    // composeItemTransform may lock this item's itemMutex, which is not recursive.
-    if (isSmooth) {
-        keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
-        if (editedFp) {
-            editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
+        if (isSmooth) {
+            keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, transform, pixelScale);
+            if (editedFp) {
+                editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, transform, pixelScale);
+            }
+        } else {
+            keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
+            if (editedFp) {
+                editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
+            }
         }
-    } else {
-        keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
-        if (editedFp) {
-            editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
-        }
-    }
-    {
-        QMutexLocker l(&itemMutex);
         keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
@@ -2737,6 +2753,117 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         Q_EMIT keyframeSet(time);
     }
 } // Bezier::smoothOrCuspPointAtIndex
+
+void
+Bezier::setTangentsBroken(const BezierCPPtr& cp,
+                          const BezierCPPtr& fp,
+                          double time)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    const bool useGuiCurve = useGuiCurveForEdit();
+    {
+        QMutexLocker l(&itemMutex);
+        if (cp) {
+            cp->setBroken(true);
+        }
+        if (fp) {
+            fp->setBroken(true);
+        }
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    // Every read realigns the handles of an unbroken point, so the flag counts at every time.
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, true, false);
+}
+
+namespace {
+
+// point's position and left handle stay what they are at every key. They are read without realigning,
+// because the point is about to break and from then on its handles read as stored.
+void
+collapseRightHandle(BezierCP& point,
+                    bool useGuiCurve,
+                    double time,
+                    bool writeAtTime,
+                    const RippleEditKeys& ripple)
+{
+    double x, y;
+    if (writeAtTime) {
+        point.getPositionAtTime(useGuiCurve, time, ViewIdx(0), &x, &y);
+        if (!point.hasKeyFrameAtTime(useGuiCurve, time)) {
+            double lx, ly;
+            point.getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &lx, &ly, false);
+            point.setPositionAtTime(useGuiCurve, time, x, y);
+            point.setLeftBezierPointAtTime(useGuiCurve, time, lx, ly);
+        }
+        point.setRightBezierPointAtTime(useGuiCurve, time, x, y);
+    }
+    // A linked point's offsets already hold at every time.
+    if (ripple.enabled && !point.isLinkedToTrack()) {
+        std::set<double> keyframes;
+        point.getKeyframeTimes(useGuiCurve, &keyframes);
+        for (std::set<double>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+            if ((*it == time) || !ripple.includes(*it, time)) {
+                continue;
+            }
+            point.getPositionAtTime(useGuiCurve, *it, ViewIdx(0), &x, &y);
+            point.setRightBezierPointAtTime(useGuiCurve, *it, x, y);
+        }
+    }
+    point.setBroken(true);
+}
+
+} // namespace
+
+void
+Bezier::collapseRightHandleAtIndex(int index,
+                                   double time)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    BezierCPPtr cp = getControlPointAtIndex(index);
+    if (!cp || refusesBoundedRipple(cp.get())) {
+        return;
+    }
+    BezierCPPtr fp = getFeatherPointAtIndex(index);
+    const bool autoKeying = getContext()->isAutoKeyingEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    const bool useGuiCurve = useGuiCurveForEdit();
+    bool keySet = false;
+    bool keyedAllPoints = false;
+    {
+        QMutexLocker l(&itemMutex);
+        const bool isOnKeyframe = _imp->hasKeyframeAtTime(useGuiCurve, time);
+        const bool writeAtTime = autoKeying || isOnKeyframe;
+        collapseRightHandle(*cp, useGuiCurve, time, writeAtTime, ripple);
+        if (fp) {
+            collapseRightHandle(*fp, useGuiCurve, time, writeAtTime, ripple);
+        }
+        keySet = writeAtTime && !isOnKeyframe;
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    if (autoKeying) {
+        setKeyframeInternal(time, false);
+    }
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, true, keyedAllPoints);
+    if (keySet) {
+        Q_EMIT keyframeSet(time);
+    }
+} // Bezier::collapseRightHandleAtIndex
+
+bool
+Bezier::refusesBoundedRipple(const BezierCP* point)
+{
+    if (!point || !point->isLinkedToTrack() || !getContext()->getRippleEditKeys().isBounded()) {
+        return false;
+    }
+    getContext()->warnBoundedRippleOnLinkedPoint();
+
+    return true;
+}
 
 void
 Bezier::smoothPointAtIndex(int index,

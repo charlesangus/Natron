@@ -587,6 +587,13 @@ public:
     void refreshTrackLinkListeners();
 
     /**
+     * @brief Tells the user that an edit of a point that follows a track was refused because ripple
+     * edit is limited to some keyframes. The warning lasts until the ripple settings or the links
+     * change. Main thread only.
+     **/
+    void warnBoundedRippleOnLinkedPoint();
+
+    /**
      * @brief Points loaded links whose track object is unknown at their tracks, found by the
      * tracker node's fully qualified name and the track's script name. Called once every node
      * of a load or paste exists. Links that do not resolve keep their last centre.

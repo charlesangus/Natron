@@ -28,6 +28,7 @@
 #include <list>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QFileInfo>
@@ -439,6 +440,104 @@ TEST_F(CurveTrackLinkTest, RemovedTrackLeavesThePointStaticWithAWarning)
 }
 
 // Moving a key of a followed track changes the Roto's and the SplineWarp's hashes and renders.
+// A linked point has one offset for all frames: ripple limited to some keys refuses an edit of it
+// and says so, while the other modes apply the edit at every frame.
+TEST_F(CurveTrackLinkTest, RippleModesOnALinkedPoint)
+{
+    resetProject();
+    TrackMarkerPtr marker = makeTrack();
+    ASSERT_TRUE(bool(marker));
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoCurveContextPtr context = roto->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    context->setAutoKeyingEnabled(true);
+    BezierPtr square = context->makeSquare(10., 10., 12., kFirstKey);
+    ASSERT_TRUE(bool(square));
+    square->linkPointToTrack(0, marker, kFirstKey);
+    const BezierCPPtr cp = square->getControlPointAtIndex(0);
+    const BezierCPPtr fp = square->getFeatherPointAtIndex(0);
+    ASSERT_TRUE(cp && fp);
+
+    const double editTime = 5.;
+    const double frames[] = { kFirstKey, editTime, kLastKey };
+    const std::pair<double, double> pixelScale(1., 1.);
+
+    const auto stateAt = [&](const BezierCPPtr& point, std::vector<PointState>* states) {
+        states->clear();
+        for (double frame : frames) {
+            states->push_back(pointAt(point, frame));
+        }
+    };
+    const auto expectSame = [](const std::vector<PointState>& a, const std::vector<PointState>& b, const char* what) {
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            EXPECT_NEAR(a[i].x, b[i].x, kTolerance) << what << ", frame slot " << i;
+            EXPECT_NEAR(a[i].y, b[i].y, kTolerance) << what << ", frame slot " << i;
+            EXPECT_NEAR(a[i].lx, b[i].lx, kTolerance) << what << ", frame slot " << i;
+            EXPECT_NEAR(a[i].ly, b[i].ly, kTolerance) << what << ", frame slot " << i;
+            EXPECT_NEAR(a[i].rx, b[i].rx, kTolerance) << what << ", frame slot " << i;
+            EXPECT_NEAR(a[i].ry, b[i].ry, kTolerance) << what << ", frame slot " << i;
+        }
+    };
+
+    context->setRippleEditEnabled(true);
+    context->setRippleEditRange(3., 7.);
+    const RippleEditModeEnum boundedModes[] = { eRippleEditModeFromStart, eRippleEditModeToEnd, eRippleEditModeRange };
+    for (RippleEditModeEnum mode : boundedModes) {
+        context->setRippleEditMode(mode);
+        EXPECT_FALSE(roto->hasPersistentMessage()) << "mode " << mode;
+
+        std::vector<PointState> cpBefore, fpBefore, cpAfter, fpAfter;
+        stateAt(cp, &cpBefore);
+        stateAt(fp, &fpBefore);
+
+        square->smoothPointAtIndex(0, editTime, pixelScale);
+        ASSERT_TRUE(roto->hasPersistentMessage()) << "mode " << mode;
+        QString message;
+        int type = 0;
+        roto->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeWarning, type);
+        EXPECT_TRUE(message.contains(QString::fromUtf8("left unchanged"))) << message.toStdString();
+
+        square->cuspPointAtIndex(0, editTime, pixelScale);
+        square->movePointByIndex(0, editTime, 2., 3.);
+        square->moveFeatherByIndex(0, editTime, 2., 3.);
+        square->collapseRightHandleAtIndex(0, editTime);
+
+        stateAt(cp, &cpAfter);
+        stateAt(fp, &fpAfter);
+        expectSame(cpBefore, cpAfter, "control point");
+        expectSame(fpBefore, fpAfter, "feather point");
+    }
+
+    context->setRippleEditEnabled(false);
+    EXPECT_FALSE(roto->hasPersistentMessage()) << "leaving the limited modes clears the warning";
+
+    for (int enabled = 0; enabled < 2; ++enabled) {
+        context->setRippleEditEnabled(enabled != 0);
+        context->setRippleEditMode(eRippleEditModeAll);
+
+        std::vector<PointState> before, moved;
+        stateAt(cp, &before);
+        square->movePointByIndex(0, editTime, 2., 3.);
+        stateAt(cp, &moved);
+        EXPECT_FALSE(roto->hasPersistentMessage());
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            EXPECT_NEAR(before[i].x + 2., moved[i].x, kTolerance) << "ripple " << enabled << ", frame slot " << i;
+            EXPECT_NEAR(before[i].y + 3., moved[i].y, kTolerance) << "ripple " << enabled << ", frame slot " << i;
+        }
+
+        square->cuspPointAtIndex(0, editTime, pixelScale);
+        std::vector<PointState> cusped, smoothed;
+        stateAt(cp, &cusped);
+        square->smoothPointAtIndex(0, editTime, pixelScale);
+        stateAt(cp, &smoothed);
+        EXPECT_FALSE(roto->hasPersistentMessage());
+        EXPECT_NE(cusped[0].rx - cusped[0].x, smoothed[0].rx - smoothed[0].x) << "the one offset holds at the first frame too";
+        EXPECT_NEAR(smoothed[0].rx - smoothed[0].x, smoothed[2].rx - smoothed[2].x, kTolerance) << "ripple " << enabled;
+    }
+}
+
 TEST_F(CurveTrackLinkTest, MovingATrackKeyInvalidatesRotoAndSplineWarp)
 {
     resetProject();

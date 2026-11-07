@@ -83,8 +83,9 @@ protected:
                         double time);
 
     /**
-     * @brief Copies point, which this command is about to edit. Null points and points already
-     * added are ignored.
+     * @brief Copies point, which this command is about to edit, unless it is null or already
+     * copied. Auto-keying writes to every point of a shape, so an edit about to auto-key the shape
+     * of point copies all of its points.
      **/
     void addPoint(const BezierCPPtr& point);
 
@@ -108,7 +109,10 @@ protected:
     double _time; //< the time at which the change was made
 
 private:
+    void copyPoint(const BezierCPPtr& point);
+
     std::vector<BezierCPPtr> _points, _before, _after;
+    std::vector<BezierPtr> _beziers, _beziersWithoutKey, _beziersKeyedByEdit;
     bool _undone;
 };
 
@@ -479,8 +483,8 @@ private:
 };
 
 class OpenCloseUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(OpenCloseUndoCommand)
 
 public:
@@ -492,12 +496,19 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
+    /**
+     * @brief Takes in the tangent drag of the closing gesture, when this command was given that
+     * gesture's key, so that one undo reopens the shape and restores the tangents.
+     **/
+    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
 private:
     RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
     std::shared_ptr<RotoCurveContextHostState> _hostState;
+    std::shared_ptr<MoveTangentUndoCommand> _closingDrag;
 };
 
 // The commands below that override mergeWith() take the key of the interact's open undo gesture

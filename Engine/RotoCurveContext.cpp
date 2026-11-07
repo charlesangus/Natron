@@ -355,8 +355,13 @@ RotoCurveContext::setRippleEditEnabled(bool enabled)
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->rippleEdit = enabled;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEdit = enabled;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
 }
 
 bool
@@ -373,8 +378,13 @@ RotoCurveContext::isRippleEditEnabled() const
 void
 RotoCurveContext::setRippleEditMode(RippleEditModeEnum mode)
 {
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->rippleEditMode = mode;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEditMode = mode;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
 }
 
 RippleEditModeEnum
@@ -2026,6 +2036,17 @@ RotoCurveContext::getTrackLinkedCurves() const
     }
 
     return ret;
+}
+
+void
+RotoCurveContext::warnBoundedRippleOnLinkedPoint()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    node->setPersistentMessage(eMessageTypeWarning, tr("A point that follows a track has one offset for all frames, so ripple edit cannot limit an edit of it to some keyframes. The point was left unchanged: set ripple edit to All, or turn it off, to edit it.").toStdString());
+    _imp->trackLinkWarningPosted = true;
 }
 
 void

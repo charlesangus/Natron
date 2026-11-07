@@ -49,6 +49,12 @@ struct RippleEditKeys {
     double rangeFirst = 0.;
     double rangeLast = 0.;
 
+    /// Whether the edit must leave some keys out.
+    bool isBounded() const
+    {
+        return enabled && (mode != eRippleEditModeAll);
+    }
+
     bool includes(double keyTime,
                   double editTime) const
     {

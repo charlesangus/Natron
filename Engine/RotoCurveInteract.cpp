@@ -1817,7 +1817,7 @@ RotoCurveInteract::getToolbarShortcuts(int toolSet,
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamSelectionToolButton, kRotoUIParamSelectionToolButtonLabel, Key_Q));
     }
     if (toolSet & eRotoCurveToolSetPointsEdition) {
-        // D belongs to the dodge/burn group, as in Nuke; this group has no default key.
+        // D belongs to the dodge/burn group; this group has no default key.
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamEditPointsToolButton, kRotoUIParamEditPointsToolButtonLabel));
     }
     if (toolSet & eRotoCurveToolSetShapesDrawing) {
@@ -4215,7 +4215,9 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 if ((x >= (pos.x() - cpSelectionTolerance)) && (x <= (pos.x() + cpSelectionTolerance)) && (y >= (pos.y() - cpSelectionTolerance)) && (y <= (pos.y() + cpSelectionTolerance))) {
                     if (it == cps.begin()) {
                         BezierPtr closed = builtBezier;
-                        pushUndoCommand(new OpenCloseUndoCommand(shared_from_this(), builtBezier));
+                        OpenCloseUndoCommand* closeCommand = new OpenCloseUndoCommand(shared_from_this(), builtBezier);
+                        closeCommand->setGestureKey(undoGesture.key());
+                        pushUndoCommand(closeCommand);
 
                         builtBezier.reset();
 

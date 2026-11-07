@@ -367,6 +367,19 @@ public:
      **/
     void cuspPointAtIndex(int index, double time, const std::pair<double, double>& pixelScale);
 
+    /**
+     * @brief Collapses the right handle of the control point at the given index and of its feather
+     * point onto the point's position, and breaks their tangents. Positions and left handles keep
+     * their values. If ripple edit is enabled, each key it includes collapses onto its own position.
+     **/
+    void collapseRightHandleAtIndex(int index, double time);
+
+    /**
+     * @brief Breaks the tangents of a control point and its feather point, either of which may be
+     * null, and invalidates what depends on the tangents.
+     **/
+    void setTangentsBroken(const BezierCPPtr& cp, const BezierCPPtr& fp, double time);
+
     void getMotionBlurSettings(const double time,
                                double* startTime,
                                double* endTime,
@@ -748,6 +761,13 @@ private:
      * copy themselves, so pending GUI edits made during a render are not overwritten.
      **/
     void setKeyframeInternal(double time, bool copyToGui);
+
+    /**
+     * @brief True, after warning the user, when ripple edit is limited to some keys and point
+     * follows a track. Its one offset holds at every time, so such an edit could only change the
+     * keys the limit excludes. Posts on the node, so call without itemMutex.
+     **/
+    bool refusesBoundedRipple(const BezierCP* point);
 
     void copyInternalPointsToGuiPoints();
 

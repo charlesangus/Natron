@@ -327,7 +327,7 @@ RotoDrawableItem::createNodes(bool connectNodes)
     MergingFunctionEnum op;
     if ( (type == eRotoStrokeTypeDodge) || (type == eRotoStrokeTypeBurn) ) {
         op = (type == eRotoStrokeTypeDodge ? eMergeColorDodge : eMergeColorBurn);
-    } else if ( (type == eRotoStrokeTypeSolid) || (type == eRotoStrokeTypeClone) ) {
+    } else if ((type == eRotoStrokeTypeSolid) || (type == eRotoStrokeTypeClone) || (type == eRotoStrokeTypeReveal)) {
         op = eMergeOver;
     } else {
         op = eMergeCopy;

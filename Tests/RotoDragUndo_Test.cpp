@@ -631,3 +631,139 @@ TEST_F(RotoDragUndoTest, PenDownModifiersClearALostAltRelease)
     EXPECT_EQ(1, _ui->altDown);
     EXPECT_EQ(0, _ui->shiftDown);
 }
+
+TEST_F(RotoDragUndoTest, AutoKeyedDragOfANonFirstPointUndoesTheKeyOnEveryPoint)
+{
+    _node->getRotoContext()->setAutoKeyingEnabled(true);
+    const double between = _time + 5.;
+    const std::string before = dumpShape(_square);
+    ASSERT_FALSE(pointAt(0).first->hasKeyFrameAtTime(true, between));
+
+    PointList toDrag;
+    toDrag.push_back(pointAt(1));
+    _ui->undoGesture.begin();
+    std::shared_ptr<MoveControlPointsUndoCommand> cmd = std::make_shared<MoveControlPointsUndoCommand>(_ui, toDrag, 3., 4., between);
+    cmd->redo();
+    _ui->undoGesture.end();
+    EXPECT_TRUE(pointAt(0).first->hasKeyFrameAtTime(true, between));
+    EXPECT_TRUE(pointAt(2).second->hasKeyFrameAtTime(true, between));
+
+    expectUndoRedo(cmd, before);
+
+    cmd->undo();
+    for (int i = 0; i < _square->getControlPointsCount(); ++i) {
+        EXPECT_FALSE(pointAt(i).first->hasKeyFrameAtTime(true, between)) << "control point " << i;
+        EXPECT_FALSE(pointAt(i).second->hasKeyFrameAtTime(true, between)) << "feather point " << i;
+    }
+    cmd->redo();
+    EXPECT_TRUE(pointAt(0).first->hasKeyFrameAtTime(true, between));
+}
+
+TEST_F(RotoDragUndoTest, SharpenWithRangedRippleCollapsesEachIncludedKeyOntoItsOwnPosition)
+{
+    struct State {
+        double x, y, lx, ly, rx, ry;
+    };
+    const auto stateOf = [](const BezierCPPtr& point, double time) {
+        State s;
+        point->getPositionAtTime(true, time, ViewIdx(0), &s.x, &s.y);
+        point->getLeftBezierPointAtTime(true, time, ViewIdx(0), &s.lx, &s.ly, false);
+        point->getRightBezierPointAtTime(true, time, ViewIdx(0), &s.rx, &s.ry, false);
+
+        return s;
+    };
+
+    const int index = 1;
+    const std::vector<double> keys = { _time, _time + 10., _time + 20., _time + 30. };
+    _square->setKeyframe(keys[2]);
+    _square->setKeyframe(keys[3]);
+    for (std::size_t k = 0; k < keys.size(); ++k) {
+        const double x = 10. + 3. * k;
+        const double y = 20. - 2. * k;
+        _square->setPointAtIndex(false, index, keys[k], x, y, x - 4. - k, y - 1., x + 5. + k, y + 2.);
+        _square->setPointAtIndex(true, index, keys[k], x + 1., y + 1., x - 2. - k, y - 3., x + 6. + k, y + 4.);
+    }
+
+    RotoContextPtr context = _node->getRotoContext();
+    context->setRippleEditEnabled(true);
+    context->setRippleEditMode(eRippleEditModeRange);
+    context->setRippleEditRange(_time + 5., _time + 25.);
+
+    const BezierCPPtr points[] = { pointAt(index).first, pointAt(index).second };
+    std::vector<State> before[2];
+    for (int p = 0; p < 2; ++p) {
+        ASSERT_TRUE(bool(points[p]));
+        for (std::size_t k = 0; k < keys.size(); ++k) {
+            before[p].push_back(stateOf(points[p], keys[k]));
+            ASSERT_NE(before[p][k].x, before[p][k].rx);
+        }
+    }
+
+    _square->collapseRightHandleAtIndex(index, keys[1]);
+
+    for (int p = 0; p < 2; ++p) {
+        EXPECT_TRUE(points[p]->getBroken());
+        for (std::size_t k = 0; k < keys.size(); ++k) {
+            const State after = stateOf(points[p], keys[k]);
+            const bool included = (k == 1) || (k == 2);
+            EXPECT_DOUBLE_EQ(before[p][k].x, after.x) << "point " << p << " key " << k;
+            EXPECT_DOUBLE_EQ(before[p][k].y, after.y) << "point " << p << " key " << k;
+            EXPECT_DOUBLE_EQ(before[p][k].lx, after.lx) << "point " << p << " key " << k;
+            EXPECT_DOUBLE_EQ(before[p][k].ly, after.ly) << "point " << p << " key " << k;
+            EXPECT_DOUBLE_EQ(included ? before[p][k].x : before[p][k].rx, after.rx) << "point " << p << " key " << k;
+            EXPECT_DOUBLE_EQ(included ? before[p][k].y : before[p][k].ry, after.ry) << "point " << p << " key " << k;
+        }
+    }
+}
+
+TEST_F(RotoDragUndoTest, BreakTangentsInvalidatesTheShapeOnItsFirstRedo)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    const std::string before = dumpShape(_square);
+    const U64 hashBefore = context->getContentHash();
+
+    PointList toBreak;
+    toBreak.push_back(pointAt(1));
+    std::shared_ptr<BreakTangentsUndoCommand> cmd = std::make_shared<BreakTangentsUndoCommand>(_ui, toBreak, _time);
+    cmd->redo();
+
+    EXPECT_TRUE(pointAt(1).first->getBroken());
+    EXPECT_TRUE(pointAt(1).second->getBroken());
+    EXPECT_NE(hashBefore, context->getContentHash());
+
+    expectUndoRedo(cmd, before);
+}
+
+TEST_F(RotoDragUndoTest, ClosingAndItsTangentDragAreOneUndoStep)
+{
+    _square->setCurveFinished(false);
+    const std::string before = dumpShape(_square);
+
+    _ui->undoGesture.begin();
+    const quint64 gesture = _ui->undoGesture.key();
+    std::shared_ptr<OpenCloseUndoCommand> closeCommand = std::make_shared<OpenCloseUndoCommand>(_ui, _square);
+    closeCommand->setGestureKey(gesture);
+    closeCommand->redo();
+    ASSERT_TRUE(_square->isCurveFinished());
+
+    std::shared_ptr<MoveTangentUndoCommand> drag = std::make_shared<MoveTangentUndoCommand>(_ui, 4., 5., _time, pointAt(0).first, false, false);
+    drag->setGestureKey(gesture);
+    drag->redo();
+    drag->addDelta(1., -2., false);
+    ASSERT_TRUE(closeCommand->mergeWith(drag));
+    _ui->undoGesture.end();
+
+    const std::string after = dumpShape(_square);
+    ASSERT_NE(before, after);
+    for (int i = 0; i < 2; ++i) {
+        closeCommand->undo();
+        EXPECT_FALSE(_square->isCurveFinished()) << "undo " << i;
+        EXPECT_EQ(before, dumpShape(_square)) << "undo " << i;
+        closeCommand->redo();
+        EXPECT_TRUE(_square->isCurveFinished()) << "redo " << i;
+        EXPECT_EQ(after, dumpShape(_square)) << "redo " << i;
+    }
+
+    std::shared_ptr<OpenCloseUndoCommand> keyless = std::make_shared<OpenCloseUndoCommand>(_ui, _square);
+    EXPECT_FALSE(keyless->mergeWith(drag)) << "only the closing click takes in a drag";
+}

@@ -1,4 +1,4 @@
-"""Roto gestures and modes from the Nuke parity pass, driven through the viewer of a Roto node.
+"""Roto gestures and modes, driven through the viewer of a Roto node.
 
 Checks, each on its own shape:
   - Shift+drag of a tangent handle turns and stretches both handles together: two handles at 90
@@ -542,6 +542,7 @@ try:
               "Ctrl during the draw drag moves only the exit handle")
 
         # Close on the first point and keep dragging.
+        open_first = point(bez, 0)
         drag(gl, p0, p0 + QPointF(0, -40))
         yield ("sleep", SETTLE_MS)
         check(bez.isCurveFinished(), "clicking the first point closes the shape")
@@ -549,6 +550,15 @@ try:
         check(length(right_off(c0)) > 30 * ps and close(left_off(c0), (-right_off(c0)[0], -right_off(c0)[1]), 1e-6),
               "dragging on from the closing click pulls out mirrored handles on the first point")
         check(len(shapes(ctx)) == 1, "closing adds no shape")
+
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+        check(not bez.isCurveFinished(), "one undo reopens the shape closed by the drag")
+        check(close(point(bez, 0), open_first, 1e-6), "the same undo restores the first point's handles")
+        trigger("redo")
+        yield ("sleep", SETTLE_MS)
+        check(bez.isCurveFinished(), "one redo closes the shape again")
+        check(close(point(bez, 0), c0, 1e-6), "the same redo brings the dragged handles back")
 
         gt.section("escape-returns-to-select")
         send_key(gl, Qt.Key_V)

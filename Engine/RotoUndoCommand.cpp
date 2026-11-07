@@ -86,7 +86,32 @@ RotoDragUndoCommand::~RotoDragUndoCommand()
 void
 RotoDragUndoCommand::addPoint(const BezierCPPtr& point)
 {
-    if (!point || (std::find(_points.begin(), _points.end(), point) != _points.end())) {
+    if (!point) {
+        return;
+    }
+    const BezierPtr bezier = point->getBezier();
+    if (std::find(_beziers.begin(), _beziers.end(), bezier) == _beziers.end()) {
+        _beziers.push_back(bezier);
+        // The edit's auto-key lands on every point of the shape, not only on the edited ones.
+        const std::list<BezierCPPtr>& cps = bezier->getControlPoints();
+        if (bezier->getContext()->isAutoKeyingEnabled() && !cps.empty() && !cps.front()->hasKeyFrameAtTime(true, _time)) {
+            _beziersWithoutKey.push_back(bezier);
+            for (std::list<BezierCPPtr>::const_iterator it = cps.begin(); it != cps.end(); ++it) {
+                copyPoint(*it);
+            }
+            const std::list<BezierCPPtr>& fps = bezier->getFeatherPoints();
+            for (std::list<BezierCPPtr>::const_iterator it = fps.begin(); it != fps.end(); ++it) {
+                copyPoint(*it);
+            }
+        }
+    }
+    copyPoint(point);
+}
+
+void
+RotoDragUndoCommand::copyPoint(const BezierCPPtr& point)
+{
+    if (std::find(_points.begin(), _points.end(), point) != _points.end()) {
         return;
     }
     // The GUI copy is never behind the internal one, so it is the state the user sees even while
@@ -107,8 +132,18 @@ RotoDragUndoCommand::restoreBefore()
         }
         _after[i]->cloneGuiState(*_points[i], true);
     }
+    _beziersKeyedByEdit.clear();
+    for (std::size_t i = 0; i < _beziersWithoutKey.size(); ++i) {
+        const std::list<BezierCPPtr>& cps = _beziersWithoutKey[i]->getControlPoints();
+        if (!cps.empty() && cps.front()->hasKeyFrameAtTime(true, _time)) {
+            _beziersKeyedByEdit.push_back(_beziersWithoutKey[i]);
+        }
+    }
     for (std::size_t i = 0; i < _points.size(); ++i) {
         _points[i]->getBezier()->restorePointState(_points[i], *_before[i]);
+    }
+    for (std::size_t i = 0; i < _beziersKeyedByEdit.size(); ++i) {
+        Q_EMIT _beziersKeyedByEdit[i]->keyframeRemoved(_time);
     }
     _undone = true;
 }
@@ -118,6 +153,9 @@ RotoDragUndoCommand::restoreAfter()
 {
     for (std::size_t i = 0; i < _points.size() && i < _after.size(); ++i) {
         _points[i]->getBezier()->restorePointState(_points[i], *_after[i]);
+    }
+    for (std::size_t i = 0; i < _beziersKeyedByEdit.size(); ++i) {
+        Q_EMIT _beziersKeyedByEdit[i]->keyframeSet(_time);
     }
 }
 
@@ -1407,6 +1445,10 @@ OpenCloseUndoCommand::undo()
     if (!roto) {
         return;
     }
+    // The drag happened with the shape closed, so it comes off first.
+    if (_closingDrag) {
+        _closingDrag->undo();
+    }
     if (_firstRedoCalled) {
         roto->setCurrentTool( _selectedTool.lock() );
         if ( _selectedTool.lock() == roto->drawBezierAction.lock() ) {
@@ -1436,7 +1478,23 @@ OpenCloseUndoCommand::redo()
     _curve->setCurveFinished( !_curve->isCurveFinished() );
     roto->evaluate(_firstRedoCalled);
     roto->setSelection( _curve, std::make_pair( CpPtr(), CpPtr() ) );
+    if (_closingDrag) {
+        _closingDrag->redo();
+    }
     _firstRedoCalled = true;
+}
+
+bool
+OpenCloseUndoCommand::mergeWith(const UndoCommandPtr& other)
+{
+    std::shared_ptr<MoveTangentUndoCommand> drag = std::dynamic_pointer_cast<MoveTangentUndoCommand>(other);
+
+    if (!drag || _closingDrag || !inSameGestureAs(*drag)) {
+        return false;
+    }
+    _closingDrag = drag;
+
+    return true;
 }
 
 ////////////////////////////
@@ -1731,17 +1789,7 @@ MakeBezierUndoCommand::sharpenLastPoint()
         _previousFpState->cloneGuiState(*fp, true);
     }
 
-    double x, y, lx, ly;
-    cp->getPositionAtTime(true, _time, ViewIdx(0), &x, &y);
-    cp->getLeftBezierPointAtTime(true, _time, ViewIdx(0), &lx, &ly, false);
-    _newCurve->setPointAtIndex(false, index, _time, x, y, lx, ly, x, y);
-    cp->setBroken(true);
-    if (fp) {
-        fp->getPositionAtTime(true, _time, ViewIdx(0), &x, &y);
-        fp->getLeftBezierPointAtTime(true, _time, ViewIdx(0), &lx, &ly, false);
-        _newCurve->setPointAtIndex(true, index, _time, x, y, lx, ly, x, y);
-        fp->setBroken(true);
-    }
+    _newCurve->collapseRightHandleAtIndex(index, _time);
 }
 
 bool
@@ -1913,11 +1961,9 @@ BreakTangentsUndoCommand::redo()
         restoreAfter();
     } else {
         for (std::list<std::pair<BezierCPPtr, BezierCPPtr>>::const_iterator it = _toBreak.begin(); it != _toBreak.end(); ++it) {
-            if (it->first) {
-                it->first->setBroken(true);
-            }
-            if (it->second) {
-                it->second->setBroken(true);
+            const BezierCPPtr& any = it->first ? it->first : it->second;
+            if (any) {
+                any->getBezier()->setTangentsBroken(it->first, it->second, _time);
             }
         }
         _done = true;

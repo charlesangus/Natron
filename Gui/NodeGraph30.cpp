@@ -29,6 +29,7 @@
 #include <cmath> // abs, ceil, floor
 #include <stdexcept>
 #include <unordered_set>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -55,6 +56,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
+#include "Gui/NodeGraphDeleteLinks.h"
 #include "Gui/NodeGui.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -221,57 +223,82 @@ NodeGraph::keyReleaseEvent(QKeyEvent* e)
     QGraphicsView::keyReleaseEvent(e);
 }
 
-void
-NodeGraph::removeNode(const NodeGuiPtr & node)
+namespace {
+// Links from nodes that stay to knobs of the nodes in the list; a node reading a node that goes
+// away with it, or living inside a group that goes away, breaks nothing.
+std::vector<BrokenLink>
+collectBrokenLinks(const NodesGuiList& nodesToRemove)
 {
-    NodeGroup* isGrp = node->getNode()->isEffectGroup();
-    const KnobsVec & knobs = node->getNode()->getKnobs();
-
-
-    for (U32 i = 0; i < knobs.size(); ++i) {
-        KnobI::ListenerDimsMap listeners;
-        knobs[i]->getListeners(listeners);
-        ///For all listeners make sure they belong to a node
-        std::string foundLinkedErrorMessage;
-        for (KnobI::ListenerDimsMap::iterator it2 = listeners.begin(); it2 != listeners.end(); ++it2) {
-            KnobIPtr listener = it2->first.lock();
-            if (!listener) {
-                continue;
-            }
-            EffectInstance* isEffect = dynamic_cast<EffectInstance*>( listener->getHolder() );
-            if (!isEffect) {
-                continue;
-            }
-            if ( isGrp && (isEffect->getNode()->getGroup().get() == isGrp) ) {
-                continue;
-            }
-
-            if ( isEffect && ( isEffect != node->getNode()->getEffectInstance().get() ) ) {
-                std::string masterNodeName = node->getNode()->getFullyQualifiedName();
-                std::string master = masterNodeName + "." + knobs[i]->getName();
-                std::string slave = isEffect->getNode()->getFullyQualifiedName() + "." + listener->getName();
-                foundLinkedErrorMessage = tr("%1 is linked to %2 through a link or expression. Deleting %3 may break this link.\nContinue anyway?").arg(QString::fromUtf8(slave.c_str())).arg(QString::fromUtf8(master.c_str())).arg(QString::fromUtf8(masterNodeName.c_str())).toStdString();
-                break;
-            }
-
-            
-            
-            
-        }
-        if (!foundLinkedErrorMessage.empty()) {
-            StandardButtonEnum reply = Dialogs::questionDialog( tr("Delete").toStdString(), foundLinkedErrorMessage, false );
-            if (reply == eStandardButtonNo) {
-                return;
-            }
-            break;
+    std::unordered_set<const EffectInstance*> effectsToRemove;
+    std::unordered_set<const NodeGroup*> groupsToRemove;
+    for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
+        EffectInstance* effect = (*it)->getNode()->getEffectInstance().get();
+        effectsToRemove.insert(effect);
+        if (const NodeGroup* grp = (*it)->getNode()->isEffectGroup()) {
+            groupsToRemove.insert(grp);
         }
     }
 
-    node->setUserSelected(false);
+    std::vector<BrokenLink> links;
+    for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
+        const NodePtr master = (*it)->getNode();
+        const KnobsVec& knobs = master->getKnobs();
+        const std::string masterName = master->getFullyQualifiedName();
+        for (U32 i = 0; i < knobs.size(); ++i) {
+            KnobI::ListenerDimsMap listeners;
+            knobs[i]->getListeners(listeners);
+            for (KnobI::ListenerDimsMap::iterator it2 = listeners.begin(); it2 != listeners.end(); ++it2) {
+                KnobIPtr listener = it2->first.lock();
+                if (!listener) {
+                    continue;
+                }
+                EffectInstance* isEffect = dynamic_cast<EffectInstance*>(listener->getHolder());
+                if (!isEffect || effectsToRemove.count(isEffect)) {
+                    continue;
+                }
+                const NodeCollectionPtr slaveGroup = isEffect->getNode()->getGroup();
+                if (!slaveGroup || groupsToRemove.count(dynamic_cast<NodeGroup*>(slaveGroup.get()))) {
+                    continue;
+                }
+                BrokenLink link;
+                link.masterNode = masterName;
+                link.masterKnob = knobs[i]->getName();
+                link.slaveNode = isEffect->getNode()->getFullyQualifiedName();
+                link.slaveKnob = listener->getName();
+                links.push_back(link);
+            }
+        }
+    }
+
+    return links;
+}
+
+bool
+confirmBrokenLinks(const NodesGuiList& nodesToRemove)
+{
+    const QString text = brokenLinksPrompt(collectBrokenLinks(nodesToRemove));
+    if (text.isEmpty()) {
+        return true;
+    }
+
+    return Dialogs::questionDialog(QCoreApplication::translate("NodeGraph", "Delete").toStdString(),
+                                   text.toStdString(), false)
+        != eStandardButtonNo;
+}
+} // anonymous namespace
+
+void
+NodeGraph::removeNode(const NodeGuiPtr& node)
+{
     NodesGuiList nodesToRemove;
     nodesToRemove.push_back(node);
+    if (!confirmBrokenLinks(nodesToRemove)) {
+        return;
+    }
+
+    node->setUserSelected(false);
     pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
-} // NodeGraph::removeNode
+}
 
 void
 NodeGraph::deleteSelection()
@@ -293,65 +320,9 @@ NodeGraph::deleteSelection()
             }
         }
 
-        std::unordered_set<const EffectInstance*> effectsToRemove;
-        for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
-            effectsToRemove.insert((*it)->getNode()->getEffectInstance().get());
+        if (!confirmBrokenLinks(nodesToRemove)) {
+            return;
         }
-
-        for (NodesGuiList::iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
-            const KnobsVec & knobs = (*it)->getNode()->getKnobs();
-            bool mustBreak = false;
-            NodeGroup* isGrp = (*it)->getNode()->isEffectGroup();
-
-            for (U32 i = 0; i < knobs.size(); ++i) {
-                KnobI::ListenerDimsMap listeners;
-                knobs[i]->getListeners(listeners);
-
-                ///For all listeners make sure they belong to a node
-                std::string foundLinkedErrorMessage;
-                for (KnobI::ListenerDimsMap::iterator it2 = listeners.begin(); it2 != listeners.end(); ++it2) {
-                    KnobIPtr listener = it2->first.lock();
-                    if (!listener) {
-                        continue;
-                    }
-                    EffectInstance* isEffect = dynamic_cast<EffectInstance*>( listener->getHolder() );
-
-                    if (!isEffect) {
-                        continue;
-                    }
-                    if ( isGrp && (isEffect->getNode()->getGroup().get() == isGrp) ) {
-                        continue;
-                    }
-
-                    if ( !isEffect->getNode()->getGroup() ) {
-                        continue;
-                    }
-
-                    if ( isEffect && ( isEffect != (*it)->getNode()->getEffectInstance().get() ) ) {
-                        if (!effectsToRemove.count(isEffect)) {
-                            std::string masterNodeName = (*it)->getNode()->getFullyQualifiedName();
-                            std::string master = masterNodeName + "." + knobs[i]->getName();
-                            std::string slave = isEffect->getNode()->getFullyQualifiedName() + "." + listener->getName();
-                            foundLinkedErrorMessage = tr("%1 is linked to %2 through a link or expression. Deleting %3 may break this link.\nContinue anyway?").arg(QString::fromUtf8(slave.c_str())).arg(QString::fromUtf8(master.c_str())).arg(QString::fromUtf8(masterNodeName.c_str())).toStdString();
-                            break;
-                        }
-                    }
-                }
-                if (!foundLinkedErrorMessage.empty()) {
-                    StandardButtonEnum reply = Dialogs::questionDialog( tr("Delete").toStdString(),
-                                                                       foundLinkedErrorMessage, false);
-                    if (reply == eStandardButtonNo) {
-                        return;
-                    }
-                    mustBreak = true;
-                    break;
-                }
-            }
-            if (mustBreak) {
-                break;
-            }
-        }
-
 
         for (NodesGuiList::iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
             (*it)->setUserSelected(false);

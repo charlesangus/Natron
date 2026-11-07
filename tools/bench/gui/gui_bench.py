@@ -222,11 +222,11 @@ try:
         QMetaObject.invokeMethod(root_graph(), slot)
 
     def delete_selection():
-        """Deletes the selection, confirming each broken-link prompt; returns how many there were."""
+        """Deletes the selection, confirming the broken-link prompt if one appears; returns how many there were (at most one)."""
         answered = [0]
 
-        # deleteSelection asks once per selected node that a surviving node's expression reads, and
-        # the prompt's event loop would otherwise block the driver for good.
+        # deleteSelection asks once for the whole selection when a surviving node reads a deleted one,
+        # and the prompt's event loop would otherwise block the driver for good.
         def answer():
             dialog = QApplication.activeModalWidget()
             if dialog is None:

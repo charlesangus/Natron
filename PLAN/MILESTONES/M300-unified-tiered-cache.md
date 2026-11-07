@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — M300.P1.T4 at 4cfe3b531, phase gate running. `Cache<Image>` with templated members for now, not the note's non-template cache; a large deep render can evict images by LRU until M300.P2.T2. `DeepReadWrite_Test` `EachFrameOfASequenceRendersItsOwnFileThroughTheCache` proves less now that held entries are pinned; tighten it at the next test pass.
 - 2026-11-07 — **Concurrent sessions coexist on the disk tier (user):** two sessions with different projects are very common and with the same project somewhat rare. Locking the tier to the first session is rejected; this replaces the second-instance edge case and the directory lock. Redesign pending before Phase 300.3.
 - 2026-11-07 — M300.P1.T3 at 9a477bf16, unbuilt until the phase gate. A restored DiskCache entry now has an empty bitmap and re-renders until M300.P3 persists bitmaps; the old code served never-rendered pixels as rendered, so the fix stays and the gap closes before the Feature ships. Each entry has its own `pendingLock` rather than the note's stripe.
 - 2026-11-07 — M300.P1.T2 at 900e2277c, unbuilt until the phase gate. Dropped from the old filter: a differently laid out RGB, Alpha or XY entry (except RGB or Alpha from RGBA), and Short for a Half request. A miss costs up to 72 probes for Alpha byte at mip 8 (144 on draft), 1 for RGBA float at mip 0; watch this in the bench.
@@ -67,7 +68,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: The cache, CacheStress (including concurrent) and render suites pass unchanged.
   - size: L
 
-- [ ] M300.P1.T4 — Make deep images a payload of the node cache
+- [x] M300.P1.T4 — Make deep images a payload of the node cache
   - files: `Engine/DeepImageCacheEntry.h`, `Engine/DeepImageCacheEntry.cpp`, `Engine/DeepImageKey.cpp`, `Engine/AppManager.cpp` (instances ~:1041), `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepImageCache_Test.cpp`
   - approach: Deep entries use `CacheEntryHeader` and live in the node cache under the shared budget. Retire the DeepImageCache instance and its 2 GiB setting.
   - verify: `DeepImageCache_Test` and the deep compositing suites pass against the shared cache.

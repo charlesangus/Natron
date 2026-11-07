@@ -385,9 +385,9 @@ future core work has solid ground to build on.
 | M298 | RenderIsolation Taskgraph Hang | todo | M177 |  | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
 | M299 | Roto Render Performance | todo | M224, M276, M300 |  | E6 | | | [M299-roto-render-performance.md](PLAN/MILESTONES/M299-roto-render-performance.md) |
 | M304 | Roto Points Snapping To Origin | todo | M224, M261 |  | E6 | | | [M304-roto-points-snapping-to-origin.md](PLAN/MILESTONES/M304-roto-points-snapping-to-origin.md) |
-| M305 | Stale Viewer Keyframe Markers | doing | M275, M261 | misty-marten | E10 | F10 | | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
+| M305 | Stale Viewer Keyframe Markers | done | M275, M261 | misty-marten | E10 | F10 | | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
 | M306 | Knob Row Layout | cancelled | M229 | misty-marten | E10 | F10 | | [M306-knob-row-layout.md](PLAN/MILESTONES/M306-knob-row-layout.md) |
-| M307 | Remove Viewer Auto-Contrast | doing | M164 | misty-marten | E10 | F10 | | [M307-remove-viewer-auto-contrast.md](PLAN/MILESTONES/M307-remove-viewer-auto-contrast.md) |
+| M307 | Remove Viewer Auto-Contrast | done | M164 | misty-marten | E10 | F10 | | [M307-remove-viewer-auto-contrast.md](PLAN/MILESTONES/M307-remove-viewer-auto-contrast.md) |
 | M308 | Knob Label Cleanup | todo | - |  | E10 | | | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
 | M309 | Roto Feather Falloff Banding | todo | M224 |  | E6 | | | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 | M310 | Device-Switch Shader Test Fix | todo | - |  | E14 | | | [M310-device-switch-shader-test-fix.md](PLAN/MILESTONES/M310-device-switch-shader-test-fix.md) |
@@ -406,9 +406,9 @@ future core work has solid ground to build on.
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | | | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |
 | M324 | SplineWarp STMap And IDistort Outputs | todo | M274 |  | E3 | | | [M324-splinewarp-stmap-idistort-outputs.md](PLAN/MILESTONES/M324-splinewarp-stmap-idistort-outputs.md) |
 | M325 | MoonRay Fork | todo | M252 |  | E9 | | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
-| M326 | Legible Viewer Warning Banner | doing | - | misty-marten | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
-| M338 | Viewer Input Keys And Locks | doing | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
-| M339 | File Knob Reload Button Cleanup | doing | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
+| M326 | Legible Viewer Warning Banner | done | - | misty-marten | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
+| M338 | Viewer Input Keys And Locks | done | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
+| M339 | File Knob Reload Button Cleanup | done | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
 | M340 | Viewer Gain Gamma On Rendered Pixels | todo | M234 |  | E9 | | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
 | M341 | Per-Placement Geometry Projection | doing | M234 | misty-marten | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
 | M342 | Sticky Projections On Deforming Geometry | doing | M234 | misty-marten | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |

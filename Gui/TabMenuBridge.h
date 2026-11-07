@@ -28,9 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+
 #include <QPointF>
 #include <QString>
 
+#include "Engine/EngineFwd.h"
+#include "Global/Enums.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -42,25 +46,57 @@ NATRON_NAMESPACE_ENTER
  **/
 namespace TabMenuBridge {
 /**
- * @brief Triggers action with a node creation context on the graph that last called launch(): nodes
- * the action creates with no collection go into that graph, and the first one with no position lands
- * at the cursor position recorded then. The context is cleared once the action returns. Without such
- * a graph the action is triggered as is.
+ * @brief A launch that lists only the node types that can take some data, and hands the one
+ * chosen to the caller.
+ **/
+struct LaunchContext {
+    // Only node types whose first input takes this kind are listed, and no commands.
+    DataKindEnum inputKind = eDataKindScene;
+    // Only node types that declare a prim path or pattern knob are listed.
+    bool needsPrimPathKnob = false;
+    // Adds to the creation arguments of the node the chosen action creates, such as initial knob
+    // values, which are in place before the node first evaluates.
+    std::function<void(CreateNodeArgs& args)> decorateArgs;
+    // Called with the node created, in the undo step that creates it.
+    std::function<void(const NodePtr& created)> created;
+};
+
+// The name the tab menu's adapter knows kind by: "image", "deep", "scene", "polymorphic" or "raw".
+QString dataKindKey(DataKindEnum kind);
+
+/**
+ * @brief Triggers action, the tab menu's choice, with a node creation context on the graph that last
+ * called launch(): nodes the action creates with no collection go into that graph, and the first one
+ * with no position lands at the cursor position recorded then. The context is cleared once the action
+ * returns. Without such a graph the action is triggered as is. A filtered launch's context applies to
+ * this one call only; a null action, which the menu sends when it closes with no choice, drops it.
  **/
 void triggerAction(QAction* action);
 
 /**
  * @brief Triggers action with a node creation context on graph at scenePos, as triggerAction() does
  * for the tab menu's graph, so that a shortcut bound to a nodes menu action creates its node where a
- * plug-in's own shortcut would. Without a graph the action is triggered as is.
+ * plug-in's own shortcut would. Without a graph the action is triggered as is. A filtered launch's
+ * context never applies here.
  **/
 void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scenePos);
 
 /**
- * @brief Records the graph and the cursor's scene position, then opens the tab menu.
+ * @brief Records the graph and the cursor's scene position, then opens the tab menu. When every
+ * node selected in graph outputs the same kind of data, the menu lists only node types with an
+ * input other than a mask that takes that kind. Menu commands stay listed, as does any action in
+ * the nodes menu with no plug-in behind it.
  * A Python failure is reported in the Script Editor and on stderr.
  **/
 void launch(NodeGraph* graph);
+
+/**
+ * @brief Opens the tab menu filtered by context over graph. The action chosen is triggered as one
+ * undo step, with nothing selected in graph so that the node it creates connects to nothing by
+ * itself; context.created is then called with that node. The selection ends as after any tab menu
+ * choice, with the node created selected; the selection the user had before is not restored.
+ **/
+void launch(NodeGraph* graph, const LaunchContext& context);
 
 /**
  * @brief Puts the bundled tabtabtab folder (<bin>/../Resources/tabtabtab) on sys.path and imports the adapter.

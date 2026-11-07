@@ -357,7 +357,8 @@ renderDirect(const NodePtr& node,
              const RectI& roi,
              bool throughScheduler,
              const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>(),
-             bool byPassCache = true)
+             bool byPassCache = true,
+             bool draftMode = false)
 {
     DirectPass pass;
     const int frame = static_cast<int>(time);
@@ -376,7 +377,7 @@ renderDirect(const NodePtr& node,
                                              node->getApp()->getTimeLine().get(),
                                              NodePtr(),
                                              false /*isAnalysis*/,
-                                             false /*draftMode*/,
+                                             draftMode,
                                              stats);
     EffectInstancePtr effect = node->getEffectInstance();
     const RectD canonicalWindow = roi.toCanonical_noClipping(mipmapLevel, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
@@ -544,7 +545,8 @@ renderPlanes(const NodePtr& node,
              RenderSchedulerModeEnum mode,
              bool byPassCache,
              std::vector<RenderedPlane>* out,
-             std::string* error)
+             std::string* error,
+             bool draftMode = false)
 {
     out->clear();
     if (!node) {
@@ -568,7 +570,7 @@ renderPlanes(const NodePtr& node,
     enterMode(mode, 0, byPassCache /*clearCaches*/);
 
     const bool throughScheduler = mode == eRenderSchedulerModeTaskGraph;
-    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, throughScheduler, layers, byPassCache);
+    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, throughScheduler, layers, byPassCache, draftMode);
     if (pass.error.any) {
         if (error) {
             *error = pass.error.error;
@@ -611,7 +613,8 @@ renderNodePlanesDirect(const NodePtr& node,
                        const std::list<ImageLayerDesc>& layers,
                        std::vector<RenderedPlane>* out,
                        std::string* error,
-                       bool byPassCache)
+                       bool byPassCache,
+                       bool draftMode)
 {
     if (layers.empty()) {
         out->clear();
@@ -622,7 +625,7 @@ renderNodePlanesDirect(const NodePtr& node,
         return false;
     }
 
-    return renderPlanes(node, time, view, mipmapLevel, roi, layers, eRenderSchedulerModeLegacy, byPassCache, out, error);
+    return renderPlanes(node, time, view, mipmapLevel, roi, layers, eRenderSchedulerModeLegacy, byPassCache, out, error, draftMode);
 }
 
 bool

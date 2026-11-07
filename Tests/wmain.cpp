@@ -13,7 +13,6 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/ViewerInstance.h"
 
 #include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
@@ -22,15 +21,18 @@
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
+#include "OverlayImageTestEffect.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "SceneTestEffect.h"
+#include "SplineWarpHostTestEffect.h"
 #include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
@@ -92,9 +94,6 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
-    // The background AppManager does not register the Viewer, and the Viewer is the one image input
-    // that takes raw, so ViewerRaw_Test.cpp needs it registered by hand.
-    registerTestBuiltInPlugin<ViewerInstance>();
 }
 
 void
@@ -137,6 +136,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
+    registerTestBuiltInPlugin<SceneTestAuthored>();
 }
 
 void
@@ -145,6 +145,8 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to count, hold and fail an overlay image pass, which no shipped node can be made to do.
+    registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
@@ -155,6 +157,7 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextRegionTestEffect>();
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
+    registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
 }
 
 void
@@ -187,6 +190,14 @@ registerCurveHostTestPlugins()
 }
 
 void
+registerSplineWarpHostTestPlugins()
+{
+    // Registered so SplineWarpModel_Test.cpp can edit SplineWarp links on a geometry curve host
+    // before the SplineWarp node exists.
+    registerTestBuiltInPlugin<SplineWarpHostTestEffect>();
+}
+
+void
 registerNativeMetadataTestPlugins()
 {
     // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
@@ -202,6 +213,15 @@ registerNativeParityTestPlugins()
     // same deterministic multiplanar picture, with negatives, super-whites and exact alpha bands.
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
+}
+
+void
+registerOverlayTestPlugins()
+{
+    // The app already registered it when NATRON_GUI_TEST_NODES=1 is set.
+    if (appPTR->getPluginsList().count(kTestPluginIDOverlay) == 0) {
+        registerTestBuiltInPlugin<OverlayTestNode>();
+    }
 }
 
 void
@@ -274,8 +294,10 @@ GTEST_API_ int main(int argc, char **argv)
     registerIdentityHopTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
+    registerOverlayTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerSplineWarpHostTestPlugins();
     registerCacheStressTestPlugins();
     registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();

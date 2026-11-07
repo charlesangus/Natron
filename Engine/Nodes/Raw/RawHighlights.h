@@ -46,7 +46,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWHIGHLIGHTS "fr.natron.RawHighlights"
+#define PLUGINID_NATRON_RAWHIGHLIGHTS "RawHighlights"
 #define PLUGIN_MAJOR_NATRON_RAWHIGHLIGHTS 1
 
 #define kRawHighlightsParamMode "mode"
@@ -60,12 +60,24 @@
 #define kRawHighlightsParamIterations "iterations"
 #define kRawHighlightsParamScales "scales"
 #define kRawHighlightsParamSolidColor "solidColor"
+#define kRawHighlightsParamMaskView "maskView"
 
 // What RawNodeSupport::noteFrameComputed() names this node's whole-frame computations.
 #define kRawHighlightsFrameOpposedChroma "RawHighlights.opposedChroma"
 #define kRawHighlightsFrameReconstructColor "RawHighlights.reconstructColor"
 #define kRawHighlightsFrameSegments "RawHighlights.segments"
 #define kRawHighlightsFrameLaplacian "RawHighlights.laplacian"
+
+// The overlay image planes of the Clipped, Combine and Candidating views, by the colours a pixel has
+// marked, and of the Strength view.
+#define kRawHighlightsMaskPlaneRed "maskRed"
+#define kRawHighlightsMaskPlaneGreen "maskGreen"
+#define kRawHighlightsMaskPlaneBlue "maskBlue"
+#define kRawHighlightsMaskPlaneYellow "maskYellow"
+#define kRawHighlightsMaskPlaneMagenta "maskMagenta"
+#define kRawHighlightsMaskPlaneCyan "maskCyan"
+#define kRawHighlightsMaskPlaneWhite "maskWhite"
+#define kRawHighlightsMaskPlaneStrength "maskStrength"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,6 +89,17 @@ enum RawHighlightsModeEnum {
     eRawHighlightsModeInpaint,
     eRawHighlightsModeSegments,
     eRawHighlightsModeLaplacian
+};
+
+/**
+ * @brief What the Mask View knob overlays, one view at a time as darktable's mask buttons.
+ **/
+enum RawHighlightsMaskViewEnum {
+    eRawHighlightsMaskViewOff = 0,
+    eRawHighlightsMaskViewClipped,
+    eRawHighlightsMaskViewCombine,
+    eRawHighlightsMaskViewCandidating,
+    eRawHighlightsMaskViewStrength
 };
 
 /**
@@ -147,6 +170,7 @@ public:
      * and memory pressure ask; the next render computes them again.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void releaseOverlayImageResources() OVERRIDE FINAL;
 
 private:
     struct Settings;
@@ -172,6 +196,8 @@ private:
     void refreshModeWarning(double time);
 
     void refreshModeKnobsVisibility();
+
+    virtual bool isOverlayImageViewOn() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -225,6 +251,7 @@ private:
     KnobIntWPtr _iterations;
     KnobChoiceWPtr _scales;
     KnobDoubleWPtr _solidColor;
+    KnobChoiceWPtr _maskView;
     RawNodeSupport::OwnedMessage _message;
 
     // The chrominance of Inpaint Opposed, for the source and settings its key names.
@@ -239,6 +266,10 @@ private:
     bool _frameValid;
     U64 _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;
+    // The photosite mask of a segmentation mask view, guarded by _frameMutex.
+    U64 _maskFrameKey;
+    int _maskFrameView;
+    std::shared_ptr<const std::vector<float>> _maskFrame;
 };
 
 NATRON_NAMESPACE_EXIT

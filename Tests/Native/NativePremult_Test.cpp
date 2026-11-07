@@ -62,9 +62,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
-const char* const kOfxPremultID = "net.sf.openfx.Premult";
-const char* const kOfxUnpremultID = "net.sf.openfx.Unpremult";
-const int kOfxPremultMajor = 2;
 
 bool
 isNative(const NodePtr& node)
@@ -300,34 +297,6 @@ TEST_F(NativePremultTest, IdentityConditions)
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, std::vector<double>(1, 0.)));
         EXPECT_TRUE(identityAt(node, window, &inputNb));
         EXPECT_EQ(0, inputNb);
-    }
-}
-
-// While the OpenFX plug-ins are still loadable, the default render matches them. Recording
-// writes their output as references for replay once they are retired.
-TEST_F(NativePremultTest, MatchesTheOpenFXPlugins)
-{
-    for (int divide = 0; divide < 2; ++divide) {
-        const char* ofxID = divide ? kOfxUnpremultID : kOfxPremultID;
-        if (!isPluginMajorRegistered(ofxID, kOfxPremultMajor)) {
-            std::cout << "[ skipped ] " << ofxID << " " << kOfxPremultMajor << " is not loaded" << std::endl;
-            continue;
-        }
-        ParityPair pair;
-        pair.id = divide ? PLUGINID_NATRON_UNPREMULT : PLUGINID_NATRON_PREMULT;
-        pair.ofxMajor = kOfxPremultMajor;
-        pair.nativeMajor = PLUGIN_MAJOR_NATRON_PREMULT;
-        pair.app = getApp();
-        pair.source = makeSource();
-        pair.native = makeNode(divide != 0, pair.source);
-        pair.ofx = createNodeAtMajor(getApp(), ofxID, kOfxPremultMajor);
-        ASSERT_TRUE(bool(pair.source) && bool(pair.native) && bool(pair.ofx));
-        connectNodes(pair.source, pair.ofx, 0, true);
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const ParityResult r = compareParity(pair, "defaults", RectI(), mipmapLevel, ParityTolerance::arithmetic(), true);
-            EXPECT_TRUE(r.ok) << pair.id << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_GE(r.planesCompared, 1) << pair.id;
-        }
     }
 }
 

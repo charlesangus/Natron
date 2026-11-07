@@ -75,7 +75,7 @@ try:
     require(merge.connectInput(1, lock_cam), "connect LockCam into the merge")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(100, 260)
     lock_cam_path = lock_cam.getParam("primPath").getValue()

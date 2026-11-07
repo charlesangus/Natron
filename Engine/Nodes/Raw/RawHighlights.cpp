@@ -52,6 +52,8 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Nodes/Raw/RawSegmentation.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -92,6 +94,46 @@ const float kClipMagicLCh = 1.0f;
 const float kClipMagicOpposed = 0.987f;
 const float kClipMagicInpaint = 1.0f;
 const float kClipMagicLaplacian = 0.995f;
+
+// highlights_clip_magics[] as darktable's process_visualize() reads it by method.
+float
+clippedViewMagic(RawHighlightsModeEnum mode)
+{
+    switch (mode) {
+    case eRawHighlightsModeClip:
+    case eRawHighlightsModeUnclipped:
+    case eRawHighlightsModeLCh:
+        return 1.0f;
+    case eRawHighlightsModeLaplacian:
+        return 0.995f;
+    case eRawHighlightsModeOpposed:
+    case eRawHighlightsModeInpaint:
+    case eRawHighlightsModeSegments:
+        return 0.987f;
+    }
+
+    return 1.0f;
+}
+
+struct MaskColour {
+    int colours;
+    const char* plane;
+    float r;
+    float g;
+    float b;
+};
+
+// The viewer stacks planes alpha-over in the order a pass first adds them and keeps the strongest
+// value of each when zoomed out, so the most clipped colours go last and win a shared screen pixel.
+const MaskColour kMaskColours[] = {
+    { 1, kRawHighlightsMaskPlaneRed, 1.f, 0.f, 0.f },
+    { 2, kRawHighlightsMaskPlaneGreen, 0.f, 1.f, 0.f },
+    { 4, kRawHighlightsMaskPlaneBlue, 0.f, 0.f, 1.f },
+    { 3, kRawHighlightsMaskPlaneYellow, 1.f, 1.f, 0.f },
+    { 5, kRawHighlightsMaskPlaneMagenta, 1.f, 0.f, 1.f },
+    { 6, kRawHighlightsMaskPlaneCyan, 0.f, 1.f, 1.f },
+    { 7, kRawHighlightsMaskPlaneWhite, 1.f, 1.f, 1.f },
+};
 
 const char* const kModeUnavailable = "highlights: mode not available for this type of image. falling back to inpaint opposed.";
 
@@ -729,6 +771,9 @@ RawHighlights::RawHighlights(NodePtr node)
     , _frameValid(false)
     , _frameKey(0)
     , _frame()
+    , _maskFrameKey(0)
+    , _maskFrameView(RawKernels::eSegmentsMaskOff)
+    , _maskFrame()
 {
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
@@ -747,6 +792,15 @@ RawHighlights::purgeCaches()
     std::lock_guard<std::mutex> lock(_frameMutex);
     _frameValid = false;
     _frame.reset();
+    _maskFrame.reset();
+}
+
+void
+RawHighlights::releaseOverlayImageResources()
+{
+    std::lock_guard<std::mutex> lock(_frameMutex);
+
+    _maskFrame.reset();
 }
 
 const NodeSpec*
@@ -897,8 +951,35 @@ RawHighlights::initializeKnobs()
     page->addKnob(scales);
     _scales = scales;
 
+    std::vector<ChoiceOption> maskViews;
+    maskViews.push_back(ChoiceOption("off", tr("Off").toStdString(), tr("No mask.").toStdString()));
+    maskViews.push_back(ChoiceOption("clipped", tr("Clipped").toStdString(), tr("The photosites at or above the clipping threshold, in the colours that clipped: red, green, blue, their mixes, and white where all three did.").toStdString()));
+    maskViews.push_back(ChoiceOption("combine", tr("Combine").toStdString(), tr("Segmentation Based only: the segments Combine leaves, in the colours they belong to.").toStdString()));
+    maskViews.push_back(ChoiceOption("candidating", tr("Candidating").toStdString(), tr("Segmentation Based only: the segments that found a candidate to rebuild from, in the colours they belong to.").toStdString()));
+    maskViews.push_back(ChoiceOption("strength", tr("Strength").toStdString(), tr("Segmentation Based with Rebuild on only: how strongly Rebuild acts on the all-clipped segments.").toStdString()));
+    KnobChoicePtr maskView = createKnob<KnobChoice>(tr("Mask View"));
+    maskView->setName(kRawHighlightsParamMaskView);
+    maskView->setHintToolTip(tr("Draws a mask over the viewer's image while this panel is open, without changing the image. "
+                                "Changing Method turns it off, and Unclipped, which passes the data through, has no masks."));
+    maskView->populateChoices(maskViews);
+    maskView->setDefaultValue((int)eRawHighlightsMaskViewOff);
+    maskView->setAnimationEnabled(false);
+    maskView->setHashExempt(true);
+    maskView->setEvaluateOnChange(false);
+    maskView->setIsPersistent(false);
+    page->addKnob(maskView);
+    _maskView = maskView;
+
     refreshOverride();
     refreshModeKnobsVisibility();
+}
+
+bool
+RawHighlights::isOverlayImageViewOn() const
+{
+    const KnobChoicePtr maskView = _maskView.lock();
+
+    return maskView && (maskView->getValue() != (int)eRawHighlightsMaskViewOff);
 }
 
 // darktable's gui_changed(): the segmentation and Laplacian knobs follow the requested method, so
@@ -1011,15 +1092,27 @@ RawHighlights::knobChanged(KnobI* k,
     const KnobBoolPtr overrideKnob = _clipOverride.lock();
     const KnobChoicePtr mode = _mode.lock();
     const KnobChoicePtr recovery = _recovery.lock();
+    const KnobChoicePtr maskView = _maskView.lock();
 
+    if (maskView && (k == maskView.get())) {
+        refreshOverlayImages();
+
+        return true;
+    }
     if (mode && (k == mode.get())) {
         refreshModeKnobsVisibility();
         refreshModeWarning(time);
+        if (maskView && (maskView->getValue() != (int)eRawHighlightsMaskViewOff)) {
+            maskView->setValue((int)eRawHighlightsMaskViewOff);
+        }
 
         return true;
     }
     if (recovery && (k == recovery.get())) {
         refreshModeKnobsVisibility();
+        if (maskView && (maskView->getValue() == (int)eRawHighlightsMaskViewStrength) && (recoveryFromIndex(recovery->getValue()) == RawKernels::eSegmentsRecoveryOff)) {
+            maskView->setValue((int)eRawHighlightsMaskViewOff);
+        }
 
         return true;
     }
@@ -1101,12 +1194,15 @@ RawHighlights::getRegionsOfInterest(double time,
     }
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
+    const KnobChoicePtr maskView = _maskView.lock();
+    const bool clippedView = isOverlayImageRender() && settings->layout.hasCfa() && maskView && (maskView->getValue() == (int)eRawHighlightsMaskViewClipped);
     RectI need;
     if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || (settings->mode == eRawHighlightsModeLaplacian) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
         need = settings->sourceRoD;
-    } else if (lchOnCfa) {
+    } else if (lchOnCfa || clippedView) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
-        need = RectI(window.x1 - 2, window.y1 - 2, window.x2 + 2, window.y2 + 2).intersect(settings->sourceRoD);
+        const int reach = lchOnCfa ? 2 : 1;
+        need = RectI(window.x1 - reach, window.y1 - reach, window.x2 + reach, window.y2 + reach).intersect(settings->sourceRoD);
     } else {
         return;
     }
@@ -1175,12 +1271,27 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
     const RectI& roi = args.roi;
 
+    const KnobChoicePtr maskViewKnob = _maskView.lock();
+    const int maskView = (isOverlayImageRender() && maskViewKnob) ? maskViewKnob->getValue() : (int)eRawHighlightsMaskViewOff;
+    RawKernels::SegmentsMaskEnum segmentsMask = RawKernels::eSegmentsMaskOff;
+    if (mode == eRawHighlightsModeSegments) {
+        if (maskView == (int)eRawHighlightsMaskViewCombine) {
+            segmentsMask = RawKernels::eSegmentsMaskCombine;
+        } else if (maskView == (int)eRawHighlightsMaskViewCandidating) {
+            segmentsMask = RawKernels::eSegmentsMaskCandidating;
+        } else if (maskView == (int)eRawHighlightsMaskViewStrength) {
+            segmentsMask = RawKernels::eSegmentsMaskStrength;
+        }
+    }
+
     RectI need = roi;
     if ((mode == eRawHighlightsModeOpposed) || (mode == eRawHighlightsModeLCh)) {
         need = RectI(roi.x1 - 2, roi.y1 - 2, roi.x2 + 2, roi.y2 + 2).intersect(s.sourceRoD);
     } else if (mode == eRawHighlightsModeLaplacian) {
         // The mask's box mean reaches 2 photosites and the bilinear RGB under it 1 more.
         need = RectI(roi.x1 - 3, roi.y1 - 3, roi.x2 + 3, roi.y2 + 3).intersect(s.sourceRoD);
+    } else if ((maskView == (int)eRawHighlightsMaskViewClipped) && hasCfa) {
+        need = RectI(roi.x1 - 1, roi.y1 - 1, roi.x2 + 1, roi.y2 + 1).intersect(s.sourceRoD);
     }
     RawNodeSupport::TopDownBuffer buffer;
     buffer.allocate(need, source.nComps);
@@ -1190,6 +1301,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
 
     std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
     std::shared_ptr<const std::vector<float>> frameMosaic;
+    std::shared_ptr<const std::vector<float>> photositeMask;
     RectI laplacianWindow;
     float clips[3] = { s.clip, s.clip, s.clip };
     const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
@@ -1227,7 +1339,8 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         chroma = opposedChromaOf(NULL);
     } else if ((mode == eRawHighlightsModeInpaint) || (mode == eRawHighlightsModeSegments)) {
         std::lock_guard<std::mutex> lock(_frameMutex);
-        if (!_frameValid || (_frameKey != key)) {
+        const bool maskMissing = (segmentsMask != RawKernels::eSegmentsMaskOff) && (!_maskFrame || (_maskFrameKey != key) || (_maskFrameView != (int)segmentsMask));
+        if (!_frameValid || (_frameKey != key) || maskMissing) {
             RawNodeSupport::noteFrameComputed((mode == eRawHighlightsModeInpaint) ? kRawHighlightsFrameReconstructColor : kRawHighlightsFrameSegments, key);
             _frame.reset();
             std::optional<ImageView> whole;
@@ -1272,13 +1385,27 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                 params.recovery = s.recovery;
                 params.strength = s.strength;
                 params.noiseLevel = s.noiseLevel;
-                RawKernels::segmentsHighlights(whole->pixel(0, 0), whole->rowStride, whole->nComps, opposed, width, height, filters, xtrans, params, parallel);
+                std::shared_ptr<std::vector<float>> masked;
+                if (segmentsMask != RawKernels::eSegmentsMaskOff) {
+                    masked = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
+                }
+                RawKernels::segmentsHighlights(whole->pixel(0, 0), whole->rowStride, whole->nComps, opposed, width, height, filters, xtrans, params, parallel, segmentsMask, masked ? masked->data() : nullptr);
+                // refreshOverlayImages() moves the generation before it releases the mask, so under
+                // this lock either the release comes after this store or the check below sees it.
+                if (masked && !cancel.check() && !isOverlayImagePassSuperseded()) {
+                    _maskFrame = std::move(masked);
+                    _maskFrameKey = key;
+                    _maskFrameView = (int)segmentsMask;
+                }
             }
             _frame = std::move(mosaic);
             _frameKey = key;
             _frameValid = !cancel.check();
         }
         frameMosaic = _frame;
+        if ((segmentsMask != RawKernels::eSegmentsMaskOff) && (_maskFrameKey == key) && (_maskFrameView == (int)segmentsMask)) {
+            photositeMask = _maskFrame;
+        }
     } else if (mode == eRawHighlightsModeLaplacian) {
         RawKernels::LaplacianParams params;
         for (int c = 0; c < 3; ++c) {
@@ -1391,6 +1518,94 @@ RawHighlights::renderOp(const RenderActionArgs& args,
                 }
             }
         });
+    }
+
+    const RectI maskTile = roi.intersect(rod);
+    if ((maskView != (int)eRawHighlightsMaskViewOff) && !maskTile.isNull() && !cancel.check()) {
+        const unsigned int level = args.mappedScale.toMipmapLevel();
+        const std::size_t tileWidth = (std::size_t)maskTile.width();
+        const std::size_t tileSize = tileWidth * (std::size_t)maskTile.height();
+        if ((maskView == (int)eRawHighlightsMaskViewStrength) && photositeMask) {
+            std::vector<unsigned char> values(tileSize, 0);
+            bool any = false;
+            for (int y = maskTile.y1; y < maskTile.y2; ++y) {
+                const std::size_t row = (std::size_t)(rod.y2 - 1 - y);
+                for (int x = maskTile.x1; x < maskTile.x2; ++x) {
+                    const unsigned char value = overlayImageCoverageByte((*photositeMask)[row * (std::size_t)rod.width() + (std::size_t)(x - rod.x1)]);
+                    values[(std::size_t)(y - maskTile.y1) * tileWidth + (std::size_t)(x - maskTile.x1)] = value;
+                    any = any || (value > 0);
+                }
+            }
+            if (any) {
+                addOverlayImageTile(kRawHighlightsMaskPlaneStrength, OverlayColor::fromRGBA(1.f, 1.f, 1.f, 1.f), maskTile, level, std::move(values));
+            }
+        } else if ((maskView == (int)eRawHighlightsMaskViewClipped) || photositeMask) {
+            const float clippedMagic = clippedViewMagic(mode);
+            float viewClips[3];
+            for (int c = 0; c < 3; ++c) {
+                viewClips[c] = clippedMagic * s.clip * ((s.coeffs[c] <= 0.f) ? 1.f : s.coeffs[c]);
+            }
+            const CfaLookup cfa = hasCfa ? CfaLookup(s.layout, rod) : CfaLookup(RawLayout(), rod);
+            const bool clippedView = maskView == (int)eRawHighlightsMaskViewClipped;
+            const auto photosite = [&](int row, int col) {
+                if (!clippedView) {
+                    return (*photositeMask)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
+                }
+
+                return (in.pixel(row, col)[0] >= viewClips[cfa.at(row, col)]) ? 1.f : 0.f;
+            };
+            std::vector<unsigned char> colours(tileSize, 0);
+            std::vector<unsigned char> coverage(tileSize, 0);
+            parallel(maskTile.height(), [&](int r) {
+                const int y = maskTile.y1 + r;
+                const int row = rod.y2 - 1 - y;
+                for (int x = maskTile.x1; x < maskTile.x2; ++x) {
+                    const int col = x - rod.x1;
+                    const std::size_t index = (std::size_t)r * tileWidth + (std::size_t)(x - maskTile.x1);
+                    if (!hasCfa) {
+                        if (clippedView) {
+                            const float* pixel = in.pixel(row, col);
+                            for (int c = 0; c < 3; ++c) {
+                                if (pixel[(nComps >= 3) ? c : 0] >= viewClips[c]) {
+                                    colours[index] |= (unsigned char)(1 << c);
+                                    coverage[index] = 255;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    // A mosaic has one colour per photosite, so as darktable's demosaic_box3() a
+                    // pixel takes each colour's mean over its 3x3 neighbours inside the frame.
+                    float sum[3] = { 0.f, 0.f, 0.f };
+                    int count[3] = { 0, 0, 0 };
+                    for (int nr = std::max(0, row - 1); nr <= std::min(rod.height() - 1, row + 1); ++nr) {
+                        for (int nc = std::max(0, col - 1); nc <= std::min(rod.width() - 1, col + 1); ++nc) {
+                            const int colour = cfa.at(nr, nc);
+                            sum[colour] += photosite(nr, nc);
+                            ++count[colour];
+                        }
+                    }
+                    for (int c = 0; c < 3; ++c) {
+                        if (sum[c] > 0.f) {
+                            colours[index] |= (unsigned char)(1 << c);
+                            coverage[index] = std::max(coverage[index], overlayImageCoverageByte(sum[c] / (float)count[c]));
+                        }
+                    }
+                }
+            });
+            for (const MaskColour& colour : kMaskColours) {
+                if (std::find(colours.begin(), colours.end(), (unsigned char)colour.colours) == colours.end()) {
+                    continue;
+                }
+                std::vector<unsigned char> values(tileSize, 0);
+                for (std::size_t i = 0; i < tileSize; ++i) {
+                    if (colours[i] == (unsigned char)colour.colours) {
+                        values[i] = coverage[i];
+                    }
+                }
+                addOverlayImageTile(colour.plane, OverlayColor::fromRGBA(colour.r, colour.g, colour.b, 1.f), maskTile, level, std::move(values));
+            }
+        }
     }
 
     return cancel.check() ? eStatusFailed : eStatusOK;

@@ -47,6 +47,7 @@
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -252,6 +253,14 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                 }
             }
         }
+        // Curve points linked to tracks resolve them by name once every tracker exists.
+        for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
+            RotoCurveContextPtr curves = (*n)->getCurveContext();
+            if (curves) {
+                curves->resolveTrackLinks();
+            }
+        }
+
         // The variables store their link groups first, so that the groups they share with node knobs
         // are rebuilt together.
         restoreRFVVariableLinksAndExpressions(projectSerializedValues, allNodes);

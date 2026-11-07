@@ -60,13 +60,14 @@ NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The script names of the spaces OcioSpaceKnobs builds on the native nodes. Each space is a
-// string knob (the name), a menu (name + "Index") and a flag (name + "Set").
+// The script names of the colourspace menus OcioSpaceKnobs builds on the native OCIO nodes. The
+// native Read's and Write's are kNatronReadParamColorspace and kNatronWriteParamColorspace.
 const char* const kOcioSpaceKnobNames[] = {
-    kNatronReadNodeOCIOParamInputSpace,
-    kNatronWriteParamOCIOOutputSpace,
     kOCIOColorSpaceParamInputSpace,
     kOCIOColorSpaceParamOutputSpace,
+    kOCIODisplayParamInputSpace,
+    kOCIOLookTransformParamInputSpace,
+    kOCIOLookTransformParamOutputSpace,
 };
 
 bool
@@ -77,8 +78,7 @@ isNativeOcioNode(const QString& pluginID)
     return (id == PLUGINID_NATRON_OCIOCOLORSPACE) || (id == PLUGINID_NATRON_OCIODISPLAY) || (id == PLUGINID_NATRON_OCIOCDLTRANSFORM) || (id == PLUGINID_NATRON_OCIOFILETRANSFORM) || (id == PLUGINID_NATRON_OCIOLOOKTRANSFORM);
 }
 
-// The space strings, which their menus stand for, the flags recording that a space was picked,
-// and the hidden config pair: none is a parameter the user sets.
+// The hidden config pair, which is not a parameter the user sets.
 bool
 isHiddenOcioKnob(const QString& pluginID,
                  const QString& knobScriptName)
@@ -86,17 +86,8 @@ isHiddenOcioKnob(const QString& pluginID,
     if (!Node::documentationDependsOnOcioConfig(pluginID.toStdString())) {
         return false;
     }
-    if ((knobScriptName == QString::fromUtf8(kOCIOParamConfigFile)) || (knobScriptName == QString::fromUtf8(kOCIOParamWorkingSpace))) {
-        return true;
-    }
-    for (std::size_t i = 0; i < sizeof(kOcioSpaceKnobNames) / sizeof(kOcioSpaceKnobNames[0]); ++i) {
-        const QString space = QString::fromUtf8(kOcioSpaceKnobNames[i]);
-        if ((knobScriptName == space) || (knobScriptName == space + QString::fromUtf8("Set"))) {
-            return true;
-        }
-    }
 
-    return false;
+    return (knobScriptName == QString::fromUtf8(kOCIOParamConfigFile)) || (knobScriptName == QString::fromUtf8(kOCIOParamWorkingSpace));
 }
 
 // The menus the native nodes fill from the project's OpenColorIO config, or from a file, at run
@@ -108,12 +99,20 @@ hasRunTimeOcioOptions(const QString& pluginID,
     if (!Node::documentationDependsOnOcioConfig(pluginID.toStdString())) {
         return false;
     }
-    for (std::size_t i = 0; i < sizeof(kOcioSpaceKnobNames) / sizeof(kOcioSpaceKnobNames[0]); ++i) {
-        if (knobScriptName == QString::fromUtf8(kOcioSpaceKnobNames[i]) + QString::fromUtf8("Index")) {
-            return true;
+    const std::string id = pluginID.toStdString();
+    if (isNativeOcioNode(pluginID)) {
+        for (std::size_t i = 0; i < sizeof(kOcioSpaceKnobNames) / sizeof(kOcioSpaceKnobNames[0]); ++i) {
+            if (knobScriptName == QString::fromUtf8(kOcioSpaceKnobNames[i])) {
+                return true;
+            }
         }
     }
-    const std::string id = pluginID.toStdString();
+    if (id == PLUGINID_NATRON_READ) {
+        return knobScriptName == QString::fromUtf8(kNatronReadParamColorspace);
+    }
+    if (id == PLUGINID_NATRON_WRITE) {
+        return knobScriptName == QString::fromUtf8(kNatronWriteParamColorspace);
+    }
     if (id == PLUGINID_NATRON_OCIODISPLAY) {
         return (knobScriptName == QString::fromUtf8(kOCIODisplayParamDisplay)) || (knobScriptName == QString::fromUtf8(kOCIODisplayParamView));
     }

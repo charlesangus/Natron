@@ -38,6 +38,11 @@ NATRON_NAMESPACE_ENTER
 
 
 namespace Merge {
+#ifdef SBK_RUN
+// Shiboken parses without NATRON_NAMESPACE but keeps the enums in namespace Natron (Global/Enums.h).
+NATRON_NAMESPACE_USING
+#endif
+
 /**
  * @brief Returns the name of the merge oeprator as described in @openfx-supportext/ofxsMerging.h
  * Keep this in sync with the Merge node's operators otherwise everything will fall apart.

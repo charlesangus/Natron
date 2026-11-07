@@ -27,6 +27,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -98,6 +99,35 @@ TEST_F(BaseTest, KnobContentHashFollowsStaticValue)
     EXPECT_EQ(before, knob->getContentHash());
 }
 
+TEST_F(BaseTest, KnobContentHashFollowsUnlistedChoiceName)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(node->getEffectInstance().get(), std::string("hashChoice"), 1, false);
+    ASSERT_TRUE(bool(knob));
+
+    const std::vector<ChoiceOption> entries = {
+        ChoiceOption("first", "first", std::string()),
+        ChoiceOption("second", "second", std::string()),
+        ChoiceOption("third", "third", std::string()),
+    };
+    knob->populateChoices(entries);
+    knob->setValue(1);
+    const U64 listed = knob->getContentHash();
+
+    knob->setActiveEntry(ChoiceOption("Foo", "Foo", std::string()));
+    ASSERT_EQ(1, knob->getValue());
+    const U64 foo = knob->getContentHash();
+    EXPECT_NE(listed, foo);
+
+    knob->setActiveEntry(ChoiceOption("Bar", "Bar", std::string()));
+    ASSERT_EQ(1, knob->getValue());
+    EXPECT_NE(foo, knob->getContentHash());
+
+    knob->setActiveEntry(entries[1]);
+    EXPECT_EQ(listed, knob->getContentHash());
+}
+
 TEST_F(BaseTest, KnobContentHashFollowsKeyframes)
 {
     NodePtr node = createNode(_generatorPluginID);
@@ -126,6 +156,22 @@ TEST_F(BaseTest, KnobContentHashFollowsKeyframes)
 
     knobI->deleteValueAtTime(eCurveChangeReasonInternal, 10, ViewSpec::all(), 0, false);
     EXPECT_EQ(noKeys, knob->getContentHash());
+}
+
+TEST_F(BaseTest, AnimatedKnobHashIgnoresStaticValue)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr a = makeDoubleKnob(node, "hashAnimatedA");
+    KnobDoublePtr b = makeDoubleKnob(node, "hashAnimatedB");
+    ASSERT_TRUE(bool(a) && bool(b));
+
+    b->setValue(7.);
+    EXPECT_NE(a->getContentHash(), b->getContentHash());
+
+    a->setValueAtTime(10, 3., ViewSpec::all(), 0);
+    b->setValueAtTime(10, 3., ViewSpec::all(), 0);
+    EXPECT_EQ(a->getContentHash(), b->getContentHash());
 }
 
 TEST_F(BaseTest, KnobContentHashFollowsExpression)

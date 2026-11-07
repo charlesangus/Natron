@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -78,10 +79,13 @@ public:
         bool readsFrameRange = true;
         SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
         double metersPerUnit = 1.;
+        // The project's shared materials root prim name, empty when off.
+        std::string materialsScope;
 
         bool operator==(const Key& other) const
         {
-            return (nodeDigest == other.nodeDigest) && (firstFrame == other.firstFrame) && (lastFrame == other.lastFrame) && (framesPerSecond == other.framesPerSecond) && (upstreamRead == other.upstreamRead) && (factsDigest == other.factsDigest) && (readsFrameRange == other.readsFrameRange) && (upAxis == other.upAxis) && (metersPerUnit == other.metersPerUnit);
+            return (nodeDigest == other.nodeDigest) && (firstFrame == other.firstFrame) && (lastFrame == other.lastFrame) && (framesPerSecond == other.framesPerSecond) && (upstreamRead == other.upstreamRead) && (factsDigest == other.factsDigest) && (readsFrameRange == other.readsFrameRange) && (upAxis == other.upAxis) && (metersPerUnit == other.metersPerUnit)
+                && (materialsScope == other.materialsScope);
         }
 
         bool operator!=(const Key& other) const
@@ -124,6 +128,9 @@ public:
      * key does not see.
      **/
     void invalidate();
+
+    // The node produce() records as the author of its layer, for SceneOps::authoringNodeOf().
+    void setOwner(const NodePtr& owner);
 
     // How many layers produce() has authored.
     U64 getAuthorCount() const;

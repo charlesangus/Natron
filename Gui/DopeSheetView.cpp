@@ -813,7 +813,7 @@ DopeSheetViewPrivate::isNearByKeyframe(DSNodePtr dsNode,
         DSKnobPtr dsKnob = (*it).second;
         int dim = dsKnob->getDimension();
 
-        if (dim == -1) {
+        if ((dim == -1) || dsKnob->isHiddenDriverRow()) {
             continue;
         }
         if (underItem && !isTreeItemUnder(it->first, underItem)) {
@@ -1480,7 +1480,7 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
             QTreeWidgetItem *knobTreeItem = dsKnob->getTreeItem();
 
             // The knob is no longer animated
-            if ( knobTreeItem->isHidden() ) {
+            if (knobTreeItem->isHidden() || dsKnob->isHiddenDriverRow()) {
                 continue;
             }
 
@@ -1531,7 +1531,7 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                 // Fill the knob times map
                 {
                     DSKnobPtr rootDSKnob = model->mapNameItemToDSKnob( knobTreeItem->parent() );
-                    if (rootDSKnob) {
+                    if (rootDSKnob && rootDSKnob->isMultiDimRoot()) {
                         assert(rootDSKnob);
                         const std::map<double, bool>& map = knobsKeytimes[rootDSKnob.get()];
                         bool knobTimeExists = ( map.find(keyTime) != map.end() );
@@ -2124,7 +2124,7 @@ DopeSheetViewPrivate::computeReaderRange(DSNode *reader)
 
     NodePtr node = reader->getInternalNode();
 
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameStartAt).get());
     if (!startingTimeKnob) {
         return;
     }
@@ -2484,7 +2484,7 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
             if (gui) {
                 gui->setDraftRenderEnabled(true);
             }
-            KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameTimeOffset).get() );
+            KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameFrameOffset).get());
             assert(timeOffsetKnob);
 
             double newFirstFrame = std::floor(currentTime - timeOffsetKnob->getValue() + 0.5);
@@ -2499,7 +2499,7 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
             if (gui) {
                 gui->setDraftRenderEnabled(true);
             }
-            KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameTimeOffset).get() );
+            KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(currentEditedReader->getInternalNode()->getKnobByName(kReaderParamNameFrameOffset).get());
             assert(timeOffsetKnob);
 
             double newLastFrame = std::floor(currentTime - timeOffsetKnob->getValue() + 0.5);
@@ -2559,7 +2559,7 @@ DopeSheetViewPrivate::createSelectionFromRect(const RectD &zoomCoordsRect,
             DSKnobPtr dsKnob = (*it2).second;
             int dim = dsKnob->getDimension();
 
-            if (dim == -1) {
+            if ((dim == -1) || dsKnob->isHiddenDriverRow()) {
                 continue;
             }
 
@@ -3001,7 +3001,8 @@ std::pair<double, double> DopeSheetView::getKeyframeRange() const
 
             const DSKnobPtr& dsKnob = (*itKnob).second;
 
-            for (int i = 0; i < dsKnob->getDimensionCount(); ++i) {
+            const int nCurves = dsKnob->getDriverCurve() ? 1 : dsKnob->getDimensionCount();
+            for (int i = 0; i < nCurves; ++i) {
                 KeyFrameSet keyframes = dsKnob->getKeyFrames(i);
 
                 if ( keyframes.empty() ) {
@@ -3393,7 +3394,7 @@ DopeSheetView::onNodeAdded(DSNode *dsNode)
         }
         KnobSignalSlotHandlerPtr lastFrameKnobHandler =  lastFrameKnob->getSignalSlotHandler();
         assert(lastFrameKnob);
-        KnobSignalSlotHandlerPtr startingTimeKnob = node->getKnobByName(kReaderParamNameStartingTime)->getSignalSlotHandler();
+        KnobSignalSlotHandlerPtr startingTimeKnob = node->getKnobByName(kReaderParamNameStartAt)->getSignalSlotHandler();
         assert(startingTimeKnob);
 
         connect( lastFrameKnobHandler.get(), SIGNAL(valueChanged(ViewSpec,int,int)),
@@ -4083,7 +4084,7 @@ DopeSheetView::mouseDoubleClickEvent(QMouseEvent *e)
 
     if ( modCASIsControl(e) ) {
         DSKnobPtr dsKnob = _imp->hierarchyView->getDSKnobAt( e->pos().y() );
-        if (dsKnob) {
+        if (dsKnob && !dsKnob->getDriverCurve()) {
             std::vector<DopeSheetKey> toPaste;
             double displayTime = std::floor(_imp->zoomContext.toZoomCoordinates(e->pos().x(), 0).x() + 0.5);
             _imp->refreshKeyTimeOffsets();

@@ -1,0 +1,23 @@
+{
+    "Plugins": [
+        {
+            "Info": {
+                "Types": {
+                    "Natron::LiveTextureResolver": {
+                        "bases": ["ArResolver"],
+                        "uriSchemes": ["natron"]
+                    },
+                    "Natron::LiveTextureImage": {
+                        "bases": ["HioImage"],
+                        "imageTypes": ["natron"],
+                        "precedence": 0
+                    }
+                }
+            },
+            "Name": "natronLiveTexture",
+            "Root": ".",
+            "ResourcePath": ".",
+            "Type": "resource"
+        }
+    ]
+}

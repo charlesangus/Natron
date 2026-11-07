@@ -39,6 +39,7 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
+#include "Gui/KnobDriverRow.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
 
@@ -911,6 +912,9 @@ KnobGui::show(int /*index*/)
     }
     if (!_imp->customInteract) {
         _show();
+        if (_imp->driverRow && _imp->driverRow->isDriving()) {
+            _hide();
+        }
     } else {
         _imp->customInteract->show();
     }
@@ -980,7 +984,8 @@ KnobGui::isOnNewLine() const
 void
 KnobGui::setEnabledSlot()
 {
-    if ( !getGui() ) {
+    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets.
+    if (!getGui() || !_imp->widgetCreated) {
         return;
     }
     if (!_imp->customInteract) {

@@ -65,7 +65,6 @@ namespace {
 
 const char* const kGradeID = PLUGINID_NATRON_GRADE;
 const double kTime = 1.;
-const int kOfxGradeMajor = 2;
 const int kNativeGradeMajor = PLUGIN_MAJOR_NATRON_GRADE;
 
 // Grade's gamma is a pow(), so the class bound of the transcendental nodes.
@@ -113,10 +112,9 @@ class NativeGradeTest
 protected:
     ParityPair makePair(bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kGradeID, kOfxGradeMajor, kNativeGradeMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kGradeID, kNativeGradeMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Grade is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -131,7 +129,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kGradeTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Grade " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -225,8 +222,6 @@ TEST_F(NativeGradeTest, UnversionedRequestsGetTheNativeGrade)
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeGradeMajor, unversioned->getMajorVersion());
 
-    EXPECT_FALSE(isPluginMajorRegistered(kGradeID, kOfxGradeMajor));
-
     NodesList before = getApp()->getProject()->getNodes();
     const std::string script = getApp()->getAppIDString() + ".createNode(\"" + std::string(kGradeID) + "\")\n";
     std::string error, output;
@@ -249,7 +244,7 @@ TEST_F(NativeGradeTest, ChainOfThirtyRendersTheSameInBothSchedulerModes)
     Format format(0, 0, 128, 96, "nativeGradeChainFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(format);
 
-    NodePtr previous = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+    NodePtr previous = createNode(QString::fromUtf8("CheckerBoard"));
     ASSERT_TRUE(bool(previous));
     for (int i = 0; i < 30; ++i) {
         NodePtr grade = createNode(QString::fromUtf8(kGradeID));

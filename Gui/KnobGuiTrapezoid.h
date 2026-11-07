@@ -114,7 +114,8 @@ public:
 
     /**
      * @brief The model the gradient is drawn in, and the source colour's components in it, the
-     * hue counting only when hueWeight is positive.
+     * hue counting only when hueWeight is positive. With no sourceComponents no source tick is
+     * drawn and a saturation strip is grey towards red.
      **/
     void setContext(ColorMath::KeyModelEnum model,
                     const ColorMath::OkLabBasis& basis,
@@ -200,6 +201,7 @@ private:
     ColorMath::KeyModelEnum _model;
     ColorMath::OkLabBasis _basis;
     float _source[3];
+    bool _hasSource;
     float _hueWeight;
     bool _smooth;
     DisplayConverter _toDisplay;
@@ -232,11 +234,12 @@ private:
 
 /**
  * @brief The GUI of a KnobDouble with a range-widget hint: a TrapezoidStrip with Smooth (when the
- * hint has a smooth knob), Recentre and Reset Zoom buttons, above the spinboxes, each labelled
- * above its field. Strip edits go through KnobUndoCommand, one undo step per drag; Recentre sets
- * the centre to the source colour's component in one undo step, keeping the offsets; Smooth
- * toggles the smooth knob in one undo step. The strip repaints when the source colour, the model
- * or the smooth knob changes, and the row greys out while the hint's enable knob is off.
+ * hint has a smooth knob), Recentre (when it has a source colour knob) and Reset Zoom buttons,
+ * above the spinboxes, each labelled above its field. Strip edits go through KnobUndoCommand,
+ * one undo step per drag; Recentre sets the centre to the source colour's component in one undo
+ * step, keeping the offsets; Smooth toggles the smooth knob in one undo step. The strip repaints
+ * when the source colour, the model or the smooth knob changes, and the row greys out while the
+ * hint's enable knob is off.
  **/
 class KnobGuiTrapezoid
     : public KnobGuiDouble {

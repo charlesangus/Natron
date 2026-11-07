@@ -533,6 +533,15 @@ ViewerGL::paintGL()
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
 } // paintGL
 
+QVariantList
+ViewerGL::canonicalToWidget() const
+{
+    const QPointF origin = toWidgetCoordinates(QPointF(0., 0.));
+    const QPointF unit = toWidgetCoordinates(QPointF(1., 1.));
+
+    return QVariantList { origin.x(), origin.y(), unit.x() - origin.x(), unit.y() - origin.y() };
+}
+
 void
 ViewerGL::clearColorBuffer(double r,
                            double g,
@@ -564,22 +573,18 @@ ViewerGL::toggleOverlays()
 void
 ViewerGL::toggleWipe()
 {
-    ViewerCompositingOperatorEnum compOperator = getViewerTab()->getCompositingOperator();
+    ViewerTab* tab = getViewerTab();
+    ViewerCompositingOperatorEnum newOp = eViewerCompositingOperatorNone;
 
-    switch (compOperator) {
-    case eViewerCompositingOperatorNone: {
-        ViewerCompositingOperatorEnum newOp = getViewerTab()->getCompositingOperatorPrevious();
+    if (tab->getCompositingOperator() == eViewerCompositingOperatorNone) {
+        newOp = tab->getCompositingOperatorPrevious();
         if (newOp == eViewerCompositingOperatorNone) {
             newOp = eViewerCompositingOperatorWipeUnder;
         }
-        getViewerTab()->setCompositingOperator(newOp);
-        break;
     }
-    default: {
-        getViewerTab()->setCompositingOperator(eViewerCompositingOperatorNone);
-        break;
-    }
-    }
+    tab->editViewerKnobs(tr("Toggle Wipe"), [tab, newOp]() {
+        tab->setCompositingOperator(newOp);
+    });
 }
 
 void
@@ -590,14 +595,14 @@ ViewerGL::centerWipe()
     int y = pos.y();
 
     QPointF zoomPos = toZoomCoordinates( QPointF(x, y) );
-
+    double mixAmount, angle;
     {
         QMutexLocker l(&_imp->wipeControlsMutex);
-        _imp->wipeCenter.rx() = zoomPos.x();
-        _imp->wipeCenter.ry() = zoomPos.y();
+        mixAmount = _imp->mixAmount;
+        angle = _imp->wipeAngle;
     }
 
-    update();
+    _imp->viewerTab->commitWipeControls(zoomPos, mixAmount, angle);
 }
 
 void
@@ -717,7 +722,14 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
             drawWipeControl(screenPixelRatio);
         }
 
-
+        glCheckError();
+        {
+            NodesList overlayNodes;
+            _imp->viewerTab->getGui()->getNodesEntitledForOverlayImages(overlayNodes);
+            // Reversed like the overlays, so that the first panel's images are on top.
+            overlayNodes.reverse();
+            _imp->overlayImageRenderer.draw(overlayNodes, getCurrentlyDisplayedTime(), getCurrentView());
+        }
         glCheckError();
         glColor4f(1., 1., 1., 1.);
 
@@ -1851,12 +1863,8 @@ ViewerGL::prepareHandoffAhead()
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if ((processFormat == ViewerHandoffFormat::Bgra8) && colorManagement) {
-        std::string display = _imp->displayName;
-        std::string view = _imp->viewName;
-        const std::string look = _imp->lookName;
-        if (display.empty() || view.empty()) {
-            project->getDefaultDisplayView(&display, &view);
-        }
+        std::string display, view, look;
+        node->getResolvedDisplayTransform(&display, &view, &look);
         const std::string working = project->getWorkingColorSpace();
         // Held by the request so that a later config cannot reuse the address the key names while it is the last one.
         const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement->getConfig();
@@ -2117,15 +2125,10 @@ ViewerGL::setGamma(double g)
 }
 
 void
-ViewerGL::setDisplayTransform(const std::string& display,
-                              const std::string& view,
-                              const std::string& look)
+ViewerGL::refreshDisplayTransform()
 {
     // always running in the main thread
-    assert( qApp && qApp->thread() == QThread::currentThread() );
-    _imp->displayName = display;
-    _imp->viewName = view;
-    _imp->lookName = look;
+    assert(qApp && qApp->thread() == QThread::currentThread());
     // A new transform gets a new chance at the shader path; the textures rendered for the 8-bit
     // fallback must then be re-rendered as float.
     if (_imp->shaderFailed.exchange(false)) {
@@ -2448,6 +2451,29 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
         _imp->userRoI = _imp->draggedUserRoI;
     }
 
+    bool commitRoI = false;
+    bool commitWipe = false;
+    switch (_imp->ms) {
+    case eMouseStateDraggingRoiLeftEdge:
+    case eMouseStateDraggingRoiRightEdge:
+    case eMouseStateDraggingRoiTopEdge:
+    case eMouseStateDraggingRoiBottomEdge:
+    case eMouseStateDraggingRoiTopLeft:
+    case eMouseStateDraggingRoiTopRight:
+    case eMouseStateDraggingRoiBottomRight:
+    case eMouseStateDraggingRoiBottomLeft:
+    case eMouseStateDraggingRoiCross:
+    case eMouseStateBuildingUserRoI:
+        commitRoI = _imp->hasMovedSincePress;
+        break;
+    case eMouseStateDraggingWipeCenter:
+    case eMouseStateDraggingWipeMixHandle:
+    case eMouseStateRotatingWipeHandle:
+        commitWipe = _imp->hasMovedSincePress;
+        break;
+    default:
+        break;
+    }
 
     _imp->hasMovedSincePress = false;
 
@@ -2466,6 +2492,27 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
         update();
     }
 
+    // The knobs' edit renders, so only a drag that changed nothing is left to render here.
+    if (commitRoI) {
+        RectD roi;
+        {
+            QMutexLocker k(&_imp->userRoIMutex);
+            roi = _imp->userRoI;
+        }
+        _imp->renderOnPenUp = false;
+        _imp->viewerTab->commitUserRoI(roi);
+    }
+    if (commitWipe) {
+        QPointF center;
+        double mixAmount, angle;
+        {
+            QMutexLocker l(&_imp->wipeControlsMutex);
+            center = _imp->wipeCenter;
+            mixAmount = _imp->mixAmount;
+            angle = _imp->wipeAngle;
+        }
+        _imp->viewerTab->commitWipeControls(center, mixAmount, angle);
+    }
     if (_imp->renderOnPenUp) {
         _imp->renderOnPenUp = false;
         getInternalNode()->renderCurrentFrame(true);
@@ -3466,29 +3513,14 @@ ViewerGL::setFormat(const std::string& formatName, const RectD& format, double p
     _imp->currentViewerInfo_resolutionOverlay[textureIndex] = QString::fromUtf8(formatName.c_str());
 }
 
-void
-ViewerGL::setClipToFormat(bool b)
-{
-    // always running in the main thread
-    assert( qApp && qApp->thread() == QThread::currentThread() );
-    {
-        QMutexLocker l(&_imp->clipToDisplayWindowMutex);
-        _imp->clipToDisplayWindow = b;
-    }
-    ViewerInstance* viewer = _imp->viewerTab->getInternalNode();
-    assert(viewer);
-    if ( viewer->getUiContext() && !_imp->viewerTab->getGui()->getApp()->getProject()->isLoadingProject() ) {
-        _imp->viewerTab->getInternalNode()->renderCurrentFrame(true);
-    }
-}
-
 bool
 ViewerGL::isClippingImageToFormat() const
 {
     // MT-SAFE
-    QMutexLocker l(&_imp->clipToDisplayWindowMutex);
+    ViewerInstance* node = _imp->viewerTab->getInternalNode();
+    KnobBoolPtr knob = node ? node->getKnobByNameAndType<KnobBool>(kViewerParamClipToFormat) : KnobBoolPtr();
 
-    return _imp->clipToDisplayWindow;
+    return knob ? knob->getValue() : true;
 }
 
 /*display black in the viewer*/
@@ -3867,9 +3899,6 @@ ViewerGL::setUserRoIEnabled(bool b)
     if (!b) {
         _imp->buildUserRoIOnNextPress = false;
     }
-    if ( displayingImage() ) {
-        _imp->viewerTab->getInternalNode()->renderCurrentFrame(true);
-    }
     update();
 }
 
@@ -3961,16 +3990,31 @@ ViewerGL::isNearByUserRoI(double x,
 bool
 ViewerGL::isUserRegionOfInterestEnabled() const
 {
-    // MT-SAFE
-    QMutexLocker l(&_imp->userRoIMutex);
+    // MT-SAFE. The knob, not the drawn state: a knob edit renders before the drawn state follows it.
+    ViewerInstance* node = _imp->viewerTab->getInternalNode();
+    KnobBoolPtr knob = node ? node->getKnobByNameAndType<KnobBool>(kViewerParamEnableUserRoI) : KnobBoolPtr();
 
-    return _imp->userRoIEnabled;
+    return knob && knob->getValue();
 }
 
 RectD
 ViewerGL::getUserRegionOfInterest() const
 {
     // MT-SAFE
+    ViewerInstance* node = _imp->viewerTab->getInternalNode();
+    KnobDoublePtr bottomLeft = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoIBottomLeft) : KnobDoublePtr();
+    KnobDoublePtr size = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoISize) : KnobDoublePtr();
+    if (bottomLeft && size) {
+        const double width = size->getValue(0);
+        const double height = size->getValue(1);
+        if ((width > 0.) && (height > 0.)) {
+            const double x1 = bottomLeft->getValue(0);
+            const double y1 = bottomLeft->getValue(1);
+
+            return RectD(x1, y1, x1 + width, y1 + height);
+        }
+    }
+    // An empty knob RoI was never set: the drawn one is the default made from the format.
     QMutexLocker l(&_imp->userRoIMutex);
 
     return _imp->userRoI;
@@ -4050,6 +4094,20 @@ ViewerGL::getScreenPixelRatio() const
     return devicePixelRatio();
 }
 #endif
+
+void
+ViewerGL::drawOverlayDrawList(const OverlayDrawList& list,
+                              const OverlayDrawState& state)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+
+    if (!_imp->overlayRenderer) {
+        _imp->overlayRenderer.reset(new NodeOverlayRenderer());
+    }
+    _imp->overlayRenderer->draw(list, state, this);
+}
 
 /**
  * @brief Returns the colour of the background (i.e: clear color) of the viewport.
@@ -4349,30 +4407,35 @@ ViewerGL::updateRectangleColorPickerInternal(bool pickOutput)
 }
 
 void
-ViewerGL::resetWipeControls()
+ViewerGL::setWipeControls(const QPointF& center,
+                          double mixAmount,
+                          double angle)
 {
-    RectD rod;
-
-    if (_imp->displayTextures[1].isVisible) {
-        rod = getRoD(1);
-    } else if (_imp->displayTextures[0].isVisible) {
-        rod = getRoD(0);
-    } else {
-        rod = _imp->displayTextures[0].format;
-    }
     {
         QMutexLocker l(&_imp->wipeControlsMutex);
-        _imp->wipeCenter.setX( (rod.x1 + rod.x2) / 2. );
-        _imp->wipeCenter.setY( (rod.y1 + rod.y2) / 2. );
-        _imp->wipeAngle = 0;
-        _imp->mixAmount = 1.;
+        _imp->wipeCenter = center;
+        _imp->mixAmount = mixAmount;
+        _imp->wipeAngle = angle;
     }
+    update();
 }
 
 bool
 ViewerGL::isWipeHandleVisible() const
 {
     return _imp->viewerTab->getCompositingOperator() != eViewerCompositingOperatorNone;
+}
+
+void
+ViewerGL::fitImageToFormatUnlessNavigated()
+{
+    {
+        QMutexLocker l(&_imp->zoomCtxMutex);
+        if (_imp->zoomOrPannedSinceLastFit || (_imp->zoomCtx.screenWidth() == 0) || (_imp->zoomCtx.screenHeight() == 0)) {
+            return;
+        }
+    }
+    fitImageToFormat();
 }
 
 void

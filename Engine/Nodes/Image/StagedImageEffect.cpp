@@ -220,7 +220,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
-        return opPassesInputRoI(inputNb, outputRect, scale);
+        return opPassesInputRoI(inputNb, time, view, outputRect, scale);
     }
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);

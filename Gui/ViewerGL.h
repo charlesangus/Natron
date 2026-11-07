@@ -36,6 +36,7 @@
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 
 #include <QSize>
+#include <QVariantList>
 
 #include <QOpenGLWidget>
 
@@ -61,9 +62,12 @@ class ViewerGL
 GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
+// GUI test scripts map canonical coordinates to widget pixels with this: widget origin of the
+// canonical origin, then widget pixels per canonical unit in x and y (negative y: y points up).
+Q_PROPERTY(QVariantList natronCanonicalToWidget READ canonicalToWidget)
 
 public:
-
+    QVariantList canonicalToWidget() const;
 
     /*3 different constructors, that all take a different parameter related to OpenGL or Qt widget parenting.
        When constructing a viewer for the 1st time in the app, you must pass a NULL shareWidget. Otherwise,you
@@ -97,8 +101,6 @@ public:
     RectD getCanonicalFormat(int texIndex) const;
 
     double getPAR(int texIndex) const;
-
-    void setClipToFormat(bool b);
 
     virtual bool isClippingImageToFormat() const OVERRIDE FINAL;
     virtual ImageBitDepthEnum getBitDepth() const OVERRIDE FINAL;
@@ -280,13 +282,10 @@ public Q_SLOTS:
 
     void onCheckerboardSettingsChanged();
 
-
     /**
-     * @brief Reset the wipe position so it is in the center of the B input.
-     * If B input is disconnected it goes in the middle of the A input.
-     * Otherwise it goes in the middle of the project window
+     * @brief Shows the wipe handle at the given place, as the viewer node's wipe knobs hold it.
      **/
-    void resetWipeControls();
+    void setWipeControls(const QPointF& center, double mixAmount, double angle);
 
     void clearLastRenderedTexture();
 
@@ -321,6 +320,7 @@ public:
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 
+    // Shows or hides the RoI the viewer node's knobs enable; rendering follows the knobs.
     void setUserRoIEnabled(bool b);
 
     void setBuildNewUserRoI(bool b);
@@ -328,6 +328,7 @@ public:
     virtual bool isUserRegionOfInterestEnabled() const OVERRIDE FINAL;
     virtual RectD getUserRegionOfInterest() const OVERRIDE FINAL;
 
+    // The RoI drawn and dragged, which the viewer node's knobs hold once a drag ends.
     void setUserRoI(const RectD & r);
 
     /**
@@ -358,6 +359,8 @@ public:
 #ifdef OFX_EXTENSIONS_NATRON
     virtual double getScreenPixelRatio() const OVERRIDE FINAL;
 #endif
+
+    virtual void drawOverlayDrawList(const OverlayDrawList& list, const OverlayDrawState& state) OVERRIDE FINAL;
 
     /**
      * @brief Returns the colour of the background (i.e: clear color) of the viewport.
@@ -420,14 +423,18 @@ public:
     void setGamma(double g);
 
     /**
-     * @brief Sets the display, view and look the 32f shader and the colour picker use, for both
-     * the A and B textures. An empty display or view uses the project's defaults.
+     * @brief Redraws with the viewer node's current display, view and look, which the 32f shader
+     * and the colour picker use for both the A and B textures.
      **/
-    void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
+    void refreshDisplayTransform();
 
     bool isWipeHandleVisible() const;
 
     void setZoomOrPannedSinceLastFit(bool enabled);
+
+    // Fits unless the user zoomed or panned since the last fit, or the viewer has no size yet, in
+    // which case its first resize fits.
+    void fitImageToFormatUnlessNavigated();
 
     bool getZoomOrPannedSinceLastFit() const;
 

@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/HueCurves.h"
+#include "Engine/Nodes/Keyer/KeyerRange.h"
 #include "Engine/Project.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -69,68 +70,6 @@ const uint32_t kGpuFlagSmoothLuma = 1024u;
 const uint32_t kGpuModelShift = 4u;
 const uint32_t kGpuOutputShift = 6u;
 #endif
-
-KnobDoublePtr
-addRange(KnobHolder* holder,
-         const KnobPagePtr& page,
-         const char* name,
-         const std::string& label,
-         const std::string& hint,
-         const double defaults[KnobDouble::eRangeWidgetDimensionCount])
-{
-    KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label, KnobDouble::eRangeWidgetDimensionCount);
-    const char* const dimensionNames[KnobDouble::eRangeWidgetDimensionCount] = {
-        "Outer Low", "Inner Low", "Centre", "Inner High", "Outer High"
-    };
-
-    knob->setName(name);
-    knob->setHintToolTip(hint);
-    for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
-        const bool offset = (i != KnobDouble::eRangeWidgetDimensionCentre);
-        knob->setDimensionName(i, dimensionNames[i]);
-        knob->setMinimum(offset ? 0. : -DBL_MAX, i);
-        knob->setMaximum(DBL_MAX, i);
-        knob->setDisplayMinimum(0., i);
-        knob->setDisplayMaximum(offset ? 0.5 : 1., i);
-        knob->setDefaultValue(defaults[i], i);
-    }
-    page->addKnob(knob);
-
-    return knob;
-}
-
-// A range knob's centre at time and its offsets as they key (KnobDouble::rangeOffsetsOf()).
-double
-rangeAt(const KnobReader& reader,
-        const KnobDoubleWPtr& knob,
-        double* offsets)
-{
-    double values[KnobDouble::eRangeWidgetDimensionCount];
-
-    for (int i = 0; i < KnobDouble::eRangeWidgetDimensionCount; ++i) {
-        values[i] = reader.value(knob, i);
-    }
-    KnobDouble::rangeOffsetsOf(values, offsets);
-
-    return values[KnobDouble::eRangeWidgetDimensionCentre];
-}
-
-// The outer low, inner low, inner high and outer high points of a linear range.
-void
-linearPoints(const KnobReader& reader,
-             const KnobDoubleWPtr& knob,
-             float* points)
-{
-    double o[4];
-    const double centre = rangeAt(reader, knob, o);
-    const double innerLow = centre - o[1];
-    const double innerHigh = centre + o[2];
-
-    points[0] = (float)(innerLow - o[0]);
-    points[1] = (float)innerLow;
-    points[2] = (float)innerHigh;
-    points[3] = (float)(innerHigh + o[3]);
-}
 
 KnobBoolPtr
 addBool(KnobHolder* holder,
@@ -250,16 +189,16 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     const double hueDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.035, 0.4, 0.035, 0.05 };
     const double satDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.04, 0.14, 0.2, 0.2, 0. };
     const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.45, 0.5, 0.45, 0.05 };
-    const std::string offsetsHint = EffectInstance::tr("The key is 1 from the centre minus the inner low offset to the centre plus the inner high offset, and falls to 0 over the outer low offset below that and over the outer high offset above it, so an outer offset of 0 is a hard edge. Offsets below 0 count as 0.").toStdString();
-    KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
-                                 EffectInstance::tr("The hue range, in turns from red at 0, wrapping around its centre, so it may cross red. Each offset counts up to a whole turn. Hue counts for less as the chroma nears 0.").toStdString() + "\n" + offsetsHint,
-                                 hueDefaults);
-    KnobDoublePtr sat = addRange(knobHolder, page, kHSVKeyerParamSaturationRange, EffectInstance::tr("Saturation Range").toStdString(),
-                                 EffectInstance::tr("The saturation range (chroma in OkLCh).").toStdString() + "\n" + offsetsHint,
-                                 satDefaults);
-    KnobDoublePtr luma = addRange(knobHolder, page, kHSVKeyerParamLumaRange, EffectInstance::tr("Luma Range").toStdString(),
-                                  EffectInstance::tr("The range over the model's value, lightness or OkLab lightness.").toStdString() + "\n" + offsetsHint,
-                                  lumaDefaults);
+    const std::string offsetsHint = keyerRangeOffsetsHint();
+    KnobDoublePtr hue = createKeyerRangeKnob(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
+                                             EffectInstance::tr("The hue range, in turns from red at 0, wrapping around its centre, so it may cross red. Each offset counts up to a whole turn. Hue counts for less as the chroma nears 0.").toStdString() + "\n" + offsetsHint,
+                                             hueDefaults);
+    KnobDoublePtr sat = createKeyerRangeKnob(knobHolder, page, kHSVKeyerParamSaturationRange, EffectInstance::tr("Saturation Range").toStdString(),
+                                             EffectInstance::tr("The saturation range (chroma in OkLCh).").toStdString() + "\n" + offsetsHint,
+                                             satDefaults);
+    KnobDoublePtr luma = createKeyerRangeKnob(knobHolder, page, kHSVKeyerParamLumaRange, EffectInstance::tr("Luma Range").toStdString(),
+                                              EffectInstance::tr("The range over the model's value, lightness or OkLab lightness.").toStdString() + "\n" + offsetsHint,
+                                              lumaDefaults);
     KnobColorPtr src = sourceColor.lock();
     KnobChoicePtr model = colorModel.lock();
     // The smooth toggles are shown as buttons on their range rows.
@@ -319,7 +258,7 @@ HSVKeyerOp::bake(const KnobReader& reader) const
     // Each hue offset counts up to a whole turn, so the trapezoid spans at most four turns, which
     // HueCurves::hueTrapezoid() and the kernel overlap in full.
     double h[4];
-    const double hueCentre = rangeAt(reader, hueRange, h);
+    const double hueCentre = keyerRangeAt(reader, hueRange, h);
     for (int i = 0; i < 4; ++i) {
         h[i] = (std::min)(1., h[i]);
     }
@@ -329,8 +268,8 @@ HSVKeyerOp::bake(const KnobReader& reader) const
     p.hueFull = (float)hueFull;
     p.hueFall = (float)(hueFull + h[3]);
 
-    linearPoints(reader, satRange, p.sat);
-    linearPoints(reader, lumaRange, p.luma);
+    keyerRangePoints(reader, satRange, p.sat);
+    keyerRangePoints(reader, lumaRange, p.luma);
     if (p.model == ColorMath::eKeyModelOkLCh) {
         p.basis = basisOf(holder);
     }

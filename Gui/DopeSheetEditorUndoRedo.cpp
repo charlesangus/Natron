@@ -46,6 +46,7 @@
 
 #include "Global/GlobalDefines.h"
 
+#include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheet.h"
 #include "Gui/DopeSheetEditor.h"
@@ -63,6 +64,62 @@ typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
 
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+DriverCurveGuiPtr
+driverCurveOf(const DopeSheetKey& key)
+{
+    DSKnobPtr context = key.getContext();
+
+    return context ? context->getDriverCurve() : DriverCurveGuiPtr();
+}
+
+void
+addCurve(std::list<DriverCurveGuiPtr>* curves,
+         const DriverCurveGuiPtr& curve)
+{
+    if (std::find(curves->begin(), curves->end(), curve) == curves->end()) {
+        curves->push_back(curve);
+    }
+}
+
+void
+commitCurves(const std::list<DriverCurveGuiPtr>& curves)
+{
+    for (std::list<DriverCurveGuiPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        (*it)->commit();
+    }
+}
+
+// Moves driver keys in the order that keeps one from landing on another not yet moved.
+void
+moveDriverKeys(const DopeSheetKeyPtrList& keys,
+               double dt)
+{
+    std::vector<DopeSheetKeyPtr> driverKeys;
+
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (driverCurveOf(**it)) {
+            driverKeys.push_back(*it);
+        }
+    }
+    std::sort(driverKeys.begin(), driverKeys.end(), [dt](const DopeSheetKeyPtr& a, const DopeSheetKeyPtr& b) {
+        return dt > 0 ? a->key.getTime() > b->key.getTime() : a->key.getTime() < b->key.getTime();
+    });
+
+    std::list<DriverCurveGuiPtr> curves;
+    for (std::size_t i = 0; i < driverKeys.size(); ++i) {
+        DopeSheetKey& k = *driverKeys[i];
+        DriverCurveGuiPtr curve = driverCurveOf(k);
+        CurvePtr internalCurve = curve->getInternalCurve();
+        const int keyframeIndex = internalCurve->keyFrameIndex(k.key.getTime());
+        if (keyframeIndex == -1) {
+            continue;
+        }
+        k.key = internalCurve->setKeyFrameValueAndTime(k.key.getTime() + dt, k.key.getValue(), keyframeIndex);
+        addCurve(&curves, curve);
+    }
+    commitCurves(curves);
+}
 
 /**
  * @brief Returns the knob whose curve a key edit must change. A slaved knob shows and renders
@@ -95,7 +152,7 @@ void
 moveReader(const NodePtr &reader,
            double dt)
 {
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( reader->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(reader->getKnobByName(kReaderParamNameStartAt).get());
     assert(startingTimeKnob);
     KnobHelper::ValueChangedReturnCodeEnum s = startingTimeKnob->setValue(startingTimeKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
     Q_UNUSED(s);
@@ -602,9 +659,13 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
     }
 
     //////////Handle selected keyframes
+    moveDriverKeys(_keys, dt);
     std::set<std::tuple<KnobI*, int, double>> movedKeys;
     for (DopeSheetKeyPtrList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKeyPtr& selectedKey = (*it);
+        if (driverCurveOf(*selectedKey)) {
+            continue;
+        }
         if (offsetsMovedWithNodes.count(selectedKey->knob.lock())) {
             continue;
         }
@@ -733,7 +794,8 @@ DSTransformKeysCommand::DSTransformKeysCommand(const DopeSheetKeyPtrList& keys,
             continue;
         }
         KnobIPtr knob = (*it)->knob.lock();
-        if (!knob) {
+        // Driver keys are moved and deleted here, not scaled.
+        if (!knob || driverCurveOf(**it)) {
             continue;
         }
 
@@ -1269,9 +1331,9 @@ DSSlipReaderCommand::slipReader(double dt)
     assert(firstFrameKnob);
     KnobIntBase *lastFrameKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameLastFrame).get() );
     assert(lastFrameKnob);
-    KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameTimeOffset).get() );
+    KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameFrameOffset).get());
     assert(timeOffsetKnob);
-    KnobIntBase *startingTimeKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName(kReaderParamNameStartingTime).get() );
+    KnobIntBase* startingTimeKnob = dynamic_cast<KnobIntBase*>(node->getKnobByName(kReaderParamNameStartAt).get());
     assert(startingTimeKnob);
     if (!firstFrameKnob || !lastFrameKnob || !timeOffsetKnob || !startingTimeKnob) {
         return;
@@ -1396,12 +1458,24 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
     }
 
     std::set<KnobIPtr> knobsSet;
+    std::list<DriverCurveGuiPtr> driverCurves;
     // Several selected items' knobs can be slaved to one proxy knob, whose key must be edited once.
     std::set<std::tuple<KnobI*, int, double>> editedKeys;
     for (std::vector<DopeSheetKey>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKey& selected = (*it);
         int dimension;
         KnobIPtr knob = editedKnob(selected.knob.lock(), selected.dimension, &dimension);
+
+        if (DriverCurveGuiPtr driverCurve = driverCurveOf(selected)) {
+            CurvePtr internalCurve = driverCurve->getInternalCurve();
+            if (add) {
+                internalCurve->addKeyFrame(selected.key);
+            } else if (internalCurve->keyFrameIndex(selected.key.getTime()) != -1) {
+                internalCurve->removeKeyFrameWithTime(selected.key.getTime());
+            }
+            addCurve(&driverCurves, driverCurve);
+            continue;
+        }
 
         if (!editedKeys.insert(std::make_tuple(knob.get(), dimension, selected.key.getTime())).second) {
             if (!add) {
@@ -1430,6 +1504,7 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
     for (std::set<KnobIPtr>::iterator it = knobsSet.begin(); it != knobsSet.end(); ++it) {
         (*it)->endChanges();
     }
+    commitCurves(driverCurves);
 
     _model->refreshSelectionBboxAndRedrawView();
 }
@@ -1512,10 +1587,22 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
         it->_key->key.setInterpolation(undo ? it->_oldInterpType : it->_newInterpType);
     }
 
+    std::list<DriverCurveGuiPtr> driverCurves;
     for (std::list<DSKeyInterpolationChange>::iterator it = _changes.begin(); it != _changes.end(); ++it) {
         KeyframeTypeEnum interp = undo ? it->_oldInterpType : it->_newInterpType;
         int dimension;
         KnobIPtr knob = editedKnob(it->_key->knob.lock(), it->_key->dimension, &dimension);
+
+        // Undo of a driver key's tangents comes from the drivers restored around this command.
+        if (DriverCurveGuiPtr driverCurve = driverCurveOf(*it->_key)) {
+            CurvePtr internalCurve = driverCurve->getInternalCurve();
+            const int keyframeIndex = internalCurve->keyFrameIndex(it->_key->key.getTime());
+            if (keyframeIndex != -1) {
+                it->_key->key = internalCurve->setKeyFrameInterpolation(interp, keyframeIndex);
+                addCurve(&driverCurves, driverCurve);
+            }
+            continue;
+        }
 
         knob->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
                                      ViewSpec::all(),
@@ -1533,6 +1620,7 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
                                     &it->_key->key);
         }
     }
+    commitCurves(driverCurves);
 
     _model->refreshSelectionBboxAndRedrawView();
 }

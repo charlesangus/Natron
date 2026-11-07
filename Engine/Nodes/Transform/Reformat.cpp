@@ -356,14 +356,6 @@ Reformat::initializeKnobs()
     page->addKnob(scaleUniform);
     _scaleUniform = scaleUniform;
 
-    // The divider an OpenFX host draws under a knob whose layout hint asks for one, with the name
-    // that host gives it.
-    {
-        KnobSeparatorPtr separator = createKnob<KnobSeparator>(std::string());
-        separator->setName(std::string(kReformatParamScaleUniform) + "_separator");
-        page->addKnob(separator);
-    }
-
     KnobChoicePtr resize = createKnob<KnobChoice>(tr("Resize Type"));
     resize->setName(kReformatParamResize);
     resize->setHintToolTip(tr("Format: Converts between formats, the image is resized to fit in the target format. "

@@ -349,6 +349,8 @@ public:
     DopeSheetEditor * getDopeSheetEditor() const;
     ScriptEditor* getScriptEditor() const;
     ProgressPanel* getProgressPanel() const;
+
+    SceneGraphPanel* getSceneGraphPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -424,6 +426,12 @@ public:
      * @brief Returns in nodes all the nodes that can draw an overlay in their order of appearance in the properties bin.
      **/
     void getNodesEntitledForOverlays(NodesList& nodes) const;
+
+    /**
+     * @brief Like getNodesEntitledForOverlays, for the overlay images: a node needs no overlay
+     * interact or draw list to offer them, so the interact-based list leaves out nodes that only have images.
+     **/
+    void getNodesEntitledForOverlayImages(NodesList& nodes) const;
 
     bool isLeftToolBarDisplayedOnMouseHoverOnly() const;
 
@@ -635,6 +643,10 @@ public Q_SLOTS:
     void renderSelectedNode();
 
     void onEnableRenderStatsActionTriggered();
+
+    void onToggleInteractiveActionTriggered();
+
+    void syncInteractiveActionWithSettings();
 
     void onMaxVisibleDockablePanelChanged(int maxPanels);
 

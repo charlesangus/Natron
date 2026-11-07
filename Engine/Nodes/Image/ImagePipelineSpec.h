@@ -38,13 +38,16 @@ NATRON_NAMESPACE_ENTER
  * by" channel (RowIO::divisor, 1 outside its image) over the undivided source and multiplies
  * nothing back: for an op whose work is the multiply or the divide itself, so that with no
  * channel picked the node is an identity. Its selector starts on rgba.A and is labelled
- * ImagePipelineSpec::divisorLabel.
+ * ImagePipelineSpec::divisorLabel. ClampAlpha limits the alpha channel of a result the MaskMix
+ * stage has blended with the source to 0 to 1, a NaN giving 0; the alpha a blend leaves as the
+ * source is not touched.
  **/
 enum class Stage : unsigned char {
     Premult = 1 << 0,
     MaskMix = 1 << 1,
     PassThroughUnprocessed = 1 << 2,
-    Divisor = 1 << 3
+    Divisor = 1 << 3,
+    ClampAlpha = 1 << 4
 };
 
 class StageSet {

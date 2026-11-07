@@ -44,19 +44,19 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Phase 279.1: Delegate skeleton
 
-- [ ] M279.P1.T1 — Build wiring for the delegate and Embree
+- [x] M279.P1.T1 — Build wiring for the delegate and Embree
   - files: `Engine/Nodes/Scene/Utility/CMakeLists.txt` (new), `Engine/CMakeLists.txt`, `cmake/NatronUsd.cmake`, the AppImage staging script, `Engine/Nodes/Scene/plugInfo.json`
   - approach: new source directory `Engine/Nodes/Scene/Utility/` compiled into the Engine library (pxr types stay inside `Engine/Nodes/Scene/`). `find_package(embree 4 REQUIRED)` and link. Add the renderer plug-in type entry (`HdRendererPlugin` base, displayName "Natron Utility", priority 50) to the existing plugInfo.json, read the pinned USD's `plug/` source for how an in-process library entry is declared, and stage `libembree4` into the AppImage. Cite the headers used.
   - verify: the tree configures and builds with an empty plug-in class; `ldd` on the built Engine library shows `libembree4`; the AppImage staging step lists it.
   - size: M
 
-- [ ] M279.P1.T2 — Renderer plug-in, render delegate and render buffer
+- [x] M279.P1.T2 — Renderer plug-in, render delegate and render buffer
   - files: `Engine/Nodes/Scene/Utility/UtilityRendererPlugin.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderBuffer.{h,cpp}`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: implement the pure virtuals of `HdRendererPlugin`, `HdRenderDelegate` (supported Rprim `mesh`, Sprim `camera` plus whatever fallbacks Hydra requires, Bprim `renderBuffer`) and `HdRenderBuffer` (float/int formats as host memory, `Map`/`Unmap`/`Resolve`/`IsConverged`). Model the lifecycle on hdEmbree's delegate from the pinned USD source and cite it. `GetDefaultAovDescriptor` serves `color`, `depth`, `primId`, `instanceId`.
   - verify: gtest — `RenderDelegates::list()` contains "Natron Utility" as loadable; `HdRendererPluginRegistry::GetDefaultPluginId()` is still Storm; creating and destroying the delegate leaks nothing under the test's allocation counters.
   - size: L
 
-- [ ] M279.P1.T3 — Mesh rprim, instancer and camera sync
+- [x] M279.P1.T3 — Mesh rprim, instancer and camera sync
   - files: `Engine/Nodes/Scene/Utility/UtilityMesh.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityInstancer.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityScene.{h,cpp}`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: `UtilityMesh::Sync` triangulates with `HdMeshUtil` (holes, orientation, n-gons), pulls `points`, `displayColor`, `displayOpacity` and the transform, and rebuilds only on dirty points/topology. `UtilityInstancer` flattens nested PointInstancer and native-instance transforms per prototype. `UtilityScene` owns the per-mesh geometry records and instance list and exposes a version that bumps on any change; it knows nothing about Embree.
   - verify: gtest on hand-authored `.usda` — a PointInstancer of 3 cubes yields 3 instances of one geometry record; editing one point dirties only that mesh; hiding a prim drops its instance and nothing is rebuilt.

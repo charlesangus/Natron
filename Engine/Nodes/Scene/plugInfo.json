@@ -11,6 +11,17 @@
                         "bases": ["HioImage"],
                         "imageTypes": ["natron"],
                         "precedence": 0
+                    },
+                    "HdNatronUtilityRendererPlugin": {
+                        "bases": ["HdRendererPlugin"],
+                        "displayName": "Natron Utility",
+                        "priority": 50
+                    },
+                    "HdNatronUtilityImplicitSurfaceSceneIndexPlugin": {
+                        "bases": ["HdSceneIndexPlugin"],
+                        "displayName": "Natron Utility implicit surfaces",
+                        "loadWithRenderer": "Natron Utility",
+                        "priority": 0
                     }
                 }
             },

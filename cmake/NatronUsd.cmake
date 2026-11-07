@@ -70,7 +70,8 @@ endif()
 # and USDRender's Storm render: UsdImagingGLEngine on HgiGL, its AOV render buffers, garch's GL
 # loader for the framebuffer it renders under, the camera framing and conforming and the GL
 # lights it hands the engine, and hio's image reader interface for the natron:// live textures.
-set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
+# hf, hd and hdsi also carry the Natron Utility render delegate (Nodes/Scene/Utility/).
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdsi hd hf hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
 set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})
@@ -81,5 +82,9 @@ foreach(_natron_usd_target ${NATRON_USD_GUI_LIBRARIES})
     endif()
 endforeach()
 unset(_natron_usd_target)
+
+# The ray tracer of the Natron Utility render delegate. Found here so that the imported target is
+# visible to whatever links NatronEngine, whose static archive passes it on.
+find_package(embree 4 REQUIRED CONFIG)
 
 message(STATUS "OpenUSD ${PXR_MAJOR_VERSION}.${PXR_MINOR_VERSION}.${PXR_PATCH_VERSION} (Python ${NATRON_USD_PYTHON_VERSION}) at ${pxr_DIR}")

@@ -35,6 +35,8 @@
 
 // Storm's HdRendererPlugin type name, the renderer every consumer starts with.
 #define kRenderDelegateStormId "HdStormRendererPlugin"
+// The built-in utility renderer's HdRendererPlugin type name, which plugInfo.json declares.
+#define kRenderDelegateUtilityId "HdNatronUtilityRendererPlugin"
 
 NATRON_NAMESPACE_ENTER
 

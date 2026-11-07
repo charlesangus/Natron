@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRendererPlugin.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -149,6 +150,9 @@ registerLiveTextures(std::string* errorMessage)
         PXR_NS::Ar_DefineResolver<LiveTextureResolver, PXR_NS::ArResolver>();
         PXR_NS::TfType::Define<LiveTextureImage, PXR_NS::TfType::Bases<PXR_NS::HioImage>>()
             .SetFactory<PXR_NS::HioImageFactory<LiveTextureImage>>();
+        // NatronEngine is a static archive: the linker would drop an object whose only reference
+        // were a TF_REGISTRY_FUNCTION, so the renderer's types are defined from here.
+        defineUtilityRendererTypes();
 
         std::error_code ec;
         const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);

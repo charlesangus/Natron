@@ -64,19 +64,19 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Phase 279.2: Wavefront core on CPU
 
-- [ ] M279.P2.T1 — Intersection backend interface and Embree implementation
+- [x] M279.P2.T1 — Intersection backend interface and Embree implementation
   - files: `Engine/Nodes/Scene/Utility/Tracer.h`, `Engine/Nodes/Scene/Utility/EmbreeTracer.{h,cpp}`, `Tests/Scene/NatronUtilityTracer_Test.cpp`
   - approach: `Tracer` takes a `UtilityScene` version and builds or refits its structures (per-geometry BLAS, instance-level TLAS), then intersects a ray batch (SoA origin/dir/tmin/tmax) into a hit batch (t, geometry id, instance id, primitive id, barycentrics) and answers occlusion batches. Embree implementation: one `RTCScene` per geometry plus an instance scene; `rtcIntersect16`/streams over the batch; refit on dirty points only. The arena runs on the scheduler's TBB pool with its thread budget.
   - verify: gtest — rays at a unit quad hit with the expected t and barycentrics; an instance offset moves the hit; editing points refits without rebuilding the instance scene (counter).
   - size: L
 
-- [ ] M279.P2.T2 — Shared Slang kernels for ray generation and flat shading
+- [x] M279.P2.T2 — Shared Slang kernels for ray generation and flat shading
   - files: `Engine/Nodes/Scene/Utility/Kernels/RayGen.slang`, `Engine/Nodes/Scene/Utility/Kernels/ShadeFlat.slang`, `Engine/Nodes/Scene/Utility/Kernels/UtilityTypes.slang`, `Engine/Nodes/Scene/Utility/CMakeLists.txt`
   - approach: declare both through `slang_add_kernel(... CPP)` (`cmake/SlangKernels.cmake`) so each compiles to SPIR-V and C++. RayGen builds primary rays from the camera frustum USDRender already passes (centred sample per pixel). ShadeFlat reads a hit batch and the scene's per-geometry colour buffers and writes color (premultiplied displayColor × displayOpacity), depth (USDRender's `depth.Z` convention, read from `USDRender.cpp`) and primId/instanceId. No intersection inside Slang.
   - verify: both kernels compile to SPIR-V and C++ in the build; a gtest drives the C++ RayGen for a 4×4 frame and checks corner ray directions against the camera frustum.
   - size: M
 
-- [ ] M279.P2.T3 — Render pass driving the wavefront on CPU
+- [x] M279.P2.T3 — Render pass driving the wavefront on CPU
   - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.{h,cpp}`, `Engine/Nodes/Scene/Utility/WavefrontCpu.{h,cpp}`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: `_Execute` resolves the camera and AOV bindings, then runs RayGen (C++) → `EmbreeTracer` → ShadeFlat (C++) over tiles in parallel and writes the bound render buffers. Honour the abort flag between tiles. Keep the stage loop backend-agnostic so M280 - Utility Renderer GPU Path swaps the executor.
   - verify: gtest renders a red unit cube through the delegate directly (no Natron node) and reads `color`, `depth`, `primId` from the buffers: the centre pixel is red with depth equal to the analytic distance, corners transparent.

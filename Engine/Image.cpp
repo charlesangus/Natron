@@ -33,6 +33,8 @@
 
 #include <QDebug>
 
+#include "Engine/CacheDiskTier.h"
+
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
@@ -795,6 +797,215 @@ Image::onMemoryAllocated(bool /*diskRestoration*/)
     // and the file may hold a partial render or none at all.
     if (_cache || _useBitmap) {
         _header->bitmap.initialize(_bounds);
+    }
+}
+
+CacheDiskIdentity
+Image::diskIdentityOfKey(const ImageKey& key)
+{
+    CacheDiskByteWriter base;
+    base.put<std::uint64_t>(key._nodeHashKey);
+    base.put<double>(key._frameVaryingOrAnimated ? key._time : 0.);
+    base.put<double>(key._pixelAspect);
+    base.put<std::int32_t>(key._view);
+    base.put<std::uint8_t>(key._draftMode ? 1 : 0);
+    base.put<std::uint8_t>(key._fullScaleWithDownscaleInputs ? 1 : 0);
+
+    CacheDiskByteWriter variant;
+    variant.put<std::uint32_t>(key._mipmapLevel);
+    variant.putText(key._layer);
+    variant.put<std::int32_t>(key._bitDepth);
+
+    return CacheDiskTier::makeIdentity(eCacheDiskPayloadImage, base.bytes(), variant.bytes());
+}
+
+std::string
+Image::diskParamsBytes(const ImageParams& params)
+{
+    CacheDiskByteWriter bytes;
+    const RectD& rod = params.getRoD();
+    bytes.put<double>(rod.x1);
+    bytes.put<double>(rod.y1);
+    bytes.put<double>(rod.x2);
+    bytes.put<double>(rod.y2);
+    bytes.put<double>(params.getPixelAspectRatio());
+    bytes.put<std::uint32_t>(params.getMipmapLevel());
+    bytes.put<std::uint8_t>(params.isRodProjectFormat() ? 1 : 0);
+    bytes.put<std::int32_t>((std::int32_t)params.getBitDepth());
+    bytes.put<std::int32_t>((std::int32_t)params.getFieldingOrder());
+    bytes.put<std::int32_t>((std::int32_t)params.getStorageInfo().mode);
+    bytes.put<std::uint32_t>(params.getStorageInfo().textureTarget);
+
+    const ImageLayerDesc& components = params.getComponents();
+    bytes.putText(components.getLayerID());
+    bytes.putText(components.getLayerLabel());
+    bytes.putText(components.getChannelsLabel());
+    const std::vector<std::string>& channels = components.getChannels();
+    bytes.put<std::uint32_t>((std::uint32_t)channels.size());
+    for (const std::string& channel : channels) {
+        bytes.putText(channel);
+    }
+
+    return bytes.bytes();
+}
+
+ImageParamsPtr
+Image::diskParamsFromBytes(const std::string& bytes,
+                           const RectI& bounds)
+{
+    CacheDiskByteReader reader(bytes);
+    RectD rod;
+    double par;
+    std::uint32_t mipmapLevel, textureTarget, channelCount;
+    std::uint8_t isRoDProjectFormat;
+    std::int32_t bitDepth, fielding, mode;
+    std::string layerID, layerLabel, channelsLabel;
+
+    if (!reader.get(&rod.x1) || !reader.get(&rod.y1) || !reader.get(&rod.x2) || !reader.get(&rod.y2) || !reader.get(&par) || !reader.get(&mipmapLevel) || !reader.get(&isRoDProjectFormat) || !reader.get(&bitDepth) || !reader.get(&fielding) || !reader.get(&mode) || !reader.get(&textureTarget) || !reader.getText(&layerID) || !reader.getText(&layerLabel) || !reader.getText(&channelsLabel) || !reader.get(&channelCount) || (channelCount == 0) || (channelCount > bytes.size())) {
+        return ImageParamsPtr();
+    }
+
+    std::vector<std::string> channels(channelCount);
+    for (std::string& channel : channels) {
+        if (!reader.getText(&channel)) {
+            return ImageParamsPtr();
+        }
+    }
+    if (!reader.atEnd() || (mode != (std::int32_t)eStorageModeRAM)) {
+        return ImageParamsPtr();
+    }
+    switch ((ImageBitDepthEnum)bitDepth) {
+    case eImageBitDepthByte:
+    case eImageBitDepthShort:
+    case eImageBitDepthHalf:
+    case eImageBitDepthFloat:
+        break;
+    default:
+
+        return ImageParamsPtr();
+    }
+
+    return std::make_shared<ImageParams>(rod,
+                                         par,
+                                         mipmapLevel,
+                                         bounds,
+                                         (ImageBitDepthEnum)bitDepth,
+                                         (ImageFieldingOrderEnum)fielding,
+                                         isRoDProjectFormat != 0,
+                                         ImageLayerDesc(layerID, layerLabel, channelsLabel, channels),
+                                         eStorageModeRAM,
+                                         textureTarget);
+}
+
+bool
+Image::diskIdentity(CacheDiskIdentity* identity) const
+{
+    if (!_cache || !_useBitmap || (getStorageMode() != eStorageModeRAM)) {
+        return false;
+    }
+    *identity = diskIdentityOfKey(getKey());
+    const std::string paramsBytes = diskParamsBytes(*_params);
+    identity->paramsHash = CacheDiskTier::hashBytes(paramsBytes.data(), paramsBytes.size());
+
+    return true;
+}
+
+bool
+Image::diskSnapshot(CacheDiskSnapshot* snapshot) const
+{
+    if (!diskIdentity(&snapshot->identity)) {
+        return false;
+    }
+    snapshot->paramsBytes = diskParamsBytes(*_params);
+
+    QReadLocker k(&_entryLock);
+
+    const std::size_t count = (std::size_t)_bounds.area();
+    if ((count == 0) || !_data.isAllocated() || (_data.size() == 0)) {
+        return false;
+    }
+    snapshot->bounds = _bounds;
+    snapshot->totalPixels = count;
+    snapshot->payloadBytes = _data.size();
+    CacheDiskTier::encodeBitmap(_header->bitmap.getBitmap(), count, &snapshot->bitmapRuns, &snapshot->renderedPixels);
+    if (snapshot->renderedPixels == 0) {
+        return false;
+    }
+    if (snapshot->renderedPixels == count) {
+        snapshot->bitmapRuns.clear();
+    }
+
+    return true;
+}
+
+bool
+Image::diskWritePayload(const CacheDiskSnapshot& snapshot,
+                        CacheDiskSink& sink) const
+{
+    std::vector<unsigned char> scratch((std::size_t)std::min<std::uint64_t>(snapshot.payloadBytes, CacheDiskTier::kChunkBytes));
+    std::uint64_t offset = 0;
+
+    // The lock is dropped between chunks, and the disk is only touched without it: a render
+    // finishing a tile must not wait on the disk.
+    while (offset < snapshot.payloadBytes) {
+        const std::size_t chunk = (std::size_t)std::min<std::uint64_t>(snapshot.payloadBytes - offset, scratch.size());
+        {
+            QReadLocker k(&_entryLock);
+            if (!_data.isAllocated() || !(_bounds == snapshot.bounds) || (_data.size() != snapshot.payloadBytes)) {
+                return false;
+            }
+            std::memcpy(scratch.data(), _data.readable() + offset, chunk);
+        }
+        if (!sink.write(scratch.data(), chunk)) {
+            return false;
+        }
+        offset += chunk;
+    }
+
+    return true;
+}
+
+bool
+Image::diskRestore(const CacheDiskFileInfo& info,
+                   CacheDiskSource& source)
+{
+    const std::size_t count = (std::size_t)_bounds.area();
+
+    if (!(_bounds == info.bounds) || (count == 0) || (info.totalPixels != count) || (getElementsCountFromParams() * sizeof(unsigned char) != info.payloadBytes) || (info.bitmapBytes % sizeof(std::uint32_t) != 0) || (info.bitmapBytes > ((std::uint64_t)count + 1) * sizeof(std::uint32_t))) {
+        return false;
+    }
+
+    allocateMemory();
+
+    QWriteLocker k(&_entryLock);
+
+    if (!_data.isAllocated() || (_data.size() != info.payloadBytes)) {
+        return false;
+    }
+    std::vector<std::uint32_t> runs((std::size_t)(info.bitmapBytes / sizeof(std::uint32_t)));
+    if (!runs.empty() && !source.read(runs.data(), (std::size_t)info.bitmapBytes)) {
+        return false;
+    }
+    if (!source.read(_data.writable(), (std::size_t)info.payloadBytes)) {
+        return false;
+    }
+    if (info.allRendered) {
+        _header->bitmap.setTo1();
+
+        return true;
+    }
+
+    return CacheDiskTier::decodeBitmap(runs, _header->bitmap.getBitmap(), count);
+}
+
+void
+Image::diskPrepareStub(bool allRendered)
+{
+    QWriteLocker k(&_entryLock);
+
+    _header->bitmap.initialize(_bounds);
+    if (allRendered) {
+        _header->bitmap.setTo1();
     }
 }
 

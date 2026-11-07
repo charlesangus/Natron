@@ -153,6 +153,12 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
+    U64 getDiskTierSizeBytes() const;
+
+    std::string getDiskTierLocation() const;
+
+    static std::string defaultDiskTierLocation();
+
     double getUnreachableRamPercent() const;
 
     int getNumberOfThreads() const;
@@ -672,6 +678,8 @@ private:
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
     KnobPathPtr _diskCachePath;
+    KnobPathPtr _diskTierLocation;
+    KnobIntPtr _diskTierSize;
     KnobButtonPtr _wipeDiskCache;
 
     // Viewer

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <list>
 #include <map>
@@ -254,6 +255,8 @@ GTEST_API_ int main(int argc, char **argv)
 {
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
+    // No test may fill the developer's home directory; one that wants a tier opens its own.
+    setenv("NATRON_CACHE_DISK_TIER", "off", 0);
     // ctest lists the suites before every run. Every test is registered statically, so the list
     // does not depend on load(), which would cost a cold OFX rescan plus Python and OCIO init.
     if (::testing::GTEST_FLAG(list_tests)) {

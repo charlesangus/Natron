@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <vector>
 
 // Beyond that percentage of occupation, the cache will start evicting entries
 #define NATRON_CACHE_LIMIT_PERCENT 0.9
@@ -177,6 +178,12 @@ public:
 
     // Any in-memory entry nobody holds, in no particular order, or null.
     virtual CacheEntryPtr demotionCandidate() const = 0;
+
+    // In-memory entries nobody holds and no file is known for, looking at no more than maxVisits.
+    virtual void publishCandidates(std::size_t /*maxVisits*/,
+                                   std::vector<std::weak_ptr<AbstractCacheEntryBase>>* /*out*/) const
+    {
+    }
 };
 
 // The host RAM tier. Its counters are atomics rather than state of the cache's size lock, so that

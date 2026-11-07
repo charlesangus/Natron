@@ -282,6 +282,9 @@ public:
     void removeFromNodeCache(const DeepImageCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
+    // Also unlinks the key's files of every params variation, known to this session or not.
+    void removeFromNodeCache(const ImageKey& key);
+    void setNodeCacheDiskTierSize(U64 bytes);
     void removeFromViewerCache(U64 hash);
     void removeAllCacheEntriesForHolder(const CacheEntryHolder* holder, bool blocking);
 

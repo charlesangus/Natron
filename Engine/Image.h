@@ -33,6 +33,7 @@
 #include <cfloat>
 #include <list>
 #include <map>
+#include <string>
 
 #include "Global/GlobalDefines.h"
 
@@ -52,6 +53,8 @@ CLANG_DIAG_ON(deprecated)
 
 NATRON_NAMESPACE_ENTER
 
+struct CacheDiskFileInfo;
+class CacheDiskSource;
 
 class GenericAccess
 {
@@ -100,6 +103,25 @@ public:
     const CacheEntryHeaderPtr& getEntryHeader() const { return _header; }
 
     virtual CacheEntryHeader* evictionHeader() const OVERRIDE FINAL { return _header.get(); }
+
+    typedef void DiskPayloadTag;
+
+    virtual bool diskIdentity(CacheDiskIdentity* identity) const OVERRIDE FINAL;
+    virtual bool diskSnapshot(CacheDiskSnapshot* snapshot) const OVERRIDE FINAL;
+    virtual bool diskWritePayload(const CacheDiskSnapshot& snapshot, CacheDiskSink& sink) const OVERRIDE FINAL;
+
+    static CacheDiskIdentity diskIdentityOfKey(const ImageKey& key);
+    // Without the bounds: an entry grows in place, and a larger result must replace the smaller file.
+    static std::string diskParamsBytes(const ImageParams& params);
+    // Null if the bytes do not describe an image stored in RAM.
+    static ImageParamsPtr diskParamsFromBytes(const std::string& bytes, const RectI& bounds);
+
+    // False for a file that contradicts itself, which is corrupt. Throws std::bad_alloc.
+    bool diskRestore(const CacheDiskFileInfo& info, CacheDiskSource& source);
+
+    // A partial file claims none of its pixels: the bitmap is not read until the stub is promoted,
+    // and a caller planning on a stub must only over-estimate the work left.
+    void diskPrepareStub(bool allRendered);
 
     StorageModeEnum getStorageMode() const
     {

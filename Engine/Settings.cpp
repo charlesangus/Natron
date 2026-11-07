@@ -33,6 +33,7 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1595,6 +1596,27 @@ Settings::initializeKnobsCaching()
     _diskCachePath->setHintToolTip( diskCacheTt + QLatin1Char('\n') + diskCacheTt2 );
     _cachingTab->addKnob(_diskCachePath);
 
+    _diskTierLocation = AppManager::createKnob<KnobPath>(this, tr("Disk Tier Location"));
+    _diskTierLocation->setName("diskTierLocation");
+    _diskTierLocation->setMultiPath(false);
+    _diskTierLocation->setHintToolTip(tr("WARNING: Changing this parameter requires a restart of the application.\n"
+                                         "The directory holding rendered images that left RAM, shared with every "
+                                         "other %1 session pointing at it, on this machine or on a network filesystem. "
+                                         "If the parameter is left empty or the location cannot be used, the default "
+                                         "location is used: %2")
+                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                          .arg(QString::fromUtf8(defaultDiskTierLocation().c_str())));
+    _cachingTab->addKnob(_diskTierLocation);
+
+    _diskTierSize = AppManager::createKnob<KnobInt>(this, tr("Disk Tier Size"));
+    _diskTierSize->setName("diskTierSize");
+    _diskTierSize->disableSlider();
+    _diskTierSize->setMinimum(0);
+    _diskTierSize->setHintToolTip(tr("The maximum size of the disk tier, in GiB. It never takes more than a quarter of "
+                                     "the free space of its filesystem. Setting 0 turns the tier off; turning it back "
+                                     "on requires a restart of the application."));
+    _cachingTab->addKnob(_diskTierSize);
+
     _wipeDiskCache = AppManager::createKnob<KnobButton>( this, tr("Wipe Disk Cache") );
     _wipeDiskCache->setHintToolTip( tr("Cleans-up all caches, deleting all folders that may contain cached data. "
                                        "This is provided in case %1 lost track of cached images "
@@ -1802,6 +1824,7 @@ Settings::setDefaultValues()
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
+    _diskTierSize->setDefaultValue(20, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -2512,6 +2535,10 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
         }
+    } else if (k == _diskTierSize.get()) {
+        if (!_restoringSettings) {
+            appPTR->setNodeCacheDiskTierSize(getDiskTierSizeBytes());
+        }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
@@ -2783,6 +2810,26 @@ U64
 Settings::getMaximumDiskCacheNodeSize() const
 {
     return (U64)( _maxDiskCacheNodeGB->getValue() ) * 1024 * 1024 * 1024;
+}
+
+U64
+Settings::getDiskTierSizeBytes() const
+{
+    return (U64)(_diskTierSize->getValue()) * 1024 * 1024 * 1024;
+}
+
+std::string
+Settings::getDiskTierLocation() const
+{
+    const std::string location = _diskTierLocation->getValue();
+
+    return location.empty() ? defaultDiskTierLocation() : location;
+}
+
+std::string
+Settings::defaultDiskTierLocation()
+{
+    return (QDir::homePath() + QString::fromUtf8("/.cache/Natron/tier")).toStdString();
 }
 
 ///////////////////////////////////////////////////

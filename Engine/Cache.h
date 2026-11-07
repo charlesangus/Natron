@@ -56,6 +56,7 @@ GCC_DIAG_OFF(deprecated)
 GCC_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h" //for access to settings
+#include "Engine/CacheDiskTier.h"
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheRetention.h"
 #include "Engine/CacheTier.h"
@@ -498,6 +499,7 @@ private:
     // The in-memory limit and the size of the in-memory portion. Declared before the helper
     // threads at the end, whose entry destructions charge it until they are joined.
     mutable CacheHostTier _hostTier;
+    std::shared_ptr<CacheDiskTier> _diskTier;
     std::size_t _maximumCacheSize;     // maximum size allowed for the cache
 
     /*mutable because we need to change modify it in the sealEntryInternal function which
@@ -597,6 +599,11 @@ public:
 
     virtual ~Cache()
     {
+        // Off _lock: joining the writers releases the entries they hold, which reach back into this.
+        if (_diskTier) {
+            _diskTier->shutdown();
+        }
+
         QMutexLocker locker(&_lock);
 
         _tearingDown = true;
@@ -652,10 +659,26 @@ public:
     bool get(const typename PayloadType::key_type& key,
              std::list<std::shared_ptr<PayloadType>>* returnValue) const
     {
-        ///Be atomic, so it cannot be created by another thread in the meantime
-        QMutexLocker getlocker(&_getLock);
+        {
+            /// Be atomic, so it cannot be created by another thread in the meantime
+            QMutexLocker getlocker(&_getLock);
 
-        ///lock the cache before reading it.
+            /// lock the cache before reading it.
+            QMutexLocker locker(&_lock);
+
+            if (getInternal(key, returnValue)) {
+                return true;
+            }
+        }
+
+        // Both locks are released: createInternal holds _getLock, so a read under it would stall
+        // every render that misses.
+        const std::shared_ptr<PayloadType> promoted = promoteFromDisk<PayloadType>(key, NULL);
+        if (!promoted) {
+            return false;
+        }
+
+        QMutexLocker getlocker(&_getLock);
         QMutexLocker locker(&_lock);
 
         return getInternal(key, returnValue);
@@ -664,7 +687,8 @@ public:
     /**
      * @brief Finds entries as get() does without counting as a use of them: the replacement order and the eviction
      * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
-     * to be unreadable later.
+     * to be unreadable later. An entry only in the disk tier comes back as an unallocated stub made from its verified
+     * header, which claims all of its pixels if the file holds them all and none otherwise.
      *
      * Skips _getLock, which getOrCreate() holds while it evicts and allocates; a miss on an entry being created at that
      * moment only means the caller doesn't count on it.
@@ -673,25 +697,84 @@ public:
     bool peek(const typename PayloadType::key_type& key,
               std::list<std::shared_ptr<PayloadType>>* returnValue) const
     {
-        QMutexLocker locker(&_lock);
+        // Outlives the lock: a write finishing meanwhile can leave this the last reference.
+        std::vector<CacheEntryPtr> demoting;
+        {
+            QMutexLocker locker(&_lock);
 
-        for (CacheContainer* container : { &_memoryCache, &_diskCache }) {
-            const CacheIterator found = container->peek(key.getHash());
-            if (found == container->end()) {
-                continue;
+            for (CacheContainer* container : { &_memoryCache, &_diskCache }) {
+                const CacheIterator found = container->peek(key.getHash());
+                if (found == container->end()) {
+                    continue;
+                }
+                for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
+                    const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(stored);
+                    if (typed && (typed->getKey() == key)) {
+                        returnValue->push_back(typed);
+                    }
+                }
+
+                if (!returnValue->empty() || !_diskTier) {
+                    return !returnValue->empty();
+                }
+                break;
             }
-            for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
-                const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(stored);
-                if (typed && (typed->getKey() == key)) {
-                    returnValue->push_back(typed);
+
+            if (_diskTier && _diskTier->hasDemoting()) {
+                _diskTier->peekDemoting(key.getHash(), &demoting);
+                for (const CacheEntryPtr& stored : demoting) {
+                    const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(stored);
+                    if (typed && (typed->getKey() == key)) {
+                        returnValue->push_back(typed);
+                    }
+                }
+                if (!returnValue->empty()) {
+                    return true;
                 }
             }
-
-            return !returnValue->empty();
         }
 
-        return false;
+        if constexpr (requires(PayloadType& payload) { payload.diskPrepareStub(true); }) {
+            if (_diskTier) {
+                std::vector<CacheDiskFileInfo> candidates;
+                if (_diskTier->probe(PayloadType::diskIdentityOfKey(key), NULL, &candidates)) {
+                    for (const CacheDiskFileInfo& info : candidates) {
+                        const std::shared_ptr<typename PayloadType::param_t> params = PayloadType::diskParamsFromBytes(info.paramsBytes, info.bounds);
+                        if (!params) {
+                            continue;
+                        }
+                        try {
+                            const std::shared_ptr<PayloadType> stub = std::make_shared<PayloadType>(key, params, this);
+                            if (stub->getKey() == key) {
+                                stub->diskPrepareStub(info.allRendered);
+                                returnValue->push_back(stub);
+                            }
+                        } catch (const std::bad_alloc&) {
+                        }
+                    }
+                }
+            }
+        }
+
+        return !returnValue->empty();
     } // peek
+
+    /**
+     * @brief Connects the disk tier and starts its threads. Call once, before any render.
+     **/
+    void setDiskTier(const std::shared_ptr<CacheDiskTier>& tier)
+    {
+        _diskTier = tier;
+        _hostTier.setNext(tier.get());
+        if (tier) {
+            tier->attach(this, &_hostTier);
+        }
+    }
+
+    const std::shared_ptr<CacheDiskTier>& diskTier() const
+    {
+        return _diskTier;
+    }
 
 private:
 
@@ -901,6 +984,8 @@ private:
                 occupationPercentage = (double)memoryCacheSize / maximumInMemorySize;
             }
 
+            offerEvictedToDiskTier(entriesToBeDeleted);
+
             if ( !entriesToBeDeleted.empty() ) {
                 ///Launch a separate thread whose function will be to delete all the entries to be deleted
                 _deleterThread.appendToQueue(entriesToBeDeleted);
@@ -986,6 +1071,11 @@ public:
     void swapOrInsert(const EntryTypePtr& entryToBeEvicted,
                       const EntryTypePtr& newEntry)
     {
+        // The replaced entry must not publish, but its file is the same key's and stays valid.
+        if (_diskTier) {
+            _diskTier->retract(entryToBeEvicted, false);
+        }
+
         QMutexLocker locker(&_lock);
 
         const typename EntryType::key_type& key = entryToBeEvicted->getKey();
@@ -1062,6 +1152,20 @@ public:
         ///Make sure the shared_ptrs live in this list and are destroyed not while under the lock
         ///so that the memory freeing (which might be expensive for large images) doesn't happen while under the lock
 
+        // Before _getLock: createInternal holds it, so a read under it would stall every miss.
+        std::shared_ptr<PayloadType> promoted;
+        if (_diskTier) {
+            bool inMemory;
+            {
+                QMutexLocker memoryLocker(&_lock);
+                reclaimDemotingLocked(key.getHash());
+                inMemory = (bool)findInMemory<PayloadType>(key, params.get());
+            }
+            if (!inMemory) {
+                promoted = promoteFromDisk<PayloadType>(key, params.get());
+            }
+        }
+
         {
             ///Be atomic, so it cannot be created by another thread in the meantime
             QMutexLocker getlocker(&_getLock);
@@ -1092,6 +1196,9 @@ public:
      **/
     void clear()
     {
+        if (_diskTier) {
+            _diskTier->clearAuto();
+        }
         {
             QMutexLocker k(&_tileCacheMutex);
             _clearingCache = true;
@@ -1262,8 +1369,8 @@ public:
                 }
                 diskPercentage = (double)diskCacheSize / maximumDiskCacheSize;
             }
-            
 
+            offerEvictedToDiskTier(entriesToBeDeleted);
         }
     }
 
@@ -1282,6 +1389,7 @@ public:
             QMutexLocker locker(&_lock);
             int scansLeft = CacheEviction::kScansPerPass;
             ret = tryEvictInMemoryEntry(entriesToBeDeleted, &scansLeft);
+            offerEvictedToDiskTier(entriesToBeDeleted);
         }
 
         return ret;
@@ -1530,12 +1638,32 @@ public:
                 return false;
             }
             disposeOfEntryLeavingMemory(entry->getHashKey(), entry, entriesToBeDeleted);
+            offerEvictedToDiskTier(entriesToBeDeleted);
         }
         if (!entriesToBeDeleted.empty()) {
             _deleterThread.appendToQueue(entriesToBeDeleted);
         }
 
         return true;
+    }
+
+    virtual void publishCandidates(std::size_t maxVisits,
+                                   std::vector<std::weak_ptr<AbstractCacheEntryBase>>* out) const OVERRIDE FINAL
+    {
+        QMutexLocker locker(&_lock);
+
+        if (!_scoredEviction) {
+            return;
+        }
+        _memoryCache.scan(maxVisits, [out](hash_type /*hash*/, const StoredEntryPtr& entry) {
+            if (entry.use_count() != 1) {
+                return;
+            }
+            const CacheEntryHeader* const header = entry->evictionHeader();
+            if (header && !(header->residency.load() & CacheEntryHeader::eResidencyDisk)) {
+                out->push_back(entry);
+            }
+        });
     }
 
     virtual CacheEntryPtr demotionCandidate() const OVERRIDE FINAL
@@ -1610,12 +1738,17 @@ public:
 
         {
             QMutexLocker l(&_lock);
+            // An entry waiting for its write has left the table and would otherwise publish.
+            reclaimDemotingLocked(entry->getHashKey());
             // Several entries can share a key and differ only in their params (bounds, mipmap
             // level...), so the match has to be the instance itself rather than its key.
             if (!removeEntryFromContainer(_memoryCache, entry, &toRemove)) {
                 removeEntryFromContainer(_diskCache, entry, &toRemove);
             }
         } // QMutexLocker l(&_lock);
+        if (_diskTier) {
+            _diskTier->retract(entry, true);
+        }
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
@@ -1655,6 +1788,8 @@ public:
         std::list<StoredEntryPtr> toRemove;
         {
             QMutexLocker l(&_lock);
+            // An entry waiting for its write has left the table and would otherwise publish.
+            reclaimDemotingLocked(hash);
             CacheIterator existingEntry = _memoryCache( hash);
             if ( existingEntry != _memoryCache.end() ) {
                 std::list<StoredEntryPtr>& ret = getValueFromIterator(existingEntry);
@@ -1674,12 +1809,32 @@ public:
             }
         } // QMutexLocker l(&_lock);
 
+        if (_diskTier) {
+            for (const StoredEntryPtr& entry : toRemove) {
+                _diskTier->retract(entry, true);
+            }
+        }
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
             ///Clearing the list here will not delete the objects pointing to by the shared_ptr's because we made a copy
             ///that the separate thread will delete
             toRemove.clear();
+        }
+    }
+
+    /**
+     * @brief Removes the key's entries and every file of it, including params variations that were
+     * never in this session's memory.
+     **/
+    template <typename PayloadType>
+    void removeEntryAndFiles(const typename PayloadType::key_type& key)
+    {
+        removeEntry(key.getHash());
+        if constexpr (requires { typename PayloadType::DiskPayloadTag; }) {
+            if (_diskTier) {
+                _diskTier->retractFiles(PayloadType::diskIdentityOfKey(key));
+            }
         }
     }
 
@@ -1785,6 +1940,11 @@ private:
             _diskCache = newDiskCache;
         } // QMutexLocker locker(&_lock);
 
+        if (_diskTier) {
+            for (const StoredEntryPtr& entry : toDelete) {
+                _diskTier->retract(entry, false);
+            }
+        }
         if ( !toDelete.empty() ) {
             _deleterThread.appendToQueue(toDelete);
 
@@ -1800,6 +1960,8 @@ private:
     {
         ///Private should be locked
         assert( !_lock.tryLock() );
+
+        reclaimDemotingLocked(key.getHash());
 
         ///find a matching value in the internal memory container
         CacheIterator memoryCached = _memoryCache( key.getHash() );
@@ -1935,6 +2097,170 @@ private:
                 getValueFromIterator(existingEntry).push_back(entry);
             }
         }
+    }
+
+    // Under _lock. What is left in the list keeps the fate it had without a disk tier.
+    void offerEvictedToDiskTier(std::list<StoredEntryPtr>& entries) const
+    {
+        if (!_diskTier) {
+            return;
+        }
+        for (typename std::list<StoredEntryPtr>::iterator it = entries.begin(); it != entries.end();) {
+            if (!(*it)->isStoredOnDisk() && _diskTier->offerDemotion(*it)) {
+                it = entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // Under _lock. A lookup in the middle of a demotion takes the entry back at no I/O cost.
+    void reclaimDemotingLocked(hash_type hash) const
+    {
+        if (!_diskTier || !_diskTier->hasDemoting()) {
+            return;
+        }
+        std::vector<CacheEntryPtr> reclaimed;
+        _diskTier->reclaimDemoting(hash, &reclaimed);
+        for (const CacheEntryPtr& entry : reclaimed) {
+            sealEntry(entry, true);
+        }
+    }
+
+    // Under _lock. Null wanted means any params.
+    template <typename PayloadType>
+    std::shared_ptr<PayloadType> findInMemory(const typename PayloadType::key_type& key,
+                                              const typename PayloadType::param_t* wanted) const
+    {
+        const CacheIterator found = _memoryCache.peek(key.getHash());
+
+        if (found != _memoryCache.end()) {
+            for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
+                const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(stored);
+                if (typed && (typed->getKey() == key) && (!wanted || (*typed->getParams() == *wanted))) {
+                    return typed;
+                }
+            }
+        }
+
+        return std::shared_ptr<PayloadType>();
+    }
+
+    void evictForPromotion(std::size_t bytes) const
+    {
+        std::list<StoredEntryPtr> entriesToBeDeleted;
+        {
+            QMutexLocker locker(&_lock);
+            U64 live = _hostTier.liveBytes();
+            const double limit = (double)std::max((std::size_t)1, _hostTier.limit());
+            int scansLeft = CacheEviction::kScansPerPass;
+            while ((double)(live + bytes) / limit > NATRON_CACHE_LIMIT_PERCENT) {
+                std::list<StoredEntryPtr> deleted;
+                if (!tryEvictInMemoryEntry(deleted, &scansLeft)) {
+                    break;
+                }
+                for (const StoredEntryPtr& entry : deleted) {
+                    const std::size_t size = entry->size();
+                    live -= std::min<U64>(live, size);
+                    entriesToBeDeleted.push_back(entry);
+                }
+            }
+            offerEvictedToDiskTier(entriesToBeDeleted);
+        }
+        if (!entriesToBeDeleted.empty()) {
+            _deleterThread.appendToQueue(entriesToBeDeleted);
+        }
+    }
+
+    // Off every lock. Null on a miss, which any failure of the file's is.
+    template <typename PayloadType>
+    std::shared_ptr<PayloadType> restoreFromDisk(const typename PayloadType::key_type& key,
+                                                 const CacheDiskFileInfo& info) const
+    {
+        std::shared_ptr<PayloadType> typed;
+        const std::shared_ptr<typename PayloadType::param_t> params = PayloadType::diskParamsFromBytes(info.paramsBytes, info.bounds);
+
+        if (!params) {
+            return typed;
+        }
+        appPTR->checkCacheFreeMemoryIsGoodEnough();
+        evictForPromotion((std::size_t)info.payloadBytes);
+        try {
+            typed = std::make_shared<PayloadType>(key, params, this);
+            if (!(typed->getKey() == key)) {
+                return std::shared_ptr<PayloadType>();
+            }
+            CacheDiskTier::Reader reader(info);
+            if (!reader.open()) {
+                return std::shared_ptr<PayloadType>();
+            }
+            if (!typed->diskRestore(info, reader) || !reader.finish()) {
+                _diskTier->discardCorrupt(info);
+
+                return std::shared_ptr<PayloadType>();
+            }
+        } catch (const std::bad_alloc&) {
+            return std::shared_ptr<PayloadType>();
+        }
+
+        CacheEntryHeader* const header = typed->evictionHeader();
+        header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
+        header->reuseCount.store(info.stats.reuseCount + 1, std::memory_order_relaxed);
+        header->priority.store(info.stats.priority, std::memory_order_relaxed);
+        header->recomputeCostNs.store(info.stats.recomputeCostNs);
+        _diskTier->notePromoted(info);
+
+        return typed;
+    }
+
+    // Off every lock, because it reads the file on the calling render's thread.
+    template <typename PayloadType>
+    std::shared_ptr<PayloadType> promoteFromDisk(const typename PayloadType::key_type& key,
+                                                 const typename PayloadType::param_t* wanted) const
+    {
+        if constexpr (requires { typename PayloadType::DiskPayloadTag; }) {
+            if (!_diskTier) {
+                return std::shared_ptr<PayloadType>();
+            }
+            std::string wantedBytes;
+            if (wanted) {
+                wantedBytes = PayloadType::diskParamsBytes(*wanted);
+            }
+            std::vector<CacheDiskFileInfo> candidates;
+            if (!_diskTier->probe(PayloadType::diskIdentityOfKey(key), wanted ? &wantedBytes : NULL, &candidates)) {
+                return std::shared_ptr<PayloadType>();
+            }
+
+            CacheDiskTier::PromotionGate gate(*_diskTier, key.getHash());
+            {
+                QMutexLocker locker(&_lock);
+                const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
+                if (present) {
+                    return present;
+                }
+            }
+            for (const CacheDiskFileInfo& info : candidates) {
+                const std::shared_ptr<PayloadType> restored = restoreFromDisk<PayloadType>(key, info);
+                if (!restored) {
+                    continue;
+                }
+                // A render can have created the entry while this one was read.
+                QMutexLocker getlocker(&_getLock);
+                QMutexLocker locker(&_lock);
+                const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
+                if (present) {
+                    return present;
+                }
+                sealEntry(restored, true);
+
+                return restored;
+            }
+        } else {
+            (void)key;
+            (void)wanted;
+        }
+
+        return std::shared_ptr<PayloadType>();
     }
 
     static void markUsed(const AbstractCacheEntryBase& entry)

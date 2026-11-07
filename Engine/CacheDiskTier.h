@@ -1,0 +1,332 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef NATRON_ENGINE_CACHEDISKTIER_H
+#define NATRON_ENGINE_CACHEDISKTIER_H
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+#include "Engine/CacheTier.h"
+#include "Engine/RectI.h"
+
+NATRON_NAMESPACE_ENTER
+
+enum CacheDiskPayloadKindEnum {
+    eCacheDiskPayloadImage = 1,
+    eCacheDiskPayloadDeep = 2
+};
+
+// What names an entry's file and proves a file is that entry's.
+struct CacheDiskIdentity {
+    std::uint32_t kind = 0;
+    std::string keyBytes;
+    std::uint64_t base = 0;
+    std::uint64_t variant = 0;
+    std::uint64_t paramsHash = 0;
+};
+
+// An entry as the writer is about to store it. Taken before the payload is copied, so that a pixel
+// finishing mid-copy is merely not claimed by the file, rather than claimed with torn data.
+struct CacheDiskSnapshot {
+    CacheDiskIdentity identity;
+    std::string paramsBytes;
+    RectI bounds;
+    std::uint64_t renderedPixels = 0;
+    std::uint64_t totalPixels = 0;
+    std::uint64_t payloadBytes = 0;
+    std::vector<std::uint32_t> bitmapRuns; // empty when every pixel is rendered
+};
+
+struct CacheDiskStats {
+    std::uint64_t lastUse = 0;
+    std::uint32_t reuseCount = 0;
+    float priority = 0.f;
+    float recomputeCostNs = 0.f;
+};
+
+// A verified file header. Every field but the stats is covered by its checksum.
+struct CacheDiskFileInfo {
+    std::string path;
+    std::uint32_t kind = 0;
+    std::string keyBytes;
+    std::string paramsBytes;
+    RectI bounds;
+    bool allRendered = false;
+    std::uint64_t renderedPixels = 0;
+    std::uint64_t totalPixels = 0;
+    std::uint64_t bitmapBytes = 0;
+    std::uint64_t payloadBytes = 0;
+    std::uint64_t payloadHash = 0;
+    std::uint64_t fileBytes = 0;
+    CacheDiskStats stats;
+};
+
+// Native byte order: a file names its format and the fork only runs on one architecture.
+class CacheDiskByteWriter {
+public:
+    template <typename T>
+    void put(T value)
+    {
+        static_assert(std::is_trivially_copyable<T>::value, "stored as raw bytes");
+        _bytes.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+
+    void putText(const std::string& text)
+    {
+        put<std::uint32_t>((std::uint32_t)text.size());
+        _bytes += text;
+    }
+
+    const std::string& bytes() const
+    {
+        return _bytes;
+    }
+
+private:
+    std::string _bytes;
+};
+
+class CacheDiskByteReader {
+public:
+    explicit CacheDiskByteReader(const std::string& bytes)
+        : _bytes(bytes)
+        , _at(0)
+    {
+    }
+
+    template <typename T>
+    bool get(T* value)
+    {
+        static_assert(std::is_trivially_copyable<T>::value, "stored as raw bytes");
+        if (_bytes.size() - _at < sizeof(T)) {
+            return false;
+        }
+        std::memcpy(value, _bytes.data() + _at, sizeof(T));
+        _at += sizeof(T);
+
+        return true;
+    }
+
+    bool getText(std::string* text)
+    {
+        std::uint32_t length;
+
+        if (!get(&length) || (_bytes.size() - _at < length)) {
+            return false;
+        }
+        text->assign(_bytes, _at, length);
+        _at += length;
+
+        return true;
+    }
+
+    bool atEnd() const
+    {
+        return _at == _bytes.size();
+    }
+
+private:
+    const std::string& _bytes;
+    std::size_t _at;
+};
+
+class CacheDiskSink {
+public:
+    virtual ~CacheDiskSink()
+    {
+    }
+
+    // False means give up: the write failed, the entry was retracted or the tier is stopping.
+    virtual bool write(const void* data, std::size_t bytes) = 0;
+};
+
+class CacheDiskSource {
+public:
+    virtual ~CacheDiskSource()
+    {
+    }
+
+    virtual bool read(void* data, std::size_t bytes) = 0;
+};
+
+/**
+ * @brief The peer-shared disk tier: files that any number of sessions publish and read, with no
+ * lock gating access. docs/cache/tiered-cache.md, Persistence, describes the protocol.
+ *
+ * The methods a cache calls under its own lock do no I/O and wait for none: offerDemotion,
+ * hasDemoting, reclaimDemoting and peekDemoting. Every other method is called off that lock, and
+ * maintainNow and the maintenance thread take it through CacheHostStorage::publishCandidates.
+ **/
+class CacheDiskTier final
+    : public CacheTier {
+public:
+    static const std::size_t kChunkBytes = 4 * 1024 * 1024;
+
+    struct Config {
+        std::string root;
+        std::string buildId;
+        std::uint64_t sizeBytes = 0;
+        // Off, the session reads but fills nothing.
+        bool publish = true;
+        bool idlePublisher = true;
+        int publishIntervalMs = 1000;
+        // Off, budget and eviction advance only through maintainNow().
+        bool backgroundMaintenance = true;
+    };
+
+    // Null if the location cannot be created.
+    static std::shared_ptr<CacheDiskTier> open(const Config& config);
+
+    virtual ~CacheDiskTier();
+
+    virtual std::size_t budget() const override final;
+    virtual std::size_t used() const override final;
+
+    // Unlinks the entry's file. The host tier reaches this tier through offerDemotion instead.
+    virtual bool demote(const CacheEntryPtr& entry) override final;
+
+    // Promotion needs the typed entry and so lives in the cache's promoteFromDisk.
+    virtual bool promote(const CacheEntryPtr& entry) override final;
+
+    void attach(const CacheHostStorage* storage, const CacheTier* host);
+
+    // Drops what is queued, abandons what is being written and joins every thread.
+    void shutdown();
+
+    void setSizeBytes(std::uint64_t bytes);
+
+    // Takes the entry if recomputing it would cost more than the write and the queue has room. The
+    // entry's RAM stays charged until the write finishes. False means the caller drops the entry.
+    bool offerDemotion(const CacheEntryPtr& entry);
+    bool hasDemoting() const;
+    // Hands back the entries of this hash that wait for or are in a write, and cancels the move.
+    void reclaimDemoting(std::uint64_t hash, std::vector<CacheEntryPtr>* entries);
+    void peekDemoting(std::uint64_t hash, std::vector<CacheEntryPtr>* entries) const;
+
+    // Cancels the entry's queued write. With removeFile, also unlinks the file it published.
+    void retract(const CacheEntryPtr& entry, bool removeFile);
+    // Unlinks every params variation of a key, whether or not this session wrote or knows them.
+    void retractFiles(const CacheDiskIdentity& identity);
+    void clearAuto();
+
+    // Lists the shard, then reads and verifies the candidate headers, largest result first. The
+    // key and, if given, the params must match exactly. Returns false on a miss.
+    bool probe(const CacheDiskIdentity& identity,
+               const std::string* wantedParamsBytes,
+               std::vector<CacheDiskFileInfo>* candidates);
+    void forgetProbes();
+
+    // Serialises reads of one key among the threads of this tier, so that two renders missing on
+    // the same entry read it once. Holds no lock while the reader works.
+    class PromotionGate {
+    public:
+        PromotionGate(CacheDiskTier& tier, std::uint64_t hash);
+        ~PromotionGate();
+
+    private:
+        PromotionGate(const PromotionGate&) = delete;
+        PromotionGate& operator=(const PromotionGate&) = delete;
+
+        CacheDiskTier& _tier;
+        const std::uint64_t _hash;
+    };
+
+    class Reader final
+        : public CacheDiskSource {
+    public:
+        explicit Reader(const CacheDiskFileInfo& info);
+        virtual ~Reader();
+
+        // Fails if the path now holds a different file than the probe saw.
+        bool open();
+        virtual bool read(void* data, std::size_t bytes) override final;
+        // Whether everything in the file was read and matches the checksum.
+        bool finish();
+
+    private:
+        Reader(const Reader&) = delete;
+        Reader& operator=(const Reader&) = delete;
+
+        const CacheDiskFileInfo& _info;
+        int _fd;
+        std::uint64_t _offset;
+        void* _hashState;
+    };
+
+    void discardCorrupt(const CacheDiskFileInfo& info);
+    void notePromoted(const CacheDiskFileInfo& info);
+
+    // Blocks until nothing is queued or being written, or the wait times out.
+    bool waitIdle(int timeoutMs);
+    // One budget refresh and eviction pass on the calling thread, after a scan if asked.
+    void maintainNow(bool scan);
+
+    std::uint64_t writeFailures() const;
+    std::uint64_t warningCount() const;
+    std::uint64_t publishedFiles() const;
+    double writeBytesPerSecond() const;
+    std::string sessionName() const;
+
+    static std::uint64_t hashBytes(const void* data, std::size_t bytes);
+    // Variant bytes are what several entries of one output differ by: level, layer and depth. The
+    // params hash is left for the caller, because a lookup by key has none.
+    static CacheDiskIdentity makeIdentity(std::uint32_t kind,
+                                          const std::string& baseBytes,
+                                          const std::string& variantBytes);
+    static void encodeBitmap(const char* map,
+                             std::size_t count,
+                             std::vector<std::uint32_t>* runs,
+                             std::uint64_t* renderedPixels);
+    // False if the runs do not add up to count.
+    static bool decodeBitmap(const std::vector<std::uint32_t>& runs,
+                             char* map,
+                             std::size_t count);
+
+    // Whether a file of these sizes fits a header: an entry that does not is simply not stored.
+    static bool fitsHeader(std::size_t keyBytes, std::size_t paramsBytes);
+
+private:
+    explicit CacheDiskTier(const Config& config);
+
+    CacheDiskTier(const CacheDiskTier&) = delete;
+    CacheDiskTier& operator=(const CacheDiskTier&) = delete;
+
+    struct Imp;
+    std::unique_ptr<Imp> _imp;
+};
+
+typedef std::shared_ptr<CacheDiskTier> CacheDiskTierPtr;
+
+NATRON_NAMESPACE_EXIT
+
+#endif // NATRON_ENGINE_CACHEDISKTIER_H

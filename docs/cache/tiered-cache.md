@@ -312,7 +312,7 @@ Why not reuse the scheduler's task wall time: see [Assumptions](#assumptions-che
 
 ### Demotion cost
 
-`bytes ÷ measured write throughput`, per M300.P3.T1. Throughput starts at `diskWriteBytesPerSecond` and is averaged from
+`per-file latency + bytes ÷ measured write throughput`, per M300.P3.T1. The latency term is 2 ms, and the measured throughput excludes it so that it is not charged twice. Throughput starts at `diskWriteBytesPerSecond` and is averaged from
 the writer's own measurements through `fdatasync`, so a modest disk learns it is modest within a few writes. The
 per-node test has a problem for chains; see [Departures](#departures-for-the-user).
 
@@ -535,7 +535,31 @@ recompute-versus-write test, and keeps their RAM copy, so a peer can see an entr
 nothing a peer could have used. The write-cost estimate has a per-file latency term next to `bytes ÷ throughput`, since
 thousands of `fdatasync` per second are not realistic; a small cheap entry is below the test whatever its size. A
 demotion of a published entry first `stat`s the file: a peer may have evicted it, and then the demotion writes again or
-drops by the usual test. A retracted entry (dropped, replaced or cleared) cancels its queued publish.
+drops by the usual test. A retracted entry (dropped, replaced or cleared) cancels its queued publish; one removed because
+its result is invalid also unlinks the file it published, and a removal by key unlinks the key's files of every params
+variation, whichever session wrote them.
+
+A demotion's write failure drops the entry, as it must leave RAM. A publish-behind failure keeps the RAM copy, which is
+still valid, abandons the file and backs the publisher off for 30 s. Both warn once per session.
+
+An `Image` file's params hash leaves the bounds out, since an image grows in place and a larger result must find the
+smaller file to replace. A `DeepImage` has no other params, so its bounds name the file.
+
+**Threads and locks.**
+
+| Thread | Count and priority | Work | Locks |
+| --- | --- | --- | --- |
+| Render thread | the caller's | probe and promotion, `pread` and checksum | no cache lock during I/O; `_lock` briefly to evict for the promotion and to seal the result; one `PromotionGate` per key, so two renders read a file once |
+| Scheduler thread | the caller's | `peek`: a probe after RAM misses, returning unallocated stubs from verified headers; a partial file claims no pixels, so the plan only over-estimates | no cache lock during the probe |
+| Demotion writers | `clamp(hardware threads ÷ 8, 1, 4)`, normal priority | write, `fdatasync`, rename | `queueMutex` for the queue only, a leaf taken under `_lock` by offers, reclaims and peeks, never held across I/O; the pixels' `_entryLock` read-locked per 4 MiB chunk while copying to a scratch buffer, never across a write |
+| Publisher | 1, nice 19 and idle I/O class | publish-behind, at most 8 per batch, yielding to demotions | `publishMutex`, never taken under `_lock`; holds weak references until it writes |
+| Maintenance | 1, normal CPU and idle I/O class | ledger, budget, eviction, publish candidates, on a tick of at most 1 s | `_lock` briefly through `publishCandidates`, sampling the table |
+| Scanner | 1, nice 19 and idle I/O class | deletes cleared directories, walks the tree every 60 s | none of the cache's |
+
+Many-core machines do not serialise on the publisher because demotions never pass through it, and writers and readers
+share no lock over I/O. Modest machines do not stall on disk because neither `_getLock` nor `_lock` is held over a read
+or a write, and the queue bound turns a slow disk into recomputes. The last reference to a published entry can drop on
+the publisher, where freeing it takes `_sizeLock` at nice 19 for the time of a counter update.
 
 ### Reading and restoring
 
@@ -572,8 +596,8 @@ A restored entry is found only when the session computes the same key. It does, 
 - A volatile plug-in's hash is salted per process (`Engine/Plugin.cpp`, `kVolatilePlugins`). A salted hash, and every hash
   downstream of one, is flagged and never published, so no file is written that could not hit.
 
-Since the bitmap travels in the file, a restored entry keeps its rendered pixels, and `Image::onMemoryAllocated` no longer
-starts it unrendered once M300.P3.T1 reads the bitmap.
+Since the bitmap travels in the file, a restored entry keeps its rendered pixels: `Image::onMemoryAllocated` starts every
+entry unrendered, and `Image::diskRestore` then writes the file's bitmap over it.
 
 ### Budget and eviction
 
@@ -766,7 +790,7 @@ measured nodes differ by factors of hundreds.
 | Negative-cache lifetime | 1 s; 2 s for a listing on a network mount | The bench of M300.P3.T4: raise it if misses cost more than 30 ms per 1000-node frame, lower it if a peer's publish is seen too late |
 | Budget refresh; slow scan period | 1 s; 60 s (unmeasured) | Overshoot of four writers in M300.P3.T4: shorten the refresh if they exceed the 2 GiB between the mark and the budget |
 | Eviction sample; unlinked per pass | about 1024; 64 (`evictionBatch`) | Sampling time on a 300,000-file tier |
-| Per-file write latency term | unmeasured | A small-entry publish bench with `fdatasync`; it decides how small an entry the write test rejects |
+| Per-file write latency term | 2 ms, unmeasured | A small-entry publish bench with `fdatasync`; it decides how small an entry the write test rejects |
 | Dead build; heartbeat stale | 7 days (the user's choice); 60 s (unmeasured) | The age is fixed by the user; the heartbeat by false reaps seen on a network mount |
 | Default disk size and cap | 20 GiB, 25% | Fixed by the milestone; changed only by the user |
 | Entry-file bitmap coding | run-length | Average bitmap bytes per entry from a real tier: if partials are rare, a flag alone would do |

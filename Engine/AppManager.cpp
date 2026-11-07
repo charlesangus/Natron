@@ -51,6 +51,7 @@
 #include <clocale>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring> // for std::memcpy
 #include <locale>
@@ -98,9 +99,9 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 
-
-#include "Global/ProcInfo.h"
 #include "Global/GLIncludes.h"
+#include "Global/GitVersion.h"
+#include "Global/ProcInfo.h"
 #include "Global/StrUtils.h"
 #ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
@@ -113,6 +114,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
+#include "Engine/CacheDiskTier.h"
 #include "Engine/CacheRetention.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
@@ -1096,6 +1098,43 @@ AppManager::initGui(const CLArgs& cl)
     return loadInternalAfterInitGui(cl);
 }
 
+static CacheDiskTierPtr
+openNodeCacheDiskTier(const Settings& settings)
+{
+    const U64 sizeBytes = settings.getDiskTierSizeBytes();
+    const char* const envSwitch = std::getenv("NATRON_CACHE_DISK_TIER");
+
+    if ((sizeBytes == 0) || (envSwitch && (std::strcmp(envSwitch, "off") == 0))) {
+        return CacheDiskTierPtr();
+    }
+
+    // Files of another build are not read, so every build needs only tell itself apart.
+    const std::string build = std::string(NATRON_VERSION_STRING) + GIT_COMMIT;
+    char buildId[17];
+    std::snprintf(buildId, sizeof(buildId), "%016llx",
+                  (unsigned long long)CacheDiskTier::hashBytes(build.data(), build.size()));
+
+    CacheDiskTier::Config config;
+    config.root = settings.getDiskTierLocation();
+    config.buildId = buildId;
+    config.sizeBytes = sizeBytes;
+
+    CacheDiskTierPtr tier = CacheDiskTier::open(config);
+    if (!tier) {
+        const std::string fallback = Settings::defaultDiskTierLocation();
+        qWarning("Disk tier: cannot use %s", config.root.c_str());
+        if (fallback != config.root) {
+            config.root = fallback;
+            tier = CacheDiskTier::open(config);
+        }
+    }
+    if (!tier) {
+        qWarning("Disk tier: running without one, caching in RAM only");
+    }
+
+    return tier;
+}
+
 bool
 AppManager::loadInternalAfterInitGui(const CLArgs& cl)
 {
@@ -1106,6 +1145,7 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_nodeCache->useEvictionScore();
+        _imp->_nodeCache->setDiskTier(openNodeCacheDiskTier(*_imp->_settings));
         _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
         _imp->setViewerCacheTileSize();
@@ -2479,6 +2519,20 @@ void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
+}
+
+void
+AppManager::removeFromNodeCache(const ImageKey& key)
+{
+    _imp->_nodeCache->removeEntryAndFiles<Image>(key);
+}
+
+void
+AppManager::setNodeCacheDiskTierSize(U64 bytes)
+{
+    if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->setSizeBytes(bytes);
+    }
 }
 
 void

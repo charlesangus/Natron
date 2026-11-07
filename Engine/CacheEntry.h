@@ -73,6 +73,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct CacheDiskIdentity;
+struct CacheDiskSnapshot;
+class CacheDiskSink;
+
 class Bitmap {
 public:
     Bitmap(const RectI& bounds)
@@ -530,6 +534,23 @@ public:
     virtual CacheEntryHeader* evictionHeader() const
     {
         return NULL;
+    }
+
+    // An entry whose payload cannot be stored in the disk tier answers false to all three.
+    virtual bool diskIdentity(CacheDiskIdentity* /*identity*/) const
+    {
+        return false;
+    }
+
+    virtual bool diskSnapshot(CacheDiskSnapshot* /*snapshot*/) const
+    {
+        return false;
+    }
+
+    virtual bool diskWritePayload(const CacheDiskSnapshot& /*snapshot*/,
+                                  CacheDiskSink& /*sink*/) const
+    {
+        return false;
     }
 
 protected:

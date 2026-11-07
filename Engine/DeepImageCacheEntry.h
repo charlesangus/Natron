@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <string>
 
 #include "Engine/CacheEntry.h"
 #include "Engine/DeepImage.h"
@@ -37,6 +38,9 @@
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct CacheDiskFileInfo;
+class CacheDiskSource;
 
 /**
  * @brief The deep payload of the node cache, next to Image. DeepImage itself stays a plain COW
@@ -86,6 +90,19 @@ public:
     {
         return _header.get();
     }
+
+    typedef void DiskPayloadTag;
+
+    virtual bool diskIdentity(CacheDiskIdentity* identity) const OVERRIDE FINAL;
+    virtual bool diskSnapshot(CacheDiskSnapshot* snapshot) const OVERRIDE FINAL;
+    virtual bool diskWritePayload(const CacheDiskSnapshot& snapshot, CacheDiskSink& sink) const OVERRIDE FINAL;
+
+    static CacheDiskIdentity diskIdentityOfKey(const DeepImageKey& key);
+    static std::string diskParamsBytes(const DeepImageParams& params);
+    static DeepImageParamsPtr diskParamsFromBytes(const std::string& bytes, const RectI& bounds);
+
+    // False for a file that contradicts itself, which is corrupt. Throws std::bad_alloc.
+    bool diskRestore(const CacheDiskFileInfo& info, CacheDiskSource& source);
 
     // False from construction until renderDeepRoI() has actually populated the sample table and
     // channels and called allocateMemory(): a cache lookup that finds this entry before then would

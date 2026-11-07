@@ -93,7 +93,7 @@ removeLayerFromCache(const ImageKey& key,
     const unsigned int coarsestLevel = 15;
 
     key.forEachServingKey(coarsestLevel, 0, layer, eImageBitDepthByte, [](const ImageKey& candidate) {
-        appPTR->removeFromNodeCache(candidate.getHash());
+        appPTR->removeFromNodeCache(candidate);
 
         return false;
     });

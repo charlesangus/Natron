@@ -52,7 +52,7 @@ NATRON_NAMESPACE_ENTER
  * through its resolver, never sees it.
  *
  * Neither delegate honours a UsdUVTexture's fallback either: with no file to give, the filter removes
- * the texture node and writes its fallback onto the inputs it fed.
+ * the texture node and writes kLiveTextureMissingColour onto the inputs it fed, magenta in both.
  **/
 namespace LiveTextureSceneIndex {
 void registerSceneIndices();

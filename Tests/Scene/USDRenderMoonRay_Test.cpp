@@ -1460,7 +1460,7 @@ TEST_F(USDRenderMoonRayLiveTextureTest, AnAnimatedRampFollowsTheFrame)
 
 // A source's texture is missing here because the main thread does not prepare it: deleting a source
 // re-authors the material with no texture, so it never reaches the render with its URI.
-TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsOfItsSource)
+TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsSource)
 {
     if (!moonRayOrSkip()) {
         return;
@@ -1474,11 +1474,12 @@ TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsO
     ASSERT_TRUE(renderNodePlanesDirect(graph.render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), &planes, &error, false)) << error;
     ASSERT_EQ(1u, planes.size());
     const std::array<double, 4> centre = centreOf(planes[0]);
-    // Lit, UsdUVTexture's default fallback is black. hdMoonray's own handling would give 0.18 grey
-    // for an empty path and white for a file it cannot open.
-    EXPECT_LT(centre[0], 0.02);
-    EXPECT_LT(centre[1], 0.02);
-    EXPECT_LT(centre[2], 0.02);
+    // Lit, so the hue is checked, not the value. hdMoonray's own handling would give 0.18 grey for
+    // an empty path and white for a file it cannot open.
+    EXPECT_GT(centre[0], 0.05) << centre[0] << ", " << centre[1] << ", " << centre[2];
+    EXPECT_GT(centre[0], 5. * centre[1]);
+    EXPECT_GT(centre[2], 5. * centre[1]);
+    EXPECT_NEAR(centre[0], centre[2], 0.25 * std::max(centre[0], centre[2]));
     ASSERT_TRUE(graph.material->hasPersistentMessage());
     EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
 }

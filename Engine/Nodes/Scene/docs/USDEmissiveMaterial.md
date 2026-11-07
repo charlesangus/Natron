@@ -44,7 +44,7 @@ in Storm's translucent pass, which writes no depth or prim id. With Use Alpha
 off, or for a texture file, no opacity is written and the surface is opaque.
 
 The material only names the images. The viewer and USDRender render them before
-they draw a frame. An image that cannot be rendered leaves the renderer's
-fallback texture, and the node shows a warning that names it.
+they draw a frame. An image that cannot be rendered shows as magenta, and
+the node shows a warning that names it.
 
 Tolerance: none recorded.

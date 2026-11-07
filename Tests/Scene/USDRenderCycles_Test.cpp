@@ -1475,7 +1475,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, AnAnimatedRampFollowsTheFrame)
 
 // A source's texture is missing here because the main thread does not prepare it: a deleted source
 // never reaches the render with its URI, as the next test shows.
-TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsOfItsSource)
+TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsSource)
 {
     if (!cyclesOrSkip()) {
         return;
@@ -1489,10 +1489,9 @@ TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsOf
     ASSERT_TRUE(renderNodePlanesDirect(graph.render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), &planes, &error, false)) << error;
     ASSERT_EQ(1u, planes.size());
     const std::array<double, 4> centre = centreOf(planes[0]);
-    // UsdUVTexture's default fallback is black; an unhandled missing file shades magenta.
-    EXPECT_LT(centre[0], 0.02);
-    EXPECT_LT(centre[1], 0.02);
-    EXPECT_LT(centre[2], 0.02);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], centre[0], 0.1) << centre[0] << ", " << centre[1] << ", " << centre[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], centre[1], 0.05);
+    EXPECT_NEAR(kLiveTextureMissingColour[2], centre[2], 0.1);
     ASSERT_TRUE(graph.material->hasPersistentMessage());
     EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
 }

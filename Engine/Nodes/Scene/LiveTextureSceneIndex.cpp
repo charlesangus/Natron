@@ -130,19 +130,19 @@ private:
 };
 
 VtValue
-fallbackOutput(const GfVec4f& fallback,
-               const TfToken& output)
+missingOutput(const GfVec4f& colour,
+              const TfToken& output)
 {
     static const TfToken rgb("rgb");
     static const char* const channels = "rgba";
 
     if (output == rgb) {
-        return VtValue(GfVec3f(fallback[0], fallback[1], fallback[2]));
+        return VtValue(GfVec3f(colour[0], colour[1], colour[2]));
     }
     if (output.size() == 1) {
         const char* channel = std::strchr(channels, output.GetString()[0]);
         if (channel) {
-            return VtValue(fallback[int(channel - channels)]);
+            return VtValue(colour[int(channel - channels)]);
         }
     }
 
@@ -150,16 +150,14 @@ fallbackOutput(const GfVec4f& fallback,
 }
 
 void
-replaceWithFallback(HdMaterialNetworkInterface* network,
-                    const TfToken& texture)
+replaceWithMissingColour(HdMaterialNetworkInterface* network,
+                         const TfToken& texture)
 {
-    // A surface's normal has no value meaning "unperturbed" a texture's fallback could hold: all
-    // zeros, the default, would blacken it, so with the texture gone it keeps the geometry's.
+    // A colour has no value meaning "unperturbed" for a normal, so with the texture gone it keeps
+    // the geometry's. An authored fallback on the texture loses to the colour: it signals an error.
     static const TfToken normalInput("normal");
-    static const TfToken fallbackName("fallback");
 
-    const VtValue authored = network->GetNodeParameterValue(texture, fallbackName);
-    const GfVec4f fallback = authored.IsHolding<GfVec4f>() ? authored.UncheckedGet<GfVec4f>() : GfVec4f(0.f, 0.f, 0.f, 1.f);
+    const GfVec4f colour(kLiveTextureMissingColour[0], kLiveTextureMissingColour[1], kLiveTextureMissingColour[2], kLiveTextureMissingColour[3]);
 
     for (const TfToken& node : network->GetNodeNames()) {
         if (node == texture) {
@@ -171,7 +169,7 @@ replaceWithFallback(HdMaterialNetworkInterface* network,
             VtValue value;
             for (const HdMaterialNetworkInterface::InputConnection& connection : connections) {
                 if (connection.upstreamNodeName == texture) {
-                    value = fallbackOutput(fallback, connection.upstreamOutputName);
+                    value = missingOutput(colour, connection.upstreamOutputName);
                 } else {
                     kept.push_back(connection);
                 }
@@ -184,8 +182,7 @@ replaceWithFallback(HdMaterialNetworkInterface* network,
             } else {
                 network->SetNodeInputConnection(node, input, kept);
             }
-            const bool isUnsetNormal = (input == normalInput) && !authored.IsHolding<GfVec4f>();
-            if (!value.IsEmpty() && !isUnsetNormal) {
+            if (!value.IsEmpty() && (input != normalInput)) {
                 network->SetNodeParameterValue(node, input, value);
             }
         }
@@ -196,7 +193,7 @@ replaceWithFallback(HdMaterialNetworkInterface* network,
         }
     }
     network->DeleteNode(texture);
-} // replaceWithFallback
+} // replaceWithMissingColour
 
 void
 filterNetwork(HdMaterialNetworkInterface* network,
@@ -221,7 +218,7 @@ filterNetwork(HdMaterialNetworkInterface* network,
         if (buffer) {
             network->SetNodeParameterValue(node, fileParameter(), VtValue(SdfAssetPath(uri, buffer->getFilePath())));
         } else {
-            replaceWithFallback(network, node);
+            replaceWithMissingColour(network, node);
         }
     }
 }

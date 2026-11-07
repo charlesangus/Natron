@@ -25,6 +25,7 @@
 
 #include "LiveTextureResolver.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
@@ -57,6 +58,22 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // The name plugInfo.json registers the resolver and image reader under.
 const char* const kPluginName = "natronLiveTexture";
+
+const LiveTextureBufferConstPtr&
+missingTexture()
+{
+    static const LiveTextureBufferConstPtr texture = []() {
+        const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(1, 1);
+
+        if (buffer) {
+            std::copy(kLiveTextureMissingColour, kLiveTextureMissingColour + 4, buffer->getRow(0));
+        }
+
+        return LiveTextureBufferConstPtr(buffer);
+    }();
+
+    return texture;
+}
 
 // Through the environment so that MoonRay's execComp, which inherits it, finds the plug-in too. Must
 // run before other threads exist. OIIO reads the variable each time it catalogues its plug-ins.
@@ -109,7 +126,10 @@ LiveTextureResolver::_CreateIdentifierForNewAsset(const std::string& assetPath,
 PXR_NS::ArResolvedPath
 LiveTextureResolver::_Resolve(const std::string& assetPath) const
 {
-    return LiveTextureStore::instance().contains(assetPath) ? PXR_NS::ArResolvedPath(assetPath) : PXR_NS::ArResolvedPath();
+    LiveTextureStore& store = LiveTextureStore::instance();
+
+    // A URI that failed resolves too, to the magenta image _OpenAsset serves for it.
+    return (store.contains(assetPath) || !store.getFailure(assetPath).empty()) ? PXR_NS::ArResolvedPath(assetPath) : PXR_NS::ArResolvedPath();
 }
 
 PXR_NS::ArResolvedPath
@@ -136,8 +156,12 @@ LiveTextureResolver::_GetModificationTimestamp(const std::string& /*assetPath*/,
 std::shared_ptr<PXR_NS::ArAsset>
 LiveTextureResolver::_OpenAsset(const PXR_NS::ArResolvedPath& resolvedPath) const
 {
-    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(resolvedPath.GetPathString());
+    LiveTextureStore& store = LiveTextureStore::instance();
+    LiveTextureBufferConstPtr buffer = store.find(resolvedPath.GetPathString());
 
+    if (!buffer && !store.getFailure(resolvedPath.GetPathString()).empty()) {
+        buffer = missingTexture();
+    }
     if (!buffer) {
         return std::shared_ptr<PXR_NS::ArAsset>();
     }

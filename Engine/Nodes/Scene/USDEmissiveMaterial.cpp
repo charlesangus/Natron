@@ -246,7 +246,7 @@ USDEmissiveMaterial::renderScene(const SceneRenderActionArgs& args,
         const std::string uri = live.getUri(args.time);
         const std::string failure = LiveTextureStore::instance().getFailure(uri);
         if (!failure.empty()) {
-            warning = tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure));
+            warning = tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure));
         }
     } else {
         const std::string texturePath = SceneNodeAuthoring::getAnchoredFilePath(_emissiveTexture.lock());

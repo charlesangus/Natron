@@ -218,7 +218,7 @@ std::string
 fallbackWarning(const std::string& uri,
                 const std::string& failure)
 {
-    return "The live texture " + uri + " shows the renderer's fallback: " + failure + ".";
+    return "The live texture " + uri + " shows the missing-texture colour, magenta: " + failure + ".";
 }
 
 // natron://<node>/<layer>?v=<hash>, whose reader knows the node by the name it gave it.

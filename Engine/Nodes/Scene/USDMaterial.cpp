@@ -441,7 +441,7 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
         const std::string uri = source.getUri(args.time);
         const std::string failure = LiveTextureStore::instance().getFailure(uri);
         if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+            warnings.push_back(tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
         }
     }
     if (warnings.isEmpty()) {

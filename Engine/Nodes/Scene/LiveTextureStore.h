@@ -50,6 +50,10 @@
 
 NATRON_NAMESPACE_ENTER
 
+// What a live texture that exists but cannot be served shows in every renderer, bright so that it is
+// seen: linear RGBA.
+constexpr float kLiveTextureMissingColour[4] = { 1.f, 0.f, 1.f, 1.f };
+
 /**
  * @brief One rendered live texture, immutable once stored: width x height RGBA float pixels, rows
  * bottom-up as Natron renders them, after a small header, as LiveTextureFile.h lays them out. The colour is not premultiplied, as USD
@@ -224,8 +228,8 @@ public:
      * @brief Renders the texture of every source in sources at frame that the store lacks, and
      * waits for them: each on a thread of its own, so a caller in the middle of a render (USDRender)
      * keeps its render state. Renders nothing on the main thread, which must never wait on a render.
-     * A texture that cannot be rendered, there or elsewhere, stays missing, which Storm shows as its
-     * fallback, and its consumer gets a warning. Returns how many it could not render.
+     * A texture that cannot be rendered, there or elsewhere, stays missing, which every renderer
+     * shows as kLiveTextureMissingColour, and its consumer gets a warning. Returns how many it could not render.
      **/
     int prepare(const LiveTextureSourceList& sources,
                 double frame);

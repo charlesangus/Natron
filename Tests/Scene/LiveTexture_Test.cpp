@@ -792,7 +792,7 @@ TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)
     EXPECT_FALSE(constant->hasPersistentMessage());
 }
 
-TEST_F(LiveTextureTest, ADeletedSourceLeavesTheTextureMissing)
+TEST_F(LiveTextureTest, AFailedRenderResolvesToTheMagentaImage)
 {
     LiveTextureSource source;
     {
@@ -809,7 +809,21 @@ TEST_F(LiveTextureTest, ADeletedSourceLeavesTheTextureMissing)
     EXPECT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
     EXPECT_FALSE(LiveTextureStore::instance().getFailure(uri).empty());
-    EXPECT_TRUE(PXR_NS::ArGetResolver().Resolve(uri).IsEmpty());
+
+    const PXR_NS::ArResolvedPath resolved = PXR_NS::ArGetResolver().Resolve(uri);
+    ASSERT_FALSE(resolved.IsEmpty());
+    const std::shared_ptr<PXR_NS::ArAsset> asset = PXR_NS::ArGetResolver().OpenAsset(resolved);
+    ASSERT_TRUE(bool(asset));
+    const std::shared_ptr<const char> bytes = asset->GetBuffer();
+    int width = 0;
+    int height = 0;
+    const float* pixels = nullptr;
+    ASSERT_TRUE(LiveTextureBuffer::parse(bytes.get(), asset->GetSize(), &width, &height, &pixels));
+    EXPECT_EQ(1, width);
+    EXPECT_EQ(1, height);
+    for (int c = 0; c < 4; ++c) {
+        EXPECT_EQ(kLiveTextureMissingColour[c], pixels[c]);
+    }
 }
 
 // Each edit of a source gives its texture a new URI, which may fail once and never be tried again.
@@ -1153,7 +1167,7 @@ TEST_F(LiveTextureTest, TheFilterLeavesOtherTexturesAlone)
     EXPECT_EQ(1u, surfaceConnections(network, "diffuseColor"));
 }
 
-TEST_F(LiveTextureTest, TheFilterFeedsAMissingTexturesFallbackDownstream)
+TEST_F(LiveTextureTest, TheFilterFeedsAMissingTexturesMagentaDownstreamWhateverItsFallback)
 {
     const std::string uri = uriOf("Gone");
     LiveTextureStore& store = LiveTextureStore::instance();
@@ -1166,7 +1180,7 @@ TEST_F(LiveTextureTest, TheFilterFeedsAMissingTexturesFallbackDownstream)
     EXPECT_EQ(0u, surfaceConnections(colour, "diffuseColor"));
     const PXR_NS::VtValue diffuse = surfaceParameter(colour, "diffuseColor");
     ASSERT_TRUE(diffuse.IsHolding<PXR_NS::GfVec3f>());
-    EXPECT_EQ(PXR_NS::GfVec3f(0.25f, 0.5f, 0.75f), diffuse.UncheckedGet<PXR_NS::GfVec3f>());
+    EXPECT_EQ(PXR_NS::GfVec3f(kLiveTextureMissingColour[0], kLiveTextureMissingColour[1], kLiveTextureMissingColour[2]), diffuse.UncheckedGet<PXR_NS::GfVec3f>());
     EXPECT_FALSE(store.getFailure(uri).empty());
 
     PXR_NS::HdMaterialNetwork2 opacity = makeTexturedNetwork(uri, "opacity", "a");
@@ -1175,7 +1189,7 @@ TEST_F(LiveTextureTest, TheFilterFeedsAMissingTexturesFallbackDownstream)
     EXPECT_FALSE(hasTextureNode(opacity));
     const PXR_NS::VtValue alpha = surfaceParameter(opacity, "opacity");
     ASSERT_TRUE(alpha.IsHolding<float>());
-    EXPECT_EQ(0.125f, alpha.UncheckedGet<float>());
+    EXPECT_EQ(kLiveTextureMissingColour[3], alpha.UncheckedGet<float>());
 }
 
 TEST_F(LiveTextureTest, AMissingNormalMapLeavesTheGeometrysNormal)
@@ -1188,8 +1202,8 @@ TEST_F(LiveTextureTest, AMissingNormalMapLeavesTheGeometrysNormal)
     EXPECT_TRUE(surfaceParameter(network, "normal").IsEmpty());
 }
 
-// Delegates must see the fallback rather than a file that faults on first touch.
-TEST_F(LiveTextureTest, AFullSharedMemoryReachesTheFallbackWithTheReason)
+// Delegates must see magenta rather than a file that faults on first touch.
+TEST_F(LiveTextureTest, AFullSharedMemoryReachesMagentaWithTheReason)
 {
     LiveTextureStore& store = LiveTextureStore::instance();
     const std::string uri = uriOf("TooBig");
@@ -1199,7 +1213,9 @@ TEST_F(LiveTextureTest, AFullSharedMemoryReachesTheFallbackWithTheReason)
     applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
 
     EXPECT_FALSE(hasTextureNode(network));
-    EXPECT_FALSE(surfaceParameter(network, "diffuseColor").IsEmpty());
+    const PXR_NS::VtValue diffuse = surfaceParameter(network, "diffuseColor");
+    ASSERT_TRUE(diffuse.IsHolding<PXR_NS::GfVec3f>());
+    EXPECT_EQ(PXR_NS::GfVec3f(kLiveTextureMissingColour[0], kLiveTextureMissingColour[1], kLiveTextureMissingColour[2]), diffuse.UncheckedGet<PXR_NS::GfVec3f>());
     EXPECT_NE(std::string::npos, store.getFailure(uri).find("does not fit in shared memory")) << store.getFailure(uri);
     EXPECT_TRUE(store.exportToSharedMemory(uri) == nullptr);
 }

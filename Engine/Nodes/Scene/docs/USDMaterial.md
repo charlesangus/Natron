@@ -59,7 +59,7 @@ The material only names the images. The viewer and USDRender render them before
 they draw a frame, and USD reads them through Natron's `natron` asset resolver. An
 image is always rendered in the project's first view, whichever view is drawn.
 Changing the connected image re-writes this node's material and no other layer.
-An image that cannot be rendered leaves the renderer's fallback texture, and the
+An image that cannot be rendered shows as magenta, and the
 node shows a warning that names it.
 
 The surface is lit only by the scene's lights, and by a renderer's headlight when

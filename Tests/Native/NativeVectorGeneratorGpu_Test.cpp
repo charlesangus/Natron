@@ -420,6 +420,30 @@ TEST_F(NativeVectorGeneratorGpuTest, ColourPassesThroughBitExact)
     ASSERT_TRUE(result.ok) << result.error;
     ASSERT_FALSE(result.cpu.empty());
     EXPECT_EQ(result.cpu, result.gpu);
+    EXPECT_TRUE(result.ranInRegion(node)) << "the node was not placed in a GPU region";
+    EXPECT_TRUE(result.cpuFallbackReasons.empty()) << "the region fell back to the CPU";
+    EXPECT_EQ(0, gpuRunsOf(result, node)) << "colour alone ran the solve";
+}
+
+// Colour and a solved plane of one task reach the store together, one aliased and the other downloaded.
+TEST_F(NativeVectorGeneratorGpuTest, ColourBesideASolvedPlanePassesThroughBitExact)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    NodePtr reader = createReader(node, kNatronColorViewRGBA, kNatronForwardMotionVectorsLayerID);
+    ASSERT_TRUE(bool(reader));
+
+    EndToEndResult result;
+    if (!renderThrough(node, reader, windowAt(0), kTime, 0, &result)) {
+        return;
+    }
+    ASSERT_FALSE(result.cpu.empty());
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i + 1 < result.cpu.size(); i += 4) {
+        differing += (result.cpu[i] != result.gpu[i]) || (result.cpu[i + 1] != result.gpu[i + 1]);
+    }
+    EXPECT_EQ(0u, differing);
 }
 
 TEST_F(NativeVectorGeneratorGpuTest, FirstFrameHasNoBackwardMotion)

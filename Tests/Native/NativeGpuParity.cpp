@@ -828,6 +828,15 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
+        // A root's default planes are the ones it renders, which leaves out the colour of a root that only passes it
+        // through. A viewer on such a root asks for colour explicitly, as the CPU render below does.
+        FrameGraph::Task& rootTask = run.graph.tasks.front();
+        const bool asksForColour = std::any_of(rootTask.components.begin(), rootTask.components.end(), [](const ImageLayerDesc& layer) {
+            return layer.isColorLayer();
+        });
+        if (!asksForColour) {
+            rootTask.components.assign(1, ImageLayerDesc::getRGBAComponents());
+        }
         placeOnGpu(&run, graph);
         result.regions = run.graph.regions;
         for (const FrameGraph::Region& region : run.graph.regions) {
@@ -863,12 +872,17 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         }
         // The colour plane, which the CPU render below asks for. A root that passes its input's other layers
         // through also returns them, and a layer ID such as "spec" sorts before the colour plane's.
-        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.begin();
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.end();
         for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
             if (it->first.isColorLayer()) {
                 colour = it;
                 break;
             }
+        }
+        if (colour == rootPlanes.end()) {
+            result.error = "the GPU frame has no colour plane";
+
+            return result;
         }
         result.gpu = readRgba(colour->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();

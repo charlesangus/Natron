@@ -27,7 +27,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -54,6 +57,33 @@ NATRON_NAMESPACE_USING
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
 const char* const kGroup = "NatronUtility";
+
+// The default clipping range of the reference scene's camera, which sets no clippingRange.
+const double kNear = 1.;
+const double kFar = 1e6;
+
+// The stored depth is a distance along the view axis, recovered from a 32-bit window depth. The
+// ray tracer's approximate reciprocals differ by runner CPU, which moves that window depth by about
+// one of its ulps, many Z ulps near the far end of the range. So depth alone is accepted within
+// that many window ulps at the stored Z; colour and primId stay bit for bit.
+bool
+sameDepth(float reference,
+          float rendered)
+{
+    if (!std::isfinite(reference) || !std::isfinite(rendered)) {
+        return (reference == rendered) || (std::isnan(reference) && std::isnan(rendered));
+    }
+    const double z = reference;
+    const double window = kFar * (1. - kNear / z) / (kFar - kNear);
+    if (window <= 0.) {
+        return reference == rendered;
+    }
+    const double windowUlp = std::ldexp(1., std::ilogb(window) - 23);
+    const double zPerWindow = z * z * (kFar - kNear) / (kFar * kNear);
+    const double tolerance = 1.5 * windowUlp * zPerWindow;
+
+    return std::fabs(z - (double)rendered) <= tolerance;
+}
 
 class NatronUtilityGoldenTest
     : public BaseTest {
@@ -118,6 +148,9 @@ TEST_F(NatronUtilityGoldenTest, ReferenceScene)
     NodePtr render = createRender();
 
     ASSERT_TRUE(render != nullptr);
-    EXPECT_TRUE(checkGolden(render, kGroup, "reference_f1", 0, 1.));
-    EXPECT_TRUE(checkGolden(render, kGroup, "reference_f24", 0, 24.));
+    GoldenPlaneAcceptance acceptance;
+
+    acceptance["depth"] = sameDepth;
+    EXPECT_TRUE(checkGolden(render, kGroup, "reference_f1", 0, 1., acceptance));
+    EXPECT_TRUE(checkGolden(render, kGroup, "reference_f24", 0, 24., acceptance));
 }

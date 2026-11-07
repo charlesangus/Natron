@@ -167,7 +167,7 @@ def summarise(frames, edited_node):
 
 CAUSES = collections.OrderedDict([
     ("not_admitted", ("M300 - Unified Tiered Cache", "Node::shouldCacheOutput false, so renderRoI sets createInCache false")),
-    ("behind_hit", ("M300 - Unified Tiered Cache", "the task graph runs every dependency though a consumer's image is cached")),
+    ("behind_hit", ("M300 - Unified Tiered Cache", "a dependency ran though its consumer's image was cached by then: planning prunes only the hits it can see")),
     ("gpu_region_member", ("M301 - GPU Cache Tier", "GpuRegionTask storeOutputs writes only the per-frame store")),
     ("mip_or_draft_key", ("M303 - Interactive Edit Latency", "no cached image at this mip; draft is in ImageKey")),
     ("placement_iscached_miss", ("M301 - GPU Cache Tier", "placed on the device although the host cache held the image")),

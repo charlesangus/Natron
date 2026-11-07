@@ -160,6 +160,12 @@ public:
         return _key_to_value.end();
     }
 
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename key_to_value_type::iterator peek(const key_type& k)
+    {
+        return _key_to_value.find(k);
+    }
+
     typename key_to_value_type::iterator begin()
     {
         return _key_to_value.begin();
@@ -279,6 +285,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();
@@ -392,6 +404,12 @@ public:
     typename key_to_value_type::iterator end()
     {
         return _key_to_value.end();
+    }
+
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename key_to_value_type::iterator peek(const key_type& k)
+    {
+        return _key_to_value.find(k);
     }
 
     typename key_to_value_type::iterator begin()
@@ -509,6 +527,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();
@@ -681,6 +705,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();

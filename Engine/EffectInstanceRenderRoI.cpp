@@ -1006,28 +1006,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     // Do not use the cache for OpenGL rendering
     bool createInCache = !useOpenGL && admitsOutputToCache(frameArgs->context, *frameArgs, isFrameVaryingOrAnimated, args.time, args.view, args.caller);
     ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
-    bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = getNode()->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    ///For multi-resolution we want input images with exactly the same size as the output image
-    if ( !renderScaleOneUpstreamIfRenderScaleSupportDisabled && !supportsMultiResolution() ) {
-        renderScaleOneUpstreamIfRenderScaleSupportDisabled = true;
-    }
+    const bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = pullsInputsAtScaleOne();
 
-    std::unique_ptr<ImageKey> key( new ImageKey(getNode().get(),
-                                                  nodeHash,
-                                                  isFrameVaryingOrAnimated,
-                                                  args.time,
-                                                  args.view,
-                                                  1.,
-                                                  draftModeSupported && frameArgs->draftMode,
-                                                  renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
-    std::unique_ptr<ImageKey> nonDraftKey( new ImageKey(getNode().get(),
-                                                          nodeHash,
-                                                          isFrameVaryingOrAnimated,
-                                                          args.time,
-                                                          args.view,
-                                                          1.,
-                                                          false,
-                                                          renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
+    std::unique_ptr<ImageKey> key(new ImageKey(outputCacheKey(nodeHash, isFrameVaryingOrAnimated, args.time, args.view, draftModeSupported && frameArgs->draftMode, renderMappedMipmapLevel)));
+    std::unique_ptr<ImageKey> nonDraftKey(new ImageKey(outputCacheKey(nodeHash, isFrameVaryingOrAnimated, args.time, args.view, false, renderMappedMipmapLevel)));
 
     // Overlay images only exist as a side effect of the render action, so a cached image can't
     // answer this render. byPassCache would reach the action too but deletes the entry, and an
@@ -1492,6 +1474,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                 renderMappedScale,
                                                 renderScaleOneUpstreamIfRenderScaleSupportDisabled,
                                                 byPassCache,
+                                                !it->rect.contains(roi),
                                                 *framesNeeded,
                                                 *neededComps,
                                                 &it->imgs,

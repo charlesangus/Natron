@@ -149,6 +149,8 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
+    // Registered to give each input a region of interest apart from the other's, which no shipped native node does.
+    registerTestBuiltInPlugin<SplitInputsTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();

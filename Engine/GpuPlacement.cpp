@@ -41,7 +41,6 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
-#include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -1018,65 +1017,8 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
-    // Probes the keys renderRoI looks up: the non-draft one, and the draft one when the frame is a draft frame and the
-    // node uses draft mode. Not knowing which full-scale flag renderRoI will key with, either counts; a false hit only
-    // keeps a task on the CPU. A finer level is left out because an entry's bitmap can't answer for the task's RoI at
-    // another level; missing one only costs a render.
-    inputs.isCached = [context](const FrameGraph::Task& task) -> bool {
-        if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
-            return false;
-        }
-        const EffectInstancePtr effect = task.key.node->getEffectInstance();
-        if (!effect) {
-            return false;
-        }
-        const ParallelRenderArgsPtr frameArgs = context ? context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr();
-        const bool probesDraft = frameArgs && frameArgs->draftMode && task.key.node->isDraftModeUsed();
-
-        EffectInstance::ComponentsNeededMap neededComps;
-        std::list<ImageLayerDesc> passThroughLayers;
-        double passThroughTime;
-        int passThroughView;
-        std::bitset<4> processChannels;
-        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-        int passThroughInput;
-        effect->getComponentsNeededAndProduced_public(task.nodeHash, task.key.time, task.key.view, &neededComps, &passThroughLayers, &passThroughTime,
-                                                      &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
-        const EffectInstance::ComponentsNeededMap::const_iterator foundOutput = neededComps.find(-1);
-        const std::list<ImageLayerDesc> outputComponents = foundOutput != neededComps.end() ? foundOutput->second : std::list<ImageLayerDesc>();
-
-        // Bit 0 is the full-scale flag, bit 1 the draft flag.
-        for (int variant = 0; variant < (probesDraft ? 4 : 2); ++variant) {
-            const ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., (variant & 2) != 0,
-                               (variant & 1) != 0);
-            bool allLayers = true;
-            for (const ImageLayerDesc& layer : task.components) {
-                const ImageLayerDesc* cachedLayer = ImageKey::cachedLayerForRequest(layer, outputComponents);
-                const bool covered = key.forEachServingKey(task.cacheMipmapLevel, task.cacheMipmapLevel, cachedLayer ? *cachedLayer : layer, task.bitdepth,
-                                                           [&task](const ImageKey& candidate) {
-                                                               std::list<ImagePtr> images;
-                                                               appPTR->getImage(candidate, &images);
-                                                               for (const ImagePtr& image : images) {
-                                                                   std::list<RectI> rest;
-                                                                   image->getRestToRender(task.renderedRoI, rest);
-                                                                   if (rest.empty()) {
-                                                                       return true;
-                                                                   }
-                                                               }
-
-                                                               return false;
-                                                           });
-                if (!covered) {
-                    allLayers = false;
-                    break;
-                }
-            }
-            if (allLayers) {
-                return true;
-            }
-        }
-
-        return false;
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.servedFromCache;
     };
 
     return inputs;

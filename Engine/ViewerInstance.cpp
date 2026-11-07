@@ -1352,6 +1352,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             root.roi = roi;
             root.components = components;
             root.bitdepth = bitdepth;
+            RenderScheduler::pruneBehindCacheHits(graph, context);
             placeRenderGraph(graph, context);
             if (contextOut) {
                 *contextOut = context;

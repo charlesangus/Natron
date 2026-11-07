@@ -661,6 +661,38 @@ public:
         return getInternal(key, returnValue);
     } // get
 
+    /**
+     * @brief Finds entries as get() does without counting as a use of them: the replacement order and the eviction
+     * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
+     * to be unreadable later.
+     *
+     * Skips _getLock, which getOrCreate() holds while it evicts and allocates; a miss on an entry being created at that
+     * moment only means the caller doesn't count on it.
+     **/
+    template <typename PayloadType>
+    bool peek(const typename PayloadType::key_type& key,
+              std::list<std::shared_ptr<PayloadType>>* returnValue) const
+    {
+        QMutexLocker locker(&_lock);
+
+        for (CacheContainer* container : { &_memoryCache, &_diskCache }) {
+            const CacheIterator found = container->peek(key.getHash());
+            if (found == container->end()) {
+                continue;
+            }
+            for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
+                const std::shared_ptr<PayloadType> typed = std::dynamic_pointer_cast<PayloadType>(stored);
+                if (typed && (typed->getKey() == key)) {
+                    returnValue->push_back(typed);
+                }
+            }
+
+            return !returnValue->empty();
+        }
+
+        return false;
+    } // peek
+
 private:
 
 

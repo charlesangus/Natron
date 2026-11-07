@@ -44,64 +44,86 @@ What stays a refusal, independent of policy, because it is not a retention quest
 (`Engine/EffectInstanceRenderRoI.cpp:929-930`), `allowsStoreUnder` (`:978`), and the overlay pass (`:963-972`). The
 analysis override at `:933` stays too.
 
-`Engine/RenderScheduler.cpp:632` is a second consumer of the same yes/no: it sets `sharesCachedOutput`, which gates
-every graph-level probe. It must read the same answer or the pruning below sees nothing. Since M300.P2.T4 it and
+`Engine/RenderScheduler.cpp:632` is a second consumer of the same yes/no: it sets `sharesCachedOutput`. It must read the
+same answer, or a task's frame-store handling would disagree with what `renderRoI` stores. Since M300.P2.T4 it and
 `renderRoI` ask one function, `EffectInstance::admitsOutputToCache`, with the frame's real `isFrameVaryingOrAnimated`.
 
-The scheduler's `sharesCachedOutput` is now false for a node below the floor that an entry stored earlier could still
-serve, because lookup is not gated and this flag is. Pruning and placement's `inputs.isCached` therefore cannot see that
-entry, so the dependencies run and the task then hits: a `behind_hit`. M300.P2.T5 has to separate "may be probed" from
-"will be stored" for its probe. It cannot arise while the policy is `all`.
+The scheduler's `sharesCachedOutput` is false for a node below the floor that an entry stored earlier could still
+serve, because lookup is not gated and this flag is. So the probe has its own flag: `buildGraph` sets
+`probesCachedOutput` on any task `renderRoI` would look up, whether or not the node would store its output now.
 
-### `behind_hit` goes away only if dependency planning changes, and no task owns that
+### Pruning the task graph behind a hit
 
-The scheduler's dependency planning must change. `RenderScheduler::buildGraph` expands every
-`fvRequest->dependencies` (`Engine/RenderScheduler.cpp:561-576`) with no cache probe. `submit` then starts each task
-whose dependencies are done (`:661-709`), and `executeTask` runs it (`:1195`). The only graph-level probe is placement's
-`inputs.isCached` (`Engine/GpuPlacement.cpp:1024-1067`), used solely to keep tasks off regions (`:371`); it prunes
-nothing, and with `NATRON_GPU=off` placement does not run at all, so pruning cannot live there.
-
-Inside `renderRoI`, a hit does skip its inputs: the pre-render loop (`Engine/EffectInstanceRenderRoI.cpp:1397`)
-iterates only rectangles left to render. So by reading, the legacy recursion has no `behind_hit`; M276 - Upstream Reuse On Edits did not measure
-that scheduler.
-
-**No existing task in the milestone owns this.** M300.P2.T2, M300.P2.T3 and M300.P2.T4 change what is stored and kept;
-none touches graph planning. M301.P2.T1 covers only device hits in placement. The attribution table also says "no task
-yet" (`docs/perf/interactive-edit-attribution.md:32`). The proposed task is under
-[Gaps](#gaps-against-the-task-list); this note designs the mechanism but does not absorb the work.
+`RenderScheduler::buildGraph` expands every `fvRequest->dependencies` with no cache probe, and `submit` starts each task
+whose dependencies are done. Inside `renderRoI`, a hit does skip its inputs: the pre-render loop iterates only rectangles
+left to render, and a legacy render plans nothing ahead of that loop. So only the task graph has `behind_hit`, and the
+change is in planning.
 
 The planning pass, `RenderScheduler::pruneBehindCacheHits(graph, context)`, runs after `buildGraph` at both call sites,
-before `placeRenderGraph` (`Engine/ViewerInstance.cpp:1331-1339`, `Engine/OutputSchedulerThread.cpp:2594-2598`):
+before `placeRenderGraph` (`Engine/ViewerInstance.cpp`, `Engine/OutputSchedulerThread.cpp`):
 
-1. Walk from the root in reverse topological order. A task is *needed* if it is the root, or if some consumer is needed
-   and is not *covered*.
-2. Probe each needed task once. A task is covered if `sharesCachedOutput` holds and an entry at its exact key, for all
-   its layers, has no unrendered pixel in `renderedRoI`, in any tier. Pixels marked as being rendered elsewhere count as
-   not covered.
-3. A covered task keeps its node and loses its dependencies. It still runs, as a `hit`: the consumer reads its image
-   from the frame store as usual. Partial hits and identity tasks are not covered and keep their dependencies.
-4. Remove tasks that are not needed and recompute `consumers` and `remainingDeps` of the rest. A dependency shared with
-   a branch that needs it stays.
-5. Hold each covered entry's `ImagePtr` in the `FrameRenderContext` until its task has run. That is an in-use hold
-   ([Pins](#pins-and-holds)), so eviction cannot take the entry between probe and read.
+1. Walk from the root in reverse topological order. A task is *needed* if it is the root, or if a consumer that is
+   needed still reads it after that consumer's own probe.
+2. Probe each needed task once, through `EffectInstance::probeOutputInCache`: every layer at the exact key `renderRoI`
+   computes (`outputCacheKey`), and the draft key too on a draft frame. Each entry answers through the same trimap
+   bitmap `renderRoI` reads, so pixels marked as being rendered elsewhere count as missing.
+3. A task whose region is all there is *covered*: it keeps its node and loses its dependencies. It still runs, as a
+   `hit`, and the consumer reads its image from the frame store as usual.
+4. A task with part of its region there keeps the dependencies its effect names for the missing part, asked through
+   `getRegionsOfInterest`. A node with input transforms keeps them all, and so does a dependency on an edge with no input
+   number. A temporal node's input is read at each frame the edge names, under the same region of interest.
+5. Remove tasks that are not needed and recompute `consumers` and `remainingDeps` of the rest. A dependency shared with
+   a branch that needs it stays. An identity task is never probed and keeps its dependency, so the walk reaches the
+   target through it.
 
-The walk is O(V+E) with one probe per needed task, so its cost follows the part of the graph that will run. It is
-skipped when the frame bypasses the cache.
+`servedFromCache` records steps 3 and 4 on the task. Placement reads that flag as `inputs.isCached` instead of probing
+again, so it plans the pruned graph with one answer per task, and it does not run with `NATRON_GPU=off`.
 
-The probe must not promote, must not count as a reuse and must not bump recency. `Cache::get` does all of that today
-(`Engine/Cache.h:1735-1809`; the table's `operator()` relocates to most recent). It also has to compute the key
-exactly as `renderRoI` does, through one shared function. Placement's probe tolerates a wrong full-scale flag by
-trying each variant ("a false hit only keeps a task on the CPU", `Engine/GpuPlacement.cpp:1021-1032`); a false hit here
-costs more.
+**Cost.** The walk is O(V+E), and a task a covered consumer alone reads is never probed. Each task is probed at most once
+per plan. A probe tries at most layers x (mip levels + 1) x 2 candidate layers x 4 depths x 2 draft keys, a hash and a lock
+pair each, so 72 to 144 keys in the worst combinations and 1 or 2 usually. The cache lock is taken per key and released
+between keys, so the worst plan does N x 144 short lock pairs for N needed tasks and never holds the lock across a plan.
 
-If a covered entry is removed anyway (retraction at `Engine/EffectInstanceRenderRoI.cpp:1716`, or a false probe), the
-existing fallback still gives correct pixels: the consumer's `renderRoI` misses, its input read misses the frame store,
-on the first path it notes an unplanned pull and renders the input by recursion (`Engine/EffectInstance.cpp:1155-1176`); the
-second path (`:1625-1660`) renders inline without noting one, so a test counting pulls has to count that path too.
+**The probe changes nothing.** `Cache::peek` reads through `LRUHashTable::peek`, which does not relocate. It does not
+call `markUsed`, so `lastUse` and `reuseCount` stay as they were, and it does not re-open a file mapping. A plan's
+probes leave the eviction order alone.
 
-The benchmark needs no new semantics: it iterates only records present in the profile
-(`tools/bench/edit_latency_bench.py:138-157`), so a pruned task counts as not executed. Its baseline
-(`tools/bench/baselines/edit-latency.jsonl`) is re-recorded by M300.P4.T1.
+**No pin.** The pass holds no entry. A plan-wide hold would keep `use_count() > 1` on each covered entry, which makes it
+immune to eviction ([Pins](#pins-and-holds)), and on a modest machine that overshoots the budget for a whole plan, with
+nothing throttling it: the frame store's byte-budget admission only sees a task's output once it runs. A covered task has
+no dependencies, so it runs just after `submit`, and from then on the frame store holds its output under that budget.
+
+If a covered entry goes anyway, whether evicted between plan and use, retracted
+(`Engine/EffectInstanceRenderRoI.cpp`) or failing to re-open from disk, the task's `renderRoI` misses and renders. Its
+input read then misses the frame store, so `getImage` notes an unplanned pull and renders the input by recursion
+(`Engine/EffectInstance.cpp`). The pixels are right, and the cost shows as an unplanned pull. A partial task that loses
+its entry widens the same way: its render window is now the whole region, so no input is skipped.
+
+**Tiers.** The memory tier answers with a real entry. A disk entry of the node cache answers from its metadata without
+re-opening the file; `renderRoI` re-opens it and a failure there is the fallback above. An entry restored with an empty
+bitmap reads as missing everything. A later tier that adds a container to the `peek` loop inherits the same contract: a
+false hit costs an unplanned pull and never a wrong pixel.
+
+**Other requests.** Tasks are keyed by node, time, view, mip and context, and consumers are per task, so a temporal
+node's other frames and a multi-output node's several consumers each stay needed exactly while something reads them.
+A draft frame probes the non-draft key and then the draft key, as `renderRoI` does. An overlay image pass, a paint
+stroke in progress, a writer rendering its own sequence and a loop variable's context are not probed, since `renderRoI`
+either skips the lookup for them or doesn't take the entry at face value. The scheduler's frames never bypass the cache,
+so the pass has no bypass case.
+
+**Partial tasks at render time.** A skipped input has no plan, so the effect must not pull it. When a task's render
+window is part of its RoI, `renderInputImagesForRoI` asks the effect for the RoI of that window, and both
+`treeRecurseFunctor` and `getImage` return nothing for an input whose RoI misses its RoD (`inputRoIMissesRoD`).
+
+**What the pass leaves.** A dependency that stays keeps its planned RoI, which may include a pruned consumer's demand, so
+it can render more than the frame still needs. `estimatedBytes` of a hit doesn't shrink. An entry at a finer mip is trusted
+only when it covers the whole region, and a part-covered non-tiled effect renders it all. A region being rendered
+elsewhere keeps its dependencies, and `renderRoI` waits on it as it always has.
+
+The benchmark needs no new semantics: it iterates only records present in the profile, so a pruned task counts as not
+executed, and a covered task records `hit` with no `deps`. A `behind_hit` can still appear for a hit a plan could not
+foresee, such as one rendered by another frame after the plan. Its baseline (`tools/bench/baselines/edit-latency.jsonl`)
+is re-recorded by M300.P4.T1.
 
 ### Why both changes are needed
 
@@ -763,23 +785,9 @@ No constant caps the size of a user's image: an entry above every budget still r
 
 ## Gaps against the task list
 
-**1. No task owns skipping dependencies behind a hit.** This is the one the gate depends on: without it, `behind_hit` stays for any
-evicted upstream entry, and the attribution's priority-floor objection stands. Proposed wording, to go before M300.P2.T4:
-
-> **M300.P2.T5 — Prune the task graph behind a cache hit.**
-> files: `Engine/RenderScheduler.cpp`, `Engine/RenderScheduler.h`, `Engine/ViewerInstance.cpp`, `Engine/OutputSchedulerThread.cpp`,
-> `Engine/GpuPlacement.cpp`, `Engine/FrameRenderContext.h`, `Engine/ImageKey.cpp`, `Tests/CacheStress_Test.cpp`.
-> approach: Between `buildGraph` and `placeRenderGraph`, walk from the root; a task whose entry covers its `renderedRoI` in every layer
-> keeps its node, loses its dependencies and runs as a hit, and a task no needed consumer reads is removed. The probe is shared with
-> placement, computes `renderRoI`'s exact key, promotes nothing and counts no reuse. Covered entries are held by the frame until
-> their task has run. A cache-bypassing frame skips the pass.
-> verify: With `NATRON_GPU=off`, on a chain whose last upstream node is cached, a Grade edit runs the edited node and one hit, with no
-> record for the nodes above it and no unplanned pull. Eviction of an upstream entry behind a hit causes no execution. A consumer
-> rendering a part of its RoI keeps its dependencies. A dependency shared with an uncached branch still runs. The result matches a
-> full render, for both a dropped hit and a partial one.
-> size: L
-
-M301.P2.T1 then extends this pass to device hits instead of walking on its own.
+**1. Skipping dependencies behind a hit.** Owned by M300.P2.T5, designed under
+[Pruning the task graph behind a hit](#pruning-the-task-graph-behind-a-hit). M301.P2.T1 extends the pass to device hits
+instead of walking on its own.
 
 **2. Task file lists that omit files their work needs.**
 

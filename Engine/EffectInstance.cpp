@@ -837,6 +837,175 @@ EffectInstance::admitsOutputToCache(const RenderContextPtr& context,
     return shouldCacheOutput(isFrameVaryingOrAnimated, time, view, frameArgs.visitsCount);
 }
 
+bool
+EffectInstance::pullsInputsAtScaleOne() const
+{
+    // For multi-resolution we want input images with exactly the same size as the output image
+    return getNode()->useScaleOneImagesWhenRenderScaleSupportIsDisabled() || !supportsMultiResolution();
+}
+
+ImageKey
+EffectInstance::outputCacheKey(U64 nodeHash,
+                               bool isFrameVaryingOrAnimated,
+                               double time,
+                               ViewIdx view,
+                               bool draft,
+                               unsigned int renderMappedMipmapLevel) const
+{
+    return ImageKey(getNode().get(), nodeHash, isFrameVaryingOrAnimated, time, view, 1., draft, renderMappedMipmapLevel == 0 && !pullsInputsAtScaleOne());
+}
+
+EffectInstance::OutputCacheCoverage
+EffectInstance::probeOutputInCache(U64 nodeHash,
+                                   bool isFrameVaryingOrAnimated,
+                                   double time,
+                                   ViewIdx view,
+                                   unsigned int mipmapLevel,
+                                   bool rendersFullScale,
+                                   bool probesDraft,
+                                   bool acceptsPartial,
+                                   const RectI& region,
+                                   const RectD& rod,
+                                   double par,
+                                   const std::list<ImageLayerDesc>& layers,
+                                   ImageBitDepthEnum bitdepth,
+                                   RectD* missing)
+{
+    if (layers.empty() || region.isNull()) {
+        return OutputCacheCoverage::None;
+    }
+
+    ComponentsNeededMap neededComps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime;
+    int passThroughView;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput;
+    getComponentsNeededAndProduced_public(nodeHash, time, view, &neededComps, &passThroughLayers, &passThroughTime,
+                                          &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    const ComponentsNeededMap::const_iterator foundOutput = neededComps.find(-1);
+    const std::list<ImageLayerDesc> outputComponents = foundOutput != neededComps.end() ? foundOutput->second : std::list<ImageLayerDesc>();
+
+    const unsigned int renderLevel = rendersFullScale ? 0 : mipmapLevel;
+    const ImageKey nonDraftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, false, renderLevel);
+    const ImageKey draftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, true, renderLevel);
+    const bool onDisk = dynamic_cast<DiskCacheNode*>(this) != nullptr;
+
+    const auto peekEntry = [&](const ImageKey& key, unsigned int level, const ImageLayerDesc& layer) -> ImagePtr {
+        ImagePtr entry;
+        key.forEachServingKey(level, 0, layer, bitdepth, [&](const ImageKey& candidate) {
+            std::list<ImagePtr> images;
+            if (onDisk) {
+                appPTR->peekImage_diskCache(candidate, &images);
+            } else {
+                appPTR->peekImage(candidate, &images);
+            }
+            for (const ImagePtr& image : images) {
+                if (image->getParams()->isRodProjectFormat()) {
+                    Format projectFormat;
+                    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+                    const RectD canonicalProject = projectFormat.toCanonicalFormat();
+                    if (canonicalProject != image->getRoD()) {
+                        continue;
+                    }
+                }
+                if (image->getBounds().isNull()) {
+                    continue;
+                }
+                if ((candidate._mipmapLevel == level) || (image->getStorageMode() == eStorageModeRAM)) {
+                    entry = image;
+
+                    return true;
+                }
+            }
+
+            return false;
+        });
+
+        return entry;
+    };
+    const auto findEntry = [&](unsigned int level, const ImageLayerDesc& layer) -> ImagePtr {
+        ImagePtr entry = peekEntry(nonDraftKey, level, layer);
+        if (!entry && probesDraft) {
+            entry = peekEntry(draftKey, level, layer);
+        }
+
+        return entry;
+    };
+    // False while another render is working on any of the region: renderRoI would wait for that render's marker, and
+    // renders the region itself if that render aborts, so the task's inputs are still needed.
+    const auto settledRest = [](const ImagePtr& entry, const RectI& at, std::list<RectI>* rest) -> bool {
+#if NATRON_ENABLE_TRIMAP
+        bool beingRendered = false;
+        entry->getRestToRender_trimap(at, *rest, &beingRendered);
+
+        return !beingRendered;
+#else
+        entry->getRestToRender(at, *rest);
+
+        return true;
+#endif
+    };
+    const auto coversInFull = [&](const ImagePtr& entry, unsigned int level, const RectI& atLevel) -> bool {
+        RectI at = atLevel;
+        if (entry->getMipmapLevel() < level) {
+            at = at.upscalePowerOfTwo(level - entry->getMipmapLevel()).intersect(rod.toPixelEnclosing(entry->getMipmapLevel(), par));
+        }
+        std::list<RectI> rest;
+
+        return settledRest(entry, at, &rest) && rest.empty();
+    };
+
+    const RectI renderRegion = rendersFullScale ? region.toCanonical(mipmapLevel, par, rod).toPixelEnclosing(0, par).intersect(rod.toPixelEnclosing(0, par)) : region;
+    RectD missingCanonical;
+    for (const ImageLayerDesc& layer : layers) {
+        const ImageLayerDesc* cachedLayer = ImageKey::cachedLayerForRequest(layer, outputComponents);
+        if (!cachedLayer) {
+            return OutputCacheCoverage::None;
+        }
+        if (rendersFullScale) {
+            const ImagePtr atRequestedLevel = findEntry(mipmapLevel, *cachedLayer);
+            if (atRequestedLevel && coversInFull(atRequestedLevel, mipmapLevel, region)) {
+                continue;
+            }
+        }
+        const ImagePtr entry = findEntry(renderLevel, *cachedLayer);
+        if (!entry) {
+            return OutputCacheCoverage::None;
+        }
+        // A finer entry's bitmap is carried over by a downscale, whose edges can't be predicted well enough to trust a part.
+        if (entry->getMipmapLevel() != renderLevel) {
+            if (!coversInFull(entry, renderLevel, renderRegion)) {
+                return OutputCacheCoverage::None;
+            }
+            continue;
+        }
+        std::list<RectI> rest;
+        if (!settledRest(entry, renderRegion, &rest)) {
+            return OutputCacheCoverage::None;
+        }
+        if (!rest.empty() && !acceptsPartial) {
+            return OutputCacheCoverage::None;
+        }
+        for (const RectI& rect : rest) {
+            const RectD canonicalRect = rect.toCanonical_noClipping(renderLevel, par);
+            if (missingCanonical.isNull()) {
+                missingCanonical = canonicalRect;
+            } else {
+                missingCanonical.merge(canonicalRect);
+            }
+        }
+    }
+
+    if (missingCanonical.isNull()) {
+        return OutputCacheCoverage::Full;
+    }
+    *missing = missingCanonical;
+
+    return OutputCacheCoverage::Partial;
+} // EffectInstance::probeOutputInCache
+
 const std::string &
 EffectInstance::getScriptName() const
 {
@@ -1346,6 +1515,7 @@ EffectInstance::getImage(int inputNb,
     //    in the kOfxActionInstanceChanged and kOfxActionEndInstanceChanged actions with a kOfxPropChangeReason of kOfxChangeUserEdited
     RectD roi;
     bool roiWasInRequestPass = false;
+    RectD inputRoDInRequestPass;
     bool isAnalysisPass = false;
     RectD thisRod;
     double thisEffectRenderTime = time;
@@ -1376,6 +1546,7 @@ EffectInstance::getImage(int inputNb,
             if (request) {
                 roiWasInRequestPass = true;
                 roi = request->finalData.finalRoi;
+                inputRoDInRequestPass = request->globalData.rod;
             }
         }
 
@@ -1445,7 +1616,13 @@ EffectInstance::getImage(int inputNb,
     if (optionalBoundsParam) {
         //Set the RoI from the parameters given to clipGetImage
         roi = optionalBounds;
-    } else if (!roiWasInRequestPass) {
+    } else if (roiWasInRequestPass) {
+        // Partial cache hits leave out inputs that only the cached part of the output read. The rect being rendered
+        // reads nothing of such an input, and the render gets what it gets from an empty RoI without a request pass.
+        if (tls->currentRenderArgs.validArgs && inputRoIMissesRoD(tls->currentRenderArgs.regionOfInterestResults, inputEffect, inputRoDInRequestPass)) {
+            return ImagePtr();
+        }
+    } else {
         //We did not have a request pass, use if possible the result of getRegionsOfInterest found in the TLS
         //If not, fallback on input RoD
         EffectInstancePtr inputToFind;
@@ -2672,12 +2849,16 @@ EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
                                         const RenderScale& renderMappedScale,
                                         bool useScaleOneInputImages,
                                         bool byPassCache,
+                                        bool renderWindowIsPartOfRoI,
                                         const FramesNeededMap& framesNeeded,
                                         const EffectInstance::ComponentsNeededMap& neededComps,
                                         EffectInstance::InputImagesMap* inputImages,
                                         RoIMap* inputsRoi)
 {
-    if (!request) {
+    // With transforms the map would name the effects the transforms redirect to rather than the inputs. Without a frame
+    // context there is no plan that can have left an input out, and the planned RoI is read as before.
+    const bool asksRenderWindow = renderWindowIsPartOfRoI && AppTLS::currentFrameContext() && (!inputTransforms || inputTransforms->empty());
+    if (!request || asksRenderWindow) {
         getRegionsOfInterest_public(time, renderMappedScale, rod, canonicalRenderWindow, view, inputsRoi);
     }
 #ifdef DEBUG

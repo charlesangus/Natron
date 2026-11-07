@@ -750,36 +750,35 @@ TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
     ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &run, &error, true /*draftMode*/)) << error;
     const int index = taskOf(run.graph, _grade);
     ASSERT_GE(index, 0);
-    FrameGraph::Task task = run.graph.tasks[index];
-    task.sharesCachedOutput = true;
-    task.renderedRoI = RectI(0, 0, kWidth, kHeight);
+    const FrameGraph::Task task = run.graph.tasks[index];
     ASSERT_FALSE(task.components.empty());
 
     const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
     ASSERT_TRUE(bool(inputs.isCached));
-    EXPECT_FALSE(inputs.isCached(task));
+    const auto cachedAfterPruning = [&](FrameGraph graph, const FrameRenderContextPtr& context) {
+        RenderScheduler::pruneBehindCacheHits(graph, context);
+        const int pruned = taskOf(graph, _grade);
 
+        return (pruned >= 0) && inputs.isCached(graph.tasks[pruned]);
+    };
+    EXPECT_FALSE(cachedAfterPruning(run.graph, run.context));
+
+    const FrameRequestMap::const_iterator request = run.context->getRequest()->find(NodeCtxKey(_grade, 0));
+    ASSERT_TRUE(request != run.context->getRequest()->end());
     const ImageLayerDesc layer = task.components.front();
-    const ImageKey draftKey = Image::makeKey(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, true, false);
+    const ImageKey draftKey = _grade->getEffectInstance()->outputCacheKey(request->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, true, task.cacheMipmapLevel);
     ImageParamsPtr params = Image::makeParams(RectD(0, 0, kWidth, kHeight), 1., task.cacheMipmapLevel, false, layer, eImageBitDepthFloat, eImageFieldingOrderNone);
     ImagePtr cached;
     appPTR->getImageOrCreate(draftKey, params, &cached);
     ASSERT_TRUE(cached != nullptr);
     cached->allocateMemory();
-    cached->markForRendered(task.renderedRoI);
+    cached->markForRendered(RectI(0, 0, kWidth, kHeight));
 
-    EXPECT_TRUE(inputs.isCached(task));
+    EXPECT_TRUE(cachedAfterPruning(run.graph, run.context));
 
     FrameRun plain;
     ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &plain, &error)) << error;
-    const int plainIndex = taskOf(plain.graph, _grade);
-    ASSERT_GE(plainIndex, 0);
-    FrameGraph::Task plainTask = plain.graph.tasks[plainIndex];
-    plainTask.sharesCachedOutput = true;
-    plainTask.renderedRoI = RectI(0, 0, kWidth, kHeight);
-    const PlacementInputs plainInputs = makeRenderPlacementInputs(plain.context);
-    ASSERT_TRUE(bool(plainInputs.isCached));
-    EXPECT_FALSE(plainInputs.isCached(plainTask));
+    EXPECT_FALSE(cachedAfterPruning(plain.graph, plain.context));
 }
 
 // A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once

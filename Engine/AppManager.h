@@ -213,12 +213,20 @@ public:
     bool getImage(const ImageKey & key, std::list<ImagePtr>* returnValue) const;
 
     /**
+     * @brief Finds images as getImage does without counting as a use of them, so a render plan can ask what is cached
+     * without changing what gets evicted.
+     **/
+    bool peekImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
+
+    /**
      * @brief Same as getImage, but if it couldn't find a matching image in the cache, it will create one with the given parameters.
      **/
     bool getImageOrCreate(const ImageKey & key, const ImageParamsPtr& params,
                           ImagePtr* returnValue) const;
 
     bool getImage_diskCache(const ImageKey & key, std::list<ImagePtr>* returnValue) const;
+
+    bool peekImage_diskCache(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
 
     bool getImageOrCreate_diskCache(const ImageKey & key, const ImageParamsPtr& params,
                                     ImagePtr* returnValue) const;

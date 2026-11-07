@@ -2548,6 +2548,13 @@ AppManager::getImage(const ImageKey & key,
 }
 
 bool
+AppManager::peekImage(const ImageKey& key,
+                      std::list<ImagePtr>* returnValue) const
+{
+    return _imp->_nodeCache->peek(key, returnValue);
+}
+
+bool
 AppManager::getImageOrCreate(const ImageKey & key,
                              const ImageParamsPtr& params,
                              ImagePtr* returnValue) const
@@ -2560,6 +2567,13 @@ AppManager::getImage_diskCache(const ImageKey & key,
                                std::list<ImagePtr>* returnValue) const
 {
     return _imp->_diskCache->get(key, returnValue);
+}
+
+bool
+AppManager::peekImage_diskCache(const ImageKey& key,
+                                std::list<ImagePtr>* returnValue) const
+{
+    return _imp->_diskCache->peek(key, returnValue);
 }
 
 bool

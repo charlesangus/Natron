@@ -482,6 +482,15 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                 roi = (ownRoI != inputRois.end()) ? ownRoI->second : RectD();
                             }
 
+                            // The planned RoI is what every rect of the frame reads together, so the rect being rendered
+                            // has to be asked: its own RoI may not reach an input a plan left out for it.
+                            if (roiIsInRequestPass && !inputRois.empty()) {
+                                const FrameViewRequest* inputRequest = frameArgs->request->getFrameViewRequest(f, viewIt->first);
+                                if (inputRequest && inputRoIMissesRoD(inputRois, inputEffect, inputRequest->globalData.rod)) {
+                                    continue;
+                                }
+                            }
+
                             const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
                             const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
                             const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);

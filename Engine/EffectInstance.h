@@ -406,6 +406,38 @@ public:
     }
 
     /**
+     * @brief For an effect with hash-namespaced knobs (KnobI::setHashNamespace()): the path of the
+     * render settings prim they author, the renderer it names and whether the node makes it the
+     * stage's active one (HashNamespaces). False when the effect authors none. Any thread.
+     **/
+    virtual bool getHashNamespaceScope(std::string* /*path*/,
+                                       std::string* /*defaultRenderer*/,
+                                       bool* /*active*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief True for an effect whose output stage may hold render settings prims that no
+     * hash-namespaced knob authors, such as a file's: its HashNamespaces are then uncertain, so a
+     * consumer folds every entry. Any thread.
+     **/
+    virtual bool mayAuthorUntrackedRenderSettings() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief True for an effect that folds what it reads of its inputs' HashNamespaces into its
+     * hash itself (appendNodeContentHash()) and outputs no stage: the node then neither folds the
+     * table nor passes it on. Otherwise the node folds every entry. Any thread.
+     **/
+    virtual bool consumesHashNamespaces() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Appends nodes whose stored hashes appendNodeContentHash() folds in, besides the
      * node's inputs: they are hashed before it, and it is only clean once they are.
      **/

@@ -22,11 +22,22 @@ permissions:
   contents: write
 
 jobs:
+  dev-image:
+    name: dev image
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/dev-image.yml
+
   release:
     name: build-and-release
+    needs: dev-image
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-vfxall:2027-clang21.1
+      image: ${{ needs.dev-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash -l {0}
@@ -35,7 +46,6 @@ jobs:
       NATRON_IN_CONTAINER: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 6G
-      NATRON_DEPS_CACHE: ${{ github.workspace }}/.natron-deps
       TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
@@ -66,10 +76,6 @@ jobs:
             git push origin "refs/tags/$TAG"
           fi
           echo "Building $TAG at $(git rev-parse HEAD)"
-
-      # The ASWF base image has no git-lfs; the dev image bakes in the same pin.
-      - name: Install git-lfs
-        run: tools/ci/local/install-git-lfs.sh
 
       # LFS objects come from the cache and download only on a miss. The workspace
       # is not owned by the container's root user, so git needs it marked safe.
@@ -109,14 +115,6 @@ jobs:
             build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
-
-      # The pinned Slang release is downloaded at configure time; the
-      # key hashes FetchSlang.cmake, so a version or SHA bump misses.
-      - name: Cache Slang
-        uses: actions/cache@v6.1.0
-        with:
-          path: .natron-deps
-          key: natron-deps-linux-${{ hashFiles('cmake/FetchSlang.cmake') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh

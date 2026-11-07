@@ -718,6 +718,19 @@ ViewerInstance::initializeKnobs()
     }
     k.downscaleLevel = downscaleLevel;
 
+    KnobIntPtr maxSamples = createViewerKnob<KnobInt>(this, page, tr("Max Samples"), kViewerParamMaxSamples,
+                                                      tr("The samples per pixel a progressive renderer refines the 3D view to; "
+                                                         "0 uses the renderer's default. A change restarts the render."));
+    maxSamples->setMinimum(0);
+    maxSamples->setDisplayMinimum(0);
+    maxSamples->setDisplayMaximum(4096);
+    k.maxSamples = maxSamples;
+
+    KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
+                                                              tr("Holds a progressive renderer's refinement of the 3D view at its "
+                                                                 "current samples; off continues from them. Edits wait until it is off."));
+    k.refinementPaused = refinementPaused;
+
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(alphaChannel, 0, LayerKnobSpec::eRoleInputBound);

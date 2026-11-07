@@ -364,6 +364,7 @@ appendUpstreamMetadata(const ScenePayload& upstream,
     h->appendDouble(metadata.metersPerUnit);
     h->appendString(metadata.defaultPrim);
     h->appendDouble(metadata.timeCodesPerSecond);
+    h->appendString(metadata.renderSettingsPrimPath);
 }
 
 void

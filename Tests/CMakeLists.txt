@@ -332,6 +332,7 @@ set(GuiTests_SOURCES
     SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
+    SpinBox_Test.cpp
     StallMonitor_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
@@ -386,6 +387,24 @@ natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
 natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
+# SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
+# from the configure step is written to an include that ctest runs just before it.
+# A build configured with a MoonRay install bundles it, so MoonRayDelegate must fail, not skip, if
+# the plug-in is not registered (the test itself skips on a CPU the runtime gate refuses).
+if(NATRON_MOONRAY_PREFIX)
+    set(NATRON_MOONRAY_BUNDLED ON)
+else()
+    set(NATRON_MOONRAY_BUNDLED OFF)
+endif()
+# A build whose OpenUSD install carries the Cycles delegate (tools/ci/local/build-cycles.sh) bundles
+# it, so CyclesDelegate must fail, not skip, if the plug-in is not registered.
+if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
+    set(NATRON_CYCLES_BUNDLED ON)
+else()
+    set(NATRON_CYCLES_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)

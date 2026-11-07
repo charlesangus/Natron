@@ -49,6 +49,11 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Flow/ is the optical-flow library. It knows nothing of nodes, images or Qt.
+file(GLOB NatronEngineFlow_HEADERS Flow/*.h)
+file(GLOB NatronEngineFlow_SOURCES Flow/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
@@ -292,6 +297,7 @@ target_include_directories(NatronEngine
         .
         ..
         ../Global
+        ../libs/Eigen3
         ../libs/SequenceParsing
         ../libs/xxhash
         ${X11_INCLUDE_DIR}

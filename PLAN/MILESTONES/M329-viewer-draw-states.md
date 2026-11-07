@@ -156,6 +156,8 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Decisions
 
+- 2026-11-07 — Load All and BBox (user): Load All skips payloads under a BBox row, so the load needs exclusions. The column also needs a recursive clear, so nobody has to clear child rows one at a time.
+
 - 2026-11-07 — Names (user): the state called Full + Load in the design and earlier tasks is now **Load All** (`loadAll`), everywhere it appears: draw column, viewer key action, USDRead `Initial Draw`, USDExpandHierarchy rules. The column stays Draw State (`drawState`).
 
 - 2026-11-07 — Budget (user): the 100 ms covers both the main-thread stall and the time until the changed picture appears. If Storm can't reach it, report the numbers rather than change the target.

@@ -180,6 +180,9 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
 
 ## Decisions
 
+- 2026-11-07 — Forward press with a later key (user, "maybe"): track forward from the earlier anchor and backward from the later key, and blend the two across the range, instead of tracking backward only.
+- 2026-11-07 — Sources (user): a source with only a forward vector layer is listed for forward follows.
+
 - 2026-10-25 — **The vectors come from any node with motion layers (user),** which covers both VectorGenerator and CG renders. There is no built-in flow and no new Roto input.
 - 2026-10-25 — **Results are baked, with optional keyframe reduction (user).** There are no live links.
 - 2026-10-25 — **Existing keys are anchors, and gaps are bridged forward/backward with a crossfade (user).**

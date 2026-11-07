@@ -24,7 +24,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 **Edge cases:**
 - **Disk full or a write error on demotion:** the entry is dropped and one warning is logged per session.
-- **A second Natron instance:** the persistent tier directory is locked, and a second instance uses a session-only scratch directory beside it.
+- **A second Natron instance:** concurrent sessions use one tier as peers; design pending (see Decisions).
 - **A changed source file across sessions:** Read keys carry M260's file stamps, so a persisted entry for a changed file misses and Reload re-reads it.
 - **An entry in use:** it is pinned and never demoted while a render holds it, as today.
 - **A partially rendered entry:** its bitmap travels with it through demotion and promotion.
@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — **Concurrent sessions coexist on the disk tier (user):** two sessions with different projects are very common and with the same project somewhat rare. Locking the tier to the first session is rejected; this replaces the second-instance edge case and the directory lock. Redesign pending before Phase 300.3.
 - 2026-11-07 — M300.P1.T3 at 9a477bf16, unbuilt until the phase gate. A restored DiskCache entry now has an empty bitmap and re-renders until M300.P3 persists bitmaps; the old code served never-rendered pixels as rendered, so the fix stays and the gap closes before the Feature ships. Each entry has its own `pendingLock` rather than the note's stripe.
 - 2026-11-07 — M300.P1.T2 at 900e2277c, unbuilt until the phase gate. Dropped from the old filter: a differently laid out RGB, Alpha or XY entry (except RGB or Alpha from RGBA), and Short for a Half request. A miss costs up to 72 probes for Alpha byte at mip 8 (144 on draft), 1 for RGBA float at mip 0; watch this in the bench.
 - 2026-11-06 — Design note at 126e17bb4 on milestone/m300-unified-tiered-cache. Assumption on recompute cost was false: the scheduler stores no cost and task wall time can include nested inputs, so a stopwatch inside `renderRoI` subtracts nested time. Five open points in the note await the user: `priorityFloor` wording, the age term, the disk cap's free space, a full pin budget, background renderer scratch.

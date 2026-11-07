@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -181,6 +181,7 @@ set(Tests_SOURCES
     TimeVaryingLayers_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
+    TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
@@ -205,6 +206,9 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the optical-flow library tests.
+file(GLOB Tests_FLOW_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Flow/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_FLOW_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the scene (USD) transport tests.
 file(GLOB Tests_SCENE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Scene/*_Test.cpp)
 # Authors the layers of SceneTestEffect.h's stubs, which wmain.cpp registers.

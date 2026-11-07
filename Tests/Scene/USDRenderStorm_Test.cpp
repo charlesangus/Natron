@@ -1291,8 +1291,11 @@ protected:
         translateB->setValueAtTime(1., 2.5, ViewSpec::all(), 0);
         translateB->setValueAtTime(11., 4.5, ViewSpec::all(), 0);
         connectNodes(*projector, *cardB, 0, true);
-        connectNodes(*cardB, render->getInput(0), 2, true);
+        connectNodes(*cardB, render->getInput(0)->getInput(0), 2, true);
         renderColour(render, "the direct connection", rgba, 11.);
+        if (HasFatalFailure()) {
+            return NodePtr();
+        }
 
         for (const std::pair<int, int>& halves : { std::make_pair(0, kWidth / 2), std::make_pair(kWidth / 2, kWidth) }) {
             const RegionColours region = regionColours(*rgba, halves.first, 0, halves.second, kHeight);
@@ -1302,7 +1305,7 @@ protected:
 
         (*cardA)->disconnectInput(0);
         (*cardB)->disconnectInput(0);
-        NodePtr merge = render->getInput(0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         merge->disconnectInput(0);
         merge->disconnectInput(2);
         connectNodes(*cardA, *cards, 0, true);
@@ -1436,7 +1439,7 @@ protected:
         hold->setValue(1.);
         fileKnob->setValue(file.toStdString());
         card->disconnectInput(0);
-        NodePtr merge = render->getInput(0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         merge->disconnectInput(0);
         connectNodes(reader, merge, 0, true);
 
@@ -1448,7 +1451,7 @@ protected:
                              const NodePtr& projector,
                              const char* pattern)
     {
-        NodePtr merge = render->getInput(0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         NodePtr scene = merge ? merge->getInput(0) : NodePtr();
         NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
         if (!scene || !assign || !setString(assign, kUSDAssignMaterialParamPrimPattern, pattern)) {
@@ -2224,7 +2227,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughOneAssign)
     ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "one assign");
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2246,7 +2249,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughTwoAssigns)
     connectNodes(projector, assignA, kUSDAssignMaterialInputMaterial, true);
     connectNodes(assignA, assignB, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assignB, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assignB, render->getInput(0), 0, true);
+    connectNodes(assignB, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "two assigns");
 }
 
@@ -2265,7 +2268,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsByMaterialPath)
     ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
     connectNodes(projector, cards, 2, true);
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "Material Path");
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2300,17 +2303,17 @@ TEST_F(USDRenderStormTest, StormProject3DReferencePointsAuthoredByHandStick)
     NodePtr render = createHeldGraphReading(sticky, &projector);
     ASSERT_TRUE(render != nullptr);
     ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
-    connectNodes(projector, render->getInput(0), 2, true);
+    connectNodes(projector, render->getInput(0)->getInput(0), 2, true);
 
     renderProjection(render, projector, 1., 0., RectI(), "reference points at the hold");
     renderProjection(render, projector, 11., shift, RectI(), "reference points after the points moved");
 
-    NodePtr reader = render->getInput(0)->getInput(0);
+    NodePtr reader = render->getInput(0)->getInput(0)->getInput(0);
     ASSERT_TRUE(reader && knob<KnobFile>(reader, kUSDReadParamFile));
     knob<KnobFile>(reader, kUSDReadParamFile)->setValue(bare.toStdString());
     std::vector<float> atHold, later;
-    renderColour(render, "no reference points at the hold", &atHold, 1.);
-    renderColour(render, "no reference points after the points moved", &later, 11.);
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "no reference points at the hold", &atHold, 1.));
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "no reference points after the points moved", &later, 11.));
     ASSERT_EQ(atHold.size(), later.size());
     // The projector's frame, which the quad covers at both frames.
     int different = 0;
@@ -2353,19 +2356,19 @@ TEST_F(USDRenderStormTest, StormProject3DProjectOnKeepsTheFacesOfTheHoldAsTheMes
     NodePtr render = createHeldGraphReading(file, &projector);
     ASSERT_TRUE(render != nullptr);
     ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
-    connectNodes(projector, render->getInput(0), 2, true);
+    connectNodes(projector, render->getInput(0)->getInput(0), 2, true);
     KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
     ASSERT_TRUE(projectOn != nullptr);
 
     for (const double frame : { 1., 11. }) {
         std::vector<float> rgba;
         projectOn->setValue((int)USDProject3D::eProjectOnFront);
-        renderColour(render, "Front", &rgba, frame);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, "Front", &rgba, frame));
         RegionColours region = regionColours(rgba, 0, 0, kWidth, kHeight);
         EXPECT_GT(region.red, 100) << "Front at frame " << frame;
         EXPECT_GT(region.blue, 100) << "Front at frame " << frame;
         projectOn->setValue((int)USDProject3D::eProjectOnBack);
-        renderColour(render, "Back", &rgba, frame);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, "Back", &rgba, frame));
         region = regionColours(rgba, 0, 0, kWidth, kHeight);
         EXPECT_EQ(0, region.red) << "Back at frame " << frame;
         EXPECT_EQ(0, region.blue) << "Back at frame " << frame;
@@ -2392,7 +2395,7 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingMeshBesideARigidPrimThroughThe
     ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Moving"));
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "a deforming mesh through the Material input", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2417,7 +2420,7 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingMeshByMaterialPath)
     ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
     connectNodes(projector, cards, 2, true);
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "a deforming mesh by Material Path", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2440,7 +2443,7 @@ TEST_F(USDRenderStormTest, StormProject3DSkinnedMeshSticks)
     ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Rig/Moving"));
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "a skinned mesh", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2491,7 +2494,7 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingCurvesAndPointsStick)
     NodePtr projector;
     NodePtr render = createHeldGraphReading(curvesFile, &projector);
     ASSERT_TRUE(render != nullptr);
-    NodePtr reader = render->getInput(0)->getInput(0);
+    NodePtr reader = render->getInput(0)->getInput(0)->getInput(0);
     NodePtr assign = assignProjection(render, projector, "/Moving");
     ASSERT_TRUE(reader && assign);
     KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
@@ -2502,12 +2505,12 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingCurvesAndPointsStick)
         knob<KnobFile>(reader, kUSDReadParamFile)->setValue(name);
         projectOn->setValue((int)USDProject3D::eProjectOnBoth);
         std::vector<float> atHold, later, front;
-        renderColour(render, name.c_str(), &atHold, 1.);
-        renderColour(render, name.c_str(), &later, 11.);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &atHold, 1.));
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &later, 11.));
         expectColoursMovedBy(atHold, later, 20, name.c_str());
         EXPECT_FALSE(assign->hasPersistentMessage()) << name;
         projectOn->setValue((int)USDProject3D::eProjectOnFront);
-        renderColour(render, name.c_str(), &front, 11.);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &front, 11.));
         expectColoursMovedBy(atHold, front, 20, name.c_str());
     }
 }

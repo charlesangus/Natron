@@ -25,11 +25,118 @@
 
 #include "SceneStage.h"
 
+#include <chrono>
+#include <set>
+
+#include <pxr/base/tf/errorMark.h>
+#include <pxr/usd/sdf/layerUtils.h>
+#include <pxr/usd/sdf/listOp.h>
+#include <pxr/usd/sdf/payload.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/schema.h>
+#include <pxr/usd/sdf/variantSetSpec.h>
+#include <pxr/usd/sdf/variantSpec.h>
+#include <pxr/usd/usd/primRange.h>
+
 #include "Engine/Nodes/Scene/SceneOps.h"
 
 NATRON_NAMESPACE_ENTER
 
-SceneStage::SceneStage()
+namespace {
+PXR_NS::SdfPayloadVector
+getAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec)
+{
+    return spec->GetFieldAs<PXR_NS::SdfPayloadListOp>(PXR_NS::SdfFieldKeys->Payload).GetAppliedItems();
+}
+
+// The payload asset paths spec and everything under it author, as authored.
+void
+collectAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec,
+                        std::set<std::string>* assets)
+{
+    for (const PXR_NS::SdfPayload& payload : getAuthoredPayloads(spec)) {
+        assets->insert(payload.GetAssetPath());
+    }
+    for (const PXR_NS::SdfPrimSpecHandle& child : spec->GetNameChildren()) {
+        collectAuthoredPayloads(child, assets);
+    }
+    for (const auto& variantSet : spec->GetVariantSets()) {
+        const PXR_NS::SdfVariantSetSpecHandle set = variantSet.second;
+        for (const PXR_NS::SdfVariantSpecHandle& variant : set->GetVariantList()) {
+            collectAuthoredPayloads(variant->GetPrimSpec(), assets);
+        }
+    }
+}
+
+// Opens asset and the sublayers and references it needs to compose, holding each in held. A nested
+// payload stays closed: its prim comes up unloaded unless it is asked for. Returns the error
+// opening asset itself gave; one of its dependencies failing is the stage's to report when it
+// composes. outcomes keeps each asset's result, so that assets are read once a batch.
+std::string
+openPayloadClosure(const std::string& asset,
+                   std::map<std::string, std::string>* outcomes,
+                   std::vector<PXR_NS::SdfLayerRefPtr>* held)
+{
+    const std::map<std::string, std::string>::const_iterator known = outcomes->find(asset);
+    if (known != outcomes->end()) {
+        return known->second;
+    }
+    PXR_NS::TfErrorMark mark;
+    const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(asset);
+    if (!layer) {
+        std::string error;
+        for (PXR_NS::TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+            error += (error.empty() ? "" : "; ") + it->GetCommentary();
+        }
+        mark.Clear();
+        if (error.empty()) {
+            error = "Could not open " + asset + ".";
+        }
+        (*outcomes)[asset] = error;
+
+        return error;
+    }
+    (*outcomes)[asset] = std::string();
+    held->push_back(layer);
+
+    std::set<std::string> nested;
+    collectAuthoredPayloads(layer->GetPseudoRoot(), &nested);
+    for (const std::string& dependency : layer->GetCompositionAssetDependencies()) {
+        if (!dependency.empty() && !nested.count(dependency)) {
+            openPayloadClosure(PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency), outcomes, held);
+        }
+    }
+    mark.Clear();
+
+    return std::string();
+}
+
+bool
+isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+{
+    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+}
+
+// The payload assets of prim, whichever layer of its composition authors them, anchored to it.
+std::vector<std::string>
+getPayloadAssets(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<std::string> assets;
+
+    for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+        for (const PXR_NS::SdfPayload& payload : getAuthoredPayloads(spec)) {
+            // An internal payload has no asset: it is in a layer the stage already holds.
+            if (!payload.GetAssetPath().empty()) {
+                assets.push_back(PXR_NS::SdfComputeAssetPathRelativeToLayer(spec->GetLayer(), payload.GetAssetPath()));
+            }
+        }
+    }
+
+    return assets;
+}
+} // anonymous namespace
+
+SceneStage::SceneStage(PXR_NS::UsdStage::InitialLoadSet load)
 {
     if (!SceneOps::checkUsdRuntime(nullptr)) {
         return;
@@ -43,7 +150,7 @@ SceneStage::SceneStage()
     // The root carries every metadata field from the start, so later syncs only rewrite the
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
-    _stage = SceneOps::openStage(_root);
+    _stage = SceneOps::openStage(_root, load);
 }
 
 SceneStage::~SceneStage()
@@ -278,6 +385,185 @@ U64
 SceneStage::getPreviewGeneration() const
 {
     return _previewGeneration;
+}
+
+void
+SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
+                        bool withDescendants)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    for (const PXR_NS::SdfPath& path : paths) {
+        if (path.IsAbsoluteRootOrPrimPath()) {
+            _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
+        }
+    }
+}
+
+void
+SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    for (const PXR_NS::SdfPath& path : paths) {
+        if (path.IsAbsoluteRootOrPrimPath()) {
+            _pendingLoads[path] = ePendingUnload;
+        }
+    }
+}
+
+void
+SceneStage::cancelPendingLoads()
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    _pendingLoads.clear();
+}
+
+bool
+SceneStage::hasPendingLoads() const
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    return !_pendingLoads.empty();
+}
+
+bool
+SceneStage::serviceLoads(const LockedSection& readLocked,
+                         const LockedSection& writeLocked)
+{
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
+    {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        if (_pendingLoads.empty()) {
+            return false;
+        }
+        batch.swap(_pendingLoads);
+        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+            _loadFailures.erase(request.first);
+        }
+    }
+    if (!_stage) {
+        return true;
+    }
+
+    // The payloads a descendant load names are the unloaded ones found below its path, not the path
+    // itself: it is how one whose file does not open stays out of the batch.
+    std::map<PXR_NS::SdfPath, std::vector<std::string>> ownLoads, descendantLoads;
+    PXR_NS::SdfPathSet unloads;
+    readLocked([&]() {
+        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+            const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(request.first);
+            if (!prim) {
+                continue;
+            }
+            switch (request.second) {
+            case ePendingUnload:
+                unloads.insert(request.first);
+                break;
+            case ePendingLoadOwn:
+                if (isUnloadedPayload(prim)) {
+                    ownLoads[request.first] = getPayloadAssets(prim);
+                }
+                break;
+            case ePendingLoadWithDescendants: {
+                // The predicate leaves IsLoaded out, or the walk would not see what it looks for.
+                const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
+                for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
+                    if (isUnloadedPayload(*it)) {
+                        descendantLoads[it->GetPath()] = getPayloadAssets(*it);
+                        // Its children do not compose until it is loaded.
+                        it.PruneChildren();
+                    }
+                }
+                break;
+            }
+            }
+        }
+    });
+
+    std::map<std::string, std::string> outcomes;
+    std::vector<PXR_NS::SdfLayerRefPtr> held;
+    std::map<PXR_NS::SdfPath, std::string> failures;
+    const auto openAll = [&](std::map<PXR_NS::SdfPath, std::vector<std::string>>* loads, PXR_NS::SdfPathSet* paths) {
+        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : *loads) {
+            std::string error;
+            for (const std::string& asset : load.second) {
+                const std::string assetError = openPayloadClosure(asset, &outcomes, &held);
+                if (!assetError.empty()) {
+                    error += (error.empty() ? "" : "; ") + assetError;
+                }
+            }
+            if (error.empty()) {
+                paths->insert(load.first);
+            } else {
+                failures[load.first] = error;
+            }
+        }
+    };
+    PXR_NS::SdfPathSet ownPaths, descendantPaths;
+    openAll(&ownLoads, &ownPaths);
+    openAll(&descendantLoads, &descendantPaths);
+    {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : descendantLoads) {
+            _loadFailures.erase(load.first);
+        }
+        _loadFailures.insert(failures.begin(), failures.end());
+    }
+    if (ownPaths.empty() && descendantPaths.empty() && unloads.empty()) {
+        return true;
+    }
+
+    writeLocked([&]() {
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        // A sync may have taken any of these away while the files were opening.
+        const auto keepComposed = [this](PXR_NS::SdfPathSet* paths) {
+            for (PXR_NS::SdfPathSet::iterator it = paths->begin(); it != paths->end();) {
+                it = _stage->GetPrimAtPath(*it) ? std::next(it) : paths->erase(it);
+            }
+        };
+        keepComposed(&ownPaths);
+        keepComposed(&descendantPaths);
+        keepComposed(&unloads);
+        if (!descendantPaths.empty() || !unloads.empty()) {
+            _stage->LoadAndUnload(descendantPaths, unloads, PXR_NS::UsdLoadWithDescendants);
+            ++_loadEditCount;
+        }
+        if (!ownPaths.empty()) {
+            _stage->LoadAndUnload(ownPaths, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithoutDescendants);
+            ++_loadEditCount;
+        }
+        _lastLoadHoldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    });
+
+    return true;
+} // SceneStage::serviceLoads
+
+std::vector<SceneStage::LoadFailure>
+SceneStage::getLoadFailures() const
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+    std::vector<LoadFailure> failures;
+
+    failures.reserve(_loadFailures.size());
+    for (const std::pair<const PXR_NS::SdfPath, std::string>& failure : _loadFailures) {
+        failures.push_back(LoadFailure { failure.first, failure.second });
+    }
+
+    return failures;
+}
+
+U64
+SceneStage::getLoadEditCount() const
+{
+    return _loadEditCount;
+}
+
+double
+SceneStage::getLastLoadHoldMs() const
+{
+    return _lastLoadHoldMs;
 }
 
 NATRON_NAMESPACE_EXIT

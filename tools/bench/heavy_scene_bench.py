@@ -6,6 +6,9 @@
         BENCH_FILE       overrides the fixture path (the fixture kind still selects the budgets)
         BENCH_SCENARIOS  comma-separated actions run in order (default open,orbit)
         BENCH_ORBIT_S    seconds the orbit action runs (default 5)
+        BENCH_LOAD_PATHS comma-separated prims the load action asks to load (default /World/Block_0/B_0);
+                         on the city, /World/Block_N with BENCH_LOAD_DESCENDANTS=1 is a larger load
+        BENCH_LOAD_DESCENDANTS  1 to load the payloads below those prims too
         BENCH_PAYLOAD_MARK  substring of a layer identifier that marks a payload file (default
                          heavy_city_payloads)
         BENCH_GPU        1 when the display is a real GPU; otherwise frame-dependent budgets are
@@ -26,6 +29,7 @@ opened that the action did not request; orbit at or above 30 fps.
 """
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -39,7 +43,7 @@ HEARTBEAT_MS = 10
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 
 try:
-    from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, QTimer, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
     import NatronEngine
@@ -57,6 +61,8 @@ try:
     gpu = os.environ.get("BENCH_GPU") == "1" or (HOST_DISPLAY and os.environ.get("BENCH_GPU") != "0")
     label = os.environ.get("BENCH_LABEL", "")
     orbit_s = float(os.environ.get("BENCH_ORBIT_S", "5"))
+    load_paths = [p.strip() for p in os.environ.get("BENCH_LOAD_PATHS", "/World/Block_0/B_0").split(",") if p.strip()]
+    load_descendants = os.environ.get("BENCH_LOAD_DESCENDANTS") == "1"
 
     try:
         from pxr import Sdf
@@ -127,6 +133,7 @@ try:
 
         def __init__(self):
             self.values = {}
+            self.requested_files = []
 
     def action_open(m):
         t0 = time.time() * 1000.0
@@ -190,7 +197,61 @@ try:
         m.values["orbit_fps"] = round(len(paints) / elapsed, 1) if elapsed > 0 else None
         m.values["boxes_drawn"] = prop("natronSceneBoxCount")
 
-    ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit}
+    def requested_files(paths):
+        """The file-name prefixes of the city's payloads below paths: b<block>_<building>.usdc."""
+        prefixes = []
+        for prim in paths:
+            found = re.match(r"^/World/Block_(\d+)(?:/B_(\d+))?$", prim)
+            if found:
+                prefixes.append("b%s_%s.usdc" % found.groups() if found.group(2) else "b%s_" % found.group(1))
+        return prefixes
+
+    def action_load(m):
+        navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
+        require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+        require(view() is not None and shown(), "load: a scene view is visible and showing the scene")
+        original = navigation.getValue()
+        navigation.setValue(1)
+        v = view()
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        centre = v.rect().center()
+
+        def mouse(kind, pos, button, buttons):
+            event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
+            QApplication.sendEvent(v, event)
+
+        def commit_reached_screen():
+            return (not v.property("natronSceneLoadsPending")
+                    and int(v.property("natronSceneLoadEdits") or 0) > edits_before
+                    and (v.property("natronSceneLastPaintMs") or 0) >= t0
+                    and not v.property("natronSceneComposing"))
+
+        edits_before = int(v.property("natronSceneLoadEdits") or 0)
+        m.requested_files = requested_files(load_paths)
+        t0 = time.time() * 1000.0
+        require(QMetaObject.invokeMethod(v, "requestLoad", Q_ARG("QStringList", load_paths), Q_ARG(bool, load_descendants)),
+                "load: the scene view takes load requests")
+        # The view has to stay usable through the whole load, not only for its first moments.
+        deadline = time.time() + TIMEOUT_S
+        moves = 0
+        mouse(QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+        while not commit_reached_screen() and time.time() < deadline:
+            moves += 1
+            offset = QPoint(int((moves % 40) * 4 - 80), int((moves % 20) * 2 - 20))
+            mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
+            yield ("sleep", 0)
+        mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+        navigation.setValue(original)
+        check(commit_reached_screen(), "load: the loaded prims reached the screen (failures %r)" % (v.property("natronSceneLoadFailures"),))
+        m.values["load_ms"] = round(time.time() * 1000.0 - t0, 1)
+        m.values["load_mouse_moves"] = moves
+        m.values["load_hold_ms"] = v.property("natronSceneLoadHoldMs")
+        m.values["load_edits"] = int(v.property("natronSceneLoadEdits") or 0) - edits_before
+        m.values["load_failures"] = v.property("natronSceneLoadFailures")
+
+    ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit, "load": action_load}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -211,7 +272,8 @@ try:
         if new_layers is None:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_valid"}
         else:
-            unrequested = sorted(i for i in new_layers if payload_mark in i)
+            unrequested = sorted(i for i in new_layers if payload_mark in i
+                                 and not any(os.path.basename(i).startswith(f) for f in m.requested_files))
             budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "orbit_fps" in m.values:

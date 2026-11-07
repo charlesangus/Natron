@@ -356,8 +356,14 @@ layers the action loaded, and the action's own numbers, each marked `pass`, `fai
 `not_applicable` against the scene-graph budgets. Frame rate and time to first boxes need a real
 GPU: without `BENCH_GPU=1` they are measured but marked `not_valid`. Stall and unrequested-payload
 checks are valid under llvmpipe. Until the viewer draws boxes, the first finished frame stands in
-for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`);
+for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`, `load`);
 `BENCH_SCENARIOS` picks and orders them, and a later milestone adds its own action.
+
+`load`, after `open` on the city, asks the viewer to load `BENCH_LOAD_PATHS` (one building by default;
+`/World/Block_N` with `BENCH_LOAD_DESCENDANTS=1` is a larger load) while moving the mouse in a tumble
+until the result is on screen. It reports `load_ms`, `load_mouse_moves`, `load_hold_ms` (how long the
+last batch held the viewer lock), `load_edits` and `load_failures`; the stall budget covers the whole
+load, and the requested payload files do not count as unrequested.
 
 ```
 docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \

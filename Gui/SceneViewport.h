@@ -72,11 +72,15 @@ struct SceneTransformDrag;
  * once per GL context, at the first render() in it, and must be released with releaseGL() in
  * that context: when the context goes away or the renderer does, never because the scene changed.
  *
- * The stage and the engine are guarded by one lock, the viewer lock: syncScene() holds it while
- * it edits the stage, and render(), pick(), frameScene() and getStageCameraPaths() while they read.
- * It also takes part in SceneWriteBarrier, so a layer reload keeps them all out.
+ * The stage and the engine are guarded by one lock, the viewer lock: syncScene() and the commit of
+ * a payload load hold it exclusively while they edit the stage, as do render() and pick(), which
+ * touch the engine. What only reads the stage shares it, with renderBackgroundFrame() among them,
+ * so that a first render taking seconds keeps out edits and no reader.
  *
- * syncScene() may run on any thread; everything else is for the main thread.
+ * syncScene() and serviceStageLoads() may run on any thread, and the stage load requests are safe
+ * from any. renderBackgroundFrame() runs in the GL context of render(), with no thread waiting for
+ * it; it reads only what prepareBackgroundFrame() copied. Everything else is for one thread at a
+ * time, normally the main thread; render() and pick() may run on another while that thread waits.
  **/
 class SceneViewportRenderer {
 public:
@@ -202,6 +206,50 @@ public:
 
     // Whether the renderer holds an engine, which the next render() makes when it does not.
     bool hasEngine() const;
+
+    /**
+     * @brief Whether the shown stage changed since the engine last took its changes in, or there is
+     * no engine: the render that follows does the Hydra work, however long that takes, rather than
+     * only drawing.
+     **/
+    bool needsBackgroundFrame() const;
+
+    /**
+     * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
+     * such frame is needed, or a sync holds the viewer lock; the sync's end is the time to retry.
+     * Not to be called while a background frame runs.
+     **/
+    bool prepareBackgroundFrame(int width, int height);
+
+    /**
+     * @brief Makes the engine if needed and renders the prepared frame into fbo, without overlays.
+     * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
+     * image and only draws the overlays. Needs the context of render() current.
+     **/
+    void renderBackgroundFrame(unsigned int fbo);
+
+    /**
+     * @brief Passes load requests on to the stage, which takes them when serviceStageLoads() next
+     * runs. Ignored before the first sync has made the stage. See SceneStage::requestLoad().
+     **/
+    void requestStageLoad(const std::vector<std::string>& paths, bool withDescendants);
+
+    void requestStageUnload(const std::vector<std::string>& paths);
+
+    void cancelStageLoads();
+
+    bool hasPendingStageLoads() const;
+
+    // Services the pending requests, opening their files with the viewer lock released.
+    bool serviceStageLoads();
+
+    // How many load commits edited the stage, and how long the last batch held the viewer lock.
+    U64 getStageLoadEditCount() const;
+
+    double getLastStageLoadHoldMs() const;
+
+    // The prims whose last load failed, each with why.
+    std::vector<std::pair<std::string, std::string>> getStageLoadFailures() const;
 
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
@@ -508,7 +556,7 @@ public:
     const std::string& getRendererId() const;
 
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
-    const std::string& getRendererError() const;
+    std::string getRendererError() const;
 
     // The delegate of the engine held, empty if none is.
     std::string getEngineRendererId() const;
@@ -531,6 +579,16 @@ private:
  *
  * setScene() hands the payload to a worker thread, which syncs the renderer's stage; a paint that
  * finds the worker syncing keeps the last frame, and the widget repaints once the sync is done.
+ *
+ * The engine lives on the widget's render thread, in a context of its own sharing textures with the
+ * widget's, drawing into a texture that paints copy to the screen. A QOpenGLWidget's context cannot
+ * leave the main thread, and an engine cannot change context. A frame that takes in a stage change
+ * renders there with the main thread free, showing the old image or a composing status meanwhile;
+ * any other frame is a paint waiting for the render thread to draw. Where Qt or the driver cannot
+ * share a context across threads, the engine stays in the widget's context on the main thread.
+ *
+ * The stage opens with payloads unloaded. requestLoad() and requestUnload() go through a thread of
+ * their own, so that slow file opens hold up neither syncs nor the main thread.
  **/
 class SceneViewport
     : public QOpenGLWidget {
@@ -549,7 +607,8 @@ public:
      **/
     void setScene(const ScenePayload& payload, double frame, double framesPerSecond);
 
-    // Whether every setScene(), setError() and clearScene() so far has been synced.
+    // Whether every setScene(), setError() and clearScene() so far has been synced and, in a
+    // visible view, taken in by the engine, so that the next paint shows it.
     bool isSceneSynced() const;
 
     void setFrame(double frame, double framesPerSecond);
@@ -688,6 +747,15 @@ public:
      **/
     void releaseEngine();
 
+public Q_SLOTS:
+    // Prim paths. A slot, so that scripts reach it through the meta object.
+    void requestLoad(const QStringList& paths, bool withDescendants);
+
+    void requestUnload(const QStringList& paths);
+
+    // Drops the load requests no batch has taken yet; a batch under way finishes.
+    void cancelPendingLoads();
+
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
@@ -770,6 +838,22 @@ private:
 
     // Main thread: the worker synced request serial, with error set on failure.
     void onSynced(U64 serial, bool ok, const QString& error);
+
+    // Main thread: starts the frame that takes in a stage change, if one is due and can start.
+    void startBackgroundFrame();
+
+    void onBackgroundFrameDone();
+
+    // Main thread: a batch of payload loads was committed.
+    void onStageLoadsServiced();
+
+    // Runs fn with the engine's context current, on whichever thread that context lives.
+    void runWithEngineContext(const std::function<void()>& fn);
+
+    // Draws the composing status over what the framebuffer has, or the background if it has no scene.
+    void paintComposingStatus();
+
+    bool isComposing() const;
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

@@ -116,7 +116,7 @@ extractChannels(const FlowImageView& image,
                 const FlowContext& context)
 {
     const bool hasRgb = image.nComps >= 3;
-    const int count = (hasRgb && channels == eFlowChannelsRGB) ? 3 : 1;
+    const int count = flowMatchedChannelCount(image.nComps, channels);
     std::vector<FlowPlane> planes(count, FlowPlane(image.width, image.height));
     const bool luminance = hasRgb && channels == eFlowChannelsLuminance;
     context.parallel(image.height, [&](int y) {
@@ -135,6 +135,13 @@ extractChannels(const FlowImageView& image,
     return planes;
 }
 } // anonymous namespace
+
+int
+flowMatchedChannelCount(int nComps,
+                        FlowChannels channels)
+{
+    return (nComps >= 3 && channels == eFlowChannelsRGB) ? 3 : 1;
+}
 
 int
 flowPyramidDepthForSize(int width,

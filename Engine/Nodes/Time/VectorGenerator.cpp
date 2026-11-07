@@ -99,18 +99,14 @@ clippedTo(const RectI& window,
     return (clipped->x1 < clipped->x2) && (clipped->y1 < clipped->y2);
 }
 
-// The frame's pixels through the matching curve, black where it has none. A frame's region can move
-// over a sequence, so every frame is read at the same pixel coordinates for the vectors to be
-// measured between the same positions.
+// A black frame over the whole window, for an image of srcComps components.
 void
-packImage(const Image& image,
-          const RectI& window,
-          const ParallelFor& parallel,
-          PackedFrame* out)
+initPackedFrame(int srcComps,
+                const RectI& window,
+                PackedFrame* out)
 {
     const int width = window.width();
     const int height = window.height();
-    const int srcComps = (int)image.getComponentsCount();
     const int nComps = (srcComps >= 3) ? 3 : 1;
 
     out->pixels.assign((std::size_t)width * (std::size_t)height * (std::size_t)nComps, 0.f);
@@ -119,6 +115,20 @@ packImage(const Image& image,
     out->frame.image.height = height;
     out->frame.image.nComps = nComps;
     out->frame.image.rowElements = (std::ptrdiff_t)width * nComps;
+}
+
+// Overlays the frame's pixels, through the matching curve, on a frame from initPackedFrame() for the
+// image's components. A frame's region can move over a sequence, so every frame is read at the same
+// pixel coordinates for the vectors to be measured between the same positions.
+void
+packImage(const Image& image,
+          const RectI& window,
+          const ParallelFor& parallel,
+          PackedFrame* out)
+{
+    const int width = window.width();
+    const int srcComps = (int)image.getComponentsCount();
+    const int nComps = out->frame.image.nComps;
 
     RectI read;
     if (!clippedTo(window, image.getBounds(), &read)) {
@@ -619,21 +629,28 @@ VectorGenerator::formatsMatch(double time,
     }
     const RectI& format = current->getOutputFormat();
     const double par = current->getPixelAspectRatio(-1);
+    const auto describe = [](const RectI& rect, double aspect) {
+        return tr("%1x%2 at (%3, %4) with a pixel aspect ratio of %5")
+            .arg(rect.width())
+            .arg(rect.height())
+            .arg(rect.x1)
+            .arg(rect.y1)
+            .arg(aspect);
+    };
     for (int i = 0; i < frameCount; ++i) {
         const NodeMetadataConstPtr other = getInputMetadataAt(kVectorGeneratorInputSource, frames[i], view);
         if (!other) {
             continue;
         }
         const RectI& otherFormat = other->getOutputFormat();
-        if ((otherFormat.width() != format.width()) || (otherFormat.height() != format.height()) || (other->getPixelAspectRatio(-1) != par)) {
+        const double otherPar = other->getPixelAspectRatio(-1);
+        if ((otherFormat != format) || (otherPar != par)) {
             *message = tr("The Source's format changes between frames, which motion cannot be estimated across: "
-                          "frame %1 is %2x%3 and frame %4 is %5x%6.")
+                          "frame %1 is %2 and frame %3 is %4.")
                            .arg(time)
-                           .arg(format.width())
-                           .arg(format.height())
+                           .arg(describe(format, par))
                            .arg(frames[i])
-                           .arg(otherFormat.width())
-                           .arg(otherFormat.height())
+                           .arg(describe(otherFormat, otherPar))
                            .toStdString();
 
             return false;
@@ -743,25 +760,46 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
         if (!window.isNull()) {
             for (int i = 0; i < frameCount; ++i) {
                 const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, kVectorGeneratorInputSource, times[i], args.view);
-                if (storage.getNumComponents() <= 0) {
-                    continue;
-                }
-                RectI inputRoI;
-                // Read as stored rather than in the clip's layout, which a multi-planar node has none of.
-                ImagePtr image = fetchInputAt(kVectorGeneratorInputSource, times[i], args, &storage, false /*mapToClipPrefs*/, &inputRoI);
-                if (!image) {
-                    if (!declaresInputTime(kVectorGeneratorInputSource, args.time, args.view, times[i])) {
+                ImagePtr image;
+                if (storage.getNumComponents() > 0) {
+                    RectI inputRoI;
+                    // Read as stored rather than in the clip's layout, which a multi-planar node has none of.
+                    image = fetchInputAt(kVectorGeneratorInputSource, times[i], args, &storage, false /*mapToClipPrefs*/, &inputRoI);
+                    if (!image && !declaresInputTime(kVectorGeneratorInputSource, args.time, args.view, times[i])) {
                         // fetchInputAt() has posted why.
                         return eStatusFailed;
                     }
+                }
+                // The host gives no image for a region wholly outside the window, which is a black frame
+                // of the sequence; only a time outside the domain is a frame the sequence does not have.
+                if (!image && ((times[i] < domainFirst) || (times[i] > domainLast))) {
                     continue;
                 }
-                if (image->getBitDepth() != eImageBitDepthFloat) {
+                if (!image && (storage.getNumComponents() > 0)) {
+                    // A failed or aborted upstream render returns no image either, and solving against
+                    // black for it would output wrong vectors without a word.
+                    if (cancel.check()) {
+                        return eStatusFailed;
+                    }
+                    RectD frameRoD;
+                    bool frameIsProjectFormat = false;
+                    const StatusEnum rodStatus = source->getRegionOfDefinition_public(source->getRenderHash(), times[i], inputScale, args.view, &frameRoD, &frameIsProjectFormat);
+                    const bool blackPadding = (rodStatus != eStatusFailed) && (frameRoD.isNull() || !frameRoD.toPixelEnclosing(args.mappedScale, par).intersects(window));
+                    if (!blackPadding) {
+                        updateFormatMessage(tr("The Source's frame %1 could not be rendered.").arg(times[i]).toStdString());
+
+                        return eStatusFailed;
+                    }
+                }
+                if (image && (image->getBitDepth() != eImageBitDepthFloat)) {
                     return eStatusFailed;
                 }
                 PackedFrame& frame = packed[slots[i]];
-                packImage(*image, window, parallel, &frame);
-                image.reset();
+                initPackedFrame(image ? (int)image->getComponentsCount() : storage.getNumComponents(), window, &frame);
+                if (image) {
+                    packImage(*image, window, parallel, &frame);
+                    image.reset();
+                }
                 if (hasMatte) {
                     RectI matteRoI;
                     ImagePtr matte = fetchInputAt(kVectorGeneratorInputMatte, times[i], args, &matteLayer, false /*mapToClipPrefs*/, &matteRoI);
@@ -783,14 +821,18 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
             FlowContext context;
             context.parallel = parallel;
             context.aborted = [&cancel]() { return cancel.check(); };
+            const std::function<void(int)> releaseFrame = [&packed](int index) {
+                std::vector<float>().swap(packed[index].pixels);
+                std::vector<float>().swap(packed[index].matte);
+            };
             const FlowEstimateStatus status = s.smoothing
-                ? estimateFlowSmoothed(framePointers, s.smoothingStrength, s.params, context, result)
+                ? estimateFlowSmoothed(framePointers, s.smoothingStrength, s.params, context, result, releaseFrame)
                 : estimateFlow(framePointers[kMaxOffset - 1], *framePointers[kMaxOffset], framePointers[kMaxOffset + 1], s.params, context, result);
             if (status == eFlowEstimateAborted) {
                 return eStatusFailed;
             }
             if (status == eFlowEstimateFormatMismatch) {
-                updateFormatMessage(tr("The Source's frame %1 has a different size from frame %2.")
+                updateFormatMessage(tr("The Source's frame %1 and frame %2 have different channels, which RGB Flow Channels cannot match.")
                                         .arg(args.time + result.mismatchOffset)
                                         .arg(args.time)
                                         .toStdString());

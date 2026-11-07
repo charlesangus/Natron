@@ -59,6 +59,10 @@
 #define kTestPluginIDMovingTexture "test.natron.built-in.MovingTexture"
 #define kMovingTextureParamMoving "moving"
 #define kMovingTextureParamFormatChangeFrame "formatChangeFrame"
+#define kMovingTextureParamOriginChangeFrame "originChangeFrame"
+#define kMovingTextureParamBlackFrame "blackFrame"
+#define kMovingTextureParamAwayFrame "awayFrame"
+#define kMovingTextureParamFailFrame "failFrame"
 
 NATRON_NAMESPACE_ENTER
 
@@ -79,7 +83,9 @@ constexpr double kConfident = 0.9;
 // A texture moving by (kShiftX, kShiftY) canonical pixels a frame over the frames [kFirstFrame,
 // kLastFrame], sampled at each pixel's canonical centre so a mipmap level shows the same picture.
 // Alpha splits the moving picture in two. From formatChangeFrame on, the format's height differs
-// while the region of definition stays.
+// while the region of definition stays; from originChangeFrame on, the format moves without changing
+// size. At blackFrame the picture is black, and at awayFrame the region of definition is far from
+// that of every other frame. At failFrame the render fails.
 class MovingTextureEffect
     : public NativeEffectBase {
 public:
@@ -139,14 +145,15 @@ public:
     }
 
     virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
-                                             double /*time*/,
+                                             double time,
                                              const RenderScale& /*scale*/,
                                              ViewIdx /*view*/,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        rod->x1 = 0.;
+        const double offset = (frameKnobValue(_awayFrame) == time) ? 4. * kWidth : 0.;
+        rod->x1 = offset;
         rod->y1 = 0.;
-        rod->x2 = kWidth;
+        rod->x2 = offset + kWidth;
         rod->y2 = kHeight;
 
         return eStatusOK;
@@ -159,10 +166,11 @@ public:
         metadata.setNComps(-1, 4);
         metadata.setBitDepth(-1, eImageBitDepthFloat);
         metadata.setIsFrameVarying(true);
-        KnobIntPtr changeFrame = _formatChangeFrame.lock();
-        const int change = changeFrame ? changeFrame->getValue() : 0;
+        const int change = frameKnobValue(_formatChangeFrame);
         const bool changed = (change != 0) && (time >= change);
-        metadata.setOutputFormat(RectI(0, 0, kWidth, changed ? kHeight / 2 : kHeight));
+        const int originChange = frameKnobValue(_originChangeFrame);
+        const int x1 = ((originChange != 0) && (time >= originChange)) ? 16 : 0;
+        metadata.setOutputFormat(RectI(x1, 0, x1 + kWidth, changed ? kHeight / 2 : kHeight));
 
         return eStatusOK;
     }
@@ -173,6 +181,10 @@ public:
         const int step = 1 << args.mappedScale.toMipmapLevel();
         KnobBoolPtr movingKnob = _moving.lock();
         const double travel = (!movingKnob || movingKnob->getValue()) ? args.time : 0.;
+        const bool black = frameKnobValue(_blackFrame) == args.time;
+        if (frameKnobValue(_failFrame) == args.time) {
+            return eStatusFailed;
+        }
 
         for (const std::pair<ImageLayerDesc, ImagePtr>& output : args.outputLayers) {
             if (!output.second) {
@@ -188,9 +200,9 @@ public:
                 const double cy = y * step + step / 2 - travel * kShiftY;
                 for (int x = args.roi.x1; x < args.roi.x2; ++x) {
                     const double cx = x * step + step / 2 - travel * kShiftX;
-                    const float value = (float)texture(cx, cy);
+                    const float value = black ? 0.f : (float)texture(cx, cy);
                     for (int c = 0; c < nComps; ++c) {
-                        dst[c] = (c == 3) ? ((cx < kWidth / 2) ? 1.f : 0.f) : value;
+                        dst[c] = ((c == 3) && !black) ? ((cx < kWidth / 2) ? 1.f : 0.f) : value;
                     }
                     dst += nComps;
                 }
@@ -201,6 +213,26 @@ public:
     }
 
 private:
+    static int frameKnobValue(const KnobIntWPtr& knob)
+    {
+        const KnobIntPtr locked = knob.lock();
+
+        return locked ? locked->getValue() : 0;
+    }
+
+    KnobIntPtr createFrameKnob(const KnobPagePtr& page,
+                               const std::string& label,
+                               const std::string& name)
+    {
+        KnobIntPtr knob = createKnob<KnobInt>(label);
+        knob->setName(name);
+        knob->setDefaultValue(0);
+        knob->setIsMetadataSlave(true);
+        page->addKnob(knob);
+
+        return knob;
+    }
+
     virtual void initializeKnobs() OVERRIDE FINAL
     {
         KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
@@ -211,16 +243,19 @@ private:
         page->addKnob(moving);
         _moving = moving;
 
-        KnobIntPtr changeFrame = createKnob<KnobInt>(std::string("Format Change Frame"));
-        changeFrame->setName(kMovingTextureParamFormatChangeFrame);
-        changeFrame->setDefaultValue(0);
-        changeFrame->setIsMetadataSlave(true);
-        page->addKnob(changeFrame);
-        _formatChangeFrame = changeFrame;
+        _formatChangeFrame = createFrameKnob(page, "Format Change Frame", kMovingTextureParamFormatChangeFrame);
+        _originChangeFrame = createFrameKnob(page, "Origin Change Frame", kMovingTextureParamOriginChangeFrame);
+        _blackFrame = createFrameKnob(page, "Black Frame", kMovingTextureParamBlackFrame);
+        _awayFrame = createFrameKnob(page, "Away Frame", kMovingTextureParamAwayFrame);
+        _failFrame = createFrameKnob(page, "Fail Frame", kMovingTextureParamFailFrame);
     }
 
     KnobBoolWPtr _moving;
     KnobIntWPtr _formatChangeFrame;
+    KnobIntWPtr _originChangeFrame;
+    KnobIntWPtr _blackFrame;
+    KnobIntWPtr _awayFrame;
+    KnobIntWPtr _failFrame;
 };
 
 void
@@ -557,6 +592,60 @@ TEST_F(NativeVectorGeneratorTest, FormatChangeFailsNamingBothFrames)
     // Frames 1 and 2 share a format, and the error goes with the render that follows.
     EXPECT_LT(meanDistance(plane(node, kFirstFrame, forwardLayer()), kShiftX, kShiftY, kMargin), kDisEpe);
     EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(NativeVectorGeneratorTest, FormatOriginChangeFailsNamingBothFrames)
+{
+    NodePtr source = createMovingTexture();
+    NodePtr node = createGenerator(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamOriginChangeFrame, { 4. }));
+
+    std::vector<RenderedPlane> planes;
+    EXPECT_FALSE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), std::list<ImageLayerDesc> { forwardLayer() }, &planes));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("frame 3"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("frame 4"))) << message.toStdString();
+}
+
+TEST_F(NativeVectorGeneratorTest, ARegionOutsideTheWindowSolvesAsABlackFrame)
+{
+    for (const double smoothing : { 0., 1. }) {
+        NodePtr away = createMovingTexture();
+        NodePtr black = createMovingTexture();
+        NodePtr awayNode = createGenerator(away);
+        NodePtr blackNode = createGenerator(black);
+        ASSERT_TRUE(bool(awayNode));
+        ASSERT_TRUE(bool(blackNode));
+        ASSERT_TRUE(setKnobValues(away, kMovingTextureParamAwayFrame, { 4. }));
+        ASSERT_TRUE(setKnobValues(black, kMovingTextureParamBlackFrame, { 4. }));
+        ASSERT_TRUE(setKnobValues(awayNode, kVectorGeneratorParamTemporalSmoothing, { smoothing }));
+        ASSERT_TRUE(setKnobValues(blackNode, kVectorGeneratorParamTemporalSmoothing, { smoothing }));
+
+        const RenderedPlane awayForward = plane(awayNode, 3., forwardLayer());
+        const RenderedPlane awayConfidence = plane(awayNode, 3., VectorGenerator::confidenceLayer());
+        EXPECT_FALSE(awayNode->hasPersistentMessage());
+        ASSERT_FALSE(awayForward.pixels.empty());
+        EXPECT_EQ(awayForward.pixels, plane(blackNode, 3., forwardLayer()).pixels);
+        EXPECT_EQ(awayConfidence.pixels, plane(blackNode, 3., VectorGenerator::confidenceLayer()).pixels);
+        // A frame the sequence does not have leaves its direction at confidence 0 instead.
+        EXPECT_GT(largestMagnitude(awayConfidence, 0), 0.f);
+    }
+}
+
+TEST_F(NativeVectorGeneratorTest, AFailedSourceRenderFailsInsteadOfSolvingAgainstBlack)
+{
+    NodePtr source = createMovingTexture();
+    NodePtr node = createGenerator(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamFailFrame, { 4. }));
+
+    std::vector<RenderedPlane> planes;
+    EXPECT_FALSE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), std::list<ImageLayerDesc> { forwardLayer() }, &planes));
+    EXPECT_TRUE(node->hasPersistentMessage());
 }
 
 TEST_F(NativeVectorGeneratorTest, ForwardOutputLeavesOutTheBackwardLayerAndItsFrames)

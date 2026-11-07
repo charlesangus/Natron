@@ -61,9 +61,11 @@ with smoothing, and twice that with a matte. A later request for another layer o
 missed the cache solves again.
 
 All frames are read over the current frame's region of definition, so vectors measure between the same
-pixel positions when a Source's region animates; a neighbour is black where it has no pixels. A
-neighbour whose format differs from the current frame's fails the render, with an error naming both
-frames.
+pixel positions when a Source's region animates; a neighbour is black where it has no pixels, even
+when its whole region lies outside the current frame's. A neighbour whose format rectangle or pixel
+aspect ratio differs from the current frame's fails the render, with an error naming both frames, as
+does one with other channels when `flowChannels` is RGB: a frame with fewer than three channels is
+matched on its first alone, which RGB frames cannot be compared with.
 
 | Parameter | Default | Meaning |
 |---|---|---|

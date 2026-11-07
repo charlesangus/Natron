@@ -77,6 +77,11 @@ int flowPyramidDepthForSize(int width, int height);
 std::vector<FlowPlane> flowBuildPlanePyramid(FlowPlane base, int depth, const FlowContext& context);
 
 /**
+ * @brief How many channels FlowPyramid::build() matches for an image of nComps components.
+ **/
+int flowMatchedChannelCount(int nComps, FlowChannels channels);
+
+/**
  * @brief The matched channels of an image with their gradients, finest level first. Non-finite
  * samples count as 0. An image with fewer than 3 components has its first as its only channel,
  * whichever FlowChannels is asked.

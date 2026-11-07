@@ -26,6 +26,8 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -226,6 +228,93 @@ TEST(FlowTemporal, ReportsAMismatchedFrame)
     FlowEstimateResult result;
     EXPECT_EQ(estimateFlowSmoothed(pointers, 1.f, FlowEstimateParams(), FlowContext(), result), eFlowEstimateFormatMismatch);
     EXPECT_EQ(result.mismatchOffset, -2);
+}
+
+TEST(FlowTemporal, ReportsAFrameWithOtherMatchedChannels)
+{
+    const std::vector<Frame> sequence = noisySequence(0.f);
+    std::vector<float> rgb;
+    for (const float value : sequence[1].pixels) {
+        rgb.insert(rgb.end(), 3, value);
+    }
+    FlowFrame current = frameOf(sequence[0]);
+    current.image.pixels = rgb.data();
+    current.image.nComps = 3;
+    current.image.rowElements = static_cast<std::ptrdiff_t>(kWidth) * 3;
+    const FlowFrame single = frameOf(sequence[2]);
+    const FlowFrame* const pointers[] = { nullptr, nullptr, &current, nullptr, &single };
+
+    for (const FlowMethod method : { eFlowMethodDIS, eFlowMethodTVL1 }) {
+        FlowEstimateParams params;
+        params.method = method;
+        params.channels = eFlowChannelsRGB;
+        FlowEstimateResult result;
+        EXPECT_EQ(estimateFlowSmoothed(pointers, 1.f, params, FlowContext(), result), eFlowEstimateFormatMismatch);
+        EXPECT_EQ(result.mismatchOffset, 2);
+    }
+}
+
+TEST(FlowTemporal, ResultIsThatOfThePairsSolvedSeparately)
+{
+    const std::vector<Frame> sequence = noisySequence(0.02f);
+    std::vector<FlowFrame> frames;
+    for (int k = 0; k < 5; ++k) {
+        frames.push_back(frameOf(sequence[k]));
+    }
+    const FlowFrame* const pointers[] = { &frames[0], &frames[1], &frames[2], &frames[3], &frames[4] };
+    const float strength = 0.75f;
+    FlowEstimateResult result;
+    ASSERT_EQ(estimateFlowSmoothed(pointers, strength, FlowEstimateParams(), FlowContext(), result), eFlowEstimateOK);
+
+    FlowField ahead[4];
+    FlowField behind[4];
+    for (int k = 0; k < 4; ++k) {
+        FlowEstimateResult pair;
+        ASSERT_EQ(estimateFlow(nullptr, frames[k], &frames[k + 1], FlowEstimateParams(), FlowContext(), pair), eFlowEstimateOK);
+        ahead[k] = pair.forward;
+        ASSERT_EQ(estimateFlow(&frames[k], frames[k + 1], nullptr, FlowEstimateParams(), FlowContext(), pair), eFlowEstimateOK);
+        behind[k] = pair.backward;
+    }
+    const FlowTemporalNeighbour forwardNeighbours[] = { { &ahead[3], &ahead[2] }, { &ahead[1], &behind[1] } };
+    const FlowTemporalNeighbour backwardNeighbours[] = { { &behind[0], &behind[1] }, { &behind[2], &ahead[2] } };
+    FlowField forward;
+    FlowField backward;
+    flowSmoothTemporal(ahead[2], forwardNeighbours, 2, strength, FlowContext(), forward);
+    flowSmoothTemporal(behind[1], backwardNeighbours, 2, strength, FlowContext(), backward);
+
+    EXPECT_EQ(result.forward.u.data, forward.u.data);
+    EXPECT_EQ(result.forward.v.data, forward.v.data);
+    EXPECT_EQ(result.forward.confidence.data, forward.confidence.data);
+    EXPECT_EQ(result.backward.u.data, backward.u.data);
+    EXPECT_EQ(result.backward.v.data, backward.v.data);
+    EXPECT_EQ(result.backward.confidence.data, backward.confidence.data);
+}
+
+TEST(FlowTemporal, AReleasedFrameIsNotReadAgain)
+{
+    const std::vector<Frame> sequence = noisySequence(0.02f);
+    std::vector<Frame> disposable(sequence.begin(), sequence.begin() + 5);
+    std::vector<FlowFrame> frames;
+    for (const Frame& frame : disposable) {
+        frames.push_back(frameOf(frame));
+    }
+    const FlowFrame* const pointers[] = { &frames[0], &frames[1], &frames[2], &frames[3], &frames[4] };
+    FlowEstimateResult untouched;
+    ASSERT_EQ(estimateFlowSmoothed(pointers, 1.f, FlowEstimateParams(), FlowContext(), untouched), eFlowEstimateOK);
+
+    std::vector<int> released;
+    const auto release = [&](int index) {
+        released.push_back(index);
+        std::fill(disposable[index].pixels.begin(), disposable[index].pixels.end(), std::numeric_limits<float>::quiet_NaN());
+    };
+    FlowEstimateResult result;
+    ASSERT_EQ(estimateFlowSmoothed(pointers, 1.f, FlowEstimateParams(), FlowContext(), result, release), eFlowEstimateOK);
+
+    EXPECT_EQ(released, (std::vector<int> { 0, 1, 2, 3, 4 }));
+    EXPECT_EQ(result.forward.u.data, untouched.forward.u.data);
+    EXPECT_EQ(result.forward.v.data, untouched.forward.v.data);
+    EXPECT_EQ(result.backward.u.data, untouched.backward.u.data);
+    EXPECT_EQ(result.backward.v.data, untouched.backward.v.data);
 }
 
 TEST(FlowTemporal, AbortStopsTheEstimate)

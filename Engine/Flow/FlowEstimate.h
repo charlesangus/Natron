@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 
 #include "Engine/Flow/FlowField.h"
 #include "Engine/Flow/FlowPyramid.h"
@@ -63,7 +64,8 @@ struct FlowEstimateParams {
 enum FlowEstimateStatus {
     eFlowEstimateOK = 0,
     eFlowEstimateAborted,
-    /// A neighbour's size differs from the current frame's: see FlowEstimateResult::mismatchOffset.
+    /// A neighbour's size or matched-channel count differs from the current frame's: see
+    /// FlowEstimateResult::mismatchOffset. The solvers can only compare frames that agree on both.
     eFlowEstimateFormatMismatch
 };
 
@@ -102,12 +104,18 @@ FlowEstimateStatus estimateFlow(const FlowFrame* previous,
  * ways, so a call costs up to eight solves. The current frame's vectors are then blended with those of
  * t-1 and t+1 of the same direction, by flowSmoothTemporal() with the given strength. A direction with
  * no neighbour frame stays at zero vectors and confidence 0.
+ *
+ * The pairs are solved in sequence order, keeping only the pyramids of the pair being solved and the
+ * fields the two outputs read. releaseFrame, when set, is called on the calling thread with a frame's
+ * index in frames as soon as its pixels and matte will not be read again, so the caller can free them;
+ * the FlowFrame itself must stay valid for the whole call.
  **/
 FlowEstimateStatus estimateFlowSmoothed(const FlowFrame* const frames[5],
                                         float smoothingStrength,
                                         const FlowEstimateParams& params,
                                         const FlowContext& context,
-                                        FlowEstimateResult& result);
+                                        FlowEstimateResult& result,
+                                        const std::function<void(int)>& releaseFrame = std::function<void(int)>());
 
 NATRON_NAMESPACE_EXIT
 

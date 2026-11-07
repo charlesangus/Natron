@@ -202,8 +202,12 @@ jobs:
           xvfb-run --auto-servernum ctest -R '^NativeGoldenTest$' --timeout 300 --output-on-failure || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           # Parity references ride in the golden artifact, where they cannot overwrite the committed ones.
-          NATRON_PARITY_RECORD_DIR="$NATRON_GOLDEN_RECORD_DIR/native-parity" GTEST_FILTER='*Regression*' \
-            xvfb-run --auto-servernum ctest -R '^NativeVectorGeneratorTest$' --timeout 300 --output-on-failure || rc=$?
+          # The binary directly, as a suite's ctest entry passes its own --gtest_filter, which outranks
+          # GTEST_FILTER. A node takes part by naming its cases Regression*.
+          export NATRON_PARITY_RECORD_DIR="$NATRON_GOLDEN_RECORD_DIR/native-parity"
+          (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter='Native*Test.Regression*') || rc=$?
+          # A filter that selects nothing exits 0.
+          test -n "$(find "$NATRON_PARITY_RECORD_DIR" -name '*.f32' -print -quit)" || rc=1
           exit "$rc"
 
       # Straight after recording, so that a later leg that fails, times out or is cancelled cannot

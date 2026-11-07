@@ -331,6 +331,34 @@ TEST(FlowConfidence, ReportsWhichNeighbourHasAnotherSize)
     EXPECT_EQ(result.mismatchOffset, -1);
 }
 
+TEST(FlowConfidence, ReportsANeighbourWithOtherMatchedChannels)
+{
+    const Frame single = squareFrame(1);
+    std::vector<float> rgb;
+    for (const float value : squareFrame(0).pixels) {
+        rgb.insert(rgb.end(), 3, value);
+    }
+    FlowFrame current;
+    current.image = single.view();
+    current.image.pixels = rgb.data();
+    current.image.nComps = 3;
+    current.image.rowElements = static_cast<std::ptrdiff_t>(single.width) * 3;
+    const FlowFrame neighbour = frameOf(single);
+
+    for (const FlowMethod method : { eFlowMethodDIS, eFlowMethodTVL1 }) {
+        FlowEstimateParams params = paramsFor(method, eFlowQualityFast);
+        params.channels = eFlowChannelsRGB;
+        FlowEstimateResult result;
+        EXPECT_EQ(estimateFlow(nullptr, current, &neighbour, params, FlowContext(), result), eFlowEstimateFormatMismatch);
+        EXPECT_EQ(result.mismatchOffset, 1);
+        EXPECT_EQ(estimateFlow(&neighbour, current, nullptr, params, FlowContext(), result), eFlowEstimateFormatMismatch);
+        EXPECT_EQ(result.mismatchOffset, -1);
+    }
+
+    FlowEstimateResult result;
+    EXPECT_EQ(estimateFlow(nullptr, current, &neighbour, paramsFor(eFlowMethodDIS, eFlowQualityFast), FlowContext(), result), eFlowEstimateOK);
+}
+
 TEST(FlowConfidence, AbortIsReported)
 {
     const Frame frame = squareFrame(0);

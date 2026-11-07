@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <utility>
 #include <vector>
 
 #include "Engine/Flow/DisFlow.h"
@@ -172,10 +174,12 @@ solvePair(const PreparedFrame& a,
 }
 
 bool
-sameSize(const FlowFrame& a,
-         const FlowFrame& b)
+canBeMatched(const FlowFrame& a,
+             const FlowFrame& b,
+             FlowChannels channels)
 {
-    return a.image.width == b.image.width && a.image.height == b.image.height;
+    return a.image.width == b.image.width && a.image.height == b.image.height
+        && flowMatchedChannelCount(a.image.nComps, channels) == flowMatchedChannelCount(b.image.nComps, channels);
 }
 } // anonymous namespace
 
@@ -188,11 +192,11 @@ estimateFlow(const FlowFrame* previous,
              FlowEstimateResult& result)
 {
     result.mismatchOffset = 0;
-    if (previous && !sameSize(*previous, current)) {
+    if (previous && !canBeMatched(*previous, current, params.channels)) {
         result.mismatchOffset = -1;
         return eFlowEstimateFormatMismatch;
     }
-    if (next && !sameSize(*next, current)) {
+    if (next && !canBeMatched(*next, current, params.channels)) {
         result.mismatchOffset = 1;
         return eFlowEstimateFormatMismatch;
     }
@@ -223,31 +227,47 @@ estimateFlowSmoothed(const FlowFrame* const frames[5],
                      float smoothingStrength,
                      const FlowEstimateParams& params,
                      const FlowContext& context,
-                     FlowEstimateResult& result)
+                     FlowEstimateResult& result,
+                     const std::function<void(int)>& releaseFrame)
 {
     const FlowFrame& current = *frames[2];
     result.mismatchOffset = 0;
     for (int i = 0; i < 5; ++i) {
-        if (frames[i] && !sameSize(*frames[i], current)) {
+        if (frames[i] && !canBeMatched(*frames[i], current, params.channels)) {
             result.mismatchOffset = i - 2;
             return eFlowEstimateFormatMismatch;
-        }
-    }
-    PreparedFrame prepared[5];
-    for (int i = 0; i < 5; ++i) {
-        if (frames[i] && !prepareFrame(*frames[i], params, context, prepared[i])) {
-            return eFlowEstimateAborted;
         }
     }
     // Entry k holds the flows between frames k and k + 1.
     FlowField ahead[4];
     FlowField behind[4];
-    bool solved[4];
-    for (int k = 0; k < 4; ++k) {
-        solved[k] = frames[k] && frames[k + 1];
-        if (solved[k] && !solvePair(prepared[k], prepared[k + 1], params, context, ahead[k], behind[k])) {
-            return eFlowEstimateAborted;
+    bool solved[4] = { false, false, false, false };
+    PreparedFrame earlier;
+    for (int i = 0; i < 5; ++i) {
+        PreparedFrame later;
+        if (frames[i]) {
+            if (!prepareFrame(*frames[i], params, context, later)) {
+                return eFlowEstimateAborted;
+            }
+            if (releaseFrame) {
+                releaseFrame(i);
+            }
+            if (i > 0 && frames[i - 1]) {
+                const int k = i - 1;
+                solved[k] = true;
+                if (!solvePair(earlier, later, params, context, ahead[k], behind[k])) {
+                    return eFlowEstimateAborted;
+                }
+                // The outermost pairs feed each output in one direction only; the other one was
+                // solved just for that direction's confidence.
+                if (k == 0) {
+                    ahead[0] = FlowField();
+                } else if (k == 3) {
+                    behind[3] = FlowField();
+                }
+            }
         }
+        earlier = std::move(later);
     }
 
     result.forward = FlowField(current.image.width, current.image.height);
@@ -262,6 +282,8 @@ estimateFlowSmoothed(const FlowFrame* const frames[5],
         }
         flowSmoothTemporal(ahead[2], neighbours.data(), static_cast<int>(neighbours.size()), smoothingStrength, context, result.forward);
     }
+    ahead[1] = FlowField();
+    ahead[3] = FlowField();
     if (solved[1]) {
         std::vector<FlowTemporalNeighbour> neighbours;
         if (solved[0]) {

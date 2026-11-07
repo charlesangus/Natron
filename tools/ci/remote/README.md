@@ -65,7 +65,10 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   the full output and assert text of each failure.
 - `--record-goldens` implies `--tests`. It also records the native golden
   renders on the runner and downloads them into
-  `Tests/fixtures/native-golden/` of this checkout.
+  `Tests/fixtures/native-golden/` of this checkout. The parity references of
+  every `Native*Test.Regression*` case come with them, under
+  `Tests/fixtures/native-golden/native-parity/`; copy a node's directory to
+  `Tests/fixtures/native-parity/` to commit it.
 - `--shuffle-seeds <n,n,...>` implies `--tests`, e.g. `--shuffle-seeds 1,2,3`
   (seeds 1 to 99999). Each ctest leg runs once unshuffled, as without the
   option, then once per seed with `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>`,

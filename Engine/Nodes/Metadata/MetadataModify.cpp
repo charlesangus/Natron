@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "ModifyMetadata.h"
+#include "MetadataModify.h"
 
 #include <string>
 #include <vector>
@@ -33,18 +33,18 @@
 
 NATRON_NAMESPACE_ENTER
 
-ModifyMetadata::ModifyMetadata(NodePtr node)
+MetadataModify::MetadataModify(NodePtr node)
     : NativeEffectBase(node)
     , _slots()
 {
 }
 
 void
-ModifyMetadata::initializeKnobs()
+MetadataModify::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    for (int i = 0; i < kModifyMetadataSlotCount; ++i) {
+    for (int i = 0; i < kMetadataModifySlotCount; ++i) {
         Slot& slot = _slots[i];
         const std::string suffix = std::to_string(i + 1);
 
@@ -116,7 +116,7 @@ ModifyMetadata::initializeKnobs()
 }
 
 void
-ModifyMetadata::refreshSlotVisibility(const Slot& slot)
+MetadataModify::refreshSlotVisibility(const Slot& slot)
 {
     KnobChoicePtr operation = slot.operation.lock();
     KnobChoicePtr type = slot.type.lock();
@@ -153,7 +153,7 @@ ModifyMetadata::refreshSlotVisibility(const Slot& slot)
 }
 
 bool
-ModifyMetadata::knobChanged(KnobI* k,
+MetadataModify::knobChanged(KnobI* k,
                             ValueChangedReasonEnum /*reason*/,
                             ViewSpec /*view*/,
                             double /*time*/,
@@ -174,7 +174,7 @@ ModifyMetadata::knobChanged(KnobI* k,
 }
 
 void
-ModifyMetadata::onKnobsLoaded()
+MetadataModify::onKnobsLoaded()
 {
     for (const Slot& slot : _slots) {
         refreshSlotVisibility(slot);
@@ -182,14 +182,14 @@ ModifyMetadata::onKnobsLoaded()
 }
 
 Route
-ModifyMetadata::route(double time,
+MetadataModify::route(double time,
                       ViewIdx /*view*/)
 {
     return Route::input(0, time);
 }
 
 ImageMetadata
-ModifyMetadata::deriveOutputMetadata(double time,
+MetadataModify::deriveOutputMetadata(double time,
                                      ViewIdx view)
 {
     ImageMetadata metadata = getUpstreamMetadata(time, view);

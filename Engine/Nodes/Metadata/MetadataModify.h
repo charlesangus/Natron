@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Metadata_ModifyMetadata_h
-#define Engine_Nodes_Metadata_ModifyMetadata_h
+#ifndef Engine_Nodes_Metadata_MetadataModify_h
+#define Engine_Nodes_Metadata_MetadataModify_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -33,18 +33,19 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_MODIFYMETADATA "ModifyMetadata"
+#define PLUGINID_NATRON_METADATAMODIFY "MetadataModify"
+#define PLUGIN_MAJOR_NATRON_METADATAMODIFY 1
 
-#define kModifyMetadataSlotCount 8
+#define kMetadataModifySlotCount 8
 
 NATRON_NAMESPACE_ENTER
 
-inline constexpr InputSpec kModifyMetadataInputs[] = {
+inline constexpr InputSpec kMetadataModifyInputs[] = {
     InputSpec { .label = "Source", .optional = false },
 };
 
 // The slots are ordinary knobs rather than table rows so that values animate and take expressions.
-class ModifyMetadata
+class MetadataModify
     : public NativeEffectBase {
 public:
     enum OperationEnum {
@@ -62,10 +63,10 @@ public:
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ModifyMetadata(node);
+        return new MetadataModify(node);
     }
 
-    explicit ModifyMetadata(NodePtr node);
+    explicit MetadataModify(NodePtr node);
 
 private:
     struct Slot {
@@ -84,8 +85,8 @@ private:
     }
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_MODIFYMETADATA,
-        .label = "ModifyMetadata",
+        .id = PLUGINID_NATRON_METADATAMODIFY,
+        .label = "MetadataModify",
         .description = "Sets, removes or renames keys of the image's metadata. Each of the eight "
                        "operation slots has an Operation (None, Set, Remove or Rename), a Key with its "
                        "prefix, for example exr/owner, and, for Set, a Type (Integer, Float or String) "
@@ -94,9 +95,9 @@ private:
                        "order, so a later slot sees the result of an earlier one. The image itself is "
                        "passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
-        .majorVersion = 1,
+        .majorVersion = PLUGIN_MAJOR_NATRON_METADATAMODIFY,
         .minorVersion = 0,
-        .inputs = kModifyMetadataInputs,
+        .inputs = kMetadataModifyInputs,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -121,9 +122,9 @@ private:
 
     void refreshSlotVisibility(const Slot& slot);
 
-    std::array<Slot, kModifyMetadataSlotCount> _slots;
+    std::array<Slot, kMetadataModifySlotCount> _slots;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Metadata_ModifyMetadata_h
+#endif // Engine_Nodes_Metadata_MetadataModify_h

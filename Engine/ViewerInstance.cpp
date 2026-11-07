@@ -2367,6 +2367,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       const RenderStatsPtr& stats,
                                       ViewerArgs& inArgs)
 {
+    assert(inArgs.activeInputToRender);
+
+    // The request was queued behind a render and its node may have been destroyed since.
+    const NodePtr activeInputNode = inArgs.activeInputToRender->getNode();
+    if (!activeInputNode) {
+        return eViewerRenderRetCodeRedraw;
+    }
+
     if (inArgs.sceneUpstream) {
         return evaluateSceneInput(inArgs);
     }
@@ -2386,7 +2394,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      getTimeline().get(),
                                                                      false,
                                                                      rotoPaintNode,
-                                                                     inArgs.activeInputToRender->getNode(),
+                                                                     activeInputNode,
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
     }
@@ -2455,11 +2463,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
     }
 
-    assert(inArgs.activeInputToRender);
-
     ///Check that we were not aborted already
-    if ( !isSequentialRender && ( (inArgs.activeInputToRender->getHash() != inArgs.activeInputHash) ||
-                                  ( inArgs.params->time != getTimeline()->currentFrame() ) ) ) {
+    if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
         return eViewerRenderRetCodeRedraw;
     }
 

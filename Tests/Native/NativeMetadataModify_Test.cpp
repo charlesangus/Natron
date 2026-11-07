@@ -39,7 +39,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
 
@@ -58,7 +58,7 @@ knobOf(const NodePtr& node,
 void
 setOperation(const NodePtr& node,
              int slot,
-             ModifyMetadata::OperationEnum operation,
+             MetadataModify::OperationEnum operation,
              const std::string& key)
 {
     const std::string suffix = std::to_string(slot);
@@ -84,14 +84,14 @@ metadataOf(const NodePtr& node,
 
 } // namespace
 
-class ModifyMetadataTest
+class MetadataModifyTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
         source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-        modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+        modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
         ASSERT_TRUE(source && modify);
         connectNodes(source, modify, 0, true);
     }
@@ -100,12 +100,12 @@ protected:
     NodePtr modify;
 };
 
-TEST_F(ModifyMetadataTest, HasNoChannelSelector)
+TEST_F(MetadataModifyTest, HasNoChannelSelector)
 {
     EXPECT_FALSE(bool(modify->getLayerKnob()));
 }
 
-TEST_F(ModifyMetadataTest, UntouchedPassesUpstreamThrough)
+TEST_F(MetadataModifyTest, UntouchedPassesUpstreamThrough)
 {
     const ImageMetadata result = metadataOf(modify, 1.);
 
@@ -113,17 +113,17 @@ TEST_F(ModifyMetadataTest, UntouchedPassesUpstreamThrough)
     EXPECT_EQ(std::optional<int>(1), result.getInt("exr/tag"));
 }
 
-TEST_F(ModifyMetadataTest, SetsTypedValues)
+TEST_F(MetadataModifyTest, SetsTypedValues)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationSet, "exr/added"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationSet, "exr/added"));
     knobOf<KnobInt>(modify, "intValue1")->setValue(42, ViewSpec::all(), 0);
 
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 2, ModifyMetadata::eOperationSet, "exr/ratio"));
-    knobOf<KnobChoice>(modify, "type2")->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 2, MetadataModify::eOperationSet, "exr/ratio"));
+    knobOf<KnobChoice>(modify, "type2")->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
     knobOf<KnobDouble>(modify, "doubleValue2")->setValue(2.5, ViewSpec::all(), 0);
 
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 3, ModifyMetadata::eOperationSet, "exr/origin"));
-    knobOf<KnobChoice>(modify, "type3")->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 3, MetadataModify::eOperationSet, "exr/origin"));
+    knobOf<KnobChoice>(modify, "type3")->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
     knobOf<KnobString>(modify, "stringValue3")->setValue("edited", ViewSpec::all(), 0);
 
     const ImageMetadata result = metadataOf(modify, 1.);
@@ -135,9 +135,9 @@ TEST_F(ModifyMetadataTest, SetsTypedValues)
     EXPECT_EQ(std::optional<std::string>("source"), metadataOf(source, 1.).getString("exr/origin"));
 }
 
-TEST_F(ModifyMetadataTest, RemoveDropsOnlyTheKey)
+TEST_F(MetadataModifyTest, RemoveDropsOnlyTheKey)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationRemove, "exr/origin"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationRemove, "exr/origin"));
 
     const ImageMetadata result = metadataOf(modify, 1.);
 
@@ -146,9 +146,9 @@ TEST_F(ModifyMetadataTest, RemoveDropsOnlyTheKey)
     EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
 }
 
-TEST_F(ModifyMetadataTest, RenameMovesTheValue)
+TEST_F(MetadataModifyTest, RenameMovesTheValue)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationRename, "exr/origin"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationRename, "exr/origin"));
     knobOf<KnobString>(modify, "renameTo1")->setValue("exr/provenance", ViewSpec::all(), 0);
 
     const ImageMetadata result = metadataOf(modify, 1.);
@@ -158,21 +158,21 @@ TEST_F(ModifyMetadataTest, RenameMovesTheValue)
     EXPECT_EQ(std::optional<int>(1), result.getInt("exr/tag"));
 }
 
-TEST_F(ModifyMetadataTest, RenameOfAbsentKeyIsIgnored)
+TEST_F(MetadataModifyTest, RenameOfAbsentKeyIsIgnored)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationRename, "exr/missing"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationRename, "exr/missing"));
     knobOf<KnobString>(modify, "renameTo1")->setValue("exr/other", ViewSpec::all(), 0);
 
     EXPECT_EQ(metadataOf(source, 1.), metadataOf(modify, 1.));
 }
 
-TEST_F(ModifyMetadataTest, SlotsApplyInOrder)
+TEST_F(MetadataModifyTest, SlotsApplyInOrder)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationSet, "exr/step"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationSet, "exr/step"));
     knobOf<KnobInt>(modify, "intValue1")->setValue(1, ViewSpec::all(), 0);
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 2, ModifyMetadata::eOperationRename, "exr/step"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 2, MetadataModify::eOperationRename, "exr/step"));
     knobOf<KnobString>(modify, "renameTo2")->setValue("exr/renamed", ViewSpec::all(), 0);
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 3, ModifyMetadata::eOperationRemove, "exr/renamed"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 3, MetadataModify::eOperationRemove, "exr/renamed"));
 
     const ImageMetadata result = metadataOf(modify, 1.);
 
@@ -180,9 +180,9 @@ TEST_F(ModifyMetadataTest, SlotsApplyInOrder)
     EXPECT_FALSE(result.contains("exr/renamed"));
 }
 
-TEST_F(ModifyMetadataTest, KeyframedValueDiffersBetweenFrames)
+TEST_F(MetadataModifyTest, KeyframedValueDiffersBetweenFrames)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationSet, "exr/animated"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationSet, "exr/animated"));
 
     KnobInt* value = knobOf<KnobInt>(modify, "intValue1");
 
@@ -194,9 +194,9 @@ TEST_F(ModifyMetadataTest, KeyframedValueDiffersBetweenFrames)
     EXPECT_EQ(std::optional<int>(20), metadataOf(modify, 2.).getInt("exr/animated"));
 }
 
-TEST_F(ModifyMetadataTest, ExpressionValueDiffersBetweenFrames)
+TEST_F(MetadataModifyTest, ExpressionValueDiffersBetweenFrames)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationSet, "exr/scripted"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationSet, "exr/scripted"));
 
     KnobInt* value = knobOf<KnobInt>(modify, "intValue1");
 
@@ -207,9 +207,9 @@ TEST_F(ModifyMetadataTest, ExpressionValueDiffersBetweenFrames)
     EXPECT_EQ(std::optional<int>(20), metadataOf(modify, 2.).getInt("exr/scripted"));
 }
 
-TEST_F(ModifyMetadataTest, KnobEditRecomputesMetadata)
+TEST_F(MetadataModifyTest, KnobEditRecomputesMetadata)
 {
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationSet, "exr/added"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationSet, "exr/added"));
     knobOf<KnobInt>(modify, "intValue1")->setValue(5, ViewSpec::all(), 0);
 
     EXPECT_EQ(std::optional<int>(5), metadataOf(modify, 1.).getInt("exr/added"));
@@ -218,12 +218,12 @@ TEST_F(ModifyMetadataTest, KnobEditRecomputesMetadata)
 
     EXPECT_EQ(std::optional<int>(6), metadataOf(modify, 1.).getInt("exr/added"));
 
-    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, ModifyMetadata::eOperationRemove, "exr/added"));
+    ASSERT_NO_FATAL_FAILURE(setOperation(modify, 1, MetadataModify::eOperationRemove, "exr/added"));
 
     EXPECT_FALSE(metadataOf(modify, 1.).contains("exr/added"));
 }
 
-TEST_F(ModifyMetadataTest, UpstreamChangeReachesTheOutput)
+TEST_F(MetadataModifyTest, UpstreamChangeReachesTheOutput)
 {
     KnobInt* tag = knobOf<KnobInt>(source, "tag");
 

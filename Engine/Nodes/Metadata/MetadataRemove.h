@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Metadata_CopyMetadata_h
-#define Engine_Nodes_Metadata_CopyMetadata_h
+#ifndef Engine_Nodes_Metadata_MetadataRemove_h
+#define Engine_Nodes_Metadata_MetadataRemove_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -31,30 +31,25 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_COPYMETADATA "CopyMetadata"
+#define PLUGINID_NATRON_METADATAREMOVE "MetadataRemove"
+#define PLUGIN_MAJOR_NATRON_METADATAREMOVE 1
 
 NATRON_NAMESPACE_ENTER
 
-inline constexpr InputSpec kCopyMetadataInputs[] = {
-    InputSpec { .label = "A", .optional = false },
-    InputSpec { .label = "B", .optional = true },
+inline constexpr InputSpec kMetadataRemoveInputs[] = {
+    InputSpec { .label = "Source", .optional = false },
 };
 
-class CopyMetadata
+// No key is protected: the natron/ keys the engine writes go too when matched.
+class MetadataRemove
     : public NativeEffectBase {
 public:
-    enum ModeEnum {
-        eModeReplace = 0,
-        eModeMergeBWins,
-        eModeMergeAWins
-    };
-
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new CopyMetadata(node);
+        return new MetadataRemove(node);
     }
 
-    explicit CopyMetadata(NodePtr node);
+    explicit MetadataRemove(NodePtr node);
 
 private:
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -63,22 +58,17 @@ private:
     }
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_COPYMETADATA,
-        .label = "CopyMetadata",
-        .description = "Copies the metadata of B onto the metadata of A, restricted to the keys matching "
-                       "the Keys filter, a comma- or newline-separated list of globs where * matches any "
-                       "characters and ? one (every key if it is empty). The image of A is passed through "
-                       "unchanged, and so is its metadata while B is not connected.\n\n"
-                       "Replace: the keys of A matching the filter are dropped and replaced by those "
-                       "of B matching the filter; the keys of A that do not match survive, so a key "
-                       "of A matching the filter that B lacks is removed.\n"
-                       "Merge, B wins: the keys of B matching the filter are added to A's, B's value "
-                       "kept on a clash.\n"
-                       "Merge, A wins: likewise, but A's value is kept on a clash.",
+        .id = PLUGINID_NATRON_METADATAREMOVE,
+        .label = "MetadataRemove",
+        .description = "Removes the metadata keys matching the Keys list, or every key when Remove All "
+                       "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
+                       "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
+                       "is protected, so the engine's natron/ keys go too if matched. The image itself is "
+                       "passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
-        .majorVersion = 1,
+        .majorVersion = PLUGIN_MAJOR_NATRON_METADATAREMOVE,
         .minorVersion = 0,
-        .inputs = kCopyMetadataInputs,
+        .inputs = kMetadataRemoveInputs,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -89,24 +79,24 @@ private:
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The RoD of A, whose image is the output; the default would union in B, which only
-     * contributes metadata and may have no image at all.
-     **/
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    KnobChoiceWPtr _mode;
+    void refreshKeysVisibility();
+
+    KnobBoolWPtr _removeAll;
     KnobStringWPtr _keys;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Metadata_CopyMetadata_h
+#endif // Engine_Nodes_Metadata_MetadataRemove_h

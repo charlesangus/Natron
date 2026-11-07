@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "CopyMetadata.h"
+#include "MetadataCopy.h"
 
 #include <string>
 #include <vector>
@@ -35,7 +35,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-CopyMetadata::CopyMetadata(NodePtr node)
+MetadataCopy::MetadataCopy(NodePtr node)
     : NativeEffectBase(node)
     , _mode()
     , _keys()
@@ -43,7 +43,7 @@ CopyMetadata::CopyMetadata(NodePtr node)
 }
 
 void
-CopyMetadata::initializeKnobs()
+MetadataCopy::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
@@ -73,14 +73,14 @@ CopyMetadata::initializeKnobs()
 }
 
 Route
-CopyMetadata::route(double time,
+MetadataCopy::route(double time,
                     ViewIdx /*view*/)
 {
     return Route::input(0, time);
 }
 
 StatusEnum
-CopyMetadata::getRegionOfDefinition(U64 /*hash*/,
+MetadataCopy::getRegionOfDefinition(U64 /*hash*/,
                                     double time,
                                     const RenderScale& scale,
                                     ViewIdx view,
@@ -96,7 +96,7 @@ CopyMetadata::getRegionOfDefinition(U64 /*hash*/,
 }
 
 ImageMetadata
-CopyMetadata::deriveOutputMetadata(double time,
+MetadataCopy::deriveOutputMetadata(double time,
                                    ViewIdx view)
 {
     const ImageMetadata a = getInputMetadata(0, time, view);

@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Metadata_RemoveMetadata_h
-#define Engine_Nodes_Metadata_RemoveMetadata_h
+#ifndef Engine_Nodes_Metadata_MetadataView_h
+#define Engine_Nodes_Metadata_MetadataView_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -28,27 +28,40 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <string>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_REMOVEMETADATA "RemoveMetadata"
+#define PLUGINID_NATRON_METADATAVIEW "MetadataView"
+#define PLUGIN_MAJOR_NATRON_METADATAVIEW 1
 
 NATRON_NAMESPACE_ENTER
 
-inline constexpr InputSpec kRemoveMetadataInputs[] = {
+inline constexpr InputSpec kMetadataViewInputs[] = {
     InputSpec { .label = "Source", .optional = false },
 };
 
-// No key is protected: the natron/ keys the engine writes go too when matched.
-class RemoveMetadata
+class MetadataView
     : public NativeEffectBase {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new RemoveMetadata(node);
+        return new MetadataView(node);
     }
 
-    explicit RemoveMetadata(NodePtr node);
+    explicit MetadataView(NodePtr node);
+
+    /**
+     * @brief Rebuilds the table from this node's metadata at time and view. Main thread only.
+     **/
+    void refreshMetadataDisplay(double time, ViewIdx view);
+
+    /**
+     * @brief The table the settings panel currently shows.
+     **/
+    std::string getMetadataDisplayText() const WARN_UNUSED_RETURN;
 
 private:
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -57,17 +70,15 @@ private:
     }
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_REMOVEMETADATA,
-        .label = "RemoveMetadata",
-        .description = "Removes the metadata keys matching the Keys list, or every key when Remove All "
-                       "is on. Keys is a comma- or newline-separated list of globs, where * matches any "
-                       "characters, including /, and ? matches one, for example exr/*, exif/Make. No key "
-                       "is protected, so the engine's natron/ keys go too if matched. The image itself is "
-                       "passed through unchanged.",
+        .id = PLUGINID_NATRON_METADATAVIEW,
+        .label = "MetadataView",
+        .description = "Shows the metadata of its input at the current frame in its Metadata tab. The "
+                       "list follows the timeline and upstream changes; Refresh updates it on demand. "
+                       "The image and its metadata are passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
-        .majorVersion = 1,
+        .majorVersion = PLUGIN_MAJOR_NATRON_METADATAVIEW,
         .minorVersion = 0,
-        .inputs = kRemoveMetadataInputs,
+        .inputs = kMetadataViewInputs,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -86,16 +97,18 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
-    virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
-    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    void scheduleRefresh();
 
-    void refreshKeysVisibility();
-
-    KnobBoolWPtr _removeAll;
-    KnobStringWPtr _keys;
+    KnobStringWPtr _display;
+    KnobButtonWPtr _refreshButton;
+    std::atomic<bool> _refreshPending;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Metadata_RemoveMetadata_h
+#endif // Engine_Nodes_Metadata_MetadataView_h

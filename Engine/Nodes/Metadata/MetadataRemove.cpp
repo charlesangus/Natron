@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "RemoveMetadata.h"
+#include "MetadataRemove.h"
 
 #include <string>
 
@@ -32,7 +32,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-RemoveMetadata::RemoveMetadata(NodePtr node)
+MetadataRemove::MetadataRemove(NodePtr node)
     : NativeEffectBase(node)
     , _removeAll()
     , _keys()
@@ -40,7 +40,7 @@ RemoveMetadata::RemoveMetadata(NodePtr node)
 }
 
 void
-RemoveMetadata::initializeKnobs()
+MetadataRemove::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
@@ -66,7 +66,7 @@ RemoveMetadata::initializeKnobs()
 }
 
 void
-RemoveMetadata::refreshKeysVisibility()
+MetadataRemove::refreshKeysVisibility()
 {
     KnobBoolPtr removeAll = _removeAll.lock();
     KnobStringPtr keys = _keys.lock();
@@ -77,7 +77,7 @@ RemoveMetadata::refreshKeysVisibility()
 }
 
 bool
-RemoveMetadata::knobChanged(KnobI* k,
+MetadataRemove::knobChanged(KnobI* k,
                             ValueChangedReasonEnum /*reason*/,
                             ViewSpec /*view*/,
                             double /*time*/,
@@ -95,20 +95,20 @@ RemoveMetadata::knobChanged(KnobI* k,
 }
 
 void
-RemoveMetadata::onKnobsLoaded()
+MetadataRemove::onKnobsLoaded()
 {
     refreshKeysVisibility();
 }
 
 Route
-RemoveMetadata::route(double time,
+MetadataRemove::route(double time,
                       ViewIdx /*view*/)
 {
     return Route::input(0, time);
 }
 
 ImageMetadata
-RemoveMetadata::deriveOutputMetadata(double time,
+MetadataRemove::deriveOutputMetadata(double time,
                                      ViewIdx view)
 {
     const ImageMetadata input = getUpstreamMetadata(time, view);

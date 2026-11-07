@@ -54,7 +54,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/Resampler.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Nodes/Transform/LensCorrectProfile.h"
@@ -343,9 +343,9 @@ setMetadata(const NodePtr& modify,
     KnobString* valueKnob = knobOf<KnobString>(modify, "stringValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
 }
 
@@ -362,9 +362,9 @@ setMetadata(const NodePtr& modify,
     KnobDouble* valueKnob = knobOf<KnobDouble>(modify, "doubleValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
 }
 } // namespace
@@ -1048,7 +1048,7 @@ TEST_F(NativeLensCorrectTest, MetadataFillsTheLookup)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataMake, std::string("Canon")));
@@ -1109,7 +1109,7 @@ TEST_F(NativeLensCorrectTest, FixedLensFallbackIsForMetadataNames)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataLensModel, unknown));

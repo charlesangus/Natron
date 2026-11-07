@@ -38,8 +38,8 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataCopy.h"
 #include "Engine/Nodes/Metadata/MetadataKeyFilter.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
@@ -114,7 +114,7 @@ TEST(MetadataKeyFilterTest, RegexCharactersAreLiteral)
     EXPECT_FALSE(MetadataKeyFilter("exr/a.b").matches("exr/axb"));
 }
 
-class CopyMetadataTest
+class MetadataCopyTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
@@ -122,7 +122,7 @@ protected:
         BaseTest::SetUp();
         a = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
         b = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-        copy = createNode(QString::fromUtf8(PLUGINID_NATRON_COPYMETADATA));
+        copy = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATACOPY));
         ASSERT_TRUE(a && b && copy);
 
         MetadataSourceTestEffect* bEffect = dynamic_cast<MetadataSourceTestEffect*>(b->getEffectInstance().get());
@@ -149,7 +149,7 @@ protected:
         connectNodes(b, copy, 1, true);
     }
 
-    void setMode(CopyMetadata::ModeEnum mode)
+    void setMode(MetadataCopy::ModeEnum mode)
     {
         knobOf<KnobChoice>(copy, "mode")->setValue((int)mode, ViewSpec::all(), 0);
     }
@@ -164,30 +164,30 @@ protected:
     NodePtr copy;
 };
 
-TEST_F(CopyMetadataTest, HasNoChannelSelector)
+TEST_F(MetadataCopyTest, HasNoChannelSelector)
 {
     EXPECT_FALSE(bool(copy->getLayerKnob()));
 }
 
-TEST_F(CopyMetadataTest, DisconnectedBPassesAThrough)
+TEST_F(MetadataCopyTest, DisconnectedBPassesAThrough)
 {
-    setMode(CopyMetadata::eModeReplace);
+    setMode(MetadataCopy::eModeReplace);
 
     EXPECT_EQ(metadataOf(a, 1.), metadataOf(copy, 1.));
 }
 
-TEST_F(CopyMetadataTest, ReplaceWithoutFilterTakesB)
+TEST_F(MetadataCopyTest, ReplaceWithoutFilterTakesB)
 {
     connectB();
-    setMode(CopyMetadata::eModeReplace);
+    setMode(MetadataCopy::eModeReplace);
 
     EXPECT_EQ(metadataOf(b, 1.), metadataOf(copy, 1.));
 }
 
-TEST_F(CopyMetadataTest, ReplaceWithGlobKeepsUnmatchedKeysOfA)
+TEST_F(MetadataCopyTest, ReplaceWithGlobKeepsUnmatchedKeysOfA)
 {
     connectB();
-    setMode(CopyMetadata::eModeReplace);
+    setMode(MetadataCopy::eModeReplace);
     setKeys("exr/*");
 
     const ImageMetadata result = metadataOf(copy, 1.);
@@ -200,10 +200,10 @@ TEST_F(CopyMetadataTest, ReplaceWithGlobKeepsUnmatchedKeysOfA)
     EXPECT_FALSE(result.contains("exif/Make"));
 }
 
-TEST_F(CopyMetadataTest, ReplaceDropsMatchedKeysOfAThatBLacks)
+TEST_F(MetadataCopyTest, ReplaceDropsMatchedKeysOfAThatBLacks)
 {
     connectB();
-    setMode(CopyMetadata::eModeReplace);
+    setMode(MetadataCopy::eModeReplace);
     setKeys("exr/aonly, exr/origin");
 
     const ImageMetadata result = metadataOf(copy, 1.);
@@ -215,10 +215,10 @@ TEST_F(CopyMetadataTest, ReplaceDropsMatchedKeysOfAThatBLacks)
     EXPECT_FALSE(result.contains("exr/bonly"));
 }
 
-TEST_F(CopyMetadataTest, MergeBWinsPrefersB)
+TEST_F(MetadataCopyTest, MergeBWinsPrefersB)
 {
     connectB();
-    setMode(CopyMetadata::eModeMergeBWins);
+    setMode(MetadataCopy::eModeMergeBWins);
 
     const ImageMetadata result = metadataOf(copy, 1.);
 
@@ -228,10 +228,10 @@ TEST_F(CopyMetadataTest, MergeBWinsPrefersB)
     EXPECT_EQ(std::optional<std::string>("cam"), result.getString("exif/Make"));
 }
 
-TEST_F(CopyMetadataTest, MergeAWinsPrefersA)
+TEST_F(MetadataCopyTest, MergeAWinsPrefersA)
 {
     connectB();
-    setMode(CopyMetadata::eModeMergeAWins);
+    setMode(MetadataCopy::eModeMergeAWins);
 
     const ImageMetadata result = metadataOf(copy, 1.);
 
@@ -241,10 +241,10 @@ TEST_F(CopyMetadataTest, MergeAWinsPrefersA)
     EXPECT_EQ(std::optional<std::string>("cam"), result.getString("exif/Make"));
 }
 
-TEST_F(CopyMetadataTest, MergeWithFilterOnlyAddsMatchedKeysOfB)
+TEST_F(MetadataCopyTest, MergeWithFilterOnlyAddsMatchedKeysOfB)
 {
     connectB();
-    setMode(CopyMetadata::eModeMergeBWins);
+    setMode(MetadataCopy::eModeMergeBWins);
     setKeys("exr/tag");
 
     const ImageMetadata result = metadataOf(copy, 1.);
@@ -255,9 +255,9 @@ TEST_F(CopyMetadataTest, MergeWithFilterOnlyAddsMatchedKeysOfB)
     EXPECT_FALSE(result.contains("exif/Make"));
 }
 
-TEST_F(CopyMetadataTest, ConnectingBRecomputesMetadata)
+TEST_F(MetadataCopyTest, ConnectingBRecomputesMetadata)
 {
-    setMode(CopyMetadata::eModeMergeBWins);
+    setMode(MetadataCopy::eModeMergeBWins);
     EXPECT_FALSE(metadataOf(copy, 1.).contains("exr/bonly"));
     connectB();
     EXPECT_EQ(std::optional<int>(7), metadataOf(copy, 1.).getInt("exr/bonly"));

@@ -39,7 +39,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/Nodes/Metadata/RemoveMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataRemove.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
 
@@ -68,14 +68,14 @@ metadataOf(const NodePtr& node,
 
 } // namespace
 
-class RemoveMetadataTest
+class MetadataRemoveTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
         source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-        remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVEMETADATA));
+        remove = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAREMOVE));
         ASSERT_TRUE(source && remove);
         connectNodes(source, remove, 0, true);
     }
@@ -89,24 +89,24 @@ protected:
     NodePtr remove;
 };
 
-TEST_F(RemoveMetadataTest, HasNoChannelSelector)
+TEST_F(MetadataRemoveTest, HasNoChannelSelector)
 {
     EXPECT_FALSE(bool(remove->getLayerKnob()));
 }
 
-TEST_F(RemoveMetadataTest, EmptyListKeepsEverything)
+TEST_F(MetadataRemoveTest, EmptyListKeepsEverything)
 {
     EXPECT_EQ(metadataOf(source, 1.), metadataOf(remove, 1.));
 }
 
-TEST_F(RemoveMetadataTest, RemoveAllEmptiesTheMetadata)
+TEST_F(MetadataRemoveTest, RemoveAllEmptiesTheMetadata)
 {
     knobOf<KnobBool>(remove, "removeAll")->setValue(true, ViewSpec::all(), 0);
 
     EXPECT_TRUE(metadataOf(remove, 1.).empty());
 }
 
-TEST_F(RemoveMetadataTest, RemoveAllWinsOverTheList)
+TEST_F(MetadataRemoveTest, RemoveAllWinsOverTheList)
 {
     setKeys("exr/tag");
     knobOf<KnobBool>(remove, "removeAll")->setValue(true, ViewSpec::all(), 0);
@@ -114,7 +114,7 @@ TEST_F(RemoveMetadataTest, RemoveAllWinsOverTheList)
     EXPECT_TRUE(metadataOf(remove, 1.).empty());
 }
 
-TEST_F(RemoveMetadataTest, GlobRemovesMatchingKeysOnly)
+TEST_F(MetadataRemoveTest, GlobRemovesMatchingKeysOnly)
 {
     setKeys("exr/*");
 
@@ -125,7 +125,7 @@ TEST_F(RemoveMetadataTest, GlobRemovesMatchingKeysOnly)
     EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
 }
 
-TEST_F(RemoveMetadataTest, ListRemovesEachEntryAndUnmatchedKeysSurvive)
+TEST_F(MetadataRemoveTest, ListRemovesEachEntryAndUnmatchedKeysSurvive)
 {
     setKeys("exr/tag,\nnatron/fra?e");
 
@@ -136,14 +136,14 @@ TEST_F(RemoveMetadataTest, ListRemovesEachEntryAndUnmatchedKeysSurvive)
     EXPECT_EQ(std::optional<std::string>("source"), result.getString("exr/origin"));
 }
 
-TEST_F(RemoveMetadataTest, ListThatMatchesNothingChangesNothing)
+TEST_F(MetadataRemoveTest, ListThatMatchesNothingChangesNothing)
 {
     setKeys("dpx/*");
 
     EXPECT_EQ(metadataOf(source, 1.), metadataOf(remove, 1.));
 }
 
-TEST_F(RemoveMetadataTest, KnobEditRecomputesMetadata)
+TEST_F(MetadataRemoveTest, KnobEditRecomputesMetadata)
 {
     setKeys("exr/tag");
     EXPECT_FALSE(metadataOf(remove, 1.).contains("exr/tag"));

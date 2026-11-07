@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Metadata_ViewMetadata_h
-#define Engine_Nodes_Metadata_ViewMetadata_h
+#ifndef Engine_Nodes_Metadata_MetadataCompare_h
+#define Engine_Nodes_Metadata_MetadataCompare_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -32,35 +32,45 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_VIEWMETADATA "ViewMetadata"
+#define PLUGINID_NATRON_METADATACOMPARE "MetadataCompare"
+#define PLUGIN_MAJOR_NATRON_METADATACOMPARE 1
 
 NATRON_NAMESPACE_ENTER
 
-inline constexpr InputSpec kViewMetadataInputs[] = {
-    InputSpec { .label = "Source", .optional = false },
+inline constexpr InputSpec kMetadataCompareInputs[] = {
+    InputSpec { .label = "A", .optional = false },
+    InputSpec { .label = "B", .optional = true },
 };
 
-class ViewMetadata
+class MetadataCompare
     : public NativeEffectBase {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ViewMetadata(node);
+        return new MetadataCompare(node);
     }
 
-    explicit ViewMetadata(NodePtr node);
+    explicit MetadataCompare(NodePtr node);
 
     /**
-     * @brief Rebuilds the table from this node's metadata at time. Main thread only.
+     * @brief One line per key A and B disagree on, in ascending key order: "A only: key=value",
+     * "B only: key=value" or "differs: key: A=value B=value". Keys both hold with the same
+     * value print nothing, so identical metadata gives an empty text.
      **/
-    void refreshMetadataDisplay(double time);
+    static std::string differences(const ImageMetadata& a, const ImageMetadata& b) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The table the settings panel currently shows.
+     * @brief Rebuilds the display from the metadata of A and B at time and view. Main thread only.
      **/
-    std::string getMetadataDisplayText() const WARN_UNUSED_RETURN;
+    void refreshDifferencesDisplay(double time, ViewIdx view);
+
+    /**
+     * @brief The text the settings panel currently shows.
+     **/
+    std::string getDifferencesDisplayText() const WARN_UNUSED_RETURN;
 
 private:
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -69,15 +79,17 @@ private:
     }
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_VIEWMETADATA,
-        .label = "ViewMetadata",
-        .description = "Shows the metadata of its input at the current frame in its Metadata tab. The "
-                       "list follows the timeline and upstream changes; Refresh updates it on demand. "
-                       "The image and its metadata are passed through unchanged.",
+        .id = PLUGINID_NATRON_METADATACOMPARE,
+        .label = "MetadataCompare",
+        .description = "Shows, in its Differences box, the metadata keys on which A and B disagree at the "
+                       "current frame: a key only one of them holds, or one both hold with different "
+                       "values. Keys with equal values are not listed. The list follows the timeline and "
+                       "upstream changes; Refresh updates it on demand. The image and metadata of A are "
+                       "passed through unchanged.",
         .grouping = PLUGIN_GROUP_METADATA,
-        .majorVersion = 1,
+        .majorVersion = PLUGIN_MAJOR_NATRON_METADATACOMPARE,
         .minorVersion = 0,
-        .inputs = kViewMetadataInputs,
+        .inputs = kMetadataCompareInputs,
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -87,6 +99,17 @@ private:
 
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The RoD of A, whose image is the output; B only contributes metadata to compare.
+     **/
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
@@ -98,6 +121,7 @@ private:
 
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     void scheduleRefresh();
@@ -109,4 +133,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Metadata_ViewMetadata_h
+#endif // Engine_Nodes_Metadata_MetadataCompare_h

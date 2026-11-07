@@ -825,6 +825,12 @@ TEST(SceneGraphModelPayloads, LoadingATwirledRowChangesOnlyItsRows)
     const QPersistentModelIndex other(fixture.row(QString::fromUtf8("/World/Other")));
     const QPersistentModelIndex b2(fixture.row(kB2));
     const QPersistentModelIndex b0(fixture.row(kB0));
+    const QModelIndex b1 = fixture.row(kB1);
+    // The tester reads every row it can on the first change signal outside a model change; B1 is
+    // read here so that read is not counted among the rows the load changes.
+    while (fixture.model.canFetchMore(b1)) {
+        fixture.model.fetchMore(b1);
+    }
     const int resets = fixture.model.getResetCount();
     QStringList changedParents;
     int layouts = 0;
@@ -864,9 +870,11 @@ TEST(SceneGraphModelPayloads, TheLoadingRowFollowsAPrimsOwnChildren)
     fixture.source->stage.requestLoad({ PXR_NS::SdfPath(kB1.toStdString()) }, false);
     fixture.model.markLoading(QStringList(kB1));
 
-    // Marked before the view read the row: the row it fetches goes before the loading one.
-    ASSERT_EQ(1, fixture.model.rowCount(b1));
-    fixture.model.fetchMore(b1);
+    // Marked before the row was read: the tester reads it on markLoading's dataChanged, as a view
+    // would, and the row it fetches goes before the loading one.
+    while (fixture.model.canFetchMore(b1)) {
+        fixture.model.fetchMore(b1);
+    }
     EXPECT_EQ(QStringList({ QString::fromUtf8("Own"), SceneGraphModel::tr("Loading...") }), childNames(fixture.model, b1));
     EXPECT_EQ(fixture.model.parent(fixture.model.index(1, 0, b1)), QModelIndex(b1));
 

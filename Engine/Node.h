@@ -1447,15 +1447,15 @@ public:
     std::string getNodeExtraLabel() const;
 
     /**
-     * @brief Show keyframe markers on the timeline. The signal to refresh the timeline's gui
-     * will be emitted only if emitSignal is set to true.
+     * @brief Show keyframe markers on the timeline. The timeline's gui refreshes once on the next
+     * pass of the event loop however many nodes change, so emitSignal has no effect.
      * Calling this function without calling hideKeyframesFromTimeline() has no effect.
      **/
     void showKeyframesOnTimeline(bool emitSignal);
 
     /**
-     * @brief Hide keyframe markers on the timeline. The signal to refresh the timeline's gui
-     * will be emitted only if emitSignal is set to true.
+     * @brief Hide keyframe markers on the timeline. The timeline's gui refreshes once on the next
+     * pass of the event loop however many nodes change, so emitSignal has no effect.
      * Calling this function without calling showKeyframesOnTimeline() has no effect.
      **/
     void hideKeyframesFromTimeline(bool emitSignal);

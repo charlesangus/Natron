@@ -182,15 +182,16 @@ Layer::insertItem(int pos,
 void
 Layer::removeItem(ItemBase* item)
 {
-    if (refusesShapeEdit(_layer->getContext())) {
+    RotoCurveContextPtr context = _layer->getContext();
+    if (refusesShapeEdit(context)) {
         return;
     }
     RotoItemPtr internalItem = item ? item->getInternalItem() : RotoItemPtr();
-    if (!internalItem || (internalItem->getParentLayer() != _layer)) {
+    if (!context || !internalItem || (internalItem->getParentLayer() != _layer)) {
         return;
     }
-    // Through the context, so the item leaves the selection and its host data goes with it.
-    _layer->getContext()->removeItem(internalItem);
+    // Through the context, so the item leaves the selection and the panel, and its host data goes with it.
+    context->removeItem(internalItem);
 }
 
 std::list<ItemBase*>
@@ -727,6 +728,10 @@ Roto::createEllipse(double x,
     BezierPtr  ret = _ctx->makeEllipse(x, y, diameter, fromCenter, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 
@@ -745,6 +750,10 @@ Roto::createRectangle(double x,
     BezierPtr  ret = _ctx->makeSquare(x, y, size, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 

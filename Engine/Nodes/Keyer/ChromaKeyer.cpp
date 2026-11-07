@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
@@ -195,6 +196,7 @@ public:
         , _cosKey(0.)
         , _xKey(0.)
         , _ys(0.)
+        , _gainXKey(0.)
     {
         float y, cb, cr;
         toYPbPr(ColorMath::boundForKeying(settings.keyColor[0]), ColorMath::boundForKeying(settings.keyColor[1]), ColorMath::boundForKeying(settings.keyColor[2]), &y, &cb, &cr);
@@ -211,6 +213,7 @@ public:
         _cosKey = 2 * cb / _xKey;
         _sinKey = 2 * cr / _xKey;
         _ys = _xKey == 0. ? 0. : y / _xKey;
+        _gainXKey = productOrInfinity(_keyGain, _xKey);
         if (_acceptanceAngle < 180.) {
             _tanAcceptanceAngle2 = std::tan((_acceptanceAngle / 2) * M_PI / 180);
         }
@@ -290,11 +293,11 @@ public:
             if (_keyGain <= 0.) {
                 Kbg = (Kfg > 0.) ? 1.f : 0.f;
             } else if (_keyLift >= 1.) {
-                Kbg = (Kfg >= _keyGain * _xKey) ? 1.f : 0.f;
+                Kbg = (Kfg >= _gainXKey) ? 1.f : 0.f;
             } else {
                 // Unclamped, but kept finite: a near-zero key chroma would overflow it, and Bg
                 // times an infinite key is NaN where Bg is zero.
-                Kbg = ColorMath::boundForKeying((float)((Kfg / (_keyGain * _xKey) - _keyLift) / (1. - _keyLift)));
+                Kbg = ColorMath::boundForKeying(knobValueAsFloat(keyRamp(Kfg)));
             }
         }
 
@@ -321,9 +324,9 @@ public:
             }
             break;
         case eShowComposite:
-            out[0] = (float)(compAlpha * (fgr + bgr * Kbg) + (1. - compAlpha) * bgr);
-            out[1] = (float)(compAlpha * (fgg + bgg * Kbg) + (1. - compAlpha) * bgg);
-            out[2] = (float)(compAlpha * (fgb + bgb * Kbg) + (1. - compAlpha) * bgb);
+            out[0] = composite(fgr, bgr, Kbg, compAlpha);
+            out[1] = composite(fgg, bgg, Kbg, compAlpha);
+            out[2] = composite(fgb, bgb, Kbg, compAlpha);
             break;
         }
         out[3] = (float)fga;
@@ -340,9 +343,9 @@ public:
         p->ys = (float)_ys;
         p->tanAcceptance = (float)_tanAcceptanceAngle2;
         p->tanSuppression = (float)_tanSuppressionAngle2;
-        p->keyLift = (float)_keyLift;
-        p->oneMinusLift = (float)(1. - _keyLift);
-        p->gainXKey = (float)(_keyGain * _xKey);
+        p->keyLift = knobValueAsFloat(_keyLift);
+        p->oneMinusLift = knobValueAsFloat(1. - _keyLift);
+        p->gainXKey = knobValueAsFloat(_gainXKey);
         p->kr = _kr;
         p->kb = _kb;
         p->kg = 1 - _kr - _kb;
@@ -356,6 +359,31 @@ public:
 #endif // NATRON_HAVE_GPU
 
 private:
+    double keyRamp(double Kfg) const
+    {
+        // A source bounded for keying keeps Kfg below 2^132 and 1 - lift is at least 2^-53, so with
+        // the gain times the key chroma this far above zero no step can overflow, and the per-pixel
+        // path stays on the plain divisions.
+        if (_gainXKey >= 0x1p-800) {
+            return (Kfg / _gainXKey - _keyLift) / (1. - _keyLift);
+        }
+
+        return quotientOrInfinity(differenceOrInfinity(quotientOrInfinity(Kfg, _gainXKey), _keyLift), 1. - _keyLift);
+    }
+
+    // The unclamped key can take Bg times it past the float range. The double product of two floats
+    // is exact and double has the bits to round a sum to the float the float sum gives, so finite
+    // results match the float operations.
+    static float composite(float fg,
+                           float bg,
+                           float Kbg,
+                           double alpha)
+    {
+        const float over = knobValueAsFloat((double)fg + knobValueAsFloat((double)bg * Kbg));
+
+        return knobValueAsFloat(productOrInfinity(alpha, over) + (1. - alpha) * bg);
+    }
+
     // Y'PbPr with the working space's weights, in single precision.
     void toYPbPr(float r,
                  float g,
@@ -396,6 +424,7 @@ private:
     double _cosKey;
     double _xKey;
     double _ys;
+    double _gainXKey;
 };
 
 // An image locked for reading by the render's calling thread. Image::getBounds() takes the
@@ -782,7 +811,7 @@ ChromaKeyer::readSettings(double time,
     KnobColorPtr keyColor = _keyColor.lock();
     if (keyColor) {
         for (int i = 0; i < 3; ++i) {
-            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
+            settings->keyColor[i] = knobValueAsFloat(keyColor->getValueAtTime(time, i, view));
         }
     }
     double luma[3];

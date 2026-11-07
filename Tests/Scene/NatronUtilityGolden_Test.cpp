@@ -44,6 +44,8 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
 
@@ -63,31 +65,31 @@ protected:
         BaseTest::TearDown();
     }
 
-    // USDRead of the reference scene into a Natron Utility USDRender of the golden window's size.
+    // USDRead of the reference scene, through a USDRenderSettings framing its camera at the golden
+    // window's size, into a Natron Utility USDRender.
     NodePtr createRender()
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
 
-        if (!reader || !render) {
-            ADD_FAILURE() << "USDRead or USDRender is not registered";
+        if (!reader || !settings || !render) {
+            ADD_FAILURE() << "USDRead, USDRenderSettings or USDRender is not registered";
 
             return NodePtr();
         }
         KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
-        KnobInt* size = dynamic_cast<KnobInt*>(render->getKnobByName(kNatronParamFormatSize).get());
-        KnobDouble* par = dynamic_cast<KnobDouble*>(render->getKnobByName(kNatronParamFormatPar).get());
         KnobChoice* renderer = dynamic_cast<KnobChoice*>(render->getKnobByName(kUSDRenderParamRenderer).get());
 
-        if (!file || !size || !par || !renderer) {
+        if (!file || !renderer) {
             ADD_FAILURE() << "missing knobs";
 
             return NodePtr();
         }
         file->setValue(std::string(kFixture));
-        size->setValue(kGoldenWidth, ViewSpec::all(), 0);
-        size->setValue(kGoldenHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+        if (!RenderSettingsTestUtils::configure(settings, "/World/Cam", kGoldenWidth, kGoldenHeight)) {
+            return NodePtr();
+        }
 
         const std::vector<ChoiceOption> entries = renderer->getEntries_mt_safe();
         bool selected = false;
@@ -103,7 +105,8 @@ protected:
 
             return NodePtr();
         }
-        connectNodes(reader, render, 0, true);
+        connectNodes(reader, settings, 0, true);
+        connectNodes(settings, render, 0, true);
 
         return render;
     }

@@ -266,6 +266,9 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
         kSplineWarpParamCurveResolution,
         kSplineWarpParamFieldResolution,
         kResamplerParamFilterType,
+        kResamplerParamLobes,
+        kResamplerParamBicubicB,
+        kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
         kSplineWarpParamBBox,
@@ -612,6 +615,27 @@ TEST_F(NativeSplineWarpTest, RoICoversWhatTheWindowReads)
 }
 
 // A Transform upstream is applied in the warp's own resample, not resampled twice.
+TEST_F(NativeSplineWarpTest, TilesMatchTheWholeFrameUnderStrongMinification)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 32., 24., 20., 0., 0., 0.2)));
+    ASSERT_TRUE(setKnobValue(warp, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterLanczos3].id)));
+    EXPECT_FALSE(isIdentityOnSource(warp));
+
+    const RectI all(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const int midX = kParitySourceWidth / 2;
+    RenderedPlane whole;
+    ASSERT_TRUE(renderRGBA(warp, all, &whole));
+    for (const RectI& tile : { RectI(0, 0, midX, kParitySourceHeight), RectI(midX, 0, kParitySourceWidth, kParitySourceHeight) }) {
+        RenderedPlane part;
+        ASSERT_TRUE(renderRGBA(warp, tile, &part));
+        EXPECT_EQ(0., maxDiff(whole, part, tile)) << "tile from x " << tile.x1;
+    }
+}
+
 TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
 {
     resetProject();

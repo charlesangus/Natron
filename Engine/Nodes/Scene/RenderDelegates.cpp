@@ -25,6 +25,7 @@
 
 #include "RenderDelegates.h"
 
+#include <functional>
 #include <mutex>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -183,6 +184,32 @@ void
 registerPluginDirectory(const std::string& path)
 {
     (void)PlugRegistry::GetInstance().RegisterPlugins(path);
+}
+
+namespace {
+    std::mutex gRenderFaultHookMutex;
+    std::function<void()> gRenderFaultHook;
+} // namespace
+
+void
+setRenderFaultHook(std::function<void()> hook)
+{
+    std::lock_guard<std::mutex> lock(gRenderFaultHookMutex);
+
+    gRenderFaultHook = std::move(hook);
+}
+
+void
+runRenderFaultHook()
+{
+    std::function<void()> hook;
+    {
+        std::lock_guard<std::mutex> lock(gRenderFaultHookMutex);
+        hook = gRenderFaultHook;
+    }
+    if (hook) {
+        hook();
+    }
 }
 } // namespace RenderDelegates
 

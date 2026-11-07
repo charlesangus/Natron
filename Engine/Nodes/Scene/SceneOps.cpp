@@ -410,6 +410,10 @@ readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     if (layer->HasTimeCodesPerSecond()) {
         metadata.timeCodesPerSecond = layer->GetTimeCodesPerSecond();
     }
+    std::string renderSettingsPrimPath;
+    if (layer->HasField(root, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &renderSettingsPrimPath)) {
+        metadata.renderSettingsPrimPath = renderSettingsPrimPath;
+    }
 
     return metadata;
 }
@@ -458,6 +462,13 @@ writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
     }
     if (!applied || (applied->timeCodesPerSecond != metadata.timeCodesPerSecond)) {
         root->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
+    }
+    if (!applied || (applied->renderSettingsPrimPath != metadata.renderSettingsPrimPath)) {
+        if (metadata.renderSettingsPrimPath.empty()) {
+            root->EraseField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath);
+        } else {
+            root->SetField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, metadata.renderSettingsPrimPath);
+        }
     }
 }
 

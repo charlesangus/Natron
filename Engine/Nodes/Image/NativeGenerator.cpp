@@ -27,7 +27,6 @@
 
 #include <cmath>
 
-#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -140,9 +139,9 @@ NativeGenerator::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
+    metadata.setDouble(kNatronMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
     NodeMetadataConstPtr own = _effect->getMetadata(time, view);
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
+    metadata.setDouble(kNatronMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     return metadata;
 }

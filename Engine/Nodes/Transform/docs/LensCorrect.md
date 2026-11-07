@@ -5,6 +5,8 @@ database, as darktable's lens correction module does. `mode` Correct removes the
 Distort adds them, for instance to match a CG element to a plate. `correctDistortion`, `correctTCA`
 and `correctVignetting` choose which of the three apply. TCA is never applied to a monochrome image.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 The camera and lens are looked up in the database bundled with Natron. An empty `camera` reads the
 Source's `exif/Make` and `exif/Model` metadata (a raw file's `raw/make` and `raw/model` otherwise),
 and an empty `lens` reads `exif/LensModel`, cut at " or " or " (" as darktable does. A fixed-lens

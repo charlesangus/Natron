@@ -741,5 +741,10 @@ TEST_F(NativeIDistortAmountTest, GoldenSTMapMap)
     v.push_back(goldenVariant("uvalpha", false, [knobs](const GoldenGraph& g) {
         return knobs(g) && setKnobValues(g.node, kSTMapParamUVAlpha, { 1. });
     }));
+    // A quarter UV scale keeps the samples inside the Source, where the noise's steep gradient
+    // minifies; past the Source the kernel falls back to its plain width.
+    v.push_back(goldenVariant("lanczos3minify", false, [knobs](const GoldenGraph& g) {
+        return knobs(g) && setKnobValues(g.node, kSTMapParamUVScale, { 0.25, 0.25 }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("lanczos3"));
+    }));
     runGoldenCases(getApp(), spec, v);
 }

@@ -106,3 +106,5 @@ Scouted facts (2026-10-25; re-check at promotion):
 
 - 2026-11-05 — **Residual accepted (user):** defocus_retime's copy rate (0.53–0.81× of the same-boot transfer-queue rate) misses the gate's 10% clause, and the user accepts it. The residual is about 1% of that comp's wall time. Why those copies run slower was not identified.
 
+
+- 2026-11-07 — **RADV run on main at 42252a557 (gpu, debug, 2e07dd8bf):** 757 of 767 pass. All ten failing suites are main's. Seven are fixed by M240 - Float Trap And Denormal Audit, two more are its P3.T7 and P3.T8, and one is M310 - Device-Switch Shader Test Fix's. M240's branch, which lacks this milestone's changes, showed the same two new suites failing with the same worst differences on main a2906666a, so this milestone adds no RADV failure.

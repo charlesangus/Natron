@@ -172,7 +172,7 @@ future core work has solid ground to build on.
 | M232 | Scene Selection To Nodes | done | M226, M231 | bosley-native-nodes | E9 | | | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
 | M327 | Heavy Scene Spike | done | M231, M232 | misty-marten | E9 | | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
 | M328 | Deferred Viewer Stage | doing | M327 | misty-marten | E9 | F4 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
-| M329 | Viewer Draw States | todo | M327, M328 |  | E9 | F4 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
+| M329 | Viewer Draw States | doing | M327, M328 | misty-marten | E9 | F4 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
 | M330 | Graph Draw Policy | todo | M329 |  | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
 | M331 | Deferred Pattern Matching | todo | M52, M327, M328 |  | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
 | M332 | Scene Graph Points | todo | M328 |  | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
@@ -332,8 +332,8 @@ future core work has solid ground to build on.
 | M215 | Colour Equalizer | done | M209, M214 | bosley-native-nodes | E17 | | | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | done | - | bosley-native-nodes | E17 | | | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 | M217 | VectorGenerator Node | doing | M124 | misty-marten | E18 | F8 | | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
-| M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | F8 | | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
-| M219 | Curves Follow Vectors | todo | M217, M146 |  | E18 | F8 | | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
+| M218 | VectorGenerator GPU | doing | M217, M124 | misty-marten | E18 | F8 | | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
+| M219 | Curves Follow Vectors | doing | M217, M146 | misty-marten | E18 | F8 | | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
 | M220 | SplineWarp Follow Vectors | todo | M219, M148 |  | E18 | F8 | | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | F8 | | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | | | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |

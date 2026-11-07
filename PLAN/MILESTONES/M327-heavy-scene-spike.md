@@ -81,6 +81,8 @@ the numbers that settle how draw states reach Hydra. Design:
 
 ## Decisions
 
+- 2026-11-07 — Settle run, session on the loaded 1M city (AMD Radeon AI PRO R9700): peak RSS 12.27 GB with 46 GB free, so memory didn't cause the earlier hang. Open 14.7 s; prune 1896 ms, restore 39 ms; sibling set 10-16 ms; reveal first frame 1344 ms; cancel 1402 ms. `orbit10k` ended the process after 145 s (cause unknown, the likely hang trigger). `sibling_shot` changed 0 pixels for both rows, with no filter control to judge it. Lobby was skipped because its path differs on that host.
+
 - 2026-11-07 — Host script rewritten on spike/m327-hydra-filter (user): no system PySide, fixtures in the dev image, Lobby and Island added (Lobby 2,786 prims loaded; Island 30.9M instances, skipped below 24 GB free, an estimate), per-scenario limits record `timed_out`, `settle` mode with a pixel check. `first_boxes_ms` renamed `first_frame_ms`. Tested under llvmpipe only; Island in the GUI is untested.
 
 - 2026-11-07 — GPU host run received (87 of 92 records; synthetic fixtures). `flat-session-all` and `flat-session-restorevalue` were killed by the user in `noedit`, after about 53 and 10 min (inferred from timestamps). **Recommendation, awaiting the user's choice:** draw states reach Hydra through a per-engine scene index filter with a GL box overlay, not session-layer draw mode. The filter finished reveal at 2 fps and cancelled in 120-1207 ms. Open: session on a loaded city is unmeasured, and the filter's 1.2-1.7 s state change at 1M loaded fails the 100 ms budget. A run of about 5 minutes closes this.

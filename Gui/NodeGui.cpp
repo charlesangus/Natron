@@ -4830,6 +4830,9 @@ public:
     virtual void redo() OVERRIDE FINAL
     {
         _command->redo();
+        if (_command->isObsolete()) {
+            setObsolete(true);
+        }
     }
 
     virtual void undo() OVERRIDE FINAL

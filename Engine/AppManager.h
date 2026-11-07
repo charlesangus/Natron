@@ -100,6 +100,7 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<std::size_t()>& getAccountedMemory,
                                             const std::function<bool()>& evictOnce);
 
+class CacheHostTier;
 struct AppManagerPrivate;
 class AppManager
     : public QObject, public AfterQuitProcessingI
@@ -384,6 +385,8 @@ public:
      * WARNING: This function may remove some entries from the caches.
      **/
     void checkCacheFreeMemoryIsGoodEnough();
+
+    CacheHostTier& getNodeCacheHostTier() const;
 
     /**
      * @brief Evicts the least-recently-used in-memory entry of the node cache, image or deep.

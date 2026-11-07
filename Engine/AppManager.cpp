@@ -2998,12 +2998,19 @@ evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
     }
 }
 
+CacheHostTier&
+AppManager::getNodeCacheHostTier() const
+{
+    return _imp->_nodeCache->hostTier();
+}
+
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
     size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
     size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
 
+    _imp->_nodeCache->hostTier().setSystemMemory(totalAvailableRAM, systemRAMToKeepFree);
     evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [this]() { return _imp->_nodeCache->getMemoryCacheSize(); }, [this]() { return evictLRUFromMemoryCaches(); });
 }
 

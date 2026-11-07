@@ -970,13 +970,18 @@ TEST_F(DeepReadWriteTest, EachFrameOfASequenceRendersItsOwnFileThroughTheCache)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 2., fullFrame(), &second));
     ASSERT_TRUE(first && second);
     EXPECT_NE(channelNamesOf(*first), channelNamesOf(*second));
+    const std::vector<std::string> secondChannels = channelNamesOf(*second);
 
+    // A held entry survives the clear, and the render below would then read it back instead of
+    // the file.
+    first.reset();
+    second.reset();
     appPTR->clearAllCaches();
 
     DeepImagePtr fresh;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 2., fullFrame(), &fresh));
     ASSERT_TRUE(bool(fresh));
-    EXPECT_EQ(channelNamesOf(*fresh), channelNamesOf(*second));
+    EXPECT_EQ(channelNamesOf(*fresh), secondChannels);
 }
 
 TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlaceOnReload)

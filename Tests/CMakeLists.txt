@@ -27,6 +27,7 @@ set(Tests_SOURCES
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    CacheHostTier_Test.cpp
     CacheStress.cpp
     CacheStress_Test.cpp
     CacheStressConcurrent_Test.cpp

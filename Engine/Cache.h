@@ -57,6 +57,7 @@ GCC_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h" //for access to settings
 #include "Engine/CacheEntry.h"
+#include "Engine/CacheTier.h"
 #include "Engine/ImageLocker.h"
 #include "Engine/LRUHashTable.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM
@@ -64,9 +65,6 @@ GCC_DIAG_ON(deprecated)
 #include "Engine/StandardPaths.h"
 
 #include "Engine/EngineFwd.h"
-
-//Beyond that percentage of occupation, the cache will start evicting LRU entries
-#define NATRON_CACHE_LIMIT_PERCENT 0.9
 
 #define NATRON_TILE_CACHE_FILE_SIZE_BYTES 2000000000
 
@@ -397,10 +395,10 @@ Q_SIGNALS:
  * the same containers and under the same budget, because the containers hold entries by their common base. A base
  * pointer shares its control block with the typed pointers handed out, so a holder of either pins the entry alike.
  */
-template<typename EntryType>
+template <typename EntryType>
 class Cache
-    : public CacheAPI
-{
+    : public CacheAPI,
+      public CacheHostStorage {
     friend class CacheCleanerThread;
 public:
 
@@ -496,17 +494,16 @@ public:
 #endif // USE_VARIADIC_TEMPLATES
 
 private:
-
-
-    std::size_t _maximumInMemorySize;     // the maximum size of the in-memory portion of the cache.(in % of the maximum cache size)
+    // The in-memory limit and the size of the in-memory portion. Declared before the helper
+    // threads at the end, whose entry destructions charge it until they are joined.
+    mutable CacheHostTier _hostTier;
     std::size_t _maximumCacheSize;     // maximum size allowed for the cache
 
     /*mutable because we need to change modify it in the sealEntryInternal function which
          is called by an external object that have a const ref to the cache.
      */
-    mutable std::size_t _memoryCacheSize;     // current size of the cache in bytes
     mutable std::size_t _diskCacheSize;
-    mutable QMutex _sizeLock; // protects _memoryCacheSize & _diskCacheSize & _maximumInMemorySize & _maximumCacheSize
+    mutable QMutex _sizeLock; // protects _diskCacheSize & _maximumCacheSize
     mutable QMutex _lock; //protects _memoryCache & _diskCache
     mutable QMutex _getLock;  //prevents get() and getOrCreate() to be called simultaneously
 
@@ -558,9 +555,9 @@ public:
           double maximumInMemoryPercentage // how much should live in RAM
           )
         : CacheAPI()
-        , _maximumInMemorySize(maximumCacheSize * maximumInMemoryPercentage)
+        , CacheHostStorage()
+        , _hostTier(this, maximumCacheSize * maximumInMemoryPercentage)
         , _maximumCacheSize(maximumCacheSize)
-        , _memoryCacheSize(0)
         , _diskCacheSize(0)
         , _sizeLock()
         , _lock()
@@ -836,13 +833,9 @@ private:
             ++safeCounter;
         }
 
-        U64 memoryCacheSize, maximumInMemorySize;
-        {
-            QMutexLocker k(&_sizeLock);
-            memoryCacheSize = _memoryCacheSize;
-            maximumInMemorySize = std::max( (std::size_t)1, _maximumInMemorySize );
-        }
-        trimHostPoolToHeadroom(memoryCacheSize, maximumInMemorySize);
+        U64 memoryCacheSize = _hostTier.liveBytes();
+        const U64 maximumInMemorySize = std::max((std::size_t)1, _hostTier.limit());
+        _hostTier.trimIdlePool();
         {
             QMutexLocker locker(&_lock);
             std::list<StoredEntryPtr> entriesToBeDeleted;
@@ -875,13 +868,13 @@ private:
         {
             //If _maximumcacheSize == 0 we don't return 1 otherwise we would cause a deadlock
             QMutexLocker k(&_sizeLock);
-            double occupationPercentage =  _maximumCacheSize == 0 ? 0.99 : (double)_memoryCacheSize / _maximumCacheSize;
+            double occupationPercentage = _maximumCacheSize == 0 ? 0.99 : (double)_hostTier.liveBytes() / _maximumCacheSize;
 
-            //_memoryCacheSize member will get updated while images are being destroyed by the parallel thread.
-            //we wait for cache memory occupation to be < 100% to be sure we don't hit swap here
+            // The tier's live bytes will get updated while images are being destroyed by the parallel thread.
+            // we wait for cache memory occupation to be < 100% to be sure we don't hit swap here
             while ( occupationPercentage >= 1. && _deleterThread.isWorking() ) {
                 _memoryFullCondition.wait(k.mutex());
-                occupationPercentage =  _maximumCacheSize == 0 ? 0.99 : (double)_memoryCacheSize / _maximumCacheSize;
+                occupationPercentage = _maximumCacheSize == 0 ? 0.99 : (double)_hostTier.liveBytes() / _maximumCacheSize;
             }
         }
         if (_isTiled) {
@@ -893,7 +886,7 @@ private:
             {
                 QMutexLocker k(&_sizeLock);
                 diskCacheSize = _diskCacheSize;
-                maximumDiskCacheSize = std::max( (std::size_t)1, _maximumCacheSize - _maximumInMemorySize );
+                maximumDiskCacheSize = std::max((std::size_t)1, _maximumCacheSize - _hostTier.limit());
             }
             double diskPercentage = (double)diskCacheSize / maximumDiskCacheSize;
             while (diskPercentage >= NATRON_CACHE_LIMIT_PERCENT) {
@@ -1177,17 +1170,6 @@ public:
         }
     } // clearInMemoryPortion
 
-    // Idle pooled image buffers are RAM this process holds without any entry owning it. They
-    // count against the limit, but giving them up is cheaper than evicting a live entry, so
-    // only what does not fit in the remaining headroom is returned to the OS.
-    static void trimHostPoolToHeadroom(U64 memoryCacheSize,
-                                       U64 maximumInMemorySize)
-    {
-        const U64 limit = (U64)(maximumInMemorySize * NATRON_CACHE_LIMIT_PERCENT);
-
-        HostImageMemory::trimTo(limit > memoryCacheSize ? (std::size_t)(limit - memoryCacheSize) : 0);
-    }
-
     void clearExceedingEntries()
     {
         ///Make sure the shared_ptrs live in this list and are destroyed not while under the lock
@@ -1196,13 +1178,9 @@ public:
 
         {
             QMutexLocker locker(&_lock);
-            U64 memoryCacheSize, maximumInMemorySize;
-            {
-                QMutexLocker k(&_sizeLock);
-                memoryCacheSize = _memoryCacheSize;
-                maximumInMemorySize = std::max( (std::size_t)1, _maximumInMemorySize );
-            }
-            trimHostPoolToHeadroom(memoryCacheSize, maximumInMemorySize);
+            U64 memoryCacheSize = _hostTier.liveBytes();
+            const U64 maximumInMemorySize = std::max((std::size_t)1, _hostTier.limit());
+            _hostTier.trimIdlePool();
             double occupationPercentage = (double)memoryCacheSize / maximumInMemorySize;
             while (occupationPercentage >= NATRON_CACHE_LIMIT_PERCENT) {
                 std::list<StoredEntryPtr> deleted;
@@ -1223,7 +1201,7 @@ public:
             {
                 QMutexLocker k(&_sizeLock);
                 diskCacheSize = _diskCacheSize;
-                maximumDiskCacheSize = std::max( (std::size_t)1, _maximumCacheSize - _maximumInMemorySize );
+                maximumDiskCacheSize = std::max((std::size_t)1, _maximumCacheSize - _hostTier.limit());
             }
             double diskPercentage = (double)diskCacheSize / maximumDiskCacheSize;
             while (diskPercentage >= NATRON_CACHE_LIMIT_PERCENT) {
@@ -1282,22 +1260,15 @@ public:
     virtual void notifyEntrySizeChanged(std::size_t oldSize,
                                         std::size_t newSize) const OVERRIDE FINAL
     {
-        ///The entry has notified it's memory layout has changed, it must have been due to an action from the cache
-        QMutexLocker k(&_sizeLock);
-
         ///This function can only be called for RAM buffers or while a memory mapped file is mapped into the RAM, so
         ///we just have to modify the RAM size.
-
-        ///Avoid overflows, _memoryCacheSize may not always fallback to 0
-        qint64 diff = (qint64)newSize - (qint64)oldSize;
-
-        if (diff < 0) {
-            _memoryCacheSize = diff > (qint64)_memoryCacheSize ? 0 : _memoryCacheSize + diff;
+        if (newSize >= oldSize) {
+            _hostTier.addBytes(newSize - oldSize);
         } else {
-            _memoryCacheSize += diff;
+            _hostTier.removeBytes(oldSize - newSize);
         }
 #ifdef NATRON_DEBUG_CACHE
-        qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_memoryCacheSize);
+        qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_hostTier.liveBytes());
 #endif
     }
 
@@ -1317,18 +1288,18 @@ public:
                 // For tile caches, we do not control which portion of the cache is in memory, so just keep track of the disk portion
                 _diskCacheSize += size;
             } else {
-                _memoryCacheSize += size;
+                _hostTier.addBytes(size);
                 appPTR->increaseNCacheFilesOpened();
             }
         } else {
-            _memoryCacheSize += size;
+            _hostTier.addBytes(size);
         }
 
         _signalEmitter->emitAddedEntry(time);
 
 
 #ifdef NATRON_DEBUG_CACHE
-        qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_memoryCacheSize);
+        qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_hostTier.liveBytes());
 #endif
     }
 
@@ -1342,9 +1313,9 @@ public:
         QMutexLocker k(&_sizeLock);
 
         if (storage == eStorageModeRAM) {
-            _memoryCacheSize = size > _memoryCacheSize ? 0 : _memoryCacheSize - size;
+            _hostTier.removeBytes(size);
 #ifdef NATRON_DEBUG_CACHE
-            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_memoryCacheSize);
+            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_hostTier.liveBytes());
 #endif
         } else if (storage == eStorageModeDisk) {
             _diskCacheSize = size > _diskCacheSize ? 0 : _diskCacheSize - size;
@@ -1383,26 +1354,26 @@ public:
         assert(oldStorage != newStorage);
         assert(newStorage != eStorageModeNone);
         if (oldStorage == eStorageModeRAM) {
-            _memoryCacheSize = size > _memoryCacheSize ? 0 : _memoryCacheSize - size;
+            _hostTier.removeBytes(size);
             _diskCacheSize += size;
 #ifdef NATRON_DEBUG_CACHE
-            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_memoryCacheSize);
+            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_hostTier.liveBytes());
             qDebug() << cacheName().c_str() << " disk size: " << printAsRAM(_diskCacheSize);
 #endif
             ///We switched from RAM to DISK that means the MemoryFile object has been destroyed hence the file has been closed.
             appPTR->decreaseNCacheFilesOpened();
         } else if (oldStorage == eStorageModeDisk) {
-            _memoryCacheSize += size;
+            _hostTier.addBytes(size);
             _diskCacheSize = size > _diskCacheSize ? 0 : _diskCacheSize - size;
 #ifdef NATRON_DEBUG_CACHE
-            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_memoryCacheSize);
+            qDebug() << cacheName().c_str() << " memory size: " << printAsRAM(_hostTier.liveBytes());
             qDebug() << cacheName().c_str() << " disk size: " << printAsRAM(_diskCacheSize);
 #endif
             ///We switched from DISK to RAM that means the MemoryFile object has been created and the file opened
             appPTR->increaseNCacheFilesOpened();
         } else {
             if (newStorage == eStorageModeRAM) {
-                _memoryCacheSize += size;
+                _hostTier.addBytes(size);
             } else if (newStorage == eStorageModeDisk) {
                 _diskCacheSize += size;
             }
@@ -1464,7 +1435,7 @@ public:
     {
         QMutexLocker k(&_sizeLock);
 
-        _maximumInMemorySize = _maximumCacheSize * percentage;
+        _hostTier.setLimit(_maximumCacheSize * percentage);
     }
 
     std::size_t getMaximumSize() const
@@ -1476,16 +1447,56 @@ public:
 
     std::size_t getMaximumMemorySize() const
     {
-        QMutexLocker k(&_sizeLock);
-
-        return _maximumInMemorySize;
+        return _hostTier.limit();
     }
 
     std::size_t getMemoryCacheSize() const
     {
-        QMutexLocker k(&_sizeLock);
+        return _hostTier.liveBytes();
+    }
 
-        return _memoryCacheSize;
+    CacheHostTier& hostTier() const
+    {
+        return _hostTier;
+    }
+
+    virtual bool dropFromHost(const CacheEntryPtr& entry) const OVERRIDE FINAL
+    {
+        std::list<StoredEntryPtr> entriesToBeDeleted;
+        {
+            QMutexLocker locker(&_lock);
+            // One reference for the table and one for the caller. Copies only appear under this
+            // lock, so a count of two cannot grow before the entry has left the table.
+            if (entry.use_count() > 2) {
+                return false;
+            }
+            std::list<StoredEntryPtr> removed;
+            if (!removeEntryFromContainer(_memoryCache, entry, &removed)) {
+                return false;
+            }
+            disposeOfEntryLeavingMemory(entry->getHashKey(), entry, entriesToBeDeleted);
+        }
+        if (!entriesToBeDeleted.empty()) {
+            _deleterThread.appendToQueue(entriesToBeDeleted);
+        }
+
+        return true;
+    }
+
+    virtual CacheEntryPtr demotionCandidate() const OVERRIDE FINAL
+    {
+        QMutexLocker locker(&_lock);
+
+        for (ConstCacheIterator it = _memoryCache.begin(); it != _memoryCache.end(); ++it) {
+            const std::list<StoredEntryPtr>& entries = getValueFromIterator(it);
+            for (typename std::list<StoredEntryPtr>::const_iterator e = entries.begin(); e != entries.end(); ++e) {
+                if (e->use_count() == 1) {
+                    return *e;
+                }
+            }
+        }
+
+        return CacheEntryPtr();
     }
 
     std::size_t getDiskCacheSize() const
@@ -1794,13 +1805,8 @@ private:
                             //put it back into the RAM
                             _memoryCache.insert( (*it)->getHashKey(), *it );
 
-
-                            U64 memoryCacheSize, maximumInMemorySize;
-                            {
-                                QMutexLocker k(&_sizeLock);
-                                memoryCacheSize = _memoryCacheSize;
-                                maximumInMemorySize = _maximumInMemorySize;
-                            }
+                            U64 memoryCacheSize = _hostTier.liveBytes();
+                            U64 maximumInMemorySize = _hostTier.limit();
                             std::list<StoredEntryPtr> entriesToBeDeleted;
 
                             //now clear extra entries from the disk cache so it doesn't exceed the RAM limit.
@@ -1809,11 +1815,8 @@ private:
                                     break;
                                 }
 
-                                {
-                                    QMutexLocker k(&_sizeLock);
-                                    memoryCacheSize = _memoryCacheSize;
-                                    maximumInMemorySize = _maximumInMemorySize;
-                                }
+                                memoryCacheSize = _hostTier.liveBytes();
+                                maximumInMemorySize = _hostTier.limit();
                             }
                         }
 
@@ -1882,17 +1885,27 @@ private:
             return false;
         }
 
+        assert(!evicted.second->isStoredOnDisk() || evicted.second.unique());
+        disposeOfEntryLeavingMemory(evicted.first, evicted.second, entriesToBeDeleted);
+
+        return true;
+    } // tryEvictEntry
+
+    void disposeOfEntryLeavingMemory(hash_type hash,
+                                     const StoredEntryPtr& entry,
+                                     std::list<StoredEntryPtr>& entriesToBeDeleted) const
+    {
+        assert(!_lock.tryLock());
+
         // If it is stored on disk, remove it from memory
         // If the cache is tiled, the entry is sharing the same file with other entries so we cannot close the file.
         // Just deallocate it
-        if ( !evicted.second->isStoredOnDisk()) {
-            entriesToBeDeleted.push_back(evicted.second);
+        if (!entry->isStoredOnDisk()) {
+            entriesToBeDeleted.push_back(entry);
         } else {
 
-            assert( evicted.second.unique() );
-
             ///This is EXPENSIVE! it calls msync
-            evicted.second->deallocate();
+            entry->deallocate();
 
             /*insert it back into the disk portion */
 
@@ -1900,12 +1913,12 @@ private:
             {
                 QMutexLocker k(&_sizeLock);
                 diskCacheSize = _diskCacheSize;
-                maximumInMemorySize = _maximumInMemorySize;
+                maximumInMemorySize = _hostTier.limit();
                 maximumCacheSize = _maximumCacheSize;
             }
 
             /*before that we need to clear the disk cache if it exceeds the maximum size allowed*/
-            while ( ( diskCacheSize  + evicted.second->size() ) >= (maximumCacheSize - maximumInMemorySize) ) {
+            while ((diskCacheSize + entry->size()) >= (maximumCacheSize - maximumInMemorySize)) {
                 std::pair<hash_type, StoredEntryPtr> evictedFromDisk = _diskCache.evict();
                 //if the cache couldn't evict that means all entries are used somewhere and we shall not remove them!
                 //we'll let the user of these entries purge the extra entries left in the cache later on
@@ -1920,7 +1933,7 @@ private:
 
                 {
                     QMutexLocker k(&_sizeLock);
-                    maximumInMemorySize = _maximumInMemorySize;
+                    maximumInMemorySize = _hostTier.limit();
                     maximumCacheSize = _maximumCacheSize;
                 }
 
@@ -1930,17 +1943,15 @@ private:
                 diskCacheSize -= fsize;
             }
 
-            CacheIterator existingDiskCacheEntry = _diskCache(evicted.first);
+            CacheIterator existingDiskCacheEntry = _diskCache(hash);
             /*if the entry doesn't exist on the disk cache,make a new list and insert it*/
             if ( existingDiskCacheEntry == _diskCache.end() ) {
-                _diskCache.insert(evicted.first, evicted.second);
+                _diskCache.insert(hash, entry);
             } else {   /*append to the existing list*/
-                getValueFromIterator(existingDiskCacheEntry).push_back(evicted.second);
+                getValueFromIterator(existingDiskCacheEntry).push_back(entry);
             }
-        } // if (!evicted.second->isStoredOnDisk())
-
-        return true;
-    } // tryEvictEntry
+        } // if (!entry->isStoredOnDisk())
+    } // disposeOfEntryLeavingMemory
 
     bool tryEvictDiskEntry(std::list<StoredEntryPtr>& entriesToBeDeleted) const
     {
@@ -1959,7 +1970,6 @@ private:
         entriesToBeDeleted.push_back(evicted.second);
         return true;
     }
-
 };
 
 NATRON_NAMESPACE_EXIT

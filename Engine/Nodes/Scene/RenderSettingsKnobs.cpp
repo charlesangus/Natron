@@ -1241,10 +1241,6 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                                  const DescriptorList& declared,
                                  const Curated* curated)
 {
-    // An empty tab would only suggest that settings are missing.
-    if (declared.empty() && !curated) {
-        return;
-    }
     Impl::Renderer renderer;
     const std::string prefix = scriptPrefix(rendererId);
     std::set<std::string> names;
@@ -1476,6 +1472,17 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         addSetting(other, d.key, prefix + capitalized(camelCaseFromKey(d.key, false)), d.name, d.defaultValue, d.defaultValue,
                    std::vector<Choice>(), std::string(), (off == disabled.end()) ? std::string() : off->second, nullptr);
         handled.insert(d.key);
+    }
+    // The settings panel shows no tab for a page without knobs.
+    if (page->getChildren().empty()) {
+        KnobStringPtr note = AppManager::createKnob<KnobString>(_imp->holder, std::string());
+        note->setName(prefix + "NoSettings");
+        note->setDefaultValue(pageLabel + " has no settings.");
+        note->setAsLabel();
+        note->setAnimationEnabled(false);
+        note->setEvaluateOnChange(false);
+        note->setIsPersistent(false);
+        page->addKnob(note);
     }
     _imp->renderers.push_back(renderer);
     refreshEnabled();

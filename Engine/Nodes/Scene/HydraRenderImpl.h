@@ -321,12 +321,14 @@ std::string contextDescription(std::string* error);
  * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
  * each of which syncs the stage's changes into it. After each poll whose sample count moved it
  * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
- * of the frame's projection, and calls the listener on the worker.
+ * of the frame's projection, and calls the listener on the worker. Natron Utility, which has no
+ * samples to refine, publishes only its finished frames.
  *
  * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
  * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
  * without pause still restarts several times a second. A pass that was under way when an edit came
- * is never published, and neither are the delegate's pixels from before a restart.
+ * is never published, and neither are the delegate's pixels from before a restart. A delegate that
+ * can stop is stopped as soon as an edit or stop() comes, ahead of the quiet time and holding no lock.
  *
  * The worker, and the threads the delegate starts from it, run at a lowered priority, which is what
  * keeps the interface responsive: a Cycles engine renders on the process' one Cycles thread count

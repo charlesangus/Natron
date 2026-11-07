@@ -37,6 +37,8 @@
 #include <pxr/base/tf/diagnostic.h>
 #include <pxr/imaging/hd/types.h>
 
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
@@ -128,6 +130,24 @@ int
 UtilityRenderBuffer::liveCount()
 {
     return gLiveBuffers.load();
+}
+
+void
+UtilityRenderBuffer::Sync(HdSceneDelegate* sceneDelegate,
+                          HdRenderParam* renderParam,
+                          HdDirtyBits* dirtyBits)
+{
+    if (*dirtyBits & DirtyDescription) {
+        static_cast<UtilityRenderParam*>(renderParam)->cancelFrameAndWait();
+    }
+    HdRenderBuffer::Sync(sceneDelegate, renderParam, dirtyBits);
+}
+
+void
+UtilityRenderBuffer::Finalize(HdRenderParam* renderParam)
+{
+    static_cast<UtilityRenderParam*>(renderParam)->cancelFrameAndWait();
+    HdRenderBuffer::Finalize(renderParam);
 }
 
 bool

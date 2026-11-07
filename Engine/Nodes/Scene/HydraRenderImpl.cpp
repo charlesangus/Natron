@@ -2598,6 +2598,8 @@ struct ProgressiveRender::Implementation {
     TfToken samplesKey;
     int appliedCap = 0;
     bool paused = false;
+    // Whether a stop of the delegate awaits its restart. The worker's alone.
+    bool delegateStopped = false;
     View engineView;
     bool engineHasView = false;
     // The count the engine's Cycles session was opened under, and the one the worker last asked
@@ -2632,11 +2634,32 @@ struct ProgressiveRender::Implementation {
         wake.notify_all();
     }
 
+    bool delegateCanStop() const
+    {
+        return engine && !delegateStopped && engine->IsStopRendererSupported();
+    }
+
+    // Takes neither the stage lock nor engineMutex, for the main thread's pick() takes both and must
+    // not wait on a frame ending. That is safe because only the worker changes the engine.
+    void stopDelegate()
+    {
+        (void)engine->StopRenderer();
+        delegateStopped = true;
+    }
+
     // Must not throw: it ends the worker. The engine's stage scene index stays subscribed to the
     // stage's notices until it is gone, its destructor does not revoke them and delivery holds no
     // reference to it, so it may only die while no edit of the stage can be under way.
     void dropEngine()
     {
+        if (delegateCanStop()) {
+            try {
+                stopDelegate();
+            } catch (...) {
+                qWarning("A render delegate threw while stopping to be released.");
+            }
+        }
+        delegateStopped = false;
         std::lock_guard<std::mutex> stageGuard(*stageLock);
         std::lock_guard<std::mutex> l(engineMutex);
         if (engine && paused) {
@@ -2730,6 +2753,7 @@ struct ProgressiveRender::Implementation {
         }
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
+        delegateStopped = false;
         engineRenderer = id;
         engineSettings = primSettings;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
@@ -3031,6 +3055,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     }
                     paused = true;
                 }
+                if (!engine->IsPauseRendererSupported() && delegateCanStop()) {
+                    stopDelegate();
+                }
                 lock.lock();
                 continue;
             }
@@ -3054,6 +3081,13 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         }
 
         if (pending) {
+            if (delegateCanStop()) {
+                lock.unlock();
+                stopDelegate();
+                lock.lock();
+                continue;
+            }
+
             const Clock::time_point now = Clock::now();
             const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
             if (now < due) {
@@ -3084,6 +3118,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const std::uint64_t passGeneration = generation;
         const std::uint64_t restartIndex = status.restarts;
         lock.unlock();
+
+        if (delegateStopped) {
+            (void)engine->RestartRenderer();
+            delegateStopped = false;
+        }
 
         const bool readsRestart = firstPass;
         bool rendered = false;
@@ -3190,7 +3229,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         status.samples = samples;
         status.maxSamples = cap;
         status.converged = converged;
-        bool publish = restartSeen && (samples != 0) && (changed || (samples < 0) || !frame || (frame->restart != restartIndex));
+        // Natron Utility's tiles land in no order and count no samples, so only its finished frame is
+        // a picture.
+        const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? converged : (changed || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);

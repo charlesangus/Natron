@@ -154,11 +154,12 @@ makeShadeParams(const WavefrontFrame& frame,
     return params;
 }
 
-void
-WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot)
+bool
+WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
+                             const std::atomic<bool>* stop)
 {
     if (_synced && _version == snapshot.version) {
-        return;
+        return true;
     }
 
     std::vector<SourceVersion> sources;
@@ -180,7 +181,12 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot)
     std::uint32_t colorOffset = 0;
     std::uint32_t triangleOffset = 0;
 
+    _synced = false;
     for (const auto& entry : snapshot.geometries) {
+        if (stop && stop->load(std::memory_order_relaxed)) {
+            return false;
+        }
+
         const UtilityScene::Geometry& geometry = entry.second;
         const bool fits = colorsFitBinding(geometry);
         const std::uint32_t colorCount = fits ? static_cast<std::uint32_t>(geometry.colors.size()) : 1;
@@ -216,6 +222,8 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot)
     _sources.swap(sources);
     _version = snapshot.version;
     _synced = true;
+
+    return true;
 }
 
 KernelShadeBuffers

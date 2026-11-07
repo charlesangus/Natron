@@ -136,8 +136,9 @@ WavefrontCpu::render(const UtilityScene::Snapshot& snapshot,
                      const std::atomic<bool>& stop,
                      int threads)
 {
-    _tracer->update(snapshot, threads);
-    _shadeTables.update(snapshot);
+    if (!_tracer->update(snapshot, threads, &stop) || !_shadeTables.update(snapshot, &stop)) {
+        return false;
+    }
 
     const std::vector<WavefrontRect> tiles = splitIntoTiles(frame.window);
 

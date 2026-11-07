@@ -56,6 +56,11 @@ UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
 {
 }
 
+UtilityRenderParam::~UtilityRenderParam()
+{
+    cancelFrameAndWait();
+}
+
 UtilityScene*
 UtilityRenderParam::scene() const
 {
@@ -69,9 +74,9 @@ UtilityRenderParam::executor() const
 }
 
 const std::atomic<bool>&
-UtilityRenderParam::stopFlag() const
+UtilityRenderParam::cancelFlag() const
 {
-    return _stop;
+    return _cancel;
 }
 
 bool
@@ -84,24 +89,76 @@ void
 UtilityRenderParam::stop(bool blocking)
 {
     _stop.store(true);
+    _cancel.store(true);
     if (blocking) {
-        const std::lock_guard<std::mutex> waitForRender(_renderMutex);
+        waitForFrame();
     }
 }
 
 void
 UtilityRenderParam::restart()
 {
+    waitForFrame();
     _stop.store(false);
+    _cancel.store(false);
 }
 
-UtilityRenderParam::RenderScope::RenderScope(UtilityRenderParam& param)
-    : _lock(param._renderMutex)
+bool
+UtilityRenderParam::startFrame(const std::function<void()>& body)
 {
+    const std::lock_guard<std::mutex> l(_threadMutex);
+
+    if (_thread.joinable()) {
+        _thread.join();
+    }
+    // In this order, or a stop landing between the two could be wiped out.
+    _cancel.store(false);
+    if (_stop.load()) {
+        _cancel.store(true);
+
+        return false;
+    }
+    _frameRunning.store(true);
+    try {
+        _thread = std::thread([this, body]() {
+            body();
+            _frameRunning.store(false);
+        });
+    } catch (...) {
+        _frameRunning.store(false);
+        throw;
+    }
+
+    return true;
 }
 
-UtilityRenderParam::RenderScope::~RenderScope()
+bool
+UtilityRenderParam::frameRunning() const
 {
+    return _frameRunning.load();
+}
+
+void
+UtilityRenderParam::cancelFrame()
+{
+    _cancel.store(true);
+}
+
+void
+UtilityRenderParam::cancelFrameAndWait()
+{
+    _cancel.store(true);
+    waitForFrame();
+}
+
+void
+UtilityRenderParam::waitForFrame()
+{
+    const std::lock_guard<std::mutex> l(_threadMutex);
+
+    if (_thread.joinable()) {
+        _thread.join();
+    }
 }
 
 UtilityRenderDelegate::UtilityRenderDelegate()

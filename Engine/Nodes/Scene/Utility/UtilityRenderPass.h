@@ -30,6 +30,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <string>
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/imaging/hd/aov.h>
@@ -44,9 +46,10 @@ NATRON_NAMESPACE_ENTER
 class UtilityRenderParam;
 
 /**
- * @brief Clears the bound AOVs and has the delegate's executor draw the scene into them. A frame already
- * in the buffers is not drawn again. A stopped render leaves its buffers unconverged, and the next
- * render after a restart draws the frame in full.
+ * @brief Clears the bound AOVs and has the delegate's executor draw the scene into them, on the
+ * delegate's frame thread, returning at once. Only a frame that ran to its end converges. A frame
+ * already in the buffers is not drawn again. A change of what to draw cancels the running frame, and
+ * a later Execute() starts the new one when the old has returned.
  **/
 class UtilityRenderPass : public PXR_NS::HdRenderPass {
 public:
@@ -58,17 +61,29 @@ public:
     virtual bool IsConverged() const OVERRIDE;
 
 private:
+    struct FrameKey {
+        std::uint64_t version = 0;
+        PXR_NS::GfMatrix4d worldToView;
+        PXR_NS::GfMatrix4d projection;
+        WavefrontRect window;
+        PXR_NS::HdRenderPassAovBindingVector bindings;
+
+        bool operator==(const FrameKey& other) const;
+    };
+
     virtual void _Execute(const PXR_NS::HdRenderPassStateSharedPtr& renderPassState,
                           const PXR_NS::TfTokenVector& renderTags) OVERRIDE;
 
     UtilityRenderParam* _renderParam;
     std::atomic<bool> _converged { false };
-    bool _hasDrawn = false;
-    std::uint64_t _drawnVersion = 0;
-    PXR_NS::GfMatrix4d _drawnWorldToView;
-    PXR_NS::GfMatrix4d _drawnProjection;
-    WavefrontRect _drawnWindow;
-    PXR_NS::HdRenderPassAovBindingVector _drawnBindings;
+    // What the last frame started draws.
+    bool _hasFrame = false;
+    FrameKey _frameKey;
+    // Guards the two below, and makes a frame's landing and Execute()'s cancelling it exclusive: a
+    // frame cancelled as it ends must not report itself finished after the cancel.
+    std::mutex _landingMutex;
+    bool _frameFinished = false;
+    std::string _frameFailure;
 };
 
 NATRON_NAMESPACE_EXIT

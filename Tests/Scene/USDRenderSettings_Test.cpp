@@ -301,9 +301,8 @@ TEST_F(USDRenderSettingsTest, DefaultRendererIsAuthored)
     EXPECT_EQ(other, id);
 }
 
-// Every installed renderer that declares settings gets a page, and one that declares none gets none;
-// every setting its delegate declares, of a type a knob can hold, is reached by a knob of the curated
-// group or of Other Settings, and none by two.
+// Every installed renderer gets a page; every setting its delegate declares, of a type a knob can
+// hold, is reached by a knob of the curated group or of Other Settings, and none by two.
 TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
 {
     NodePtr node = settings(NodePtr());
@@ -314,10 +313,6 @@ TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
     ASSERT_TRUE(knobs != nullptr);
     for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
         KnobPagePtr page = knobs->page(id);
-        if (RenderSettingsKnobs::descriptors(id).empty() && !RenderSettingsKnobs::curatedFor(id)) {
-            EXPECT_FALSE(bool(page)) << id;
-            continue;
-        }
         ASSERT_TRUE(bool(page)) << id;
         EXPECT_FALSE(page->getIsSecret()) << id;
         std::set<std::string> names;
@@ -337,6 +332,28 @@ TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
             }
         }
     }
+}
+
+// The panel draws no tab for a page without knobs, so a delegate with no settings needs one that says so.
+TEST_F(USDRenderSettingsTest, NatronUtilityHasATabThatSaysItHasNoSettings)
+{
+    NodePtr node = settings(NodePtr());
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    ASSERT_TRUE(RenderSettingsKnobs::descriptors(kRenderDelegateUtilityId).empty());
+    KnobPagePtr page = knobs->page(kRenderDelegateUtilityId);
+    ASSERT_TRUE(bool(page));
+    EXPECT_FALSE(page->getIsSecret());
+    const KnobsVec children = page->getChildren();
+    ASSERT_EQ(1u, children.size());
+    KnobString* note = dynamic_cast<KnobString*>(children[0].get());
+    ASSERT_TRUE(note != nullptr);
+    EXPECT_TRUE(note->isLabel());
+    EXPECT_FALSE(note->getIsPersistent());
+    EXPECT_EQ(std::string("Natron Utility has no settings."), note->getValue());
 }
 
 // Storm declares few settings, each placed by its name: volumes, lights and performance, all open.

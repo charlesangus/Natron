@@ -5,6 +5,10 @@ Graph: USDRead into Viewer1, of a stage with a grey default-purpose box and a bl
 in front of it. The viewer's purposes start with Render off, so the ball must be absent until the
 toggle and absent again after it, under Natron Utility and then under Storm.
 
+Under Natron Utility it also measures the longest gap between ticks of a main-thread timer while a
+USDXformPrim is edited repeatedly over a heavy mesh in a large view, once the mesh's first sync is done.
+That first sync reads the whole stage under the stage lock and cannot be cut short, so it is not measured.
+
 Only geometry may reach the colour counts: the grid (Ctrl+G) is hidden, as its blue axis line counts as
 blue and its lines as grey, and the view uses the headlight, as the default Scene Lights leaves Storm's
 surfaces black on this stage, which has no light.
@@ -14,6 +18,7 @@ Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON
 """
 import os
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -28,6 +33,11 @@ UTILITY_ID = "HdNatronUtilityRendererPlugin"
 STORM_ID = "HdStormRendererPlugin"
 # Pixels of a colour below this count are noise (antialiasing, the HUD).
 MIN_PIXELS = 40
+HEAVY_GRID = 1000
+STALL_BOUND_MS = 500.0
+TICK_MS = 5
+STALL_EDITS = 8
+STALL_EDIT_GAP_MS = 150
 
 # The ball sits inside the box's silhouette because the view frames the box alone while the render
 # purpose is off, and the ball must be in that frame when it appears.
@@ -71,6 +81,24 @@ try:
     scene_path = os.path.join(OUT, "natron-utility-viewer.usda")
     with open(scene_path, "w") as f:
         f.write(STAGE)
+
+    def write_heavy_stage(path, n):
+        with open(path, "w") as out:
+            out.write('#usda 1.0\n(\n    defaultPrim = "Heavy"\n    upAxis = "Y"\n)\n\n')
+            out.write('def Mesh "Heavy"\n{\n')
+            out.write("    int[] faceVertexCounts = [%s]\n" % ", ".join(["4"] * (n * n)))
+            out.write("    int[] faceVertexIndices = [")
+            for y in range(n):
+                row = ["%d, %d, %d, %d" % (c, c + 1, c + n + 2, c + n + 1)
+                       for c in (y * (n + 1) + x for x in range(n))]
+                out.write(("" if y == 0 else ", ") + ", ".join(row))
+            out.write("]\n    point3f[] points = [")
+            for y in range(n + 1):
+                row = ["(%g, %g, 0)" % (-2.0 + 4.0 * x / n, -2.0 + 4.0 * y / n) for x in range(n + 1)]
+                out.write(("" if y == 0 else ", ") + ", ".join(row))
+            out.write("]\n    color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)]\n}\n\n")
+            # Something under the edited prim, or the edit changes no pixel and the delegate keeps its frame.
+            out.write('def Xform "Rig"\n{\n    def Cube "Marker"\n    {\n        double size = 1\n    }\n}\n')
 
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
@@ -239,6 +267,69 @@ try:
         blue = count(crop(), bluish)
         check(blue < MIN_PIXELS, "%s hides the ball again (%d blue pixels)" % (label, blue))
 
+    class StallMeter:
+        """The longest gap between ticks of a main-thread timer."""
+
+        def __init__(self):
+            self.timer = QTimer()
+            self.timer.setInterval(TICK_MS)
+            self.timer.timeout.connect(self.tick)
+            self.last = 0.0
+            self.longest_ms = 0.0
+
+        def start(self):
+            self.last = time.monotonic()
+            self.longest_ms = 0.0
+            self.timer.start()
+
+        def tick(self):
+            now = time.monotonic()
+            self.longest_ms = max(self.longest_ms, (now - self.last) * 1000.0)
+            self.last = now
+
+        def stop(self):
+            self.tick()
+            self.timer.stop()
+
+    def measure_edit_stall(v):
+        heavy_path = os.path.join(OUT, "natron-utility-viewer-heavy.usda")
+        write_heavy_stage(heavy_path, HEAVY_GRID)
+        rig = app.createNode("USDXformPrim")
+        require(rig is not None, "create USDXformPrim", plugin_problem("USDXformPrim"))
+        rig.setPosition(0, 75)
+        rig.getParam("primPath").setValue("/Rig")
+        require(rig.connectInput(0, usd), "connect the USDRead into the USDXformPrim")
+        require(viewer.connectInput(0, rig), "connect the Viewer to the USDXformPrim")
+        usd.getParam("filename").setValue(heavy_path)
+        before = prop("natronSceneRefineFrames") or 0
+        ok = yield ("until", lambda: (prop("natronSceneRefineFrames") or 0) > before and bool(prop("natronSceneRefineConverged")),
+                    STARTUP_TIMEOUT_S * 5)
+        check(ok, "the heavy mesh's first frame finishes (scene error %r)" % (prop("natronSceneError"),))
+
+        meter = StallMeter()
+        restarts_before = prop("natronSceneRestartCount") or 0
+        frames_before = prop("natronSceneRefineFrames") or 0
+        meter.start()
+        for i in range(STALL_EDITS):
+            rig.getParam("rotate").set(0.0, float(i + 1), 0.0)
+            yield ("sleep", STALL_EDIT_GAP_MS)
+        ok = yield ("until", lambda: (prop("natronSceneRestartCount") or 0) > restarts_before and bool(prop("natronSceneRefineConverged")),
+                    POLL_TIMEOUT_S)
+        meter.stop()
+        check(ok, "the render finishes after the edits")
+        report("NOTE main-thread stall during edits of a %d-triangle render: %.1f ms; %d frames published" % (
+            HEAVY_GRID * HEAVY_GRID * 2, meter.longest_ms, (prop("natronSceneRefineFrames") or 0) - frames_before))
+        check(meter.longest_ms < STALL_BOUND_MS,
+              "edits during a large render stall the main thread under %d ms (longest gap %.1f ms)"
+              % (STALL_BOUND_MS, meter.longest_ms))
+
+        require(viewer.connectInput(0, usd), "connect the Viewer back to the USDRead")
+        usd.getParam("filename").setValue(scene_path)
+        rig.destroy()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the small stage")
+        yield settle()
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -258,6 +349,8 @@ try:
         section("Natron Utility")
         yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
         yield from check_purpose_toggle(v, "Natron Utility", "utility")
+        section("Natron Utility: main-thread stall during an edit in a large render")
+        yield from measure_edit_stall(v)
 
         section("Storm")
         yield from pick_renderer(v, "Storm", STORM_ID)

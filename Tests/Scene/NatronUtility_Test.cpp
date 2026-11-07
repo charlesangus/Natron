@@ -57,10 +57,12 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -134,9 +136,16 @@ public:
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 
+    // A frame draws on the delegate's thread, and Render() only starts it.
     void render()
     {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
         renderWithoutChecks();
+        while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            renderWithoutChecks();
+        }
         EXPECT_TRUE(_engine->IsConverged());
     }
 

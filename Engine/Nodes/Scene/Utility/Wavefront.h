@@ -90,8 +90,9 @@ public:
 
     /**
      * @brief Draws the frame into the film using at most threads threads, the caller included, polling
-     * stop between units of work. Returns false when stop ended it early, leaving the film partly written.
-     * Calls must not overlap.
+     * stop throughout, the scene's preparation included. Returns false when stop ended it early, leaving
+     * the film partly written; the next call picks the scene up from a consistent state. Calls must not
+     * overlap.
      **/
     virtual bool render(const UtilityScene::Snapshot& snapshot,
                         const WavefrontFrame& frame,
@@ -119,7 +120,9 @@ KernelShadeParams makeShadeParams(const WavefrontFrame& frame,
  **/
 class WavefrontShadeTables {
 public:
-    void update(const UtilityScene::Snapshot& snapshot);
+    // Returns false when stop ended it early, leaving the tables for the next update to redo.
+    bool update(const UtilityScene::Snapshot& snapshot,
+                const std::atomic<bool>* stop = nullptr);
 
     // The tables as the kernel's buffers; the caller fills in what is per-tile.
     KernelShadeBuffers buffers() const;

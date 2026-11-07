@@ -57,44 +57,50 @@ class UtilityRenderParam : public PXR_NS::HdRenderParam {
 public:
     UtilityRenderParam(UtilityScene* scene,
                        WavefrontExecutor* executor);
+    virtual ~UtilityRenderParam();
 
     UtilityScene* scene() const;
     WavefrontExecutor* executor() const;
 
-    // The flag running renders poll. It stays set until restart(), so renders that start meanwhile
-    // draw nothing. MT-safe.
-    const std::atomic<bool>& stopFlag() const;
+    // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
+    // frame starts. MT-safe.
+    const std::atomic<bool>& cancelFlag() const;
     bool isStopped() const;
-    // Sets the flag and, when blocking, waits for the running render to return. MT-safe.
+    // Ends the running frame and refuses new ones until restart(); when blocking, waits for the frame
+    // to return. MT-safe.
     void stop(bool blocking);
+    // Waits for a frame that a non-blocking stop is ending. MT-safe.
     void restart();
 
     /**
-     * @brief Held for the length of a render: it makes renders take turns on the shared executor, and
-     * is what a blocking stop waits on.
+     * @brief Runs body on a thread of its own and returns at once, because Hydra's sync and everything
+     * else under Render() holds locks the host's main thread can block on. Returns false, without
+     * running it, when stopped. A frame must not be running.
      **/
-    class RenderScope {
-    public:
-        explicit RenderScope(UtilityRenderParam& param);
-        ~RenderScope();
-
-        RenderScope(const RenderScope&) = delete;
-        RenderScope& operator=(const RenderScope&) = delete;
-
-    private:
-        std::lock_guard<std::mutex> _lock;
-    };
+    bool startFrame(const std::function<void()>& body);
+    bool frameRunning() const;
+    // Asks the running frame to end, without waiting for it. MT-safe.
+    void cancelFrame();
+    // For what a frame reads or writes going away. MT-safe.
+    void cancelFrameAndWait();
 
 private:
+    void waitForFrame();
+
     UtilityScene* _scene;
     WavefrontExecutor* _executor;
     std::atomic<bool> _stop { false };
-    std::mutex _renderMutex;
+    std::atomic<bool> _cancel { false };
+    std::atomic<bool> _frameRunning { false };
+    // Guards _thread, and is held only for as long as a cancelled frame takes to return.
+    std::mutex _threadMutex;
+    std::thread _thread;
 };
 
 /**
  * @brief The Natron Utility render delegate: meshes and instancers become a UtilityScene that its
- * render passes draw on the CPU.
+ * render passes draw on the CPU, on a thread of the delegate's between Render() calls. Poll
+ * IsConverged() for a finished frame, as for any delegate that renders in the background.
  **/
 class UtilityRenderDelegate : public PXR_NS::HdRenderDelegate {
 public:

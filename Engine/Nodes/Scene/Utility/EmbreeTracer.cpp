@@ -53,6 +53,9 @@ reportEmbreeError(void* /*userData*/,
                   RTCError code,
                   const char* message)
 {
+    if (code == RTC_ERROR_CANCELLED) {
+        return;
+    }
     TF_WARN("Embree error %d: %s", static_cast<int>(code), message ? message : "");
 }
 
@@ -106,6 +109,33 @@ private:
     const unsigned int _saved;
 };
 
+bool
+wasStopped(const std::atomic<bool>* stop)
+{
+    return stop && stop->load(std::memory_order_relaxed);
+}
+
+bool
+continueBuild(void* stop,
+              double /*progress*/)
+{
+    return !static_cast<const std::atomic<bool>*>(stop)->load(std::memory_order_relaxed);
+}
+
+// A commit that stop can cut short. The scene then holds nothing usable: its caller rebuilds it.
+void
+commitCancellable(RTCScene scene,
+                  const std::atomic<bool>* stop)
+{
+    if (stop) {
+        rtcSetSceneProgressMonitorFunction(scene, continueBuild, const_cast<std::atomic<bool>*>(stop));
+    }
+    rtcCommitScene(scene);
+    if (stop) {
+        rtcSetSceneProgressMonitorFunction(scene, nullptr, nullptr);
+    }
+}
+
 // One geometry's structure. A geometry with nothing to trace has a null scene and no instances.
 class GeometryScene {
 public:
@@ -115,6 +145,7 @@ public:
         , _pointCount(source.points.size())
         , _topologyVersion(source.topologyVersion)
         , _pointsVersion(source.pointsVersion)
+        , _committed(false)
     {
         if (source.points.empty() || source.triangles.empty()) {
             return;
@@ -157,7 +188,12 @@ public:
 
     bool needsRebuild(const UtilityScene::Geometry& source) const
     {
-        return source.topologyVersion != _topologyVersion || source.points.size() != _pointCount;
+        return source.topologyVersion != _topologyVersion || source.points.size() != _pointCount || (_scene && !_committed);
+    }
+
+    void setCommitted()
+    {
+        _committed = true;
     }
 
     bool needsRefit(const UtilityScene::Geometry& source) const
@@ -172,6 +208,7 @@ public:
         if (!_scene) {
             return false;
         }
+        _committed = false;
         std::memcpy(_vertices, source.points.cdata(), _pointCount * sizeof(GfVec3f));
         rtcUpdateGeometryBuffer(_geometry, RTC_BUFFER_TYPE_VERTEX, 0);
         rtcCommitGeometry(_geometry);
@@ -188,6 +225,7 @@ private:
     std::size_t _pointCount;
     std::uint64_t _topologyVersion;
     std::uint64_t _pointsVersion;
+    bool _committed;
 };
 
 struct Placement {
@@ -258,11 +296,17 @@ struct EmbreeTracer::Implementation {
         }
     }
 
-    void buildInstanceScene(const std::vector<Placement>& newPlacements)
+    // Returns false when stop ended it early.
+    bool buildInstanceScene(const std::vector<Placement>& newPlacements,
+                            const std::atomic<bool>* stop)
     {
         releaseInstanceScene();
         instanceScene = newRefittableScene(device);
         for (std::size_t i = 0; i < newPlacements.size(); ++i) {
+            if (wasStopped(stop)) {
+                return false;
+            }
+
             const auto found = geometries.find(newPlacements[i].geometry);
 
             if (found == geometries.end() || !found->second->scene()) {
@@ -282,6 +326,19 @@ struct EmbreeTracer::Implementation {
             rtcAttachGeometryByID(instanceScene, instance, static_cast<unsigned int>(i));
             instances.push_back(instance);
         }
+
+        return true;
+    }
+
+    // After a stop, whose update may have left any of the instance scene's parts half done. Geometry
+    // scenes left uncommitted say so themselves.
+    bool abandonUpdate()
+    {
+        releaseInstanceScene();
+        placements.clear();
+        synced = false;
+
+        return false;
     }
 
     RTCDevice device;
@@ -305,15 +362,17 @@ EmbreeTracer::~EmbreeTracer()
 {
 }
 
-void
+bool
 EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
-                     int threads)
+                     int threads,
+                     const std::atomic<bool>* stop)
 {
     Implementation& imp = *_imp;
 
     if (imp.synced && imp.version == snapshot.version) {
-        return;
+        return true;
     }
+    imp.synced = false;
 
     bool geometryReplaced = false;
 
@@ -326,12 +385,15 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
         }
     }
 
-    std::vector<RTCScene> toCommit;
+    std::vector<GeometryScene*> toCommit;
     bool geometryRefitted = false;
     std::map<UtilityScene::GeometryId, std::uint32_t> denseIndices;
     std::uint32_t nextIndex = 0;
 
     for (const auto& entry : snapshot.geometries) {
+        if (wasStopped(stop)) {
+            return imp.abandonUpdate();
+        }
         denseIndices[entry.first] = nextIndex++;
 
         std::unique_ptr<GeometryScene>& scene = imp.geometries[entry.first];
@@ -339,12 +401,12 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
         if (!scene || scene->needsRebuild(entry.second)) {
             scene.reset(new GeometryScene(imp.device, entry.second));
             if (scene->scene()) {
-                toCommit.push_back(scene->scene());
+                toCommit.push_back(scene.get());
                 ++imp.counters.geometryBuilds;
             }
             geometryReplaced = true;
         } else if (scene->needsRefit(entry.second) && scene->refit(entry.second)) {
-            toCommit.push_back(scene->scene());
+            toCommit.push_back(scene.get());
             ++imp.counters.geometryRefits;
             geometryRefitted = true;
         }
@@ -369,30 +431,49 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
 
     arena.execute([&]() {
         tbb::parallel_for(std::size_t(0), toCommit.size(), [&](std::size_t i) {
-            rtcCommitScene(toCommit[i]);
+            if (!wasStopped(stop)) {
+                commitCancellable(toCommit[i]->scene(), stop);
+            }
         });
     });
+    // Embree does not say which commits a stop cut short, so none of them counts.
+    if (wasStopped(stop)) {
+        return imp.abandonUpdate();
+    }
+    for (GeometryScene* scene : toCommit) {
+        scene->setCommitted();
+    }
 
     if (rebuildInstances) {
-        imp.buildInstanceScene(placements);
+        if (!imp.buildInstanceScene(placements, stop)) {
+            return imp.abandonUpdate();
+        }
         imp.placements.swap(placements);
         arena.execute([&]() {
-            rtcCommitScene(imp.instanceScene);
+            commitCancellable(imp.instanceScene, stop);
         });
         ++imp.counters.instanceSceneBuilds;
     } else if (geometryRefitted) {
         // An instance caches the bounds of what it places, and those just moved.
         for (RTCGeometry instance : imp.instances) {
+            if (wasStopped(stop)) {
+                return imp.abandonUpdate();
+            }
             rtcCommitGeometry(instance);
         }
         arena.execute([&]() {
-            rtcCommitScene(imp.instanceScene);
+            commitCancellable(imp.instanceScene, stop);
         });
         ++imp.counters.instanceSceneUpdates;
+    }
+    if (wasStopped(stop)) {
+        return imp.abandonUpdate();
     }
 
     imp.version = snapshot.version;
     imp.synced = true;
+
+    return true;
 }
 
 void

@@ -28,6 +28,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -88,10 +89,12 @@ public:
 
     /**
      * @brief Brings the acceleration structures up to the snapshot, doing nothing for a version they
-     * already hold. Uses at most threads threads, the caller included.
+     * already hold. Uses at most threads threads, the caller included. Returns false when stop ended it
+     * early, after which only another update may be called, and redoes what it left unfinished.
      **/
-    virtual void update(const UtilityScene::Snapshot& snapshot,
-                        int threads)
+    virtual bool update(const UtilityScene::Snapshot& snapshot,
+                        int threads,
+                        const std::atomic<bool>* stop = nullptr)
         = 0;
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const

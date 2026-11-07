@@ -44,11 +44,11 @@ the scene, USDWrite writes them out with it and other USD tools can read them.
 
 ## Renderer tabs
 
-Every render delegate the build has that declares settings gets a tab, labelled
-with the delegate's name (Storm, Cycles, MoonRay, ...). Natron Utility has no
-settings and so no tab. A tab's knobs sit in groups, listed below. Each
+Every render delegate the build has gets a tab, labelled with the delegate's
+name (Storm, Cycles, MoonRay, ...). Its knobs sit in groups, listed below. Each
 knob's tooltip says what it does, what it trades off and which values to try,
-and says so when the control has no effect in this build.
+and says so when the control has no effect in this build. The tab of a delegate
+with no settings, such as Natron Utility, says only that.
 
 ### Cycles
 

@@ -44,8 +44,9 @@ public:
     EmbreeTracer();
     virtual ~EmbreeTracer();
 
-    virtual void update(const UtilityScene::Snapshot& snapshot,
-                        int threads) OVERRIDE;
+    virtual bool update(const UtilityScene::Snapshot& snapshot,
+                        int threads,
+                        const std::atomic<bool>* stop = nullptr) OVERRIDE;
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const OVERRIDE;
     virtual void occluded(const RayBatch& rays,

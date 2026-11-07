@@ -44,10 +44,12 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -110,7 +112,14 @@ public:
         params.showRender = purposes.render;
         params.showProxy = purposes.proxy;
         params.showGuides = purposes.guide;
+        // A frame draws on the delegate's thread, and Render() only starts it.
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
         _engine->Render(_stage->GetPseudoRoot(), params);
+        while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            _engine->Render(_stage->GetPseudoRoot(), params);
+        }
         EXPECT_TRUE(_engine->IsConverged());
     }
 

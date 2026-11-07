@@ -50,6 +50,12 @@ public:
     // How many buffers exist right now, for the tests' leak checks. MT-safe.
     static int liveCount();
 
+    // A running frame writes straight into the pixels, so both of these end it first.
+    virtual void Sync(PXR_NS::HdSceneDelegate* sceneDelegate,
+                      PXR_NS::HdRenderParam* renderParam,
+                      PXR_NS::HdDirtyBits* dirtyBits) OVERRIDE;
+    virtual void Finalize(PXR_NS::HdRenderParam* renderParam) OVERRIDE;
+
     virtual bool Allocate(const PXR_NS::GfVec3i& dimensions,
                           PXR_NS::HdFormat format,
                           bool multiSampled) OVERRIDE;

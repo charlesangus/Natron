@@ -26,7 +26,13 @@
 #include "UtilityRenderPass.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <pxr/base/gf/rect2i.h>
@@ -171,6 +177,14 @@ UtilityRenderPass::UtilityRenderPass(HdRenderIndex* index,
 
 UtilityRenderPass::~UtilityRenderPass()
 {
+    _renderParam->cancelFrameAndWait();
+}
+
+bool
+UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
+{
+    return version == other.version && worldToView == other.worldToView && projection == other.projection
+        && sameWindow(window, other.window) && bindings == other.bindings;
 }
 
 bool
@@ -183,20 +197,30 @@ void
 UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                             const TfTokenVector& renderTags)
 {
-    const UtilityRenderParam::RenderScope renderScope(*_renderParam);
     const HdRenderPassAovBindingVector& bindings = renderPassState->GetAovBindings();
 
-    if (_renderParam->isStopped()) {
-        _converged.store(false);
-        setBuffersConverged(bindings, false);
-        _hasDrawn = false;
+    {
+        const std::lock_guard<std::mutex> l(_landingMutex);
 
-        return;
+        if (!_frameFailure.empty()) {
+            const std::string failure = _frameFailure;
+
+            _frameFailure.clear();
+            throw std::runtime_error(failure);
+        }
+        if (_renderParam->isStopped()) {
+            _converged.store(false);
+            setBuffersConverged(bindings, false);
+            _frameFinished = false;
+
+            return;
+        }
     }
 
-    _renderParam->scene()->setRenderTags(renderTags);
+    UtilityScene* const scene = _renderParam->scene();
 
-    const UtilityScene::Snapshot snapshot = _renderParam->scene()->snapshot();
+    scene->setRenderTags(renderTags);
+
     WavefrontFrame frame;
 
     frame.window = renderWindow(*renderPassState);
@@ -208,16 +232,42 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         frame.projection = renderPassState->GetProjectionMatrix();
     }
 
-    if (_hasDrawn && buffersAreConverged(bindings) && snapshot.version == _drawnVersion && frame.worldToView == _drawnWorldToView
-        && frame.projection == _drawnProjection && sameWindow(frame.window, _drawnWindow) && bindings == _drawnBindings) {
-        _converged.store(true);
+    FrameKey key;
+
+    key.version = scene->version();
+    key.worldToView = frame.worldToView;
+    key.projection = frame.projection;
+    key.window = frame.window;
+    key.bindings = bindings;
+
+    const bool sameFrame = _hasFrame && key == _frameKey;
+
+    if (_renderParam->frameRunning()) {
+        // Waiting for the frame here would hold up whoever holds the caller's locks, so the next
+        // Execute() starts the new frame.
+        if (!sameFrame) {
+            const std::lock_guard<std::mutex> l(_landingMutex);
+
+            _renderParam->cancelFrame();
+            _converged.store(false);
+            setBuffersConverged(bindings, false);
+        }
 
         return;
     }
 
-    _converged.store(false);
-    setBuffersConverged(bindings, false);
-    _hasDrawn = false;
+    {
+        const std::lock_guard<std::mutex> l(_landingMutex);
+
+        if (sameFrame && _frameFinished && buffersAreConverged(bindings)) {
+            _converged.store(true);
+
+            return;
+        }
+        _frameFinished = false;
+        _converged.store(false);
+        setBuffersConverged(bindings, false);
+    }
     for (const HdRenderPassAovBinding& binding : bindings) {
         UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
 
@@ -226,26 +276,53 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         }
     }
 
-    bool finished = true;
+    const std::shared_ptr<const UtilityScene::Snapshot> snapshot = std::make_shared<UtilityScene::Snapshot>(scene->snapshot());
 
-    if (hasCamera && frame.window.width > 0 && frame.window.height > 0 && !snapshot.instances.empty() && wavefrontCameraIsUsable(frame)) {
-        AovFilm film(bindings);
-        const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
+    key.version = snapshot->version;
+    _frameKey = key;
+    _hasFrame = true;
 
-        finished = _renderParam->executor()->render(snapshot, frame, film, _renderParam->stopFlag(), threads);
-    }
-    if (!finished) {
+    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || snapshot->instances.empty() || !wavefrontCameraIsUsable(frame)) {
+        const std::lock_guard<std::mutex> l(_landingMutex);
+
+        _frameFinished = true;
+        setBuffersConverged(bindings, true);
+        _converged.store(true);
+
         return;
     }
 
-    _drawnVersion = snapshot.version;
-    _drawnWorldToView = frame.worldToView;
-    _drawnProjection = frame.projection;
-    _drawnWindow = frame.window;
-    _drawnBindings = bindings;
-    _hasDrawn = true;
-    setBuffersConverged(bindings, true);
-    _converged.store(true);
+    // The thread budget belongs to this thread, not the frame's.
+    const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
+    const HdRenderPassAovBindingVector frameBindings = bindings;
+
+    (void)_renderParam->startFrame([this, snapshot, frame, frameBindings, threads]() {
+        const std::atomic<bool>& cancel = _renderParam->cancelFlag();
+        bool finished = false;
+        std::string failure;
+
+        try {
+            AovFilm film(frameBindings);
+
+            finished = _renderParam->executor()->render(*snapshot, frame, film, cancel, threads);
+        } catch (const std::exception& e) {
+            failure = e.what();
+            if (failure.empty()) {
+                failure = "unknown exception";
+            }
+        } catch (...) {
+            failure = "unknown exception";
+        }
+
+        const std::lock_guard<std::mutex> l(_landingMutex);
+
+        _frameFailure = failure;
+        if (finished && !cancel.load()) {
+            _frameFinished = true;
+            setBuffersConverged(frameBindings, true);
+            _converged.store(true);
+        }
+    });
 }
 
 NATRON_NAMESPACE_EXIT

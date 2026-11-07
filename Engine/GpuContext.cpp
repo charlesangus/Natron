@@ -28,6 +28,8 @@
 
 #include <QtCore/QDebug>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/RenderStats.h"
@@ -280,6 +282,9 @@ GpuContext::recoverIfLost()
     {
         // The free hook reaches the transfer, which the recreation replaces.
         std::unique_lock<std::shared_mutex> hook(_shared->hookTarget->mutex);
+        // Recovery runs on a render thread, which traps floating-point exceptions in debug builds,
+        // and recreating the device is the same driver code that initialize() guards against.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         status = rt->recreate();
     }
     std::string message;
@@ -458,6 +463,10 @@ calibrate(gpu::GpuRuntime& runtime,
 void
 GpuContext::initialize()
 {
+    // This thread inherits the main thread's floating-point traps, which a debug Natron turns on for
+    // FE_INVALID, and Mesa's lavapipe raises that compiling its built-in shaders in vkCreateDevice.
+    // The driver's own threads start from here and inherit the same state, so all of this stays off.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     Shared& shared = *_shared;
     std::string failure;
     std::shared_ptr<Shared::HookTarget> target = shared.hookTarget;

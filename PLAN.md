@@ -197,12 +197,12 @@ future core work has solid ground to build on.
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | | | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | | | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | done | M20 |  | E9 | | | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
-| M249 | Bundle Cycles Delegate | doing | M19, M248 | misty-marten | E9 | F3 | | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
-| M250 | Bundle MoonRay Delegate | doing | M19 | misty-marten | E9 | F3 | | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
-| M251 | Cycles Rendering | doing | M248, M249 | misty-marten | E9 | F3 | | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
-| M252 | MoonRay Rendering | doing | M248, M250 | misty-marten | E9 | F3 | | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
-| M253 | Delegate Render Settings | doing | M251, M252 | misty-marten | E9 | F3 | | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
-| M254 | Progressive Viewer Render | doing | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
+| M249 | Bundle Cycles Delegate | done | M19, M248 | misty-marten | E9 | F3 | | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
+| M250 | Bundle MoonRay Delegate | done | M19 | misty-marten | E9 | F3 | | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
+| M251 | Cycles Rendering | done | M248, M249 | misty-marten | E9 | F3 | | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
+| M252 | MoonRay Rendering | done | M248, M250 | misty-marten | E9 | F3 | | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
+| M253 | Delegate Render Settings | done | M251, M252 | misty-marten | E9 | F3 | | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
+| M254 | Progressive Viewer Render | done | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | blocked | M251, M252 | bosley-native-nodes | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
@@ -458,7 +458,7 @@ future core work has solid ground to build on.
 |----|------|--------|-------|-------|--------|------|
 | F1 | VDB Volumes | open |  |  | feature/f1-vdb-volumes | Bring a VDB into the scene, shade it with one material across Storm, Cycles and MoonRay, and inspect it in the viewer. |
 | F2 | Native Shader Networks | open |  |  | feature/f2-native-shader-networks | Build, tweak and render each renderer's native shading networks from one builder node, with full or nearly full coverage of Cycles and MoonRay. |
-| F3 | Cycles And MoonRay Delegates | shipping | misty-marten |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
+| F3 | Cycles And MoonRay Delegates | landed | misty-marten |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |

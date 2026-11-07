@@ -217,6 +217,8 @@ Storm and generated renderers, through the classifier: Storm gets Volumes (Volum
 
 ## Decisions
 
+- 2026-11-07 — F3 - Cycles And MoonRay Delegates merged as 0553d5c3a (#212). Post-merge checks: M249.P4.T3 (Island on a real GPU), M252.P2.T2 (the fully textured Lobby's render time).
+
 - 2026-11-07 — F3 - Cycles And MoonRay Delegates UAT questions closed (user): patching MoonRay's denoiser to OIDN and building Cycles with `openpgl` are follow-ups, not part of F3, and no milestone exists for them yet. Current behaviour is fine for the render settings' open and closed groups, M251's Lobby camera exposure, M254's display transform on progressive frames, and the session on thread budget changes.
 
 - 2026-11-06 — Panel polish before the user's look: MoonRay's Disable Lighting crashed on a first render because `setDisableLighting` used a null `mRenderIndex` (`RenderDelegate.cc:717`); patched in `build-moonray.sh` so the control stays. Numbers of magnitude 1e6 or more now show compactly in every `SpinBox`, since the 50 px field can't hold them; values aren't capped. Bounces and Clamping start closed so the default Cycles tab has no scrollbar: the user was asked whether to close Denoise instead.

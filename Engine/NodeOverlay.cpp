@@ -534,7 +534,7 @@ Node::hasOverlay() const
         }
     }
 
-    return _imp->effect->hasOverlay();
+    return _imp->effect->hasOverlay() || _imp->effect->hasOverlayDrawList();
 }
 
 

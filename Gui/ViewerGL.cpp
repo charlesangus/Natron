@@ -533,6 +533,15 @@ ViewerGL::paintGL()
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
 } // paintGL
 
+QVariantList
+ViewerGL::canonicalToWidget() const
+{
+    const QPointF origin = toWidgetCoordinates(QPointF(0., 0.));
+    const QPointF unit = toWidgetCoordinates(QPointF(1., 1.));
+
+    return QVariantList { origin.x(), origin.y(), unit.x() - origin.x(), unit.y() - origin.y() };
+}
+
 void
 ViewerGL::clearColorBuffer(double r,
                            double g,
@@ -713,7 +722,14 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
             drawWipeControl(screenPixelRatio);
         }
 
-
+        glCheckError();
+        {
+            NodesList overlayNodes;
+            _imp->viewerTab->getGui()->getNodesEntitledForOverlayImages(overlayNodes);
+            // Reversed like the overlays, so that the first panel's images are on top.
+            overlayNodes.reverse();
+            _imp->overlayImageRenderer.draw(overlayNodes, getCurrentlyDisplayedTime(), getCurrentView());
+        }
         glCheckError();
         glColor4f(1., 1., 1., 1.);
 
@@ -4078,6 +4094,20 @@ ViewerGL::getScreenPixelRatio() const
     return devicePixelRatio();
 }
 #endif
+
+void
+ViewerGL::drawOverlayDrawList(const OverlayDrawList& list,
+                              const OverlayDrawState& state)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+
+    if (!_imp->overlayRenderer) {
+        _imp->overlayRenderer.reset(new NodeOverlayRenderer());
+    }
+    _imp->overlayRenderer->draw(list, state, this);
+}
 
 /**
  * @brief Returns the colour of the background (i.e: clear color) of the viewport.

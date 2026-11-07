@@ -6230,6 +6230,64 @@ Node::clearPersistentMessageForPreview()
     }
 }
 
+OverlayImageFrameConstPtr
+Node::getOverlayImageFrame() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageFrame;
+}
+
+std::uint64_t
+Node::getOverlayImageGeneration() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageGeneration;
+}
+
+bool
+Node::setOverlayImageFrame(const OverlayImageFrameConstPtr& frame,
+                           std::uint64_t generation)
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    if (generation != _imp->overlayImageGeneration) {
+        return false;
+    }
+    _imp->overlayImageFrame = frame;
+
+    return true;
+}
+
+bool
+Node::clearOverlayImageFrame()
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+    const bool hadFrame = (bool)_imp->overlayImageFrame;
+
+    _imp->overlayImageFrame.reset();
+    ++_imp->overlayImageGeneration;
+
+    return hadFrame;
+}
+
+std::shared_ptr<void>
+Node::markOverlayImagePassPending()
+{
+    const std::shared_ptr<std::atomic<int>> pending = _imp->overlayImagePassesPending;
+
+    ++*pending;
+
+    return std::shared_ptr<void>(nullptr, [pending](void*) { --*pending; });
+}
+
+bool
+Node::isOverlayImagePassPending() const
+{
+    return *_imp->overlayImagePassesPending > 0;
+}
+
 void
 Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
                                             NodesList* nodes)

@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
-#include <iostream>
+#include <atomic>
 #include <cassert>
 #include <cstdio> // for std::remove
 #include <cstring> // for std::memcpy
+#include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #ifndef _WIN32
@@ -45,11 +47,12 @@
 #include <windows.h>
 #endif
 
+#include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QMutex>
 #include <QReadWriteLock>
-#include <QDir>
-#include <QDebug>
+#include <QWaitCondition>
 
 #ifdef DEBUG
 #include <SequenceParsing.h> // for removePath
@@ -59,13 +62,187 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Hash64.h"
 #include "Engine/HostImageMemory.h"
+#include "Engine/KeyHelper.h"
 #include "Engine/MemoryFile.h"
 #include "Engine/NonKeyParams.h"
+#include "Engine/RectI.h"
 #include "Engine/Texture.h"
 #include "Global/GlobalDefines.h"
 #include "Global/StrUtils.h"
 
 NATRON_NAMESPACE_ENTER
+
+class Bitmap {
+public:
+    Bitmap(const RectI& bounds)
+        : _bounds(bounds)
+        , _map(bounds.area())
+        , _dirtyZone()
+        , _dirtyZoneSet(false)
+    {
+        // The bounds may be empty: an entry that is a link to another image is an empty image with 0 bytes of data.
+        std::fill(_map.begin(), _map.end(), 0);
+    }
+
+    Bitmap()
+        : _bounds()
+        , _map()
+        , _dirtyZone()
+        , _dirtyZoneSet(false)
+    {
+    }
+
+    void initialize(const RectI& bounds)
+    {
+        _bounds = bounds;
+        _map.assign(_bounds.area(), 0);
+    }
+
+    ~Bitmap()
+    {
+    }
+
+    void setTo1();
+
+    const RectI& getBounds() const
+    {
+        return _bounds;
+    }
+
+#if NATRON_ENABLE_TRIMAP
+    void minimalNonMarkedRects_trimap(const RectI& roi, std::list<RectI>& ret, bool* isBeingRenderedElsewhere) const;
+    RectI minimalNonMarkedBbox_trimap(const RectI& roi, bool* isBeingRenderedElsewhere) const;
+#endif
+
+    void minimalNonMarkedRects(const RectI& roi, std::list<RectI>& ret) const;
+    RectI minimalNonMarkedBbox(const RectI& roi) const;
+
+    // returns true if the roi only contains 0s
+    bool isNonMarked(const RectI& roi) const;
+
+    /// Fill with 1 the roi
+    void markForRendered(const RectI& roi) { markFor(roi, 1); }
+
+#if NATRON_ENABLE_TRIMAP
+    /// Fill with 2 the roi
+    void markForRendering(const RectI& roi);
+#endif
+
+    void clear(const RectI& roi) { markFor(roi, 0); }
+
+    void swap(Bitmap& other);
+
+    const char* getBitmap() const
+    {
+        return &_map.front();
+    }
+
+    char* getBitmap()
+    {
+        return &_map.front();
+    }
+
+    const char* getBitmapAt(int x, int y) const;
+    char* getBitmapAt(int x, int y);
+
+    void copyRowPortion(int x1, int x2, int y, const Bitmap& other);
+
+    void copyBitmapPortion(const RectI& roi, const Bitmap& other);
+
+    void setDirtyZone(const RectI& zone)
+    {
+        _dirtyZone = zone;
+        _dirtyZoneSet = true;
+    }
+
+private:
+    void markFor(const RectI& roi, char value);
+
+private:
+    RectI _bounds;
+    std::vector<char> _map;
+
+    /**
+     * This represents the zone that has potentially something to render. In minimalNonMarkedRects
+     * we intersect the region of interest with the dirty zone. This is useful to optimize the bitmap checking
+     * when we are sure multiple threads are not using the image and we have a very small RoI to render.
+     * For now it's only used for the rotopaint while painting.
+     **/
+    RectI _dirtyZone;
+    bool _dirtyZoneSet;
+};
+
+/**
+ * @brief The renders currently reserving regions of one entry. A render that finds a region reserved waits on cond
+ * instead of rendering it again.
+ **/
+struct ImageBeingRendered {
+    QWaitCondition cond;
+    QMutex lock;
+    int refCount;
+    bool failed;
+    bool retracted; //< failed because the image left the cache, not because its render failed
+
+    ImageBeingRendered()
+        : cond()
+        , lock()
+        , refCount(0)
+        , failed(false)
+        , retracted(false)
+    {
+    }
+};
+
+typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
+
+/**
+ * @brief What a storage tier and the eviction policy see of a cache entry, whichever payload it holds. It is owned
+ * separately from the payload because an entry held by another tier has no pixels in RAM.
+ *
+ * bounds and bitmap are guarded by the owning entry's _entryLock, because a resize replaces them together with the
+ * pixels. A being-rendered update also holds ImageBeingRendered::lock around them, so that a waiter misses no wake-up.
+ **/
+struct CacheEntryHeader {
+    enum ResidencyEnum {
+        eResidencyHost = 1 << 0,
+        eResidencyDisk = 1 << 1,
+        eResidencyDevice = 1 << 2
+    };
+
+    CacheEntryHeader()
+        : key()
+        , bounds()
+        , bitmap()
+        , pendingLock()
+        , pending()
+        , residency(0)
+        , lastUse(0)
+        , priority(0.f)
+        , recomputeCostNs(0.f)
+    {
+    }
+
+    // Set once at creation, and null outside a cache: only a cached entry is ever looked up, and a temporary image is
+    // made per tile, where a copy of the key would be one more allocation for nothing.
+    std::shared_ptr<const KeyHelper<U64>> key;
+
+    RectI bounds;
+    Bitmap bitmap;
+
+    // Separate from the reservation stripes because those are held across whole bitmap scans, and finishing a render
+    // must not wait on another render's scan. Taken before ImageBeingRendered::lock; _entryLock is never taken under it.
+    // Starts a cache line because any thread writes from here on, and every bitmap check and pixelAt() reads above.
+    alignas(64) QMutex pendingLock;
+    // Null while nothing is reserved. Guarded by pendingLock.
+    ImageBeingRenderedPtr pending;
+
+    std::atomic<unsigned char> residency; // mask of ResidencyEnum
+    std::atomic<U64> lastUse; // wall clock in ns, so that it survives a restart
+    std::atomic<float> priority;
+    std::atomic<float> recomputeCostNs;
+};
+
+typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////BUFFER////////////////////////////////////////////////////

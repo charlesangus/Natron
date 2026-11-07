@@ -64,110 +64,6 @@ public:
     }
 };
 
-class Bitmap
-{
-public:
-    Bitmap(const RectI & bounds)
-        : _bounds(bounds)
-        , _map( bounds.area() )
-        , _dirtyZone()
-        , _dirtyZoneSet(false)
-    {
-        //Do not assert !rod.isNull() : An empty image can be created for entries that correspond to
-        // "identities" images (i.e: images that are just a link to another image). See EffectInstance :
-        // "!!!Note that if isIdentity is true it will allocate an empty image object with 0 bytes of data."
-        //assert(!rod.isNull());
-        std::fill(_map.begin(), _map.end(), 0);
-    }
-
-    Bitmap()
-        : _bounds()
-        , _map()
-        , _dirtyZone()
-        , _dirtyZoneSet(false)
-    {
-    }
-
-    void initialize(const RectI & bounds)
-    {
-        _bounds = bounds;
-        _map.assign(_bounds.area(), 0);
-    }
-
-    ~Bitmap()
-    {
-    }
-
-    void setTo1();
-
-    const RectI & getBounds() const
-    {
-        return _bounds;
-    }
-
-#if NATRON_ENABLE_TRIMAP
-    void minimalNonMarkedRects_trimap(const RectI & roi, std::list<RectI>& ret, bool* isBeingRenderedElsewhere) const;
-    RectI minimalNonMarkedBbox_trimap(const RectI & roi, bool* isBeingRenderedElsewhere) const;
-#endif
-
-    void minimalNonMarkedRects(const RectI & roi, std::list<RectI>& ret) const;
-    RectI minimalNonMarkedBbox(const RectI & roi) const;
-
-    // returns true if the roi only contains 0s
-    bool isNonMarked(const RectI & roi) const;
-
-    ///Fill with 1 the roi
-    void markForRendered(const RectI & roi) { markFor(roi, 1); }
-
-#if NATRON_ENABLE_TRIMAP
-    ///Fill with 2 the roi
-    void markForRendering(const RectI & roi);
-#endif
-
-    void clear(const RectI& roi) { markFor(roi, 0); }
-
-    void swap(Bitmap& other);
-
-    const char* getBitmap() const
-    {
-        return &_map.front();
-    }
-
-    char* getBitmap()
-    {
-        return &_map.front();
-    }
-
-    const char* getBitmapAt(int x, int y) const;
-    char* getBitmapAt(int x, int y);
-
-    void copyRowPortion(int x1, int x2, int y, const Bitmap& other);
-
-    void copyBitmapPortion(const RectI& roi, const Bitmap& other);
-
-    void setDirtyZone(const RectI& zone)
-    {
-        _dirtyZone = zone;
-        _dirtyZoneSet = true;
-    }
-
-private:
-    void markFor(const RectI & roi, char value);
-
-private:
-    RectI _bounds;
-    std::vector<char> _map;
-
-    /**
-     * This represents the zone that has potentially something to render. In minimalNonMarkedRects
-     * we intersect the region of interest with the dirty zone. This is useful to optimize the bitmap checking
-     * when we are sure multiple threads are not using the image and we have a very small RoI to render.
-     * For now it's only used for the rotopaint while painting.
-     **/
-    RectI _dirtyZone;
-    bool _dirtyZoneSet;
-};
-
 class Image
     : public CacheEntryHelper<unsigned char, ImageKey, ImageParams>, public BufferableObject
 {
@@ -200,6 +96,8 @@ public:
     virtual ~Image();
 
     bool usesBitMap() const { return _useBitmap; }
+
+    const CacheEntryHeaderPtr& getEntryHeader() const { return _header; }
 
     StorageModeEnum getStorageMode() const
     {
@@ -301,7 +199,7 @@ public:
         std::size_t dt = dataSize();
         bool got = _entryLock.tryLockForRead();
 
-        dt += _bitmap.getBounds().area();
+        dt += _header->bitmap.getBounds().area();
         if (got) {
             _entryLock.unlock();
         }
@@ -490,13 +388,13 @@ private:
     const char* getBitmapAt(int x,
                             int y) const
     {
-        return this->_bitmap.getBitmapAt(x, y);
+        return this->_header->bitmap.getBitmapAt(x, y);
     }
 
     char* getBitmapAt(int x,
                       int y)
     {
-        return this->_bitmap.getBitmapAt(x, y);
+        return this->_header->bitmap.getBitmapAt(x, y);
     }
 
     /**
@@ -581,7 +479,7 @@ public:
             return;
         }
         QReadLocker locker(&_entryLock);
-        _bitmap.minimalNonMarkedRects_trimap(regionOfInterest, ret, isBeingRenderedElsewhere);
+        _header->bitmap.minimalNonMarkedRects_trimap(regionOfInterest, ret, isBeingRenderedElsewhere);
     }
 
 #endif
@@ -592,7 +490,7 @@ public:
             return;
         }
         QReadLocker locker(&_entryLock);
-        _bitmap.minimalNonMarkedRects(regionOfInterest, ret);
+        _header->bitmap.minimalNonMarkedRects(regionOfInterest, ret);
     }
 
 #if NATRON_ENABLE_TRIMAP
@@ -604,7 +502,7 @@ public:
         }
         QReadLocker locker(&_entryLock);
 
-        return _bitmap.minimalNonMarkedBbox_trimap(regionOfInterest, isBeingRenderedElsewhere);
+        return _header->bitmap.minimalNonMarkedBbox_trimap(regionOfInterest, isBeingRenderedElsewhere);
     }
 
 #endif
@@ -615,7 +513,7 @@ public:
         }
         QReadLocker locker(&_entryLock);
 
-        return _bitmap.minimalNonMarkedBbox(regionOfInterest);
+        return _header->bitmap.minimalNonMarkedBbox(regionOfInterest);
     }
 
 #if NATRON_ENABLE_TRIMAP
@@ -628,7 +526,7 @@ public:
         RectI ret;
         {
             QReadLocker locker(&_entryLock);
-            ret = _bitmap.minimalNonMarkedBbox_trimap(regionOfInterest, isBeingRenderedElsewhere);
+            ret = _header->bitmap.minimalNonMarkedBbox_trimap(regionOfInterest, isBeingRenderedElsewhere);
         }
         markForRendering(ret);
 
@@ -644,7 +542,7 @@ public:
         }
         QWriteLocker locker(&_entryLock);
         const RectI intersection = _bounds.intersect(roi);
-        _bitmap.markForRendered(intersection);
+        _header->bitmap.markForRendered(intersection);
     }
 
 #if NATRON_ENABLE_TRIMAP
@@ -656,7 +554,7 @@ public:
         }
         QWriteLocker locker(&_entryLock);
         const RectI intersection = _bounds.intersect(roi);
-        _bitmap.markForRendering(intersection);
+        _header->bitmap.markForRendering(intersection);
     }
 
 #endif
@@ -668,7 +566,7 @@ public:
         }
         QWriteLocker locker(&_entryLock);
         const RectI intersection = _bounds.intersect(roi);
-        _bitmap.clear(intersection);
+        _header->bitmap.clear(intersection);
     }
 
 #ifdef DEBUG
@@ -976,9 +874,10 @@ private:
 private:
     ImageBitDepthEnum _bitDepth;
     int _depthBytesSize;
-    Bitmap _bitmap;
-    RectD _rod;     // rod in canonical coordinates (not the same as the OFX::Image RoD, which is in pixel coordinates)
-    RectI _bounds;
+    CacheEntryHeaderPtr _header;
+    // Aliases _header->bounds. It stays valid because _header is never reseated, even when a resize swaps the bitmap.
+    const RectI& _bounds;
+    RectD _rod; // rod in canonical coordinates (not the same as the OFX::Image RoD, which is in pixel coordinates)
     double _par;
     ImageFieldingOrderEnum _fielding;
     bool _useBitmap;

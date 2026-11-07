@@ -624,9 +624,9 @@ Image::printUnrenderedPixels(const RectI& roi) const
         return;
     }
     QReadLocker k(&_entryLock);
-    const char* bm = _bitmap.getBitmapAt(roi.x1, roi.y1);
+    const char* bm = _header->bitmap.getBitmapAt(roi.x1, roi.y1);
     int roiw = roi.x2 - roi.x1;
-    int boundsW = _bitmap.getBounds().width();
+    int boundsW = _header->bitmap.getBounds().width();
     RectD bboxUnrendered;
     bboxUnrendered.setupInfinity();
     RectD bboxUnavailable;
@@ -686,27 +686,34 @@ Image::Image(const ImageKey& key,
              const ImageParamsPtr& params,
              const CacheAPI* cache)
     : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, cache)
+    , _header(std::make_shared<CacheEntryHeader>())
+    , _bounds(_header->bounds)
     , _useBitmap(true)
 {
     _bitDepth = params->getBitDepth();
     _depthBytesSize = getSizeOfForBitDepth(_bitDepth);
     _nbComponents = params->getComponents().getNumComponents();
     _rod = params->getRoD();
-    _bounds = params->getBounds();
+    _header->bounds = params->getBounds();
     _par = params->getPixelAspectRatio();
     _fielding = params->getFieldingOrder();
+    if (cache) {
+        _header->key = std::make_shared<const ImageKey>(getKey());
+    }
 }
 
 Image::Image(const ImageKey& key,
              const ImageParamsPtr& params)
     : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, NULL)
+    , _header(std::make_shared<CacheEntryHeader>())
+    , _bounds(_header->bounds)
     , _useBitmap(false)
 {
     _bitDepth = params->getBitDepth();
     _depthBytesSize = getSizeOfForBitDepth(_bitDepth);
     _nbComponents = params->getComponents().getNumComponents();
     _rod = params->getRoD();
-    _bounds = params->getBounds();
+    _header->bounds = params->getBounds();
     _par = params->getPixelAspectRatio();
     _fielding = params->getFieldingOrder();
 
@@ -719,6 +726,7 @@ Image::Image(const ImageKey& key,
 void
 Image::setKey(const ImageKey& key)
 {
+    assert(!_cache);
     CacheEntryHelper<unsigned char, ImageKey, ImageParams>::setKey(key.forEntry(getMipmapLevel(), getComponents(), getBitDepth()));
 }
 
@@ -733,6 +741,8 @@ Image::Image(const ImageLayerDesc& components,
              StorageModeEnum storage,
              U32 textureTarget)
     : CacheEntryHelper<unsigned char, ImageKey, ImageParams>()
+    , _header(std::make_shared<CacheEntryHeader>())
+    , _bounds(_header->bounds)
     , _useBitmap(useBitmap)
 {
     setCacheEntry(makeKey(0, 0, false, 0, ViewIdx(0), false, false),
@@ -766,7 +776,7 @@ Image::Image(const ImageLayerDesc& components,
     _depthBytesSize = getSizeOfForBitDepth(_bitDepth);
     _nbComponents = components.getNumComponents();
     _rod = regionOfDefinition;
-    _bounds = _params->getBounds();
+    _header->bounds = _params->getBounds();
     _par = par;
     _fielding = fielding;
 
@@ -779,22 +789,13 @@ Image::~Image()
 }
 
 void
-Image::onMemoryAllocated(bool diskRestoration)
+Image::onMemoryAllocated(bool /*diskRestoration*/)
 {
+    // A restored entry starts unrendered too: the table of contents does not record which of its pixels were rendered,
+    // and the file may hold a partial render or none at all.
     if (_cache || _useBitmap) {
-        _bitmap.initialize(_bounds);
+        _header->bitmap.initialize(_bounds);
     }
-
-    if (diskRestoration) {
-        _bitmap.setTo1();
-    }
-
-#ifdef DEBUG
-    if (!diskRestoration) {
-        ///fill with red, to recognize unrendered pixels
-        //fill(_bounds,1.,0.,0.,1.);
-    }
-#endif
 }
 
 void
@@ -802,7 +803,7 @@ Image::setBitmapDirtyZone(const RectI& zone)
 {
     QWriteLocker k(&_entryLock);
 
-    _bitmap.setDirtyZone(zone);
+    _header->bitmap.setDirtyZone(zone);
 }
 
 ImageKey
@@ -1156,12 +1157,12 @@ Image::ensureBounds(const RectI& newBounds,
 
 
     ///Change the size of the current buffer
-    _bounds = merge;
+    _header->bounds = merge;
     _params->setBounds(merge);
     assert( _bounds.contains(newBounds) );
     swapBuffer(*tmpImg);
     if ( usesBitMap() ) {
-        _bitmap.swap(tmpImg->_bitmap);
+        _header->bitmap.swap(tmpImg->_header->bitmap);
     }
 
     return true;
@@ -1740,8 +1741,8 @@ Image::halveRoIForDepth(const RectI & roi,
     ///The source rectangle, intersected to this image region of definition in pixels
     const RectI &srcBounds = _bounds;
     const RectI &dstBounds = output->_bounds;
-    const RectI &srcBmBounds = _bitmap.getBounds();
-    const RectI &dstBmBounds = output->_bitmap.getBounds();
+    const RectI& srcBmBounds = _header->bitmap.getBounds();
+    const RectI& dstBmBounds = output->_header->bitmap.getBounds();
     assert( !copyBitMap || usesBitMap() );
     assert( !usesBitMap() || (srcBmBounds == srcBounds && dstBmBounds == dstBounds) );
 
@@ -1764,9 +1765,9 @@ Image::halveRoIForDepth(const RectI & roi,
 
 
     const PIX* const srcPixels      = (const PIX*)pixelAt(srcBounds.x1,   srcBounds.y1);
-    const char* const srcBmPixels   = _bitmap.getBitmapAt(srcBmBounds.x1, srcBmBounds.y1);
+    const char* const srcBmPixels = _header->bitmap.getBitmapAt(srcBmBounds.x1, srcBmBounds.y1);
     PIX* const dstPixels          = (PIX*)output->pixelAt(dstBounds.x1,   dstBounds.y1);
-    char* const dstBmPixels = output->_bitmap.getBitmapAt(dstBmBounds.x1, dstBmBounds.y1);
+    char* const dstBmPixels = output->_header->bitmap.getBitmapAt(dstBmBounds.x1, dstBmBounds.y1);
     int srcRowSize = srcBounds.width() * _nbComponents;
     int dstRowSize = dstBounds.width() * _nbComponents;
 
@@ -2010,7 +2011,7 @@ Image::downscaleMipmap(const RectD& dstRod,
     double par = getPixelAspectRatio();
     unsigned int downscaleLvls = toLevel - fromLevel;
 
-    assert( !copyBitMap || _bitmap.getBitmap() );
+    assert(!copyBitMap || _header->bitmap.getBitmap());
 
     RectI dstRoI  = roi.downscalePowerOfTwoSmallestEnclosing(downscaleLvls);
     ImagePtr tmpImg = std::make_shared<Image>(getComponents(), dstRod, dstRoI, toLevel, par, getBitDepth(), getFieldingOrder(), true);
@@ -2219,7 +2220,7 @@ Image::copyBitmapRowPortion(int x1,
                             int y,
                             const Image& other)
 {
-    _bitmap.copyRowPortion(x1, x2, y, other._bitmap);
+    _header->bitmap.copyRowPortion(x1, x2, y, other._header->bitmap);
 }
 
 void
@@ -2244,7 +2245,7 @@ void
 Image::copyBitmapPortion(const RectI& roi,
                          const Image& other)
 {
-    _bitmap.copyBitmapPortion(roi, other._bitmap);
+    _header->bitmap.copyBitmapPortion(roi, other._header->bitmap);
 }
 
 void

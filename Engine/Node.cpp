@@ -9212,9 +9212,12 @@ Node::refreshShownDownstreamInputRelatedData()
         if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
             reached[i]->refreshPanelInputRelatedData();
         } else if (ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(reached[i]->_imp->effect.get())) {
-            // A viewer's layer menu is on screen with its panel closed, and lists what its inputs
-            // present at the current frame, so it only needs telling that the list may differ.
+            // A viewer's layer menu and displayed format are on screen with its panel closed.
+            // The format reaches the viewer only through the current-frame hook, which a
+            // metadata comparison on the viewer's own answer would not run for a format change
+            // upstream, so it is forced. One call per viewer reached, not per node.
             isViewer->onChannelsSelectorRefreshed();
+            isViewer->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), true);
         }
     }
 }

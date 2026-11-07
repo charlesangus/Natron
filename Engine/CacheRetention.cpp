@@ -27,6 +27,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheTier.h"
@@ -63,6 +66,11 @@ touchStamp(std::atomic<std::uint64_t>& stamp,
     return true;
 }
 
+const int kNoAdmissionOverride = -1;
+
+std::atomic<int> s_admissionSetting { (int)CacheRetention::kDefaultAdmissionPolicy };
+std::atomic<int> s_admissionOverride { kNoAdmissionOverride };
+
 } // namespace
 
 namespace CacheRetention {
@@ -73,10 +81,87 @@ nowNs()
     return (std::uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-bool
-admit(unsigned reasons)
+std::optional<AdmissionPolicyEnum>
+parseAdmissionPolicy(const char* name)
 {
-    return reasons != 0;
+    if (!name) {
+        return std::nullopt;
+    }
+    if (std::strcmp(name, "all") == 0) {
+        return eAdmissionPolicyAll;
+    }
+    if (std::strcmp(name, "priorityFloor") == 0) {
+        return eAdmissionPolicyPriorityFloor;
+    }
+
+    return std::nullopt;
+}
+
+void
+setAdmissionPolicySetting(AdmissionPolicyEnum policy)
+{
+    s_admissionSetting.store((int)policy, std::memory_order_relaxed);
+}
+
+AdmissionPolicyEnum
+admissionPolicySetting()
+{
+    return (AdmissionPolicyEnum)s_admissionSetting.load(std::memory_order_relaxed);
+}
+
+void
+setAdmissionPolicyOverride(std::optional<AdmissionPolicyEnum> policy)
+{
+    s_admissionOverride.store(policy ? (int)*policy : kNoAdmissionOverride, std::memory_order_relaxed);
+}
+
+std::optional<AdmissionPolicyEnum>
+admissionPolicyOverride()
+{
+    const int policy = s_admissionOverride.load(std::memory_order_relaxed);
+
+    return policy == kNoAdmissionOverride ? std::nullopt : std::optional<AdmissionPolicyEnum>((AdmissionPolicyEnum)policy);
+}
+
+void
+readAdmissionPolicyOverrideFromEnvironment()
+{
+    const char* value = std::getenv("NATRON_CACHE_ADMISSION");
+    const std::optional<AdmissionPolicyEnum> policy = parseAdmissionPolicy(value);
+
+    // A mistyped name would otherwise pass for the setting's policy in a benchmark comparing the two.
+    if (value && !policy) {
+        std::cerr << "NATRON_CACHE_ADMISSION: unknown policy \"" << value << "\", expected all or priorityFloor" << std::endl;
+    }
+    setAdmissionPolicyOverride(policy);
+}
+
+AdmissionPolicyEnum
+admissionPolicy()
+{
+    const std::optional<AdmissionPolicyEnum> forced = admissionPolicyOverride();
+
+    return forced ? *forced : admissionPolicySetting();
+}
+
+bool
+admit(unsigned reasons,
+      const CacheRetentionSignals& retention)
+{
+    return admitUnder(admissionPolicy(), reasons, retention, nowNs());
+}
+
+bool
+admitUnder(AdmissionPolicyEnum policy,
+           unsigned reasons,
+           const CacheRetentionSignals& retention,
+           std::uint64_t nowNs)
+{
+    if (policy == eAdmissionPolicyAll) {
+        return true;
+    }
+
+    return (reasons != 0) || (retention.rememberedCostNs() >= kAdmissionCostNs) || retention.hasLiveStamp(nowNs);
 }
 
 void
@@ -136,6 +221,16 @@ CacheRetentionSignals::priority(std::uint64_t nowNs) const
     }
 
     return priority;
+}
+
+bool
+CacheRetentionSignals::hasLiveStamp(std::uint64_t nowNs) const
+{
+    using namespace CacheRetention;
+
+    return (decayed(_inputOfEditedNs.load(std::memory_order_relaxed), nowNs, kEditHalfLifeNs) > 0.)
+        || (decayed(_panelNs.load(std::memory_order_relaxed), nowNs, kPanelHalfLifeNs) > 0.)
+        || (decayed(_branchNs.load(std::memory_order_relaxed), nowNs, kBranchHalfLifeNs) > 0.);
 }
 
 bool

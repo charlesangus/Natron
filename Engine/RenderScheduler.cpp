@@ -629,13 +629,13 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         }
         task.estimatedBytes = estimateBytes(task.renderedRoI, task.components, task.bitdepth);
 
-        if (!task.isIdentity && !renderContextHasLoopVariables(nodeRequest->second->context)) {
-            if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
-                task.sharesCachedOutput = true;
-                task.nodeHash = nodeRequest->second->nodeHash;
-                task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
-                task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
-            }
+        // A frame with an analysis is not scheduled, so no caller is needed for the analysis answer.
+        if (!task.isIdentity && frameArgs && frameArgs->frameVaryingComputed
+            && effect->admitsOutputToCache(nodeRequest->second->context, *frameArgs, frameArgs->isFrameVaryingOrAnimated, task.key.time, task.key.view, nullptr)) {
+            task.sharesCachedOutput = true;
+            task.nodeHash = nodeRequest->second->nodeHash;
+            task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
+            task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
         }
     }
 

@@ -1003,14 +1003,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
     const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
     retention->noteStaticOutput(!isFrameVaryingOrAnimated);
-    bool createInCache;
     // Do not use the cache for OpenGL rendering
-    if (useOpenGL || renderContextHasLoopVariables(frameArgs->context)) {
-        createInCache = false;
-    } else {
-        // in Analysis, the node upstream of the analysis node should always cache
-        createInCache = (frameArgs->isAnalysis && frameArgs->treeRoot->getEffectInstance().get() == args.caller) ? true : shouldCacheOutput(isFrameVaryingOrAnimated, args.time, args.view, frameArgs->visitsCount);
-    }
+    bool createInCache = !useOpenGL && admitsOutputToCache(frameArgs->context, *frameArgs, isFrameVaryingOrAnimated, args.time, args.view, args.caller);
     ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
     bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = getNode()->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
     ///For multi-resolution we want input images with exactly the same size as the output image
@@ -1456,14 +1450,16 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     const bool cacheCanServe = !byPassCache && !allIdentity;
     // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
     const bool partial = cacheCanServe && hasSomethingToRender && (partlyCachedBeforeWidening || leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area()));
-    if (byPassCache || !createInCache || allIdentity) {
+    // A hit and a partial come before admission: a node that no longer admits can still be served an entry stored earlier.
+    if (!cacheCanServe) {
         cacheStateRecorder.set(eRenderCacheStateBypass);
     } else if (!hasSomethingToRender) {
         cacheStateRecorder.set(eRenderCacheStateHit);
+    } else if (partial) {
+        cacheStateRecorder.set(eRenderCacheStatePartial);
     } else {
-        cacheStateRecorder.set(partial ? eRenderCacheStatePartial : eRenderCacheStateMiss);
+        cacheStateRecorder.set(createInCache ? eRenderCacheStateMiss : eRenderCacheStateBypass);
     }
-    // Not gated on createInCache: a node that no longer admits can still be served an entry stored earlier.
     if (cacheCanServe && (!hasSomethingToRender || partial)) {
         noteImagesServed(*layersToRender, retention, renderSequence);
     }

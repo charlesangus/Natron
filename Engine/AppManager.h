@@ -536,8 +536,6 @@ public:
 
     bool isNodeCacheAlmostFull() const;
 
-    bool isAggressiveCachingEnabled() const;
-
     void refreshDiskCacheLocation();
     const QString& getDiskCacheLocation() const;
 

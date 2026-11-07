@@ -113,6 +113,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
@@ -334,6 +335,8 @@ AppManager::AppManager()
             _imp->renderSchedulerEnvOverride = true;
         }
     }
+
+    CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
 
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
 
@@ -2601,12 +2604,6 @@ AppManager::getTextureOrCreate(const FrameKey & key,
                                FrameEntryPtr* returnValue) const
 {
     return _imp->_viewerCache->getOrCreate(key, params, locker, returnValue);
-}
-
-bool
-AppManager::isAggressiveCachingEnabled() const
-{
-    return _imp->_settings->isAggressiveCachingEnabled();
 }
 
 U64

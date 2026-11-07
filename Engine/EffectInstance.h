@@ -841,7 +841,7 @@ public:
                                std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
     enum RenderCacheStateEnum {
-        eRenderCacheStateBypass = 0, // not looked up or not stored: byPassCache, uncached output, or nothing to render
+        eRenderCacheStateBypass = 0, // rendered with no entry involved: byPassCache, an unadmitted output nothing was stored for, or nothing to render
         eRenderCacheStateMiss, // the whole RoI was rendered
         eRenderCacheStatePartial, // part of the RoI was already in the cache
         eRenderCacheStateHit // the cache held the whole RoI
@@ -1853,6 +1853,18 @@ public:
                       Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
     virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
+
+    /**
+     * @brief Whether this frame stores the effect's output in the cache. The one question renderRoI and the scheduler ask,
+     * so that a planned reuse never assumes an entry that renderRoI would not store. caller is the effect pulling this one,
+     * and may be null where nothing pulls it yet. Says nothing of a lookup: an entry stored earlier serves regardless.
+     **/
+    bool admitsOutputToCache(const RenderContextPtr& context,
+                             const ParallelRenderArgs& frameArgs,
+                             bool isFrameVaryingOrAnimated,
+                             double time,
+                             ViewIdx view,
+                             const EffectInstance* caller) const;
 
     /**
      * @brief Can be derived to get the region that the plugin is capable of filling.

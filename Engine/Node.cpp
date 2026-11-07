@@ -8735,10 +8735,10 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
 {
     const unsigned reasons = computeRetentionReasons(isFrameVaryingOrAnimated, time, view);
 
-    // The scheduler passes a placeholder for the static test, which must not overwrite what renderRoI measured.
+    // renderRoI notes the static output itself, for every node, including those whose reasons stop before testing it.
     _imp->retentionSignals->noteReasons(reasons & ~CacheRetention::eReasonStaticOutput);
 
-    return CacheRetention::admit(reasons);
+    return CacheRetention::admit(reasons, *_imp->retentionSignals);
 }
 
 // Does not stop at the first reason, because each one also weighs in the priority. Every test is one a node with no
@@ -8755,7 +8755,6 @@ Node::computeRetentionReasons(bool isFrameVaryingOrAnimated,
      * - It is references multiple times below in the graph
      * - Its single output has its settings panel opened,  meaning the user is actively editing the output
      * - The force caching parameter in the "Node" tab is checked
-     * - The aggressive caching preference of Natron is checked
      * - We are in a recursive action (such as an analysis)
      * - The plug-in does temporal clip access
      * - Preview image is enabled (and Natron is not running in background)
@@ -8780,12 +8779,9 @@ Node::computeRetentionReasons(bool isFrameVaryingOrAnimated,
     unsigned reasons = 0;
 
     if (sz == 0) {
-        // Nothing reads this output, so only an explicit request or a rotopaint internal node keeps it.
+        // Nothing reads this output, so only an explicit request or a rotopaint internal node is a reason to keep it.
         if (isForceCachingEnabled()) {
             reasons |= eReasonForced;
-        }
-        if (appPTR->isAggressiveCachingEnabled()) {
-            reasons |= eReasonAggressive;
         }
         if (strokeBeingEdited) {
             reasons |= eReasonRotoEditing;
@@ -8843,9 +8839,6 @@ Node::computeRetentionReasons(bool isFrameVaryingOrAnimated,
     NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(getGroup().get());
     if (isForceCachingEnabled() || (parentIsGroup && parentIsGroup->getNode()->isForceCachingEnabled() && (parentIsGroup->getOutputNodeInput(false).get() == this))) {
         reasons |= eReasonForced;
-    }
-    if (appPTR->isAggressiveCachingEnabled()) {
-        reasons |= eReasonAggressive;
     }
     if (isPreviewEnabled() && !appPTR->isBackground()) {
         // Computed again between previews and actual renders.

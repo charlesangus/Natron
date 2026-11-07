@@ -35,19 +35,23 @@ they are refused.
 
 Since M300.P2.T3 the reasons are also a priority ([Priority signals](#priority-signals)), but the decision is unchanged:
 `Node::shouldCacheOutput` returns `CacheRetention::admit(reasons)`, true for any reason, so the raw nodes are still
-refused. After M300.P2.T4 `createInCache` is the admission policy's answer ([Admission](#admission)). Every raw node is
+refused. Since M300.P2.T4 `createInCache` is the admission policy's answer ([Admission](#admission)). Every raw node is
 on the active viewer's branch, which is a signal stamped before the frame's first admission question, so both policies
-store all five on the first render.
+store all five on the first render, and a later edit of a downstream node finds them at an unchanged hash and records
+`hit`. That is read from the code, not measured; M300.P4.T1 measures it.
 
 What stays a refusal, independent of policy, because it is not a retention question: OpenGL renders and loop variables
 (`Engine/EffectInstanceRenderRoI.cpp:929-930`), `allowsStoreUnder` (`:978`), and the overlay pass (`:963-972`). The
 analysis override at `:933` stays too.
 
-`Engine/RenderScheduler.cpp:625-632` is a second consumer of the same yes/no: it sets `sharesCachedOutput`, which gates
-every graph-level probe. It must read the same answer or the pruning below sees nothing. It does not quite do so today:
-it passes `false` for `isFrameVaryingOrAnimated`, which makes any node with an output answer yes, a superset of
-renderRoI's answer. M300.P2.T3 keeps that, because changing it would change behaviour; M300.P2.T4 decides what the
-scheduler asks. See [Gaps](#gaps-against-the-task-list).
+`Engine/RenderScheduler.cpp:632` is a second consumer of the same yes/no: it sets `sharesCachedOutput`, which gates
+every graph-level probe. It must read the same answer or the pruning below sees nothing. Since M300.P2.T4 it and
+`renderRoI` ask one function, `EffectInstance::admitsOutputToCache`, with the frame's real `isFrameVaryingOrAnimated`.
+
+The scheduler's `sharesCachedOutput` is now false for a node below the floor that an entry stored earlier could still
+serve, because lookup is not gated and this flag is. Pruning and placement's `inputs.isCached` therefore cannot see that
+entry, so the dependencies run and the task then hits: a `behind_hit`. M300.P2.T5 has to separate "may be probed" from
+"will be stored" for its probe. It cannot arise while the policy is `all`.
 
 ### `behind_hit` goes away only if dependency planning changes, and no task owns that
 
@@ -309,8 +313,8 @@ priority = 1 + Σ wᵢ · sᵢ
 | Forced | `isForceCachingEnabled`, also through a group's output | 1 | 16 | none |
 | Structural: output is read more than once or is costly to re-read | more than one output, roto output, temporal access, no tile support, not frame-varying, preview enabled, roto painting, nested render | 1 | 4 | none |
 
-Direct viewer input, a panel on the single output, and `aggressiveCaching` are reasons that admit but carry no weight:
-the branch and panel signals already say the first two, and the third is retired by M300.P2.T4.
+Direct viewer input and a panel on the single output are reasons that admit but carry no weight: the branch and panel
+signals already say them.
 
 Fresh values, highest first: forced 17, edited input 9, structural 5, panel input 5, branch 3, expensive 2, off-branch 1.
 A signal past 8 half-lives reads as exactly 0, so an idle holder is back at exactly neutral. Signals add.
@@ -333,18 +337,36 @@ unless its entries get others.
 
 ## Admission
 
-Setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), environment override `NATRON_CACHE_ADMISSION`. Asked at
-`Engine/EffectInstanceRenderRoI.cpp:933` and `Engine/RenderScheduler.cpp:626`, through one function,
-`CacheRetention::admit`. Effects overriding `shouldCacheOutput`, such as `DiskCacheNode`, do not reach it.
+Setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), environment override `NATRON_CACHE_ADMISSION`, read once at
+startup; an unknown value warns and leaves the setting in charge. The policy is an atomic, written on the setting's change
+and after preferences load, because admission runs on every render call.
 
-- **`all`:** admit every output that passes the non-policy refusals above.
-- **`priorityFloor`:** admit when the output carries a priority signal or its remembered cost is at least
-  `admissionCostMs`, as M300.P2.T4 words it. Otherwise it renders into a private image, read by consumers from the frame
-  store and gone with its last consumer.
+`renderRoI` and `RenderScheduler::buildGraph` ask one function, `EffectInstance::admitsOutputToCache`: loop variables
+refuse, the analysis input is admitted, and everything else goes to the virtual `shouldCacheOutput`, whose default reaches
+`CacheRetention::admit`. `renderRoI` adds the refusals that only it can know: OpenGL, the overlay pass and
+`allowsStoreUnder`. Those are not retention questions, and there the scheduler's answer is a superset. A nested render's
+reason depends on the thread's recursion level, so `renderRoI` can admit a node the graph did not plan to share.
+
+`DiskCacheNode` and the test effect keep their overrides, reached through the same virtual, and record no reasons. The
+first is a pin, which M300.P3.T3 takes out of the automatic policy; the second's knob is what its tests control. Neither
+is a retention question.
+
+- **`all`:** admit every output that passes the non-policy refusals above, including a node nothing reads.
+- **`priorityFloor`:** admit when the output has any reason, a live edit, panel or branch stamp, or a remembered cost of
+  at least `admissionCostMs`. Otherwise it renders into a private image, read by consumers from the frame store and gone
+  with its last consumer. The noted static output is not a signal here: `renderRoI` notes it before asking and the
+  scheduler does not, so a node with no output would get two answers. With an output it is already a reason.
+
+No default is set by this note. Until M300.P4.T1 the default is `priorityFloor`
+(`CacheRetention::kDefaultAdmissionPolicy`): the user's recorded lean, and the nearer to the behaviour before these
+policies. It is a placeholder for the user's choice.
+
+Deep images do not ask: `renderDeepRoI` stores every output under both policies. Interior members of a GPU region are not
+stored under either, until M301 - GPU Cache Tier.
 
 Lookup is not gated. `getImageFromCacheAndConvertIfNeeded` ignores its `useCache` argument
-(`Engine/EffectInstance.cpp:2226`), so an entry stored earlier still serves a node now below the floor. The state record
-at `Engine/EffectInstanceRenderRoI.cpp:1380` calls that `bypass` and has to test for the hit first.
+(`Engine/EffectInstance.cpp:2226`), so an entry stored earlier still serves a node now below the floor, and records `hit`
+or `partial`. `bypass` now means that a render used no entry.
 
 Cost is known only after a render, and the decision comes before it. A node never rendered has no remembered cost, so
 on a first render only signals can admit it.
@@ -356,8 +378,7 @@ signal does not admit, fails the gate: the first render knows no cost and has no
 first edit runs the chain. M300.P4.T1 therefore needs a graph with off-branch work to tell the policies apart; see
 [Gaps](#gaps-against-the-task-list).
 
-`aggressiveCaching` (`Engine/Settings.cpp:1498`, read at `Engine/Node.cpp:8802`, `:8826`) is the same question as `all`.
-Retire it with no migration.
+`all` replaces the former aggressive caching preference, retired with no migration.
 
 ## Pins and holds
 
@@ -653,6 +674,14 @@ applies on a small disk.
 **Deep graphs.** Pruning follows only what will run, and the edit touches direct inputs. The O(N²) upstream walks in the render
 scaling findings are not added to.
 
+**The free-RAM check under `all`.** `createInternal` runs `checkCacheFreeMemoryIsGoodEnough` per store, and a private image
+never reaches it. `all` turns every missing output into such a store, so `/proc/meminfo` is parsed once per output on a first
+render, under `_getLock` (unmeasured; hits and refused outputs do not pay it). It also means the check sees allocations it
+used to miss, and memory that was private becomes accounted and evictable once its render lets go. Entries the frame still
+holds count in `getMemoryCacheSize` but cannot be evicted, so a shortfall can stop the loop with RAM still short, as private
+images did. The floor keeps today's blind spot: a refused output's allocation neither refreshes the budget's RAM term nor
+runs the check.
+
 **Broad graphs.** Many small entries: the scan is bounded by `evictionSample` per batch whatever the table holds, a header is a few hundred bytes, and the bitmap of a
 disk entry is not in RAM. The branch signal separates what is viewed from what is not. This is where `all` and `priorityFloor`
 differ.
@@ -761,7 +790,7 @@ M301.P2.T1 then extends this pass to device hits instead of walking on its own.
 | M300.P1.T4 | `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `Cache<T>` holds one entry type and constructs it at `:919`, so one cache cannot hold both without splitting it; the 2 GiB setting lives in Settings; the deep renderer calls `removeFromDeepImageCache` (`:563`). The hash needs its domain tag here. Node-cache clears, memory stats and pressure eviction now reach deep entries, and a holder purge ignores pins for them as it does for images |
 | M300.P2.T2 | Thread-local nested-time accumulator, `Engine/EffectInstance.cpp` | [A2](#assumptions-checked) |
 | M300.P2.T3 | `Engine/RenderScheduler.cpp`, `Engine/ViewerInstance.cpp`, `Engine/AppInstance.h/.cpp`, `Gui/Gui05.cpp`, `Gui/Gui20.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `:626` is a second consumer of `shouldCacheOutput`, unchanged here, and graph build passes edits through identities. The branch stamp is at the viewer's args setter rather than graph build, so that it also covers the legacy path and precedes admission; a render thread learns the active viewer from a pointer the GUI publishes. The hook is in `Engine/Node.cpp`, which is listed, rather than `Engine/Knob.cpp` |
-| M300.P2.T4 | `Engine/EffectInstanceRenderRoI.cpp`, retiring `aggressiveCaching` | The state record at `:1380`, and the setting now duplicating `all` |
+| M300.P2.T4 | `Engine/EffectInstanceRenderRoI.cpp`, `Engine/EffectInstance.h/.cpp`, `Engine/RenderScheduler.cpp`, `Engine/Node.cpp`, `Engine/AppManager.h/.cpp`, `Engine/Settings.h` | The state record, the shared admission question, and the aggressive caching preference `all` replaced. `Engine/Cache.h` needed no change |
 | M300.P3.T1 | `Engine/MemoryFile.h/.cpp`, `Engine/Image.cpp`, `Engine/DeepImage.h` | Reservation before mapping; bitmaps need persisting, since `onMemoryAllocated` starts restored entries unrendered (`:792`, changed in M300.P1.T3 rather than here); deep needs a writer and reader |
 | M300.P3.T2 | `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp` | `runningExecutableStamp` is file-local (`:67`) and has to stamp both executables; the old restore path lives in `AppManagerPrivate.cpp` and goes |
 

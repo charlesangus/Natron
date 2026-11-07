@@ -31,12 +31,14 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
 struct CacheEntryHeader;
+class CacheRetentionSignals;
 
 namespace CacheRetention {
 
@@ -53,6 +55,7 @@ const double kPanelHalfLifeNs = 60e9;
 const double kBranchHalfLifeNs = 600e9;
 
 const float kExpensiveCostNs = 16e6f;
+const float kAdmissionCostNs = 16e6f;
 
 // A slider drag and a viewer's every frame both land here. Far below any half-life, so skipping writes within it loses
 // nothing, and it keeps a signal's cache line from bouncing between the threads that read it.
@@ -72,9 +75,8 @@ enum ReasonEnum : unsigned {
     eReasonNoTiles = 1u << 6,
     eReasonNestedRender = 1u << 7,
     eReasonForced = 1u << 8,
-    eReasonAggressive = 1u << 9,
-    eReasonPreview = 1u << 10,
-    eReasonRotoEditing = 1u << 11
+    eReasonPreview = 1u << 9,
+    eReasonRotoEditing = 1u << 10
 };
 
 const unsigned kStructuralReasons = eReasonMultipleOutputs | eReasonRotoInput | eReasonStaticOutput | eReasonTemporalAccess | eReasonNoTiles | eReasonNestedRender | eReasonPreview | eReasonRotoEditing;
@@ -83,8 +85,37 @@ const unsigned kStructuralReasons = eReasonMultipleOutputs | eReasonRotoInput | 
 // stale signal.
 std::uint64_t nowNs();
 
-// Whether an output with these reasons goes in the cache, rather than into a private image.
-bool admit(unsigned reasons);
+// Values are the setting's choice indices.
+enum AdmissionPolicyEnum {
+    eAdmissionPolicyAll = 0,
+    eAdmissionPolicyPriorityFloor
+};
+
+const AdmissionPolicyEnum kDefaultAdmissionPolicy = eAdmissionPolicyPriorityFloor;
+
+// Empty for a null or unknown name.
+std::optional<AdmissionPolicyEnum> parseAdmissionPolicy(const char* name);
+
+void setAdmissionPolicySetting(AdmissionPolicyEnum policy);
+AdmissionPolicyEnum admissionPolicySetting();
+
+// Held apart from the setting so that either can be written first, and so that restoring preferences cannot undo it.
+void setAdmissionPolicyOverride(std::optional<AdmissionPolicyEnum> policy);
+std::optional<AdmissionPolicyEnum> admissionPolicyOverride();
+
+// NATRON_CACHE_ADMISSION. Read once at startup, since admission runs on every render call.
+void readAdmissionPolicyOverrideFromEnvironment();
+
+AdmissionPolicyEnum admissionPolicy();
+
+// Whether an output goes in the cache, rather than into a private image, under the current policy. Asked on every render
+// call, so the policy comes from an atomic rather than from the preferences.
+bool admit(unsigned reasons, const CacheRetentionSignals& retention);
+
+bool admitUnder(AdmissionPolicyEnum policy,
+                unsigned reasons,
+                const CacheRetentionSignals& retention,
+                std::uint64_t nowNs);
 
 } // namespace CacheRetention
 
@@ -112,6 +143,10 @@ public:
 
     double priority(std::uint64_t nowNs) const;
 
+    // Whether a user's activity still vouches for this node. Leaves out what renderRoI alone notes, the static output,
+    // so that the scheduler asking first gets the answer renderRoI gets.
+    bool hasLiveStamp(std::uint64_t nowNs) const;
+
     // True when this edit should reach the node's inputs, which a burst of edits does only once per granularity.
     bool noteEdited(std::uint64_t nowNs);
     void noteInputOfEdited(std::uint64_t nowNs);
@@ -130,7 +165,7 @@ public:
 
     void noteReasons(unsigned reasons);
 
-    // Apart from the other reasons because only renderRoI knows it: the scheduler asks about admission with a placeholder.
+    // Apart from the other reasons because it weighs for every node, while the reason exists only on a single output.
     void noteStaticOutput(bool isStatic);
 
     void rememberCost(float costNs);

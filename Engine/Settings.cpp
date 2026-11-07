@@ -54,6 +54,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
@@ -1495,15 +1496,25 @@ Settings::initializeKnobsCaching()
     /////////// Caching tab
     _cachingTab = AppManager::createKnob<KnobPage>( this, tr("Caching") );
 
-    _aggressiveCaching = AppManager::createKnob<KnobBool>( this, tr("Aggressive caching") );
-    _aggressiveCaching->setName("aggressiveCaching");
-    _aggressiveCaching->setHintToolTip( tr("When checked, %1 will cache the output of all images "
-                                           "rendered by all nodes, regardless of their \"Force caching\" parameter. When enabling this option "
-                                           "you need to have at least 8GiB of RAM, and 16GiB is recommended.\n"
-                                           "If not checked, %1 will only cache the  nodes "
-                                           "which have multiple outputs, or their parameter \"Force caching\" checked or if one of its "
-                                           "output has its settings panel opened.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _cachingTab->addKnob(_aggressiveCaching);
+    _cacheAdmissionPolicy = AppManager::createKnob<KnobChoice>(this, tr("Cache Admission Policy"));
+    _cacheAdmissionPolicy->setName("cacheAdmissionPolicy");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyAll);
+        entries.push_back(ChoiceOption("all",
+                                       tr("All").toStdString(),
+                                       tr("Store the output of every node. Nothing is evicted until the cache needs room.").toStdString()));
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyPriorityFloor);
+        entries.push_back(ChoiceOption("priorityFloor",
+                                       tr("Priority Floor").toStdString(),
+                                       tr("Store an output only when something asks for it: the node is on the active viewer's branch, feeds a recently edited node or an open panel, "
+                                          "was slow to render, has \"Force caching\" checked, or its output is read more than once.")
+                                           .toStdString()));
+        _cacheAdmissionPolicy->populateChoices(entries);
+    }
+    _cacheAdmissionPolicy->setHintToolTip(tr("Advanced. Which node outputs may enter the cache. An output stored earlier serves a render under either policy. "
+                                             "The NATRON_CACHE_ADMISSION environment variable (all or priorityFloor) takes precedence over this setting."));
+    _cachingTab->addKnob(_cacheAdmissionPolicy);
 
     _maxRAMPercent = AppManager::createKnob<KnobInt>( this, tr("Maximum amount of RAM memory used for caching (% of total RAM)") );
     _maxRAMPercent->setName("maxRAMPercent");
@@ -1786,7 +1797,7 @@ Settings::setDefaultValues()
 #endif
 
     // Caching
-    _aggressiveCaching->setDefaultValue(false);
+    _cacheAdmissionPolicy->setDefaultValue((int)CacheRetention::kDefaultAdmissionPolicy);
     _maxRAMPercent->setDefaultValue(50, 0);
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
@@ -2388,6 +2399,7 @@ Settings::restoreSettings(bool useDefault)
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
     } catch (std::logic_error&) {
         // ignore
@@ -2544,6 +2556,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
+    } else if (k == _cacheAdmissionPolicy.get()) {
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
         if (!_restoringSettings) {
             tryLoadOpenColorIOConfig();
@@ -2752,12 +2766,6 @@ Settings::getRenderSchedulerMode() const
 }
 
 // "Caching" pane
-
-bool
-Settings::isAggressiveCachingEnabled() const
-{
-    return _aggressiveCaching->getValue();
-}
 
 double
 Settings::getRamMaximumPercent() const

@@ -818,6 +818,25 @@ EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     return n->shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
 }
 
+bool
+EffectInstance::admitsOutputToCache(const RenderContextPtr& context,
+                                    const ParallelRenderArgs& frameArgs,
+                                    bool isFrameVaryingOrAnimated,
+                                    double time,
+                                    ViewIdx view,
+                                    const EffectInstance* caller) const
+{
+    if (renderContextHasLoopVariables(context)) {
+        return false;
+    }
+    // Whatever the policy: an analysis is likely to ask its input for the same image again.
+    if (frameArgs.isAnalysis && (frameArgs.treeRoot->getEffectInstance().get() == caller)) {
+        return true;
+    }
+
+    return shouldCacheOutput(isFrameVaryingOrAnimated, time, view, frameArgs.visitsCount);
+}
+
 const std::string &
 EffectInstance::getScriptName() const
 {

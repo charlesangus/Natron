@@ -417,8 +417,6 @@ public:
      **/
     bool didSettingsExistOnStartup() const;
 
-    bool isAggressiveCachingEnabled() const;
-
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     GpuComputeModeEnum getGpuComputeMode() const;
@@ -649,7 +647,7 @@ private:
 
     // Caching
     KnobPagePtr _cachingTab;
-    KnobBoolPtr _aggressiveCaching;
+    KnobChoicePtr _cacheAdmissionPolicy;
     ///The percentage of the value held by _maxRAMPercent to dedicate to playback cache (viewer cache's in-RAM portion) only
     KnobStringPtr _maxPlaybackLabel;
 

@@ -26,8 +26,10 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -41,6 +43,7 @@
 #include "Engine/Cache.h"
 #include "Engine/CacheRetention.h"
 #include "Engine/CacheTier.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
@@ -141,7 +144,7 @@ TEST(CacheRetentionTest, ReasonsMapToTheirWeights)
     }
 
     // These hold a place in admission only: their meaning reaches the priority through the panel and branch stamps.
-    retention.noteReasons(CacheRetention::eReasonViewerInput | CacheRetention::eReasonOutputPanel | CacheRetention::eReasonAggressive);
+    retention.noteReasons(CacheRetention::eReasonViewerInput | CacheRetention::eReasonOutputPanel);
     EXPECT_DOUBLE_EQ(CacheEviction::kNeutralPriority, retention.priority(kStartNs));
 
     retention.noteReasons(0);
@@ -164,12 +167,141 @@ TEST(CacheRetentionTest, ACostAtTheThresholdCountsAsExpensive)
     EXPECT_DOUBLE_EQ(1. + CacheRetention::kExpensiveWeight, retention.priority(kStartNs));
 }
 
-TEST(CacheRetentionTest, AdmissionIsAnyReason)
+TEST(CacheRetentionTest, AllAdmitsACheapUnflaggedOutputAndTheFloorRefusesIt)
 {
-    EXPECT_FALSE(CacheRetention::admit(0));
+    CacheRetentionSignals cheap;
+    cheap.rememberCost(CacheRetention::kAdmissionCostNs / 2.f);
+
+    EXPECT_TRUE(CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyAll, 0, cheap, kStartNs));
+    EXPECT_FALSE(CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyPriorityFloor, 0, cheap, kStartNs));
+}
+
+TEST(CacheRetentionTest, TheFloorAdmitsAnyReason)
+{
+    const CacheRetentionSignals retention;
+
     for (unsigned bit = CacheRetention::eReasonMultipleOutputs; bit <= CacheRetention::eReasonRotoEditing; bit <<= 1) {
-        EXPECT_TRUE(CacheRetention::admit(bit));
+        EXPECT_TRUE(CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyPriorityFloor, bit, retention, kStartNs)) << bit;
     }
+}
+
+TEST(CacheRetentionTest, TheFloorAdmitsEachActivitySignalUntilItHasDecayed)
+{
+    const auto floorAdmits = [](const CacheRetentionSignals& retention, std::uint64_t now) {
+        return CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyPriorityFloor, 0, retention, now);
+    };
+    const auto cutoffOf = [](double halfLifeNs) {
+        return kStartNs + (std::uint64_t)(CacheRetention::kDecayCutoffHalfLives * halfLifeNs);
+    };
+
+    CacheRetentionSignals edited;
+    edited.noteInputOfEdited(kStartNs);
+    EXPECT_TRUE(floorAdmits(edited, kStartNs));
+    EXPECT_FALSE(floorAdmits(edited, cutoffOf(CacheRetention::kEditHalfLifeNs)));
+
+    CacheRetentionSignals panel;
+    panel.notePanelOfOutput(kStartNs);
+    EXPECT_TRUE(floorAdmits(panel, kStartNs));
+    EXPECT_FALSE(floorAdmits(panel, cutoffOf(CacheRetention::kPanelHalfLifeNs)));
+
+    CacheRetentionSignals branch;
+    branch.noteViewerBranch(kStartNs);
+    EXPECT_TRUE(floorAdmits(branch, kStartNs));
+    EXPECT_FALSE(floorAdmits(branch, cutoffOf(CacheRetention::kBranchHalfLifeNs)));
+}
+
+TEST(CacheRetentionTest, TheFloorAdmitsARememberedCostAtTheThreshold)
+{
+    CacheRetentionSignals retention;
+
+    retention.rememberCost(CacheRetention::kAdmissionCostNs);
+    EXPECT_TRUE(CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyPriorityFloor, 0, retention, kStartNs));
+}
+
+// renderRoI notes this before it asks and the scheduler does not, so it must not change the answer.
+TEST(CacheRetentionTest, TheFloorIgnoresTheNotedStaticOutput)
+{
+    CacheRetentionSignals retention;
+
+    retention.noteStaticOutput(true);
+    EXPECT_FALSE(CacheRetention::admitUnder(CacheRetention::eAdmissionPolicyPriorityFloor, 0, retention, kStartNs));
+}
+
+TEST(CacheRetentionTest, PolicyNamesParseAndAnythingElseIsEmpty)
+{
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyAll, CacheRetention::parseAdmissionPolicy("all"));
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyPriorityFloor, CacheRetention::parseAdmissionPolicy("priorityFloor"));
+    EXPECT_FALSE(CacheRetention::parseAdmissionPolicy(nullptr).has_value());
+    EXPECT_FALSE(CacheRetention::parseAdmissionPolicy("").has_value());
+    EXPECT_FALSE(CacheRetention::parseAdmissionPolicy("ALL").has_value());
+}
+
+// Puts back the process's policy and environment, whatever a test or the runner's own environment set.
+class ScopedAdmissionState {
+public:
+    ScopedAdmissionState()
+        : _setting(CacheRetention::admissionPolicySetting())
+        , _override(CacheRetention::admissionPolicyOverride())
+    {
+        const char* env = std::getenv(kVariable);
+        if (env) {
+            _env = env;
+        }
+    }
+
+    ~ScopedAdmissionState()
+    {
+        if (_env) {
+            setenv(kVariable, _env->c_str(), 1);
+        } else {
+            unsetenv(kVariable);
+        }
+        CacheRetention::setAdmissionPolicySetting(_setting);
+        CacheRetention::setAdmissionPolicyOverride(_override);
+    }
+
+    ScopedAdmissionState(const ScopedAdmissionState&) = delete;
+    ScopedAdmissionState& operator=(const ScopedAdmissionState&) = delete;
+
+    static constexpr const char* kVariable = "NATRON_CACHE_ADMISSION";
+
+private:
+    const CacheRetention::AdmissionPolicyEnum _setting;
+    const std::optional<CacheRetention::AdmissionPolicyEnum> _override;
+    std::optional<std::string> _env;
+};
+
+TEST(CacheRetentionTest, TheEnvironmentOverridesTheSettingWhicheverIsWrittenLast)
+{
+    const ScopedAdmissionState restore;
+
+    CacheRetention::setAdmissionPolicySetting(CacheRetention::eAdmissionPolicyPriorityFloor);
+    setenv(ScopedAdmissionState::kVariable, "all", 1);
+    CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyAll, CacheRetention::admissionPolicy());
+
+    CacheRetention::setAdmissionPolicySetting(CacheRetention::eAdmissionPolicyPriorityFloor);
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyAll, CacheRetention::admissionPolicy());
+
+    const CacheRetentionSignals unflagged;
+    EXPECT_TRUE(CacheRetention::admit(0, unflagged));
+
+    unsetenv(ScopedAdmissionState::kVariable);
+    CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyPriorityFloor, CacheRetention::admissionPolicy());
+    EXPECT_FALSE(CacheRetention::admit(0, unflagged));
+}
+
+TEST(CacheRetentionTest, AnUnknownEnvironmentValueLeavesTheSettingInCharge)
+{
+    const ScopedAdmissionState restore;
+
+    CacheRetention::setAdmissionPolicySetting(CacheRetention::eAdmissionPolicyAll);
+    setenv(ScopedAdmissionState::kVariable, "everything", 1);
+    CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
+
+    EXPECT_FALSE(CacheRetention::admissionPolicyOverride().has_value());
+    EXPECT_EQ(CacheRetention::eAdmissionPolicyAll, CacheRetention::admissionPolicy());
 }
 
 TEST(CacheRetentionTest, AnEditBurstReachesTheInputsOncePerGranularity)
@@ -347,6 +479,48 @@ TEST_F(CacheRetentionCacheTest, OnlyARenderServedByTheEntryCountsAsReuse)
     EXPECT_EQ(1u, header.reuseCount.load());
 
     EXPECT_GT(constant->getRetentionSignals()->priority(CacheRetention::nowNs()), CacheRetention::kForcedWeight);
+}
+
+TEST_F(CacheRetentionCacheTest, AnEntryStoredUnderAllServesANodeNowBelowTheFloorAsAHit)
+{
+    const ScopedAdmissionState restore;
+    const AppInstancePtr app = getApp();
+    clearEverything(app);
+
+    app->getProject()->setOrAddProjectFormat(Format(0, 0, kWindow.x2, kWindow.y2, "cacheRetention", 1.));
+    const NodePtr constant = createConstantIn(app, app->getProject(), kWindow, { 0.25, 0.5, 0.75, 1. });
+    ASSERT_TRUE(bool(constant));
+
+    RenderedPlane plane;
+    std::string error;
+
+    CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyPriorityFloor);
+    EXPECT_FALSE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
+    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    EXPECT_EQ(EffectInstance::eRenderCacheStateBypass, EffectInstance::takeLastRenderCacheState());
+    EXPECT_FALSE(bool(appPTR->getNodeCacheHostTier().demotionCandidate()));
+
+    CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyAll);
+    EXPECT_TRUE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
+    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    EXPECT_EQ(EffectInstance::eRenderCacheStateMiss, EffectInstance::takeLastRenderCacheState());
+
+    const ImagePtr entry = std::dynamic_pointer_cast<Image>(appPTR->getNodeCacheHostTier().demotionCandidate());
+    ASSERT_TRUE(bool(entry));
+    const CacheEntryHeader& header = *entry->getEntryHeader();
+    EXPECT_EQ(0u, header.reuseCount.load());
+
+    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    EXPECT_EQ(EffectInstance::eRenderCacheStateHit, EffectInstance::takeLastRenderCacheState());
+    EXPECT_EQ(1u, header.reuseCount.load());
+
+    // A slow first render would have earned the node a place above the floor.
+    constant->getRetentionSignals()->rememberCost(0.f);
+    CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyPriorityFloor);
+    EXPECT_FALSE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
+    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    EXPECT_EQ(EffectInstance::eRenderCacheStateHit, EffectInstance::takeLastRenderCacheState());
+    EXPECT_EQ(2u, header.reuseCount.load());
 }
 
 TEST_F(CacheRetentionCacheTest, AKnobEditBoostsADirectInputAndNothingFurtherUp)

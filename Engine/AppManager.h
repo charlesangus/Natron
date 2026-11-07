@@ -223,8 +223,8 @@ public:
                                     ImagePtr* returnValue) const;
 
     /**
-     * @brief Same as getImage/getImageOrCreate but for the deep image cache, which has its own
-     * memory budget separate from the regular image cache above.
+     * @brief Same as getImage/getImageOrCreate but for deep images, which live in the node cache
+     * next to images and under the same budget. Neither ever finds the other's entries.
      **/
     bool getDeepImage(const DeepImageKey& key, std::list<DeepImageCacheEntryPtr>* returnValue) const;
 
@@ -262,17 +262,15 @@ public:
 
     void setApplicationsCachesMaximumDiskSpace(unsigned long long size);
 
-    void setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size);
-
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
 
     /**
-     * @brief Drops one deep image entry. A cache entry is sealed as soon as it is created, i.e.
+     * @brief Drops one deep entry from the node cache. A cache entry is sealed as soon as it is created, i.e.
      * before its payload exists, so a deep render that aborts or fails must take its own
      * half-built entry back out rather than leave it to be found by the next lookup.
      **/
-    void removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry);
+    void removeFromNodeCache(const DeepImageCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
     void removeFromViewerCache(U64 hash);
@@ -388,9 +386,8 @@ public:
     void checkCacheFreeMemoryIsGoodEnough();
 
     /**
-     * @brief Evicts a single least-recently-used in-memory entry from each of the app-wide
-     * in-memory caches (the node cache and the deep image cache). Returns true if at least one
-     * entry was evicted from either cache.
+     * @brief Evicts the least-recently-used in-memory entry of the node cache, image or deep.
+     * Returns true if an entry was evicted.
      **/
     bool evictLRUFromMemoryCaches();
 

@@ -31,10 +31,13 @@ DeepImageCacheEntry::DeepImageCacheEntry(const DeepImageKey& key,
                                          const DeepImageParamsPtr& params,
                                          const CacheAPI* cache)
     : CacheEntryHelper<char, DeepImageKey, DeepImageParams>(key, params, cache)
+    , _header(std::make_shared<CacheEntryHeader>())
     , _deepImage(std::make_shared<DeepImage>(params->getBounds(), key.getRenderScale(), key.getView()))
     , _accountedSize(0)
     , _sizeAccounted(false)
 {
+    _header->key = std::make_shared<const DeepImageKey>(getKey());
+    _header->bounds = params->getBounds();
 }
 
 DeepImageCacheEntry::~DeepImageCacheEntry()
@@ -43,6 +46,41 @@ DeepImageCacheEntry::~DeepImageCacheEntry()
     assert(!_sizeAccounted || _accountedSize == _deepImage->getSizeInBytes());
 #endif
     deallocate();
+}
+
+void
+DeepImageCacheEntry::allocateMemory()
+{
+    std::size_t accounted;
+    {
+        QWriteLocker k(&_entryLock);
+        if (_sizeAccounted) {
+            return;
+        }
+        accounted = _deepImage->getSizeInBytes();
+        _accountedSize = accounted;
+        _sizeAccounted = true;
+    }
+    if (getCacheAPI()) {
+        getCacheAPI()->notifyEntryAllocated(getTime(), accounted, eStorageModeRAM);
+    }
+}
+
+void
+DeepImageCacheEntry::deallocate()
+{
+    std::size_t accounted;
+    {
+        QWriteLocker k(&_entryLock);
+        if (!_sizeAccounted) {
+            return;
+        }
+        accounted = _accountedSize;
+        _sizeAccounted = false;
+    }
+    if (getCacheAPI()) {
+        getCacheAPI()->notifyEntryDestroyed(getTime(), accounted, eStorageModeRAM);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

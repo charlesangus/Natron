@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+
 #include "Engine/CacheEntry.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageKey.h"
@@ -37,23 +39,19 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The Cache<DeepImageCacheEntry> entry type. DeepImage itself stays a plain COW value
- * with no knowledge of the cache; this wrapper is what implements CacheEntryHelper's contract,
- * holding a DeepImage alongside the generic (and here unused-for-payload) buffer that
- * CacheEntryHelper manages internally.
+ * @brief The deep payload of the node cache, next to Image. DeepImage itself stays a plain COW
+ * value with no knowledge of the cache; this wrapper is what the cache stores, finds and evicts.
  *
- * size() overrides CacheEntryHelper's default (which measures that generic buffer) to report
- * getDeepImage()->getSizeInBytes() instead -- the real, aliasing-blind cost of the payload. This
- * override must still run through the ordinary allocateMemory()/deallocate() path so the cache's
- * running byte total stays in sync (see DeepImageParams for why that path is RAM-backed at all
- * despite the real payload not living in it). Populate the DeepImage completely -- sample table
- * and channels -- before calling allocateMemory(): that call is the one point where the cache
- * captures this entry's byte cost, and mutating the DeepImage afterwards does not update it.
+ * A deep image's size is known only after it has rendered, whereas the cache seals an entry before
+ * that. So the generic buffer of CacheEntryHelper stays unallocated (its storage info says
+ * eStorageModeNone), the entry costs nothing while it renders, and allocateMemory() below reports
+ * the real, aliasing-blind cost of the payload. Populate the DeepImage completely -- sample table
+ * and channels -- before calling it: that call is the one point where the cache captures this
+ * entry's byte cost, and mutating the DeepImage afterwards does not update it.
  *
- * Like Image, this class must call deallocate() from its own destructor body (not rely on
- * ~CacheEntryHelper() to do it), because by the time the base destructor runs, virtual dispatch
- * no longer reaches this class's size() override, and the byte count reported to the cache would
- * silently drop to whatever the untouched generic buffer measures.
+ * Like Image, this class must call deallocate() from its own destructor body, because by the time
+ * the base destructor runs, virtual dispatch no longer reaches the override below and the cache
+ * would never get this entry's bytes back.
  **/
 class DeepImageCacheEntry
     : public CacheEntryHelper<char, DeepImageKey, DeepImageParams> {
@@ -69,38 +67,50 @@ public:
         return _deepImage;
     }
 
+    /**
+     * @brief The entry's image, under a pointer that shares ownership with the entry. The cache
+     * evicts what nothing but the cache holds, so a consumer must hold this one for the entry to
+     * stay pinned the way an ImagePtr pins an Image. Never store it in the entry: that is a cycle.
+     **/
+    static DeepImagePtr pinnedDeepImage(const DeepImageCacheEntryPtr& entry)
+    {
+        return DeepImagePtr(entry, entry->getDeepImage().get());
+    }
+
+    const CacheEntryHeaderPtr& getEntryHeader() const
+    {
+        return _header;
+    }
+
     // False from construction until renderDeepRoI() has actually populated the sample table and
-    // channels and called allocateMemory() (the same instant onMemoryAllocated() below fires):
-    // a cache lookup that finds this entry before then would otherwise hand out an empty payload
-    // that just happens to have the right bounds.
+    // channels and called allocateMemory(): a cache lookup that finds this entry before then would
+    // otherwise hand out an empty payload that just happens to have the right bounds.
     bool isFullyRendered() const
     {
         return _sizeAccounted;
     }
 
-    // The cache adds this entry's cost exactly once, from within allocateMemory(), and later
-    // subtracts whatever size() reports at that same instant during deallocate(). Snapshotting
-    // here (rather than measuring the DeepImage live in size()) keeps those two numbers equal
-    // even if the payload is mutated in between, which would otherwise desync the cache's running
-    // total and, via the clamp on underflow, silently disable eviction.
-    virtual void onMemoryAllocated(bool /*diskRestoration*/) OVERRIDE FINAL
-    {
-        _accountedSize = _deepImage ? _deepImage->getSizeInBytes() : 0;
-        _sizeAccounted = true;
-    }
+    // Hides CacheEntryHelper::allocateMemory(), which has no buffer to allocate here. The cache
+    // never allocates an entry itself and every caller holds the typed pointer.
+    void allocateMemory();
 
+    virtual void deallocate() OVERRIDE FINAL;
+
+    // The cache adds this entry's cost exactly once, from within allocateMemory(), and later
+    // subtracts this during deallocate(). A snapshot rather than a live measure keeps those two
+    // numbers equal even if the payload is mutated in between, which would otherwise desync the
+    // cache's running total and, via the clamp on underflow, silently disable eviction. It also
+    // makes this safe to call while the entry renders, as cache statistics and eviction do.
     virtual size_t size() const OVERRIDE
     {
-        if (_sizeAccounted) {
-            return _accountedSize;
-        }
-        return _deepImage ? _deepImage->getSizeInBytes() : 0;
+        return _sizeAccounted ? _accountedSize : 0;
     }
 
 private:
+    CacheEntryHeaderPtr _header;
     DeepImagePtr _deepImage;
     std::size_t _accountedSize;
-    bool _sizeAccounted;
+    std::atomic<bool> _sizeAccounted;
 };
 
 NATRON_NAMESPACE_EXIT

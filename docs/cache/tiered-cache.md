@@ -114,12 +114,12 @@ pixels in RAM.
 | Field | Type | Written | Purpose |
 | --- | --- | --- | --- |
 | `key` | `shared_ptr<const KeyHelper<U64>>` | at creation | identity; `ImageKey` and `DeepImageKey` both derive from `KeyHelper<U64>` (`Engine/ImageKey.h:37`, `Engine/DeepImageKey.h:43`) |
-| `hash` | `U64` | at creation | table key, with a payload domain tag so an image and a deep key cannot share a bucket by accident |
+| `hash` | `U64` | at creation | table key; `DeepImageKey::fillHash` (`Engine/DeepImageKey.cpp`) starts with a domain tag so an image and a deep key cannot share a bucket by accident, and `ImageKey` needs none |
 | `payload` | enum: image, deep | at creation | selects the typed entry and the file format |
 | `holder` | interned `U32` | creation, hit | reference into `CacheRetention`, from `CacheEntryHolder::getCacheID()` |
 | `bounds` | `RectI` | under `_entryLock` | as `Image::getBounds` (`Engine/Image.h:287`) |
 | `bitmap` | `Bitmap`, absent for deep | under `_entryLock` | the trimap (`Engine/Image.h:67-169`); null in RAM while the entry is disk-resident |
-| `pending` | `ImageBeingRenderedPtr` | under its reservation stripe | the entry's slot in the being-rendered registry |
+| `pending` | `ImageBeingRenderedPtr` | under the entry's `pendingLock` | the entry's slot in the being-rendered registry; see [A1](#assumptions-checked) for why not the stripe |
 | `residency` | atomic mask: host, disk, device | tier moves | which tiers hold a copy; a mask because a device and a host copy can coexist |
 | `bytes` | atomic `size_t` | allocation, resize | payload plus bitmap, as `Image::size` (`Engine/Image.h:293-304`) |
 | `state` | atomic enum: normal, demoting, promoting | tier moves | a move in flight, which a lookup can overtake |
@@ -136,13 +136,18 @@ An `Image` always has a header, including uncached images built with `useBitmap`
 the pixels and delegates. A demoted entry keeps its `Image` object and swaps the buffer, as `deallocate` does today
 (`Engine/CacheEntry.h:963-991`), so the pointer the registry and every holder use stays valid.
 
-Partially rendered entries: an entry can only move once no render holds it, so it contains only 0 and 1 in its bitmap;
-the 2 ("being rendered") never reaches disk, and the writer converts any it finds to 0. On demotion the bitmap goes to
-the entry's file and leaves RAM. It cannot stay: a 20 GiB tier of float RGBA is 1.3 G pixels, so 1.3 GiB of RAM at
-one byte per pixel. Promotion reads it back. `Image::onMemoryAllocated` must stop forcing every restored pixel to
-rendered (`bitmap.setTo1()`, `Engine/Image.cpp:782-784`), which would turn a partial entry into a full one.
+Partially rendered entries: an entry can only move once no render holds it, so it normally contains only 0 and 1 in its
+bitmap. It is not only 0 and 1 in the stale-marker windows described under [Pins and holds](#pins-and-holds), where a
+render keeps its marks without a hold. The 2 ("being rendered") still never reaches disk, because the writer converts any
+it finds to 0, which also covers those windows. On demotion the bitmap goes to the entry's file and leaves RAM. It cannot
+stay: a 20 GiB tier of float RGBA is 1.3 G pixels, so 1.3 GiB of RAM at one byte per pixel. Promotion reads it back.
+`Image::onMemoryAllocated` no longer forces every restored pixel to rendered (`Engine/Image.cpp:792`, changed in
+M300.P1.T3), which would have turned a partial entry into a full one.
 
-Deep entries have no bitmap and stay all-or-nothing (`isFullyRendered`, `Engine/DeepImageCacheEntry.h:76`).
+Deep entries have no bitmap and stay all-or-nothing (`isFullyRendered`, `Engine/DeepImageCacheEntry.h:88`). Their header
+carries the key and bounds only. A deep entry costs nothing from creation until `allocateMemory()` after its render, when
+its real size is captured once and reported to the cache, and the render then trims the cache to its budget, because
+eviction at creation could not know that size.
 
 ## Tier interface
 
@@ -290,9 +295,18 @@ Retire it with no migration.
 Two different things, both of which the score skips.
 
 **An in-use hold** is "pinned" in the milestone's edge case, and exists today: a `shared_ptr` beyond the cache's own
-(`use_count() == 1` is the test, `Engine/LRUHashTable.h:651`). The frame store, the being-rendered registry and any
-running render hold one, and now the pruning pass. Such an entry is never demoted, and the writer's own reference does
-not count as a render's. It ends when the render lets go.
+(`use_count() == 1` is the test, `Engine/LRUHashTable.h:651`). The frame store and any running render hold one, and now
+the pruning pass. Such an entry is never demoted, and the writer's own reference does not count as a render's. It ends
+when the render lets go.
+
+The being-rendered registry does not hold one: since M300.P1.T3 the slot lives in the header and keeps no `ImagePtr`. A
+render normally holds its image for as long as its marker exists, but not everywhere. `renderRoI` drops its pointers while
+its marks stand before the re-lookup (`Engine/EffectInstanceRenderRoI.cpp:1267`), and swaps the cache image for a resized
+one (`:1524`). In those stale-marker windows an image can be evicted with its slot, and a waiter holding that slot's
+`ImageBeingRenderedPtr` finds its image gone rather than kept alive by the registry.
+
+A deep render hands its consumer a `DeepImagePtr`, not the entry, so that pointer shares ownership with the entry
+(`DeepImageCacheEntry::pinnedDeepImage`, `Engine/DeepImageCacheEntry.h:75`) and pins it as an `ImagePtr` pins an `Image`.
 
 **A pin** is a DiskCache node output (M300.P3.T3):
 
@@ -383,6 +397,9 @@ At start, in the slot of `restoreCaches` (`Engine/AppManager.cpp:1135`), after t
 4. Enter each entry as disk-resident, with no RAM and no bitmap. Over budget (a lowered preference, less free space):
    apply the score now.
 
+Since M300.P1.T3 `Image::onMemoryAllocated` starts a restored entry unrendered, since nothing records which of its pixels
+were rendered. A restored entry therefore re-renders on a hit until bitmaps persist in M300.P3.
+
 A restored entry is found only when the session computes the same key. It does:
 
 - Hashes are stable across sessions and AppImage remounts, by test (`docs/cache-invalidation/keys.md`, "Stability across
@@ -449,11 +466,11 @@ device. A mip-0 output of a non-scaling node is its own entry once mip is in the
 
 | Class | Today | Becomes |
 | --- | --- | --- |
-| `Cache<T>` (`Engine/Cache.h:396-397`) | One entry type per instance, constructed at `:919`; four instances (`Engine/AppManager.cpp:1105-1115`); LRU and RAM/disk split inside | `Cache<FrameEntry>` stays as it is for `ViewerCache`, tiles and own budget. `NodeCache`, `DeepImageCache` and `DiskCache` go into one non-template tiered cache with typed `Image` and `DeepImageCacheEntry` accessors, so `AppManager`'s getters keep their shape. The typing must be split for M300.P1.T4 |
+| `Cache<T>` (`Engine/Cache.h:396-397`) | One entry type per instance, constructed at `:919`; four instances (`Engine/AppManager.cpp:1105-1115`); LRU and RAM/disk split inside | `Cache<FrameEntry>` stays as it is for `ViewerCache`, tiles and own budget. `NodeCache`, `DeepImageCache` and `DiskCache` go into one non-template tiered cache with typed `Image` and `DeepImageCacheEntry` accessors, so `AppManager`'s getters keep their shape. As of M300.P1.T4 the deep entries are in `NodeCache`, which is still `Cache<Image>`: its containers hold `AbstractCacheEntryBase` pointers, and `get` and `getOrCreate` are member templates on the payload that filter by type. `DiskCache` and the non-template cache remain ahead |
 | `LRUHashTable` (`Engine/LRUHashTable.h`) | Active variant `BoostLRUHashTable` (`:578`), since `NATRON_CACHE_USE_HASH` and `NATRON_CACHE_USE_BOOST` are defined (`:67-69`); the milestone's `:199` is an inactive one. Any lookup moves to most recent; `evict` (`:646`) takes the front with `use_count() == 1` (`:651`) | Used only by `Cache<FrameEntry>`. The tiered cache uses a plain hash table of entry lists, with recency in the header. M300.P2.T2 lists this file; nothing changes in it |
 | `CacheEntryHolder` (`Engine/CacheEntryHolder.h:40-57`) | Interface with `getCacheID()`, a UUID on `Node` (`Engine/Node.cpp:912`) | Unchanged. Still owner identity for removal and stats, and now the key into `CacheRetention`, interned on the header |
 | `HostImageMemory` (`Engine/HostImageMemory.h`) | Pooled importable RAM; pool counts against the limit and is trimmed first (`trimTo`, `Engine/Cache.h:839`, `:1170-1176`) | The host tier's allocator, unchanged. The tier trims the idle pool before scoring anything. Promotion allocates here, so a promoted entry stays importable |
-| `DeepImageCacheEntry` (`Engine/DeepImageCacheEntry.h:58-59`) | `CacheEntryHelper<char, …>` with `DeepImagePtr` beside an unused generic buffer; size snapshot at `:86-90`; its own 2 GiB instance | A payload type with a header, without the buffer accounting. Its size is real bytes for the score. The old reason for its own budget (`Engine/AppManager.cpp:1112-1113`, a big deep render would evict all 2D) is answered by the score: large and cheap goes first, whatever the type |
+| `DeepImageCacheEntry` (`Engine/DeepImageCacheEntry.h:58-59`) | `CacheEntryHelper<char, …>` with `DeepImagePtr` beside an unused generic buffer; size snapshot at `:86-90`; its own 2 GiB instance | A payload type with a header, without the buffer accounting (done in M300.P1.T4, its instance and setting retired). Its size is real bytes for the score. The old reason for its own budget (`Engine/AppManager.cpp:1112-1113`, a big deep render would evict all 2D) is answered by the score: large and cheap goes first, whatever the type |
 | `MemoryFile` (`Engine/MemoryFile.h`) | One mapped file, not MT-safe (`:43`); destructor keeps the file (`:98-100`) | Backs entry files and pins, used by one thread at a time. Needs a reservation step before mapping (`Engine/MemoryFile.cpp:304`) |
 
 Also: `ImageKey` gains mip level, layer and bit depth (`Engine/ImageKey.h:42-51`, `Engine/ImageKey.cpp` `fillHash` and
@@ -492,15 +509,21 @@ differ.
 `waitForImageBeingRenderedElsewhere`. True, with conditions.**
 
 - The registry is not in `Image` today. It is a global map keyed by `ImagePtr`, leaked on purpose
-  (`Engine/EffectInstancePrivate.cpp:835-861`). Holding it per entry removes `registry.mutex` and the recheck at `:999-1003`.
+  (`Engine/EffectInstancePrivate.cpp:835-861`). Holding it per entry removes `registry.mutex`. The recheck at `:999-1003` stays:
+  the race between the last unmarker and a new mark outlives the global map.
+- Each entry has its own `pendingLock` for its slot, not the reservation stripe the first draft of this note named. The stripe
+  is held across bitmap scans, so a wait and an unmark would stall behind it, and taking it there risks deadlock with
+  `_entryLock`.
 - Keep the reservation stripes. One render must reserve its rectangles on all its layers before another queries any
   (`:836-839`, `:884`), and that is a property across entries, which no per-entry slot gives.
 - Keep the bitmap under `_entryLock` as well as `ibr->lock`: `getRestToRender_trimap` takes the former
   (`Engine/Image.h:570-579`), the wait holds the latter (`Engine/EffectInstancePrivate.cpp:945-952`), and `ensureBounds` swaps the
   bitmap together with the buffer under the former (`Engine/Image.cpp:1144-1158`).
 - Uncached images use it too, so `Image` always has a header.
-- An entry with a waiter or writer is held by `ImagePtr`, so it cannot be demoted, and the pointer keeps its identity across
-  moves. The semantics survive tiers for that reason.
+- An entry with a writer is held by `ImagePtr`, so it cannot be demoted, and the pointer keeps its identity across moves. A
+  waiter holds the slot, not the image, and the registry no longer holds an `ImagePtr`, so outside the windows named in
+  [Pins and holds](#pins-and-holds) the wait is covered by the render's own hold and in those windows the image can be
+  evicted with its slot. The semantics survive tiers on those terms.
 
 **A2: recompute cost can be measured as the node's own render wall time, "already split out per task by the scheduler". False as
 stated.** Own wall time is the right quantity, and M300.P2.T2 records it in the right file, but nothing provides it today:
@@ -573,11 +596,11 @@ M301.P2.T1 then extends this pass to device hits instead of walking on its own.
 | --- | --- | --- |
 | M300.P1.T2 | `Engine/GpuPlacement.cpp` | It builds an `ImageKey` itself (`:1032`) and would stop matching |
 | M300.P1.T2 | Key serialization | The new fields must persist with the key |
-| M300.P1.T4 | `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `Cache<T>` holds one entry type and constructs it at `:919`, so one cache cannot hold both without splitting it; the 2 GiB setting lives in Settings; the deep renderer calls `removeFromDeepImageCache` (`:563`). The hash needs its domain tag here |
+| M300.P1.T4 | `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `Cache<T>` holds one entry type and constructs it at `:919`, so one cache cannot hold both without splitting it; the 2 GiB setting lives in Settings; the deep renderer calls `removeFromDeepImageCache` (`:563`). The hash needs its domain tag here. Node-cache clears, memory stats and pressure eviction now reach deep entries, and a holder purge ignores pins for them as it does for images |
 | M300.P2.T2 | Thread-local nested-time accumulator, `Engine/EffectInstance.cpp` | [A2](#assumptions-checked) |
 | M300.P2.T3 | `Engine/RenderScheduler.cpp` | `:626` is a second consumer of `shouldCacheOutput`, and graph build refreshes the panel and branch signals. The hook is in `Engine/Node.cpp:2050`, which is listed, rather than `Engine/Knob.cpp` |
 | M300.P2.T4 | `Engine/EffectInstanceRenderRoI.cpp`, retiring `aggressiveCaching` | The state record at `:1380`, and the setting now duplicating `all` |
-| M300.P3.T1 | `Engine/MemoryFile.h/.cpp`, `Engine/Image.cpp`, `Engine/DeepImage.h` | Reservation before mapping; `onMemoryAllocated` forces restored bitmaps full (`:782-784`); deep needs a writer and reader |
+| M300.P3.T1 | `Engine/MemoryFile.h/.cpp`, `Engine/Image.cpp`, `Engine/DeepImage.h` | Reservation before mapping; bitmaps need persisting, since `onMemoryAllocated` starts restored entries unrendered (`:792`, changed in M300.P1.T3 rather than here); deep needs a writer and reader |
 | M300.P3.T2 | `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp` | `runningExecutableStamp` is file-local (`:67`); the restore path lives there |
 
 **3. M300.P4.T1 cannot discriminate the policies on its current graph.** See [Admission](#admission). Proposed addition to its approach:

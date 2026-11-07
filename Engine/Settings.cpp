@@ -1510,8 +1510,9 @@ Settings::initializeKnobsCaching()
     _maxRAMPercent->disableSlider();
     _maxRAMPercent->setMinimum(0);
     _maxRAMPercent->setMaximum(100);
-    QString ramHint( tr("This setting indicates the percentage of the total RAM which can be used by the memory caches. "
-                        "This system has %1 of RAM.").arg( printAsRAM( getSystemTotalRAM() ) ) );
+    QString ramHint(tr("This setting indicates the percentage of the total RAM which can be used by the memory caches, images and deep images alike. "
+                       "This system has %1 of RAM.")
+                        .arg(printAsRAM(getSystemTotalRAM())));
     if ( isApplication32Bits() && (getSystemTotalRAM() > 4ULL * 1024ULL * 1024ULL * 1024ULL) ) {
         ramHint.append( QString::fromUtf8("\n") );
         ramHint.append( tr("The version of %1 you are running is 32 bits, which means the available RAM "
@@ -1566,16 +1567,6 @@ Settings::initializeKnobsCaching()
     _maxDiskCacheNodeGB->setMaximum(100);
     _maxDiskCacheNodeGB->setHintToolTip( tr("The maximum size that may be used by the DiskCache node on disk (in GiB)") );
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
-
-    _maxDeepImageCacheGB = AppManager::createKnob<KnobInt>(this, tr("Maximum deep image cache RAM usage (GiB)"));
-    _maxDeepImageCacheGB->setName("maxDeepImageCache");
-    _maxDeepImageCacheGB->disableSlider();
-    _maxDeepImageCacheGB->setMinimum(0);
-    _maxDeepImageCacheGB->setMaximum(100);
-    _maxDeepImageCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the deep image cache (in GiB). "
-                                            "This is a separate budget from the regular image cache above, "
-                                            "so that large deep renders cannot evict it entirely."));
-    _cachingTab->addKnob(_maxDeepImageCacheGB);
 
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
@@ -1800,7 +1791,6 @@ Settings::setDefaultValues()
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
-    _maxDeepImageCacheGB->setDefaultValue(2, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -2510,10 +2500,6 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
         }
-    } else if (k == _maxDeepImageCacheGB.get()) {
-        if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDeepImageCacheSize(getMaximumDeepImageCacheSize());
-        }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
@@ -2789,12 +2775,6 @@ U64
 Settings::getMaximumDiskCacheNodeSize() const
 {
     return (U64)( _maxDiskCacheNodeGB->getValue() ) * 1024 * 1024 * 1024;
-}
-
-U64
-Settings::getMaximumDeepImageCacheSize() const
-{
-    return (U64)(_maxDeepImageCacheGB->getValue()) * 1024 * 1024 * 1024;
 }
 
 ///////////////////////////////////////////////////

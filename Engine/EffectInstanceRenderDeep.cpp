@@ -151,7 +151,7 @@ lookupCachedDeepImage(const DeepImageKey& key,
             continue;
         }
         if (entryImage->getBounds().contains(roi)) {
-            *outputDeepImage = entryImage;
+            *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(*it);
 
             return true;
         }
@@ -346,7 +346,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////// Look-up the deep cache //////////////////////////////////////
+    ////////////////////////////// Look-up the node cache //////////////////////////////////////
 
     const DeepImageKey key(getNode().get(), nodeHash, args.time, args.view, args.scale);
     RectI boundsToRender = roi;
@@ -373,7 +373,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                     continue;
                 }
                 if (entryImage->getBounds().contains(roi)) {
-                    *outputDeepImage = entryImage;
+                    *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(*it);
 
                     return eRenderRoIRetCodeOk;
                 }
@@ -476,7 +476,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         // getOrCreate() returns true when it *found* an entry and false when it created one.
         if (appPTR->getDeepImageOrCreate(key, params, &cacheEntry)) {
             if (cacheEntry && cacheEntry->getDeepImage() && cacheEntry->isFullyRendered()) {
-                *outputDeepImage = cacheEntry->getDeepImage();
+                *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(cacheEntry);
 
                 return eRenderRoIRetCodeOk;
             }
@@ -517,7 +517,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (aborted()) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
 
         return eRenderRoIRetCodeAborted;
@@ -525,7 +525,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (st != eStatusOK) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
         if (st == eStatusReplyDefault) {
             qDebug() << getScriptName_mt_safe().c_str() << "renderDeepRoI: this effect does not implement renderDeep()";
@@ -536,7 +536,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (renderedImage->getSampleTable().getTotalSampleCount() > 0 && !renderedImage->hasChannel("A")) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
         setPersistentMessage(eMessageTypeError, getScriptName_mt_safe() + " produced deep data without an alpha (A) channel");
 
@@ -545,7 +545,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (cacheEntry && !clean.allowsStoreUnder(nodeHash)) {
         // An edit or a mark came during the render: the samples may be another state's.
-        appPTR->removeFromDeepImageCache(cacheEntry);
+        appPTR->removeFromNodeCache(cacheEntry);
         cacheEntry.reset();
     }
     if (cacheEntry) {
@@ -555,10 +555,18 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     for (std::list<DeepImageCacheEntryPtr>::const_iterator it = supersededDeepEntries.begin(); it != supersededDeepEntries.end(); ++it) {
-        appPTR->removeFromDeepImageCache(*it);
+        appPTR->removeFromNodeCache(*it);
     }
 
-    *outputDeepImage = renderedImage;
+    if (cacheEntry) {
+        // Creating the entry could only make room by what it knew then, which was nothing: a deep
+        // entry weighs nothing until it has rendered. Its own bytes are pinned by cacheEntry.
+        supersededDeepEntries.clear();
+        appPTR->clearExceedingEntriesFromNodeCache();
+        *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(cacheEntry);
+    } else {
+        *outputDeepImage = renderedImage;
+    }
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::renderDeepRoI
@@ -667,8 +675,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Look-up the image cache /////////////////////////////////////
 
-    // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
-    // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
+    // An effect whose output kind is eDataKindDeep never produces image entries of its own -- its
+    // renders live under DeepImageKey, which neither hashes nor compares like an ImageKey, and a
+    // lookup only ever finds its own payload -- so among image entries this node's hash identifies
     // the flattened layers and nothing else, and a purge of the node reaches all of them.
     const ImageKey key(getNode().get(),
                        nodeHash,
@@ -697,11 +706,11 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             }
             // Bounds growth, not tiling, the same way renderDeepRoI() handles it: re-flatten over
             // the union of what was asked for rather than mint a narrower entry that the next,
-            // wider request would miss again. Unlike the deep cache's entries, ImageParams::
+            // wider request would miss again. Unlike the deep entries, ImageParams::
             // operator==() does not compare bounds, so getImageOrCreate() below would treat this
             // stale entry as a match for the wider params and hand it straight back instead of
             // making a new one if it were still here -- this removal cannot be deferred to the
-            // success path the way renderDeepRoI() defers its deep-cache counterpart.
+            // success path the way renderDeepRoI() defers its deep counterpart.
             boundsToRender.merge(cached->getBounds());
             appPTR->removeFromNodeCache(cached);
         }

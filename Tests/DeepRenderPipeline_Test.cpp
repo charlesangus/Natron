@@ -529,6 +529,34 @@ TEST_F(DeepRenderPipelineTest, BoundsGrowthRetractsTheSupersededDeepCacheEntry)
     EXPECT_TRUE(fullFrame == gainCached[0]);
 }
 
+TEST_F(DeepRenderPipelineTest, ARenderedDeepImagePinsItsCacheEntryWhileHeld)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    DeepImagePtr held;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &held));
+    ASSERT_TRUE(held != NULL);
+
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+    EXPECT_TRUE(cachedDeepEntryBounds(_source, 1.).empty());
+
+    // The same again for a pointer served from the cache rather than from the render.
+    DeepImagePtr served;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &served));
+    EXPECT_EQ(held.get(), served.get());
+    held.reset();
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+
+    served.reset();
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_TRUE(cachedDeepEntryBounds(_gain, 1.).empty());
+}
+
 TEST_F(DeepRenderPipelineTest, AbortBeforeRenderingIsHonoured)
 {
     const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);

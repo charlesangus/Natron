@@ -510,6 +510,16 @@ public:
 
     virtual void syncBackingFile() const = 0;
 
+    // What a cache does to an entry without knowing which payload it carries.
+    virtual U64 getHashKey() const = 0;
+    virtual const std::string& getKeyHolderID() const = 0;
+    virtual U64 getKeyTreeVersion() const = 0;
+    virtual bool isStoredOnDisk() const = 0;
+    virtual void deallocate() = 0;
+    virtual void removeAnyBackingFile() const = 0;
+    virtual void reOpenFileMapping() const = 0;
+    virtual void scheduleForDestruction() = 0;
+
 protected:
 
     AbstractCacheEntryBase(const AbstractCacheEntryBase&) = delete;
@@ -538,10 +548,7 @@ public:
     {
     }
 
-    virtual const KeyType & getKey() const = 0;
-    virtual hash_type getHashKey() const = 0;
-
-
+    virtual const KeyType& getKey() const = 0;
 };
 
 /** @brief Buffer represents  an internal buffer that can be allocated on different devices.
@@ -1084,6 +1091,16 @@ public:
         return _key.getHash();
     }
 
+    virtual const std::string& getKeyHolderID() const OVERRIDE FINAL
+    {
+        return _key.getCacheHolderID();
+    }
+
+    virtual U64 getKeyTreeVersion() const OVERRIDE FINAL
+    {
+        return _key.getTreeVersion();
+    }
+
     std::string generateStringFromHash(const std::string & path,
                                        U64 hashKey) const
     {
@@ -1120,7 +1137,7 @@ public:
      * living only in the disk portion of the cache. No locking is required here because the
      * caller is already preventing other threads to call this function.
      **/
-    void reOpenFileMapping() const
+    virtual void reOpenFileMapping() const OVERRIDE FINAL
     {
         if (_cache && _cache->isTileCache()) {
             return;
@@ -1137,7 +1154,7 @@ public:
     /**
      * @brief Can be called several times without harm
      **/
-    void deallocate()
+    virtual void deallocate() OVERRIDE
     {
         std::size_t sz = size();
         bool dataAllocated;
@@ -1202,8 +1219,7 @@ public:
         return _data.getOffsetInFile();
     }
 
-
-    bool isStoredOnDisk() const
+    virtual bool isStoredOnDisk() const OVERRIDE FINAL
     {
         return _data.getStorageMode() == eStorageModeDisk;
     }
@@ -1224,7 +1240,7 @@ public:
     /**
      * @brief An entry stored on disk is effectively destroyed when its backing file is removed.
      **/
-    void removeAnyBackingFile() const
+    virtual void removeAnyBackingFile() const OVERRIDE FINAL
     {
         if ( !isStoredOnDisk() || _cache->isTileCache()) {
             return;
@@ -1252,7 +1268,7 @@ public:
     /**
      * @brief To be called when an entry is going to be removed from the cache entirely.
      **/
-    void scheduleForDestruction()
+    virtual void scheduleForDestruction() OVERRIDE FINAL
     {
         QWriteLocker k(&_entryLock);
 

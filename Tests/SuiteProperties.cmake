@@ -41,6 +41,8 @@ set(_natron_long_suite_timeouts
     # Debug llvmpipe on a loaded runner: 150 to 285 s with ten filters, most of it one frame per
     # filter and clamp, so it grows with the filter list and the wider kernels.
     NativeSplineWarpGpuTest 900
+    NativeFilterSpecGpuTest 900
+    StagedResampleTest 900
 )
 
 set(_natron_long_suites "")

@@ -52,7 +52,7 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
   - approach: Reuse M119's disc/ring drawing (copy its ring function if linking is awkward). Render translate, rotate, scale, size, skew, generic 1D and generic 2D spatial as reveal discs with direction labels outside the ring, plus the split HUD under each (knob name; Q/W/E/R/A for a lone knob, Q/W/E/R/T + 1/2/A for the transform group; gearing hints), in the theme colours. Start from the sketches in `## Scope`. Run under Xvfb (`build/deeprepro/run-gui.sh` recipe) and save one PNG per kind plus the group HUD.
   - verify: PNGs exist for all seven kinds and the group HUD; send them to the user with SendUserFile.
   - size: M
-- [ ] M173.P1.T2 — User approval of the mockup
+- [x] M173.P1.T2 — User approval of the mockup
   - files: this milestone file (`## Decisions`)
   - approach: Iterate on T1's screenshots until the user approves; record the approved designs, and any changes to them, as decisions.
   - verify: an approval decision dated and recorded.
@@ -130,6 +130,8 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 **Verification gate:** release build plus both ctest legs green (including `GlobalModeKind_Test`, `GlobalModeStroke_Test`, `ValueKnobEditSession_Test`, the new GuiTests and the unchanged colour global-mode tests); `build/m173-gui/` script zero FAIL under Xvfb; the user approves per-kind screenshots and signs off the UAT AppImage.
 
 ## Decisions
+
+- 2026-11-07 — Mockups approved (user), with one change: the transform group's HUD gets a reveal disc too, not only the HUD block.
 
 - 2026-10-24 — **Scope set by the user (grilled):** extend global mode to every double/int knob; classify by explicit role hint first, name/label heuristic as fallback: the user wants the special widgets on knobs that declare intent, with a heuristic catching the rest.
 - 2026-10-24 — **No engage button on non-colour rows; Ctrl+E only (user):** keeps plain rows uncluttered.

@@ -1,6 +1,10 @@
 """Picks the rows heavy_scene_bench.py acts on from a scene's composed stage.
 
   heavy_scene_rows.py <scene> [--load all|none] [--boxes 10000] [--out rows.json]
+  heavy_scene_rows.py <scene> --bounds /World /World/Block0 [--load all|none] [--out bounds.json]
+
+With --bounds it picks nothing and prints the stage's up axis and the world bound ({"min", "max"}, or
+null for a prim with no extent or no such prim) of each prim given, for sibling_shot's frame coverage.
 
 Prints one JSON object. It runs in its own process, under the AppImage's natron-python or any python
 with pxr: opening the stage inside Natron would leave its layers in the registry and hand the
@@ -149,6 +153,27 @@ def pick_sibling(stage, tally, widest):
     return best
 
 
+def world_bound(cache, stage, path):
+    """The prim's world-space aligned box as {"min", "max"}, or None when it has no extent."""
+    box = cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange()
+    if box.IsEmpty():
+        return None
+    return {"min": [box.GetMin()[i] for i in range(3)], "max": [box.GetMax()[i] for i in range(3)]}
+
+
+def bounds_of(scene, load, paths):
+    """{"up_axis": ..., "bounds": {path: world bound or None}} for the bench's frame-coverage figure."""
+    stage = Usd.Stage.Open(scene, load=Usd.Stage.LoadAll if load == "all" else Usd.Stage.LoadNone)
+    if stage is None:
+        raise SystemExit("cannot open " + scene)
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.proxy], True)
+    bounds = {}
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        bounds[path] = world_bound(cache, stage, path) if prim else None
+    return {"up_axis": str(UsdGeom.GetStageUpAxis(stage)), "bounds": bounds}
+
+
 def pick_box_depth(tally, boxes):
     at_depth = collections.Counter(p.pathElementCount for p in tally.rows if tally.gprims(p) > 0)
     if not at_depth:
@@ -237,8 +262,12 @@ def main():
     parser.add_argument("--load", choices=("all", "none"), default="all")
     parser.add_argument("--boxes", type=int, default=10000)
     parser.add_argument("--out")
+    parser.add_argument("--bounds", nargs="+", metavar="PRIM")
     args = parser.parse_args()
-    rows = pick(args.scene, args.load, args.boxes)
+    if args.bounds:
+        rows = bounds_of(args.scene, args.load, args.bounds)
+    else:
+        rows = pick(args.scene, args.load, args.boxes)
     text = json.dumps(rows, indent=1, sort_keys=True)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

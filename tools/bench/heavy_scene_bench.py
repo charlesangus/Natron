@@ -63,7 +63,11 @@ heavy_scene_watchdog.sh writes the last three from outside Natron, so a hung run
 sibling_shot takes screen grabs around one state change on sibling_row and one on branch, into
 $NATRON_GUI_TEST_OUT: before, set as soon as the frame reported done, set a second later, restored.
 It records the viewport pixels that differ from before at each, the only evidence so far that a state
-change drew anything. The camera is the viewer's framing of the whole scene.
+change drew anything, and the share of the frame each row's world bound projects onto (the 2D box of
+its eight corners under the viewer's free camera, so an upper bound; absent with a reason when the bound
+or the camera is not known). The same change on the root, which the viewer frames, is the control: if it
+changes no pixels the state does nothing, and if it does, a row that did not is out of frame or ineffective
+(shot_reading says which, from its coverage). The camera is the viewer's framing of the whole scene.
 
 The Hydra filter actions need a binary with SceneHydraFilter. populate_pruned and populate_full open
 the file themselves, so one of them comes first in place of open, once per process. An action
@@ -102,6 +106,7 @@ Budgets: main-thread stall under 100 ms; first finished frame under 2 s on a pay
 payload file opened that the action did not request; orbit at or above 30 fps. On a scene, payload
 files are those its unloaded composition names, and the check applies only with payloads unloaded.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -110,6 +115,7 @@ import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "tools", "bench"))
 
 STALL_BUDGET_MS = 100.0
 FIRST_FRAME_BUDGET_MS = 2000.0
@@ -134,6 +140,7 @@ try:
     from PySide6.QtWidgets import QApplication
     import NatronEngine
 
+    from heavy_scene_frame import frame_coverage
     from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, shot, widgets_of
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
@@ -526,12 +533,41 @@ try:
             return 0
         return sum(1 for i in range(0, len(a), 4) if a[i:i + 3] != b[i:i + 3])
 
-    def shoot_state_change(m, tag, row, area):
+    def row_bounds(paths):
+        """{"up_axis", "bounds"} for the rows, read from the stage in a picker process; None, with the reason, if it fails."""
+        load = "none" if load_none else "all"
+        rows_dir = os.environ.get("BENCH_ROWS_DIR", os.path.join(OUT, "rows"))
+        key = hashlib.sha1("\n".join(sorted(set(paths))).encode()).hexdigest()[:10]
+        cached = os.path.join(rows_dir, "%s-load-%s-bounds-%s.json" % (file_stem, load, key))
+        if not os.path.isfile(cached) or os.path.getmtime(cached) < os.path.getmtime(path):
+            picker = os.path.join(ROOT, "tools", "bench", "heavy_scene_rows.py")
+            try:
+                done = subprocess.run(picker_command() + [picker, path, "--load", load, "--out", cached, "--bounds"] + sorted(set(paths)),
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PICK_LIMIT_S)
+            except subprocess.TimeoutExpired:
+                return None, "the bounds query passed %d s" % PICK_LIMIT_S
+            if done.returncode != 0:
+                return None, "the bounds query failed: " + done.stderr.decode(errors="replace")[-300:]
+        with open(cached) as f:
+            return json.load(f), None
+
+    def row_coverage(info, row, v):
+        """The share of the viewport the row's world bound projects onto, and why it is None if it is."""
+        if info is None:
+            return None, "no bounds for the rows"
+        if prop("natronSceneLookThrough"):
+            return None, "the view looks through a camera prim, whose lens is not published"
+        camera = prop("natronSceneFreeCamera")
+        return frame_coverage(info["bounds"].get(row), camera, prop("natronSceneViewMode", "perspective"),
+                              info.get("up_axis") == "Z", v.width() / float(max(1, v.height())))
+
+    def shoot_state_change(m, tag, row, area, info):
         yield from clear_pruned(row)
         yield ("sleep", 1000)
         stem = "%s_%s_%s_load-%s" % (tag, mechanism, file_stem, "none" if load_none else "all")
         before_path = shot(stem + "_0_before.png")
         before = viewport_image(before_path, area)
+        coverage, why = row_coverage(info, row, view())
         pruned = yield from spike("prune " + row)
         immediate_path = shot(stem + "_1_set_immediate.png")
         yield ("sleep", 1000)
@@ -541,11 +577,40 @@ try:
         restored_path = shot(stem + "_3_restored.png")
         m.values[tag + "_shot_row"] = row
         m.values[tag + "_shot_files"] = [os.path.basename(p) for p in (before_path, immediate_path, settled_path, restored_path)]
+        m.values[tag + "_shot_frame_coverage"] = None if coverage is None else round(coverage, 5)
+        if why:
+            m.values[tag + "_shot_frame_coverage_unavailable"] = why
         m.values[tag + "_shot_changed_immediate"] = changed_pixels(before, viewport_image(immediate_path, area))
         m.values[tag + "_shot_changed_settled"] = changed_pixels(before, viewport_image(settled_path, area))
         m.values[tag + "_shot_changed_restored"] = changed_pixels(before, viewport_image(restored_path, area))
         m.values[tag + "_shot_set_frame_ms"] = round(pruned["frameMs"], 2)
         m.values[tag + "_shot_clear_frame_ms"] = round(restored["frameMs"], 2)
+
+    def read_shots(m, tags):
+        """Whether a state change drew nothing because the state does nothing or because the row is not in frame."""
+        def changed(tag):
+            return max(m.values.get(tag + "_shot_changed_immediate") or 0, m.values.get(tag + "_shot_changed_settled") or 0)
+
+        control = tags["control"]
+        if changed(control) == 0:
+            m.values["shot_reading"] = "state_ineffective: the control row %s covering %s of the frame changed no pixels either" % (
+                m.values[control + "_shot_row"], m.values.get(control + "_shot_frame_coverage"))
+            return
+        for tag in tags["rows"]:
+            if tag == control:
+                continue
+            if changed(tag) > 0:
+                reading = "state_visible"
+            else:
+                coverage = m.values.get(tag + "_shot_frame_coverage")
+                if coverage is None:
+                    reading = "no_pixels_changed_but_the_control_did: coverage unknown, so the row may be out of frame"
+                elif coverage < 0.001:
+                    reading = "row_out_of_frame_or_tiny: it projects onto %.5f of the frame and the control changed" % coverage
+                else:
+                    reading = "state_ineffective_on_this_row: it projects onto %.5f of the frame, the control changed and it did not" % coverage
+            m.values[tag + "_shot_reading"] = reading
+        m.values["shot_reading"] = "control_changed"
 
     def action_sibling_shot(m):
         v = view()
@@ -553,11 +618,22 @@ try:
         corner = v.mapToGlobal(v.rect().topLeft()) - QGuiApplication.primaryScreen().geometry().topLeft()
         area = QRect(corner.x(), corner.y(), v.width(), v.height())
         m.values["shot_viewport_pixels"] = v.width() * v.height()
-        yield from shoot_state_change(m, "sibling", sibling_row, area)
         # One row of a large scene can cover a few pixels, which cannot tell "drew nothing" from "too
-        # small to see"; the branch holds enough of the scene to settle it, with the same camera.
+        # small to see". The branch holds more of the scene, and the root, which the viewer frames,
+        # covers most of the frame; the same state change on the root says what the state can do.
+        shot_rows = [("sibling", sibling_row)]
         if branch != sibling_row:
-            yield from shoot_state_change(m, "branch", branch, area)
+            shot_rows.append(("branch", branch))
+        control = next((tag for tag, row in shot_rows if row == root_prim), None)
+        if control is None:
+            control = "control"
+            shot_rows.append((control, root_prim))
+        info, why = row_bounds([row for _, row in shot_rows])
+        if why:
+            m.values["shot_bounds_unavailable"] = why
+        for tag, row in shot_rows:
+            yield from shoot_state_change(m, tag, row, area, info)
+        read_shots(m, {"control": control, "rows": [tag for tag, _ in shot_rows]})
         # The grabs and the comparison are this harness's cost, not the viewer's.
         heartbeat.start()
 

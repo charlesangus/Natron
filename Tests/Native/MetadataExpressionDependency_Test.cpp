@@ -241,7 +241,7 @@ TEST_F(MetadataExpressionDependencyTest, ReplacingTheExpressionRemovesTheEdge)
 
 TEST_F(MetadataExpressionDependencyTest, NextFrameReadFollowsTheEvaluationFrame)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1)"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame', frame + 1)"));
 
     EXPECT_EQ(4, readerTag->getValueAtTime(3, 0));
     EXPECT_EQ(9, readerTag->getValueAtTime(8, 0));
@@ -251,7 +251,7 @@ TEST_F(MetadataExpressionDependencyTest, NextFrameReadFollowsTheEvaluationFrame)
 
 TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSourceChanges)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1) + " + source->getScriptName() + ".metadata('exr/tag', frame)"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame', frame + 1) + " + source->getScriptName() + ".metadata('exr/tag', frame)"));
 
     EXPECT_EQ(5, readerTag->getValueAtTime(3, 0));
     EXPECT_EQ(7, readerTag->getValueAtTime(5, 0));
@@ -265,7 +265,7 @@ TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSource
 
 TEST_F(MetadataExpressionDependencyTest, DefaultFrameIsTheEvaluationFrame)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame')"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame')"));
 
     const int current = (int)reader->getEffectInstance()->getCurrentTime();
 

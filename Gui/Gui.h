@@ -427,6 +427,12 @@ public:
      **/
     void getNodesEntitledForOverlays(NodesList& nodes) const;
 
+    /**
+     * @brief Like getNodesEntitledForOverlays, for the overlay images: a node needs no overlay
+     * interact or draw list to offer them, so the interact-based list leaves out nodes that only have images.
+     **/
+    void getNodesEntitledForOverlayImages(NodesList& nodes) const;
+
     bool isLeftToolBarDisplayedOnMouseHoverOnly() const;
 
     void setLeftToolBarDisplayedOnMouseHoverOnly(bool b);

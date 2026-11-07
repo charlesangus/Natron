@@ -679,8 +679,9 @@ private:
         }
     }
 
+protected:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
-                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN
+                                const StagePlan& plan) OVERRIDE WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Route) {
             Q_UNUSED(args);
@@ -721,6 +722,7 @@ private:
         }
     }
 
+private:
     virtual GpuOpRef gpuOp(double time,
                            ViewIdx view,
                            const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN

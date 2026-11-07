@@ -52,6 +52,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/MissingPluginNode.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RotoContext.h"
@@ -232,6 +233,9 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         if (knobs[i]->toSerialization(&knobSerialization)) {
             serialization->knobs.push_back(knobSerialization);
         }
+    }
+    if (const USDRenderSettings* renderSettings = dynamic_cast<const USDRenderSettings*>(effect.get())) {
+        renderSettings->appendUnmatchedKnobs(serialization);
     }
 
     for (std::list<KnobIPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {

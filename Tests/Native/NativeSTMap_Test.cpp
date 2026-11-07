@@ -41,6 +41,7 @@
 #include <QStringList>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -478,6 +479,22 @@ protected:
     }
 };
 
+TEST_F(NativeSTMapTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr uv = makeUV();
+    ASSERT_TRUE(source && uv);
+    NodePtr node = makeSTMap(source, uv, "cubic");
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kSTMapParamUVScale, { 0.9, 0.8 }));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+}
+
 TEST_F(NativeSTMapTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP, "STMap");
@@ -504,6 +521,9 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
         kMapInputParamResponse,
         kMapInputParamGamma,
         kResamplerParamFilterType,
+        kResamplerParamLobes,
+        kResamplerParamBicubicB,
+        kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
         kOfxMixParamName,

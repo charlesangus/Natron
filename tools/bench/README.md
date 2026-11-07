@@ -21,6 +21,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
+| `reformat_filter_bench.sh`, `reformat_filter_bench.py` | CPU cost of a 4x Reformat downscale with Cubic and Lanczos 3, a main AppImage against a branch AppImage. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
 
@@ -335,3 +336,31 @@ after (`BENCH_LABEL=after`). The record keeps nothing about the machine: note th
 numbers. `Tests/BezierEditScaling_Test.cpp` prints the same single-shape figures from the engine
 directly, without the Python binding's overhead, and fails a release build when keying stops
 scaling linearly with the keyframe count.
+
+## Heavy scene fixtures
+
+`heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under
+`build/bench`: a payload city (about 300 blocks of buildings, one `.usdc` payload per building,
+about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine in ten
+buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
+container. The fixtures are never committed; only the generator is.
+
+```
+docker exec natron-dev bash -lc "cd $PWD && python3 tools/bench/heavy_scene_make.py"
+```
+
+## Heavy scene budgets
+
+`heavy_scene_bench.py` runs one action per scenario against a heavy fixture inside Natron under
+Xvfb and prints one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the
+layers the action loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
+`not_applicable` against the scene-graph budgets. Frame rate and time to first boxes need a real
+GPU: without `BENCH_GPU=1` they are measured but marked `not_valid`. Stall and unrequested-payload
+checks are valid under llvmpipe. Until the viewer draws boxes, the first finished frame stands in
+for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`);
+`BENCH_SCENARIOS` picks and orders them, and a later milestone adds its own action.
+
+```
+docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \
+    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
+```

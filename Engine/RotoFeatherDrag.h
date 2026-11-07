@@ -68,6 +68,30 @@ double featherDragDistance(const Point& dir, double dx, double dy);
  **/
 Point applyFeatherDistance(const Point& featherPoint, const Point& dir, double s);
 
+/**
+ * @brief The curvature vector of the circle that leaves p0 heading towards p1 and passes through
+ * p3: it points to the side the circle turns towards and its length is one over its radius. For a
+ * segment from p0 to p3 with first handle p1 this is exact when the segment is a circular arc,
+ * whatever its handle lengths. (0, 0) when p1 sits on p0 or p3 does.
+ **/
+Point featherCurvature(const Point& p0, const Point& p1, const Point& p3);
+
+/**
+ * @brief The factor that scales a feather point's tangent on one side when the point moves by
+ * delta, given the curvature vector of the feather curve on that side: 1 - curvature . delta.
+ * This is how an offset curve's tangents stretch, so moving every feather of a circle out by the
+ * same distance keeps it a concentric circle. Never negative.
+ **/
+double featherTangentScale(const Point& curvature, const Point& delta);
+
+/**
+ * @brief Limits a tangent scale so the grown tangent reaches at most half way to the neighbouring
+ * feather point on its side. Two tangents facing each other across a segment then never pass one
+ * another, which is what tears a feather when closely packed points grow. A scale that does not
+ * grow the tangent, or a tangent already longer than that reach, is left as it is.
+ **/
+double clampFeatherTangentScale(double scale, double tangentLength, double neighbourDistance);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_RotoFeatherDrag_h

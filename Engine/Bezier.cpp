@@ -1010,6 +1010,28 @@ Bezier::dequeueGuiActions()
 }
 
 void
+Bezier::restorePointState(const BezierCPPtr& point,
+                          const BezierCP& state)
+{
+    const bool useGuiCurve = useGuiCurveForEdit();
+    {
+        QMutexLocker k(&itemMutex);
+        point->cloneGuiState(state, !useGuiCurve);
+        if (_imp->autoRecomputeOrientation) {
+            eraseOrientation(true);
+            if (!useGuiCurve) {
+                eraseOrientation(false);
+            }
+        }
+    }
+    if (useGuiCurve) {
+        _imp->markGuiDirtyPoint(point);
+    } else {
+        invalidateContentHash();
+    }
+}
+
+void
 Bezier::copyInternalPointsToGuiPoints()
 {
     assert( !itemMutex.tryLock() );
@@ -1133,6 +1155,27 @@ Bezier::canSetInternalPoints() const
     return !getContext()->getNode()->isNodeRendering();
 }
 
+bool
+Bezier::useGuiCurveForEdit()
+{
+    if (!canSetInternalPoints()) {
+        return true;
+    }
+    // An internal-path edit ends by copying internal state over the GUI copy, which would
+    // drop GUI-only edits made during a render that has since ended (a new point snapped to 0,0).
+    flushGuiEdits();
+
+    return false;
+}
+
+void
+Bezier::flushGuiEdits()
+{
+    if ((QThread::currentThread() == qApp->thread()) && canSetInternalPoints()) {
+        dequeueGuiActions();
+    }
+}
+
 void
 Bezier::clearAllPoints()
 {
@@ -1182,6 +1225,7 @@ Bezier::clone(const RotoItem* other)
         return;
     }
 
+    const_cast<Bezier*>(otherBezier)->flushGuiEdits();
     Q_EMIT aboutToClone();
     {
         bool useFeather = otherBezier->useFeatherPoints();
@@ -1199,10 +1243,13 @@ Bezier::clone(const RotoItem* other)
         for (BezierCPs::const_iterator it = otherBezier->_imp->points.begin(); it != otherBezier->_imp->points.end(); ++it) {
             BezierCPPtr cp = std::make_shared<BezierCP>(this_shared);
             cp->clone(**it);
+            // During a render the source's latest state may exist in its GUI copy only.
+            cp->cloneGuiState(**it, false);
             _imp->points.push_back(cp);
             if (useFeather) {
                 BezierCPPtr fp = std::make_shared<BezierCP>(this_shared);
                 fp->clone(**itF);
+                fp->cloneGuiState(**itF, false);
                 _imp->featherPoints.push_back(fp);
                 ++itF;
             }
@@ -1238,7 +1285,7 @@ Bezier::addControlPoint(double x,
         return BezierCPPtr();
     }
 
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     double keyframeTime;
     ///if the curve is empty make a new keyframe at the current timeline's time
@@ -1322,7 +1369,7 @@ Bezier::addControlPointAfterIndex(int index,
 
     BezierCPPtr p = std::make_shared<BezierCP>(this_shared);
     BezierCPPtr fp;
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     if ( useFeatherPoints() ) {
         fp = std::make_shared<FeatherPoint>(this_shared);
@@ -1721,7 +1768,12 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
+
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool fLinkEnabled = ( onlyFeather ? true : getContext()->isFeatherLinkEnabled() );
     bool keySet = false;
@@ -1822,7 +1874,7 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
-                if (*it2 == time) {
+                if ((*it2 == time) || !ripple.includes(*it2, time)) {
                     continue;
                 }
                 // A linked point's offsets already hold at every time.
@@ -1943,7 +1995,7 @@ Bezier::movePointByIndex(int index,
                          double dx,
                          double dy)
 {
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     movePointByIndexInternal(useGuiCurve, index, time, dx, dy, false);
 } // movePointByIndex
@@ -1954,7 +2006,7 @@ Bezier::setPointByIndex(int index,
                         double x,
                         double y)
 {
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     setPointByIndexInternal(useGuiCurve, index, time, x, y);
 } // setPointByIndex
@@ -1965,10 +2017,80 @@ Bezier::moveFeatherByIndex(int index,
                            double dx,
                            double dy)
 {
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     movePointByIndexInternal(useGuiCurve, index, time, dx, dy, true);
 } // moveFeatherByIndex
+
+void
+Bezier::scaleFeatherTangentsByIndex(int index,
+                                    double time,
+                                    double leftScale,
+                                    double rightScale)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    if ((leftScale == 1.) && (rightScale == 1.)) {
+        return;
+    }
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
+    bool useGuiCurve = useGuiCurveForEdit();
+    bool autoKeying = getContext()->isAutoKeyingEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool keySet = false;
+    bool keyedAllPoints = false;
+    BezierCPPtr editedFp;
+
+    {
+        QMutexLocker l(&itemMutex);
+        if (!useFeatherPoints() || (index < 0) || (index >= (int)_imp->featherPoints.size())) {
+            return;
+        }
+        BezierCPs::iterator it = _imp->featherPoints.begin();
+        std::advance(it, index);
+        editedFp = *it;
+
+        std::set<double> times;
+        double x, y, lx, ly, rx, ry;
+        editedFp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &x, &y);
+        bool isOnKeyframe = editedFp->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &lx, &ly);
+        if (autoKeying || isOnKeyframe) {
+            times.insert(time);
+            if (!isOnKeyframe) {
+                keySet = true;
+            }
+        }
+        if (ripple.enabled) {
+            std::set<double> keyframes;
+            _imp->getKeyframeTimes(useGuiCurve, &keyframes);
+            for (std::set<double>::iterator k = keyframes.begin(); k != keyframes.end(); ++k) {
+                if ((*k != time) && ripple.includes(*k, time)) {
+                    times.insert(*k);
+                }
+            }
+        }
+        for (std::set<double>::iterator t = times.begin(); t != times.end(); ++t) {
+            editedFp->getPositionAtTime(useGuiCurve, *t, ViewIdx(0), &x, &y);
+            editedFp->getLeftBezierPointAtTime(useGuiCurve, *t, ViewIdx(0), &lx, &ly);
+            editedFp->getRightBezierPointAtTime(useGuiCurve, *t, ViewIdx(0), &rx, &ry);
+            editedFp->setLeftBezierPointAtTime(useGuiCurve, *t, x + (lx - x) * leftScale, y + (ly - y) * leftScale);
+            editedFp->setRightBezierPointAtTime(useGuiCurve, *t, x + (rx - x) * rightScale, y + (ry - y) * rightScale);
+        }
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
+    }
+
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    if (autoKeying) {
+        setKeyframeInternal(time, false);
+    }
+    syncGuiAfterEdit(useGuiCurve, BezierCPPtr(), editedFp, time, ripple.enabled, keyedAllPoints);
+    if (keySet) {
+        Q_EMIT keyframeSet(time);
+    }
+} // scaleFeatherTangentsByIndex
 
 void
 Bezier::moveBezierPointInternal(BezierCP* cpParam,
@@ -1991,14 +2113,19 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    if (refusesBoundedRipple(cpParam ? cpParam : (fpParam ? fpParam : getControlPointAtIndex(index).get()))) {
+        return;
+    }
+
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool featherLink = getContext()->isFeatherLinkEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     Transform::Matrix3x3 trans, invTrans;
     getTransformAtTime(time, &trans);
     invTrans = Transform::matInverse(trans);
 
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     bool keySet = false;
     bool keyedAllPoints = false;
@@ -2028,6 +2155,8 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
             assert(fp);
         }
 
+        // A broken point stays broken until Smooth is applied.
+        breakTangents = breakTangents || cp->getBroken() || (fp && fp->getBroken());
 
         bool isOnKeyframe = false;
         Transform::Point3D left, right;
@@ -2140,7 +2269,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
-                if (*it2 == time) {
+                if ((*it2 == time) || !ripple.includes(*it2, time)) {
                     continue;
                 }
 
@@ -2250,12 +2379,16 @@ Bezier::setPointAtIndexInternal(bool setLeft,
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
     bool autoKeying = getContext()->isAutoKeyingEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     bool keySet = false;
     bool keyedAllPoints = false;
     BezierCPPtr editedCp, editedFp;
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     {
         QMutexLocker l(&itemMutex);
@@ -2306,6 +2439,9 @@ Bezier::setPointAtIndexInternal(bool setLeft,
             const bool fpLinked = (*fp)->isLinkedToTrack();
             const bool cpLinked = featherAndCp && (*cp)->isLinkedToTrack();
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
+                if (!ripple.includes(*it2, time)) {
+                    continue;
+                }
                 if (setPoint) {
                     if (!fpLinked) {
                         (*fp)->setPositionAtTime(useGuiCurve, *it2, x, y);
@@ -2483,9 +2619,12 @@ Bezier::transformPoint(const BezierCPPtr & point,
                        double time,
                        Transform::Matrix3x3* matrix)
 {
+    if (refusesBoundedRipple(point.get())) {
+        return;
+    }
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool keySet = false;
-    bool useGuiCurve = !canSetInternalPoints();
+    bool useGuiCurve = useGuiCurveForEdit();
 
     {
         QMutexLocker l(&itemMutex);
@@ -2559,12 +2698,20 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    if (refusesBoundedRipple(getControlPointAtIndex(index).get())) {
+        return;
+    }
     bool keySet = false;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
-    bool useGuiCurve = !canSetInternalPoints();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
+    bool useGuiCurve = useGuiCurveForEdit();
     bool keyedAllPoints = false;
     BezierCPPtr editedCp, editedFp;
+
+    // A context's composeItemTransform may lock this item's itemMutex, which is not recursive.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
 
     {
         QMutexLocker l(&itemMutex);
@@ -2586,23 +2733,18 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         if (useFeather) {
             editedFp = *fp;
         }
-    }
 
-    // Outside itemMutex: smoothPoint() reads the curve transform, and a context's
-    // composeItemTransform may lock this item's itemMutex, which is not recursive.
-    if (isSmooth) {
-        keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-        if (editedFp) {
-            editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+        if (isSmooth) {
+            keySet = editedCp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, transform, pixelScale);
+            if (editedFp) {
+                editedFp->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, transform, pixelScale);
+            }
+        } else {
+            keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
+            if (editedFp) {
+                editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
+            }
         }
-    } else {
-        keySet = editedCp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-        if (editedFp) {
-            editedFp->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
-        }
-    }
-    {
-        QMutexLocker l(&itemMutex);
         keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
@@ -2616,6 +2758,121 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         Q_EMIT keyframeSet(time);
     }
 } // Bezier::smoothOrCuspPointAtIndex
+
+void
+Bezier::setTangentsBroken(const BezierCPPtr& cp,
+                          const BezierCPPtr& fp,
+                          double time)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    const bool useGuiCurve = useGuiCurveForEdit();
+    {
+        QMutexLocker l(&itemMutex);
+        if (cp) {
+            cp->setBroken(true);
+        }
+        if (fp) {
+            fp->setBroken(true);
+        }
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    // Every read realigns the handles of an unbroken point, so the flag counts at every time.
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, true, false);
+}
+
+namespace {
+
+// point's position and left handle stay what they are at every key. They are read without realigning,
+// because the point is about to break and from then on its handles read as stored.
+void
+collapseRightHandle(BezierCP& point,
+                    bool useGuiCurve,
+                    double time,
+                    bool writeAtTime,
+                    const RippleEditKeys& ripple)
+{
+    double x, y;
+    if (writeAtTime) {
+        point.getPositionAtTime(useGuiCurve, time, ViewIdx(0), &x, &y);
+        if (!point.hasKeyFrameAtTime(useGuiCurve, time)) {
+            double lx, ly;
+            point.getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &lx, &ly, false);
+            point.setPositionAtTime(useGuiCurve, time, x, y);
+            point.setLeftBezierPointAtTime(useGuiCurve, time, lx, ly);
+        }
+        point.setRightBezierPointAtTime(useGuiCurve, time, x, y);
+    }
+    // A linked point's offsets already hold at every time.
+    if (ripple.enabled && !point.isLinkedToTrack()) {
+        std::set<double> keyframes;
+        point.getKeyframeTimes(useGuiCurve, &keyframes);
+        for (std::set<double>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+            if ((*it == time) || !ripple.includes(*it, time)) {
+                continue;
+            }
+            point.getPositionAtTime(useGuiCurve, *it, ViewIdx(0), &x, &y);
+            point.setRightBezierPointAtTime(useGuiCurve, *it, x, y);
+        }
+    }
+    point.setBroken(true);
+}
+
+} // namespace
+
+void
+Bezier::collapseRightHandleAtIndex(int index,
+                                   double time)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    BezierCPPtr cp = getControlPointAtIndex(index);
+    if (!cp || refusesBoundedRipple(cp.get())) {
+        return;
+    }
+    BezierCPPtr fp = getFeatherPointAtIndex(index);
+    const bool autoKeying = getContext()->isAutoKeyingEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    const bool useGuiCurve = useGuiCurveForEdit();
+    bool keySet = false;
+    bool keyedAllPoints = false;
+    {
+        QMutexLocker l(&itemMutex);
+        const bool isOnKeyframe = _imp->hasKeyframeAtTime(useGuiCurve, time);
+        const bool writeAtTime = autoKeying || isOnKeyframe;
+        collapseRightHandle(*cp, useGuiCurve, time, writeAtTime, ripple);
+        if (fp) {
+            collapseRightHandle(*fp, useGuiCurve, time, writeAtTime, ripple);
+        }
+        keySet = writeAtTime && !isOnKeyframe;
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    if (autoKeying) {
+        setKeyframeInternal(time, false);
+    }
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, true, keyedAllPoints);
+    if (keySet) {
+        Q_EMIT keyframeSet(time);
+    }
+} // Bezier::collapseRightHandleAtIndex
+
+bool
+Bezier::refusesBoundedRipple(const BezierCP* point)
+{
+    RotoCurveContextPtr context = getContext();
+    if (!point || !point->isLinkedToTrack() || !context->getRippleEditKeys().isBounded()) {
+        context->noteRippleEditCheck(false);
+
+        return false;
+    }
+    context->noteRippleEditCheck(true);
+    context->warnBoundedRippleOnLinkedPoint();
+
+    return true;
+}
 
 void
 Bezier::smoothPointAtIndex(int index,
@@ -2636,6 +2893,7 @@ Bezier::cuspPointAtIndex(int index,
 void
 Bezier::setKeyframe(double time)
 {
+    flushGuiEdits();
     setKeyframeInternal(time, true);
 }
 
@@ -2697,6 +2955,7 @@ Bezier::removeKeyframe(double time)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    flushGuiEdits();
     {
         QMutexLocker l(&itemMutex);
 
@@ -2729,6 +2988,7 @@ Bezier::removeAnimation()
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
+    flushGuiEdits();
 
     double time = getContext()->getTimelineCurrentTime();
     {
@@ -2762,6 +3022,7 @@ Bezier::moveKeyframe(double oldTime,
     if (oldTime == newTime) {
         return;
     }
+    flushGuiEdits();
     bool useFeather = useFeatherPoints();
     BezierCPs::iterator fp = _imp->featherPoints.begin();
     for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
@@ -3204,6 +3465,93 @@ Bezier::getBoundingBox(double time) const
 
     return bbox;
 } // Bezier::getBoundingBox
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+sameMatrix(const Transform::Matrix3x3& m,
+           const Transform::Matrix3x3& n)
+{
+    return (m.a == n.a) && (m.b == n.b) && (m.c == n.c) && (m.d == n.d) && (m.e == n.e) && (m.f == n.f) && (m.g == n.g) && (m.h == n.h) && (m.i == n.i);
+}
+
+void
+appendVertices(const std::list<ParametricPoint>& points,
+               std::vector<float>* vertices)
+{
+    vertices->reserve(points.size() * 2);
+    for (std::list<ParametricPoint>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        vertices->push_back((float)it->x);
+        vertices->push_back((float)it->y);
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+BezierOverlayPolygonsConstPtr
+Bezier::getOverlayPolygons(double time,
+                           bool withFeather) const
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    // The transform comes from knobs, which edit neither generation.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
+    const U64 geometryGeneration = getGeometryGeneration();
+    const U64 guiEditGeneration = _imp->guiEditGeneration.load(std::memory_order_acquire);
+    // Editing a track moves the points linked to it without advancing either generation.
+    U64 trackLinkHash = 0;
+    if (hasTrackLinks()) {
+        ContentHasher hasher;
+        appendLiveContentHash(hasher);
+        trackLinkHash = hasher.finalize();
+    }
+
+    const BezierOverlayPolygonsConstPtr& cached = _imp->overlayPolygons;
+    if (cached && (_imp->overlayTime == time) && (_imp->overlayGeometryGeneration == geometryGeneration) && (_imp->overlayGuiEditGeneration == guiEditGeneration) && (_imp->overlayTrackLinkHash == trackLinkHash) && sameMatrix(_imp->overlayTransform, transform) && (cached->hasFeather || !withFeather)) {
+        return cached;
+    }
+
+    std::shared_ptr<BezierOverlayPolygons> polygons = std::make_shared<BezierOverlayPolygons>();
+    const RectD empty(std::numeric_limits<double>::infinity(),
+                      std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity());
+    polygons->curveBBox = empty;
+    polygons->featherBBox = empty;
+    polygons->hasFeather = withFeather;
+    {
+        std::list<ParametricPoint> points;
+        evaluateAtTime_DeCasteljau(true, time, 0,
+#ifdef ROTO_BEZIER_EVAL_ITERATIVE
+                                   100,
+#else
+                                   1,
+#endif
+                                   &points, &polygons->curveBBox);
+        appendVertices(points, &polygons->curve);
+    }
+    if (withFeather) {
+        std::list<ParametricPoint> points;
+        evaluateFeatherPointsAtTime_DeCasteljau(true, time, 0,
+#ifdef ROTO_BEZIER_EVAL_ITERATIVE
+                                                100,
+#else
+                                                1,
+#endif
+                                                true, &points, &polygons->featherBBox);
+        appendVertices(points, &polygons->feather);
+    }
+
+    _imp->overlayPolygons = polygons;
+    _imp->overlayTime = time;
+    _imp->overlayGeometryGeneration = geometryGeneration;
+    _imp->overlayGuiEditGeneration = guiEditGeneration;
+    _imp->overlayTrackLinkHash = trackLinkHash;
+    _imp->overlayTransform = transform;
+
+    return polygons;
+} // Bezier::getOverlayPolygons
 
 const std::list<BezierCPPtr> &
 Bezier::getControlPoints() const
@@ -4111,7 +4459,7 @@ Bezier::expandToFeatherDistance(bool useGuiCurve,
 
     if (featherDistance != 0) {
         ///shortcut when the feather point is different than the control point
-        if ( (cp.x != fp->x) && (cp.y != fp->y) ) {
+        if ((cp.x != fp->x) || (cp.y != fp->y)) {
             double dx = (fp->x - cp.x);
             double dy = (fp->y - cp.y);
             double dist = sqrt(dx * dx + dy * dy);

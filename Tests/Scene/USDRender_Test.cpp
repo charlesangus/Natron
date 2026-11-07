@@ -51,6 +51,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "CyclesTestUtils.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
@@ -60,16 +61,20 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGpuParity.h"
 #include "ofxNatron.h"
 
@@ -454,31 +459,79 @@ protected:
         BaseTest::TearDown();
     }
 
-    // USDRead of the fixture into a USDRender at kWidth x kHeight.
-    NodePtr createRender(const char* fixture = kFixture)
+    // A USDRead of fixture; null after a gtest failure.
+    NodePtr createReader(const char* fixture)
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!reader || !render) {
-            ADD_FAILURE() << "USDRead or USDRender is not registered";
-
-            return NodePtr();
-        }
-        KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
-        KnobInt* size = dynamic_cast<KnobInt*>(render->getKnobByName(kNatronParamFormatSize).get());
-        KnobDouble* par = dynamic_cast<KnobDouble*>(render->getKnobByName(kNatronParamFormatPar).get());
-        if (!file || !size || !par) {
-            ADD_FAILURE() << "missing knobs";
+        KnobFile* file = reader ? dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get()) : nullptr;
+        if (!file) {
+            ADD_FAILURE() << "USDRead is not registered or has no file knob";
 
             return NodePtr();
         }
         file->setValue(std::string(fixture));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
-        connectNodes(reader, render, 0, true);
+
+        return reader;
+    }
+
+    /**
+     * A USDRead of the fixture into a USDRenderSettings whose prim frames /World/Cam at kWidth x
+     * kHeight, into a USDRender. *settingsNode gets the USDRenderSettings.
+     **/
+    NodePtr createRender(const char* fixture = kFixture,
+                         NodePtr* settingsNode = nullptr)
+    {
+        NodePtr reader = createReader(fixture);
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!reader || !settings || !render) {
+            ADD_FAILURE() << "USDRead, USDRenderSettings or USDRender is not registered";
+
+            return NodePtr();
+        }
+        if (!RenderSettingsTestUtils::configure(settings, "/World/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
+        connectNodes(reader, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (settingsNode) {
+            *settingsNode = settings;
+        }
 
         return render;
+    }
+
+    static USDRender* renderOf(const NodePtr& node)
+    {
+        return node ? dynamic_cast<USDRender*>(node->getEffectInstance().get()) : nullptr;
+    }
+
+    // The renderer node renders frame 1 with, empty with *error set if it cannot tell.
+    static std::string activeRendererOf(const NodePtr& node,
+                                        std::string* error)
+    {
+        std::string id;
+        USDRender* render = renderOf(node);
+        if (!render) {
+            *error = "not a USDRender";
+
+            return std::string();
+        }
+
+        return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string();
+    }
+
+    // The node's output format as its region of definition at frame 1.
+    static RectD rodOf(const NodePtr& node)
+    {
+        RectD rod;
+        USDRender* render = renderOf(node);
+        EXPECT_TRUE(render != nullptr);
+        if (render) {
+            EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(node->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
+        }
+
+        return rod;
     }
 
     static std::list<ImageLayerDesc> allPlanes()
@@ -492,18 +545,37 @@ protected:
     }
 };
 
-TEST_F(USDRenderNodeTest, TheCameraMenuListsTheScenesCameras)
+TEST_F(USDRenderNodeTest, TheSettingsPrimMenuListsTheScenesRenderSettingsPrims)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(node != nullptr);
-    USDRender* effect = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshCameraMenu();
-    KnobChoice* camera = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamCamera).get());
-    ASSERT_TRUE(camera);
-    const std::vector<ChoiceOption> entries = camera->getEntries_mt_safe();
-    ASSERT_EQ(1u, entries.size());
-    EXPECT_EQ("/World/Cam", entries[0].id);
+    effect->refreshSettingsPrimMenu();
+    KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
+    ASSERT_TRUE(settingsPrim);
+    const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
+    ASSERT_EQ(2u, entries.size());
+    EXPECT_EQ(std::string(kUSDRenderSettingsPrimStageDefault), entries[0].id);
+    EXPECT_EQ(std::string(kUSDRenderSettingsDefaultPrimPath), entries[1].id);
+    EXPECT_EQ(std::string(kUSDRenderSettingsPrimStageDefault), settingsPrim->getActiveEntry().id);
+}
+
+// The prim's resolution and pixel aspect ratio are the node's format.
+TEST_F(USDRenderNodeTest, ThePrimsResolutionIsTheFormat)
+{
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(node != nullptr);
+    RectD rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ(0., rod.y1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+    EXPECT_EQ((double)kHeight, rod.y2);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/World/Cam", 64, 32, 2.));
+    rod = rodOf(node);
+    EXPECT_EQ(128., rod.x2);
+    EXPECT_EQ(32., rod.y2);
 }
 
 TEST_F(USDRenderNodeTest, MetadataMapsEveryPrimIdToItsPath)
@@ -567,16 +639,15 @@ TEST_F(USDRenderNodeTest, RendersEveryPlaneThroughTheNode)
     EXPECT_TRUE(std::isinf(planes[1].pixels[corner]));
 }
 
-TEST_F(USDRenderNodeTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
+TEST_F(USDRenderNodeTest, APrimCameraTheSceneLacksIsANodeErrorNamingIt)
 {
     if (skipWithoutGL()) {
         return;
     }
-    NodePtr node = createRender();
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
     ASSERT_TRUE(node != nullptr);
-    KnobChoice* camera = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamCamera).get());
-    ASSERT_TRUE(camera);
-    camera->setActiveEntry(ChoiceOption("/World/Gone", "/World/Gone", ""));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/World/Gone", kWidth, kHeight));
     std::vector<RenderedPlane> planes;
     std::string error;
 
@@ -586,6 +657,27 @@ TEST_F(USDRenderNodeTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
     int type = 0;
     node->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Gone"))) << message.toStdString();
+}
+
+// A Settings Prim the scene has no RenderSettings prim at is the node's error, naming the path.
+TEST_F(USDRenderNodeTest, ASettingsPrimTheSceneLacksIsANodeErrorNamingIt)
+{
+    NodePtr node = createRender();
+    ASSERT_TRUE(node != nullptr);
+    KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
+    ASSERT_TRUE(settingsPrim);
+    settingsPrim->setActiveEntry(ChoiceOption("/Render/gone", "/Render/gone", ""));
+    std::string error;
+    EXPECT_TRUE(activeRendererOf(node, &error).empty());
+    EXPECT_NE(std::string::npos, error.find("/Render/gone")) << error;
+    std::vector<RenderedPlane> planes;
+    std::string renderError;
+    EXPECT_FALSE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &renderError));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Render/gone"))) << message.toStdString();
 }
 
 // The stub's library is missing (Tests/fixtures/renderDelegates), so it is listed but unavailable.
@@ -653,19 +745,97 @@ protected:
     }
 };
 
-TEST_F(USDRenderRendererTest, TheRendererMenuListsTheRegistryWithStormChosen)
+TEST_F(USDRenderRendererTest, TheRendererMenuListsSceneDefaultThenTheRegistry)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(bool(node));
     KnobChoice* renderer = rendererKnob(node);
     ASSERT_TRUE(renderer);
-    EXPECT_EQ(std::string(kRenderDelegateStormId), renderer->getActiveEntry().id);
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), renderer->getActiveEntry().id);
     const std::vector<RenderDelegates::Delegate> delegates = RenderDelegates::list();
     const std::vector<ChoiceOption> entries = renderer->getEntries_mt_safe();
-    ASSERT_EQ(delegates.size(), entries.size());
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-        EXPECT_EQ(delegates[i].id, entries[i].id);
+    ASSERT_EQ(delegates.size() + 1, entries.size());
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), entries[0].id);
+    EXPECT_EQ(std::string("Scene Default"), entries[0].label);
+    for (std::size_t i = 0; i < delegates.size(); ++i) {
+        EXPECT_EQ(delegates[i].id, entries[i + 1].id);
     }
+}
+
+// The renderer is the Renderer knob's, else the active prim's natron:renderer, else Storm.
+TEST_F(USDRenderRendererTest, TheRendererKnobBeatsThePrimWhichBeatsStorm)
+{
+    // No render settings prim: Storm.
+    NodePtr bare = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    NodePtr reader = createReader(kFixture);
+    ASSERT_TRUE(bare && reader);
+    connectNodes(reader, bare, 0, true);
+    std::string error;
+    EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(bare, &error)) << error;
+
+    // The prim names the stub.
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(bool(node));
+    KnobChoice* defaultRenderer = dynamic_cast<KnobChoice*>(settings->getKnobByName(kUSDRenderSettingsParamDefaultRenderer).get());
+    ASSERT_TRUE(defaultRenderer);
+    (void)defaultRenderer->setValueFromID(kStubRendererId, 0);
+    ASSERT_EQ(std::string(kStubRendererId), defaultRenderer->getActiveEntry().id);
+    EXPECT_EQ(std::string(kStubRendererId), activeRendererOf(node, &error)) << error;
+
+    // The Renderer knob beats the prim.
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
+    EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateSceneDefaultId));
+    EXPECT_EQ(std::string(kStubRendererId), activeRendererOf(node, &error)) << error;
+
+    // A prim that is not active is not used: Storm.
+    KnobBool* makeActive = dynamic_cast<KnobBool*>(settings->getKnobByName(kUSDRenderSettingsParamMakeActive).get());
+    ASSERT_TRUE(makeActive);
+    makeActive->setValue(false);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+}
+
+// The Settings Prim knob beats the stage's renderSettingsPrimPath metadata.
+TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
+{
+    NodePtr first;
+    NodePtr node = createRender(kFixture, &first);
+    ASSERT_TRUE(bool(node));
+    // A second prim, not active, at another path and size, naming the stub.
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    ASSERT_TRUE(bool(second));
+    KnobString* path = dynamic_cast<KnobString*>(second->getKnobByName(kSceneParamPrimPath).get());
+    KnobBool* makeActive = dynamic_cast<KnobBool*>(second->getKnobByName(kUSDRenderSettingsParamMakeActive).get());
+    KnobChoice* defaultRenderer = dynamic_cast<KnobChoice*>(second->getKnobByName(kUSDRenderSettingsParamDefaultRenderer).get());
+    ASSERT_TRUE(path && makeActive && defaultRenderer);
+    path->setValue(std::string("/Render/second"));
+    makeActive->setValue(false);
+    (void)defaultRenderer->setValueFromID(kStubRendererId, 0);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(second, "/World/Cam", 64, 32));
+    disconnectNodes(first, node, true);
+    connectNodes(first, second, 0, true);
+    connectNodes(second, node, 0, true);
+
+    std::string error;
+    EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+    EXPECT_EQ((double)kWidth, rodOf(node).x2);
+
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
+    ASSERT_TRUE(settingsPrim);
+    const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
+    ASSERT_EQ(3u, entries.size());
+    (void)settingsPrim->setValueFromID("/Render/second", 0);
+    ASSERT_EQ(std::string("/Render/second"), settingsPrim->getActiveEntry().id);
+    EXPECT_EQ(std::string(kStubRendererId), activeRendererOf(node, &error)) << error;
+    const RectD rod = rodOf(node);
+    EXPECT_EQ(64., rod.x2);
+    EXPECT_EQ(32., rod.y2);
 }
 
 // An unavailable renderer stays chosen across a save and load, and every render is an error naming
@@ -723,6 +893,111 @@ TEST_F(USDRenderRendererTest, ARendererThatIsNotInstalledIsKeptOnLoad)
     EXPECT_NE(std::string::npos, message.find(missing)) << message;
 }
 
+// A RenderSettings prim written by hand into a .usda, not by a USDRenderSettings node, read by a
+// USDRead: its camera, resolution and cycles:samples are what the render uses. The decoy camera
+// comes first in the file, so it is the camera a render without the prim would use.
+const char* const kHandWrittenSettings = R"(#usda 1.0
+(
+    renderSettingsPrimPath = "/Render/shot"
+)
+
+def Xform "Decoy"
+{
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 1000, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 2
+    }
+
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+
+def Scope "Render"
+{
+    def RenderSettings "shot"
+    {
+        rel camera = </World/Cam>
+        uniform int2 resolution = (64, 32)
+        uniform token aspectRatioConformPolicy = "cropAperture"
+        int cycles:samples = 3
+    }
+}
+)";
+
+TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString filePath = tmp.path() + QString::fromUtf8("/hand-written-settings.usda");
+    {
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(kHandWrittenSettings), 0);
+    }
+    const std::string path = filePath.toStdString();
+    NodePtr reader = createReader(path.c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
+    ASSERT_TRUE(settingsPrim);
+    const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
+    ASSERT_EQ(2u, entries.size());
+    EXPECT_EQ(std::string("/Render/shot"), entries[1].id);
+
+    // The resolution.
+    const RectD rod = rodOf(node);
+    EXPECT_EQ(64., rod.x2);
+    EXPECT_EQ(32., rod.y2);
+    std::string error;
+    EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+
+    // The camera: /World/Cam sees the box, the decoy sees nothing.
+    if (!skipWithoutGL()) {
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 32), allPlanes(), &planes, &error)) << error;
+        ASSERT_EQ(3u, planes.size());
+        ASSERT_EQ((std::size_t)64 * 32, planes[1].pixels.size());
+        const Coverage box = coverageOf("/World/Box", 64, 32, planes[2].pixels, planes[1].pixels, planes[0].pixels);
+        EXPECT_GT(box.count, 20);
+        EXPECT_NEAR(9., box.minDepth, 0.01);
+    }
+
+    // cycles:samples reaches Cycles.
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateCyclesId));
+    std::vector<RenderedPlane> planes;
+    std::list<ImageLayerDesc> rgba;
+    rgba.push_back(ImageLayerDesc::getRGBAComponents());
+    // Bypassing the cache would empty the caches after the render, releasing the engine asked next.
+    appPTR->clearAllCaches();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 32), rgba, &planes, &error, false)) << error;
+    PXR_NS::VtValue samples;
+    ASSERT_TRUE(HydraRender::engineSetting(effect, "cycles:samples", &samples));
+    EXPECT_EQ(PXR_NS::VtValue(3), samples);
+    HydraRender::releaseAllCpuEngines();
+}
+
 TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
 {
     NodePtr node = createRender();
@@ -733,7 +1008,7 @@ TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
     ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
     const U64 stubHash = node->getHashValue();
     EXPECT_NE(stormHash, stubHash);
-    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateSceneDefaultId));
     EXPECT_EQ(stormHash, node->getHashValue());
 }
 

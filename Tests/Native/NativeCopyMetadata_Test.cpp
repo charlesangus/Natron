@@ -100,11 +100,11 @@ TEST(MetadataKeyFilterTest, StarCrossesSlashesAndQuestionMarkIsOneCharacter)
 
 TEST(MetadataKeyFilterTest, ListIsSplitOnCommasAndNewlinesAndTrimmed)
 {
-    const MetadataKeyFilter filter("  exr/tag ,exif/*\nofx/frame\r\n");
+    const MetadataKeyFilter filter("  exr/tag ,exif/*\nnatron/frame\r\n");
 
     EXPECT_TRUE(filter.matches("exr/tag"));
     EXPECT_TRUE(filter.matches("exif/Make"));
-    EXPECT_TRUE(filter.matches("ofx/frame"));
+    EXPECT_TRUE(filter.matches("natron/frame"));
     EXPECT_FALSE(filter.matches("exr/origin"));
 }
 
@@ -195,7 +195,7 @@ TEST_F(CopyMetadataTest, ReplaceWithGlobKeepsUnmatchedKeysOfA)
     EXPECT_EQ(std::optional<int>(2), result.getInt("exr/tag"));
     EXPECT_EQ(std::optional<std::string>("b"), result.getString("exr/origin"));
     EXPECT_EQ(std::optional<int>(7), result.getInt("exr/bonly"));
-    EXPECT_EQ(std::optional<int>(1), result.getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
     EXPECT_FALSE(result.contains("exr/aonly"));
     EXPECT_FALSE(result.contains("exif/Make"));
 }
@@ -210,7 +210,7 @@ TEST_F(CopyMetadataTest, ReplaceDropsMatchedKeysOfAThatBLacks)
 
     EXPECT_EQ(std::optional<std::string>("b"), result.getString("exr/origin"));
     EXPECT_EQ(std::optional<int>(1), result.getInt("exr/tag"));
-    EXPECT_EQ(std::optional<int>(1), result.getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(1), result.getInt("natron/frame"));
     EXPECT_FALSE(result.contains("exr/aonly"));
     EXPECT_FALSE(result.contains("exr/bonly"));
 }

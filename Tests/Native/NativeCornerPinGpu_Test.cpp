@@ -40,6 +40,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
@@ -558,6 +559,46 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
 
 } // namespace
 
+TEST_F(NativeCornerPinGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    const bool hasGpu = createRuntime(runtime);
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+
+    const auto make = [&]() {
+        return makePin(source, kPins[0]);
+    };
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    NodePtr node = make();
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+
+    if (!hasGpu) {
+        return;
+    }
+    int nCompared = 0;
+    for (double lobes : { 2., 8. }) {
+        NodePtr sinc = make();
+        ASSERT_TRUE(bool(sinc));
+        ASSERT_TRUE(selectFilter(sinc, Resampler::eFilterSinc));
+        ASSERT_TRUE(setKnobValues(sinc, kResamplerParamLobes, { lobes }));
+        expectGpuMatchesCpu(*runtime, source, NodePtr(), sinc, "sinc " + std::to_string((int)lobes), &nCompared);
+        if (HasFatalFailure()) {
+            return;
+        }
+    }
+    NodePtr bicubic = make();
+    ASSERT_TRUE(bool(bicubic));
+    ASSERT_TRUE(selectFilter(bicubic, Resampler::eFilterBicubic));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicB, { 0. }));
+    ASSERT_TRUE(setKnobValues(bicubic, kResamplerParamBicubicC, { 0.5 }));
+    expectGpuMatchesCpu(*runtime, source, NodePtr(), bicubic, "bicubic b0 c0.5", &nCompared);
+    EXPECT_GT(nCompared, 0);
+}
+
 // The filter of the parameter, with clamp off and (if the filter honours it) on and black outside
 // on and off, under each pin, against the CPU render fed with the source over getGpuInputRoI(), on
 // the parity source moved off the format's origin. One test per filter, as for Transform.
@@ -578,7 +619,7 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    ASSERT_EQ((std::size_t)Resampler::eFilterNotch + 1, filters.size());
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
     const std::size_t f = (std::size_t)GetParam();
     const bool honoursClamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
     int nCompared = 0;
@@ -608,7 +649,7 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
-INSTANTIATE_TEST_CASE_P(Filters, NativeCornerPinGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterNotch + 1));
+INSTANTIATE_TEST_CASE_P(Filters, NativeCornerPinGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 // The homography with the mask enabled at mix 0.5 and 1, inverted, and mix 0.5 without a mask.
 TEST_F(NativeCornerPinGpuTest, MaskedMatchesTheCpuRender)

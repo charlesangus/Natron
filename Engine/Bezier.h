@@ -51,6 +51,19 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What the viewer overlay draws of a Bezier at one time: the curve and the feather as x,y
+ * float pairs, with their bounding boxes.
+ **/
+struct BezierOverlayPolygons {
+    std::vector<float> curve;
+    std::vector<float> feather;
+    RectD curveBBox;
+    RectD featherBBox;
+    bool hasFeather;
+};
+
+typedef std::shared_ptr<const BezierOverlayPolygons> BezierOverlayPolygonsConstPtr;
 
 /**
  * @class A base class for all items made by the roto context
@@ -213,17 +226,22 @@ public:
      **/
     void moveFeatherByIndex(int index, double time, double dx, double dy);
 
+    /**
+     * @brief Scales the left and right tangents of the feather point at index about that point,
+     * keying and rippling as moveFeatherByIndex does.
+     **/
+    void scaleFeatherTangentsByIndex(int index, double time, double leftScale, double rightScale);
+
 private:
 
     void movePointByIndexInternal(bool useGuiCurve, int index, double time, double dx, double dy, bool onlyFeather);
     void setPointByIndexInternal(bool useGuiCurve, int index, double time, double dx, double dy);
 
 public:
-
-
     /**
      * @brief Moves the left bezier point of the control point at the given index by the given deltas
      * and at the given time.
+     * A point whose tangents are broken stays broken.
      * If auto keying is enabled and there's no keyframe at the current time, a new keyframe will be added.
      * If ripple edit is enabled, the point will be moved at the same location at all keyframes.
      **/
@@ -232,6 +250,7 @@ public:
     /**
      * @brief Moves the right bezier point of the control point at the given index by the given deltas
      * and at the given time.
+     * A point whose tangents are broken stays broken.
      * If auto keying is enabled and there's no keyframe at the current time, a new keyframe will be added.
      * If ripple edit is enabled, the point will be moved at the same location at all keyframes.
      **/
@@ -347,6 +366,19 @@ public:
      * If ripple edit is enabled, the point will be moved at the same location at all keyframes.
      **/
     void cuspPointAtIndex(int index, double time, const std::pair<double, double>& pixelScale);
+
+    /**
+     * @brief Collapses the right handle of the control point at the given index and of its feather
+     * point onto the point's position, and breaks their tangents. Positions and left handles keep
+     * their values. If ripple edit is enabled, each key it includes collapses onto its own position.
+     **/
+    void collapseRightHandleAtIndex(int index, double time);
+
+    /**
+     * @brief Breaks the tangents of a control point and its feather point, either of which may be
+     * null, and invalidates what depends on the tangents.
+     **/
+    void setTangentsBroken(const BezierCPPtr& cp, const BezierCPPtr& fp, double time);
 
     void getMotionBlurSettings(const double time,
                                double* startTime,
@@ -501,6 +533,13 @@ public:
      * otherwise if it has never been called, evaluateAtTime_DeCasteljau will be called to compute the bounding box.
      **/
     virtual RectD getBoundingBox(double time) const OVERRIDE;
+
+    /**
+     * @brief The polygons the viewer overlay draws at time, evaluated from the GUI copy, with the
+     * feather when withFeather is true. The last result is kept until the shape, its GUI copy or
+     * its transform changes, or another time is asked for. Main thread only.
+     **/
+    BezierOverlayPolygonsConstPtr getOverlayPolygons(double time, bool withFeather) const;
     static void bezierSegmentListBboxUpdate(bool useGuiCurves,
                                             const std::list<BezierCPPtr> & points,
                                             bool finished,
@@ -657,6 +696,13 @@ public:
 
     bool dequeueGuiActions();
 
+    /**
+     * @brief Sets point, a control or feather point of this Bezier, to the GUI state of state
+     * at every time. While the node renders only the GUI copy changes, and the render picks it
+     * up when the queued GUI edits are dequeued, as with any other edit.
+     **/
+    void restorePointState(const BezierCPPtr& point, const BezierCP& state);
+
 protected:
     virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;
 
@@ -698,11 +744,30 @@ private:
     bool canSetInternalPoints() const;
 
     /**
+     * @brief Returns true when an edit must go to the GUI copy because the node renders.
+     * Otherwise first writes back GUI edits still pending from an earlier render, so the
+     * edit's internal-to-GUI copy cannot overwrite them, and returns false.
+     **/
+    bool useGuiCurveForEdit();
+
+    /**
+     * @brief Writes pending GUI edits to the internal curves when the node is not rendering.
+     **/
+    void flushGuiEdits();
+
+    /**
      * @brief setKeyframe() on the internal curves. copyToGui also copies the new key and its
      * neighbours' re-derived tangents to the GUI copy; edit paths pass false and sync the GUI
      * copy themselves, so pending GUI edits made during a render are not overwritten.
      **/
     void setKeyframeInternal(double time, bool copyToGui);
+
+    /**
+     * @brief True, after warning the user, when ripple edit is limited to some keys and point
+     * follows a track. Its one offset holds at every time, so such an edit could only change the
+     * keys the limit excludes. Posts on the node, so call without itemMutex.
+     **/
+    bool refusesBoundedRipple(const BezierCP* point);
 
     void copyInternalPointsToGuiPoints();
 

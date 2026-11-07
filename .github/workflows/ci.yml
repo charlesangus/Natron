@@ -73,6 +73,8 @@ jobs:
       CCACHE_MAXSIZE: 3G
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
+      # Several debug links at once, beside the compiles, exhaust the runner's memory and get it killed.
+      NATRON_LINK_JOBS: 1
 
     steps:
       - name: Checkout branch
@@ -156,7 +158,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun
@@ -267,7 +268,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun

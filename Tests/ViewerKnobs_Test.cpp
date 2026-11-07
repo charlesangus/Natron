@@ -205,6 +205,8 @@ TEST_F(ViewerKnobsTest, KnobEditsLeaveHashesUnchanged)
     knobOf<KnobBool>(node, kViewerParamEnableUserRoI)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamClipToFormat)->setValue(false);
     knobOf<KnobDouble>(node, kViewerParamFps)->setValue(12.);
+    knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
+    knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
 
     EXPECT_EQ(viewerHash, node->getHashValue());
     EXPECT_EQ(dotHash, dot->getHashValue());
@@ -229,6 +231,9 @@ TEST_F(ViewerKnobsTest, RenderRequestedOnlyByProcessingKnobs)
     knobOf<KnobDouble>(node, kViewerParamWipeAmount)->setValue(0.5);
     knobOf<KnobDouble>(node, kViewerParamWipeAngle)->setValue(1.);
     knobOf<KnobInt>(node, kViewerParamActiveView)->setValue(1);
+    // The scene view's progressive render follows these itself.
+    knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
+    knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
     EXPECT_EQ(start, viewer->getKnobRenderRequestCount());
 
     knobOf<KnobBool>(node, kViewerParamFullFrame)->setValue(true);
@@ -259,6 +264,25 @@ TEST_F(ViewerKnobsTest, HasASettingsPanelWithALabelAndNoImageKnobs)
     EXPECT_FALSE(bool(node->getKnobByName(kEnableLifeTimeNodeKnobName)));
     EXPECT_TRUE(bool(knobOf<KnobBool>(node, kViewerParamEnableFps)));
     EXPECT_TRUE(bool(knobOf<KnobDouble>(node, kViewerParamFps)));
+}
+
+// The scene view's progressive render: 0 samples is the render delegate's own count, and a new
+// viewer refines.
+TEST_F(ViewerKnobsTest, RefinementKnobsDefaultToTheDelegatesCountUnpaused)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    KnobIntPtr maxSamples = knobOf<KnobInt>(node, kViewerParamMaxSamples);
+    KnobBoolPtr paused = knobOf<KnobBool>(node, kViewerParamRefinementPaused);
+    ASSERT_TRUE(bool(maxSamples) && bool(paused));
+
+    EXPECT_EQ(std::string("Max Samples"), maxSamples->getLabel());
+    EXPECT_EQ(std::string("Refinement Paused"), paused->getLabel());
+    EXPECT_EQ(0, maxSamples->getValue());
+    EXPECT_EQ(0, maxSamples->getMinimum());
+    EXPECT_FALSE(paused->getValue());
+    EXPECT_FALSE(maxSamples->isAnimationEnabled());
+    EXPECT_FALSE(paused->isAnimationEnabled());
 }
 
 TEST_F(ViewerKnobsTest, ConnectingAnInputSetsTheInputKnobs)
@@ -317,6 +341,8 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     knobOf<KnobBool>(node, kViewerParamFullFrame)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamEnableDownscale)->setValue(true);
     knobOf<KnobChoice>(node, kViewerParamDownscaleLevel)->setValue(4);
+    knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
+    knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -375,6 +401,8 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     EXPECT_FALSE(knobOf<KnobBool>(loaded, kViewerParamClipToFormat)->getValue());
     EXPECT_TRUE(viewer->isFullFrameProcessingEnabled());
     EXPECT_EQ(5u, viewer->getMipmapLevel());
+    EXPECT_EQ(64, knobOf<KnobInt>(loaded, kViewerParamMaxSamples)->getValue());
+    EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamRefinementPaused)->getValue());
 }
 
 // A script run without the GUI that opens a project and saves it again keeps every viewer, its

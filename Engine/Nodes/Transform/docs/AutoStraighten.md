@@ -6,6 +6,8 @@ corners. Everything it does is driven by four knobs: `rotation` in degrees (dark
 value), `lensShiftV` for converging verticals, `lensShiftH` for converging horizontals and `shear`.
 They animate like any other knob.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 ## Fits
 
 `fitVertical`, `fitHorizontal` and `fitBoth` fit the knobs to the guide lines on the current

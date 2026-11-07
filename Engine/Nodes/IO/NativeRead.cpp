@@ -49,7 +49,6 @@
 #include <QString>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -1157,7 +1156,7 @@ NativeRead::deriveOutputMetadata(double time,
     ImageMetadata metadata;
 
     NodeMetadataConstPtr own = getMetadata(time, view);
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
+    metadata.setDouble(kNatronMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
     // unknown is left out rather than published empty.
@@ -1169,16 +1168,16 @@ NativeRead::deriveOutputMetadata(double time,
     if (!info.isFile()) {
         return metadata;
     }
-    metadata.setString(kOfxMetadataKeyFilePath, target.path);
-    metadata.setInt(kOfxMetadataKeySourceFrame, target.frame);
-    metadata.setDouble(kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
-    metadata.setDouble(kOfxMetadataKeyFileSize, (double)info.size());
+    metadata.setString(kNatronMetadataKeyFilePath, target.path);
+    metadata.setInt(kNatronMetadataKeySourceFrame, target.frame);
+    metadata.setDouble(kNatronMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    metadata.setDouble(kNatronMetadataKeyFileSize, (double)info.size());
 
     std::string error;
     if (RawExtensions::isRawPath(target.path)) {
         const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(target.path, &error);
         if (raw) {
-            metadata.setDouble(kOfxMetadataKeyPixelAspect, raw->pixelAspect);
+            metadata.setDouble(kNatronMetadataKeyPixelAspect, raw->pixelAspect);
             metadata.merge(raw->metadata, ImageMetadata::eMergePreferThis);
         }
 
@@ -1187,7 +1186,7 @@ NativeRead::deriveOutputMetadata(double time,
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
     if (header && !header->subimages.empty()) {
         const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
-        metadata.setDouble(kOfxMetadataKeyPixelAspect, pixelAspectOf(spec));
+        metadata.setDouble(kNatronMetadataKeyPixelAspect, pixelAspectOf(spec));
         metadata.merge(OiioReadSupport::attributeMetadata(target.path, spec), ImageMetadata::eMergePreferThis);
     }
 

@@ -69,6 +69,12 @@ public:
         eColorTrackballWheelWidthFifth
     };
 
+    enum RotoShapeDragRenderEnum {
+        eRotoShapeDragRenderAdaptive = 0,
+        eRotoShapeDragRenderAlwaysLive,
+        eRotoShapeDragRenderOnRelease
+    };
+
     // The mouse bindings of the 3D viewer's navigation and selection, named after the
     // application whose scheme they follow. Custom is whatever the shortcut editor made of them.
     enum Viewer3DNavigationEnum {
@@ -377,6 +383,8 @@ public:
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
+
+    RotoShapeDragRenderEnum getRotoShapeDragRender() const;
 
     // What lights the viewer's 3D views, shared by all of them.
     Viewer3DLightingEnum getViewer3DLighting() const;
@@ -693,6 +701,7 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;

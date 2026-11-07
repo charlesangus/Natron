@@ -1,4 +1,5 @@
 import pixelwrap;
+import exactdivide;
 
 // The Colorspace node's conversions, with ColorMath.h's colorspace* functions written the same
 // way, one rounding per statement, so the CPU and the GPU agree to float rounding. The models are
@@ -65,7 +66,7 @@ float csAtanUnit(float tIn)
     {
         precise float num = t - 1.0;
         precise float den = t + 1.0;
-        t = num / den;
+        t = divideRounded(num, den);
         base = 0.7853981852531433;
     }
     precise float z = t * t;
@@ -91,12 +92,12 @@ float csAtan2Turns(float y, float x)
     precise float a;
     if (ay <= ax)
     {
-        precise float q = ay / ax;
+        precise float q = divideRounded(ay, ax);
         a = csAtanUnit(q);
     }
     else
     {
-        precise float q = ax / ay;
+        precise float q = divideRounded(ax, ay);
         precise float t = csAtanUnit(q);
         a = 1.5707963705062866 - t;
     }
@@ -136,7 +137,7 @@ float csTanNear(float u)
     q = q - 0.5;
     q = q * z;
     precise float c = 1.0 + q;
-    precise float o = s / c;
+    precise float o = divideRounded(s, c);
     return o;
 }
 
@@ -148,18 +149,18 @@ float csHexHue(float3 v, float maxv, float delta)
     if (v.r == maxv)
     {
         precise float d = v.g - v.b;
-        h = d / delta;
+        h = divideRounded(d, delta);
     }
     else if (v.g == maxv)
     {
         precise float d = v.b - v.r;
-        precise float q = d / delta;
+        precise float q = divideRounded(d, delta);
         h = 2.0 + q;
     }
     else
     {
         precise float d = v.r - v.g;
-        precise float q = d / delta;
+        precise float q = divideRounded(d, delta);
         h = 4.0 + q;
     }
     if (h < 0.0)
@@ -214,7 +215,7 @@ float3 csRgbToHsv(float3 v)
     const float h = csHexHue(v, maxv, delta);
     precise float s = 0.0;
     if (maxv != 0.0)
-        s = delta / maxv;
+        s = divideRounded(delta, maxv);
     return float3(h, s, maxv);
 }
 
@@ -235,7 +236,7 @@ float3 csRgbToHsl(float3 v)
     precise float den = (l <= 0.5) ? sum : (2.0 - sum);
     precise float s = 0.0;
     if (den != 0.0)
-        s = delta / den;
+        s = divideRounded(delta, den);
     return float3(h, s, l);
 }
 
@@ -259,7 +260,7 @@ float3 csRgbToHsi(float3 v)
     precise float s = 0.0;
     if (i != 0.0)
     {
-        precise float q = minv / i;
+        precise float q = divideRounded(minv, i);
         s = 1.0 - q;
     }
     precise float x1 = v.r - v.g;
@@ -440,8 +441,8 @@ struct ColorspaceOp : IPixelOp
         const float bigY = v.y;
         if (bigY == 0.0 || sum == 0.0)
             return float3(whiteXy.x, whiteXy.y, bigY);
-        precise float x = v.x / sum;
-        precise float y = bigY / sum;
+        precise float x = divideRounded(v.x, sum);
+        precise float y = divideRounded(bigY, sum);
         return float3(x, y, bigY);
     }
 
@@ -450,7 +451,7 @@ struct ColorspaceOp : IPixelOp
         const float bigY = v.z;
         if (v.y == 0.0)
             return float3(0.0, bigY, 0.0);
-        precise float k = bigY / v.y;
+        precise float k = divideRounded(bigY, v.y);
         precise float oneMinusX = 1.0 - v.x;
         precise float zc = oneMinusX - v.y;
         precise float x = v.x * k;

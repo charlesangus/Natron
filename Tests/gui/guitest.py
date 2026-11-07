@@ -226,8 +226,20 @@ def host_window_on_screen():
     samples = range(0, len(a) - 3, 4 * 97)
     if len(set(a[i:i + 3] for i in samples)) < 16:
         return False
+    _host_screen_colours[:] = [len(set(b[i:i + 3] for i in samples))]
     same = sum(1 for i in samples if a[i:i + 3] == b[i:i + 3])
     return same >= 0.9 * len(samples)
+
+
+# Distinct colours in the last root-window grab of the main window's area.
+_host_screen_colours = []
+HOST_BLANK_SCREEN_S = 10.0
+
+
+def host_screen_unreadable():
+    """Whether root-window grabs come back as one flat colour, as under a compositor (XWayland)
+    that does not let X clients read the screen: no wait makes the window appear there."""
+    return bool(_host_screen_colours) and _host_screen_colours[0] <= 1
 
 
 class _ClientMessage(ctypes.Structure):
@@ -305,12 +317,17 @@ def run(gen):
         if pin_host_window():
             started = time.time()
             deadline = started + HOST_ON_SCREEN_TIMEOUT_S
+            report("NOTE host display: main window pinned; waiting for it to show on screen")
 
             def wait_on_screen():
                 if host_window_on_screen():
                     g = _host_window[0].geometry()
                     report("NOTE host display: main window on screen at %d,%d %dx%d after %.1fs" %
                            (g.x(), g.y(), g.width(), g.height(), time.time() - started))
+                    advance(value)
+                elif host_screen_unreadable() and time.time() > started + HOST_BLANK_SCREEN_S:
+                    report("NOTE host display: screen grabs come back blank, so checks that read the screen "
+                           "cannot pass; run on an X11 session for those")
                     advance(value)
                 elif time.time() > deadline:
                     check(False, "host display: the main window appears on screen within %ds" % HOST_ON_SCREEN_TIMEOUT_S)

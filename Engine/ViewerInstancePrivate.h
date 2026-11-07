@@ -506,6 +506,8 @@ public:
         KnobBoolWPtr fullFrame;
         KnobBoolWPtr enableDownscale;
         KnobChoiceWPtr downscaleLevel;
+        KnobIntWPtr maxSamples; // 0: the render delegate's own count
+        KnobBoolWPtr refinementPaused;
     };
     Knobs knobs;
 

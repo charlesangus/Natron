@@ -92,7 +92,7 @@ protected:
     virtual bool isTransformIdentity(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     void markPointsEdited(ValueChangedReasonEnum reason);
 

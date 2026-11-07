@@ -33,6 +33,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -88,6 +89,38 @@ CLANG_DIAG_ON(deprecated)
 #define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The content of the knobs given a hash namespace (KnobI::setHashNamespace()), on a node
+ * and everything upstream of it. Those knobs stay out of the knobs' digest; the content hash folds
+ * the whole table instead, except on an effect that consumes it
+ * (EffectInstance::consumesHashNamespaces()), as USDRender folds only the namespaces of the
+ * renderer it renders with. An edit to one then re-keys every node but those.
+ *
+ * Scopes are render settings prims, by path. An entry merges the digests of every node that
+ * authors the namespace on that prim, from upstream down.
+ **/
+struct HashNamespaces {
+    struct Scope {
+        std::map<std::string, U64> digests; //< by namespace
+        std::string defaultRenderer; //< the renderer the strongest node names, empty if none
+        bool settled = false; //< when uncertain, whether a node over all of it named the renderer
+    };
+
+    std::map<std::string, Scope> scopes; //< by path
+    std::string active; //< the scope the strongest node makes the stage's active one, empty if none
+    // The stage may hold render settings the table does not track (a file's), or inputs disagree
+    // on a renderer or the active prim: only the settled scopes and active prim are known.
+    bool uncertain = false;
+    bool activeSettled = false; //< when uncertain, whether a node over all of it made active the active prim
+
+    // Every scope, namespace and renderer.
+    void appendAll(ContentHasher& h) const;
+    // Marks the table uncertain and nothing in it settled.
+    void unsettle();
+};
+
+typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;
 
 class Node
     : public QObject
@@ -291,12 +324,32 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief The stored content hash without the HashNamespaces folded in, which is what a
+     * downstream node folds of its inputs: their namespaces reach it through its own table instead,
+     * so an effect consuming them sees only the ones it folds itself.
+     **/
+    U64 getStoredBaseContentHash() const;
+
+    /**
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
      * does not move when an input changes.
      **/
     U64 getKnobsContentDigest(bool* hasExpression) const;
+
+    /**
+     * @brief Digest of the knobs with a hash namespace, which getKnobsContentDigest() leaves out,
+     * by namespace. Empty when the node has none.
+     **/
+    std::map<std::string, U64> getKnobsNamespaceDigests() const;
+
+    /**
+     * @brief The node's and its inputs' namespaced knobs as of the last content hash computation
+     * (see HashNamespaces). Null before the first, when neither has any, or when the effect
+     * consumes them (EffectInstance::consumesHashNamespaces()).
+     **/
+    HashNamespacesConstPtr getHashNamespaces() const;
 
     /**
      * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
@@ -2262,12 +2315,18 @@ private:
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored one
-     * when it is null.
+     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored base
+     * hash when it is null. namespaces, when not null, is set to the node's HashNamespaces, and
+     * baseHash to the hash without them.
      **/
     U64 computeContentHash(U64 projectDigest,
                            const HashInputs& inputs,
-                           const std::function<U64(const Node&)>* inputHash = 0) const;
+                           const std::function<U64(const Node&)>* inputHash = nullptr,
+                           HashNamespacesConstPtr* namespaces = nullptr,
+                           U64* baseHash = nullptr) const;
+
+    // The inputs' HashNamespaces with the node's own on top.
+    HashNamespacesConstPtr mergeHashNamespaces(const HashInputs& inputs) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

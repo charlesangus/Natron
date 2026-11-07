@@ -64,8 +64,8 @@ const char* const kTransformID = PLUGINID_NATRON_TRANSFORM;
 const int kNativeTransformMajor = PLUGIN_MAJOR_NATRON_TRANSFORM;
 const double kTime = 1.;
 
-// The resampler repeats the OpenFX double arithmetic, but sums in a different association order
-// in places, so values may differ in the last float bits.
+// The references are recorded from this resampler in one build; another build's float association
+// order may differ in the last bits.
 const ParityTolerance kResamplingTolerance = ParityTolerance::resampling();
 // Motion blur averages up to hundreds of samples, each with the rounding above.
 const ParityTolerance kMotionBlurTolerance = ParityTolerance::iir();
@@ -199,6 +199,34 @@ protected:
         }
     }
 };
+
+TEST_F(NativeTransformTest, FilterParameterKnobsAndTheirDefaults)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(node));
+
+    KnobIntPtr lobes = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kResamplerParamLobes));
+    KnobDoublePtr b = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicB));
+    KnobDoublePtr c = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicC));
+    KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
+    ASSERT_TRUE(lobes && b && c && clamp);
+
+    EXPECT_EQ("Lobes", lobes->getLabel());
+    EXPECT_EQ("Bicubic B", b->getLabel());
+    EXPECT_EQ("Bicubic C", c->getLabel());
+    EXPECT_EQ(4, lobes->getDefaultValue(0));
+    EXPECT_EQ(2, lobes->getMinimum(0));
+    EXPECT_EQ(8, lobes->getMaximum(0));
+    EXPECT_DOUBLE_EQ(1. / 3., b->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(1. / 3., c->getDefaultValue(0));
+
+    // The default Cubic reads none of them and is never clamped.
+    EXPECT_TRUE(lobes->getIsSecret());
+    EXPECT_TRUE(b->getIsSecret());
+    EXPECT_TRUE(c->getIsSecret());
+    EXPECT_TRUE(clamp->getIsSecret());
+}
 
 TEST_F(NativeTransformTest, CubicMinifyingAndRotated)
 {
@@ -364,7 +392,7 @@ TEST_F(NativeTransformTest, IdentityRules)
     EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
+TEST_F(NativeTransformTest, ClampIsShownOnlyForFiltersThatHonourIt)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
@@ -372,11 +400,11 @@ TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
     KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
     ASSERT_TRUE(bool(clamp));
 
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "keys"));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "cubic"));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
 }
 
 TEST_F(NativeTransformTest, ConnectingASourceCentresTheTransformOnce)

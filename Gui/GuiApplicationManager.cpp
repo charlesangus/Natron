@@ -67,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
 #include "Gui/DocumentationManager.h"
@@ -1093,6 +1094,10 @@ GuiApplicationManager::initGui(const CLArgs& args)
     // Init documentation manager
     _imp->documentation.reset(new DocumentationManager);
     _imp->documentation->startServer();
+
+    _imp->stallMonitor = StallMonitor::createFromEnvironment();
+    // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
+    RotoLatencyProbe::startFromEnvironment();
 
     return exec();
 } // GuiApplicationManager::initGui

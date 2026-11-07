@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <cstdint>
 
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/LensModels.h"
 
 NATRON_NAMESPACE_ENTER
@@ -54,8 +56,10 @@ inline void
 setLensModelGpuDouble(double v,
                       float out[2])
 {
-    out[0] = (float)v;
-    out[1] = (float)(v - (double)out[0]);
+    out[0] = knobValueAsFloat(v);
+    // Past the float range the high word is infinite and there is no remainder; subtracting an
+    // infinite high word would raise the invalid exception for an infinite v.
+    out[1] = std::isinf(out[0]) ? 0.f : (float)(v - (double)out[0]);
 }
 
 inline LensModelGpu

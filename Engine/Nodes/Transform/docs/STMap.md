@@ -8,6 +8,8 @@ layer and a channel, from any layer of the input, the same way as IDistort.
 the Source format, which falls back to the Source region of definition when the Source has no
 format. A pixel centre maps to itself when U = (x + 0.5) / width.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 The output format is the UV input's. `formatFrom` chooses whether the output covers the UV format
 or the UV region of definition. A UV channel that the input lacks, or None, reads 0, and so does UV outside
 its image. A non-finite coordinate reads black, except under Clamp wrap, where an infinity clamps

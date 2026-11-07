@@ -93,12 +93,12 @@ script-name prefix so the Write can share it.
 - **Proxies.** The `proxy` file is read instead of `filename` when the render
   scale is at or below `proxyThreshold`; it has its own frame listing.
 - **Metadata.** `deriveOutputMetadata()` publishes
-  `ofx/pixelaspect` and, for a frame that loads a file, the file path, source
+  `natron/pixelaspect` and, for a frame that loads a file, the file path, source
   frame, mtime and size plus the file's own attributes
   (`OiioReadSupport::attributeMetadata()`, so a frame rate in the header appears under the
   format's prefix like any other attribute), for downstream native nodes and, via
   `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
-  leaves the output frame rate at the host default and publishes no `ofx/framerate`.
+  leaves the output frame rate at the host default and publishes no `natron/framerate`.
 - **Camera raw.** A raw file is decoded by rawspeed through
   `RawDecodeSupport.*` and output as `eDataKindRaw`: the undemosaiced sensor
   data, one channel for a colour filter array mosaic, or the file's 3 or 1

@@ -406,6 +406,38 @@ public:
     }
 
     /**
+     * @brief For an effect with hash-namespaced knobs (KnobI::setHashNamespace()): the path of the
+     * render settings prim they author, the renderer it names and whether the node makes it the
+     * stage's active one (HashNamespaces). False when the effect authors none. Any thread.
+     **/
+    virtual bool getHashNamespaceScope(std::string* /*path*/,
+                                       std::string* /*defaultRenderer*/,
+                                       bool* /*active*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief True for an effect whose output stage may hold render settings prims that no
+     * hash-namespaced knob authors, such as a file's: its HashNamespaces are then uncertain, so a
+     * consumer folds every entry. Any thread.
+     **/
+    virtual bool mayAuthorUntrackedRenderSettings() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief True for an effect that folds what it reads of its inputs' HashNamespaces into its
+     * hash itself (appendNodeContentHash()) and outputs no stage: the node then neither folds the
+     * table nor passes it on. Otherwise the node folds every entry. Any thread.
+     **/
+    virtual bool consumesHashNamespaces() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Appends nodes whose stored hashes appendNodeContentHash() folds in, besides the
      * node's inputs: they are hashed before it, and it is only clean once they are.
      **/
@@ -2575,6 +2607,24 @@ public:
     void drawOverlay_public(double time, const RenderScale & renderScale, ViewIdx view);
 
     bool onOverlayPenDown_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp, PenType pen) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether this effect's overlay wants an Alt+left press at pos, which the viewer
+     * otherwise keeps for panning. When true the press is sent through onOverlayPenDown_public.
+     **/
+    virtual bool onOverlayClaimsAltPenDown(double /*time*/,
+                                           const QPointF& /*pos*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The keyboard modifiers held at a pen press in the viewer. An overlay that tracks
+     * modifiers from key events matches its state to these, since a key release can be lost.
+     **/
+    virtual void onOverlayPenDownModifiers(KeyboardModifiers /*modifiers*/)
+    {
+    }
 
     bool onOverlayPenMotion_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 

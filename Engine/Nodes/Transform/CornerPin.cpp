@@ -311,6 +311,8 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     page->addKnob(blackOutsideKnob);
     blackOutside = blackOutsideKnob;
 
+    filterKnobs.create(holder, page, filterKnob, clampKnob);
+
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
     motionBlurKnob->setName(kCornerPinNodeParamMotionBlur);
     motionBlurKnob->setHintToolTip(EffectInstance::tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
@@ -382,7 +384,7 @@ CornerPinOp::bake(const KnobReader& reader) const
     }
 
     params.invert = reader.value(invert);
-    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
     params.blackOutside = reader.value(blackOutside);
 
@@ -736,7 +738,7 @@ CornerPinNode::initializeKnobs()
     page->addKnob(srcClipChanged);
     _srcClipChanged = srcClipChanged;
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -749,22 +751,16 @@ CornerPinNode::initializeKnobs()
 } // CornerPinNode::initializeKnobs
 
 void
-CornerPinNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+CornerPinNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 CornerPinNode::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -869,7 +865,7 @@ CornerPinNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = o.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

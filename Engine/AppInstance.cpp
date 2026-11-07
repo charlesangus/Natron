@@ -27,6 +27,7 @@
 #include "AppInstance.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <fstream>
 #include <limits>
@@ -167,6 +168,7 @@ public:
     AppInstance* _publicInterface;
     ProjectPtr _currentProject; //< ptr to the project
     int _appID; //< the unique ID of this instance (or window)
+    std::atomic<const Node*> _viewerActiveForRenders { nullptr };
     mutable QMutex creatingGroupMutex;
 
     //When a pyplug is created
@@ -282,6 +284,20 @@ AppInstance::getNodesBeingCreated() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_creatingNodeQueue;
+}
+
+void
+AppInstance::setViewerActiveForRenders(const Node* viewer)
+{
+    _imp->_viewerActiveForRenders.store(viewer, std::memory_order_relaxed);
+}
+
+bool
+AppInstance::isViewerActiveForRenders(const Node* viewer) const
+{
+    const Node* active = _imp->_viewerActiveForRenders.load(std::memory_order_relaxed);
+
+    return !active || (active == viewer);
 }
 
 NodePtr

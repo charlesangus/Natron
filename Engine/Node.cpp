@@ -68,6 +68,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Backdrop.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
@@ -2055,6 +2056,20 @@ Node::onKnobContentChanged(const KnobI* knob)
         groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
     }
     markHashDirtyInternal(groupState, "knob content changed", knob);
+
+    // Building a node sets every knob, and a knob that does not evaluate changes no image, so neither is an edit.
+    if (knob && isNodeCreated() && knob->getEvaluateOnChange()) {
+        const std::uint64_t now = CacheRetention::nowNs();
+        if (_imp->retentionSignals->noteEdited(now)) {
+            const int inputCount = getInputSlotCount();
+            for (int i = 0; i < inputCount; ++i) {
+                const NodePtr input = getInput(i);
+                if (input) {
+                    input->getRetentionSignals()->noteInputOfEdited(now);
+                }
+            }
+        }
+    }
 }
 
 bool
@@ -8706,12 +8721,35 @@ addIdentityNodesRecursively(const Node* caller,
     }
 } // addIdentityNodesRecursively
 
+const CacheRetentionSignalsPtr&
+Node::getRetentionSignals() const
+{
+    return _imp->retentionSignals;
+}
+
 bool
 Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
                         double time,
                         ViewIdx view,
                         int /*visitsCount*/) const
 {
+    const unsigned reasons = computeRetentionReasons(isFrameVaryingOrAnimated, time, view);
+
+    // The scheduler passes a placeholder for the static test, which must not overwrite what renderRoI measured.
+    _imp->retentionSignals->noteReasons(reasons & ~CacheRetention::eReasonStaticOutput);
+
+    return CacheRetention::admit(reasons);
+}
+
+// Does not stop at the first reason, because each one also weighs in the priority. Every test is one a node with no
+// reason already paid for, so this costs at most what an uncached node always cost.
+unsigned
+Node::computeRetentionReasons(bool isFrameVaryingOrAnimated,
+                              double time,
+                              ViewIdx view) const
+{
+    using namespace CacheRetention;
+
     /*
      * Here is a list of reasons when caching is enabled for a node:
      * - It is references multiple times below in the graph
@@ -8736,100 +8774,90 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     if (appPTR->isBackground()) {
         outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
     }
-    std::size_t sz = outputs.size();
+    const std::size_t sz = outputs.size();
+    const RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
+    const bool strokeBeingEdited = attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible();
+    unsigned reasons = 0;
+
+    if (sz == 0) {
+        // Nothing reads this output, so only an explicit request or a rotopaint internal node keeps it.
+        if (isForceCachingEnabled()) {
+            reasons |= eReasonForced;
+        }
+        if (appPTR->isAggressiveCachingEnabled()) {
+            reasons |= eReasonAggressive;
+        }
+        if (strokeBeingEdited) {
+            reasons |= eReasonRotoEditing;
+        }
+
+        return reasons;
+    }
 
     if (sz > 1) {
-        ///The node is referenced multiple times below, cache it
-        return true;
-    } else {
-        if (sz == 1) {
-            const Node* output = outputs.front();
-            ViewerInstance* isViewer = output->isEffectViewer();
-            if (isViewer) {
-                int activeInputs[2];
-                isViewer->getActiveInputs(activeInputs[0], activeInputs[1]);
-                if ( (output->getInput(activeInputs[0]).get() == this) ||
-                     ( output->getInput(activeInputs[1]).get() == this) ) {
-                    ///The node is a direct input of the viewer. Cache it because it is likely the user will make
+        reasons |= eReasonMultipleOutputs;
 
-                    ///changes to the viewer that will need this image.
-                    return true;
+        const std::uint64_t now = CacheRetention::nowNs();
+        if (_imp->retentionSignals->panelScanDue(now)) {
+            for (const Node* output : outputs) {
+                if (output->isSettingsPanelVisible()) {
+                    _imp->retentionSignals->notePanelOfOutput(now);
+                    break;
                 }
             }
-
-            RotoPaint* isRoto = dynamic_cast<RotoPaint*>(output->getEffectInstance().get());
-            if (isRoto) {
-                // THe roto internally makes multiple references to the input so cache it
-                return true;
+        }
+    } else {
+        const Node* output = outputs.front();
+        ViewerInstance* isViewer = output->isEffectViewer();
+        if (isViewer) {
+            int activeInputs[2];
+            isViewer->getActiveInputs(activeInputs[0], activeInputs[1]);
+            if ((output->getInput(activeInputs[0]).get() == this) || (output->getInput(activeInputs[1]).get() == this)) {
+                reasons |= eReasonViewerInput;
             }
-
-            if (!isFrameVaryingOrAnimated) {
-                //This image never changes, cache it once.
-                return true;
-            }
-            if ( output->isSettingsPanelVisible() ) {
-                //Output node has panel opened, meaning the user is likely to be heavily editing
-
-                //that output node, hence requesting this node a lot. Cache it.
-                return true;
-            }
-            if ( _imp->effect->doesTemporalClipAccess() ) {
-                //Very heavy to compute since many frames are fetched upstream. Cache it.
-                return true;
-            }
-            if ( !_imp->effect->supportsTiles() ) {
-                //No tiles, image is going to be produced fully, cache it to prevent multiple access
-
-                //with different RoIs
-                return true;
-            }
-            if (_imp->effect->getRecursionLevel() > 0) {
-                //We are in a call from getImage() and the image needs to be computed, so likely in an
-
-                //analysis pass. Cache it because the image is likely to get asked for severla times.
-                return true;
-            }
-            if ( isForceCachingEnabled() ) {
-                //Users wants it cached
-                return true;
-            }
-            NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
-            if ( parentIsGroup && parentIsGroup->getNode()->isForceCachingEnabled() && (parentIsGroup->getOutputNodeInput(false).get() == this) ) {
-                //if the parent node is a group and it has its force caching enabled, cache the output of the Group Output's node input.
-                return true;
-            }
-
-            if ( appPTR->isAggressiveCachingEnabled() ) {
-                ///Users wants all nodes cached
-                return true;
-            }
-
-            if ( isPreviewEnabled() && !appPTR->isBackground() ) {
-                ///The node has a preview, meaning the image will be computed several times between previews & actual renders. Cache it.
-                return true;
-            }
-
-            if ( isRotoPaintingNode() && isSettingsPanelVisible() ) {
-                ///The Roto node is being edited, cache its output (special case because Roto has an internal node tree)
-                return true;
-            }
-
-            RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-            if ( attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible() ) {
-                ///Internal RotoPaint tree and the Roto node has its settings panel opened, cache it.
-                return true;
-            }
-        } else {
-            // outputs == 0, never cache, unless explicitly set or rotopaint internal node
-            RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-
-            return isForceCachingEnabled() || appPTR->isAggressiveCachingEnabled() ||
-                   ( attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible() );
+        }
+        if (dynamic_cast<RotoPaint*>(output->getEffectInstance().get())) {
+            // The roto internally makes multiple references to its input.
+            reasons |= eReasonRotoInput;
+        }
+        if (!isFrameVaryingOrAnimated) {
+            reasons |= eReasonStaticOutput;
+        }
+        if (output->isSettingsPanelVisible()) {
+            reasons |= eReasonOutputPanel;
+            _imp->retentionSignals->notePanelOfOutput(CacheRetention::nowNs());
         }
     }
 
-    return false;
-} // Node::shouldCacheOutput
+    if (_imp->effect->doesTemporalClipAccess()) {
+        reasons |= eReasonTemporalAccess;
+    }
+    if (!_imp->effect->supportsTiles()) {
+        // The image is produced whole, and other RoIs will ask for it again.
+        reasons |= eReasonNoTiles;
+    }
+    if (_imp->effect->getRecursionLevel() > 0) {
+        // Inside getImage(), so likely an analysis pass that will ask again.
+        reasons |= eReasonNestedRender;
+    }
+    NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(getGroup().get());
+    if (isForceCachingEnabled() || (parentIsGroup && parentIsGroup->getNode()->isForceCachingEnabled() && (parentIsGroup->getOutputNodeInput(false).get() == this))) {
+        reasons |= eReasonForced;
+    }
+    if (appPTR->isAggressiveCachingEnabled()) {
+        reasons |= eReasonAggressive;
+    }
+    if (isPreviewEnabled() && !appPTR->isBackground()) {
+        // Computed again between previews and actual renders.
+        reasons |= eReasonPreview;
+    }
+    // A roto node has an internal node tree, whose outputs say nothing about its panel.
+    if ((isRotoPaintingNode() && isSettingsPanelVisible()) || strokeBeingEdited) {
+        reasons |= eReasonRotoEditing;
+    }
+
+    return reasons;
+} // Node::computeRetentionReasons
 
 bool
 Node::refreshMaskEnabledNess(int inputNb)

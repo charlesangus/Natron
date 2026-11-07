@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstdio> // for std::remove
 #include <cstring> // for std::memcpy
 #include <iostream>
@@ -240,6 +241,12 @@ struct CacheEntryHeader {
     std::atomic<U64> lastUse; // wall clock in ns, so that it survives a restart
     std::atomic<float> priority;
     std::atomic<float> recomputeCostNs;
+
+    // Shared with the node rather than naming it: the score scan runs under the cache lock and must not look a node up,
+    // and the entry can outlive the node.
+    std::atomic<CacheRetentionSignalsPtr> retention;
+    std::atomic<std::uint32_t> reuseCount { 0 };
+    std::atomic<U64> lastReuseRender { 0 };
 };
 
 typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;

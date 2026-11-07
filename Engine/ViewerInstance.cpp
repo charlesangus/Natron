@@ -1288,6 +1288,22 @@ noteHandoffRefusal(const RenderStatsPtr& stats,
 }
 #endif
 
+// The setter has just walked the viewer's branch to install its args, so knowing the branch costs no walk of its own.
+// Runs before any node of the frame asks about admission, so the first render of a branch already counts as on it.
+void
+noteActiveViewerBranch(const ParallelRenderArgsSetter& setter,
+                       const NodePtr& viewer)
+{
+    if (!viewer->getApp()->isViewerActiveForRenders(viewer.get())) {
+        return;
+    }
+
+    const std::uint64_t now = CacheRetention::nowNs();
+    for (const std::pair<const NodePtr, ParallelRenderArgsPtr>& args : setter.getInstalledArgs()) {
+        args.first->getRetentionSignals()->noteViewerBranch(now);
+    }
+}
+
 // Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
 // back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
 FrameFuturePtr
@@ -1418,6 +1434,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            NodePtr(),
                                            false,
                                            stats);
+        noteActiveViewerBranch(tls, thisNode);
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -2363,6 +2380,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      inArgs.activeInputToRender->getNode(),
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
+        noteActiveViewerBranch(*frameArgs, getNode());
     }
 
 

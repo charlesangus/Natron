@@ -51,6 +51,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionTask.h"
@@ -590,6 +591,12 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         task.dfsPostOrder = fvRequest->dfsPostOrder;
         task.isIdentity = fvRequest->globalData.isIdentity;
+        if (task.isIdentity) {
+            const CacheRetentionSignals& identity = *task.key.node->getRetentionSignals();
+            for (const int dependency : task.dependencies) {
+                graph.tasks[dependency].key.node->getRetentionSignals()->inheritInputOfEdited(identity);
+            }
+        }
         // The frame's own layout, not the widest over the sequence, sizes the memory estimate.
         const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(nodeKey), task.key.time, task.key.view);
         task.bitdepth = metadata->getBitDepth(-1);

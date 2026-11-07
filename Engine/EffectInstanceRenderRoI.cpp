@@ -127,7 +127,9 @@ private:
 template <typename LayersToRender>
 void
 recordRecomputeCost(const LayersToRender& layersToRender,
-                    double ownNs)
+                    double ownNs,
+                    const CacheRetentionSignalsPtr& retention,
+                    std::uint64_t renderSequence)
 {
     double renderedPixels = 0.;
     for (const auto& rect : layersToRender.rectsToRender) {
@@ -153,8 +155,28 @@ recordRecomputeCost(const LayersToRender& layersToRender,
     }
     for (const ImagePtr& image : rendered) {
         if (image) {
-            std::atomic<float>& cost = image->getEntryHeader()->recomputeCostNs;
-            cost.store(CacheEviction::costAfterRender(cost.load(), ownNs, wholePixels, renderedPixels));
+            CacheEntryHeader& header = *image->getEntryHeader();
+            const float cost = CacheEviction::costAfterRender(header.recomputeCostNs.load(), ownNs, wholePixels, renderedPixels);
+            header.recomputeCostNs.store(cost);
+            // Kept on an uncached private image too: it is the only measurement a node that admits nothing leaves behind.
+            retention->rememberCost(cost);
+            CacheRetention::noteStored(header, retention, renderSequence);
+        }
+    }
+}
+
+template <typename LayersToRender>
+void
+noteImagesServed(const LayersToRender& layersToRender,
+                 const CacheRetentionSignalsPtr& retention,
+                 std::uint64_t renderSequence)
+{
+    for (const auto& layer : layersToRender.layers) {
+        if (layer.second.fullscaleImage) {
+            CacheRetention::noteHit(*layer.second.fullscaleImage->getEntryHeader(), retention, renderSequence);
+        }
+        if (layer.second.downscaleImage && (layer.second.downscaleImage != layer.second.fullscaleImage)) {
+            CacheRetention::noteHit(*layer.second.downscaleImage->getEntryHeader(), retention, renderSequence);
         }
     }
 }
@@ -978,6 +1000,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();
     const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
+    retention->noteStaticOutput(!isFrameVaryingOrAnimated);
     bool createInCache;
     // Do not use the cache for OpenGL rendering
     if (useOpenGL || renderContextHasLoopVariables(frameArgs->context)) {
@@ -1428,14 +1453,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         allIdentity = allIdentity && it->isIdentity;
     }
 
+    const bool cacheCanServe = !byPassCache && !allIdentity;
+    // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
+    const bool partial = cacheCanServe && hasSomethingToRender && (partlyCachedBeforeWidening || leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area()));
     if (byPassCache || !createInCache || allIdentity) {
         cacheStateRecorder.set(eRenderCacheStateBypass);
     } else if (!hasSomethingToRender) {
         cacheStateRecorder.set(eRenderCacheStateHit);
     } else {
-        // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
-        const bool partial = partlyCachedBeforeWidening || leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area());
         cacheStateRecorder.set(partial ? eRenderCacheStatePartial : eRenderCacheStateMiss);
+    }
+    // Not gated on createInCache: a node that no longer admits can still be served an entry stored earlier.
+    if (cacheCanServe && (!hasSomethingToRender || partial)) {
+        noteImagesServed(*layersToRender, retention, renderSequence);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1725,7 +1755,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                               neededComps,
                                               processChannels);
             if ((renderRetCode == eRenderRoIStatusImageRendered) && !aborted()) {
-                recordRecomputeCost(*layersToRender, renderWatch.ownNs());
+                recordRecomputeCost(*layersToRender, renderWatch.ownNs(), retention, renderSequence);
             }
             if (useOpenGL) {
                 // If the plug-in doesn't support concurrent OpenGL renders, release the lock that was taken in the call to attachOpenGLContext_public() above.

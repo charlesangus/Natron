@@ -35,7 +35,10 @@
 #include <QDebug>
 #include <QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheEntry.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/CacheTier.h"
 #include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
@@ -256,6 +259,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     } else {
         frameArgs = tls->frameArgs.back();
     }
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const AbortableRenderInfoPtr retentionAbortInfo = frameArgs->abortInfo.lock();
+    const std::uint64_t renderSequence = retentionAbortInfo ? retentionAbortInfo->getRenderSequence() : 0;
 
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
@@ -479,6 +485,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         // getOrCreate() returns true when it *found* an entry and false when it created one.
         if (appPTR->getDeepImageOrCreate(key, params, &cacheEntry)) {
             if (cacheEntry && cacheEntry->getDeepImage() && cacheEntry->isFullyRendered()) {
+                CacheRetention::noteHit(*cacheEntry->getEntryHeader(), retention, renderSequence);
                 *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(cacheEntry);
 
                 return eRenderRoIRetCodeOk;
@@ -558,7 +565,10 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         // after renderDeep() has populated the sample table and the channel buffers.
         cacheEntry->allocateMemory();
         // A deep entry is all-or-nothing, so this render was of the whole of it.
-        cacheEntry->getEntryHeader()->recomputeCostNs.store(CacheEviction::costAfterRender(0.f, renderOwnNs, 1., 1.));
+        const float cost = CacheEviction::costAfterRender(0.f, renderOwnNs, 1., 1.);
+        cacheEntry->getEntryHeader()->recomputeCostNs.store(cost);
+        retention->rememberCost(cost);
+        CacheRetention::noteStored(*cacheEntry->getEntryHeader(), retention, renderSequence);
     }
 
     for (std::list<DeepImageCacheEntryPtr>::const_iterator it = supersededDeepEntries.begin(); it != supersededDeepEntries.end(); ++it) {
@@ -636,6 +646,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeAborted;
     }
 
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const AbortableRenderInfoPtr retentionAbortInfo = frameArgs->abortInfo.lock();
+    const std::uint64_t renderSequence = retentionAbortInfo ? retentionAbortInfo->getRenderSequence() : 0;
     const U64 nodeHash = frameArgs->nodeHash;
     const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
@@ -708,6 +721,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             std::list<RectI> restToRender;
             cached->getRestToRender(args.roi, restToRender);
             if (!args.byPassCache && cached->getBounds().contains(args.roi) && restToRender.empty()) {
+                CacheRetention::noteHit(*cached->getEntryHeader(), retention, renderSequence);
                 it->image = cached;
                 continue;
             }
@@ -800,6 +814,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             if (!foundInCache) {
                 image->allocateMemory();
                 created.push_back(image);
+                CacheRetention::noteStored(*image->getEntryHeader(), retention, renderSequence);
             } else {
                 // Another render created this entry between the lookup above and here. Its
                 // bounds need not cover this request and it may still be filling in, so it is
@@ -808,6 +823,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                 std::list<RectI> restToRender;
                 image->getRestToRender(args.roi, restToRender);
                 if (!args.byPassCache && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                    CacheRetention::noteHit(*image->getEntryHeader(), retention, renderSequence);
                     layer.image = image;
                     layer.needsFlatten = false;
                     continue;

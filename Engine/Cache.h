@@ -57,6 +57,7 @@ GCC_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h" //for access to settings
 #include "Engine/CacheEntry.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/CacheTier.h"
 #include "Engine/ImageLocker.h"
 #include "Engine/LRUHashTable.h"
@@ -1919,19 +1920,34 @@ private:
         _evictionBatch.clear();
 
         const std::uint64_t now = CacheEviction::nowNs();
-        _memoryCache.scan(CacheEviction::kSample, [this, now](hash_type hash, const StoredEntryPtr& entry) {
+        const std::uint64_t retentionNow = CacheRetention::nowNs();
+        _memoryCache.scan(CacheEviction::kSample, [this, now, retentionNow](hash_type hash, const StoredEntryPtr& entry) {
             // size() is read only here, past the pin test: on a held entry it would race a resize.
             if (entry.use_count() != 1) {
                 return;
             }
-            const CacheEntryHeader* header = entry->evictionHeader();
+            CacheEntryHeader* const header = entry->evictionHeader();
             const std::uint64_t lastUse = header ? header->lastUse.load() : 0;
-            const float cost = header ? header->recomputeCostNs.load() : 0.f;
+            float cost = header ? header->recomputeCostNs.load() : 0.f;
+            double priority = CacheEviction::kNeutralPriority;
+            std::uint32_t reuseCount = 0;
+            if (header) {
+                reuseCount = header->reuseCount.load(std::memory_order_relaxed);
+                const CacheRetentionSignalsPtr retention = header->retention.load();
+                if (retention) {
+                    priority = retention->priority(retentionNow);
+                    // The holder's last render is a better guess for an entry with no measurement than the placeholder.
+                    if (cost <= 0.f) {
+                        cost = retention->rememberedCostNs();
+                    }
+                }
+                header->priority.store((float)priority, std::memory_order_relaxed);
+            }
             EvictionCandidate candidate;
             candidate.entry = entry.get();
             candidate.hash = hash;
             candidate.lastUse = lastUse;
-            candidate.score = CacheEviction::score(CacheEviction::kNeutralPriority, cost, 0, now > lastUse ? now - lastUse : 0, entry->size());
+            candidate.score = CacheEviction::score(priority, cost, reuseCount, now > lastUse ? now - lastUse : 0, entry->size());
             _evictionBatch.push_back(candidate);
         });
 

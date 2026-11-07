@@ -31,6 +31,7 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/CacheRetention.h"
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
@@ -408,6 +409,7 @@ public:
     std::atomic<U64> hashCleanEpoch { 0 };
     // Set while a mark of this node waits for its dependents to be marked too.
     std::atomic<bool> hashDirtyQueued { false };
+    const CacheRetentionSignalsPtr retentionSignals = std::make_shared<CacheRetentionSignals>();
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it

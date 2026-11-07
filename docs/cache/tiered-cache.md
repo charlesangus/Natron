@@ -33,17 +33,21 @@ Today admission is the yes/no of `Node::shouldCacheOutput` (`Engine/Node.cpp:871
 (`Engine/EffectInstanceRenderRoI.cpp:1380`). The raw nodes have one output, a closed panel and no forcing reason, so
 they are refused.
 
-After M300.P2.T3 the reasons become a priority ([Priority signals](#priority-signals)), and after M300.P2.T4
-`createInCache` is the admission policy's answer ([Admission](#admission)). Every raw node is on the active viewer's
-branch, which is a signal, so both policies store all five on the first render.
+Since M300.P2.T3 the reasons are also a priority ([Priority signals](#priority-signals)), but the decision is unchanged:
+`Node::shouldCacheOutput` returns `CacheRetention::admit(reasons)`, true for any reason, so the raw nodes are still
+refused. After M300.P2.T4 `createInCache` is the admission policy's answer ([Admission](#admission)). Every raw node is
+on the active viewer's branch, which is a signal stamped before the frame's first admission question, so both policies
+store all five on the first render.
 
 What stays a refusal, independent of policy, because it is not a retention question: OpenGL renders and loop variables
 (`Engine/EffectInstanceRenderRoI.cpp:929-930`), `allowsStoreUnder` (`:978`), and the overlay pass (`:963-972`). The
 analysis override at `:933` stays too.
 
 `Engine/RenderScheduler.cpp:625-632` is a second consumer of the same yes/no: it sets `sharesCachedOutput`, which gates
-every graph-level probe. It must read the same answer or the pruning below sees nothing. M300.P2.T3 does not list it;
-see [Gaps](#gaps-against-the-task-list).
+every graph-level probe. It must read the same answer or the pruning below sees nothing. It does not quite do so today:
+it passes `false` for `isFrameVaryingOrAnimated`, which makes any node with an output answer yes, a superset of
+renderRoI's answer. M300.P2.T3 keeps that, because changing it would change behaviour; M300.P2.T4 decides what the
+scheduler asks. See [Gaps](#gaps-against-the-task-list).
 
 ### `behind_hit` goes away only if dependency planning changes, and no task owns that
 
@@ -116,7 +120,7 @@ pixels in RAM.
 | `key` | `shared_ptr<const KeyHelper<U64>>` | at creation | identity; `ImageKey` and `DeepImageKey` both derive from `KeyHelper<U64>` (`Engine/ImageKey.h:37`, `Engine/DeepImageKey.h:43`) |
 | `hash` | `U64` | at creation | table key; `DeepImageKey::fillHash` (`Engine/DeepImageKey.cpp`) starts with a domain tag so an image and a deep key cannot share a bucket by accident, and `ImageKey` needs none |
 | `payload` | enum: image, deep | at creation | selects the typed entry and the file format |
-| `holder` | interned `U32` | creation, hit | reference into `CacheRetention`, from `CacheEntryHolder::getCacheID()` |
+| `retention` | atomic `shared_ptr<CacheRetentionSignals>`, in place of an interned holder id | store, hit | the holder's signals. Shared rather than looked up so that the score scan takes no other lock and an entry can outlive its node without an interning table to clean |
 | `bounds` | `RectI` | under `_entryLock` | as `Image::getBounds` (`Engine/Image.h:287`) |
 | `bitmap` | `Bitmap`, absent for deep | under `_entryLock` | the trimap (`Engine/Image.h:67-169`); null in RAM while the entry is disk-resident |
 | `pending` | `ImageBeingRenderedPtr` | under the entry's `pendingLock` | the entry's slot in the being-rendered registry; see [A1](#assumptions-checked) for why not the stripe |
@@ -124,9 +128,10 @@ pixels in RAM.
 | `bytes` | not stored | | payload plus bitmap, from `size()` (`Engine/Image.h`); the scan calls it only on entries nobody holds, where no resize can race it and its `tryLockForRead` cannot wait |
 | `state` | atomic enum: normal, demoting, promoting | tier moves | a move in flight, which a lookup can overtake |
 | `pinned` | bool | at creation | DiskCache node output |
-| `lastUse` | atomic wall-clock ns | real hits only | age term of the score; wall clock so it survives a restart |
-| `reuseCount` | atomic `U32`, added by M300.P2.T3 | real hits only | reuse multiplier; counted once per frame through `lastReuseFrame`. Until it exists the score passes 0 |
-| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the file's stats block; the score itself recomputes it. Not written yet: the score uses a neutral 1 until M300.P2.T3 |
+| `lastUse` | atomic wall-clock ns | every lookup today, real hits only after M300.P2.T5 | age term of the score; wall clock so it survives a restart. `Cache::getInternal` still bumps it for a probe that serves nothing, such as `appPTR->getImage` at the graph-level probes; the non-promoting probe of M300.P2.T5 ends that |
+| `reuseCount` | atomic `U32` | a render served by the entry | reuse multiplier; counted at the render sites, so no probe counts, and once per render request through `lastReuseRender` (the request's `AbortableRenderInfo::getRenderSequence`). The render that stores the entry does not count |
+| `lastReuseRender` | atomic `U64` | store, hit | the request `reuseCount` last counted |
+| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the file's stats block; the score itself recomputes it |
 | `recomputeCostNs` | atomic `float` | after each render | own render time scaled to the full bounds; see [Recompute cost](#recompute-cost) |
 
 The score scan reads atomics and the `size()` of unheld entries, so it waits on no per-entry lock.
@@ -273,9 +278,9 @@ factors of hundreds.
 
 An entry with no recorded cost scores as `unmeasuredCost`, 16 ms, so it is neither first to go nor protected: restored
 entries, planes a plug-in adds on the fly, and members a GPU region publishes until M301 - GPU Cache Tier. An entry in
-flight has none either, but a render holds it, so it is not a candidate. A per-node remembered cost, kept by
-`CacheRetention` (M300.P2.T3), will answer for these instead. An entry holding no bytes scores 0: an unheld one is a render
-that never completed.
+flight has none either, but a render holds it, so it is not a candidate. The holder's remembered cost, the last cost
+any of its renders recorded (private images included), answers for these when the entry is bound to a holder that has
+one. An entry holding no bytes scores 0: an unheld one is a render that never completed.
 
 Why not reuse the scheduler's task wall time: see [Assumptions](#assumptions-checked).
 
@@ -287,7 +292,9 @@ per-node test has a problem for chains; see [Departures](#departures-for-the-use
 
 ## Priority signals
 
-`CacheRetention` (`Engine/CacheRetention.h/.cpp`, M300.P2.T3) holds per-holder signal state:
+`CacheRetentionSignals` (`Engine/CacheRetention.h/.cpp`) holds per-holder signal state, all atomics, written by whichever
+thread sees the event and read by the score scan without a lock. Weights and half-lives are starting values, unmeasured;
+see [Tunable constants](#tunable-constants).
 
 ```
 priority = 1 + Σ wᵢ · sᵢ
@@ -295,21 +302,31 @@ priority = 1 + Σ wᵢ · sᵢ
 
 | Signal | Set by | `sᵢ` | Weight | Half-life |
 | --- | --- | --- | --- | --- |
-| Input of a recently edited node | `Node::onKnobContentChanged` (`Engine/Node.cpp:2050`), reached from `KnobHolder::bumpKnobsContentGeneration` (`Engine/Knob.cpp:8556`); boosts the node's direct inputs, walking through identities | `2^(−t/h)` since the edit | 8 | 120 s |
-| Input of an open panel | graph build, testing each output's `isSettingsPanelVisible` as `Engine/Node.cpp:8770` does | decays after the last graph where it held | 4 | 60 s |
-| Active viewer's branch | graph build of the active viewer's frame: every task's node | decays after the last such graph | 2 | 10 min |
+| Input of a recently edited node | `Node::onKnobContentChanged`, reached from `KnobHolder::bumpKnobsContentGeneration` (`Engine/Knob.cpp`), for a knob that evaluates on change on a created node; stamps the node's direct inputs. An identity task in `buildGraph` passes its stamp to its inputs, unrenewed, so a Dot or a disabled node does not stop the boost; the legacy render path has no such carry | `2^(−t/h)` since the edit | 8 | 120 s |
+| Input of an open panel | `Node::shouldCacheOutput`, testing the outputs' `isSettingsPanelVisible`: every call with one output, at most once a second with several | decays after the last render where it held, so an open panel with no renders fades | 4 | 60 s |
+| Active viewer's branch | `noteActiveViewerBranch` (`Engine/ViewerInstance.cpp`): every node the frame's args setter installed, on both render paths, before the first admission question | decays after the last such frame | 2 | 10 min |
 | Expensive node | remembered cost ≥ `expensiveCostMs` | 1 or 0 | 1 | none |
-| Forced | `isForceCachingEnabled`, also through a group's output (`Engine/Node.cpp:8792-8797`) | 1 | 16 | none |
-| Structural: output is read more than once or is costly to re-read | more than one output, temporal access, no tile support (`:8780`), not frame-varying (`:8766`), preview enabled (`:8807`), roto painting (`:8812-8818`), nested render | 1 | 4 | none |
+| Forced | `isForceCachingEnabled`, also through a group's output | 1 | 16 | none |
+| Structural: output is read more than once or is costly to re-read | more than one output, roto output, temporal access, no tile support, not frame-varying, preview enabled, roto painting, nested render | 1 | 4 | none |
 
-The reuse count is not in this sum; per the milestone it multiplies recompute cost. It is per entry, the signals per
-holder.
+Direct viewer input, a panel on the single output, and `aggressiveCaching` are reasons that admit but carry no weight:
+the branch and panel signals already say the first two, and the third is retired by M300.P2.T4.
 
-Priority is read when scoring, so a panel opened after a store protects the entry. A hit by another holder moves
-`holder` to it, since entries are shared by content (`docs/cache-invalidation/image-caches.md`, "Holder").
+Fresh values, highest first: forced 17, edited input 9, structural 5, panel input 5, branch 3, expensive 2, off-branch 1.
+A signal past 8 half-lives reads as exactly 0, so an idle holder is back at exactly neutral. Signals add.
 
-Costs of the signals are bounded for deep and broad graphs: the edit boost touches direct inputs, not the upstream
-tree. Panel and branch signals are one write per task while `buildGraph` already visits it. No new upstream walk.
+The reuse count is not in this sum; per the milestone it multiplies recompute cost: 3 hits is ×3, between a fresh panel
+input and a fresh branch node when nothing else differs. It is per entry, the signals per holder.
+
+Priority is read when scoring, so a panel opened after a store protects the entry once a render has seen the panel. A hit
+by another holder moves `retention` to it, since entries are shared by content
+(`docs/cache-invalidation/image-caches.md`, "Holder"). Reasons are per holder, refreshed by each admission question, not
+per time or view, so the nested-render bit follows the latest call.
+
+Costs of the signals are bounded for deep and broad graphs. Admission asks the same questions a node with no reason
+always did. A stamp inside one second of the last is a load and a compare, so that a drag or a playing viewer does not
+bounce a cache line. An edit visits direct inputs, at most once a second per node. The branch stamp is one load per node
+the setter already walked. No new upstream walk.
 
 `RotoDrawableItem` is also a holder (`Engine/RotoDrawableItem.cpp:365`). It has no signal state and scores at priority 1
 unless its entries get others.
@@ -317,7 +334,8 @@ unless its entries get others.
 ## Admission
 
 Setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), environment override `NATRON_CACHE_ADMISSION`. Asked at
-`Engine/EffectInstanceRenderRoI.cpp:933` and `Engine/RenderScheduler.cpp:626`, through one function.
+`Engine/EffectInstanceRenderRoI.cpp:933` and `Engine/RenderScheduler.cpp:626`, through one function,
+`CacheRetention::admit`. Effects overriding `shouldCacheOutput`, such as `DiskCacheNode`, do not reach it.
 
 - **`all`:** admit every output that passes the non-policy refusals above.
 - **`priorityFloor`:** admit when the output carries a priority signal or its remembered cost is at least
@@ -681,11 +699,12 @@ measured nodes differ by factors of hundreds.
 | --- | --- | --- |
 | `highWater` | 0.9, all tiers (today's `NATRON_CACHE_LIMIT_PERCENT`, `Engine/CacheTier.h:38`) | Allocation waits or free-RAM evictions in the peak-RAM run of M300.P4.T1 lower it; a run where a tier sits unused above it raises it |
 | `reuseHalfLife` | 30 min | Eviction count in a scripted session that switches branches and returns: raise it if returning re-runs expensive nodes, lower it if orphans hold the budget |
-| Edit half-life, weight | 120 s, 8 | Upstream executions on the second edit after a pause, in a variant of the benchmark with memory pressure |
-| Panel half-life, weight | 60 s, 4 | As above, panel open, then closed |
-| Branch half-life, weight | 10 min, 2 | Same run on a broad graph: raise if the viewed branch is evicted before off-branch work |
-| Forced weight; structural weight | 16; 4 | CacheStress under pressure: a forced node's entry must outlast unforced ones of equal cost |
-| Expensive signal weight, `expensiveCostMs` | 1, 16 ms (one 60 Hz frame) | Measured walls straddle this: `RawDemosaic` 383.6 ms at fit, 7.1 at 100%. Move it if the signal separates nothing |
+| Edit half-life, weight | 120 s, 8 (unmeasured) | Upstream executions on the second edit after a pause, in a variant of the benchmark with memory pressure: raise if a pause re-runs the edited node's inputs, lower if stale edits keep entries over the viewed branch |
+| Panel half-life, weight | 60 s, 4 (unmeasured) | As above, panel open, then closed |
+| Branch half-life, weight | 10 min, 2 (unmeasured) | Same run on a broad graph: raise if the viewed branch is evicted before off-branch work |
+| Forced weight; structural weight | 16; 4 (unmeasured) | CacheStress under pressure: a forced node's entry must outlast unforced ones of equal cost |
+| Expensive signal weight, `expensiveCostMs` | 1, 16 ms, one 60 Hz frame (unmeasured) | Measured walls straddle this: `RawDemosaic` 383.6 ms at fit, 7.1 at 100%. Move it if the signal separates nothing |
+| Signal stamp granularity; decay cutoff | 1 s; 8 half-lives (unmeasured) | Cache-line contention in a profile of a drag on a large graph coarsens the first; only precision against a half-life limits it. The cutoff moves only if entries of idle holders still separate at its value, which is under 1% of a weight at 8 half-lives |
 | `admissionCostMs` | 16 ms | The off-branch graph in M300.P4.T1: lower if off-branch re-runs dominate latency; raise if off-branch writes dominate peak RAM |
 | `evictionBatch` | 64 | Scan time from a profile of a cache with many small entries; a scan over 1 ms of lock hold lowers the scan rate by raising it |
 | `evictionSample` | 1024 (the disk tier's sample) | The same profile lowers it if a scan holds the lock too long; eviction quality on a large table (an expensive entry evicted while cheaper ones wait outside the sample) raises it |
@@ -741,7 +760,7 @@ M301.P2.T1 then extends this pass to device hits instead of walking on its own.
 | M300.P1.T2 | Key serialization | The new fields must persist with the key |
 | M300.P1.T4 | `Engine/Cache.h`, `Engine/Settings.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `Cache<T>` holds one entry type and constructs it at `:919`, so one cache cannot hold both without splitting it; the 2 GiB setting lives in Settings; the deep renderer calls `removeFromDeepImageCache` (`:563`). The hash needs its domain tag here. Node-cache clears, memory stats and pressure eviction now reach deep entries, and a holder purge ignores pins for them as it does for images |
 | M300.P2.T2 | Thread-local nested-time accumulator, `Engine/EffectInstance.cpp` | [A2](#assumptions-checked) |
-| M300.P2.T3 | `Engine/RenderScheduler.cpp` | `:626` is a second consumer of `shouldCacheOutput`, and graph build refreshes the panel and branch signals. The hook is in `Engine/Node.cpp:2050`, which is listed, rather than `Engine/Knob.cpp` |
+| M300.P2.T3 | `Engine/RenderScheduler.cpp`, `Engine/ViewerInstance.cpp`, `Engine/AppInstance.h/.cpp`, `Gui/Gui05.cpp`, `Gui/Gui20.cpp`, `Engine/EffectInstanceRenderDeep.cpp` | `:626` is a second consumer of `shouldCacheOutput`, unchanged here, and graph build passes edits through identities. The branch stamp is at the viewer's args setter rather than graph build, so that it also covers the legacy path and precedes admission; a render thread learns the active viewer from a pointer the GUI publishes. The hook is in `Engine/Node.cpp`, which is listed, rather than `Engine/Knob.cpp` |
 | M300.P2.T4 | `Engine/EffectInstanceRenderRoI.cpp`, retiring `aggressiveCaching` | The state record at `:1380`, and the setting now duplicating `all` |
 | M300.P3.T1 | `Engine/MemoryFile.h/.cpp`, `Engine/Image.cpp`, `Engine/DeepImage.h` | Reservation before mapping; bitmaps need persisting, since `onMemoryAllocated` starts restored entries unrendered (`:792`, changed in M300.P1.T3 rather than here); deep needs a writer and reader |
 | M300.P3.T2 | `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp` | `runningExecutableStamp` is file-local (`:67`) and has to stamp both executables; the old restore path lives in `AppManagerPrivate.cpp` and goes |

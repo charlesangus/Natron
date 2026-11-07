@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — M300.P2.T5 at cffa62ab7, phase gate running. No pin between plan and use: a plan-wide hold would bypass the frame store's budget on modest machines, so an entry evicted in that window misses and pulls by recursion, costing time and never a wrong pixel. Worst plan is N x 144 short lock pairs; the edit-latency benchmark measures it in M300.P4.T1.
 - 2026-11-07 — M300.P2.T4 at 04999a33a, unbuilt until the phase gate. Provisional default `priorityFloor`, on the user's stated lean, until M300.P4.T1. The `maxDeepImageCache` and aggressive caching settings are retired. By reading only, both policies admit the raw chain on the viewer branch; M300.P2.T5 must separate may-be-probed from will-be-stored.
 - 2026-11-07 — M300.P2.T3 at 5aab87ed8, unbuilt until the phase gate. `CacheRetention::admit` is the one admission point; priorities and half-lives are unmeasured starting values, listed in the note.
 - 2026-11-07 — M300.P2.T2 at 7d9bf662f, unbuilt until the phase gate. Eviction samples 1024 entries from a rotating cursor rather than scanning all, so the choice is approximate on large tables; work per eviction is bounded at about 16 visits, amortised. An unmeasured entry scores as 16 ms.
@@ -106,7 +107,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: A unit test checks that `all` admits a cheap unflagged output and `priorityFloor` refuses it.
   - size: M
 
-- [ ] M300.P2.T5 — Skip dependencies behind a cache hit
+- [x] M300.P2.T5 — Skip dependencies behind a cache hit
   - files: `Engine/RenderScheduler.cpp` and the task-graph planning it uses, `Engine/GpuPlacement.cpp` if placement plans the same walk, `Tests/CacheStress_Test.cpp`
   - approach: Before scheduling a task's dependencies, ask whether its output is already available in full for the requested region; on a hit, prune the subgraph that only that task needed. A partial hit keeps only the dependencies the missing region needs. Pruning holds across tiers once they exist.
   - verify: A render test edits the last node of a chain whose second-last output is cached, and the profile shows no upstream execution. With the settings panel open, M276's benchmark shows no `behind_hit`.

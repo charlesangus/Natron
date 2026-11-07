@@ -22,6 +22,17 @@ The first and last frames of the Source have no neighbour on one side. That dire
 and confidence 0, and the other direction is estimated as usual. A direction left out by `outputs` also
 has confidence 0. The layer is always produced.
 
+`showLowConfidence` reads this layer on the viewer: while the node's panel is open, pixels below
+`confidenceThreshold` are tinted red where `Forward` is low and blue where `Backward` is low, over
+whichever layer the viewer shows. On the first and last frames the side with no neighbour tints the
+whole picture, since its confidence is 0; a direction left out by `outputs` draws nothing. The tint is
+drawn only on the viewer and changes no output, and it does not show during playback.
+
+Moving `confidenceThreshold` redraws from the cached confidence without solving again. If a frame's
+confidence is not in the cache, the tint solves it first, on the render thread: the viewer stays
+responsive and the render can be cancelled, but showing RGBA, which otherwise costs no solve, then does.
+Viewing `Forward` or `Backward` on a frame not yet solved solves twice, once for each request.
+
 ## Methods and quality
 
 DIS (dense inverse search with variational refinement) is the default: fast, and good on most plates.
@@ -75,7 +86,8 @@ matched on its first alone, which RGB frames cannot be compared with.
 | `matteChannel` | RGBA.A | The channel of the Matte input that separates foreground from background. |
 | `temporalSmoothing` | off | Blends vectors with those of the frames around, by confidence. |
 | `smoothingStrength` | 0.5 | How much those frames count; only with `temporalSmoothing`. |
-| `confidenceThreshold` | 0.5 | A reference level for reading the `vectorConfidence` layer, kept with the node. Nothing draws it yet; it changes no output. |
+| `showLowConfidence` | off | Tints the viewer where `vectorConfidence` is below `confidenceThreshold`, while the panel is open. It changes no output. |
+| `confidenceThreshold` | 0.5 | The confidence below which `showLowConfidence` tints a pixel. It changes no output. |
 | `outputs` | Forward+Backward | Which motion layers are produced; a layer left out passes through from the Source if it has one. |
 
 Tolerance:

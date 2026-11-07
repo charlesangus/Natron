@@ -12,7 +12,10 @@ Checks, each with a screenshot of the viewer (m217-*.png in the output directory
   background and both non-zero, and the vectors exported to EXR match the known motion;
   the vectorConfidence layer is high on the background and the square and low in the strips
   the square covers and uncovers, on the screen and in the exported values;
-  switching Method between DIS and TV-L1 renders both and changes the picture.
+  switching Method between DIS and TV-L1 renders both and changes the picture;
+  Show Low Confidence, on RGBA with the panel open, tints the strip the square covers red and the
+  strip it uncovers blue and leaves the background alone, follows Confidence Threshold, keeps the
+  render hash, and goes when it is turned off or the panel closes.
 BENCH_VECTORGENERATOR=1 also times DIS and TV-L1 at Medium on a 2048x1080 plate and prints
 the milliseconds per frame.
 
@@ -64,10 +67,19 @@ BG_TOLERANCE = 0.5
 OBJ_TOLERANCE = 1.5
 OBJ_V_TOLERANCE = 1.0
 STRIP_CONFIDENCE_MAX = 0.2
+# TV-L1 reads higher in the strip the square uncovers: 0.283 at Medium on Backward.
+TVL1_UNCOVERED_CONFIDENCE_MAX = 0.4
 ELSEWHERE_CONFIDENCE_MIN = 0.9
 CHANGED_PIXELS_MIN = 200
 PIXEL_DIFF_MIN = 24
 BLOCK = 2
+SHOW_LOW_CONFIDENCE = "showLowConfidence"
+CONFIDENCE_THRESHOLD = "confidenceThreshold"
+DEFAULT_THRESHOLD = 0.5
+# On the 0..255 screen scale; a half-opaque tint moves the difference of two channels by about 127.
+TINT_GAIN_MIN = 40
+UNTINTED_DIFF_MAX = 6
+RESTORED_PIXELS_MAX = 20
 
 try:
     import faulthandler
@@ -86,8 +98,8 @@ try:
     _viewer = []
     BASE = os.path.join(gt.ROOT, "build", "m217-vectorgenerator")
 
-    def create(plugin_id, x=0, y=0):
-        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)}
+    def create(plugin_id, x=0, y=0, panel_open=False):
+        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(panel_open)}
         node = app.createNode(plugin_id, -1, None, props)
         require(node is not None, "create " + plugin_id, gt.plugin_problem(plugin_id))
         node.setPosition(x, y)
@@ -344,7 +356,7 @@ try:
               "%s: the square's vector is (%d, 0) within %.1f px (got %.2f, %.2f)"
               % (label, want_obj_u, OBJ_TOLERANCE, obj[0], obj[1]))
 
-    def check_confidence(path, frame, label):
+    def check_confidence(path, frame, label, uncovered_max):
         left, right = object_window(frame)
         speed_gap = OBJ_U - BG_U
         y0, h = OBJ_Y + 6, OBJ_SIZE - 12
@@ -357,8 +369,8 @@ try:
                    label, covered[0], covered[1], revealed[0], revealed[1], background[0], background[1], inside[0], inside[1]))
         check(covered[0] < STRIP_CONFIDENCE_MAX,
               "%s: Forward confidence is below %.1f in the strip the square is about to cover (%.3f)" % (label, STRIP_CONFIDENCE_MAX, covered[0]))
-        check(revealed[1] < STRIP_CONFIDENCE_MAX,
-              "%s: Backward confidence is below %.1f in the strip the square just uncovered (%.3f)" % (label, STRIP_CONFIDENCE_MAX, revealed[1]))
+        check(revealed[1] < uncovered_max,
+              "%s: Backward confidence is below %.1f in the strip the square just uncovered (%.3f)" % (label, uncovered_max, revealed[1]))
         check(min(background[0], background[1], inside[0], inside[1]) > ELSEWHERE_CONFIDENCE_MIN,
               "%s: confidence is above %.1f on the background and inside the square (%.3f, %.3f, %.3f, %.3f)"
               % (label, ELSEWHERE_CONFIDENCE_MIN, background[0], background[1], inside[0], inside[1]))
@@ -459,13 +471,88 @@ try:
             check(unc[1] < 0.5 * bgc[1],
                   "%s confidence layer: Backward (green) is dark in the strip behind the square (%.0f vs %.0f)" % (method_name, unc[1], bgc[1]))
             path = yield from export_frame(confidence_write, "confidence-" + method_text, EVAL_FRAME)
-            check_confidence(path, EVAL_FRAME, method_name)
+            check_confidence(path, EVAL_FRAME, method_name,
+                             TVL1_UNCOVERED_CONFIDENCE_MAX if method_text == "tvl1" else STRIP_CONFIDENCE_MAX)
 
         gt.section("method switch")
         for kind in ("forward", "confidence"):
             n = changed_pixels(shots[("dis", kind)], shots[("tvl1", kind)])
             check(n >= CHANGED_PIXELS_MIN,
                   "switching DIS to TV-L1 changes the %s picture (%d sampled pixels differ, %d required)" % (kind, n, CHANGED_PIXELS_MIN))
+        set_zoom("Fit")
+        yield from section_overlay(read, points)
+
+    def wait_restored(before, label):
+        ok = yield ("until", lambda: 0 <= changed_pixels(before, viewer_crop()) <= RESTORED_PIXELS_MAX, RENDER_TIMEOUT_S)
+        check(ok, "%s restores the picture (%d sampled pixels differ)" % (label, changed_pixels(before, viewer_crop())))
+
+    def check_tint(before, after, points, label):
+        """Forward's red tint in the strip ahead of the square, Backward's blue one behind it, nothing on the background."""
+        cov0, cov1 = screen_colour(before, *points["covered"]), screen_colour(after, *points["covered"])
+        unc0, unc1 = screen_colour(before, *points["uncovered"]), screen_colour(after, *points["uncovered"])
+        bg0, bg1 = screen_colour(before, *points["background"]), screen_colour(after, *points["background"])
+        report("NOTE %s tint: covered %r -> %r, uncovered %r -> %r, background %r -> %r" % (label, cov0, cov1, unc0, unc1, bg0, bg1))
+        check((cov1[0] - cov1[2]) - (cov0[0] - cov0[2]) >= TINT_GAIN_MIN,
+              "%s: the strip the square is about to cover is tinted red (%r -> %r)" % (label, cov0, cov1))
+        check((unc1[2] - unc1[0]) - (unc0[2] - unc0[0]) >= TINT_GAIN_MIN,
+              "%s: the strip the square just uncovered is tinted blue (%r -> %r)" % (label, unc0, unc1))
+        check(max(abs(a - b) for a, b in zip(bg0, bg1)) <= UNTINTED_DIFF_MAX,
+              "%s: the confident background is not tinted (%r -> %r)" % (label, bg0, bg1))
+
+    def section_overlay(read, points):
+        """Its own node, created with its panel open: the overlay draws only then."""
+        gt.section("low confidence overlay")
+        gt.close_all_panels()
+        node = create(PLUGIN_VECTORGENERATOR, 1200, 150, panel_open=True)
+        connect(node, 0, read)
+        show(node)
+        seek(EVAL_FRAME)
+        yield ("sleep", RENDER_MS)
+        # The opened panel can resize the viewer, and the plate points assume a centred plate.
+        set_zoom("Fit")
+        set_zoom(ZOOM_TEXT)
+        before = yield from show_layer(node, COLOUR_LAYER, "m217-overlay-off.png")
+        check(gt.any_panel_open(), "the node's panel is open")
+        show_param = param(node, SHOW_LOW_CONFIDENCE)
+        threshold = param(node, CONFIDENCE_THRESHOLD)
+        check(show_param.get() is False, "Show Low Confidence defaults to off (%r)" % (show_param.get(),))
+        check(threshold.get() == DEFAULT_THRESHOLD, "Confidence Threshold defaults to %.1f (%r)" % (DEFAULT_THRESHOLD, threshold.get()))
+
+        for method_text, method_name, index in (("dis", "DIS", 0), ("tvl1", "TV-L1", 1)):
+            gt.section("low confidence overlay " + method_name)
+            param(node, "method").setValue(index)
+            hash_before = node.getContentHash()
+            yield from wait_rendered()
+            show_param.setValue(True)
+            ok = yield ("until", lambda: changed_pixels(before, viewer_crop()) >= CHANGED_PIXELS_MIN, RENDER_TIMEOUT_S)
+            check(ok, "%s: Show Low Confidence draws over the viewer" % method_name)
+            yield from wait_rendered()
+            gt.shot("m217-overlay-%s.png" % method_text)
+            tinted = viewer_crop()
+            check_tint(before, tinted, points, method_name)
+            check(node.getContentHash() == hash_before, "%s: the overlay leaves the render hash alone" % method_name)
+
+            started = time.time()
+            threshold.setValue(0.0)
+            yield from wait_restored(before, "%s: a threshold of 0" % method_name)
+            report("NOTE %s: threshold 0 redrew in %.0f ms" % (method_name, (time.time() - started) * 1000.0))
+
+            threshold.setValue(1.0)
+            ok = yield ("until", lambda: changed_pixels(before, viewer_crop()) > changed_pixels(before, tinted), POLL_TIMEOUT_S)
+            check(ok, "%s: a threshold of 1 tints more than a threshold of %.1f (%d, %d sampled pixels)"
+                  % (method_name, DEFAULT_THRESHOLD, changed_pixels(before, viewer_crop()), changed_pixels(before, tinted)))
+            gt.shot("m217-overlay-threshold-1-%s.png" % method_text)
+            check(node.getContentHash() == hash_before, "%s: the threshold leaves the render hash alone" % method_name)
+
+            threshold.setValue(DEFAULT_THRESHOLD)
+            show_param.setValue(False)
+            yield from wait_restored(before, "%s: turning the overlay off" % method_name)
+
+        show_param.setValue(True)
+        ok = yield ("until", lambda: changed_pixels(before, viewer_crop()) >= CHANGED_PIXELS_MIN, RENDER_TIMEOUT_S)
+        check(ok, "the overlay returns before the panel closes")
+        gt.close_all_panels()
+        yield from wait_restored(before, "closing the panel")
         set_zoom("Fit")
 
     def section_bench():

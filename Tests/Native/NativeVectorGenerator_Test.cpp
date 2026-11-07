@@ -42,6 +42,7 @@
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -51,6 +52,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -343,6 +345,51 @@ largestMagnitude(const RenderedPlane& plane,
 
     return largest;
 }
+
+OverlayImageRequest
+wholeFrameRequest(double time)
+{
+    OverlayImageRequest request;
+    request.time = time;
+    request.view = ViewIdx(0);
+    request.mipmapLevel = 0;
+    request.draftMode = false;
+    request.visibleCanonical = windowAt(0);
+
+    return request;
+}
+
+const OverlayImagePlane*
+findOverlayPlane(const OverlayImageFrame& frame,
+                 const std::string& name)
+{
+    for (const OverlayImagePlane& plane : frame.planes) {
+        if (plane.name == name) {
+            return &plane;
+        }
+    }
+
+    return nullptr;
+}
+
+void
+expectMaskFollowsConfidence(const OverlayImagePlane* mask,
+                            const RenderedPlane& confidence,
+                            int channel,
+                            float threshold)
+{
+    ASSERT_TRUE(mask != nullptr);
+    ASSERT_EQ(mask->tiles.size(), 1u);
+    const OverlayImageTile& tile = *mask->tiles.front();
+    ASSERT_EQ(tile.bounds, confidence.window);
+    const std::size_t nComps = confidence.channels.size();
+    ASSERT_EQ(tile.values.size() * nComps, confidence.pixels.size());
+    std::size_t wrong = 0;
+    for (std::size_t i = 0; i < tile.values.size(); ++i) {
+        wrong += ((tile.values[i] > 0) != (confidence.pixels[i * nComps + channel] < threshold)) ? 1 : 0;
+    }
+    EXPECT_EQ(wrong, 0u);
+}
 } // anonymous namespace
 
 class NativeVectorGeneratorTest
@@ -427,6 +474,20 @@ protected:
     {
         EXPECT_LT(meanDistance(plane(node, 3., forwardLayer()), kShiftX, kShiftY, kMargin), threshold);
         EXPECT_LT(meanDistance(plane(node, 3., backwardLayer()), -kShiftX, -kShiftY, kMargin), threshold);
+    }
+
+    bool runOverlayPass(const NodePtr& node,
+                        double time)
+    {
+        return node->getEffectInstance()->renderOverlayImages(wholeFrameRequest(time), AbortableRenderInfo::create(false, 0));
+    }
+
+    void setThreshold(const NodePtr& node,
+                      double value)
+    {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kVectorGeneratorParamConfidenceThreshold));
+        ASSERT_TRUE(bool(knob));
+        knob->setValue(value);
     }
 
     void expectParity(const ParityPair& pair,
@@ -783,6 +844,96 @@ TEST_F(NativeVectorGeneratorTest, NonFiniteSourcePixelsGiveFiniteOutput)
             ASSERT_TRUE(std::isfinite(value)) << rendered.layer.getLayerID();
         }
     }
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceViewIsOffByDefaultAndLeavesTheHashAlone)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    const EffectInstancePtr effect = node->getEffectInstance();
+    EXPECT_FALSE(effect->isOverlayImageViewOn());
+    const U64 hash = node->getHashValue();
+
+    KnobBoolPtr show = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kVectorGeneratorParamShowLowConfidence));
+    ASSERT_TRUE(bool(show));
+    show->setValue(true);
+    EXPECT_TRUE(effect->isOverlayImageViewOn());
+    setThreshold(node, 0.25);
+    EXPECT_EQ(hash, node->getHashValue());
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlayFollowsTheConfidenceLayer)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    const RenderedPlane confidence = plane(node, 3., VectorGenerator::confidenceLayer());
+
+    // Each channel's own mean, so that the channel has pixels on both sides of the threshold whatever
+    // the plate's confidence is.
+    const struct {
+        int channel;
+        const char* overlayPlane;
+    } directions[] = {
+        { 0, kVectorGeneratorOverlayPlaneLowForward },
+        { 1, kVectorGeneratorOverlayPlaneLowBackward },
+    };
+    for (const auto& direction : directions) {
+        const float threshold = (float)meanOfChannel(confidence, direction.channel, 0);
+        setThreshold(node, threshold);
+        ASSERT_TRUE(runOverlayPass(node, 3.));
+        const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+        ASSERT_TRUE(bool(frame));
+        expectMaskFollowsConfidence(findOverlayPlane(*frame, direction.overlayPlane), confidence, direction.channel, threshold);
+    }
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlayFollowsTheThreshold)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    setThreshold(node, 1.);
+    ASSERT_TRUE(runOverlayPass(node, 3.));
+    const OverlayImageFrameConstPtr atOne = node->getOverlayImageFrame();
+    ASSERT_TRUE(bool(atOne));
+    ASSERT_FALSE(atOne->planes.empty());
+
+    setThreshold(node, 0.);
+    EXPECT_TRUE(node->getEffectInstance()->overlayImagesStale(wholeFrameRequest(3.)));
+    ASSERT_TRUE(runOverlayPass(node, 3.));
+    const OverlayImageFrameConstPtr atZero = node->getOverlayImageFrame();
+    ASSERT_TRUE(bool(atZero));
+    EXPECT_TRUE(atZero->planes.empty());
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlayCoversTheSideWithNoNeighbour)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(runOverlayPass(node, (double)kFirstFrame));
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(bool(frame));
+
+    const OverlayImagePlane* backward = findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowBackward);
+    ASSERT_TRUE(backward != nullptr);
+    ASSERT_EQ(backward->tiles.size(), 1u);
+    EXPECT_EQ(backward->tiles.front()->coveredPixels, (std::size_t)kWidth * (std::size_t)kHeight);
+    const OverlayImagePlane* forward = findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowForward);
+    ASSERT_TRUE(forward != nullptr);
+    ASSERT_EQ(forward->tiles.size(), 1u);
+    EXPECT_LT(forward->tiles.front()->coveredPixels, (std::size_t)kWidth * (std::size_t)kHeight);
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlaySkipsADirectionLeftOut)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kVectorGeneratorParamOutputs, kVectorGeneratorOutputsForward));
+    ASSERT_TRUE(runOverlayPass(node, 3.));
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(bool(frame));
+
+    EXPECT_TRUE(findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowForward) != nullptr);
+    EXPECT_EQ(findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowBackward), nullptr);
 }
 
 TEST_F(NativeVectorGeneratorTest, RegressionDis)

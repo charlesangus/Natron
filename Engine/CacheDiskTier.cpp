@@ -2053,12 +2053,22 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
         std::nth_element(sample.begin(), sample.begin() + CacheEviction::kBatch, sample.end(), order);
         sample.resize(CacheEviction::kBatch);
     }
+    std::sort(sample.begin(), sample.end(), order);
+
+    // A batch is only the most one pass may take. With entries large enough that a tier holds fewer
+    // files than a batch, unlinking all of it would empty the tier each time it crossed the mark.
+    const double mark = (double)budget.load() * NATRON_CACHE_LIMIT_PERCENT;
+    double remaining = (double)used.load();
     for (const EvictionSample& s : sample) {
+        if (remaining <= mark) {
+            break;
+        }
         // ENOENT is a peer having evicted it first, which is what this was about to do.
         if (::unlink(s.path.c_str()) == 0) {
             ledgerDelta.fetch_sub((std::int64_t)s.bytes);
         }
         forgetBase(s.base);
+        remaining -= (double)s.bytes;
     }
 } // CacheDiskTier::Imp::evictPass
 
@@ -2117,6 +2127,9 @@ CacheDiskTier::Imp::tick()
     refreshBudget(ledgers);
     if ((double)used.load() > (double)budget.load() * NATRON_CACHE_LIMIT_PERCENT) {
         evictPass(ledgers);
+        // The ledger goes out at once, or a peer's next tick would evict for these bytes again.
+        writeLedger();
+        refreshBudget(readLedgers());
     }
     offerPublishCandidates();
 }

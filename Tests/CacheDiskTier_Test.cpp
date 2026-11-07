@@ -588,6 +588,9 @@ TEST(CacheDiskTierTest, LookupDuringADemotionReturnsTheEntry)
     for (int round = 0; round < 16; ++round) {
         const U64 hash = 100 + round;
         const float seed = (float)round;
+        // Against this budget the queue takes one entry and drops the rest. The previous round's
+        // entry is older, so it would be offered first and this one would never be demoted.
+        session.evictEverything();
         ASSERT_TRUE(session.createEntry(hash, kExpensiveNs, seed) != nullptr);
         session.cache.setMaximumCacheSize(1024);
         session.cache.setMaximumInMemorySize(1.);

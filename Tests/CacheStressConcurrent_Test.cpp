@@ -1057,6 +1057,26 @@ publishWhatIsInRam(CacheDiskTier& tier,
     return false;
 }
 
+// An entry's cost excludes the time spent rendering its inputs, so the Blur and Grade entries stay
+// too cheap to earn a file however slow the gate is. Only the gate's own entry can reach the disk,
+// and it needs one: the gate otherwise renders to a private image.
+bool
+buildCachedGateGraph(const AppInstancePtr& app,
+                     GateGraph* g,
+                     std::string* error)
+{
+    if (!buildGateGraph(app, g, error)) {
+        return false;
+    }
+    if (!setKnobValues(g->gate, "cacheOutput", { 1. })) {
+        *error = "could not make the gate cache its output";
+
+        return false;
+    }
+
+    return true;
+}
+
 std::string
 demotionUnderAWaitingRender(const AppInstancePtr& app,
                             Gate* gate,
@@ -1233,7 +1253,7 @@ TEST_F(CacheStressTieredChild, DemotionWhileARenderWaits)
         const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
         GateGraph g;
         std::string error;
-        ASSERT_TRUE(buildGateGraph(app, &g, &error)) << error;
+        ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
         gate.setNode(g.gate.get());
         slowNode.store(g.gate.get());
         for (int r = 0; r < rounds; ++r) {
@@ -1269,7 +1289,7 @@ TEST_F(CacheStressTieredChild, PromotionOfAPartialEntry)
         const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
         GateGraph g;
         std::string error;
-        ASSERT_TRUE(buildGateGraph(app, &g, &error)) << error;
+        ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
         slowNode.store(g.gate.get());
         const std::string mismatch = promotionOfAPartialEntry(app, g, mode, *tier);
         EXPECT_TRUE(mismatch.empty()) << "mode " << m << ": " << mismatch;

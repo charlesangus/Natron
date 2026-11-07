@@ -611,12 +611,16 @@ each second. A slow scan, run in the background, corrects the drift. Concurrent 
 processes × write rate × 1 s; this is assumed to fit inside the 2 GiB between the 90% mark and a 20 GiB budget (an
 estimate, to be checked in M300.P3.T4 with four writers).
 
-Past the mark, a session samples about 1024 files and unlinks the lowest 64 by the note's score
-([Score](#score-and-high-water-marks)), using the persisted stats. A process substitutes the live priority for the
-entries it knows. Files of builds with no live session are taken first, the build with the oldest `lastlive` before the
-next, and a dead build's pins are sampled with its automatic files. `evict.lock` is tried with `flock(LOCK_NB)` before
-sampling, and a session that does not get it skips the pass; it is only there to avoid duplicate work. Two evictors at
-once are harmless, and `ENOENT` on an unlink is fine.
+Past the mark, a session samples about 1024 files and unlinks them lowest first by the note's score
+([Score](#score-and-high-water-marks)), using the persisted stats, until the tier is back under the mark. A pass takes 64
+files at most, and if that is not enough the next tick continues. As with the host tier there is no low-water mark: a
+tier whose entries are so large that it holds fewer than 64 files (20 GiB of 384 MB entries is about 52) loses only what
+takes it under the mark, not all of them. The pass then writes its ledger and refreshes used bytes, so neither this
+session nor a peer evicts for the same bytes twice. A process substitutes the live priority for the entries it knows.
+Files of builds with no live session are taken first, the build with the oldest `lastlive` before the next, and a dead
+build's pins are sampled with its automatic files. `evict.lock` is tried with `flock(LOCK_NB)` before sampling, and a
+session that does not get it skips the pass; it is only there to avoid duplicate work. Two evictors at once are harmless,
+and `ENOENT` on an unlink is fine.
 
 ### Sessions and crashes
 

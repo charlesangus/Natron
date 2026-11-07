@@ -117,6 +117,9 @@
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/GPUContextPool.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
+#endif
 #include "Engine/GpuDeviceList.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
@@ -847,6 +850,10 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
+    // setenv races with getenv on other threads, and the GPU context starts one, so the token must be set first.
+#ifdef NATRON_HAVE_GPU
+    gpu::requestTransferOnlyFamily();
+#endif
     const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
     _imp->_settings->populateGpuDevices(gpuDevices);
 

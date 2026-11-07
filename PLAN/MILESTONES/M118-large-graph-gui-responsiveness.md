@@ -177,6 +177,8 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 ## Decisions
 
+- 2026-11-07 — Remote release gate green with M118's GUI scripts at 32fa7e605.
+
 - 2026-11-06 — Bench `delete_1000`'s stall was the per-node broken-link modal, then a real runaway in the untimed undo: `deactivate`/`activate` replace Param wrappers, losing `.expression0`, so reads fail repeatedly (147,649 failed evaluations in 300 s at n=60) and each failure wrote content and invalidated the hash. Baseline never had `delete_1000`, `undo` or `redo`. Fixed, not yet built. Hover has no regression: main-thread CPU per event matches a pre-merge control, and the 41 s figure was host load.
 - 2026-11-05 — M118.P3.T2 reduced from one run to two: listener registration has to follow storing the expression, while the call has to precede it, so a true single run would change cycle detection, slaving and self-reading expressions. The Xvfb bench decides whether more is needed.
 - 2026-11-02 — Audit: P1–P4 are committed and pushed (97eeb6867 P1.T2–T6, 5197e1999 P2, 96535f12b P3, 67f11e035 P4); P1.T1's map is the 2026-10-28 note below. P3.T2 is left open: the define, validate and listener-parse runs were not merged (see that note). P1.T3 deviates: no scene index (panning moves the root item), hit tests walk top-level items. P2.T5 is an indexed trash; trash growth was already bounded by the undo history. No build of P1–P4 is recorded. The branch stacks on M117 - GUI Perf Harness And Baseline and is 29 commits behind main.

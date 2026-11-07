@@ -63,9 +63,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kConstantPluginID = "net.sf.openfx.ConstantPlugin";
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kConstantPluginID = "Constant";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
+const char* const kGradePluginID = "Grade";
 
 template <typename F>
 void

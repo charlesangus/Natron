@@ -255,7 +255,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(764, 180)
@@ -288,11 +288,6 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupMerge1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("difference")
-        del param
-
     param = lastNode.getParam("operation")
     if param is not None:
         param.set("difference")
@@ -307,7 +302,7 @@ def createInstance(app,group):
     # End of node "Merge1"
 
     # Start of node "Solid1"
-    lastNode = app.createNode("net.sf.openfx.Solid", 1, group)
+    lastNode = app.createNode("Constant", 1, group)
     lastNode.setScriptName("Solid1")
     lastNode.setLabel("Solid1")
     lastNode.setPosition(776, 134)
@@ -325,13 +320,14 @@ def createInstance(app,group):
         param.setValue(1, 0)
         param.setValue(1, 1)
         param.setValue(1, 2)
+        param.setValue(1, 3)
         del param
 
     del lastNode
     # End of node "Solid1"
 
     # Start of node "Invert1"
-    lastNode = app.createNode("net.sf.openfx.Invert", 2, group)
+    lastNode = app.createNode("Invert", 1, group)
     lastNode.setScriptName("Invert1")
     lastNode.setLabel("Invert1")
     lastNode.setPosition(764, 546)
@@ -343,7 +339,7 @@ def createInstance(app,group):
     # End of node "Invert1"
 
     # Start of node "Clamp1"
-    lastNode = app.createNode("net.sf.openfx.Clamp", 2, group)
+    lastNode = app.createNode("Clamp", 1, group)
     lastNode.setScriptName("Clamp1")
     lastNode.setLabel("Clamp1")
     lastNode.setPosition(764, 455)
@@ -355,7 +351,7 @@ def createInstance(app,group):
     # End of node "Clamp1"
 
     # Start of node "ColorCorrect1"
-    lastNode = app.createNode("net.sf.openfx.ColorCorrectPlugin", 2, group)
+    lastNode = app.createNode("ColorCorrect", 1, group)
     lastNode.setScriptName("ColorCorrect1")
     lastNode.setLabel("ColorCorrect1")
     lastNode.setPosition(764, 344)
@@ -379,7 +375,7 @@ def createInstance(app,group):
     # End of node "ColorCorrect1"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(764, 774)
     lastNode.setSize(104, 34)
@@ -390,7 +386,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "InputSource"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("InputSource")
     lastNode.setLabel("InputSource")
     lastNode.setPosition(506, 255)
@@ -402,7 +398,7 @@ def createInstance(app,group):
     # End of node "InputSource"
 
     # Start of node "Switch1"
-    lastNode = app.createNode("fr.natron.Switch", 1, group)
+    lastNode = app.createNode("Switch", 1, group)
     lastNode.setScriptName("Switch1")
     lastNode.setLabel("Switch1")
     lastNode.setPosition(764, 638)
@@ -432,8 +428,10 @@ def createInstance(app,group):
     param = groupShuffle1.getParam("in1")
     group.getParam("Source_channels").setAsAlias(param)
     del param
+    # The Constant's colour is RGBA and the group's RGB, so the two are linked by expressions.
     param = groupSolid1.getParam("color")
-    group.getParam("centerValue").setAsAlias(param)
+    for dimension in range(3):
+        param.setExpression("thisGroup.centerValue.getValue(%d)" % dimension, False, dimension)
     del param
     param = groupInvert1.getParam("channels")
     group.getParam("channels").setAsAlias(param)

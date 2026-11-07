@@ -290,7 +290,6 @@ public:
         KnobChoicePtr skewOrder;
         KnobDoublePtr center;
         KnobDoublePtr extraMatrix;
-        KnobBoolPtr interactive;
         KnobButtonPtr resetCenter;
         KnobButtonPtr resetTransform;
     };

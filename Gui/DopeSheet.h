@@ -47,8 +47,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kReaderParamNameFirstFrame "firstFrame"
 #define kReaderParamNameLastFrame "lastFrame"
-#define kReaderParamNameStartingTime "startingTime"
-#define kReaderParamNameTimeOffset "timeOffset"
+#define kReaderParamNameStartAt "startAt"
+#define kReaderParamNameFrameOffset "frameOffset"
 
 NATRON_NAMESPACE_ENTER
 

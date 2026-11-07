@@ -198,6 +198,7 @@ public:
     virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN;
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual std::string getSublabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The node's static description, which every query above answers from. A node
@@ -439,6 +440,11 @@ protected:
     void invalidateOutputMetadata();
 
     /**
+     * @brief Sets the text getSublabel() returns and shows it in the node graph.
+     **/
+    void setSublabel(const std::string& sublabel);
+
+    /**
      * @brief The metadata of the effect connected to inputNb, or empty if nothing is. For a node
      * that picks its source input itself instead of taking the first connected one.
      **/
@@ -669,6 +675,9 @@ private:
     U64 _metadataCacheHash; //< the node hash (before the context key is mixed in) every entry was derived under
 
     SceneLayerMemo _sceneLayerMemo;
+
+    mutable std::mutex _sublabelMutex;
+    std::string _sublabel;
 
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 

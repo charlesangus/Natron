@@ -544,6 +544,9 @@ private:
     // The input index whose menu entry reads text, -1 for none.
     int inputIndexForMenuText(const QString& text) const;
 
+    // Gives the scene viewport the menus' display and view, as the GL viewer has them.
+    void refreshSceneDisplayTransform();
+
     void editFrameRange(const QString& text, int first, int last, quint64 gestureKey);
 
     // Writes the RoI enable knob; an RoI never set takes the one the viewer draws.

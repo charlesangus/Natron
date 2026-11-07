@@ -1,1 +1,1 @@
-slang_add_kernel(chromakeyer Kernels/chromakeyer.slang ENTRY chromakeyer_main REGISTRY NatronGpu)
+slang_add_kernel(chromakeyer_wrapped Kernels/chromakeyer.slang ENTRY chromakeyer_wrapped REGISTRY NatronGpu)

@@ -757,7 +757,7 @@ void
 RotoCurveContext::createTransformKnobs(const KnobPagePtr& page)
 {
     assert(_imp->transformKnobs.empty());
-    _imp->createTransformKnobs(page, false /*withInteractive*/);
+    _imp->createTransformKnobs(page);
 }
 
 RotoCurveContext::TransformKnobs
@@ -774,7 +774,6 @@ RotoCurveContext::getTransformKnobs() const
     knobs.skewOrder = _imp->skewOrderKnob.lock();
     knobs.center = _imp->centerKnob.lock();
     knobs.extraMatrix = _imp->extraMatrixKnob.lock();
-    knobs.interactive = _imp->transformInteractiveKnob.lock();
     knobs.resetCenter = _imp->resetCenterKnob.lock();
     knobs.resetTransform = _imp->resetTransformKnob.lock();
 

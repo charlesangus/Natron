@@ -177,6 +177,7 @@ TrapezoidStrip::TrapezoidStrip(KnobDouble::RangeWidgetRoleEnum role,
     , _role(role)
     , _model(ColorMath::eKeyModelHSV)
     , _basis()
+    , _hasSource(false)
     , _hueWeight(0.f)
     , _smooth(false)
     , _toDisplay()
@@ -240,8 +241,9 @@ TrapezoidStrip::setContext(ColorMath::KeyModelEnum model,
 {
     _model = model;
     _basis = basis;
+    _hasSource = (sourceComponents != 0);
     for (int i = 0; i < 3; ++i) {
-        _source[i] = sourceComponents[i];
+        _source[i] = _hasSource ? sourceComponents[i] : 0.f;
     }
     _hueWeight = hueWeight;
     update();
@@ -578,7 +580,7 @@ TrapezoidStrip::paintEvent(QPaintEvent* /*e*/)
     }
 
     // The source colour's component; a source with no chroma has no hue to mark.
-    if (!isHue() || (_hueWeight > 0.f)) {
+    if (_hasSource && (!isHue() || (_hueWeight > 0.f))) {
         double s = _source[isHue() ? 0 : ((_role == KnobDouble::eRangeWidgetRoleSaturation) ? 1 : 2)];
         if (isHue()) {
             double low, high;
@@ -914,6 +916,9 @@ KnobGuiTrapezoid::createBelowRowWidget(QWidget* parent)
         if ((b == eRowButtonSmooth) && !smooth) {
             continue;
         }
+        if ((b == eRowButtonRecentre) && !knob->getRangeWidgetSourceColour()) {
+            continue;
+        }
         Button* button = new Button(ThemedIcon::icon(QString::fromUtf8(specs[b].icon), iconSize.width()), QString(), row);
         button->setObjectName(QString::fromUtf8(specs[b].prefix) + name);
         button->setFixedSize(buttonSize);
@@ -1077,7 +1082,9 @@ KnobGuiTrapezoid::refreshContext()
     if (!strip || !sourceComponents(&model, &basis, comps, &hueWeight)) {
         return;
     }
-    strip->setContext(model, basis, comps, hueWeight);
+    KnobDoublePtr knob = _rangeKnob.lock();
+    const bool hasSource = knob && knob->getRangeWidgetSourceColour();
+    strip->setContext(model, basis, hasSource ? comps : 0, hueWeight);
 }
 
 void

@@ -25,20 +25,21 @@
 
 #include "OCIOColorSpace.h"
 
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/ProjectColorManagement.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The spaces a preset sets, input then output; both empty for Custom.
+// The roles a preset converts between, input then output; both empty for Custom.
 std::pair<std::string, std::string>
-presetSpaces(const std::string& preset)
+presetRoles(const std::string& preset)
 {
     if (preset == kOCIOColorSpacePresetLogToLin) {
         return std::make_pair(std::string(OCIO_NAMESPACE::ROLE_COMPOSITING_LOG), std::string(OCIO_NAMESPACE::ROLE_SCENE_LINEAR));
@@ -55,33 +56,18 @@ void
 OCIOColorSpaceOp::createKnobs(KnobHolder* holder,
                               const KnobPagePtr& page)
 {
-    // The working space until the user picks one, and again on a reset.
-    const OcioSpaceKnobs::AutomaticSpace working = []() { return std::optional<std::string>(std::string()); };
     const OcioSpaceKnobs::ChoiceMade chosen = [this]() { spacesChosen(); };
 
-    OcioSpaceKnobs::Description in;
-    in.prefix = kOCIOColorSpaceParamInputSpace;
-    in.label = EffectInstance::tr("Input Colorspace");
-    in.spaceHint = EffectInstance::tr("The OpenColorIO colourspace the input is in. Empty is the working space.");
-    in.menuHint = EffectInstance::tr("The OpenColorIO colourspace the input is in.");
-    in.setLabel = EffectInstance::tr("Input Colorspace Set");
-    ocio.addSpace(holder, page, in, working, chosen);
+    ocio.addWorkingSpace(holder, page, kOCIOColorSpaceParamInputSpace, EffectInstance::tr("Input Colorspace"), EffectInstance::tr("The OpenColorIO colourspace the input is in."), chosen);
+    ocio.addWorkingSpace(holder, page, kOCIOColorSpaceParamOutputSpace, EffectInstance::tr("Output Colorspace"), EffectInstance::tr("The OpenColorIO colourspace to convert to."), chosen);
 
-    OcioSpaceKnobs::Description out;
-    out.prefix = kOCIOColorSpaceParamOutputSpace;
-    out.label = EffectInstance::tr("Output Colorspace");
-    out.spaceHint = EffectInstance::tr("The OpenColorIO colourspace to convert to. Empty is the working space.");
-    out.menuHint = EffectInstance::tr("The OpenColorIO colourspace to convert to.");
-    out.setLabel = EffectInstance::tr("Output Colorspace Set");
-    ocio.addSpace(holder, page, out, working, chosen);
-
-    inputSpace = std::dynamic_pointer_cast<KnobString>(holder->getKnobByName(kOCIOColorSpaceParamInputSpace));
-    outputSpace = std::dynamic_pointer_cast<KnobString>(holder->getKnobByName(kOCIOColorSpaceParamOutputSpace));
+    inputSpace = std::dynamic_pointer_cast<KnobChoice>(holder->getKnobByName(kOCIOColorSpaceParamInputSpace));
+    outputSpace = std::dynamic_pointer_cast<KnobChoice>(holder->getKnobByName(kOCIOColorSpaceParamOutputSpace));
 
     KnobChoicePtr presetKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Preset").toStdString());
     presetKnob->setName(kOCIOColorSpaceParamPreset);
-    presetKnob->setHintToolTip(EffectInstance::tr("Sets both colourspaces at once. Log to Lin converts from the config's "
-                                                  "compositing_log role to its scene_linear role, Lin to Log the other way. "
+    presetKnob->setHintToolTip(EffectInstance::tr("Sets both colourspaces at once. Log to Lin converts from the colourspace of the "
+                                                  "config's compositing_log role to that of its scene_linear role, Lin to Log the other way. "
                                                   "Changing a colourspace by hand returns this to Custom.")
                                    .toStdString());
     std::vector<ChoiceOption> options;
@@ -103,23 +89,37 @@ OCIOColorSpaceOp::transform(const KnobReader& /*reader*/) const
     return ocio.spaceTransform(ocio.spaceOrWorking(0), ocio.spaceOrWorking(1));
 }
 
+std::pair<std::string, std::string>
+OCIOColorSpaceOp::presetSpaces(const std::string& preset) const
+{
+    const std::pair<std::string, std::string> roles = presetRoles(preset);
+    ProjectColorManagementPtr colorManagement = ocio.colorManagement();
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement ? colorManagement->getConfig() : OCIO_NAMESPACE::ConstConfigRcPtr();
+
+    if (roles.first.empty() || !config) {
+        return std::make_pair(std::string(), std::string());
+    }
+
+    return std::make_pair(IoColorSpace::nameInConfig(config, roles.first), IoColorSpace::nameInConfig(config, roles.second));
+}
+
 void
 OCIOColorSpaceOp::applyPreset()
 {
     KnobChoicePtr presetKnob = preset.lock();
-    KnobStringPtr in = inputSpace.lock();
-    KnobStringPtr out = outputSpace.lock();
+    KnobChoicePtr in = inputSpace.lock();
+    KnobChoicePtr out = outputSpace.lock();
 
     if (!presetKnob || !in || !out) {
         return;
     }
     const std::pair<std::string, std::string> spaces = presetSpaces(presetKnob->getActiveEntry().id);
-    if (spaces.first.empty()) {
+    if (spaces.first.empty() || spaces.second.empty()) {
         return;
     }
     applyingPreset = true;
-    in->setValue(spaces.first);
-    out->setValue(spaces.second);
+    in->setValueFromID(spaces.first, 0);
+    out->setValueFromID(spaces.second, 0);
     applyingPreset = false;
 }
 

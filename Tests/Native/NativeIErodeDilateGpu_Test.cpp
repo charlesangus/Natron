@@ -114,15 +114,15 @@ protected:
         return constant;
     }
 
-    // An IErode or IDilate of `source` at `size`, its Map `map` when there is one.
+    // An IErodeDilate of `source` eroding at `size`, or dilating at it when `dilate` negates it, its
+    // Map `map` when there is one.
     NodePtr makeNode(bool dilate,
                      const NodePtr& source,
                      const NodePtr& map,
                      double sizeX,
                      double sizeY)
     {
-        NodePtr node = dilate ? createNode(QString::fromUtf8(PLUGINID_NATRON_IDILATE), PLUGIN_MAJOR_NATRON_IDILATE)
-                              : createNode(QString::fromUtf8(PLUGINID_NATRON_IERODE), PLUGIN_MAJOR_NATRON_IERODE);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_IERODEDILATE), PLUGIN_MAJOR_NATRON_IERODEDILATE);
 
         EXPECT_TRUE(bool(node));
         if (!node) {
@@ -134,7 +134,8 @@ protected:
         if (map) {
             connectNodes(map, node, kIErodeDilateInputMap, true);
         }
-        EXPECT_TRUE(setKnobValues(node, kIErodeDilateParamSize, { sizeX, sizeY }));
+        const double sign = dilate ? -1. : 1.;
+        EXPECT_TRUE(setKnobValues(node, kIErodeDilateParamSize, { sign * sizeX, sign * sizeY }));
 
         return node;
     }
@@ -194,15 +195,17 @@ TEST_F(NativeIErodeDilateGpuTest, EligibilityFollowsTheRadius)
             q.bitDepth = depth;
             EXPECT_FALSE(effect->canRenderOnGpu(q)) << "bit depth " << (int)depth;
         }
-        // The GPU's cap is a radius of 255 pixels, which either size may reach.
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 255., 3. }));
-        EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "a radius at the cap";
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 3., 256. }));
-        EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "a radius beyond the cap";
+        // The GPU's cap is a radius of 255 pixels, which either size may reach, of either sign.
+        for (double sign : { 1., -1. }) {
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { sign * 255., sign * 3. }));
+            EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "a radius at the cap, sign " << sign;
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { sign * 3., sign * 256. }));
+            EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "a radius beyond the cap, sign " << sign;
+        }
     }
 }
 
-// The Map is read over the output alone, and only while its channel resolves.
+// The Map is read over the output alone while one stage runs, and only while its channel resolves.
 TEST_F(NativeIErodeDilateGpuTest, MapIsReadOverTheOutput)
 {
     NodePtr source = makeParitySource();
@@ -228,12 +231,32 @@ TEST_F(NativeIErodeDilateGpuTest, MapIsReadOverTheOutput)
     }
 }
 
+// Sizes whose sign may change across the Map run more than one stage, the later ones reading the
+// earlier ones' results beyond the output, so the Map is read beyond it too.
+TEST_F(NativeIErodeDilateGpuTest, MapIsReadOverTheStagesWhenTheSizeCrossesZero)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr node = makeNode(true, source, map, 7., 7.);
+    StagedImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 3., 3. }));
+
+    const RectI rect(10, 20, 31, 47);
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+        const RectI mapRoI = effect->getGpuInputRoI(kIErodeDilateInputMap, kTime, ViewIdx(0), rect, scale);
+        EXPECT_TRUE(mapRoI.contains(rect)) << "mipmap " << mipmapLevel;
+        EXPECT_NE(rect, mapRoI) << "mipmap " << mipmapLevel;
+    }
+}
+
 // A Map that is another parity source, whose alpha bands give exact 0, exact 1 and a ramp, so
 // that whole and fractional radii, and both shapes, are compared.
 TEST_F(NativeIErodeDilateGpuTest, ConnectedMapMatchesTheCpu)
 {
     for (bool dilate : { false, true }) {
-        const std::string name = dilate ? "IDilate " : "IErode ";
+        const std::string name = dilate ? "dilate " : "erode ";
         NodePtr source = makeParitySource();
         NodePtr map = makeParitySource();
         NodePtr node = makeNode(dilate, source, map, 6.5, 3.);
@@ -244,7 +267,8 @@ TEST_F(NativeIErodeDilateGpuTest, ConnectedMapMatchesTheCpu)
         ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
         expectParity(std::vector<NodePtr>({ node }), node, name + "disc");
 
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 4.5 }));
+        const double sign = dilate ? -1. : 1.;
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { sign * 2., sign * 4.5 }));
         ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
         expectParity(std::vector<NodePtr>({ node }), node, name + "size at black, inverted");
 
@@ -267,7 +291,7 @@ TEST_F(NativeIErodeDilateGpuTest, DisconnectedMapMatchesTheCpu)
         NodePtr node = makeNode(dilate, source, NodePtr(), 9., 60.);
         ASSERT_TRUE(bool(source) && bool(node));
 
-        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, no Map" : "IErode, no Map");
+        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "dilate, no Map" : "erode, no Map");
     }
 }
 
@@ -283,12 +307,12 @@ TEST_F(NativeIErodeDilateGpuTest, MapOutsideItsImageMatchesTheCpu)
         ASSERT_TRUE(bool(source) && bool(map) && bool(node));
         ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
 
-        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map" : "IErode, half Map");
+        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "dilate, half Map" : "erode, half Map");
 
         // Inverted, the black beyond the Map's image is white: Size there, not Size At Black.
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 1.5 }));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { dilate ? -2. : 2., dilate ? -1.5 : 1.5 }));
         ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
-        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map, inverted" : "IErode, half Map, inverted");
+        expectParity(std::vector<NodePtr>({ node }), node, dilate ? "dilate, half Map, inverted" : "erode, half Map, inverted");
     }
 }
 
@@ -302,12 +326,12 @@ TEST_F(NativeIErodeDilateGpuTest, InvertedMapIsFullSizeOutsideItsImage)
         NodePtr map = makeConstant(small, { 0., 0., 0., 0. });
         NodePtr node = makeNode(dilate, source, map, 5., 5.);
         ASSERT_TRUE(bool(source) && bool(map) && bool(node));
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 1.5 }));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { dilate ? -2. : 2., dilate ? -1.5 : 1.5 }));
         ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
         NodePtr fullSource = makeParitySource();
         NodePtr full = makeNode(dilate, fullSource, NodePtr(), 5., 5.);
         ASSERT_TRUE(bool(fullSource) && bool(full));
-        const char* name = dilate ? "IDilate" : "IErode";
+        const char* name = dilate ? "dilate" : "erode";
 
         const EndToEndResult inverted = renderEndToEnd(std::vector<NodePtr>({ node }), node, kWindow, kTime);
         if (inverted.skipped) {
@@ -319,5 +343,31 @@ TEST_F(NativeIErodeDilateGpuTest, InvertedMapIsFullSizeOutsideItsImage)
         ASSERT_TRUE(reference.ok) << name << ": " << reference.error;
         EXPECT_EQ(inverted.cpu, inverted.gpu) << name;
         EXPECT_EQ(reference.gpu, inverted.gpu) << name;
+    }
+}
+
+// A Map whose alpha bands give exact 0, exact 1 and a ramp, from a Size At Black of the other sign
+// to the Size, so that each pixel's radius crosses 0 somewhere on the ramp: on one axis, on both,
+// and with the axes of opposite signs, each through the stages the CPU runs.
+TEST_F(NativeIErodeDilateGpuTest, MapRampCrossingZeroMatchesTheCpu)
+{
+    const double cases[][4] = {
+        // size x, size y, size at black x, size at black y
+        { 5., 5., -5., -5. },
+        { -6.5, 3., 2., -2.5 },
+        { 4., -3., -4.5, 0. },
+    };
+    for (const double* c : cases) {
+        const std::string name = std::to_string(c[0]) + "x" + std::to_string(c[1]) + " from " + std::to_string(c[2]) + "x" + std::to_string(c[3]) + ", ";
+        NodePtr source = makeParitySource();
+        NodePtr map = makeParitySource();
+        NodePtr node = makeNode(false, source, map, c[0], c[1]);
+        ASSERT_TRUE(bool(source) && bool(map) && bool(node));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { c[2], c[3] }));
+
+        expectParity(std::vector<NodePtr>({ node }), node, name + "square");
+
+        ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
+        expectParity(std::vector<NodePtr>({ node }), node, name + "disc");
     }
 }

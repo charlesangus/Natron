@@ -13,9 +13,9 @@ STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 240
 SETTLE_MS = 500
 POLL_TIMEOUT_S = 20.0
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
+PLUGIN_CONSTANT = "Constant"
 PLUGIN_PREMULT = "Premult"
-PLUGIN_CROP = "net.sf.openfx.CropPlugin"
+PLUGIN_CROP = "Crop"
 PLUGIN_KEYMIX = "KeyMix"
 PLUGIN_DIFFERENCE = "Difference"
 PLUGIN_ADJUSTBBOX = "AdjustBBox"
@@ -137,7 +137,7 @@ try:
 
     def viewer_node():
         if not _viewer:
-            _viewer.append(app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer"))
+            _viewer.append(app.getNode("Viewer1") or app.createNode("Viewer"))
             require(_viewer[0] is not None, "the project has a Viewer")
         return _viewer[0]
 
@@ -237,7 +237,7 @@ try:
         check(ok, "connecting the Mask enables it")
         yield from expect_colour("red", "a white Mask shows A, red")
         gt.shot("m121-keymix.png")
-        # The mask reads rgba.A (as in Nuke), so black means alpha 0 too.
+        # The mask reads rgba.A, so black means alpha 0 too.
         param(white, "color").set(0.0, 0.0, 0.0, 0.0)
         yield from expect_colour("blue", "a black Mask shows B, blue")
         param(white, "color").set(1.0, 1.0, 1.0, 1.0)
@@ -299,7 +299,7 @@ try:
         show(wrap)
         use_constant = param(wrap, "useConstant")
         disable_luma = param(wrap, "disableLuma")
-        # Intensity defaults to 0 (as in Nuke), which multiplies the wrap away; Generate Wrap Only
+        # Intensity defaults to 0, which multiplies the wrap away; Generate Wrap Only
         # keeps the plus-merged foreground from clamping the differences out. The band's brightness
         # scales with FGBlur over Diffuse: the default 1px FGBlur under a wide Diffuse leaves it
         # below one 8-bit step, so both blurs are wide and equal and the intensity is high.

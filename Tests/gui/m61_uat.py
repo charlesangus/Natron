@@ -33,7 +33,7 @@ try:
 
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     gt.require(viewer is not None, "a Viewer node exists")
     viewer.setPosition(400, 600)
     try:
@@ -311,7 +311,7 @@ try:
         read = create_reader("flat-seq-layers.####.exr", 100, 100)
         first, last = read.getParam("firstFrame").get(), read.getParam("lastFrame").get()
         check((first, last) == (1, 2), "the Read picks up frames 1-2 as one sequence (got %d-%d)" % (first, last))
-        shuffle = create("fr.natron.Shuffle", 100, 250)
+        shuffle = create("Shuffle", 100, 250)
         connect(shuffle, 0, read)
         shuffle.getParam("in2").setLayer("diffuse")
         check_colour_out(shuffle)
@@ -353,7 +353,7 @@ try:
         """Wrap-up item: build on frame 2, then scrub; the menus relist per frame."""
         seek(2)
         read = create_reader("flat-seq-layers.####.exr", 100, 100)
-        shuffle = create("fr.natron.Shuffle", 100, 250)
+        shuffle = create("Shuffle", 100, 250)
         connect(shuffle, 0, read)
         connect(viewer, 0, shuffle)
         yield from open_panel(shuffle)
@@ -418,7 +418,7 @@ try:
         seek(1)
         read_a = create_reader("flat-three-layers.exr", 0, 100)
         read_b = create_reader("flat-rgba-only.exr", 250, 100)
-        switch = create("fr.natron.Switch", 120, 250)
+        switch = create("Switch", 120, 250)
         connect(switch, 0, read_a)
         connect(switch, 1, read_b)
         automatic = switch.getParam("automatic")
@@ -429,7 +429,7 @@ try:
         need(which is not None, "the Switch has a which parameter")
         which.setValueAtTime(0, 1)
         which.setValueAtTime(1, 2)
-        shuffle = create("fr.natron.Shuffle", 120, 400)
+        shuffle = create("Shuffle", 120, 400)
         connect(shuffle, 0, switch)
         shuffle.getParam("in2").setLayer("diffuse")
         check_colour_out(shuffle)
@@ -475,7 +475,7 @@ try:
         """Default (unmapped) rows are checked too."""
         seek(1)
         read = create_reader("flat-seq-layers.####.exr", 0, 100)
-        shuffle = create("fr.natron.Shuffle", 0, 250)
+        shuffle = create("Shuffle", 0, 250)
         connect(shuffle, 0, read)
         shuffle.getParam("in1").setLayer("diffuse")
         check_colour_out(shuffle)
@@ -493,7 +493,7 @@ try:
 
         destroy_graph()
         read_rgb = create_reader("flat-rgb-only.exr", 0, 100)
-        plain = create("fr.natron.Shuffle", 0, 250)
+        plain = create("Shuffle", 0, 250)
         connect(plain, 0, read_rgb)
         connect(viewer, 0, plain)
         for frame in (1, 2, 1):
@@ -514,7 +514,7 @@ try:
         destroy_graph()
         read_rgba = create_reader("flat-rgba-only.exr", 0, 100)
         read_rgb = create_reader("flat-rgb-only.exr", 250, 100)
-        copy = create("fr.natron.ShuffleCopy", 120, 250)
+        copy = create("ShuffleCopy", 120, 250)
         connect(copy, 0, read_rgba)
         connect(copy, 1, read_rgb)
         connect(viewer, 0, copy)
@@ -544,7 +544,7 @@ try:
         """A Shuffle with a keyed Disable, writing a new diffuse layer."""
         seek(1)
         read = create_reader("flat-rgba-only.exr", 100, 100)
-        writer = create("fr.natron.Shuffle", 100, 250)
+        writer = create("Shuffle", 100, 250)
         connect(writer, 0, read)
         if app.getProjectLayer("diffuse") is None:
             app.addProjectLayer("diffuse", ["R", "G", "B"])
@@ -559,7 +559,7 @@ try:
         need(disable is not None, "the first Shuffle has a Disable parameter")
         disable.setValueAtTime(False, 1)
         disable.setValueAtTime(True, 2)
-        downstream = create("fr.natron.Shuffle", 100, 400)
+        downstream = create("Shuffle", 100, 400)
         connect(downstream, 0, writer)
         downstream.getParam("in2").setLayer("diffuse")
         check_colour_out(downstream)

@@ -59,11 +59,10 @@ const char* const kProcessesAllLayers[] = {
     "fr.natron.test.TwoInputCopy",
     "fr.natron.test.MatrixWarp",
     "fr.natron.test.FrameWindow",
-    "net.sf.openfx.TransformPlugin",
-    "net.sf.openfx.TransformMaskedPlugin",
-    "net.sf.openfx.CropPlugin",
-    "net.sf.openfx.Position",
-    "net.sf.openfx.Reformat",
+    "Transform",
+    "Crop",
+    "Position",
+    "Reformat",
     "net.sf.openfx.Card3D",
     "net.sf.openfx.SpriteSheet",
     "fr.inria.openfx.OIIOResize",
@@ -76,9 +75,8 @@ const char* const kProcessesAllLayers[] = {
     "net.fxarena.openfx.Swirl",
     "net.fxarena.openfx.Wave",
     "net.sf.openfx.Deinterlace",
-    "net.sf.cimg.CImgBlur",
-    "net.sf.cimg.CImgErode",
-    "net.sf.cimg.CImgDilate",
+    "Blur",
+    "ErodeDilate",
     "net.sf.cimg.CImgErodeSmooth",
     "net.sf.cimg.CImgDenoise",
     "net.sf.cimg.CImgSmooth",
@@ -94,7 +92,7 @@ const char* const kProcessesAllLayers[] = {
     "net.fxarena.openfx.Edges",
     "net.fxarena.openfx.Sketch",
     "net.fxarena.openfx.Morphology",
-    "net.sf.openfx.DissolvePlugin",
+    "Dissolve",
     "net.sf.openfx.CopyRectanglePlugin",
     "net.sf.openfx.ContactSheetOFX",
     "net.sf.openfx.LayerContactSheetOFX",
@@ -109,16 +107,16 @@ const char* const kProcessesAllLayers[] = {
 const char* const kKeepsColorLayer[] = {
     "fr.natron.test.PointMatrix",
     "fr.natron.test.PointMatrix1",
-    "net.sf.openfx.GradePlugin",
-    "net.sf.openfx.ColorCorrectPlugin",
-    "net.sf.openfx.Invert",
-    "net.sf.openfx.MultiplyPlugin",
-    "net.sf.openfx.SaturationPlugin",
-    "net.sf.openfx.Clamp",
-    "net.sf.openfx.ColorLookupPlugin",
+    "Grade",
+    "ColorCorrect",
+    "Invert",
+    "Multiply",
+    "Saturation",
+    "Clamp",
+    "ColorLookup",
     "Merge",
-    "net.sf.openfx.KeyerPlugin",
-    "net.sf.openfx.ChromaKeyerPlugin",
+    "Keyer",
+    "ChromaKeyer",
     "net.sf.openfx.anaglyphPlugin",
     "net.sf.openfx.ImageStatistics",
     "net.sf.openfx.ClipTestPlugin",
@@ -126,7 +124,7 @@ const char* const kKeepsColorLayer[] = {
     "net.sf.openfx.DenoiseSharpen",
     "net.sf.cimg.CImgExpression",
     "net.sf.cimg.CImgChromaBlur",
-    "eu.cimg.EdgeDetect",
+    "EdgeDetect",
 };
 
 bool
@@ -210,8 +208,8 @@ TEST_F(DefaultChannelSetTest, ChannelAgnosticNodesDefaultToAll)
         ++checked;
     }
 
-    EXPECT_TRUE(isPluginLoaded("net.sf.cimg.CImgBlur"));
-    EXPECT_TRUE(isPluginLoaded("net.sf.openfx.TransformPlugin"));
+    EXPECT_TRUE(isPluginLoaded("Blur"));
+    EXPECT_TRUE(isPluginLoaded("Transform"));
     EXPECT_TRUE(isPluginLoaded("fr.natron.test.TwoInputCopy"));
     EXPECT_GE(checked, 3);
 }
@@ -239,7 +237,7 @@ TEST_F(DefaultChannelSetTest, ColourNodesKeepTheColorLayerDefault)
         ++checked;
     }
 
-    EXPECT_TRUE(isPluginLoaded("net.sf.openfx.GradePlugin"));
+    EXPECT_TRUE(isPluginLoaded("Grade"));
     EXPECT_GE(checked, 1);
 }
 
@@ -261,12 +259,12 @@ TEST_F(DefaultChannelSetTest, RotoKeepsItsAlphaTargetDefault)
 
 TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurPinsToColor)
 {
-    if (!isPluginLoaded("net.sf.cimg.CImgBlur")) {
-        std::cerr << "Skipping: net.sf.cimg.CImgBlur is not loaded." << std::endl;
+    if (!isPluginLoaded("Blur")) {
+        std::cerr << "Skipping: Blur is not loaded." << std::endl;
         return;
     }
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     KnobChannelSetPtr channels = channelSetOf(blur);
     ASSERT_TRUE(bool(channels));
@@ -287,12 +285,12 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurPinsToColor)
 
 TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurWithSingleChannelPinsToColor)
 {
-    if (!isPluginLoaded("net.sf.cimg.CImgBlur")) {
-        std::cerr << "Skipping: net.sf.cimg.CImgBlur is not loaded." << std::endl;
+    if (!isPluginLoaded("Blur")) {
+        std::cerr << "Skipping: Blur is not loaded." << std::endl;
         return;
     }
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     KnobChannelSetPtr channels = channelSetOf(blur);
     ASSERT_TRUE(bool(channels));
@@ -310,12 +308,12 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurWithSingleChannelPinsTo
 
 TEST_F(DefaultChannelSetTest, SetChannelsOnNoneRowOfADefaultAllBlurPinsToColor)
 {
-    if (!isPluginLoaded("net.sf.cimg.CImgBlur")) {
-        std::cerr << "Skipping: net.sf.cimg.CImgBlur is not loaded." << std::endl;
+    if (!isPluginLoaded("Blur")) {
+        std::cerr << "Skipping: Blur is not loaded." << std::endl;
         return;
     }
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     KnobChannelSetPtr channels = channelSetOf(blur);
     ASSERT_TRUE(bool(channels));
@@ -333,8 +331,8 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnNoneRowOfADefaultAllBlurPinsToColor)
 
 TEST_F(DefaultChannelSetTest, ChannelSetIsSavedEvenOnItsDefault)
 {
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
 
     ASSERT_TRUE(bool(blur) && bool(grade));
 
@@ -360,7 +358,7 @@ TEST_F(DefaultChannelSetTest, ChannelSetIsSavedEvenOnItsDefault)
 
 TEST_F(DefaultChannelSetTest, DefaultBlurRoundTripsAsAll)
 {
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
 
     ASSERT_TRUE(bool(blur));
     const std::string name = blur->getScriptName();
@@ -380,7 +378,7 @@ TEST_F(DefaultChannelSetTest, DefaultBlurRoundTripsAsAll)
 
 TEST_F(DefaultChannelSetTest, BlurSetToColorStaysColorAfterRoundTrip)
 {
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
 
     ASSERT_TRUE(bool(blur));
     const std::string name = blur->getScriptName();
@@ -405,7 +403,7 @@ TEST_F(DefaultChannelSetTest, BlurSetToColorStaysColorAfterRoundTrip)
 
 TEST_F(DefaultChannelSetTest, DefaultGradeStaysColorAfterRoundTrip)
 {
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
 
     ASSERT_TRUE(bool(grade));
     const std::string name = grade->getScriptName();

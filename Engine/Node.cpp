@@ -2948,6 +2948,7 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
+        refreshHostDrivenOverlayParams();
     }
 
     // The serialized age is not read: the node cache key is a content hash, so a saved age carries
@@ -2975,31 +2976,63 @@ Node::restoreSublabel()
         QString labeltext = QString::fromUtf8( labelKnob->getValue().c_str() );
         int foundNatronCustomTag = labeltext.indexOf( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
         if (foundNatronCustomTag == -1) {
-            KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
-            if (sublabelKnob) {
-                KnobString* sublabelKnobIsString = dynamic_cast<KnobString*>( sublabelKnob.get() );
-                if (sublabelKnobIsString) {
-                    QString sublabel = QString::fromUtf8( sublabelKnobIsString->getValue(0).c_str() );
-                    if ( !sublabel.isEmpty() ) {
-                        int fontEndTagFound = labeltext.lastIndexOf( QString::fromUtf8(kFontEndTag) );
-                        if (fontEndTagFound == -1) {
-                            labeltext.append( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
-                            labeltext.append( QLatin1Char('(') + sublabel + QLatin1Char(')') );
-                            labeltext.append( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END) );
-                        } else {
-                            QString toAppend( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
-                            toAppend += QLatin1Char('(');
-                            toAppend += sublabel;
-                            toAppend += QLatin1Char(')');
-                            toAppend += QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END);
-                            labeltext.insert(fontEndTagFound, toAppend);
-                        }
-                        labelKnob->setValue( labeltext.toStdString() );
-                    }
+            QString sublabel = QString::fromUtf8(getSublabel().c_str());
+            if (!sublabel.isEmpty()) {
+                int fontEndTagFound = labeltext.lastIndexOf(QString::fromUtf8(kFontEndTag));
+                if (fontEndTagFound == -1) {
+                    labeltext.append(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+                    labeltext.append(QLatin1Char('(') + sublabel + QLatin1Char(')'));
+                    labeltext.append(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END));
+                } else {
+                    QString toAppend(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+                    toAppend += QLatin1Char('(');
+                    toAppend += sublabel;
+                    toAppend += QLatin1Char(')');
+                    toAppend += QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END);
+                    labeltext.insert(fontEndTagFound, toAppend);
                 }
+                labelKnob->setValue(labeltext.toStdString());
             }
         }
     }
+}
+
+std::string
+Node::getSublabel() const
+{
+    KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
+    if (sublabelKnob) {
+        KnobString* isString = dynamic_cast<KnobString*>(sublabelKnob.get());
+
+        return isString ? isString->getValue(0) : std::string();
+    }
+
+    return _imp->effect ? _imp->effect->getSublabel() : std::string();
+}
+
+void
+Node::refreshSublabel()
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        QMetaObject::invokeMethod(this, [this]() { refreshSublabel(); }, Qt::QueuedConnection);
+
+        return;
+    }
+    if (!_imp->effect) {
+        return;
+    }
+    showSublabel(QString::fromUtf8(_imp->effect->getSublabel().c_str()));
+}
+
+void
+Node::showSublabel(const QString& sublabel)
+{
+    QString data = sublabel;
+    if (!data.isEmpty()) {
+        data.prepend(QLatin1Char('('));
+        data.append(QLatin1Char(')'));
+    }
+    replaceCustomDataInlabel(data);
 }
 
 void
@@ -3766,19 +3799,65 @@ Node::createHostMixKnob(const KnobPagePtr& mainPage)
     _imp->mixWithSource = mixKnob;
 }
 
+std::vector<KnobIPtr>
+Node::moveClampKnobsToFooter(const KnobPagePtr& mainPage)
+{
+    std::vector<KnobIPtr> moved;
+    if (!mainPage) {
+        return moved;
+    }
+    KnobBoolPtr clampBlack = _imp->effect->getKnobByNameAndType<KnobBool>("clampBlack");
+    KnobBoolPtr clampWhite = _imp->effect->getKnobByNameAndType<KnobBool>("clampWhite");
+    if (clampBlack && (clampBlack->getParentKnob() != mainPage)) {
+        clampBlack.reset();
+    }
+    if (clampWhite && (clampWhite->getParentKnob() != mainPage)) {
+        clampWhite.reset();
+    }
+    if (clampBlack) {
+        clampBlack->setAddNewLine(!clampWhite);
+        mainPage->removeKnob(clampBlack.get());
+        mainPage->addKnob(clampBlack);
+        moved.push_back(clampBlack);
+    }
+    if (clampWhite) {
+        clampWhite->setAddNewLine(true);
+        mainPage->removeKnob(clampWhite.get());
+        mainPage->addKnob(clampWhite);
+        moved.push_back(clampWhite);
+    }
+
+    return moved;
+}
+
 void
-Node::createStageFooterSeparator(const KnobPagePtr& mainPage)
+Node::createFooterSeparator(const KnobPagePtr& mainPage,
+                            const std::vector<KnobIPtr>& footerKnobs)
 {
     if (!mainPage) {
         return;
     }
     const KnobsVec children = mainPage->getChildren();
-    if (children.empty() || dynamic_cast<KnobSeparator*>(children.back().get())) {
+    int first = -1;
+    for (int i = 0; i < (int)children.size(); ++i) {
+        if (std::find(footerKnobs.begin(), footerKnobs.end(), children[i]) != footerKnobs.end()) {
+            first = i;
+            break;
+        }
+    }
+    if (first <= 0) {
+        return;
+    }
+    int previous = first - 1;
+    while ((previous >= 0) && children[previous]->getIsSecret()) {
+        --previous;
+    }
+    if ((previous < 0) || dynamic_cast<KnobSeparator*>(children[previous].get())) {
         return;
     }
     KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
     sep->setName("advancedSep");
-    mainPage->addKnob(sep);
+    mainPage->insertKnob(first, sep);
 }
 
 void
@@ -3839,6 +3918,75 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
     }
     _imp->unPremultBySelector = channel;
 } // Node::createUnPremultSelector
+
+namespace {
+
+enum HostDrivenOverlayParamEnum {
+    eHostDrivenOverlayParamNone,
+    eHostDrivenOverlayParamInteractive,
+    eHostDrivenOverlayParamHiDPI
+};
+
+HostDrivenOverlayParamEnum
+hostDrivenOverlayParam(const KnobIPtr& knob)
+{
+    if (!dynamic_cast<KnobBool*>(knob.get())) {
+        return eHostDrivenOverlayParamNone;
+    }
+    const std::string& name = knob->getName();
+    if ((name == "interactive") || (name == "transformInteractive") || (name == "rampInteractive")) {
+        return eHostDrivenOverlayParamInteractive;
+    }
+    if (name == "hidpi") {
+        return eHostDrivenOverlayParamHiDPI;
+    }
+
+    return eHostDrivenOverlayParamNone;
+}
+
+} // anon namespace
+
+void
+Node::adoptHostDrivenOverlayParams()
+{
+    // openfx-supportext overlays each carry their own "interactive" and "hidpi" toggles; the
+    // host has one global toggle and knows the screen, so it hides theirs and drives them.
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (hostDrivenOverlayParam(*it) == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        (*it)->setSecret(true);
+        (*it)->setSecretLocked(true);
+        (*it)->setIsPersistent(false);
+    }
+    refreshHostDrivenOverlayParams();
+}
+
+void
+Node::refreshHostDrivenOverlayParams()
+{
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const bool interactive = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+    const bool hiDPI = appPTR->getScreenDevicePixelRatio() >= 1.5;
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const HostDrivenOverlayParamEnum role = hostDrivenOverlayParam(*it);
+        if (role == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        KnobBool* param = static_cast<KnobBool*>(it->get());
+        const bool value = (role == eHostDrivenOverlayParamInteractive) ? interactive : hiDPI;
+        if (param->getValue() != value) {
+            param->setValue(value);
+        }
+    }
+}
 
 KnobChannelSelectPtr
 Node::getUnPremultBySelector() const
@@ -4241,17 +4389,10 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
-    // Spec'd nodes put the whole footer under one separator; the generic one below would split
-    // (Un)premult by from the mask rows.
-    const StagedImageEffect* stagedEffect = dynamic_cast<const StagedImageEffect*>(_imp->effect.get());
-    if (stagedEffect) {
-        const bool hasMaskSelector = std::any_of(hasMaskChannelSelector.begin(), hasMaskChannelSelector.end(),
-                                                 [](const std::pair<bool, bool>& p) { return p.first; });
-        if (hasMaskSelector || stagedEffect->wantsHostUnPremultSelector() || stagedEffect->imagePipelineSpec().stages.has(Stage::MaskMix)) {
-            createStageFooterSeparator(mainPage);
-        }
-    }
+    std::vector<KnobIPtr> footerKnobs = moveClampKnobsToFooter(mainPage);
     createUnPremultSelector(mainPage);
+    footerKnobs.push_back(_imp->unPremultBySelector.lock());
+    adoptHostDrivenOverlayParams();
 
     OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
     if (isOfxEffect && isOfxEffect->isMultiPlanar()) {
@@ -4281,41 +4422,13 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
             if (foundPluginDefaultKnobsToReorder[i].second->getParentKnob() == mainPage) {
                 mainPage->removeKnob( foundPluginDefaultKnobsToReorder[i].second.get() );
                 mainPage->addKnob(foundPluginDefaultKnobsToReorder[i].second);
+                footerKnobs.push_back(foundPluginDefaultKnobsToReorder[i].second);
             }
         }
     }
-
-    if (stagedEffect) {
-        lastKnobBeforeAdvancedOption.reset();
-    }
-
-    if (lastKnobBeforeAdvancedOption && mainPage) {
-
-        KnobsVec mainPageChildren = mainPage->getChildren();
-        int i = 0;
-        for (KnobsVec::iterator it = mainPageChildren.begin(); it != mainPageChildren.end(); ++it, ++i) {
-            if (*it == lastKnobBeforeAdvancedOption) {
-                if (i > 0) {
-                    int j = i - 1;
-                    KnobsVec::iterator prev = it;
-                    --prev;
-                    while (j >= 0 && (*prev)->getIsSecret()) {
-                        --j;
-                        --prev;
-                    }
-
-                    if ( j >= 0 && !dynamic_cast<KnobSeparator*>( prev->get() ) ) {
-                        KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
-                        sep->setName("advancedSep");
-                        mainPage->insertKnob(i, sep);
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-
+    footerKnobs.push_back(lastKnobBeforeAdvancedOption);
+    footerKnobs.push_back(_imp->mixWithSource.lock());
+    createFooterSeparator(mainPage, footerKnobs);
 
     createNodePage(settingsPage);
 
@@ -6117,6 +6230,64 @@ Node::clearPersistentMessageForPreview()
     }
 }
 
+OverlayImageFrameConstPtr
+Node::getOverlayImageFrame() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageFrame;
+}
+
+std::uint64_t
+Node::getOverlayImageGeneration() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageGeneration;
+}
+
+bool
+Node::setOverlayImageFrame(const OverlayImageFrameConstPtr& frame,
+                           std::uint64_t generation)
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    if (generation != _imp->overlayImageGeneration) {
+        return false;
+    }
+    _imp->overlayImageFrame = frame;
+
+    return true;
+}
+
+bool
+Node::clearOverlayImageFrame()
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+    const bool hadFrame = (bool)_imp->overlayImageFrame;
+
+    _imp->overlayImageFrame.reset();
+    ++_imp->overlayImageGeneration;
+
+    return hadFrame;
+}
+
+std::shared_ptr<void>
+Node::markOverlayImagePassPending()
+{
+    const std::shared_ptr<std::atomic<int>> pending = _imp->overlayImagePassesPending;
+
+    ++*pending;
+
+    return std::shared_ptr<void>(nullptr, [pending](void*) { --*pending; });
+}
+
+bool
+Node::isOverlayImagePassPending() const
+{
+    return *_imp->overlayImagePassesPending > 0;
+}
+
 void
 Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
                                             NodesList* nodes)
@@ -6946,7 +7117,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
             std::string pattern = fileParam->getValue();
             if ((pattern.find("%v") != std::string::npos) || (pattern.find("%V") != std::string::npos)) {
                 //We found view pattern
-                KnobIPtr viewsKnob = getKnobByName(kWriteOIIOParamViewsSelector);
+                KnobIPtr viewsKnob = getKnobByName(kWriteParamViews);
                 if (viewsKnob) {
                     KnobChoice* viewsSelector = dynamic_cast<KnobChoice*>( viewsKnob.get() );
                     if (viewsSelector) {
@@ -7323,22 +7494,15 @@ Node::onEffectKnobValueChanged(KnobI* what,
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );
     } else if (what->getName() == kNatronOfxParamStringSublabelName) {
-        //special hack for the merge node and others so we can retrieve the sublabel and display it in the node's label
         KnobString* strKnob = dynamic_cast<KnobString*>(what);
         if (strKnob) {
-            QString operation = QString::fromUtf8( strKnob->getValue().c_str() );
-            if ( !operation.isEmpty() ) {
-                operation.prepend( QString::fromUtf8("(") );
-                operation.append( QString::fromUtf8(")") );
-            }
-            replaceCustomDataInlabel(operation);
+            showSublabel(QString::fromUtf8(strKnob->getValue().c_str()));
         }
-    } else if ( what == _imp->hideInputs.lock().get() ) {
+    } else if (what == _imp->hideInputs.lock().get()) {
         Q_EMIT hideInputsKnobChanged( _imp->hideInputs.lock()->getValue() );
-    } else if ( _imp->effect->isReader() && (what->getName() == kReadOIIOAvailableViewsKnobName) ) {
+    } else if (_imp->effect->isReader() && (what->getName() == kReadOIIOAvailableViewsKnobName)) {
         refreshCreatedViews(what, false /*silent*/);
-    } else if ( what == _imp->refreshInfoButton.lock().get() ||
-               (what == _imp->infoPage.lock().get() && reason == eValueChangedReasonUserEdited) ) {
+    } else if (what == _imp->refreshInfoButton.lock().get() || (what == _imp->infoPage.lock().get() && reason == eValueChangedReasonUserEdited)) {
         std::stringstream ssinfo;
         int maxinputs = getNInputs();
         for (int i = 0; i < maxinputs; ++i) {
@@ -7412,7 +7576,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
         ssinfo << "</font>";
         _imp->nodeInfos.lock()->setValue( ssinfo.str() );
-    } else if ( what == _imp->openglRenderingEnabledKnob.lock().get() ) {
+    } else if (what == _imp->openglRenderingEnabledKnob.lock().get()) {
         // Do nothing. Knob value will be checked in getCurrentOpenGLRenderSupport() calls.
     } else {
         ret = false;
@@ -9048,9 +9212,12 @@ Node::refreshShownDownstreamInputRelatedData()
         if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
             reached[i]->refreshPanelInputRelatedData();
         } else if (ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(reached[i]->_imp->effect.get())) {
-            // A viewer's layer menu is on screen with its panel closed, and lists what its inputs
-            // present at the current frame, so it only needs telling that the list may differ.
+            // A viewer's layer menu and displayed format are on screen with its panel closed.
+            // The format reaches the viewer only through the current-frame hook, which a
+            // metadata comparison on the viewer's own answer would not run for a format change
+            // upstream, so it is forced. One call per viewer reached, not per node.
             isViewer->onChannelsSelectorRefreshed();
+            isViewer->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), true);
         }
     }
 }

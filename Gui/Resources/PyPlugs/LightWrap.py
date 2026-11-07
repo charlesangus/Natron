@@ -1027,7 +1027,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(761, 1308)
     lastNode.setSize(104, 34)
@@ -1038,7 +1038,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "Input1"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("Input1")
     lastNode.setLabel("A")
     lastNode.setPosition(198, -35)
@@ -1050,7 +1050,7 @@ def createInstance(app,group):
     # End of node "Input1"
 
     # Start of node "Keyer1"
-    lastNode = app.createNode("net.sf.openfx.KeyerPlugin", 1, group)
+    lastNode = app.createNode("Keyer", 1, group)
     lastNode.setScriptName("Keyer1")
     lastNode.setLabel("Keyer1")
     lastNode.setPosition(752, 164)
@@ -1058,19 +1058,16 @@ def createInstance(app,group):
     lastNode.setColor(0, 1, 0)
     groupKeyer1 = lastNode
 
-    param = lastNode.getParam("softnessLower")
+    # Alpha rises from the luma tolerance to 1 and stays at 1 over every highlight. The range is
+    # outer low, inner low, centre, inner high and outer high: the plateau runs from the centre, 1,
+    # to 1000000, and the outer low offset, bound to the tolerance below, reaches down to it.
+    param = lastNode.getParam("range")
     if param is not None:
-        param.setValue(-1, 0)
-        del param
-
-    param = lastNode.getParam("softnessUpper")
-    if param is not None:
-        param.setValue(0, 0)
-        del param
-
-    param = lastNode.getParam("userTextArea")
-    if param is not None:
-        param.setValue("<Natron>(Luminance)</Natron>")
+        param.setValue(1, 0)
+        param.setValue(0, 1)
+        param.setValue(1, 2)
+        param.setValue(999999, 3)
+        param.setValue(0, 4)
         del param
 
     del lastNode
@@ -1089,7 +1086,7 @@ def createInstance(app,group):
     # End of node "Premult1"
 
     # Start of node "BGBlur"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 3, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("BGBlur")
     lastNode.setLabel("BGBlur")
     lastNode.setPosition(752, 316)
@@ -1106,7 +1103,7 @@ def createInstance(app,group):
     # End of node "BGBlur"
 
     # Start of node "Constant1"
-    lastNode = app.createNode("net.sf.openfx.ConstantPlugin", 1, group)
+    lastNode = app.createNode("Constant", 1, group)
     lastNode.setScriptName("Constant1")
     lastNode.setLabel("Constant1")
     lastNode.setPosition(968, 185)
@@ -1142,7 +1139,7 @@ def createInstance(app,group):
     # End of node "Constant1"
 
     # Start of node "Shufflecopy1"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("Shufflecopy1")
     lastNode.setLabel("Shufflecopy1")
     lastNode.setPosition(968, 316)
@@ -1179,7 +1176,7 @@ def createInstance(app,group):
     # End of node "Premult2"
 
     # Start of node "DisableLuma"
-    lastNode = app.createNode("fr.natron.Switch", 1, group)
+    lastNode = app.createNode("Switch", 1, group)
     lastNode.setScriptName("DisableLuma")
     lastNode.setLabel("DisableLuma")
     lastNode.setPosition(1172, 380)
@@ -1196,7 +1193,7 @@ def createInstance(app,group):
     # End of node "DisableLuma"
 
     # Start of node "DisableLuma1"
-    lastNode = app.createNode("fr.natron.Switch", 1, group)
+    lastNode = app.createNode("Switch", 1, group)
     lastNode.setScriptName("DisableLuma1")
     lastNode.setLabel("DisableLuma1")
     lastNode.setPosition(579, 319)
@@ -1213,7 +1210,7 @@ def createInstance(app,group):
     # End of node "DisableLuma1"
 
     # Start of node "Dot1"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot1")
     lastNode.setLabel("Dot1")
     lastNode.setPosition(797, 21)
@@ -1225,7 +1222,7 @@ def createInstance(app,group):
     # End of node "Dot1"
 
     # Start of node "ConstantColor"
-    lastNode = app.createNode("fr.natron.Switch", 1, group)
+    lastNode = app.createNode("Switch", 1, group)
     lastNode.setScriptName("ConstantColor")
     lastNode.setLabel("ConstantColor")
     lastNode.setPosition(758, 448)
@@ -1242,7 +1239,7 @@ def createInstance(app,group):
     # End of node "ConstantColor"
 
     # Start of node "Dot2"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot2")
     lastNode.setLabel("Dot2")
     lastNode.setPosition(243, 443)
@@ -1254,7 +1251,7 @@ def createInstance(app,group):
     # End of node "Dot2"
 
     # Start of node "FGBlur"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 3, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("FGBlur")
     lastNode.setLabel("FGBlur")
     lastNode.setPosition(434, 433)
@@ -1285,11 +1282,6 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupEdgeMerge = lastNode
 
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("out")
-        del param
-
     param = lastNode.getParam("operation")
     if param is not None:
         param.set("out")
@@ -1317,11 +1309,6 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupMaskMerge = lastNode
 
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("in")
-        del param
-
     param = lastNode.getParam("operation")
     if param is not None:
         param.set("in")
@@ -1341,7 +1328,7 @@ def createInstance(app,group):
     # End of node "MaskMerge"
 
     # Start of node "Diffuse"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 3, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("Diffuse")
     lastNode.setLabel("Diffuse")
     lastNode.setPosition(758, 633)
@@ -1364,7 +1351,7 @@ def createInstance(app,group):
     # End of node "Diffuse"
 
     # Start of node "Intensity"
-    lastNode = app.createNode("net.sf.openfx.MultiplyPlugin", 2, group)
+    lastNode = app.createNode("Multiply", 1, group)
     lastNode.setScriptName("Intensity")
     lastNode.setLabel("Intensity")
     lastNode.setPosition(758, 697)
@@ -1389,7 +1376,7 @@ def createInstance(app,group):
     # End of node "Intensity"
 
     # Start of node "Saturation1"
-    lastNode = app.createNode("net.sf.openfx.SaturationPlugin", 2, group)
+    lastNode = app.createNode("Saturation", 1, group)
     lastNode.setScriptName("Saturation1")
     lastNode.setLabel("Saturation1")
     lastNode.setPosition(758, 761)
@@ -1406,7 +1393,7 @@ def createInstance(app,group):
     # End of node "Saturation1"
 
     # Start of node "ColorCorrect1"
-    lastNode = app.createNode("net.sf.openfx.ColorCorrectPlugin", 2, group)
+    lastNode = app.createNode("ColorCorrect", 1, group)
     lastNode.setScriptName("ColorCorrect1")
     lastNode.setLabel("ColorCorrect1")
     lastNode.setPosition(758, 825)
@@ -1448,11 +1435,6 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupMaskMerge2 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("mask")
-        del param
-
     param = lastNode.getParam("operation")
     if param is not None:
         param.set("mask")
@@ -1467,7 +1449,7 @@ def createInstance(app,group):
     # End of node "MaskMerge2"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(761, 1026)
@@ -1495,11 +1477,6 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupHighlightMerge = lastNode
 
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("plus")
-        del param
-
     param = lastNode.getParam("operation")
     if param is not None:
         param.set("plus")
@@ -1514,7 +1491,7 @@ def createInstance(app,group):
     # End of node "HighlightMerge"
 
     # Start of node "Dot4"
-    lastNode = app.createNode("fr.inria.built-in.Dot", 1, group)
+    lastNode = app.createNode("Dot", 1, group)
     lastNode.setScriptName("Dot4")
     lastNode.setLabel("Dot4")
     lastNode.setPosition(806, 1218)
@@ -1526,7 +1503,7 @@ def createInstance(app,group):
     # End of node "Dot4"
 
     # Start of node "Input2"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("Input2")
     lastNode.setLabel("B")
     lastNode.setPosition(753, -43)
@@ -1570,8 +1547,8 @@ def createInstance(app,group):
     groupHighlightMerge.connectInput(1, groupDot2)
     groupDot4.connectInput(0, groupHighlightMerge)
 
-    param = groupKeyer1.getParam("softnessLower")
-    param.setExpression("thisGroup.lumaTolerance.getValue() - 1", False, 0)
+    param = groupKeyer1.getParam("range")
+    param.setExpression("1 - thisGroup.lumaTolerance.getValue()", False, 0)
     del param
     param = groupBGBlur.getParam("size")
     group.getParam("bgblur").setAsAlias(param)

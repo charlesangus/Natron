@@ -437,9 +437,11 @@ protected:
 
     /**
      * @brief For a Passes op, the pixels of Aux input inputNb its GPU recorder reads to fill
-     * outputRect, at the current time and view. outputRect by default.
+     * outputRect, at time and view. outputRect by default.
      **/
     virtual RectI opPassesInputRoI(int /*inputNb*/,
+                                   double /*time*/,
+                                   ViewIdx /*view*/,
                                    const RectI& outputRect,
                                    const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {
@@ -677,8 +679,9 @@ private:
         }
     }
 
+protected:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
-                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN
+                                const StagePlan& plan) OVERRIDE WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Route) {
             Q_UNUSED(args);
@@ -719,6 +722,7 @@ private:
         }
     }
 
+private:
     virtual GpuOpRef gpuOp(double time,
                            ViewIdx view,
                            const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN

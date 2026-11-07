@@ -45,6 +45,7 @@
 #define kUSDWriteParamFrameRange "frameRange"
 #define kUSDWriteParamFirstFrame "firstFrame"
 #define kUSDWriteParamLastFrame "lastFrame"
+#define kUSDWriteParamExportLiveTextures "exportLiveTextures"
 
 NATRON_NAMESPACE_ENTER
 
@@ -57,6 +58,11 @@ NATRON_NAMESPACE_ENTER
  * layers bring in (USDRead's) as sublayers, as Solaris's USD ROP does with Flatten Implicit
  * Layers. Flattened mode bakes the whole composed stage, external files included, into the one
  * layer. Asset paths are written relative to the output file, or absolute.
+ *
+ * Live textures (natron:// URIs a USDMaterial's image inputs author) are rendered, with Export
+ * Live Textures, to OpenEXR files in <file's base name>_textures beside it, one per frame for an
+ * image that changes over time, and the paths point at them; without it they are written as they
+ * are, with a warning that only the Natron session that wrote them can read them.
  **/
 class USDWrite
     : public NativeEffectBase {
@@ -140,6 +146,7 @@ private:
     KnobOutputFileWPtr _filename;
     KnobChoiceWPtr _exportMode;
     KnobChoiceWPtr _pathMode;
+    KnobBoolWPtr _exportLiveTextures;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

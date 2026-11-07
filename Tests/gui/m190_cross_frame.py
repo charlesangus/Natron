@@ -30,10 +30,10 @@ STARTUP_TIMEOUT_S = 60.0
 BAKE_TIMEOUT_S = 200.0
 WATCHDOG_S = 280
 SETTLE_MS = 1500
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
-GRADE_ID = "net.sf.openfx.GradePlugin"
-BEGIN_ID = "fr.natron.LoopBegin"
-END_ID = "fr.natron.LoopEnd"
+CONSTANT_ID = "Constant"
+GRADE_ID = "Grade"
+BEGIN_ID = "LoopBegin"
+END_ID = "LoopEnd"
 # Long enough at the project format for the Progress panel to show the task: it shows a task
 # without a frame range once it has run a second with more than four seconds left.
 BAKE_END = 80
@@ -186,7 +186,7 @@ try:
         end.getParam("iterations").setValue(4)
         end.getParam("crossFrame").setValue(True)
         end.getParam("startFrame").setValue(1)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None and viewer.connectInput(0, end), "the Viewer shows the LoopEnd")
         py_viewer = app.getViewer(viewer.getScriptName())
         require(py_viewer is not None, "the Viewer has a Python wrapper")

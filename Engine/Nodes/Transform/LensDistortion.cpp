@@ -204,6 +204,7 @@ lensDistortionExtentPolicy()
     policy.reformatToggle = false;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = true;
+    policy.frameRange = false;
 
     return policy;
 }
@@ -296,7 +297,6 @@ LensDistortion::initializeKnobs()
 {
     KnobPagePtr page = createControlsPage();
 
-    // The frame range knob has no effect: the node has no time domain of its own.
     _extentKnobs.createKnobs(page);
 
     KnobDoublePtr overscan = createKnob<KnobDouble>(tr("Overscan"));

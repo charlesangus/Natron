@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -84,8 +85,7 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMixParamName "mix"
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"
-#define kWriteOIIOParamViewsSelector "viewsSelector"
-
+#define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
 
@@ -633,6 +633,12 @@ public:
     int getUnPremultChannel(const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const;
 
     KnobChannelSelectPtr getUnPremultBySelector() const;
+
+    /**
+     * @brief Sets an OpenFX plug-in's hidden "interactive" and "hidpi" style params from the
+     * global Interactive Updates setting and the screen's device pixel ratio.
+     **/
+    void refreshHostDrivenOverlayParams();
 
     /**
      * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
@@ -1463,7 +1469,20 @@ public:
      **/
     void replaceCustomDataInlabel(const QString & data);
 
+    /**
+     * @brief Shows the effect's getSublabel() in the node's label, on the main thread.
+     **/
+    void refreshSublabel();
+
+    /**
+     * @brief The text shown in parentheses after the node's name: the
+     * kNatronOfxParamStringSublabelName knob's value if the node has one, otherwise the
+     * effect's getSublabel().
+     **/
+    std::string getSublabel() const;
+
 private:
+    void showSublabel(const QString& sublabel);
 
     void restoreSublabel();
 
@@ -1554,7 +1573,11 @@ private:
 
     void createUnPremultSelector(const KnobPagePtr& mainPage);
 
-    void createStageFooterSeparator(const KnobPagePtr& mainPage);
+    void adoptHostDrivenOverlayParams();
+
+    std::vector<KnobIPtr> moveClampKnobsToFooter(const KnobPagePtr& mainPage);
+
+    void createFooterSeparator(const KnobPagePtr& mainPage, const std::vector<KnobIPtr>& footerKnobs);
 
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,
@@ -1751,8 +1774,15 @@ public:
 
     void addRectangleInteract(const KnobDoublePtr& bottomLeft,
                               const KnobDoublePtr& size,
-                              const KnobBoolPtr& interactive,
                               const KnobBoolPtr& enable);
+
+    /**
+     * @brief Declares the ramp overlay: two draggable points, each with a dashed line through it
+     * orthogonal to the line between them. A null interactive follows the global preference.
+     **/
+    void addRampInteract(const KnobDoublePtr& point0,
+                         const KnobDoublePtr& point1,
+                         const KnobBoolPtr& interactive = KnobBoolPtr());
 
     /**
      * @brief Host overlays declared before the node has a GUI; they are handed to the GUI by
@@ -1768,8 +1798,7 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,
@@ -1784,8 +1813,7 @@ public:
                               const KnobBoolPtr& enable3,
                               const KnobBoolPtr& enable4,
                               const KnobChoicePtr& overlayPoints,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void removePositionHostOverlay(KnobI* knob);
 
@@ -1796,6 +1824,39 @@ public:
     void setCurrentViewportForHostOverlays(OverlaySupport* viewPort);
 
     bool hasHostOverlayForParam(const KnobI* knob) const;
+
+    /**
+     * @brief The overlay images of the node's last finished pass. Held on the node because a render
+     * clone produces them and the viewer reads them from the main instance.
+     **/
+    OverlayImageFrameConstPtr getOverlayImageFrame() const;
+
+    /**
+     * @brief What a pass captures before it reads the node's view knobs, to hand back to
+     * setOverlayImageFrame().
+     **/
+    std::uint64_t getOverlayImageGeneration() const;
+
+    /**
+     * @brief Publishes frame unless clearOverlayImageFrame() ran since generation was captured,
+     * and returns whether it did. Checked under the frame's lock, so a frame on the node is always
+     * of the current generation.
+     **/
+    bool setOverlayImageFrame(const OverlayImageFrameConstPtr& frame, std::uint64_t generation);
+
+    /**
+     * @brief Drops the overlay images and refuses the frames of passes already running. Returns
+     * whether there were any.
+     **/
+    bool clearOverlayImageFrame();
+
+    /**
+     * @brief Marks a pass as owed to the node until the returned token dies. While one is, the viewer
+     * keeps drawing the node's previous images.
+     **/
+    std::shared_ptr<void> markOverlayImagePassPending();
+
+    bool isOverlayImagePassPending() const;
 
     void setPluginIDAndVersionForGui(const std::list<std::string>& grouping,
                                      const std::string& pluginLabel,

@@ -85,7 +85,7 @@ try:
     require(merge.connectInput(2, light), "connect GuideLight into the merge")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(150, 260)
     cam_path = cam.getParam("primPath").getValue()

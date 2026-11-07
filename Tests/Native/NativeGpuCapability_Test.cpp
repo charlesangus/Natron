@@ -66,13 +66,18 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/ColorWheel.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
+#include "Engine/Nodes/Generator/Radial.h"
+#include "Engine/Nodes/Generator/Ramp.h"
+#include "Engine/Nodes/Generator/Rectangle.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Despill.h"
@@ -106,6 +111,7 @@
 #include "Engine/Nodes/Transform/ICornerPin.h"
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/ITransform.h"
+#include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Nodes/Transform/LensDistortion.h"
 #include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
@@ -133,17 +139,18 @@ gpuCapableIds()
         PLUGINID_NATRON_COLORBALANCERGB,
         PLUGINID_NATRON_COLOREQUALIZER,
         PLUGINID_NATRON_CONSTANT,
-        PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
         PLUGINID_NATRON_NOISE,
+        PLUGINID_NATRON_RAMP,
+        PLUGINID_NATRON_RADIAL,
+        PLUGINID_NATRON_RECTANGLE,
+        PLUGINID_NATRON_COLORWHEEL,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
         PLUGINID_NATRON_GAMMA,
-        PLUGINID_NATRON_ERODE,
-        PLUGINID_NATRON_DILATE,
+        PLUGINID_NATRON_ERODEDILATE,
         PLUGINID_NATRON_TRANSFORM,
-        PLUGINID_NATRON_TRANSFORMMASKED,
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_POSITION,
         PLUGINID_NATRON_CROP,
@@ -152,6 +159,7 @@ gpuCapableIds()
         PLUGINID_NATRON_STMAP,
         PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_LENSDISTORTION,
+        PLUGINID_NATRON_LENSCORRECT,
         PLUGINID_NATRON_AUTOSTRAIGHTEN,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
@@ -163,9 +171,9 @@ gpuCapableIds()
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_IBLUR,
         PLUGINID_NATRON_DEFOCUS,
+        PLUGINID_NATRON_IDEFOCUS,
         PLUGINID_NATRON_ZDEFOCUS,
-        PLUGINID_NATRON_IERODE,
-        PLUGINID_NATRON_IDILATE,
+        PLUGINID_NATRON_IERODEDILATE,
         PLUGINID_NATRON_ITRANSFORM,
         PLUGINID_NATRON_ICORNERPIN,
         PLUGINID_NATRON_EDGEEXTEND,

@@ -89,6 +89,16 @@ public:
         eViewer3DTransformTargetAlwaysEdit
     };
 
+    // What lights the 3D viewer's shaded mode, in the order of SceneViewportRenderer's lighting modes.
+    enum Viewer3DLightingEnum {
+        // The stage's lights when it has any, else a light at the camera.
+        eViewer3DLightingAuto = 0,
+        // Only the stage's lights: a stage with none shows its lit surfaces black.
+        eViewer3DLightingScene,
+        // Only a light at the camera.
+        eViewer3DLightingHeadlight
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -305,6 +315,8 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain demosaics with RawNeuralDenoise instead of RawDemosaic.
+    bool isDevelopRawNeuralDemosaic() const;
     // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
     bool isDevelopRawDenoiseEnabled() const;
 
@@ -366,6 +378,12 @@ public:
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
+
+    // What lights the viewer's 3D views, shared by all of them.
+    Viewer3DLightingEnum getViewer3DLighting() const;
+
+    // Sets the preference and saves it.
+    void setViewer3DLighting(Viewer3DLightingEnum lighting);
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -603,6 +621,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobChoicePtr _developRawDemosaic;
     KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
@@ -679,6 +698,7 @@ private:
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
+    KnobChoicePtr _viewer3DLighting;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

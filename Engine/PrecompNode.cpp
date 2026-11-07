@@ -47,6 +47,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
@@ -609,12 +611,15 @@ PrecompNodePrivate::copyWriterSpaceToReadNode(const NodePtr& read) const
     if (!writeNode || !read) {
         return;
     }
-    KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(writeNode->getKnobByName("ocioOutputSpace").get());
-    KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(read->getKnobByName("ocioInputSpace").get());
-    if (!outputSpace || !inputSpace) {
+    NativeWrite* write = dynamic_cast<NativeWrite*>(writeNode->getEffectInstance().get());
+    KnobChoice* inputSpace = dynamic_cast<KnobChoice*>(read->getKnobByName(kNatronReadParamColorspace).get());
+    if (!write || !inputSpace) {
         return;
     }
-    inputSpace->setValue(outputSpace->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    const std::string space = write->colorspace();
+    if (!space.empty()) {
+        inputSpace->setValueFromID(space, 0);
+    }
 }
 
 void

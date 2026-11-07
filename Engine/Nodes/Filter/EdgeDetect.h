@@ -42,8 +42,8 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
-#define PLUGINID_NATRON_EDGEDETECT "eu.cimg.EdgeDetect"
-#define PLUGIN_MAJOR_NATRON_EDGEDETECT 5
+#define PLUGINID_NATRON_EDGEDETECT "EdgeDetect"
+#define PLUGIN_MAJOR_NATRON_EDGEDETECT 1
 
 #define kEdgeDetectParamFilter "filter"
 #define kEdgeDetectParamFilterSimple "simple"
@@ -162,7 +162,7 @@ struct EdgeDetectOp {
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_EDGEDETECT,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/EdgeDetect.png",
         .inputs = kEdgeDetectInputs,
     };
 

@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_SWITCH "fr.natron.Switch"
+#define PLUGINID_NATRON_SWITCH "Switch"
 #define PLUGIN_MAJOR_NATRON_SWITCH 1
 
 #define kSwitchParamWhich "which"

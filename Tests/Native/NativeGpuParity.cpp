@@ -401,6 +401,7 @@ bool
 prepareFrame(const NodePtr& root,
              double time,
              const RectI& window,
+             unsigned mipmapLevel,
              FrameRun* run,
              std::string* error)
 {
@@ -423,8 +424,9 @@ prepareFrame(const NodePtr& root,
                                        false /*draftMode*/,
                                        run->stats);
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-    const RectD rod(window.x1, window.y1, window.x2, window.y2);
-    if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, rod, root, *request) == eStatusFailed) {
+    const RectI canonical = window.upscalePowerOfTwo(mipmapLevel);
+    const RectD rod(canonical.x1, canonical.y1, canonical.x2, canonical.y2);
+    if (EffectInstance::computeRequestPass(time, ViewIdx(0), mipmapLevel, rod, root, *request) == eStatusFailed) {
         *error = "request pass failed";
 
         return false;
@@ -444,7 +446,7 @@ prepareFrame(const NodePtr& root,
                                               false /*draftMode*/,
                                               run->stats);
     run->context->setRequest(request);
-    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), mipmapLevel);
     if (run->graph.tasks.empty()) {
         *error = "empty graph";
 
@@ -590,7 +592,8 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                const RectI& window,
                double time,
                const GpuContextReady& onGpuContext,
-               const GpuFrameDone& onGpuFrame)
+               const GpuFrameDone& onGpuFrame,
+               unsigned mipmapLevel)
 {
     EndToEndResult result;
     result.window = window;
@@ -612,7 +615,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         RegionBodyScope body(scheduler);
         appPTR->clearAllCaches();
         FrameRun run;
-        if (!prepareFrame(root, time, window, &run, &result.error)) {
+        if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
         placeOnGpu(&run, graph);
@@ -674,7 +677,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;
-        if (!renderNodePlanesDirect(root, time, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
+        if (!renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
             return result;
         }
         if (planes.size() != 1) {

@@ -117,6 +117,8 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Decisions
 
+- 2026-11-06 — **Reveal also defaults to Over (user),** matching Clone. No further UAT.
+
 - M224 UAT 2026-11-06 (user): performance good; Clone must default to the Over operator instead of Copy. Approved without another UAT once fixed.
 - 2026-11-02 — Audit: P7.T1 and P7.T2 landed in 58378084f (tangents grown no further than half way to their neighbours; Alt-drag edits only on a feather bar and pans elsewhere, with a gtest and m224_gestures.py coverage). The remote build 41391443666 at the tip passed. Pushed, no uncommitted work, no PR. The branch is 23 commits behind main. Still open: P5.T1 (host bench rerun) and the round-2 UAT AppImage.
 - 2026-10-28: S answered — plain S was swallowed by the global Project Settings QAction before the viewer saw it. Viewer interact keybinds now claim ShortcutOverride while the viewer has focus (ViewerTab::event / ViewerGL::event → claimShortcutOverride), so any active interact's bound key beats a global shortcut on the same key (e.g. Roto Ctrl+A); text fields still win. Python Layer.removeItem now goes through RotoCurveContext::removeItem (removed items left the selection and panel stale). Known, pre-existing, not fixed here: the interact keeps its in-progress Bezier pointer after that Bezier is removed (from Python or the panel mid-draw).

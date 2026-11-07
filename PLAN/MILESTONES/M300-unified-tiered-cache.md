@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-06 — **A cached output skips its dependencies (user):** "that's pretty much the whole point of the cache". The task graph must not run a task's dependencies when the consumer's output is already served by the cache. M276 - Upstream Reuse On Edits measured the opposite as `behind_hit`.
 - 2026-11-01 — **One cache logic across RAM, disk and VRAM (user):** "keep more in the cache if there's budget… just not evict stuff until we need to". Cost-aware tiers with demotion replace blind LRU. See `DECISIONS/2026-11-01-unified-tiered-cache.md`.
 - 2026-11-01 — **Spill to disk only when cheaper than a recompute (user).**
 - 2026-11-01 — **The disk tier persists across sessions, and any new build invalidates it (user):** the key keeps hashing the binary. Safe, at the cost of a cold cache after a rebuild.
@@ -93,6 +94,12 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - approach: Add an advanced setting `cacheAdmissionPolicy` (`all` | `priorityFloor`), with env override `NATRON_CACHE_ADMISSION`. `priorityFloor` admits an output only when it carries a priority signal or a recompute cost above a threshold. The default is set after P4.T1.
   - verify: A unit test checks that `all` admits a cheap unflagged output and `priorityFloor` refuses it.
   - size: M
+
+- [ ] M300.P2.T5 — Skip dependencies behind a cache hit
+  - files: `Engine/RenderScheduler.cpp` and the task-graph planning it uses, `Engine/GpuPlacement.cpp` if placement plans the same walk, `Tests/CacheStress_Test.cpp`
+  - approach: Before scheduling a task's dependencies, ask whether its output is already available in full for the requested region; on a hit, prune the subgraph that only that task needed. A partial hit keeps only the dependencies the missing region needs. Pruning holds across tiers once they exist.
+  - verify: A render test edits the last node of a chain whose second-last output is cached, and the profile shows no upstream execution. With the settings panel open, M276's benchmark shows no `behind_hit`.
+  - size: L
 
 ## Phase 300.3: Disk tier and pins
 

@@ -38,6 +38,8 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-11-07 — Merged as 7d996fb70 (#203). Filter-dependent controls hide instead of disabling, Clamp included. The user waived a further UAT; flicker and speed weren't raised, and `tools/bench/reformat_filter_bench.sh` wasn't run. Debug CI links one binary at a time from here on (`NATRON_LINK_JOBS`).
+
 - M270 UAT 2026-11-06 (user): hide knobs that don't apply to the current filter, instead of disabling them. No further UAT.
 - 2026-11-07 — Black Outside edge under slow translate at 4x down (0.01 output px per frame, 201 frames): max one-frame pixel change is 0.338 for main's cubic, 0.380 for the branch's Cubic, 0.392 for Lanczos 3, against 0.010 for an interior step; Lanczos 3 also rings to -0.118 at the edge. The jump exists on main too, once per output pixel crossed. Whether it shows in playback is unchecked: for the user at the gate.
 - 2026-11-07 — Extends "a tap on the support edge is dropped": Keys, Simon, Rifman, Mitchell, Sinc and Bicubic weigh 0 within 2^-26 of the edge, on CPU and GPU. The CPU's polynomials rounded to zero there unpredictably, moving the clamp range by up to 0.04 against the GPU; mirroring that would need double multiplication per tap. Weights in the band are under 2^-50, so no visible change. Sinc's window is `cos²` to match. Phase 270.3 factors Bicubic's outer lobe, since non-default B and C arrive with its knobs.

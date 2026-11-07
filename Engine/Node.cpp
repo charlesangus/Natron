@@ -856,9 +856,16 @@ Node::getContentHash() const
 U64
 Node::getStoredContentHash() const
 {
-    QReadLocker l(&_imp->contentHashMutex);
+    U64 hash;
+    {
+        QReadLocker l(&_imp->contentHashMutex);
+        hash = _imp->contentHash;
+    }
+    if (ContentHasher::isSalted(hash)) {
+        ContentHasher::noteSalted();
+    }
 
-    return _imp->contentHash;
+    return hash;
 }
 
 bool
@@ -1025,9 +1032,15 @@ Node::computeContentHash(U64 projectDigest,
                          const HashInputs& inputs,
                          const std::function<U64(const Node&)>* inputHash) const
 {
+    ContentHasher::SaltScope salt;
     ContentHasher h;
     auto hashOf = [inputHash](const Node& input) -> U64 {
-        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+        const U64 hash = inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+        if (ContentHasher::isSalted(hash)) {
+            ContentHasher::noteSalted();
+        }
+
+        return hash;
     };
 
     h.appendString(getPluginID());
@@ -1119,9 +1132,13 @@ Node::computeContentHash(U64 projectDigest,
         h.appendDouble(last);
     }
 
-    h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
+    const U64 digest = projectDigest ? projectDigest : project->getContentDigest();
+    if (ContentHasher::isSalted(digest)) {
+        ContentHasher::noteSalted();
+    }
+    h.appendU64(digest);
 
-    return h.finalize();
+    return ContentHasher::withSaltFlag(h.finalize(), salt.salted());
 } // Node::computeContentHash
 
 void
@@ -1254,6 +1271,9 @@ Node::walkLoopBody(const std::vector<NodePtr>& begins,
     }
     if (digest && !tailIsBegin) {
         *digest = hashOf(*tail);
+        if (ContentHasher::isSalted(*digest)) {
+            ContentHasher::noteSalted();
+        }
     }
 } // Node::walkLoopBody
 

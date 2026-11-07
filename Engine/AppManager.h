@@ -728,6 +728,9 @@ public Q_SLOTS:
 
     void clearAllCaches();
 
+    // What clearAllCaches() clears in RAM, for when other sessions may still use the files.
+    void clearAllCachesInRam();
+
     // Frees the GPU memory Natron keeps between renders: the stages and Storm engines of USDRender
     // nodes, which each node makes again when it next renders, the Storm engines of the viewers'
     // scene views, which each makes again as it redraws, and the device buffers the GPU runtime's
@@ -807,6 +810,9 @@ protected:
     bool loadInternalAfterInitGui(const CLArgs& cl);
 
 private:
+    void clearCaches(bool inRamOnly);
+    void rebuildDiskCacheStructure();
+
     void findAllScriptsRecursive(const QDir& directory,
                                  QStringList& allPlugins,
                                  QStringList* foundInit,

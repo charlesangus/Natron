@@ -159,7 +159,7 @@ public:
     mutable std::shared_ptr<const std::vector<LayerRegistryEntry>> contentDigestLayers;
     mutable std::string contentDigestOCIOSource;
     mutable U64 contentDigestRenderSettings = 0;
-    mutable U64 contentDigest = 0;
+    mutable U64 contentDigest = 0; //< carries its salt flag
 
     // only used on the main-thread
     struct RenderWatcher

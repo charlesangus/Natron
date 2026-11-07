@@ -35,6 +35,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -67,6 +68,7 @@
 
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheRetention.h"
+#include "Engine/ContentHasher.h"
 
 #define XXH_INLINE_ALL
 #include "xxhash.h"
@@ -107,7 +109,9 @@ const int kNetworkListingCacheMs = 2000;
 
 const int kBudgetRefreshMs = 1000;
 const int kSlowScanMs = 60000;
-const std::uint64_t kHeartbeatStaleNs = 60ULL * 1000000000ULL;
+const int kBuildStampIntervalMs = 60000;
+const std::uint64_t kDeadBuildAgeNs = 7ULL * 24ULL * 3600ULL * 1000000000ULL;
+const char kBuildStampName[] = "lastlive";
 const std::size_t kPublishScan = 256;
 const std::size_t kPublishBatch = 8;
 const int kPublishBackoffMs = 30000;
@@ -148,6 +152,7 @@ struct LedgerRecord {
     char build[32];
     std::int64_t delta;
     std::uint64_t heartbeatNs;
+    std::uint64_t closed;
 };
 
 static_assert(std::is_trivially_copyable<FixedHeader>::value, "the header is stored as raw bytes");
@@ -437,7 +442,7 @@ isNetworkFilesystem(const std::string& path)
 }
 
 std::string
-sessionBaseName()
+hostName()
 {
     char host[256] = { 0 };
 
@@ -450,33 +455,160 @@ sessionBaseName()
         }
     }
 
-    std::string boot;
-    {
-        std::ifstream in("/proc/sys/kernel/random/boot_id");
-        std::getline(in, boot);
-        boot.erase(std::remove(boot.begin(), boot.end(), '-'), boot.end());
-    }
+    return host;
+}
 
+std::string
+bootId()
+{
+    std::string boot;
+    std::ifstream in("/proc/sys/kernel/random/boot_id");
+
+    std::getline(in, boot);
+    boot.erase(std::remove(boot.begin(), boot.end(), '-'), boot.end());
+
+    return boot;
+}
+
+struct ProcessInfo {
+    bool readable = false;
+    bool zombie = false;
+    std::string startTime;
+};
+
+ProcessInfo
+processInfo(const std::string& pid)
+{
+    ProcessInfo info;
+    std::ifstream in("/proc/" + pid + "/stat");
+    std::string line;
+
+    if (!std::getline(in, line)) {
+        return info;
+    }
     // The process name in field 2 may hold spaces, so the fields count from its closing parenthesis.
-    std::string start = "0";
-    {
-        std::ifstream in("/proc/self/stat");
-        std::string line;
-        std::getline(in, line);
-        const std::size_t close = line.rfind(')');
-        if (close != std::string::npos) {
-            std::istringstream fields(line.substr(close + 1));
-            std::string field;
-            for (int i = 3; i <= 22 && (fields >> field); ++i) {
-                start = field;
-            }
+    const std::size_t close = line.rfind(')');
+    if (close == std::string::npos) {
+        return info;
+    }
+    std::istringstream fields(line.substr(close + 1));
+    std::string field;
+    for (int i = 3; i <= 22 && (fields >> field); ++i) {
+        if (i == 3) {
+            info.zombie = (field == "Z");
+        } else if (i == 22) {
+            info.startTime = field;
+            info.readable = true;
         }
     }
 
+    return info;
+}
+
+std::string
+sessionBaseName()
+{
+    const ProcessInfo self = processInfo("self");
     std::ostringstream name;
-    name << host << '-' << boot << '-' << (long)::getpid() << '-' << start;
+
+    name << hostName() << '-' << bootId() << '-' << (long)::getpid() << '-' << (self.readable ? self.startTime : std::string("0"));
 
     return name.str();
+}
+
+struct SessionId {
+    std::string host;
+    std::string boot;
+    std::string pid;
+    std::string start;
+};
+
+// From the right, because a host name may hold dashes.
+bool
+parseSessionName(const std::string& name,
+                 SessionId* id)
+{
+    const std::size_t startDash = name.rfind('-');
+    if ((startDash == std::string::npos) || (startDash == 0)) {
+        return false;
+    }
+    const std::size_t pidDash = name.rfind('-', startDash - 1);
+    if ((pidDash == std::string::npos) || (pidDash == 0)) {
+        return false;
+    }
+    const std::size_t bootDash = name.rfind('-', pidDash - 1);
+    if (bootDash == std::string::npos) {
+        return false;
+    }
+    id->host = name.substr(0, bootDash);
+    id->boot = name.substr(bootDash + 1, pidDash - bootDash - 1);
+    id->pid = name.substr(pidDash + 1, startDash - pidDash - 1);
+    id->start = name.substr(startDash + 1, name.find('.', startDash) - startDash - 1);
+
+    return !id->pid.empty() && (id->pid.find_first_not_of("0123456789") == std::string::npos);
+}
+
+// Stops at shutdown, and returns false then with files left: a tree under a temp directory is the
+// next session's to finish, whereas waiting for it would hold up the exit.
+bool
+removeTree(const std::string& path,
+           const std::atomic<bool>& stopping)
+{
+    for (const std::string& name : listDirectory(path)) {
+        if (stopping.load()) {
+            return false;
+        }
+        const std::string child = path + '/' + name;
+        struct stat st;
+        if ((::lstat(child.c_str(), &st) == 0) && S_ISDIR(st.st_mode)) {
+            if (!removeTree(child, stopping)) {
+                return false;
+            }
+        } else {
+            (void)::unlink(child.c_str());
+        }
+    }
+    (void)::rmdir(path.c_str());
+
+    return true;
+}
+
+// Nothing is synced: the test is about what the filesystem does with a rename, and a crash during it
+// leaves only a temp file for a peer to reap.
+bool
+writeSmallFile(const std::string& path,
+               char value)
+{
+    ScopedFd fd(::open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0666));
+
+    return (fd.get() >= 0) && pwriteFully(fd.get(), &value, 1, 0);
+}
+
+bool
+renameBehavesAtomically(const std::string& tempDir,
+                        const std::string& publishDir,
+                        const std::string& session)
+{
+    const std::string first = tempDir + "/self-test-a";
+    const std::string second = tempDir + "/self-test-b";
+    const std::string published = publishDir + "/.self-test-" + session;
+    char read = 0;
+    const bool worked = writeSmallFile(first, 'a')
+        && (::rename(first.c_str(), published.c_str()) == 0)
+        && writeSmallFile(second, 'b')
+        && (::rename(second.c_str(), published.c_str()) == 0)
+        && [&published, &read]() {
+               ScopedFd fd(::open(published.c_str(), O_RDONLY | O_CLOEXEC));
+
+               return (fd.get() >= 0) && preadFully(fd.get(), &read, 1, 0);
+           }()
+        && (read == 'b');
+
+    (void)::unlink(first.c_str());
+    (void)::unlink(second.c_str());
+    (void)::unlink(published.c_str());
+
+    return worked;
 }
 
 // Nice 19 and not SCHED_IDLE: these threads hold an entry's lock for a chunk's copy, and under a
@@ -602,6 +734,18 @@ private:
 
 } // namespace
 
+namespace {
+struct EvictionSample {
+    std::string path;
+    std::string name;
+    std::uint64_t base;
+    std::uint64_t bytes;
+    CacheDiskStats stats;
+    int deadRank; // lower goes first; every live build shares the highest
+    double score;
+};
+}
+
 struct CacheDiskTier::Imp {
     struct ProbeEntry {
         std::chrono::steady_clock::time_point expiry;
@@ -644,6 +788,7 @@ struct CacheDiskTier::Imp {
         , warnings(0)
         , published(0)
         , warned(false)
+        , closing(false)
     {
     }
 
@@ -711,6 +856,17 @@ struct CacheDiskTier::Imp {
     std::atomic<std::uint64_t> warnings;
     std::atomic<std::uint64_t> published;
     std::atomic<bool> warned;
+    bool closing; // set once every thread has been joined
+
+    std::mutex livenessMutex;
+    struct PeerBeat {
+        std::uint64_t value;
+        std::chrono::steady_clock::time_point changedAt;
+    };
+    std::map<std::string, PeerBeat> peerBeats;
+
+    std::chrono::steady_clock::time_point buildStampedAt;
+    std::atomic<std::uint64_t> reclaimCounter { 0 };
 
     std::vector<std::thread> threads;
 
@@ -753,6 +909,10 @@ struct CacheDiskTier::Imp {
         const std::size_t bytes = entry.size();
 
         if (!header || (bytes == 0)) {
+            return false;
+        }
+        // No later session could ever hit it.
+        if (ContentHasher::isSalted(entry.getKeyTreeVersion())) {
             return false;
         }
 
@@ -967,6 +1127,19 @@ struct CacheDiskTier::Imp {
     void tick();
     void writeLedger();
     std::map<std::string, LedgerRecord> readLedgers() const;
+    void ensureRegistered();
+    void touchBuildStamp(bool force);
+    bool sessionIsDead(const std::string& name, const LedgerRecord& record);
+    std::set<std::string> liveBuildsOf(const std::map<std::string, LedgerRecord>& ledgers);
+    std::vector<std::string> buildNames() const;
+    std::uint64_t buildLastLiveNs(const std::string& build) const;
+    void reapDeadSessions();
+    void reclaimDeadBuilds();
+    void sampleFile(const std::string& path,
+                    const std::string& name,
+                    std::uint64_t base,
+                    int deadRank,
+                    std::vector<EvictionSample>* sample) const;
     void refreshBudget(const std::map<std::string, LedgerRecord>& ledgers);
     void evictPass(const std::map<std::string, LedgerRecord>& ledgers);
     void offerPublishCandidates();
@@ -1216,6 +1389,8 @@ CacheDiskTier::Imp::scanLoop()
     lowerThreadIoPriority();
 
     for (;;) {
+        reapDeadSessions();
+        reclaimDeadBuilds();
         removeCleared();
         scanOnce();
 
@@ -1237,8 +1412,7 @@ CacheDiskTier::Imp::removeCleared()
         paths.swap(clearedPaths);
     }
     for (const std::string& path : paths) {
-        std::error_code ignored;
-        fs::remove_all(path, ignored);
+        removeTree(path, stopping);
     }
 }
 
@@ -1248,10 +1422,7 @@ CacheDiskTier::Imp::scanOnce()
     const std::map<std::string, LedgerRecord> ledgers = readLedgers();
     std::uint64_t total = 0;
 
-    for (const std::string& build : listDirectory(config.root)) {
-        if ((build == "sessions") || (build == "tmp")) {
-            continue;
-        }
+    for (const std::string& build : buildNames()) {
         for (const char* section : { "auto", "pins" }) {
             std::error_code error;
             fs::recursive_directory_iterator it(config.root + '/' + build + '/' + section, fs::directory_options::skip_permission_denied, error);
@@ -1293,6 +1464,7 @@ CacheDiskTier::Imp::writeLedger()
     std::strncpy(record.build, config.buildId.c_str(), sizeof(record.build) - 1);
     record.delta = ledgerDelta.load();
     record.heartbeatNs = CacheEviction::nowNs();
+    record.closed = closing ? 1 : 0;
     (void)pwriteFully(ledgerFd, &record, sizeof(record), 0);
 }
 
@@ -1304,13 +1476,224 @@ CacheDiskTier::Imp::readLedgers() const
     for (const std::string& name : listDirectory(sessionsDir)) {
         ScopedFd fd(::open((sessionsDir + '/' + name).c_str(), O_RDONLY | O_CLOEXEC));
         LedgerRecord record;
-        if ((fd.get() >= 0) && preadFully(fd.get(), &record, sizeof(record), 0) && (record.magic == kLedgerMagic)) {
-            record.build[sizeof(record.build) - 1] = '\0';
-            ledgers[name] = record;
+        // A ledger that holds nothing yet, or never will, still names a session to judge.
+        if ((fd.get() < 0) || !preadFully(fd.get(), &record, sizeof(record), 0) || (record.magic != kLedgerMagic)) {
+            std::memset(&record, 0, sizeof(record));
         }
+        record.build[sizeof(record.build) - 1] = '\0';
+        ledgers[name] = record;
     }
 
     return ledgers;
+}
+
+void
+CacheDiskTier::Imp::ensureRegistered()
+{
+    struct stat st;
+    if ((::stat(ledgerPath.c_str(), &st) == 0) || (errno != ENOENT)) {
+        return;
+    }
+    // A peer judged this session dead, which a stalled mount or a shared host name in another PID
+    // namespace can make it do. It took the ledger's bytes and the temp files, so this session starts
+    // over with nothing to its name.
+    if (ledgerFd >= 0) {
+        ::close(ledgerFd);
+    }
+    ledgerFd = ::open(ledgerPath.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0666);
+    ledgerDelta.store(0);
+    std::error_code ignored;
+    fs::create_directories(tmpDir, ignored);
+}
+
+void
+CacheDiskTier::Imp::touchBuildStamp(bool force)
+{
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (!force && (now - buildStampedAt < std::chrono::milliseconds(kBuildStampIntervalMs))) {
+        return;
+    }
+    buildStampedAt = now;
+    const std::string stamp = buildDir + '/' + kBuildStampName;
+    int fd = ::open(stamp.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0666);
+    if ((fd < 0) && (errno == ENOENT)) {
+        // Reclaimed in the moment this session started, which costs only the files.
+        std::error_code ignored;
+        fs::create_directories(autoDir, ignored);
+        fd = ::open(stamp.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0666);
+    }
+    ScopedFd closer(fd);
+    if (fd >= 0) {
+        (void)::futimens(fd, NULL);
+    }
+}
+
+bool
+CacheDiskTier::Imp::sessionIsDead(const std::string& name,
+                                  const LedgerRecord& record)
+{
+    if (name == session) {
+        return false;
+    }
+    if (record.closed != 0) {
+        return true;
+    }
+    SessionId id;
+    const bool parsed = parseSessionName(name, &id);
+    if (parsed && (id.host == hostName()) && (id.start != "0")) {
+        if (id.boot != bootId()) {
+            return true;
+        }
+        const ProcessInfo process = processInfo(id.pid);
+        if (process.readable) {
+            return process.zombie || (process.startTime != id.start);
+        }
+        // /proc may hide other users' processes.
+        if ((::kill((pid_t)std::atol(id.pid.c_str()), 0) != 0) && (errno == ESRCH)) {
+            return true;
+        }
+    }
+
+    // Measured against this host's clock, because clocks of two hosts need not agree: a beat is
+    // stale once its value has stayed the same for long enough.
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(livenessMutex);
+    const auto found = peerBeats.find(name);
+    if ((found == peerBeats.end()) || (found->second.value != record.heartbeatNs)) {
+        peerBeats[name] = PeerBeat { record.heartbeatNs, now };
+
+        return false;
+    }
+
+    return now - found->second.changedAt >= std::chrono::milliseconds(config.heartbeatStaleMs);
+}
+
+std::set<std::string>
+CacheDiskTier::Imp::liveBuildsOf(const std::map<std::string, LedgerRecord>& ledgers)
+{
+    std::set<std::string> live;
+
+    live.insert(config.buildId);
+    for (const auto& ledger : ledgers) {
+        if (!sessionIsDead(ledger.first, ledger.second)) {
+            live.insert(ledger.second.build);
+        }
+    }
+
+    return live;
+}
+
+std::vector<std::string>
+CacheDiskTier::Imp::buildNames() const
+{
+    std::vector<std::string> builds;
+
+    // The stamp is what proves a directory a build's: the location is the user's choice, and it may
+    // hold directories that are nothing to do with the tier and must survive its reclaiming.
+    for (const std::string& name : listDirectory(config.root)) {
+        struct stat st;
+        if ((name != "sessions") && (name != "tmp") && (::stat((config.root + '/' + name + '/' + kBuildStampName).c_str(), &st) == 0)) {
+            builds.push_back(name);
+        }
+    }
+
+    return builds;
+}
+
+std::uint64_t
+CacheDiskTier::Imp::buildLastLiveNs(const std::string& build) const
+{
+    struct stat st;
+
+    if (::stat((config.root + '/' + build + '/' + kBuildStampName).c_str(), &st) != 0) {
+        return 0;
+    }
+
+    return (std::uint64_t)st.st_mtim.tv_sec * 1000000000ULL + (std::uint64_t)st.st_mtim.tv_nsec;
+}
+
+void
+CacheDiskTier::Imp::reapDeadSessions()
+{
+    // Temp directories first: a session makes its ledger before its directory, so one listed here
+    // with no ledger below truly has none.
+    const std::vector<std::string> tempDirs = listDirectory(config.root + "/tmp");
+    const std::map<std::string, LedgerRecord> ledgers = readLedgers();
+
+    for (const auto& ledger : ledgers) {
+        if (stopping.load()) {
+            return;
+        }
+        if (!sessionIsDead(ledger.first, ledger.second)) {
+            continue;
+        }
+        // Whoever renames it owns the session's remains. Failing means a peer got there first.
+        const std::string claim = tmpDir + "/claimed-" + ledger.first;
+        if (::rename((sessionsDir + '/' + ledger.first).c_str(), claim.c_str()) != 0) {
+            continue;
+        }
+        // Read again, since only the claim guarantees the session wrote its last.
+        LedgerRecord record;
+        std::int64_t delta = 0;
+        {
+            ScopedFd fd(::open(claim.c_str(), O_RDONLY | O_CLOEXEC));
+            if ((fd.get() >= 0) && preadFully(fd.get(), &record, sizeof(record), 0) && (record.magic == kLedgerMagic)) {
+                delta = record.delta;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(budgetMutex);
+            const auto baseline = scanBaselines.find(ledger.first);
+            if (baseline != scanBaselines.end()) {
+                delta -= baseline->second;
+                scanBaselines.erase(baseline);
+            }
+        }
+        ledgerDelta.fetch_add(delta);
+        if (removeTree(config.root + "/tmp/" + ledger.first, stopping)) {
+            (void)::unlink(claim.c_str());
+        }
+        {
+            std::lock_guard<std::mutex> lock(livenessMutex);
+            peerBeats.erase(ledger.first);
+        }
+    }
+
+    // A reaper that died mid-way leaves a directory no ledger names.
+    for (const std::string& name : tempDirs) {
+        if ((name != session) && (ledgers.find(name) == ledgers.end())) {
+            if (!removeTree(config.root + "/tmp/" + name, stopping)) {
+                return;
+            }
+        }
+    }
+}
+
+void
+CacheDiskTier::Imp::reclaimDeadBuilds()
+{
+    const std::set<std::string> live = liveBuildsOf(readLedgers());
+    const std::uint64_t now = CacheEviction::nowNs();
+
+    for (const std::string& build : buildNames()) {
+        if (stopping.load()) {
+            return;
+        }
+        if (live.count(build) != 0) {
+            continue;
+        }
+        const std::uint64_t lastLive = buildLastLiveNs(build);
+        // 0 is a stamp a peer has just moved away.
+        if ((lastLive == 0) || (now <= lastLive) || (now - lastLive < kDeadBuildAgeNs)) {
+            continue;
+        }
+        // Whoever renames it deletes it. A session of this build starting right now loses only
+        // cached files, and its next write makes the directories it needs.
+        const std::string moved = tmpDir + "/reclaimed-" + std::to_string(reclaimCounter.fetch_add(1));
+        if (::rename((config.root + '/' + build).c_str(), moved.c_str()) == 0) {
+            removeTree(moved, stopping);
+        }
+    }
 }
 
 void
@@ -1339,6 +1722,33 @@ CacheDiskTier::Imp::refreshBudget(const std::map<std::string, LedgerRecord>& led
 }
 
 void
+CacheDiskTier::Imp::sampleFile(const std::string& path,
+                               const std::string& name,
+                               std::uint64_t base,
+                               int deadRank,
+                               std::vector<EvictionSample>* sample) const
+{
+    ScopedFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC));
+    struct stat st;
+    StatsBlock block;
+
+    if ((fd.get() < 0) || (::fstat(fd.get(), &st) != 0)) {
+        return;
+    }
+    EvictionSample sampled;
+    sampled.path = path;
+    sampled.name = name;
+    sampled.base = base;
+    sampled.bytes = (std::uint64_t)st.st_size;
+    if (preadFully(fd.get(), &block, sizeof(block), kHeaderBytes)) {
+        sanitizeStats(block, &sampled.stats);
+    }
+    sampled.deadRank = deadRank;
+    sampled.score = 0.;
+    sample->push_back(std::move(sampled));
+}
+
+void
 CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers)
 {
     // EWOULDBLOCK means a peer is at it. Any other error means the mount has no flock, which costs
@@ -1348,42 +1758,40 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
     }
     ScopedUnlock unlock(evictFd);
 
-    struct Sampled {
-        std::string path;
-        std::string name;
-        std::uint64_t base;
-        std::uint64_t bytes;
-        CacheDiskStats stats;
-        bool deadBuild;
-        double score;
-    };
-
     const std::uint64_t now = CacheEviction::nowNs();
-    std::set<std::string> liveBuilds;
-    liveBuilds.insert(config.buildId);
-    for (const auto& ledger : ledgers) {
-        const std::uint64_t beat = ledger.second.heartbeatNs;
-        if ((now < beat) || (now - beat < kHeartbeatStaleNs)) {
-            liveBuilds.insert(ledger.second.build);
-        }
-    }
+    const std::set<std::string> liveBuilds = liveBuildsOf(ledgers);
 
+    // Dead builds first, the one longest out of use before the others.
+    std::vector<std::pair<std::uint64_t, std::string>> deadBuilds;
     std::vector<std::string> builds;
-    for (const std::string& build : listDirectory(config.root)) {
-        if ((build != "sessions") && (build != "tmp") && (build != "evict.lock")) {
+    for (const std::string& build : buildNames()) {
+        if (liveBuilds.count(build) == 0) {
+            deadBuilds.push_back(std::make_pair(buildLastLiveNs(build), build));
+        } else {
             builds.push_back(build);
         }
     }
-    std::stable_partition(builds.begin(), builds.end(), [&liveBuilds](const std::string& build) {
-        return liveBuilds.count(build) == 0;
-    });
+    std::sort(deadBuilds.begin(), deadBuilds.end());
+    const int deadCount = (int)deadBuilds.size();
+    {
+        std::vector<std::string> ordered;
+        ordered.reserve(deadBuilds.size() + builds.size());
+        for (const auto& dead : deadBuilds) {
+            ordered.push_back(dead.second);
+        }
+        ordered.insert(ordered.end(), builds.begin(), builds.end());
+        builds.swap(ordered);
+    }
 
     std::random_device entropy;
     std::mt19937 random(entropy());
-    std::vector<Sampled> sample;
+    std::vector<EvictionSample> sample;
     std::size_t deadSampled = 0;
-    for (const std::string& build : builds) {
-        const bool deadBuild = liveBuilds.count(build) == 0;
+    for (std::size_t buildIndex = 0; buildIndex < builds.size(); ++buildIndex) {
+        const std::string& build = builds[buildIndex];
+        const bool deadBuild = (int)buildIndex < deadCount;
+        const int rank = deadBuild ? (int)buildIndex : deadCount;
+        const std::size_t sampledBefore = sample.size();
         // Files of dead builds go first, so sampling live ones would only delay the pass.
         if (!deadBuild && (deadSampled >= CacheEviction::kBatch)) {
             break;
@@ -1402,25 +1810,39 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
                 if (!isEntryName(name) || !parseHex(name.c_str(), &base)) {
                     continue;
                 }
-                const std::string path = shardPath + '/' + name;
-                ScopedFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC));
-                struct stat st;
-                StatsBlock block;
-                if ((fd.get() < 0) || (::fstat(fd.get(), &st) != 0) || !preadFully(fd.get(), &block, sizeof(block), kHeaderBytes)) {
-                    continue;
+                sampleFile(shardPath + '/' + name, name, base, rank, &sample);
+            }
+        }
+        bool walkedEverything = sample.size() < CacheEviction::kSample;
+
+        // A pin protects files from its own build's eviction, and no session of a dead build is left
+        // to want them.
+        if (deadBuild && (sample.size() < CacheEviction::kSample)) {
+            std::error_code error;
+            fs::recursive_directory_iterator it(config.root + '/' + build + "/pins", fs::directory_options::skip_permission_denied, error);
+            const fs::recursive_directory_iterator end;
+            while (!error && (it != end) && (sample.size() < CacheEviction::kSample)) {
+                if (stopping.load()) {
+                    return;
                 }
-                Sampled sampled;
-                sampled.path = path;
-                sampled.name = name;
-                sampled.base = base;
-                sampled.bytes = (std::uint64_t)st.st_size;
-                sanitizeStats(block, &sampled.stats);
-                sampled.deadBuild = deadBuild;
-                sampled.score = 0.;
-                sample.push_back(std::move(sampled));
-                if (deadBuild) {
-                    ++deadSampled;
+                std::error_code statError;
+                if (it->is_regular_file(statError) && !statError) {
+                    const std::string name = it->path().filename().string();
+                    std::uint64_t base = 0;
+                    if (!isEntryName(name) || !parseHex(name.c_str(), &base)) {
+                        base = 0;
+                    }
+                    sampleFile(it->path().string(), name, base, rank, &sample);
                 }
+                it.increment(error);
+            }
+            walkedEverything = walkedEverything && (sample.size() < CacheEviction::kSample);
+        }
+        if (deadBuild) {
+            deadSampled += sample.size() - sampledBefore;
+            if (walkedEverything && (sample.size() == sampledBefore)) {
+                // Nothing left to evict, so nothing is left of this build but its directories.
+                removeTree(config.root + '/' + build, stopping);
             }
         }
         if (sample.size() >= CacheEviction::kSample) {
@@ -1431,7 +1853,7 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
     {
         const std::uint64_t retentionNow = CacheRetention::nowNs();
         std::lock_guard<std::mutex> lock(knownMutex);
-        for (Sampled& s : sample) {
+        for (EvictionSample& s : sample) {
             double priority = s.stats.priority > 0.f ? s.stats.priority : CacheEviction::kNeutralPriority;
             const auto found = known.find(s.name);
             if (found != known.end()) {
@@ -1445,14 +1867,14 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
         }
     }
 
-    const auto order = [](const Sampled& a, const Sampled& b) {
-        return a.deadBuild != b.deadBuild ? a.deadBuild : a.score < b.score;
+    const auto order = [](const EvictionSample& a, const EvictionSample& b) {
+        return a.deadRank != b.deadRank ? a.deadRank < b.deadRank : a.score < b.score;
     };
     if (sample.size() > CacheEviction::kBatch) {
         std::nth_element(sample.begin(), sample.begin() + CacheEviction::kBatch, sample.end(), order);
         sample.resize(CacheEviction::kBatch);
     }
-    for (const Sampled& s : sample) {
+    for (const EvictionSample& s : sample) {
         // ENOENT is a peer having evicted it first, which is what this was about to do.
         if (::unlink(s.path.c_str()) == 0) {
             ledgerDelta.fetch_sub((std::int64_t)s.bytes);
@@ -1507,7 +1929,9 @@ CacheDiskTier::Imp::offerPublishCandidates()
 void
 CacheDiskTier::Imp::tick()
 {
+    ensureRegistered();
     writeLedger();
+    touchBuildStamp(false);
 
     const std::map<std::string, LedgerRecord> ledgers = readLedgers();
 
@@ -1543,16 +1967,33 @@ CacheDiskTier::open(const Config& config)
     imp.tmpDir = config.root + "/tmp/" + imp.session;
     imp.ledgerPath = imp.sessionsDir + '/' + imp.session;
 
+    // The ledger comes before the temp directory: a directory no ledger names is a reaper's leftover.
     std::error_code error;
-    for (const std::string& dir : { imp.autoDir, imp.sessionsDir, imp.tmpDir }) {
-        fs::create_directories(dir, error);
-        if (error) {
-            return CacheDiskTierPtr();
-        }
+    fs::create_directories(imp.sessionsDir, error);
+    if (error) {
+        return CacheDiskTierPtr();
     }
     imp.ledgerFd = ::open(imp.ledgerPath.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0666);
     if (imp.ledgerFd < 0) {
         return CacheDiskTierPtr();
+    }
+    const auto abandon = [&imp]() {
+        ::close(imp.ledgerFd);
+        imp.ledgerFd = -1;
+        (void)::unlink(imp.ledgerPath.c_str());
+        std::error_code ignored;
+        fs::remove_all(imp.tmpDir, ignored);
+
+        return CacheDiskTierPtr();
+    };
+    for (const std::string& dir : { imp.autoDir, imp.tmpDir }) {
+        fs::create_directories(dir, error);
+        if (error) {
+            return abandon();
+        }
+    }
+    if ((config.root == config.renameSelfTestFailsAt) || !renameBehavesAtomically(imp.tmpDir, imp.autoDir, imp.session)) {
+        return abandon();
     }
     imp.evictFd = ::open((config.root + "/evict.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
     imp.networkMount = isNetworkFilesystem(config.root);
@@ -1565,7 +2006,29 @@ CacheDiskTier::open(const Config& config)
     }
 
     imp.writeLedger();
+    imp.touchBuildStamp(true);
     imp.refreshBudget(imp.readLedgers());
+
+    return tier;
+}
+
+CacheDiskTierPtr
+CacheDiskTier::openWithFallback(const Config& config,
+                                const std::string& fallbackRoot,
+                                std::string* warning)
+{
+    CacheDiskTierPtr tier = open(config);
+
+    if (tier) {
+        return tier;
+    }
+    if (fallbackRoot != config.root) {
+        Config fallback = config;
+        fallback.root = fallbackRoot;
+        tier = open(fallback);
+    }
+    *warning = tier ? "Disk tier: cannot use " + config.root + ", using " + fallbackRoot
+                    : "Disk tier: cannot use " + config.root + ", caching in RAM only";
 
     return tier;
 }
@@ -1645,6 +2108,8 @@ CacheDiskTier::shutdown()
         imp.publishQueue.clear();
         imp.publishing.store(0);
     }
+    // The ledger stays for a peer to claim, as after a crash, so only one path has to work.
+    imp.closing = true;
     imp.writeLedger();
     imp.storage = NULL;
     imp.host = NULL;
@@ -1657,8 +2122,12 @@ CacheDiskTier::shutdown()
         imp.evictFd = -1;
     }
 
-    std::error_code ignored;
-    fs::remove_all(imp.tmpDir, ignored);
+    // A cleared or reclaimed tree can take minutes to unlink, so it waits for a peer rather than
+    // holding up the exit.
+    for (const std::string& name : listDirectory(imp.tmpDir)) {
+        (void)::unlink((imp.tmpDir + '/' + name).c_str());
+    }
+    (void)::rmdir(imp.tmpDir.c_str());
 } // CacheDiskTier::shutdown
 
 std::size_t
@@ -1816,6 +2285,12 @@ CacheDiskTier::retractFiles(const CacheDiskIdentity& identity)
 }
 
 void
+CacheDiskTier::cancelWrites()
+{
+    _imp->cancelEverything();
+}
+
+void
 CacheDiskTier::clearAuto()
 {
     Imp& imp = *_imp;
@@ -1849,6 +2324,11 @@ CacheDiskTier::probe(const CacheDiskIdentity& identity,
                      std::vector<CacheDiskFileInfo>* candidates)
 {
     Imp& imp = *_imp;
+
+    if (identity.salted) {
+        return false;
+    }
+
     const std::vector<std::string> names = imp.namesFor(identity.base, identity.variant);
 
     if (names.empty()) {
@@ -2011,11 +2491,20 @@ CacheDiskTier::maintainNow(bool scan)
     std::lock_guard<std::mutex> lock(imp.maintenanceMutex);
 
     if (scan) {
+        imp.ensureRegistered();
         imp.writeLedger();
+        imp.reapDeadSessions();
+        imp.reclaimDeadBuilds();
         imp.removeCleared();
         imp.scanOnce();
     }
     imp.tick();
+}
+
+bool
+CacheDiskTier::isNetworkMount() const
+{
+    return _imp->networkMount;
 }
 
 std::uint64_t

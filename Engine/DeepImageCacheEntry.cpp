@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "Engine/CacheDiskTier.h"
+#include "Engine/ContentHasher.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -112,7 +113,10 @@ DeepImageCacheEntry::diskIdentityOfKey(const DeepImageKey& key)
     CacheDiskByteWriter variant;
     variant.put<std::uint32_t>(key._mipmapLevel);
 
-    return CacheDiskTier::makeIdentity(eCacheDiskPayloadDeep, base.bytes(), variant.bytes());
+    CacheDiskIdentity identity = CacheDiskTier::makeIdentity(eCacheDiskPayloadDeep, base.bytes(), variant.bytes());
+    identity.salted = ContentHasher::isSalted(key._nodeHashKey);
+
+    return identity;
 }
 
 std::string

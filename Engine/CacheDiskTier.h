@@ -53,6 +53,8 @@ struct CacheDiskIdentity {
     std::uint64_t base = 0;
     std::uint64_t variant = 0;
     std::uint64_t paramsHash = 0;
+    // The key's hash holds the session salt, so no file can be this entry's.
+    bool salted = false;
 };
 
 // An entry as the writer is about to store it. Taken before the payload is copied, so that a pixel
@@ -202,10 +204,22 @@ public:
         int publishIntervalMs = 1000;
         // Off, budget and eviction advance only through maintainNow().
         bool backgroundMaintenance = true;
+        // How long a session on another host may leave its heartbeat unchanged before it counts as
+        // dead.
+        int heartbeatStaleMs = 60000;
+        // The rename self-test fails at this root, which is the only way to reach the fallback on a
+        // filesystem that renames correctly.
+        std::string renameSelfTestFailsAt;
     };
 
-    // Null if the location cannot be created.
+    // Null if the location cannot be created or fails the rename self-test.
     static std::shared_ptr<CacheDiskTier> open(const Config& config);
+
+    // The tier at config.root, or at fallbackRoot if that is unusable, or null for RAM only. Fills
+    // warning with the one thing to tell the user, or leaves it empty if config.root worked.
+    static std::shared_ptr<CacheDiskTier> openWithFallback(const Config& config,
+                                                           const std::string& fallbackRoot,
+                                                           std::string* warning);
 
     virtual ~CacheDiskTier();
 
@@ -238,6 +252,8 @@ public:
     // Unlinks every params variation of a key, whether or not this session wrote or knows them.
     void retractFiles(const CacheDiskIdentity& identity);
     void clearAuto();
+    // Drops what is queued and abandons what is being written, and leaves every file in place.
+    void cancelWrites();
 
     // Lists the shard, then reads and verifies the candidate headers, largest result first. The
     // key and, if given, the params must match exactly. Returns false on a miss.
@@ -296,6 +312,8 @@ public:
     std::uint64_t publishedFiles() const;
     double writeBytesPerSecond() const;
     std::string sessionName() const;
+    // A network mount loses only the speed-ups that need a local filesystem.
+    bool isNetworkMount() const;
 
     static std::uint64_t hashBytes(const void* data, std::size_t bytes);
     // Variant bytes are what several entries of one output differ by: level, layer and depth. The

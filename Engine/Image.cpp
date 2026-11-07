@@ -34,6 +34,7 @@
 #include <QDebug>
 
 #include "Engine/CacheDiskTier.h"
+#include "Engine/ContentHasher.h"
 
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
@@ -816,7 +817,10 @@ Image::diskIdentityOfKey(const ImageKey& key)
     variant.putText(key._layer);
     variant.put<std::int32_t>(key._bitDepth);
 
-    return CacheDiskTier::makeIdentity(eCacheDiskPayloadImage, base.bytes(), variant.bytes());
+    CacheDiskIdentity identity = CacheDiskTier::makeIdentity(eCacheDiskPayloadImage, base.bytes(), variant.bytes());
+    identity.salted = ContentHasher::isSalted(key._nodeHashKey);
+
+    return identity;
 }
 
 std::string

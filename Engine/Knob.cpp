@@ -7283,7 +7283,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     h.appendU64(own);
     h.appendBool(isVolatile);
     if (isVolatile) {
-        h.appendU64(ContentHasher::sessionSalt());
+        h.appendSessionSalt();
     }
     for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
         KnobIPtr dep = it->first.lock();
@@ -7316,7 +7316,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         const U64 revision = source->getMetadataRevision();
         h.appendU64(revision);
         if (revision != 0) {
-            h.appendU64(ContentHasher::sessionSalt());
+            h.appendSessionSalt();
         }
         if (source != holderNode) {
             h.appendU64(source->getHashValue());
@@ -8128,13 +8128,24 @@ KnobHelper::getMemoizedValueContext(RenderContextReadSetConstPtr* reads,
             }
             if (contentHash) {
                 *contentHash = _imp->valueContextMemoContentHash;
+                if (ContentHasher::isSalted(*contentHash)) {
+                    ContentHasher::noteSalted();
+                }
             }
 
             return;
         }
     }
     const RenderContextReadSetConstPtr computedReads = std::make_shared<const RenderContextReadSet>(getValueContextReads());
-    const U64 computedHash = getContentHash();
+    U64 computedHash;
+    {
+        ContentHasher::SaltScope salt;
+        computedHash = getContentHash();
+        computedHash = ContentHasher::withSaltFlag(computedHash, salt.salted());
+    }
+    if (ContentHasher::isSalted(computedHash)) {
+        ContentHasher::noteSalted();
+    }
     {
         QMutexLocker k(&_imp->valueContextMemoMutex);
         _imp->valueContextMemoGeneration = generation;

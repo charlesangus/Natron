@@ -359,13 +359,28 @@ public:
 
     /**
      * @brief Identifies the code that renders this plug-in: for OpenFX ofxBinaryStamp() of its
-     * binary, otherwise the Natron version and commit and the running
-     * executable's modification time and size. A plug-in whose output depends on state outside
+     * binary, otherwise the Natron version and commit and runningExecutablesStamp(). A plug-in whose output depends on state outside
      * the project (system fonts, files in the home directory) also gets the session salt.
      * Computed once, on first call, so a binary replaced while Natron runs keeps its first
      * stamp, matching the already loaded code. Never 0.
      **/
     U64 getBinaryContentStamp() const;
+
+    /**
+     * @brief The modification times and sizes of Natron and NatronRenderer when both sit beside the
+     * running executable, whichever of them that is, and otherwise of the running executable alone.
+     * Sets stamped to false if a file could not be read, when the value identifies nothing.
+     * runningStatPath is what to read for the running executable, which may no longer exist at
+     * runningPath.
+     **/
+    static U64 executablesStamp(const std::string& runningPath,
+                                const std::string& runningStatPath,
+                                bool* stamped);
+
+    /**
+     * @brief executablesStamp() of this process, computed once.
+     **/
+    static U64 runningExecutablesStamp(bool* stamped);
 
     /**
      * @brief Stamp of the OpenFX binary at binaryPath: its file name, modification time and

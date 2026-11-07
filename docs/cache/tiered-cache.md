@@ -478,9 +478,10 @@ space and the smallest view wins.
 ### Layout
 
 ```
-<tier>/sessions/<host>-<boot>-<pid>-<start>        one writer: build, signed byte delta, heartbeat
+<tier>/sessions/<host>-<boot>-<pid>-<start>        one writer: build, signed byte delta, heartbeat, closed
 <tier>/tmp/<session>/
 <tier>/evict.lock                                  try-lock, optimisation only
+<tier>/<build>/lastlive                            mtime: when a session of this build last ran
 <tier>/<build>/auto/<xxx>/<base>-<variant>-<params>.ntc
 <tier>/<build>/pins/<cacheID>/<base>-<variant>-<params>.ntc
 ```
@@ -504,12 +505,13 @@ Each file holds, in order:
 
 Deep payloads are not flat: counts, offsets, then a shared sample vector (`Engine/DeepImage.h:108-109`, `:168`), so each
 payload type provides its own write and read, in those three sections. M300.P1.T2's new key fields and the deep key and
-params need serializers; `Engine/CacheSerialization.h:83` iterates only what `SerializedEntry` knows, which M300.P3.T2
-extends.
+params need serializers, which live in the file header. `Engine/CacheSerialization.h:83` is not involved: the tier has no
+index for it to extend, and it stays with the viewer cache and DiskCache, which restore through it as before.
 
 The name is not an identity. `Hash64` is CRC-64, so two keys can name the same file. Every read compares the full key and
-params in the header with the requested ones and treats a difference as a miss. A 64-bit node-hash collision remains
-possible, at about 2×10⁻⁹ with 300,000 entries (computed from the birthday bound), as it is in RAM today.
+params in the header with the requested ones and treats a difference as a miss. A node-hash collision remains
+possible, as it is in RAM today. The top bit of a node hash carries the salted flag ([Builds](#builds)), which leaves 63
+bits, and about 5×10⁻⁹ with 300,000 entries (computed from the birthday bound).
 
 ### Writing
 
@@ -608,7 +610,8 @@ estimate, to be checked in M300.P3.T4 with four writers).
 
 Past the mark, a session samples about 1024 files and unlinks the lowest 64 by the note's score
 ([Score](#score-and-high-water-marks)), using the persisted stats. A process substitutes the live priority for the
-entries it knows. Files of builds with no live session are taken first. `evict.lock` is tried with `flock(LOCK_NB)` before
+entries it knows. Files of builds with no live session are taken first, the build with the oldest `lastlive` before the
+next, and a dead build's pins are sampled with its automatic files. `evict.lock` is tried with `flock(LOCK_NB)` before
 sampling, and a session that does not get it skips the pass; it is only there to avoid duplicate work. Two evictors at
 once are harmless, and `ENOENT` on an unlink is fine.
 
@@ -617,9 +620,21 @@ once are harmless, and `ENOENT` on an unlink is fine.
 Only `tmp/` ever holds partial data, so a crash leaves nothing that a reader can mistake for an entry.
 
 Every session writes its ledger under `sessions/` and refreshes its heartbeat with the budget. Any session reaps a dead
-session's `tmp/<session>/` and ledger. Same host: dead means a different boot ID, or no process of that PID with that start
-time. Another host: dead means a stale heartbeat. The reaper first `rename`s the ledger to claim it, so two reapers do not
-both add its delta.
+session's `tmp/<session>/` and ledger, from the scanner thread. Same host: dead means a different boot ID, or no process of
+that PID with that start time. Another host: dead means a heartbeat that has not changed for `heartbeatStaleMs`, measured
+on the reaper's own clock since two hosts' clocks need not agree. The reaper first `rename`s the ledger into its own
+`tmp/<session>/` to claim it, so two reapers do not both add its delta.
+
+A clean exit writes `closed` in its ledger, which makes it dead at once, and removes only what lies directly in its temp
+directory, so that closing the application never waits on a large tree: a peer, or the next session, finishes the job.
+`kill -9` leaves the ledger and temp directory for the same reaping. A session on the same hostname in another PID
+namespace can look dead to this one; if it is reaped by mistake, its next tick registers it again, and its writes lost
+only their temp files.
+
+At start, on the main thread, a session stats the two executables and opens the tier: at most four `mkdir`s, the ledger,
+the self-test (a few small file operations, no `fsync`), `evict.lock`, `statfs`, the build stamp, one listing of `sessions/`
+and `statvfs`. There is no restore scan. Reaping, reclaiming and the scan run on the scanner thread at idle priority, and
+the heartbeat and eviction on the maintenance thread.
 
 A lock that fails (`flock` on some network mounts) loses an optimisation and never access.
 
@@ -629,23 +644,31 @@ The identity is the hash of `NATRON_VERSION_STRING`, `GIT_COMMIT` and the execut
 and it names the build directory. The key keeps hashing the binary as well (the user's decision), so a new build would miss anyway; the directory is what lets a dead build's files be found and reclaimed as a unit.
 
 - That stamp hashes `/proc/self/exe`, and Natron and NatronRenderer are separate executables, so the stamp must cover both
-  siblings, sorted by name, or the same build would key differently in the two. If the AppImage does not ship both in one
-  directory, it falls back to the running executable's own stamp; M300.P3.T4 confirms what the AppImage ships.
+  siblings, sorted by name, or the same build would key differently in the two. The AppImage ships both in `bin/`, where
+  `tools/release/stage-bundle.sh` renames each ELF to `<name>.bin` and leaves a shell shim under the plain name, so the
+  stamp reads the `.bin` files and never the shims. Without both side by side, as in a build tree (`build/App/`,
+  `build/Renderer/`), it falls back to the running executable's own stamp, and the two executables then have separate
+  identities. M300.P3.T4 runs the staged pair on one project and compares their hashes.
 - When `statx` fails, the stamp falls back to a per-process salt (`Engine/Plugin.cpp:74`, hole K8). Salted hashes
-  (`Engine/Plugin.cpp:74`, `:369`; `Engine/Knob.cpp:7286`, `:7319`) and everything downstream are flagged and never
-  published, so such a session reads but fills nothing. K8 stays with M260 - Cache Invalidation Follow-ups.
+  (`Plugin::getBinaryContentStamp`; the two sites in `Engine/Knob.cpp` that call `ContentHasher::appendSessionSalt`) and
+  everything downstream carry a flag in the top bit of the hash, which travels with the value through memos and keys, and
+  are never published. A missed flag only wastes disk, since a salted key never hits. A session whose own stamp is salted
+  is `unstamped`, with `Config.publish` off, so it reads but fills nothing. K8 stays with M260 - Cache Invalidation
+  Follow-ups.
 - An OFX plug-in rebuild changes only its own nodes' keys (`Plugin::ofxBinaryStamp`). Those entries age out.
 
 Each identity has its own directory, so builds coexist and nobody wipes at start. A new build starts cold and touches no
 other build's files. A build with no live session is dead after 7 days (the user's choice), or earlier under budget
-pressure, oldest first, pins included (also the user's choice). A background `NatronRenderer` started from the GUI
+pressure, oldest first, pins included (also the user's choice). Age is the mtime of `<build>/lastlive`, which each live
+session touches about once a minute; a directory without that file is not a build and is never touched. A background `NatronRenderer` started from the GUI
 re-executes the same binary, so it has the same identity and shares the tier, DiskCache pins included.
 
 ### Fallback
 
 At start the tier runs `statfs` and a `rename` self-test in `tmp/`. A network mount loses only the speed-ups: listings stay
 cached, and pins are read into RAM instead of mapped. If the self-test fails (a filesystem whose `rename` is not atomic or
-not permitted), every session uses the local default location, and if that fails too, RAM only, with one warning. The
+not permitted), every session uses the local default location, and if that fails too, RAM only, with one warning
+(`CacheDiskTier::openWithFallback`). A failed location keeps none of the session's files. The
 decision is the same in every session because it follows from the same test.
 
 ### What each session sees
@@ -655,7 +678,8 @@ decision is the same in every session because it follows from the same test.
 | Different projects | No shared hits except identical upstream. They share the budget by score, both persist, and closing one takes nothing from the other |
 | Same project | Hits on matching hashes, seen after publish-behind plus at most 1 s. Concurrent renders duplicate work, and the last larger publish wins |
 | A node is deleted | Its automatic files stay and age out. Its pins follow [Pins](#pins-and-holds) |
-| Clear caches | This build's automatic files and this session's pins go. Peers re-render and re-pin |
+| Clear caches (the user's command) | This build's automatic files and this session's pins go. Peers re-render and re-pin |
+| The project's views change | RAM only: `AppManager::clearAllCachesInRam`. The project digest holds the view names, so the keys move and no peer loses a file |
 
 ### Assumed costs
 

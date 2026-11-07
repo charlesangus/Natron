@@ -1231,6 +1231,18 @@ public:
     }
 
     /**
+     * @brief Drops what RAM holds and any write under way, and leaves the files of the disk tier
+     * for the sessions that can still use them.
+     **/
+    void clearInRam()
+    {
+        if (_diskTier) {
+            _diskTier->cancelWrites();
+        }
+        clearInMemoryPortion();
+    }
+
+    /**
      * @brief Clears all entries on disk that are not actively being used somewhere else in the application.
      * Any entry being used by the application will be left in the cache.
      **/

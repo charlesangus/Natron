@@ -133,6 +133,7 @@
 #include "Engine/OfxHost.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OneViewNode.h"
+#include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
@@ -1108,8 +1109,12 @@ openNodeCacheDiskTier(const Settings& settings)
         return CacheDiskTierPtr();
     }
 
-    // Files of another build are not read, so every build needs only tell itself apart.
-    const std::string build = std::string(NATRON_VERSION_STRING) + GIT_COMMIT;
+    // Files of another build are not read, so every build needs only tell itself apart. Executables
+    // that cannot be stamped share a directory rather than leave a new one behind every launch, and
+    // since nothing then proves what wrote its files, such a session adds none.
+    bool stamped = false;
+    const U64 stamp = Plugin::runningExecutablesStamp(&stamped);
+    const std::string build = std::string(NATRON_VERSION_STRING) + GIT_COMMIT + (stamped ? std::to_string(stamp) : std::string("unstamped"));
     char buildId[17];
     std::snprintf(buildId, sizeof(buildId), "%016llx",
                   (unsigned long long)CacheDiskTier::hashBytes(build.data(), build.size()));
@@ -1118,18 +1123,12 @@ openNodeCacheDiskTier(const Settings& settings)
     config.root = settings.getDiskTierLocation();
     config.buildId = buildId;
     config.sizeBytes = sizeBytes;
+    config.publish = stamped;
 
-    CacheDiskTierPtr tier = CacheDiskTier::open(config);
-    if (!tier) {
-        const std::string fallback = Settings::defaultDiskTierLocation();
-        qWarning("Disk tier: cannot use %s", config.root.c_str());
-        if (fallback != config.root) {
-            config.root = fallback;
-            tier = CacheDiskTier::open(config);
-        }
-    }
-    if (!tier) {
-        qWarning("Disk tier: running without one, caching in RAM only");
+    std::string warning;
+    CacheDiskTierPtr tier = CacheDiskTier::openWithFallback(config, Settings::defaultDiskTierLocation(), &warning);
+    if (!warning.empty()) {
+        qWarning("%s", warning.c_str());
     }
 
     return tier;
@@ -1163,9 +1162,16 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         settings.setValue(QString::fromUtf8(kNatronCacheVersionSettingsKey), NATRON_CACHE_VERSION);
     }
 
-    if (oldCacheVersion != NATRON_CACHE_VERSION || cl.isCacheClearRequestedOnLaunch()) {
+    if (cl.isCacheClearRequestedOnLaunch()) {
         setLoadingStatus( tr("Clearing the image cache...") );
         wipeAndCreateDiskCacheStructure();
+    } else if (oldCacheVersion != NATRON_CACHE_VERSION) {
+        // Not the node cache's disk tier: peers may be using its files right now, and every build
+        // already keeps to its own.
+        setLoadingStatus(tr("Clearing the image cache..."));
+        abortAnyProcessing();
+        clearDiskCache();
+        rebuildDiskCacheStructure();
     } else {
         setLoadingStatus( tr("Restoring the image cache...") );
         _imp->restoreCaches();
@@ -1484,6 +1490,18 @@ AppManager::freeGpuMemory()
 void
 AppManager::clearAllCaches()
 {
+    clearCaches(false);
+}
+
+void
+AppManager::clearAllCachesInRam()
+{
+    clearCaches(true);
+}
+
+void
+AppManager::clearCaches(bool inRamOnly)
+{
     AppInstanceVec copy;
     {
         QMutexLocker k(&_imp->_appInstancesMutex);
@@ -1506,8 +1524,24 @@ AppManager::clearAllCaches()
         _imp->_viewerCache->waitForDeleterThread();
     }
 
-    clearDiskCache();
-    clearNodeCache();
+    if (inRamOnly) {
+        clearLastRenderedTextures();
+        if (_imp->_viewerCache) {
+            _imp->_viewerCache->clearInMemoryPortion();
+        }
+        if (_imp->_diskCache) {
+            _imp->_diskCache->clearInMemoryPortion();
+        }
+        for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
+            (*it)->clearAllLastRenderedImages();
+        }
+        if (_imp->_nodeCache) {
+            _imp->_nodeCache->clearInRam();
+        }
+    } else {
+        clearDiskCache();
+        clearNodeCache();
+    }
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
@@ -1523,7 +1557,9 @@ AppManager::clearAllCaches()
         (*it)->renderAllViewers(true);
     }
 
-    Project::clearAutoSavesDir();
+    if (!inRamOnly) {
+        Project::clearAutoSavesDir();
+    }
 }
 
 void
@@ -1535,7 +1571,12 @@ AppManager::wipeAndCreateDiskCacheStructure()
     abortAnyProcessing();
 
     clearAllCaches();
+    rebuildDiskCacheStructure();
+}
 
+void
+AppManager::rebuildDiskCacheStructure()
+{
     assert(_imp->_diskCache);
     _imp->cleanUpCacheDiskStructure( _imp->_diskCache->getCachePath(), false );
     assert(_imp->_viewerCache);

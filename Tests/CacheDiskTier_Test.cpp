@@ -30,7 +30,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <list>
 #include <memory>
 #include <string>
@@ -45,12 +49,16 @@
 #include <QtCore/QStringList>
 #include <QtCore/QTemporaryDir>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
 #include <gtest/gtest.h>
 
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/CacheTier.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/DeepImageKey.h"
@@ -59,6 +67,7 @@
 #include "Engine/ImageKey.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageParams.h"
+#include "Engine/Plugin.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -174,12 +183,15 @@ class Session {
 public:
     explicit Session(const QString& root,
                      const char* name,
-                     bool background = false)
+                     bool background = false,
+                     const char* build = kBuildId,
+                     int heartbeatStaleMs = 60000)
         : cache(name, 1, 64ULL * 1024 * 1024, 1.)
     {
         CacheDiskTier::Config config;
         config.root = root.toStdString();
-        config.buildId = kBuildId;
+        config.buildId = build;
+        config.heartbeatStaleMs = heartbeatStaleMs;
         config.sizeBytes = 256ULL * 1024 * 1024;
         config.idlePublisher = background;
         config.backgroundMaintenance = background;
@@ -661,4 +673,426 @@ TEST(CacheDiskTierTest, EvictionBringsTheTierUnderItsBudget)
     }
     EXPECT_GT(survivors, 0);
     EXPECT_LT(survivors, (int)kEntries);
+}
+
+namespace {
+
+bool
+writeFile(const std::string& path,
+          std::size_t bytes = 8192)
+{
+    std::error_code ignored;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ignored);
+    std::ofstream out(path, std::ios::binary);
+    out << std::string(bytes, 'x');
+
+    return bool(out);
+}
+
+bool
+exists(const std::string& path)
+{
+    struct stat st;
+
+    return ::lstat(path.c_str(), &st) == 0;
+}
+
+void
+ageByDays(const std::string& path,
+          int days)
+{
+    struct timespec times[2];
+
+    times[0].tv_sec = ::time(NULL) - days * 24 * 3600;
+    times[0].tv_nsec = 0;
+    times[1] = times[0];
+    ASSERT_EQ(0, ::utimensat(AT_FDCWD, path.c_str(), times, 0));
+}
+
+std::string
+entryFileName(U64 index)
+{
+    char name[64];
+    std::snprintf(name, sizeof(name), "%016llx-%016llx-%016llx.ntc", (unsigned long long)index, 0ULL, 0ULL);
+
+    return name;
+}
+
+// A build whose session ended days ago, with files as a real one leaves them.
+void
+plantDeadBuild(const std::string& root,
+               const std::string& build,
+               int ageDays,
+               int autoFiles,
+               int pinFiles)
+{
+    const std::string dir = root + '/' + build;
+
+    for (int i = 0; i < autoFiles; ++i) {
+        const std::string name = entryFileName(0x100 + i);
+        ASSERT_TRUE(writeFile(dir + "/auto/" + name.substr(0, 3) + '/' + name));
+    }
+    for (int i = 0; i < pinFiles; ++i) {
+        ASSERT_TRUE(writeFile(dir + "/pins/project/" + entryFileName(0x200 + i)));
+    }
+    ASSERT_TRUE(writeFile(dir + "/lastlive", 0));
+    ageByDays(dir + "/lastlive", ageDays);
+}
+
+std::vector<std::string>
+listNames(const std::string& path)
+{
+    std::vector<std::string> names;
+    std::error_code error;
+
+    for (std::filesystem::directory_iterator it(path, error), end; !error && (it != end); it.increment(error)) {
+        names.push_back(it->path().filename().string());
+    }
+
+    return names;
+}
+
+// This host's session name with a process that cannot exist, above the kernel's highest PID.
+std::string
+deadSessionNameLike(const std::string& live)
+{
+    const std::size_t startDash = live.rfind('-');
+    const std::size_t pidDash = live.rfind('-', startDash - 1);
+
+    return live.substr(0, pidDash) + "-4194305-1";
+}
+
+} // namespace
+
+TEST(CacheDiskTierPersistenceTest, ARestartHitsWhicheverSessionStartedFirst)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Session earlier(dir.path(), "CacheDiskTierPersistence_Earlier");
+    ASSERT_TRUE(earlier.tier != nullptr);
+    {
+        Session writer(dir.path(), "CacheDiskTierPersistence_Writer");
+        ASSERT_TRUE(writer.tier != nullptr);
+        ASSERT_TRUE(writer.createEntry(1, kExpensiveNs, 3.f) != nullptr);
+        writer.evictEverything();
+    }
+    EXPECT_TRUE(earlier.lookup(1) != nullptr);
+
+    Session later(dir.path(), "CacheDiskTierPersistence_Later");
+    ASSERT_TRUE(later.tier != nullptr);
+    later.tier->maintainNow(true);
+    earlier.tier->maintainNow(true);
+    EXPECT_TRUE(later.lookup(1) != nullptr);
+}
+
+TEST(CacheDiskTierPersistenceTest, TwoIdentitiesRunTogetherAndNeitherLosesFiles)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Session first(dir.path(), "CacheDiskTierPersistence_BuildA", false, "build-a");
+    Session second(dir.path(), "CacheDiskTierPersistence_BuildB", false, "build-b");
+    ASSERT_TRUE(first.tier != nullptr);
+    ASSERT_TRUE(second.tier != nullptr);
+
+    ASSERT_TRUE(first.createEntry(1, kExpensiveNs, 4.f) != nullptr);
+    first.evictEverything();
+    ASSERT_TRUE(second.createEntry(2, kExpensiveNs, 5.f) != nullptr);
+    second.evictEverything();
+
+    first.tier->maintainNow(true);
+    second.tier->maintainNow(true);
+
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(first.fileOf(1, &info));
+    EXPECT_FALSE(first.fileOf(2, &info));
+    EXPECT_TRUE(second.fileOf(2, &info));
+    EXPECT_FALSE(second.fileOf(1, &info));
+}
+
+TEST(CacheDiskTierPersistenceTest, ABuildNoSessionHasUsedForAWeekIsReclaimedWithItsPins)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    plantDeadBuild(root, "old-build", 8, 2, 1);
+    plantDeadBuild(root, "recent-build", 6, 2, 1);
+    ASSERT_TRUE(writeFile(root + "/not-a-build/keep.txt"));
+    ageByDays(root + "/not-a-build", 30);
+
+    Session session(dir.path(), "CacheDiskTierPersistence_Reclaim");
+    ASSERT_TRUE(session.tier != nullptr);
+    session.tier->maintainNow(true);
+
+    EXPECT_FALSE(exists(root + "/old-build"));
+    EXPECT_TRUE(exists(root + "/recent-build/pins/project/" + entryFileName(0x200)));
+    EXPECT_TRUE(exists(root + "/not-a-build/keep.txt"));
+}
+
+TEST(CacheDiskTierPersistenceTest, ALiveBuildIsNeverReclaimedHoweverOldItsStamp)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    Session peer(dir.path(), "CacheDiskTierPersistence_LivePeer", false, "live-build");
+    ASSERT_TRUE(peer.tier != nullptr);
+    ASSERT_TRUE(peer.createEntry(1, kExpensiveNs, 6.f) != nullptr);
+    peer.evictEverything();
+    ageByDays(root + "/live-build/lastlive", 30);
+
+    Session session(dir.path(), "CacheDiskTierPersistence_LiveWatcher");
+    ASSERT_TRUE(session.tier != nullptr);
+    session.tier->maintainNow(true);
+
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(peer.fileOf(1, &info));
+}
+
+TEST(CacheDiskTierPersistenceTest, PressureTakesTheOldestDeadBuildFirstPinsIncluded)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    plantDeadBuild(root, "older-build", 3, (int)CacheEviction::kBatch - 1, 1);
+    plantDeadBuild(root, "newer-build", 1, 1, 0);
+
+    Session session(dir.path(), "CacheDiskTierPersistence_Pressure");
+    ASSERT_TRUE(session.tier != nullptr);
+    ASSERT_TRUE(session.createEntry(1, kExpensiveNs, 7.f) != nullptr);
+    session.evictEverything();
+
+    session.tier->setSizeBytes(1);
+    session.tier->maintainNow(true);
+
+    EXPECT_FALSE(exists(root + "/older-build/pins/project/" + entryFileName(0x200)));
+    const std::string survivor = entryFileName(0x100);
+    EXPECT_FALSE(exists(root + "/older-build/auto/" + survivor.substr(0, 3) + '/' + survivor));
+    EXPECT_TRUE(exists(root + "/newer-build/auto/" + survivor.substr(0, 3) + '/' + survivor));
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(session.fileOf(1, &info));
+}
+
+TEST(CacheDiskTierPersistenceTest, ADeadSessionIsReapedOnceAndALiveOneIsLeftAlone)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    Session reaper(dir.path(), "CacheDiskTierPersistence_Reaper");
+    Session peer(dir.path(), "CacheDiskTierPersistence_ReapPeer");
+    ASSERT_TRUE(reaper.tier != nullptr);
+    ASSERT_TRUE(peer.tier != nullptr);
+
+    const std::string dead = deadSessionNameLike(peer.tier->sessionName());
+    ASSERT_TRUE(writeFile(root + "/sessions/" + dead, 0));
+    ASSERT_TRUE(writeFile(root + "/tmp/" + dead + "/partial"));
+
+    reaper.tier->maintainNow(true);
+    EXPECT_FALSE(exists(root + "/sessions/" + dead));
+    EXPECT_FALSE(exists(root + "/tmp/" + dead));
+    EXPECT_FALSE(exists(root + "/tmp/" + reaper.tier->sessionName() + "/claimed-" + dead));
+    EXPECT_TRUE(exists(root + "/sessions/" + peer.tier->sessionName()));
+    EXPECT_TRUE(exists(root + "/tmp/" + peer.tier->sessionName()));
+}
+
+TEST(CacheDiskTierPersistenceTest, ACleanExitLeavesItsLedgerForAPeerToClaim)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    std::string name;
+    {
+        Session ended(dir.path(), "CacheDiskTierPersistence_Ended");
+        ASSERT_TRUE(ended.tier != nullptr);
+        name = ended.tier->sessionName();
+    }
+    EXPECT_TRUE(exists(root + "/sessions/" + name));
+
+    Session session(dir.path(), "CacheDiskTierPersistence_Claimer");
+    ASSERT_TRUE(session.tier != nullptr);
+    session.tier->maintainNow(true);
+    EXPECT_FALSE(exists(root + "/sessions/" + name));
+}
+
+TEST(CacheDiskTierPersistenceTest, ASessionOnAnotherHostDiesWhenItsHeartbeatStops)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    Session session(dir.path(), "CacheDiskTierPersistence_Heartbeat", false, kBuildId, 10);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const std::string other = "some-other-host-0123456789abcdef-42-1000";
+    ASSERT_TRUE(writeFile(root + "/sessions/" + other, 0));
+    ASSERT_TRUE(writeFile(root + "/tmp/" + other + "/partial"));
+
+    session.tier->maintainNow(true);
+    EXPECT_TRUE(exists(root + "/tmp/" + other + "/partial"));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    session.tier->maintainNow(true);
+    EXPECT_FALSE(exists(root + "/sessions/" + other));
+    EXPECT_FALSE(exists(root + "/tmp/" + other));
+}
+
+TEST(CacheDiskTierPersistenceTest, ASessionReapedByMistakeRegistersAgainAndKeepsWriting)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    Session session(dir.path(), "CacheDiskTierPersistence_Mistaken");
+    ASSERT_TRUE(session.tier != nullptr);
+    const std::string name = session.tier->sessionName();
+
+    ASSERT_EQ(0, ::unlink((root + "/sessions/" + name).c_str()));
+    std::error_code ignored;
+    std::filesystem::remove_all(root + "/tmp/" + name, ignored);
+
+    session.tier->maintainNow(false);
+    EXPECT_TRUE(exists(root + "/sessions/" + name));
+    EXPECT_TRUE(exists(root + "/tmp/" + name));
+
+    ASSERT_TRUE(session.createEntry(1, kExpensiveNs, 8.f) != nullptr);
+    session.evictEverything();
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(session.fileOf(1, &info));
+    EXPECT_EQ(0U, session.tier->writeFailures());
+}
+
+TEST(CacheDiskTierPersistenceTest, ASaltedEntryIsNeverPublishedOrLookedFor)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Session session(dir.path(), "CacheDiskTierPersistence_Salted", true);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const U64 salted = ContentHasher::withSaltFlag(1, true);
+    const ImagePtr saltedImage = session.createEntry(salted, kExpensiveNs, 9.f);
+    ASSERT_TRUE(saltedImage != nullptr);
+    EXPECT_FALSE(session.tier->offerDemotion(saltedImage));
+    ASSERT_TRUE(session.createEntry(2, kExpensiveNs, 10.f) != nullptr);
+
+    const CacheDiskTierPtr tier = session.tier;
+    ASSERT_TRUE(waitFor([&tier]() { return tier->publishedFiles() >= 1; }));
+    EXPECT_TRUE(tier->waitIdle(30000));
+    EXPECT_EQ(1U, tier->publishedFiles());
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(session.fileOf(2, &info));
+    EXPECT_FALSE(session.fileOf(salted, &info));
+    EXPECT_TRUE(Image::diskIdentityOfKey(keyOf(salted)).salted);
+    EXPECT_FALSE(Image::diskIdentityOfKey(keyOf(2)).salted);
+}
+
+TEST(CacheDiskTierPersistenceTest, ASessionWithPublishOffReadsAndFillsNothing)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    {
+        Session writer(dir.path(), "CacheDiskTierPersistence_PublishWriter");
+        ASSERT_TRUE(writer.tier != nullptr);
+        ASSERT_TRUE(writer.createEntry(1, kExpensiveNs, 11.f) != nullptr);
+        writer.evictEverything();
+    }
+    CacheDiskTier::Config config;
+    config.root = dir.path().toStdString();
+    config.buildId = kBuildId;
+    config.sizeBytes = 256ULL * 1024 * 1024;
+    config.publish = false;
+    config.backgroundMaintenance = false;
+    const CacheDiskTierPtr reader = CacheDiskTier::open(config);
+    ASSERT_TRUE(reader != nullptr);
+    std::vector<CacheDiskFileInfo> candidates;
+    EXPECT_TRUE(reader->probe(Image::diskIdentityOfKey(keyOf(1)), NULL, &candidates));
+
+    Cache<Image> owner("CacheDiskTierPersistence_PublishOwner", 1, 64ULL * 1024 * 1024, 1.);
+    const ImagePtr image = std::make_shared<Image>(keyOf(2), paramsOf(kSide), &owner);
+    EXPECT_FALSE(reader->offerDemotion(image));
+}
+
+TEST(CacheDiskTierPersistenceTest, AFailedSelfTestFallsBackThenToRamOnlyWithOneWarning)
+{
+    QTemporaryDir dir;
+    QTemporaryDir fallback;
+    ASSERT_TRUE(dir.isValid());
+    ASSERT_TRUE(fallback.isValid());
+    const std::string root = dir.path().toStdString();
+
+    CacheDiskTier::Config config;
+    config.root = root;
+    config.buildId = kBuildId;
+    config.sizeBytes = 256ULL * 1024 * 1024;
+    config.backgroundMaintenance = false;
+    config.renameSelfTestFailsAt = root;
+
+    EXPECT_TRUE(CacheDiskTier::open(config) == nullptr);
+    EXPECT_TRUE(listNames(root + "/sessions").empty());
+
+    std::string warning;
+    const CacheDiskTierPtr moved = CacheDiskTier::openWithFallback(config, fallback.path().toStdString(), &warning);
+    ASSERT_TRUE(moved != nullptr);
+    EXPECT_NE(std::string::npos, warning.find(fallback.path().toStdString()));
+
+    warning.clear();
+    EXPECT_TRUE(CacheDiskTier::openWithFallback(config, root, &warning) == nullptr);
+    EXPECT_NE(std::string::npos, warning.find("RAM only"));
+
+    config.renameSelfTestFailsAt.clear();
+    warning.clear();
+    const CacheDiskTierPtr direct = CacheDiskTier::openWithFallback(config, fallback.path().toStdString(), &warning);
+    EXPECT_TRUE(direct != nullptr);
+    EXPECT_TRUE(warning.empty());
+}
+
+TEST(CacheDiskTierPersistenceTest, ClearingInRamLeavesEveryFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Session session(dir.path(), "CacheDiskTierPersistence_ClearInRam");
+    ASSERT_TRUE(session.tier != nullptr);
+    ASSERT_TRUE(session.createEntry(1, kExpensiveNs, 12.f) != nullptr);
+    session.evictEverything();
+    ASSERT_TRUE(session.createEntry(2, kExpensiveNs, 13.f) != nullptr);
+
+    session.cache.clearInRam();
+    EXPECT_EQ(0U, session.cache.getMemoryCacheSize());
+    CacheDiskFileInfo info;
+    EXPECT_TRUE(session.fileOf(1, &info));
+    EXPECT_TRUE(session.lookup(1) != nullptr);
+}
+
+TEST(CacheDiskTierPersistenceTest, BothExecutablesStampAlikeAndAShimDoesNotCount)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string bin = dir.path().toStdString();
+    ASSERT_TRUE(writeFile(bin + "/Natron", 10));
+    ASSERT_TRUE(writeFile(bin + "/Natron.bin", 1000));
+    ASSERT_TRUE(writeFile(bin + "/NatronRenderer", 10));
+    ASSERT_TRUE(writeFile(bin + "/NatronRenderer.bin", 2000));
+
+    bool stamped = false;
+    const U64 fromNatron = Plugin::executablesStamp(bin + "/Natron.bin", bin + "/Natron.bin", &stamped);
+    EXPECT_TRUE(stamped);
+    const U64 fromRenderer = Plugin::executablesStamp(bin + "/NatronRenderer.bin", bin + "/NatronRenderer.bin", &stamped);
+    EXPECT_TRUE(stamped);
+    EXPECT_EQ(fromNatron, fromRenderer);
+
+    ASSERT_TRUE(writeFile(bin + "/NatronRenderer", 20));
+    EXPECT_EQ(fromNatron, Plugin::executablesStamp(bin + "/Natron.bin", bin + "/Natron.bin", &stamped));
+
+    ASSERT_TRUE(writeFile(bin + "/NatronRenderer.bin", 3000));
+    EXPECT_NE(fromNatron, Plugin::executablesStamp(bin + "/Natron.bin", bin + "/Natron.bin", &stamped));
+}
+
+TEST(CacheDiskTierPersistenceTest, AnExecutableWithoutItsSiblingStampsItselfAndAMissingOneIsUnstamped)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string bin = dir.path().toStdString();
+    ASSERT_TRUE(writeFile(bin + "/Natron", 1000));
+
+    bool stamped = false;
+    Plugin::executablesStamp(bin + "/Natron", bin + "/Natron", &stamped);
+    EXPECT_TRUE(stamped);
+
+    Plugin::executablesStamp(bin + "/gone", bin + "/gone", &stamped);
+    EXPECT_FALSE(stamped);
 }

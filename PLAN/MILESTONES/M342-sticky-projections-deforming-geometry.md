@@ -90,6 +90,8 @@ Make a projection stick to animated geometry (user, 2026-11-05). M234 - Camera P
 
 ## Decisions
 
+- 2026-11-07 — Projections at one hold keep sharing a primvar, with a warning on a real clash (user, after Codex raised the overwrite): a prim whose values differ between two assigns at one hold, such as `Assign → Transform → Assign`, stays wrong on screen but warns. Per-projection primvars were rejected: about 12 MB per million points per projection and a Storm shader variant per name, on every multi-projection scene, for a rare graph shape.
+
 - 2026-11-05 — UsdSkel meshes stick, skinned at Frame Hold (user): rigged USD assets are a likely input, and they have no time-sampled points, so a points-only check would let them slide with no warning.
 - 2026-11-05 — Reference points are world space at the hold (user): deforming prims at different places each project correctly without waiting on M341 - Per-Placement Geometry Projection, and transforms after USDAssignMaterial carry the image along.
 - 2026-11-05 — No rest-source choice (user): the plate lines up with the camera at the hold, not with a modelled rest pose, so a rest primvar would usually misalign.

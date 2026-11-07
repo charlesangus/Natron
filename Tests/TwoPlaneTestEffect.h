@@ -134,6 +134,8 @@ public:
                                        std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
     {
         comps->push_back(ImageLayerDesc::getRGBAComponents());
+        // A two-channel plane maps to the closest accepted layout; without this one it becomes a four-channel image.
+        comps->push_back(ImageLayerDesc::getXYComponents());
     }
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL

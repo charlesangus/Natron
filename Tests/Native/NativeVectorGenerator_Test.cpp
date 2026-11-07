@@ -376,7 +376,8 @@ protected:
                         const ImageLayerDesc& layer)
     {
         std::list<ImageLayerDesc> layers;
-        node->getEffectInstance()->getAvailableLayers(3., ViewIdx(0), -1, &layers);
+        // getAvailableLayers() adds every project-registered layer, the motion ones included.
+        node->getEffectInstance()->getPresentLayers(3., ViewIdx(0), -1, &layers);
         for (const ImageLayerDesc& present : layers) {
             if (present.getLayerID() == layer.getLayerID()) {
                 return true;
@@ -659,8 +660,13 @@ TEST_F(NativeVectorGeneratorTest, SchedulerModesAgree)
     ASSERT_TRUE(renderNodePlanesInMode(node, 3., ViewIdx(0), 0, windowAt(0), layers, eRenderSchedulerModeTaskGraph, true, &taskGraph, &error)) << error;
     ASSERT_EQ(legacy.size(), layers.size());
     ASSERT_EQ(taskGraph.size(), layers.size());
-    for (std::size_t i = 0; i < legacy.size(); ++i) {
-        EXPECT_EQ(legacy[i].pixels, taskGraph[i].pixels) << legacy[i].layer.getLayerID();
+    // The task graph returns its planes in layer order, Legacy in the order of `layers`.
+    for (const RenderedPlane& expected : legacy) {
+        const std::vector<RenderedPlane>::const_iterator found = std::find_if(taskGraph.begin(), taskGraph.end(), [&](const RenderedPlane& rendered) {
+            return rendered.layer.getLayerID() == expected.layer.getLayerID();
+        });
+        ASSERT_NE(found, taskGraph.end()) << expected.layer.getLayerID();
+        EXPECT_EQ(expected.pixels, found->pixels) << expected.layer.getLayerID();
     }
 }
 

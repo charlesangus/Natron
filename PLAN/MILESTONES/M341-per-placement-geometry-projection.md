@@ -21,19 +21,19 @@ A USDProject3D in Geometry space holds one `geometryFrame` per material. Assigne
 
 ## Phase 341.1: A frame per prim
 
-- [ ] M341.P1.T1 — Decide how a prim carries its frame
+- [x] M341.P1.T1 — Decide how a prim carries its frame
   - files: `Engine/Nodes/Scene/shaders/natronProject3D.glslfx`, `## Decisions` here
   - approach: compare a constant matrix primvar on each matched prim, read by the shader, with one material copy per distinct placement. The primvar avoids a material per prim, so prefer it if Storm serves a constant matrix primvar to a glslfx surface, per prim and animated. Check the pxr headers and try it on `tools/spikes/storm-projection/`. Display state rule: USDWrite must not export it as Natron data.
   - verify: a spike renders two prims at different places with one material, each projection correct; the choice is recorded in `## Decisions`.
   - size: M
 
-- [ ] M341.P1.T2 — Author per-prim placement
+- [x] M341.P1.T2 — Author per-prim placement
   - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Engine/Nodes/Scene/shaders/natronProject3D.glslfx`, `Engine/Nodes/Scene/docs/USDProject3D.md`, `Tests/Scene/USDProject3D_Test.cpp`
   - approach: USDAssignMaterial and the primitive nodes place each matched prim through the mechanism from M341.P1.T1, held or sampled when animated. With Material Path set, USDAssignMaterial reads the material from the input stage and places it the same way, sharing the shader check with M342 - Sticky Projections On Deforming Geometry (M342.P1.T5), or reusing it if that landed first. Remove the warning and the one-placement text in the docs.
   - verify: gtests: two prims apart, and two assigns sharing one projection, and a projection bound by Material Path, each match their direct-connection references in Storm (`Tests/Scene/USDRenderStorm_Test.cpp`).
   - size: L
 
-- [ ] M341.P1.T3 — USDWrite bakes per placement
+- [x] M341.P1.T3 — USDWrite bakes per placement
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (around line 824), `Tests/Scene/USDWrite_Test.cpp`
   - approach: the bake reads each mesh's own frame instead of the material's.
   - verify: a gtest exports two prims apart and checks each one's baked UVs against a direct projection; the export carries no Natron data.

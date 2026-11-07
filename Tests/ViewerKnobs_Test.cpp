@@ -101,10 +101,9 @@ TEST_F(ViewerKnobsTest, GettersReadTheKnobs)
     KnobBoolPtr enableDownscale = knobOf<KnobBool>(node, kViewerParamEnableDownscale);
     KnobChoicePtr downscaleLevel = knobOf<KnobChoice>(node, kViewerParamDownscaleLevel);
     KnobBoolPtr fullFrame = knobOf<KnobBool>(node, kViewerParamFullFrame);
-    KnobBoolPtr autoContrast = knobOf<KnobBool>(node, kViewerParamAutoContrast);
     ASSERT_TRUE(bool(enableGain) && bool(gain) && bool(enableGamma) && bool(gamma));
     ASSERT_TRUE(bool(channels) && bool(channelsB) && bool(enableDownscale) && bool(downscaleLevel));
-    ASSERT_TRUE(bool(fullFrame) && bool(autoContrast));
+    ASSERT_TRUE(bool(fullFrame));
 
     EXPECT_DOUBLE_EQ(1., viewer->getGain());
     EXPECT_DOUBLE_EQ(1., viewer->getGamma());
@@ -134,8 +133,6 @@ TEST_F(ViewerKnobsTest, GettersReadTheKnobs)
 
     fullFrame->setValue(true);
     EXPECT_TRUE(viewer->isFullFrameProcessingEnabled());
-    autoContrast->setValue(true);
-    EXPECT_TRUE(viewer->isAutoContrastEnabled());
 }
 
 TEST_F(ViewerKnobsTest, SettersWriteTheKnobs)
@@ -195,7 +192,6 @@ TEST_F(ViewerKnobsTest, KnobEditsLeaveHashesUnchanged)
     knobOf<KnobDouble>(node, kViewerParamGain)->setValue(1.5);
     knobOf<KnobBool>(node, kViewerParamEnableGamma)->setValue(true);
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
-    knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
     knobOf<KnobString>(node, kViewerParamDisplay)->setValue("Some Display");
     knobOf<KnobString>(node, kViewerParamView)->setValue("Some View");
@@ -295,7 +291,6 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     knobOf<KnobDouble>(node, kViewerParamGain)->setValue(1.5);
     knobOf<KnobBool>(node, kViewerParamEnableGamma)->setValue(true);
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
-    knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
     knobOf<KnobString>(node, kViewerParamDisplay)->setValue("NoSuchDisplay");
     knobOf<KnobString>(node, kViewerParamView)->setValue("NoSuchView");
@@ -347,7 +342,6 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     EXPECT_DOUBLE_EQ(std::pow(2., 1.5), viewer->getGain());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamEnableGamma)->getValue());
     EXPECT_DOUBLE_EQ(0.5, viewer->getGamma());
-    EXPECT_TRUE(viewer->isAutoContrastEnabled());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamCheckerboard)->getValue());
     EXPECT_EQ(std::string("NoSuchDisplay"), knobOf<KnobString>(loaded, kViewerParamDisplay)->getValue());
     EXPECT_EQ(std::string("NoSuchView"), knobOf<KnobString>(loaded, kViewerParamView)->getValue());

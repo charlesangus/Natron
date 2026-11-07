@@ -202,11 +202,6 @@ private:
     void writeUserRoIKnobs(const RectD& r);
 
 public:
-
-    bool isAutoContrastEnabled() const;
-
-    void setAutoContrastEnabled(bool b);
-
     void setMipmapLevel(unsigned int level);
 
     unsigned int getMipmapLevel() const;
@@ -407,8 +402,6 @@ public Q_SLOTS:
     void onEnableViewerRoIButtonToggle(bool);
 
     void onCreateNewRoIPressed();
-
-    void onAutoContrastChanged(bool b);
 
     void onRenderScaleButtonClicked(bool checked);
 

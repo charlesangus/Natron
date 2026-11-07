@@ -48,7 +48,6 @@
 #define kViewerParamGain "gain"
 #define kViewerParamEnableGamma "enableGamma"
 #define kViewerParamGamma "gamma"
-#define kViewerParamAutoContrast "autoContrast"
 #define kViewerParamCheckerboard "enableCheckerBoard"
 #define kViewerParamDisplay "display"
 #define kViewerParamView "view"
@@ -105,7 +104,6 @@ public:
     RenderingFlagSetterPtr isRenderingFlag;
     bool draftModeEnabled;
     unsigned int mipmapLevelWithDraft, mipmapLevelWithoutDraft;
-    bool autoContrast;
     DisplayChannelsEnum channels;
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
@@ -365,10 +363,6 @@ public:
     ImageLayerDesc getActiveLayer() const;
 
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
-
-    bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;
-
-    void onAutoContrastChanged(bool autoContrast, bool refresh);
 
     /**
      * @brief Returns the current view, MT-safe

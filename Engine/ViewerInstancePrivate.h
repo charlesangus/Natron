@@ -479,7 +479,6 @@ public:
         KnobDoubleWPtr gain; // f-stops
         KnobBoolWPtr enableGamma;
         KnobDoubleWPtr gamma;
-        KnobBoolWPtr autoContrast;
         KnobBoolWPtr checkerboard;
         KnobStringWPtr display; // empty: the project's default display and view
         KnobStringWPtr view;

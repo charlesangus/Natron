@@ -210,18 +210,6 @@ ViewerTab::setUserRoIEnabled(bool b)
     _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 
-bool
-ViewerTab::isAutoContrastEnabled() const
-{
-    return _imp->viewerNode->isAutoContrastEnabled();
-}
-
-void
-ViewerTab::setAutoContrastEnabled(bool b)
-{
-    _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
-}
-
 void
 ViewerTab::setUserRoI(const RectD & r)
 {
@@ -407,15 +395,6 @@ ViewerTab::discardInternalNodePointer()
     // node may finish loading first: a fit then would ask a node that is gone for its mipmap level.
     QObject::disconnect(_imp->projectLoadedConnection);
     _imp->viewerNode = 0;
-}
-
-void
-ViewerTab::onAutoContrastChanged(bool b)
-{
-    editViewerKnobs(tr("Auto Contrast"), [this, b]() {
-        _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
-    });
-    refreshColorControlsFromKnobs();
 }
 
 void

@@ -72,7 +72,7 @@ V2 = "Viewer2"
 MISSING_LAYER = "m164Layer"
 
 KNOBS = [
-    "enableGain", "gain", "enableGamma", "gamma", "autoContrast", "enableCheckerBoard",
+    "enableGain", "gain", "enableGamma", "gamma", "enableCheckerBoard",
     "display", "view", "look", "displayChannels", "displayChannelsB", "layer", "alphaChannel",
     "aInput", "bInput", "operation", "wipeCenter", "wipeAmount", "wipeAngle", "activeView",
     "enableFps", "desiredFps", "inPoint", "outPoint", "enableRegionOfInterest", "userRoIBottomLeft",
@@ -505,6 +505,22 @@ try:
         require(p1 is not None and p2 is not None, "both viewers settle")
         check(same_px(p1, p2), "both viewers show the same image to start with")
         gt.shot("m164-baseline.png")
+
+        gt.section("second-row")
+        gain_slider = widget_of(V1, ("ScaleSliderQWidget",), None)
+        require(gain_slider is not None, "found Viewer1's gain slider")
+        row = gain_slider.parentWidget()
+        row_tips = " ".join((w.toolTip() or "") for w in row.findChildren(QWidget)).lower()
+        check("contrast" not in row_tips, "the second control row has no contrast control")
+        for name in ("enableGain", "enableGamma"):
+            check(knob_value(viewer1, name) is not None, name + " is still a knob")
+        top_left = row.mapToGlobal(QPoint(0, 0))
+        row_image = QGuiApplication.primaryScreen().grabWindow(0, top_left.x(), top_left.y(), row.width(), row.height())
+        row_path = os.path.join(gt.OUT, "m164-viewer-second-row.png")
+        if row_image.save(row_path):
+            report("SHOT " + row_path)
+        else:
+            report("NOTE could not save screenshot " + row_path)
 
         gt.section("toolbar-viewer2")
         display2 = widget_of(V2, ("ComboBox",), "display device")

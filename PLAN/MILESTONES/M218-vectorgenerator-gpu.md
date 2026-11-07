@@ -33,7 +33,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Phase 218.1: Kernels
 
-- [ ] M218.P1.T1 — Pyramid and gradient kernels
+- [x] M218.P1.T1 — Pyramid and gradient kernels
   - files: `Engine/Gpu/Kernels/flow_pyramid.slang` (new), `Engine/Gpu/Kernels/flow_pyramid.cmake` (new), `Engine/Gpu/GpuFlow.{h,cpp}` (new), `Tests/Gpu/GpuFlowPyramid_Test.cpp` (new)
   - approach:
     - Grey conversion, a 2× downsample after a `GpuBlur` pre-blur, and gradients, matching `FlowPyramid`.
@@ -41,25 +41,25 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R GpuFlowPyramid` passes on lavapipe, matching `FlowPyramid` within 1e-5 per level.
   - size: M
 
-- [ ] M218.P1.T2 — DIS search and densification kernels
+- [x] M218.P1.T2 — DIS search and densification kernels
   - files: `Engine/Gpu/Kernels/flow_dis.slang` (new), `Engine/Gpu/Kernels/flow_dis.cmake` (new), `Engine/Gpu/GpuFlow.cpp`, `Tests/Gpu/GpuDisFlow_Test.cpp` (new)
   - approach: one thread per patch for the inverse search, with the Gauss-Newton loop in-thread. Densification is one thread per pixel, gathering the overlapping patches.
   - verify: `ctest -R GpuDisFlow` passes. The GPU stays within the CPU's recorded EPE thresholds on the M217 synthetic cases, and within 0.05 px mean of the CPU's field.
   - size: L
 
-- [ ] M218.P1.T3 — Variational refinement kernel
+- [x] M218.P1.T3 — Variational refinement kernel
   - files: `Engine/Gpu/Kernels/flow_refine.slang` (new), `Engine/Gpu/Kernels/flow_refine.cmake` (new), `Engine/Gpu/GpuFlow.cpp`, `Tests/Gpu/GpuDisFlow_Test.cpp`
   - approach: compute the data and smoothness terms per pixel, then run red-black SOR with two dispatches per iteration.
   - verify: `ctest -R GpuDisFlow` passes with refinement on, under the same thresholds as T2.
   - size: L
 
-- [ ] M218.P1.T4 — TV-L1 kernels
+- [x] M218.P1.T4 — TV-L1 kernels
   - files: `Engine/Gpu/Kernels/flow_tvl1.slang` (new), `Engine/Gpu/Kernels/flow_tvl1.cmake` (new), `Engine/Gpu/GpuFlow.cpp`, `Tests/Gpu/GpuTvL1Flow_Test.cpp` (new)
   - approach: the warp, thresholding, primal and dual updates, and the median filter, each one thread per pixel.
   - verify: `ctest -R GpuTvL1Flow` passes, within the CPU's EPE thresholds and within 0.05 px mean of the CPU.
   - size: L
 
-- [ ] M218.P1.T5 — Confidence, matte and temporal kernels
+- [x] M218.P1.T5 — Confidence, matte and temporal kernels
   - files: `Engine/Gpu/Kernels/flow_confidence.slang` (new), `Engine/Gpu/Kernels/flow_confidence.cmake` (new), `Engine/Gpu/GpuFlow.cpp`, `Tests/Gpu/GpuFlowConfidence_Test.cpp` (new)
   - approach:
     - The round-trip confidence.
@@ -71,7 +71,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Phase 218.2: Node wiring
 
-- [ ] M218.P2.T1 — GPU path in VectorGenerator
+- [x] M218.P2.T1 — GPU path in VectorGenerator
   - files: `Engine/Nodes/Time/VectorGenerator.cpp`, `Tests/Native/NativeVectorGeneratorGpu_Test.cpp` (new)
   - approach:
     - Declare GPU support and the per-input times for placement.
@@ -88,5 +88,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 - An AppImage built with `package.sh` for UAT.
 
 ## Decisions
+
+- 2026-11-07 — Pyramid levels are storage buffers with dedicated FIR kernels, because `GpuBlur`'s black edges wouldn't match the CPU's FIR. Away-frame, format-change and missing-source cases stay on the CPU. A submitted solve must abort quickly, per the user's rule that renders cancel quickly, so it is split into abortable submits.
 
 - 2026-10-25 — **The GPU is checked against ground truth plus a tolerance to the CPU, never bit-exactly (planner):** red-black SOR and parallel reductions order operations differently from the CPU. This is the iterative-solver case of the ulp-diff rule.

@@ -166,11 +166,11 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 **Verification gate:**
 - The build and the full ctest pass, including `FlowPyramid`, `DisFlow`, `TvL1Flow`, `FlowConfidence`, `FlowTemporal` and `NativeVectorGenerator`.
-- Xvfb GUI check on a fixture plate under `build/`, with screenshots shared before sign-off:
-  - the Forward layer viewed through the viewer's layer menu;
-  - the `vectorConfidence` layer showing the occlusion strip;
-  - the method switched between DIS and TV-L1.
-- Timings for DIS and TV-L1 at Medium on a 2K frame, on the release AppImage on the target host, recorded in `## Decisions`.
+- Xvfb GUI check, `Tests/gui/m217_vector_generator.py` run with `Tests/gui/run-gui-test.sh` against the release AppImage, on a moving plate with an occluding square that the script generates under `build/` (no fixture in git). It saves one PNG per state, shared before sign-off:
+  - the Forward layer chosen from the viewer's layer menu, with the exported vectors matching the known motion (background +2, +1; square +14, 0; Backward the negatives);
+  - the `vectorConfidence` layer showing the occlusion strip: low Forward confidence ahead of the square, low Backward confidence behind it, high elsewhere;
+  - the method switched between DIS and TV-L1, both rendering and the picture updating.
+- Timings for DIS and TV-L1 at Medium on a 2K frame, from `BENCH_VECTORGENERATOR=1` on the same script, on the release AppImage on the target host, recorded in `## Decisions`.
 - An AppImage built with `package.sh` for UAT.
 
 ## Decisions

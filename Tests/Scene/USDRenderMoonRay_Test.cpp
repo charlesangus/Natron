@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -60,24 +61,40 @@
 #include <pxr/base/tf/diagnosticMgr.h>
 
 #include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Ramp.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
+#include "Engine/Nodes/Scene/USDLight.h"
+#include "Engine/Nodes/Scene/USDMaterial.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
+#include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
@@ -1151,4 +1168,374 @@ TEST_F(USDRenderMoonRayTest, EveryDeclaredSettingHasAKnob)
             EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
         }
     }
+}
+
+namespace {
+const char* const kLiveTextureGoldenGroup = "USDRender";
+const char* const kLiveTextureGoldenCase = "MoonRayLiveTexture";
+// One half step of the fine passes at these levels, as the fixture's header explains, on a render of
+// only 2 samples a pixel.
+const float kLiveTextureChannelTolerance = 0.02f;
+
+void
+matchLiveTextureGolden(const RenderedPlane& rgba)
+{
+    const ImageLayerDesc layer = ImageLayerDesc::getRGBAComponents();
+    const std::string recordDir = goldenRecordDir();
+    std::string error;
+
+    if (!recordDir.empty()) {
+        ParityF32Image image;
+        image.width = rgba.window.width();
+        image.height = rgba.window.height();
+        image.nComps = (int)rgba.channels.size();
+        image.pixels = rgba.pixels;
+        const std::string path = parityReferencePath(recordDir, kLiveTextureGoldenGroup, kLiveTextureGoldenCase, 0, layer);
+        EXPECT_TRUE(writeParityF32(path, image, &error)) << "cannot record: " << error;
+
+        return;
+    }
+    const std::string refDir = goldenReferenceDir();
+    const std::string path = parityReferencePath(refDir, kLiveTextureGoldenGroup, kLiveTextureGoldenCase, 0, layer);
+    ParityF32Image reference;
+    if (!readParityF32(path, &reference, &error)) {
+        ADD_FAILURE() << "no golden reference " << path << " (" << error << "). Record it in the published build image "
+                      << "by running this test with NATRON_GOLDEN_RECORD_DIR=" << refDir << " and commit the file.";
+
+        return;
+    }
+    ASSERT_EQ(rgba.pixels.size(), reference.pixels.size()) << path;
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < reference.pixels.size(); ++i) {
+        differing += (std::fabs(rgba.pixels[i] - reference.pixels[i]) <= kLiveTextureChannelTolerance) ? 0 : 1;
+    }
+    EXPECT_LE(differing, reference.pixels.size() / 100) << path;
+}
+
+// The texture files of this process's session.
+std::vector<std::string>
+sessionFiles()
+{
+    std::vector<std::string> names;
+    const std::string session = LiveTextureSharedMemory::sessionName();
+    DIR* directory = session.empty() ? nullptr : ::opendir(LiveTextureSharedMemory::directory().c_str());
+
+    if (!directory) {
+        return names;
+    }
+    const std::string prefix = "natron-" + session + "-";
+    while (const struct dirent* entry = ::readdir(directory)) {
+        const std::string name = entry->d_name;
+        if (name.compare(0, prefix.size(), prefix) == 0) {
+            names.push_back(name);
+        }
+    }
+    ::closedir(directory);
+
+    return names;
+}
+} // anonymous namespace
+
+/*
+ * A Natron image on a card's material, through MoonRay. Rendered off the main thread, where renders
+ * run outside the tests: LiveTextureStore::prepare refuses the main thread, which is what the case
+ * for a missing texture relies on. The project format keeps each image far below Docker's 64 MB
+ * /dev/shm.
+ */
+class USDRenderMoonRayLiveTextureTest
+    : public USDRenderMoonRayTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDRenderMoonRayTest::SetUp();
+        ProjectPtr project = getApp()->getProject();
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "liveTexture", 1.));
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        LiveTextureStore::instance().clear();
+        USDRenderMoonRayTest::TearDown();
+    }
+
+    struct Graph {
+        NodePtr material;
+        NodePtr card;
+        NodePtr merge;
+        NodePtr render;
+    };
+
+    static void setPrimPath(const NodePtr& node,
+                            const char* path)
+    {
+        KnobString* k = knob<KnobString>(node, kSceneParamPrimPath);
+        if (k) {
+            k->setValue(std::string(path));
+        }
+    }
+
+    Graph createLiveTextureGraph(const NodePtr& source,
+                                 bool emissive)
+    {
+        Graph graph;
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!source || !material || !card || !camera || !light || !merge || !settings || !render) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return graph;
+        }
+        setPrimPath(material, "/Live");
+        setPrimPath(card, "/Card");
+        setPrimPath(camera, "/Cam");
+        setPrimPath(light, "/Key");
+        KnobDouble* translate = knob<KnobDouble>(camera, kSceneParamTranslate);
+        KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+        if (!translate || !renderer) {
+            return graph;
+        }
+        translate->setValue(10., ViewSpec::all(), 2);
+        if (!selectRenderer(renderer, kMoonRayRendererId)) {
+            ADD_FAILURE() << "the Renderer menu has no " << kMoonRayRendererId;
+
+            return graph;
+        }
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(material, card, 0, true);
+        connectNodes(card, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kSize, kSize)) {
+            return graph;
+        }
+        graph.material = material;
+        graph.card = card;
+        graph.merge = merge;
+        graph.render = render;
+
+        return graph;
+    }
+
+    NodePtr createConstant(double r,
+                           double g,
+                           double b,
+                           double a = 1.)
+    {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        KnobColor* color = constant ? knob<KnobColor>(constant, kConstantParamColor) : nullptr;
+        if (color) {
+            color->setValue(r, ViewSpec::all(), 0);
+            color->setValue(g, ViewSpec::all(), 1);
+            color->setValue(b, ViewSpec::all(), 2);
+            color->setValue(a, ViewSpec::all(), 3);
+        }
+
+        return constant;
+    }
+
+    // Red at frame 1 and green at frame 10 over the whole image, with both of the ramp's colours keyed.
+    NodePtr createAnimatedRamp()
+    {
+        NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+        if (!ramp) {
+            ADD_FAILURE() << "Ramp is not registered";
+
+            return ramp;
+        }
+        for (const char* name : { kRampParamColor0, kRampParamColor1 }) {
+            KnobColor* color = knob<KnobColor>(ramp, name);
+            if (!color) {
+                return NodePtr();
+            }
+            color->setValueAtTime(1., 1., ViewSpec::all(), 0);
+            color->setValueAtTime(10., 0., ViewSpec::all(), 0);
+            color->setValueAtTime(1., 0., ViewSpec::all(), 1);
+            color->setValueAtTime(10., 1., ViewSpec::all(), 1);
+            color->setValue(0., ViewSpec::all(), 2);
+            color->setValue(1., ViewSpec::all(), 3);
+        }
+
+        return ramp;
+    }
+
+    static std::list<ImageLayerDesc> colourPlane()
+    {
+        return std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
+    }
+
+    static bool renderOffMainThread(const NodePtr& render,
+                                    double frame,
+                                    std::vector<RenderedPlane>* planes)
+    {
+        bool rendered = false;
+        std::string error;
+
+        appPTR->clearAllCaches();
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), planes, &error, false);
+        });
+        worker.join();
+        appPTR->clearAllCaches();
+        EXPECT_TRUE(rendered) << error;
+
+        return rendered && (planes->size() == 1u);
+    }
+
+    // The mean of the 5 by 5 pixels at the centre, which the card covers.
+    static std::array<double, 4> centreOf(const RenderedPlane& plane)
+    {
+        std::array<double, 4> mean = { 0., 0., 0., 0. };
+
+        for (int y = kSize / 2 - 2; y <= kSize / 2 + 2; ++y) {
+            for (int x = kSize / 2 - 2; x <= kSize / 2 + 2; ++x) {
+                const std::size_t i = std::size_t(y) * kSize + x;
+                for (int k = 0; k < 4; ++k) {
+                    mean[k] += plane.pixels[i * 4 + k] / 25.;
+                }
+            }
+        }
+
+        return mean;
+    }
+
+    static std::array<double, 4> centreAtFrame(const NodePtr& render,
+                                               double frame)
+    {
+        std::vector<RenderedPlane> planes;
+
+        if (!renderOffMainThread(render, frame, &planes)) {
+            return std::array<double, 4>();
+        }
+
+        return centreOf(planes[0]);
+    }
+
+    static std::string messageOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
+    }
+};
+
+TEST_F(USDRenderMoonRayLiveTextureTest, AConstantOnACardRendersItsColour)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createConstant(0., 1., 0.), false);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_GT(centre[1], 0.02);
+    EXPECT_GT(centre[1], 5. * centre[0]) << centre[0] << ", " << centre[1];
+    EXPECT_GT(centre[1], 5. * centre[2]) << centre[1] << ", " << centre[2];
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderMoonRayLiveTextureTest, AnAnimatedRampFollowsTheFrame)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createAnimatedRamp(), false);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> first = centreAtFrame(graph.render, 1.);
+    const std::array<double, 4> tenth = centreAtFrame(graph.render, 10.);
+    EXPECT_GT(first[0], 5. * first[1]) << first[0] << ", " << first[1];
+    EXPECT_GT(tenth[1], 5. * tenth[0]) << tenth[0] << ", " << tenth[1];
+}
+
+// A source's texture is missing here because the main thread does not prepare it: deleting a source
+// re-authors the material with no texture, so it never reaches the render with its URI.
+TEST_F(USDRenderMoonRayLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsOfItsSource)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, false);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(graph.render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), &planes, &error, false)) << error;
+    ASSERT_EQ(1u, planes.size());
+    const std::array<double, 4> centre = centreOf(planes[0]);
+    // Lit, UsdUVTexture's default fallback is black. hdMoonray's own handling would give 0.18 grey
+    // for an empty path and white for a file it cannot open.
+    EXPECT_LT(centre[0], 0.02);
+    EXPECT_LT(centre[1], 0.02);
+    EXPECT_LT(centre[2], 0.02);
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
+}
+
+// The store's entries and the filter's holds are all that keep a file: with both gone, no frame of
+// either range may leave one in a filesystem made of RAM.
+TEST_F(USDRenderMoonRayLiveTextureTest, ASecondFrameRangeLeavesNoFilesBehind)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createAnimatedRamp(), false);
+    ASSERT_TRUE(bool(graph.render));
+
+    for (double frame : { 1., 2. }) {
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderOffMainThread(graph.render, frame, &planes));
+    }
+    for (double frame : { 3., 4. }) {
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderOffMainThread(graph.render, frame, &planes));
+    }
+    LiveTextureStore::instance().clear();
+    HydraRender::releaseAllCpuEngines();
+    SceneQueryPool::instance().releaseIdle();
+    const std::vector<std::string> files = sessionFiles();
+    EXPECT_TRUE(files.empty()) << files.size() << " left, the first " << (files.empty() ? std::string() : files[0]);
+}
+
+TEST_F(USDRenderMoonRayLiveTextureTest, MatchesReferenceRender)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+    ASSERT_TRUE(bool(ramp));
+    KnobDouble* point0 = knob<KnobDouble>(ramp, kRampParamPoint0);
+    KnobDouble* point1 = knob<KnobDouble>(ramp, kRampParamPoint1);
+    KnobColor* color0 = knob<KnobColor>(ramp, kRampParamColor0);
+    KnobColor* color1 = knob<KnobColor>(ramp, kRampParamColor1);
+    ASSERT_TRUE(point0 && point1 && color0 && color1);
+    point0->setValue(0., ViewSpec::all(), 0);
+    point0->setValue(0., ViewSpec::all(), 1);
+    point1->setValue(double(kSize), ViewSpec::all(), 0);
+    point1->setValue(double(kSize), ViewSpec::all(), 1);
+    color0->setValue(1., ViewSpec::all(), 0);
+    color0->setValue(0., ViewSpec::all(), 1);
+    color0->setValue(0., ViewSpec::all(), 2);
+    color0->setValue(1., ViewSpec::all(), 3);
+    color1->setValue(0., ViewSpec::all(), 0);
+    color1->setValue(1., ViewSpec::all(), 1);
+    color1->setValue(0., ViewSpec::all(), 2);
+    color1->setValue(1., ViewSpec::all(), 3);
+    const Graph graph = createLiveTextureGraph(ramp, false);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderOffMainThread(graph.render, 1., &planes));
+    matchLiveTextureGolden(planes[0]);
 }

@@ -25,8 +25,10 @@
 
 #include "LiveTextureResolver.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <string>
 #include <system_error>
 
 #ifdef emit
@@ -46,6 +48,7 @@
 #endif
 
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 
@@ -54,7 +57,31 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // The name plugInfo.json registers the resolver and image reader under.
 const char* const kPluginName = "natronLiveTexture";
+
+// Through the environment so that MoonRay's execComp, which inherits it, finds the plug-in too. Must
+// run before other threads exist. OIIO reads the variable each time it catalogues its plug-ins.
+void
+servePluginToDelegates()
+{
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+
+    if (ec) {
+        return;
+    }
+    const std::filesystem::path dir = (exe.parent_path() / ".." / "lib" / "oiio").lexically_normal();
+    if (!std::filesystem::is_regular_file(dir / "natron.imageio.so", ec)) {
+        return;
+    }
+    const char* const current = std::getenv("OPENIMAGEIO_PLUGIN_PATH");
+    std::string value = dir.string();
+    if (current && *current) {
+        value += ":";
+        value += current;
+    }
+    ::setenv("OPENIMAGEIO_PLUGIN_PATH", value.c_str(), 1);
 }
+} // anonymous namespace
 
 LiveTextureResolver::LiveTextureResolver()
 {
@@ -144,6 +171,9 @@ registerLiveTextures(std::string* errorMessage)
     static std::string error;
 
     std::call_once(once, []() {
+        LiveTextureSharedMemory::reclaimStaleSessions();
+        servePluginToDelegates();
+
         // Defined before the plugInfo.json declares them, so Ar and Hio find their factories
         // without loading a library: the types live in this executable.
         PXR_NS::Ar_DefineResolver<LiveTextureResolver, PXR_NS::ArResolver>();

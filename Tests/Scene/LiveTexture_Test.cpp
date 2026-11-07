@@ -25,8 +25,19 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/imaging/hd/materialNetwork2Interface.h>
+
 #include "Global/Macros.h"
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -49,6 +60,9 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
+#include "Engine/Nodes/Scene/LiveTextureOiio/LiveTextureFile.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Project.h"
@@ -96,6 +110,131 @@ prepareOffMainThread(const LiveTextureSourceList& sources,
     worker.join();
 
     return numFailed;
+}
+
+bool
+fileExists(const std::string& path)
+{
+    return ::access(path.c_str(), F_OK) == 0;
+}
+
+std::vector<std::string>
+namesStartingWith(const std::string& prefix)
+{
+    std::vector<std::string> names;
+    DIR* directory = ::opendir(LiveTextureSharedMemory::directory().c_str());
+
+    if (!directory) {
+        return names;
+    }
+    while (const struct dirent* entry = ::readdir(directory)) {
+        const std::string name = entry->d_name;
+        if (name.compare(0, prefix.size(), prefix) == 0) {
+            names.push_back(name);
+        }
+    }
+    ::closedir(directory);
+
+    return names;
+}
+
+// Every texture file of this process's session, .tmp ones included, but not its lock.
+std::vector<std::string>
+sessionFiles()
+{
+    const std::string session = LiveTextureSharedMemory::sessionName();
+
+    return session.empty() ? std::vector<std::string>() : namesStartingWith("natron-" + session + "-");
+}
+
+std::string
+inSharedMemory(const std::string& name)
+{
+    return LiveTextureSharedMemory::directory() + "/" + name;
+}
+
+void
+touch(const std::string& path)
+{
+    const int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+
+    ASSERT_GE(fd, 0) << path;
+    ::close(fd);
+}
+
+// A buffer claiming to be far larger than any tmpfs, whose export fails before it reads a pixel.
+LiveTextureBufferConstPtr
+makeOversizedBuffer()
+{
+    static const char bytes[64] = { 0 };
+
+    return LiveTextureBuffer::fromFile(std::shared_ptr<const char>(bytes, [](const char*) { }), sizeof(bytes), 1 << 20, 1 << 20, std::string());
+}
+
+const char* const kTextureNode = "/Material/Texture";
+const char* const kSurfaceNode = "/Material/Surface";
+
+PXR_NS::HdMaterialNetwork2
+makeTexturedNetwork(const std::string& uri,
+                    const std::string& input,
+                    const std::string& output)
+{
+    PXR_NS::HdMaterialNode2 texture;
+
+    texture.nodeTypeId = PXR_NS::TfToken("UsdUVTexture");
+    texture.parameters[PXR_NS::TfToken("file")] = PXR_NS::VtValue(PXR_NS::SdfAssetPath(uri));
+
+    PXR_NS::HdMaterialNode2 surface;
+    surface.nodeTypeId = PXR_NS::TfToken("UsdPreviewSurface");
+    PXR_NS::HdMaterialConnection2 connection;
+    connection.upstreamNode = PXR_NS::SdfPath(kTextureNode);
+    connection.upstreamOutputName = PXR_NS::TfToken(output);
+    surface.inputConnections[PXR_NS::TfToken(input)] = { connection };
+
+    PXR_NS::HdMaterialConnection2 terminal;
+    terminal.upstreamNode = PXR_NS::SdfPath(kSurfaceNode);
+    terminal.upstreamOutputName = PXR_NS::TfToken("surface");
+
+    PXR_NS::HdMaterialNetwork2 network;
+    network.nodes[PXR_NS::SdfPath(kTextureNode)] = texture;
+    network.nodes[PXR_NS::SdfPath(kSurfaceNode)] = surface;
+    network.terminals[PXR_NS::TfToken("surface")] = terminal;
+
+    return network;
+}
+
+void
+applyFilter(const std::function<void(PXR_NS::HdMaterialNetworkInterface*)>& filter,
+            PXR_NS::HdMaterialNetwork2* network)
+{
+    PXR_NS::HdMaterialNetwork2Interface interface(PXR_NS::SdfPath("/Material"), network);
+
+    filter(&interface);
+}
+
+bool
+hasTextureNode(const PXR_NS::HdMaterialNetwork2& network)
+{
+    return network.nodes.find(PXR_NS::SdfPath(kTextureNode)) != network.nodes.end();
+}
+
+PXR_NS::VtValue
+surfaceParameter(const PXR_NS::HdMaterialNetwork2& network,
+                 const std::string& name)
+{
+    const PXR_NS::HdMaterialNode2& surface = network.nodes.at(PXR_NS::SdfPath(kSurfaceNode));
+    const std::map<PXR_NS::TfToken, PXR_NS::VtValue>::const_iterator found = surface.parameters.find(PXR_NS::TfToken(name));
+
+    return (found == surface.parameters.end()) ? PXR_NS::VtValue() : found->second;
+}
+
+std::size_t
+surfaceConnections(const PXR_NS::HdMaterialNetwork2& network,
+                   const std::string& name)
+{
+    const PXR_NS::HdMaterialNode2& surface = network.nodes.at(PXR_NS::SdfPath(kSurfaceNode));
+
+    return surface.inputConnections.count(PXR_NS::TfToken(name));
 }
 } // anonymous namespace
 
@@ -695,4 +834,372 @@ TEST_F(LiveTextureTest, TheFailuresKeptAreBounded)
     }
     EXPECT_TRUE(LiveTextureStore::instance().getFailure(first).empty());
     EXPECT_FALSE(LiveTextureStore::instance().getFailure(source.getUri(1.)).empty());
+}
+
+// The mapping and the file name are the two ways a render delegate's process gets at the pixels.
+TEST_F(LiveTextureTest, AnotherProcessReadsAnExportedTexture)
+{
+    const int width = 16;
+    const int height = 10;
+    const LiveTextureBufferConstPtr source = makeGradient(width, height);
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("Exported");
+
+    store.insert(uri, source);
+    const LiveTextureBufferConstPtr exported = store.exportToSharedMemory(uri);
+    ASSERT_TRUE(bool(exported)) << store.getFailure(uri);
+    ASSERT_FALSE(exported->getFilePath().empty());
+
+    const std::string path = exported->getFilePath();
+    const std::size_t size = NatronLiveTexture::fileSize(width, height);
+    const NatronLiveTexture::Level second = NatronLiveTexture::levelAt(width, height, 1);
+    ASSERT_EQ(8, second.width);
+    ASSERT_EQ(5, second.height);
+    const char* const expectedPixels = reinterpret_cast<const char*>(source->getRow(0));
+    const std::size_t pixelBytes = std::size_t(width) * std::size_t(height) * NatronLiveTexture::kTexelBytes;
+
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        // Only async-signal-safe calls from here: the parent's other threads do not exist in this copy.
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            ::_exit(1);
+        }
+        void* mapped = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        if (mapped == MAP_FAILED) {
+            ::_exit(2);
+        }
+        const char* const bytes = static_cast<const char*>(mapped);
+        if (std::memcmp(bytes, NatronLiveTexture::kMagic, sizeof(NatronLiveTexture::kMagic)) != 0) {
+            ::_exit(3);
+        }
+        if (std::memcmp(bytes + NatronLiveTexture::kHeaderSize, expectedPixels, pixelBytes) != 0) {
+            ::_exit(4);
+        }
+        const float* const level = reinterpret_cast<const float*>(bytes + second.offset);
+        for (int y = 0; y < second.height; ++y) {
+            for (int x = 0; x < second.width; ++x) {
+                const float* const texel = level + 4 * (std::size_t(y) * second.width + x);
+                const float red = (2.f * x + 0.5f) / 15.f;
+                const float green = (2.f * y + 0.5f) / 9.f;
+                if ((std::fabs(texel[0] - red) > 1e-5f) || (std::fabs(texel[1] - green) > 1e-5f)) {
+                    ::_exit(5);
+                }
+            }
+        }
+        ::_exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(child, ::waitpid(child, &status, 0));
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(0, WEXITSTATUS(status));
+}
+
+TEST_F(LiveTextureTest, ExportingTwiceGivesOneFile)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("Twice");
+
+    store.insert(uri, makeGradient(8, 8));
+    const LiveTextureBufferConstPtr first = store.exportToSharedMemory(uri);
+    ASSERT_TRUE(bool(first)) << store.getFailure(uri);
+    const LiveTextureBufferConstPtr second = store.exportToSharedMemory(uri);
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(first, store.find(uri));
+    EXPECT_EQ(std::string("Twice"), store.getSourceOfFile(first->getFilePath()));
+    EXPECT_EQ(std::string(), store.getSourceOfFile("/somewhere/else.natron"));
+}
+
+TEST_F(LiveTextureTest, ATextureStaysInMemoryUntilARendererAsksForIt)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::vector<std::string> before = sessionFiles();
+
+    store.insert(uriOf("Heap"), makeGradient(8, 8));
+    const LiveTextureBufferConstPtr stored = store.find(uriOf("Heap"));
+    ASSERT_TRUE(bool(stored));
+    EXPECT_TRUE(stored->getFilePath().empty());
+    EXPECT_EQ(before, sessionFiles());
+}
+
+TEST_F(LiveTextureTest, AHeldFileOutlivesItsStoreEntry)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("Held");
+    const LiveTextureBufferConstPtr source = makeGradient(8, 8);
+
+    store.insert(uri, source);
+    LiveTextureBufferConstPtr held = store.exportToSharedMemory(uri);
+    ASSERT_TRUE(bool(held)) << store.getFailure(uri);
+    const std::string path = held->getFilePath();
+
+    store.clear();
+    EXPECT_FALSE(store.contains(uri));
+    ASSERT_TRUE(fileExists(path));
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    std::vector<char> bytes(NatronLiveTexture::fileSize(8, 8));
+    EXPECT_EQ(ssize_t(bytes.size()), ::pread(fd, bytes.data(), bytes.size(), 0));
+    ::close(fd);
+    const std::size_t pixelBytes = 8 * 8 * NatronLiveTexture::kTexelBytes;
+    EXPECT_EQ(0, std::memcmp(bytes.data() + NatronLiveTexture::kHeaderSize, source->getRow(0), pixelBytes));
+    EXPECT_EQ(0, std::memcmp(held->getRow(0), source->getRow(0), pixelBytes));
+
+    held.reset();
+    EXPECT_FALSE(fileExists(path));
+}
+
+TEST_F(LiveTextureTest, EvictionKeepsAHeldFile)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("Evicted");
+
+    store.insert(uri, makeGradient(8, 8));
+    LiveTextureBufferConstPtr held = store.exportToSharedMemory(uri);
+    ASSERT_TRUE(bool(held)) << store.getFailure(uri);
+    const std::string path = held->getFilePath();
+
+    // The most recently used entry stays even over budget.
+    store.insert(uriOf("Newer"), makeGradient(8, 8));
+    store.setByteBudget(1);
+    EXPECT_FALSE(store.contains(uri));
+    EXPECT_TRUE(fileExists(path));
+    held.reset();
+    EXPECT_FALSE(fileExists(path));
+}
+
+// The chain is the delegates' only source of lower levels, on any image size.
+TEST_F(LiveTextureTest, TheMipChainHandlesOddSizes)
+{
+    const int width = 5;
+    const int height = 3;
+    std::vector<float> pixels(std::size_t(width) * height * 4);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i + 0] = 0.5f;
+        pixels[i + 1] = 0.25f;
+        pixels[i + 2] = 0.125f;
+        pixels[i + 3] = 1.f;
+    }
+    LiveTextureSharedMemory::Export result;
+    int errorNumber = 0;
+    std::string what;
+    ASSERT_TRUE(LiveTextureSharedMemory::exportImage(uriOf("Odd"), width, height, pixels.data(), &result, &errorNumber, &what)) << what;
+
+    ASSERT_EQ(3, NatronLiveTexture::levelCount(width, height));
+    EXPECT_EQ(NatronLiveTexture::fileSize(width, height), result.byteSize);
+    int expectedWidth = width;
+    int expectedHeight = height;
+    for (int index = 0; index < 3; ++index) {
+        const NatronLiveTexture::Level level = NatronLiveTexture::levelAt(width, height, index);
+        EXPECT_EQ(expectedWidth, level.width);
+        EXPECT_EQ(expectedHeight, level.height);
+        const float* const texels = reinterpret_cast<const float*>(result.bytes.get() + level.offset);
+        for (int i = 0; i < level.width * level.height * 4; i += 4) {
+            EXPECT_NEAR(0.5f, texels[i + 0], 1e-5f) << "level " << index;
+            EXPECT_NEAR(0.25f, texels[i + 1], 1e-5f) << "level " << index;
+            EXPECT_NEAR(0.125f, texels[i + 2], 1e-5f) << "level " << index;
+            EXPECT_NEAR(1.f, texels[i + 3], 1e-5f) << "level " << index;
+        }
+        expectedWidth = std::max(1, expectedWidth / 2);
+        expectedHeight = std::max(1, expectedHeight / 2);
+    }
+}
+
+TEST_F(LiveTextureTest, AnImageLargerThanSharedMemoryFailsCleanly)
+{
+    const std::vector<std::string> before = sessionFiles();
+    LiveTextureSharedMemory::Export result;
+    int errorNumber = 0;
+    std::string what;
+    static const float pixel[4] = { 0.f, 0.f, 0.f, 0.f };
+
+    EXPECT_FALSE(LiveTextureSharedMemory::exportImage(uriOf("Huge"), 1 << 20, 1 << 20, pixel, &result, &errorNumber, &what));
+    EXPECT_NE(0, errorNumber);
+    EXPECT_FALSE(what.empty());
+    EXPECT_FALSE(bool(result.bytes));
+    EXPECT_EQ(before, sessionFiles());
+}
+
+TEST_F(LiveTextureTest, ACrashedSessionsFilesAreReclaimed)
+{
+    const std::string lock = inSharedMemory("natron-00000000deadbe01.lock");
+    const std::string data = inSharedMemory("natron-00000000deadbe01-0000000000000001.natron");
+    const std::string partial = inSharedMemory("natron-00000000deadbe01-0000000000000002.natron.tmp");
+    const std::string orphan = inSharedMemory("natron-00000000deadbe02-0000000000000001.natron");
+    const std::string foreign = inSharedMemory("natron-not-a-session.natron");
+    touch(lock);
+    touch(data);
+    touch(partial);
+    touch(orphan);
+    touch(foreign);
+
+    EXPECT_GE(LiveTextureSharedMemory::reclaimStaleSessions(), 4);
+    EXPECT_FALSE(fileExists(lock));
+    EXPECT_FALSE(fileExists(data));
+    EXPECT_FALSE(fileExists(partial));
+    EXPECT_FALSE(fileExists(orphan));
+    EXPECT_TRUE(fileExists(foreign));
+    ::unlink(foreign.c_str());
+}
+
+TEST_F(LiveTextureTest, ARunningSessionsFilesAreKept)
+{
+    const std::string lock = inSharedMemory("natron-00000000deadbe03.lock");
+    const std::string data = inSharedMemory("natron-00000000deadbe03-0000000000000001.natron");
+    touch(lock);
+    touch(data);
+    const int fd = ::open(lock.c_str(), O_RDWR | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(0, ::flock(fd, LOCK_EX));
+
+    LiveTextureSharedMemory::reclaimStaleSessions();
+    EXPECT_TRUE(fileExists(lock));
+    EXPECT_TRUE(fileExists(data));
+
+    ::close(fd);
+    LiveTextureSharedMemory::reclaimStaleSessions();
+    EXPECT_FALSE(fileExists(lock));
+    EXPECT_FALSE(fileExists(data));
+}
+
+TEST_F(LiveTextureTest, ReclaimingLeavesThisSessionAlone)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+
+    store.insert(uriOf("Mine"), makeGradient(8, 8));
+    const LiveTextureBufferConstPtr exported = store.exportToSharedMemory(uriOf("Mine"));
+    ASSERT_TRUE(bool(exported)) << store.getFailure(uriOf("Mine"));
+
+    LiveTextureSharedMemory::reclaimStaleSessions();
+    EXPECT_TRUE(fileExists(exported->getFilePath()));
+}
+
+TEST_F(LiveTextureTest, EndingASessionRemovesItsFiles)
+{
+    const LiveTextureBufferConstPtr source = makeGradient(8, 8);
+    LiveTextureSharedMemory::Export result;
+    int errorNumber = 0;
+    std::string what;
+    ASSERT_TRUE(LiveTextureSharedMemory::exportImage(uriOf("Ending"), 8, 8, source->getRow(0), &result, &errorNumber, &what)) << what;
+    const std::string session = LiveTextureSharedMemory::sessionName();
+    ASSERT_FALSE(session.empty());
+    ASSERT_TRUE(fileExists(result.path));
+
+    LiveTextureSharedMemory::endSession();
+    EXPECT_TRUE(namesStartingWith("natron-" + session).empty());
+    EXPECT_EQ(0, std::memcmp(result.bytes.get() + NatronLiveTexture::kHeaderSize, source->getRow(0), 8 * 8 * NatronLiveTexture::kTexelBytes));
+
+    LiveTextureSharedMemory::Export next;
+    ASSERT_TRUE(LiveTextureSharedMemory::exportImage(uriOf("Ending"), 8, 8, source->getRow(0), &next, &errorNumber, &what)) << what;
+    EXPECT_NE(session, LiveTextureSharedMemory::sessionName());
+    EXPECT_TRUE(fileExists(next.path));
+    EXPECT_NE(result.path, next.path);
+}
+
+TEST_F(LiveTextureTest, TheFilterGivesAStoredTextureItsFileAndKeepsTheAsset)
+{
+    const std::string uri = LiveTextureSource::makeUri("Filtered", "rgba", 0x1234abcdULL);
+    LiveTextureStore& store = LiveTextureStore::instance();
+
+    store.insert(uri, makeGradient(8, 8));
+    PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+    const auto filter = LiveTextureSceneIndex::makeMaterialFilter();
+    applyFilter(filter, &network);
+
+    ASSERT_TRUE(hasTextureNode(network));
+    const PXR_NS::VtValue file = network.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")];
+    ASSERT_TRUE(file.IsHolding<PXR_NS::SdfAssetPath>());
+    const PXR_NS::SdfAssetPath asset = file.UncheckedGet<PXR_NS::SdfAssetPath>();
+    EXPECT_EQ(uri, asset.GetAssetPath());
+    EXPECT_EQ(store.find(uri)->getFilePath(), asset.GetResolvedPath());
+    EXPECT_TRUE(fileExists(asset.GetResolvedPath()));
+    EXPECT_EQ(1u, surfaceConnections(network, "diffuseColor"));
+
+    store.clear();
+    EXPECT_TRUE(fileExists(asset.GetResolvedPath()));
+}
+
+// A frame's render can still be reading a file while the next frame's network is filtered.
+TEST_F(LiveTextureTest, TheFilterHoldsTheFileBeforeTheCurrentOne)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const auto filter = LiveTextureSceneIndex::makeMaterialFilter();
+    std::vector<std::string> paths;
+
+    for (int frame = 0; frame < 3; ++frame) {
+        const std::string uri = LiveTextureSource::makeUri("Sequence", "rgba", 0x1000ULL + frame);
+        store.insert(uri, makeGradient(8, 8));
+        PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+        applyFilter(filter, &network);
+        ASSERT_TRUE(hasTextureNode(network));
+        const PXR_NS::VtValue file = network.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")];
+        paths.push_back(file.Get<PXR_NS::SdfAssetPath>().GetResolvedPath());
+    }
+    store.clear();
+    EXPECT_FALSE(fileExists(paths[0]));
+    EXPECT_TRUE(fileExists(paths[1]));
+    EXPECT_TRUE(fileExists(paths[2]));
+}
+
+TEST_F(LiveTextureTest, TheFilterLeavesOtherTexturesAlone)
+{
+    PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork("/plates/plain.exr", "diffuseColor", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
+
+    ASSERT_TRUE(hasTextureNode(network));
+    EXPECT_EQ(std::string("/plates/plain.exr"),
+              network.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")].Get<PXR_NS::SdfAssetPath>().GetAssetPath());
+    EXPECT_EQ(1u, surfaceConnections(network, "diffuseColor"));
+}
+
+TEST_F(LiveTextureTest, TheFilterFeedsAMissingTexturesFallbackDownstream)
+{
+    const std::string uri = uriOf("Gone");
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const PXR_NS::GfVec4f fallback(0.25f, 0.5f, 0.75f, 0.125f);
+
+    PXR_NS::HdMaterialNetwork2 colour = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+    colour.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("fallback")] = PXR_NS::VtValue(fallback);
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &colour);
+    EXPECT_FALSE(hasTextureNode(colour));
+    EXPECT_EQ(0u, surfaceConnections(colour, "diffuseColor"));
+    const PXR_NS::VtValue diffuse = surfaceParameter(colour, "diffuseColor");
+    ASSERT_TRUE(diffuse.IsHolding<PXR_NS::GfVec3f>());
+    EXPECT_EQ(PXR_NS::GfVec3f(0.25f, 0.5f, 0.75f), diffuse.UncheckedGet<PXR_NS::GfVec3f>());
+    EXPECT_FALSE(store.getFailure(uri).empty());
+
+    PXR_NS::HdMaterialNetwork2 opacity = makeTexturedNetwork(uri, "opacity", "a");
+    opacity.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("fallback")] = PXR_NS::VtValue(fallback);
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &opacity);
+    EXPECT_FALSE(hasTextureNode(opacity));
+    const PXR_NS::VtValue alpha = surfaceParameter(opacity, "opacity");
+    ASSERT_TRUE(alpha.IsHolding<float>());
+    EXPECT_EQ(0.125f, alpha.UncheckedGet<float>());
+}
+
+TEST_F(LiveTextureTest, AMissingNormalMapLeavesTheGeometrysNormal)
+{
+    PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uriOf("GoneNormal"), "normal", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
+
+    EXPECT_FALSE(hasTextureNode(network));
+    EXPECT_EQ(0u, surfaceConnections(network, "normal"));
+    EXPECT_TRUE(surfaceParameter(network, "normal").IsEmpty());
+}
+
+// Delegates must see the fallback rather than a file that faults on first touch.
+TEST_F(LiveTextureTest, AFullSharedMemoryReachesTheFallbackWithTheReason)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("TooBig");
+
+    store.insert(uri, makeOversizedBuffer());
+    PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
+
+    EXPECT_FALSE(hasTextureNode(network));
+    EXPECT_FALSE(surfaceParameter(network, "diffuseColor").IsEmpty());
+    EXPECT_NE(std::string::npos, store.getFailure(uri).find("does not fit in shared memory")) << store.getFailure(uri);
+    EXPECT_TRUE(store.exportToSharedMemory(uri) == nullptr);
 }

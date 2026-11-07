@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -55,22 +56,37 @@
 #include <pxr/base/plug/registry.h>
 
 #include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Ramp.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
+#include "Engine/Nodes/Scene/USDLight.h"
+#include "Engine/Nodes/Scene/USDMaterial.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
@@ -1233,4 +1249,358 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
         reached[reach.first] = reach.second;
     }
     EXPECT_EQ(cyclesScriptNames(), reached);
+}
+
+/*
+ * A Natron image on a card's material, through Cycles. Rendered off the main thread, where renders
+ * run outside the tests: LiveTextureStore::prepare refuses the main thread, which is what the case
+ * for a missing texture relies on. The project format keeps each image far below Docker's 64 MB
+ * /dev/shm.
+ */
+class USDRenderCyclesLiveTextureTest
+    : public USDRenderCyclesTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDRenderCyclesTest::SetUp();
+        ProjectPtr project = getApp()->getProject();
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "liveTexture", 1.));
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        LiveTextureStore::instance().clear();
+        USDRenderCyclesTest::TearDown();
+    }
+
+    struct Graph {
+        NodePtr material;
+        NodePtr card;
+        NodePtr merge;
+        NodePtr render;
+    };
+
+    static void setPrimPath(const NodePtr& node,
+                            const char* path)
+    {
+        KnobString* k = knob<KnobString>(node, kSceneParamPrimPath);
+        if (k) {
+            k->setValue(std::string(path));
+        }
+    }
+
+    Graph createLiveTextureGraph(const NodePtr& source,
+                                 bool emissive)
+    {
+        Graph graph;
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!source || !material || !card || !camera || !light || !merge || !settings || !render) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return graph;
+        }
+        setPrimPath(material, "/Live");
+        setPrimPath(card, "/Card");
+        setPrimPath(camera, "/Cam");
+        setPrimPath(light, "/Key");
+        KnobDouble* translate = knob<KnobDouble>(camera, kSceneParamTranslate);
+        KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+        if (!translate || !renderer) {
+            return graph;
+        }
+        translate->setValue(10., ViewSpec::all(), 2);
+        if (!selectRenderer(renderer, kRenderDelegateCyclesId)) {
+            ADD_FAILURE() << "the Renderer menu has no " << kRenderDelegateCyclesId;
+
+            return graph;
+        }
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(material, card, 0, true);
+        connectNodes(card, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kSize, kSize)) {
+            return graph;
+        }
+        graph.material = material;
+        graph.card = card;
+        graph.merge = merge;
+        graph.render = render;
+
+        return graph;
+    }
+
+    NodePtr createConstant(double r,
+                           double g,
+                           double b,
+                           double a = 1.)
+    {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        KnobColor* color = constant ? knob<KnobColor>(constant, kConstantParamColor) : nullptr;
+        if (color) {
+            color->setValue(r, ViewSpec::all(), 0);
+            color->setValue(g, ViewSpec::all(), 1);
+            color->setValue(b, ViewSpec::all(), 2);
+            color->setValue(a, ViewSpec::all(), 3);
+        }
+
+        return constant;
+    }
+
+    // Red at frame 1 and green at frame 10 over the whole image, with both of the ramp's colours keyed.
+    NodePtr createAnimatedRamp()
+    {
+        NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+        if (!ramp) {
+            ADD_FAILURE() << "Ramp is not registered";
+
+            return ramp;
+        }
+        for (const char* name : { kRampParamColor0, kRampParamColor1 }) {
+            KnobColor* color = knob<KnobColor>(ramp, name);
+            if (!color) {
+                return NodePtr();
+            }
+            color->setValueAtTime(1., 1., ViewSpec::all(), 0);
+            color->setValueAtTime(10., 0., ViewSpec::all(), 0);
+            color->setValueAtTime(1., 0., ViewSpec::all(), 1);
+            color->setValueAtTime(10., 1., ViewSpec::all(), 1);
+            color->setValue(0., ViewSpec::all(), 2);
+            color->setValue(1., ViewSpec::all(), 3);
+        }
+
+        return ramp;
+    }
+
+    static std::list<ImageLayerDesc> colourPlane()
+    {
+        return std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
+    }
+
+    static bool renderOffMainThread(const NodePtr& render,
+                                    double frame,
+                                    std::vector<RenderedPlane>* planes)
+    {
+        bool rendered = false;
+        std::string error;
+
+        appPTR->clearAllCaches();
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), planes, &error, false);
+        });
+        worker.join();
+        appPTR->clearAllCaches();
+        EXPECT_TRUE(rendered) << error;
+
+        return rendered && (planes->size() == 1u);
+    }
+
+    // The mean of the 5 by 5 pixels at the centre, which the card covers.
+    static std::array<double, 4> centreOf(const RenderedPlane& plane)
+    {
+        std::array<double, 4> mean = { 0., 0., 0., 0. };
+
+        for (int y = kSize / 2 - 2; y <= kSize / 2 + 2; ++y) {
+            for (int x = kSize / 2 - 2; x <= kSize / 2 + 2; ++x) {
+                const std::size_t i = std::size_t(y) * kSize + x;
+                for (int k = 0; k < 4; ++k) {
+                    mean[k] += plane.pixels[i * 4 + k] / 25.;
+                }
+            }
+        }
+
+        return mean;
+    }
+
+    static std::array<double, 4> centreAtFrame(const NodePtr& render,
+                                               double frame)
+    {
+        std::vector<RenderedPlane> planes;
+
+        if (!renderOffMainThread(render, frame, &planes)) {
+            return std::array<double, 4>();
+        }
+
+        return centreOf(planes[0]);
+    }
+
+    static std::string messageOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
+    }
+};
+
+TEST_F(USDRenderCyclesLiveTextureTest, AConstantOnACardRendersItsColour)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createConstant(0., 0.5, 0.), true);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(0.5, centre[1], 0.05);
+    EXPECT_LT(centre[0], 0.05);
+    EXPECT_LT(centre[2], 0.05);
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, AnAnimatedRampFollowsTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createAnimatedRamp(), true);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> first = centreAtFrame(graph.render, 1.);
+    const std::array<double, 4> tenth = centreAtFrame(graph.render, 10.);
+    EXPECT_GT(first[0], 5. * first[1]) << first[0] << ", " << first[1];
+    EXPECT_GT(tenth[1], 5. * tenth[0]) << tenth[0] << ", " << tenth[1];
+}
+
+// A source's texture is missing here because the main thread does not prepare it: a deleted source
+// never reaches the render with its URI, as the next test shows.
+TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsTheFallbackAndWarnsOfItsSource)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(graph.render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), &planes, &error, false)) << error;
+    ASSERT_EQ(1u, planes.size());
+    const std::array<double, 4> centre = centreOf(planes[0]);
+    // UsdUVTexture's default fallback is black; an unhandled missing file shades magenta.
+    EXPECT_LT(centre[0], 0.02);
+    EXPECT_LT(centre[1], 0.02);
+    EXPECT_LT(centre[2], 0.02);
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, DeletingTheSourceLeavesTheMaterialsOwnColour)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    KnobColor* own = knob<KnobColor>(graph.material, kUSDEmissiveMaterialParamEmissiveColor);
+    ASSERT_TRUE(own != nullptr);
+    own->setValue(0.5, ViewSpec::all(), 0);
+    own->setValue(0., ViewSpec::all(), 1);
+    own->setValue(0., ViewSpec::all(), 2);
+    constant->destroyNode(true, false);
+    constant.reset();
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(0.5, centre[0], 0.05);
+    EXPECT_LT(centre[1], 0.05);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+// A half-covered texture's alpha reaches opacity, seen as a card behind showing through.
+TEST_F(USDRenderCyclesLiveTextureTest, ALiveTexturesAlphaIsTheOpacity)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0.5, 0., 0., 0.5);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(backMaterial && backCard);
+    setPrimPath(backMaterial, "/Blue");
+    setPrimPath(backCard, "/Back");
+    KnobDouble* translate = knob<KnobDouble>(backCard, kSceneParamTranslate);
+    KnobColor* blue = knob<KnobColor>(backMaterial, kUSDEmissiveMaterialParamEmissiveColor);
+    ASSERT_TRUE(translate && blue);
+    translate->setValue(-1., ViewSpec::all(), 2);
+    blue->setValue(0., ViewSpec::all(), 0);
+    blue->setValue(0., ViewSpec::all(), 1);
+    blue->setValue(1., ViewSpec::all(), 2);
+    connectNodes(backMaterial, backCard, 0, true);
+    connectNodes(backCard, graph.merge, 3, true);
+
+    const std::array<double, 4> half = centreAtFrame(graph.render, 1.);
+    EXPECT_GT(half[0], 0.1);
+    EXPECT_GT(half[2], 0.2);
+
+    knob<KnobColor>(constant, kConstantParamColor)->setValue(1., ViewSpec::all(), 3);
+    const std::array<double, 4> opaque = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(opaque[2], 0.05);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr normal = createConstant(0.5, 0.5, 1.);
+    const Graph graph = createLiveTextureGraph(createConstant(1., 1., 1.), false);
+    ASSERT_TRUE(bool(graph.render));
+    connectNodes(normal, graph.material, kUSDMaterialInputNormal, true);
+
+    const std::array<double, 4> flat = centreAtFrame(graph.render, 1.);
+    ASSERT_GT(flat[0], 0.05);
+
+    // Tipped most of the way off the camera's axis, and so off the default light's.
+    KnobColor* color = knob<KnobColor>(normal, kConstantParamColor);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0.5, ViewSpec::all(), 2);
+    const std::array<double, 4> bent = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(bent[0], 0.8 * flat[0]) << "flat " << flat[0] << ", bent " << bent[0];
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, MatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+    ASSERT_TRUE(bool(ramp));
+    KnobDouble* point0 = knob<KnobDouble>(ramp, kRampParamPoint0);
+    KnobDouble* point1 = knob<KnobDouble>(ramp, kRampParamPoint1);
+    KnobColor* color0 = knob<KnobColor>(ramp, kRampParamColor0);
+    KnobColor* color1 = knob<KnobColor>(ramp, kRampParamColor1);
+    ASSERT_TRUE(point0 && point1 && color0 && color1);
+    point0->setValue(0., ViewSpec::all(), 0);
+    point0->setValue(0., ViewSpec::all(), 1);
+    point1->setValue(double(kSize), ViewSpec::all(), 0);
+    point1->setValue(double(kSize), ViewSpec::all(), 1);
+    color0->setValue(1., ViewSpec::all(), 0);
+    color0->setValue(0., ViewSpec::all(), 1);
+    color0->setValue(0., ViewSpec::all(), 2);
+    color0->setValue(1., ViewSpec::all(), 3);
+    color1->setValue(0., ViewSpec::all(), 0);
+    color1->setValue(1., ViewSpec::all(), 1);
+    color1->setValue(0., ViewSpec::all(), 2);
+    color1->setValue(1., ViewSpec::all(), 3);
+    const Graph graph = createLiveTextureGraph(ramp, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderOffMainThread(graph.render, 1., &planes));
+    matchGolden(planes[0], "CyclesLiveTexture");
 }

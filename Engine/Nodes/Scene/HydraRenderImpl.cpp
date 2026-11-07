@@ -86,6 +86,7 @@
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -1121,6 +1122,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         int threads = 0;
         if (cycles && !openCyclesSession(request, cancel, &threads, error)) {
             return nullptr;
@@ -2560,6 +2562,7 @@ struct ProgressiveRender::Implementation {
         parameters.gpuEnabled = false;
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         EnginePtr made;
         {
             TfErrorMark mark;

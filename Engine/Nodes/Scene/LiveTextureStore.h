@@ -52,7 +52,7 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief One rendered live texture, immutable once stored: width x height RGBA float pixels, rows
- * bottom-up as Natron renders them, after a small header. The colour is not premultiplied, as USD
+ * bottom-up as Natron renders them, after a small header, as LiveTextureFile.h lays them out. The colour is not premultiplied, as USD
  * textures are not: where an RGBA image's alpha is 0, within kTransparentFillBand texels of one
  * with an alpha, the colour is that of the nearest texels with an alpha, so filtering across its
  * edges blends in no black; farther out it is as rendered. The header and the pixels are one
@@ -96,6 +96,22 @@ public:
         return _byteSize;
     }
 
+    // The file render delegates read this from, with its mip chain; empty while in plain memory.
+    const std::string& getFilePath() const
+    {
+        return _filePath;
+    }
+
+    /**
+     * @brief Wraps bytes mapped from filePath, read-only, whose owner removes the file when the last
+     * reference to them goes. The chain's lower levels follow the pixels in the same bytes.
+     **/
+    static std::shared_ptr<const LiveTextureBuffer> fromFile(const std::shared_ptr<const char>& bytes,
+                                                             std::size_t byteSize,
+                                                             int width,
+                                                             int height,
+                                                             const std::string& filePath);
+
     /**
      * @brief Reads back what getBytes() holds: false, leaving the outputs untouched, for bytes
      * that are not a live texture or are truncated.
@@ -114,6 +130,7 @@ private:
     float* _pixels = nullptr;
     int _width = 0;
     int _height = 0;
+    std::string _filePath;
 };
 
 typedef std::shared_ptr<const LiveTextureBuffer> LiveTextureBufferConstPtr;
@@ -213,17 +230,39 @@ public:
     int prepare(const LiveTextureSourceList& sources,
                 double frame);
 
-    // The reason uri could not be rendered, empty if it was not tried or succeeded.
+    /**
+     * @brief The texture uri as a file a render delegate can read, with its mip chain, written the
+     * first time a delegate asks so a session that only uses Storm never touches shared memory. From
+     * then on the store holds the file's mapping in place of its own copy. Holding the result keeps
+     * the file past eviction and clear(), which is what lets a renderer close and reopen it
+     * mid-render. Blocks only callers asking for the same uri while the file is written. Null when
+     * there is no such file, with the reason in getFailure() and the consumers warned; a texture that
+     * did not fit is not tried again until it is rendered again.
+     **/
+    LiveTextureBufferConstPtr exportToSharedMemory(const std::string& uri);
+
+    // The name of the node whose image a file from exportToSharedMemory() holds, empty for any other.
+    std::string getSourceOfFile(const std::string& path) const;
+
+    // The reason uri could not be rendered or exported, empty if it was not tried or succeeded.
     std::string getFailure(const std::string& uri) const;
 
 private:
     LiveTextureStore();
 
     void evictLocked();
+    void recordFailureLocked(const std::string& uri,
+                             const std::string& failure);
+    void addConsumerLocked(const std::string& uri,
+                           const NodeWPtr& consumer);
+    std::vector<LiveTextureBufferConstPtr> releaseUnusedFilesLocked(const std::string& keptUri,
+                                                                    std::size_t bytes);
 
     struct Entry {
         LiveTextureBufferConstPtr buffer;
         std::list<std::string>::iterator use;
+        // Whom to warn if a delegate's export fails, long after prepare() returned.
+        std::vector<NodeWPtr> consumers;
     };
 
     mutable std::mutex _mutex;
@@ -232,6 +271,10 @@ private:
     // Most recently used first.
     std::list<std::string> _uses;
     std::set<std::string> _rendering;
+    std::set<std::string> _exporting;
+    // Files alive through a delegate's reference after their entry left the store: a texture
+    // rendered again must not write a second file under the same URI.
+    std::map<std::string, std::weak_ptr<const LiveTextureBuffer>> _exported;
     std::map<std::string, std::string> _failures;
     // The URIs of the prepare() calls under way, with how many hold each.
     std::map<std::string, int> _pinned;

@@ -177,6 +177,8 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 ## Decisions
 
+- 2026-11-07 — Bulk delete prompt written (code on milestone/m118-large-graph-gui-responsiveness): one summary, capped at 12 link lines with an "and N more" line; none when nothing breaks.
+
 - 2026-11-07 — Bulk delete (user): deleting several nodes whose knobs other nodes link to shows one summary prompt listing what breaks, not one prompt per node.
 
 - 2026-11-07 — Bench move (user): the host rebooted during the Xvfb bench (cause unproven, no kernel log visible; the partial chain-only run is discarded). All benchmarking runs at one time on the GPU host, before and after in the same sitting so the numbers are fair and comparable. This replaces P5.T1's three Xvfb runs on this host; the comparison uses a before build run there, not the old Xvfb baseline.

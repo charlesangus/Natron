@@ -156,6 +156,8 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Decisions
 
+- 2026-11-07 — User: the viewer falls back to the headlight, in Auto and Scene modes, while no scene light is drawn. Load All skips Hidden rows as well as BBox. The recursive clear keeps the row's own state and is called **Clear Below**; Reset to Graph clears the row and everything below. Materials and cameras under a Hidden row stay in Hydra. Pending: whether lights directly under a Children row keep lighting (the user asked for more detail).
+
 - 2026-11-07 — Load All and BBox (user): Load All skips payloads under a BBox row, so the load needs exclusions. The column also needs a recursive clear, so nobody has to clear child rows one at a time.
 
 - 2026-11-07 — Names (user): the state called Full + Load in the design and earlier tasks is now **Load All** (`loadAll`), everywhere it appears: draw column, viewer key action, USDRead `Initial Draw`, USDExpandHierarchy rules. The column stays Draw State (`drawState`).

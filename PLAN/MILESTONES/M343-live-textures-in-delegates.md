@@ -77,6 +77,8 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Decisions
 
+- 2026-11-07 — USDWrite with a deleted texture source (user): warn, naming the material, and export the material's own colour; don't fail the export.
+
 - 2026-11-07 — Deleted source implemented at 7c95b00cd: a hidden persistent mark per input set only by node deletion, so a deliberate disconnect clears the slot; USDWrite now fails an export with a deleted source (pending the user's call).
 
 - 2026-11-07 — Deleted source (user): "missing textures also render magenta". A material whose texture source was deleted shows magenta too, not its own colour.

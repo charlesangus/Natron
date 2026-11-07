@@ -2155,6 +2155,8 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
             assert(fp);
         }
 
+        // A broken point stays broken until Smooth is applied.
+        breakTangents = breakTangents || cp->getBroken() || (fp && fp->getBroken());
 
         bool isOnKeyframe = false;
         Transform::Point3D left, right;

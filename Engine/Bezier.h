@@ -238,11 +238,10 @@ private:
     void setPointByIndexInternal(bool useGuiCurve, int index, double time, double dx, double dy);
 
 public:
-
-
     /**
      * @brief Moves the left bezier point of the control point at the given index by the given deltas
      * and at the given time.
+     * A point whose tangents are broken stays broken.
      * If auto keying is enabled and there's no keyframe at the current time, a new keyframe will be added.
      * If ripple edit is enabled, the point will be moved at the same location at all keyframes.
      **/
@@ -251,6 +250,7 @@ public:
     /**
      * @brief Moves the right bezier point of the control point at the given index by the given deltas
      * and at the given time.
+     * A point whose tangents are broken stays broken.
      * If auto keying is enabled and there's no keyframe at the current time, a new keyframe will be added.
      * If ripple edit is enabled, the point will be moved at the same location at all keyframes.
      **/

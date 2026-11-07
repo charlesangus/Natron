@@ -41,6 +41,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -132,6 +133,26 @@ protected:
         NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
 
         return effect ? effect->getOutputMetadata(1., ViewIdx(0)) : ImageMetadata();
+    }
+
+    static RectI outputFormat(const NodePtr& node)
+    {
+        return node->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+    }
+
+    static void setCropMargins(const NodePtr& node,
+                               int left,
+                               int bottom,
+                               int right,
+                               int top)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+
+        effect->getKnobByNameAndType<KnobBool>(kRawPrepareParamCropOverride)->setValue(true);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropLeft)->setValue(left);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropBottom)->setValue(bottom);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropRight)->setValue(right);
+        effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropTop)->setValue(top);
     }
 
     static RectD regionOfDefinition(const NodePtr& node)
@@ -246,6 +267,7 @@ TEST_F(NativeRawPrepareTest, AnOddCropKeepsTheColourOfEveryPhotosite)
         }
     }
     EXPECT_EQ(RectI(0, 0, crop.width(), crop.height()), RawMetadata::getCrop(out).value_or(RectI()));
+    EXPECT_TRUE(RectI(0, 0, crop.width(), crop.height()) == outputFormat(node));
 
     // The same crop through the override knobs.
     NodePtr plain = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
@@ -258,6 +280,7 @@ TEST_F(NativeRawPrepareTest, AnOddCropKeepsTheColourOfEveryPhotosite)
     effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropRight)->setValue(kWidth - crop.x2);
     effect->getKnobByNameAndType<KnobInt>(kRawPrepareParamCropTop)->setValue(kHeight - crop.y2);
     EXPECT_EQ(rod, regionOfDefinition(overridden));
+    EXPECT_TRUE(RectI(0, 0, crop.width(), crop.height()) == outputFormat(overridden));
     EXPECT_TRUE(RawLayout::fromMetadata(outputMetadata(overridden)).value_or(RawLayout()) == *output);
     RenderedPlane overriddenPlane;
     ASSERT_TRUE(renderRawTestPlane(overridden, window, &overriddenPlane, &error)) << error;
@@ -303,6 +326,8 @@ TEST_F(NativeRawPrepareTest, PreparedDataPassesThroughWithAWarning)
         }
     }
     EXPECT_EQ(metadata, outputMetadata(node));
+    EXPECT_TRUE(outputFormat(source) == outputFormat(node));
+    EXPECT_TRUE(outputFormat(source) == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
     ASSERT_TRUE(node->hasPersistentMessage());
     QString message;
     int type = 0;
@@ -337,4 +362,79 @@ TEST_F(NativeRawPrepareTest, ASourceWithoutAStageRaisesTheStageError)
     dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setMetadata(mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
     ASSERT_TRUE(renderRawTestPlane(node, RectI(0, 0, kWidth, kHeight), &plane, &error)) << error;
     EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(NativeRawPrepareTest, TheOutputFormatFollowsTheCropOverride)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    EXPECT_TRUE(RectI(0, 0, kWidth, kHeight) == outputFormat(node));
+    setCropMargins(node, 2, 1, 3, 4);
+    EXPECT_TRUE(RectI(0, 0, kWidth - 5, kHeight - 5) == outputFormat(node));
+    setCropMargins(node, 1, 0, 0, 2);
+    EXPECT_TRUE(RectI(0, 0, kWidth - 1, kHeight - 2) == outputFormat(node));
+}
+
+TEST_F(NativeRawPrepareTest, APreparedSourceKeepsItsFormatEvenWithCropMargins)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("BGGR", 0, 0, eRawStagePrepared));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    setCropMargins(node, 2, 1, 3, 4);
+    const RectI inputFormat = outputFormat(source);
+    EXPECT_TRUE(inputFormat == outputFormat(node));
+    EXPECT_TRUE(inputFormat == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, ADisabledNodeKeepsItsInputsFormat)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    setCropMargins(node, 2, 1, 3, 4);
+    node->getDisabledKnob()->setValue(true);
+    EXPECT_TRUE(outputFormat(source) == outputFormat(node));
+    EXPECT_TRUE(outputFormat(source) == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, UnresolvedSettingsLeaveTheFormatAlone)
+{
+    NodePtr node = createPrepare(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    const RectI before = outputFormat(node);
+    setCropMargins(node, 2, 1, 3, 4);
+    EXPECT_TRUE(before == outputFormat(node));
+    EXPECT_TRUE(before == node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getOutputFormat());
+}
+
+TEST_F(NativeRawPrepareTest, TheFormatStaysInPixelsWhateverTheSourcePixelAspectRatio)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr node = createPrepare(source);
+    ASSERT_TRUE(source && node);
+
+    dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setPixelAspectRatio(2.);
+    setCropMargins(node, 2, 1, 3, 4);
+    // The test source reports its RoD in canonical units, so at PAR 2 its pixel grid is half as wide.
+    EXPECT_TRUE(RectI(0, 0, kWidth / 2 - 5, kHeight - 5) == outputFormat(node));
+    EXPECT_EQ(2., node->getEffectInstance()->getMetadata(1., ViewIdx(0))->getPixelAspectRatio(-1));
+}
+
+TEST_F(NativeRawPrepareTest, ADemosaicAfterThePrepareReportsThePreparedFormat)
+{
+    NodePtr source = createSource(RectI(0, 0, kWidth, kHeight), 1, mosaicMetadata("RGGB", 0, 0, eRawStageRaw));
+    NodePtr prepare = createPrepare(source);
+    NodePtr demosaic = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWDEMOSAIC));
+    ASSERT_TRUE(source && prepare && demosaic);
+    connectNodes(prepare, demosaic, 0, true);
+
+    setCropMargins(prepare, 1, 3, 1, 1);
+    const RectI expected(0, 0, kWidth - 2, kHeight - 4);
+    EXPECT_TRUE(expected == outputFormat(prepare));
+    EXPECT_TRUE(expected == outputFormat(demosaic));
 }

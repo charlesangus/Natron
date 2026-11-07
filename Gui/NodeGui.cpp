@@ -749,6 +749,13 @@ NodeGui::onSettingsPanelClosed(bool closed)
             effect->closeOverlayEditStepIfOwner();
         }
     }
+    {
+        NodePtr node = getNode();
+        EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+        if (effect) {
+            effect->refreshOverlayImages();
+        }
+    }
     // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
     NodePtr node = closed ? NodePtr() : getNode();
     if (node) {

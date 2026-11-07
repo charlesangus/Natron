@@ -209,6 +209,10 @@ public:
     ///A pointer to the node that requested the current render.
     NodePtr treeRoot;
 
+    /// Set only on the args of the node whose overlay images are being rendered, so that the nodes
+    /// upstream of it render and cache as they always do.
+    OverlayImagePassPtr overlayImagePass;
+
     ///In the tree originating from the root treeRoot, how many times this node is visited ? this is used to determine
     ///if we should cache the output and whether we should do GPU rendering or not
     int visitsCount;

@@ -3881,6 +3881,11 @@ RotoCurveInteract::onOverlayPenDown(double time,
                                     double timestamp,
                                     PenType pen)
 {
+    // A drag's first motion measures from here. The last hover cannot stand in: a pen may not report
+    // one, and a viewer pan or a modal dialog moves the cursor over the canvas with no motion sent here.
+    lastClickPos = pos;
+    lastMousePos = pos;
+
     const bool altPress = altPressClaimed;
     altPressClaimed = false;
     featherBarKeepsTangents = false;
@@ -4230,8 +4235,6 @@ RotoCurveInteract::onOverlayPenDown(double time,
                         tangentBeingDragged = *it;
                         closingTangentDrag = true;
                         state = eEventStateDraggingRightTangent;
-                        lastClickPos = pos;
-                        lastMousePos = pos;
                     } else {
                         BezierCPPtr fp = builtBezier->getFeatherPointAtIndex(i);
                         assert(fp);
@@ -4288,9 +4291,6 @@ RotoCurveInteract::onOverlayPenDown(double time,
         didSomething = onPaintToolPenDown(time, pos, pressure, timestamp);
         break;
     } // switch
-
-    lastClickPos = pos;
-    lastMousePos = pos;
 
     return didSomething;
 } // penDown

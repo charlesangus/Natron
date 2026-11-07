@@ -4457,7 +4457,7 @@ Bezier::expandToFeatherDistance(bool useGuiCurve,
 
     if (featherDistance != 0) {
         ///shortcut when the feather point is different than the control point
-        if ( (cp.x != fp->x) && (cp.y != fp->y) ) {
+        if ((cp.x != fp->x) || (cp.y != fp->y)) {
             double dx = (fp->x - cp.x);
             double dy = (fp->y - cp.y);
             double dist = sqrt(dx * dx + dy * dy);

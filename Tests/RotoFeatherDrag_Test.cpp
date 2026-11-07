@@ -28,8 +28,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <list>
 
+#include "Engine/Bezier.h"
 #include "Engine/RotoFeatherDrag.h"
+#include "Engine/Transform.h"
 
 NATRON_NAMESPACE_USING
 
@@ -53,6 +56,22 @@ length(const Point& p)
 {
     return std::sqrt(p.x * p.x + p.y * p.y);
 }
+}
+
+TEST(RotoFeatherDrag, BarReachesPastAFeatherMovedAlongOneAxis)
+{
+    const std::list<BezierCPPtr> noFeathers;
+    const Transform::Matrix3x3 identity(1., 0., 0., 0., 1., 0., 0., 0., 1.);
+
+    Point vertical = pt(10, 30);
+    Bezier::expandToFeatherDistance(true, pt(10, 10), &vertical, 5., 1., true, identity, noFeathers.end(), noFeathers.end(), noFeathers.end());
+    EXPECT_NEAR(vertical.x, 10., kEps);
+    EXPECT_NEAR(vertical.y, 35., kEps);
+
+    Point horizontal = pt(30, 10);
+    Bezier::expandToFeatherDistance(true, pt(10, 10), &horizontal, 5., 1., true, identity, noFeathers.end(), noFeathers.end(), noFeathers.end());
+    EXPECT_NEAR(horizontal.x, 35., kEps);
+    EXPECT_NEAR(horizontal.y, 10., kEps);
 }
 
 TEST(RotoFeatherDrag, BarDirectionIsUnitVectorFromControlPointToFeather)

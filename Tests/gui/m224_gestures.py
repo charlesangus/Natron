@@ -559,6 +559,8 @@ try:
         yield ("sleep", SETTLE_MS)
         check(bez.isCurveFinished(), "one redo closes the shape again")
         check(close(point(bez, 0), c0, 1e-6), "the same redo brings the dragged handles back")
+        tool = drawing_tool()
+        check(tool is not None and not tool[0], "the redone close leaves the drawing tool, as the close did (%s)" % (tool,))
 
         gt.section("escape-returns-to-select")
         send_key(gl, Qt.Key_V)
@@ -574,6 +576,8 @@ try:
         select_tool(gl)
         send_key(gl, Qt.Key_V)
         yield ("sleep", SETTLE_MS)
+        tool = drawing_tool()
+        check(tool == (True, "DrawBezierTool"), "V selects the Bezier tool (%s)" % (tool,))
         centre = QPointF(w * 0.5, h * 0.5)
         rad = min(w, h) * 0.25
         arc = [centre + QPointF(rad * math.cos(math.radians(a)), rad * math.sin(math.radians(a))) for a in range(200, 341, 4)]
@@ -836,7 +840,11 @@ try:
             after = feather(bez, 0)
             report("NOTE %s of the feather tangent: handle moved %.3f, point moved %.3f"
                    % (what, moved_by(before, after, 4), moved_by(before, after, 0)))
-            check(moved_by(before, after, 4) > 10 * ps, "%s of the feather tangent moves the handle" % what)
+            # Motion events carry whole widget pixels, truncated towards zero past the viewer's top
+            # edge, so the drag can land up to 2 pixels short of 15.
+            check(abs(moved_by(before, after, 4) - 15 * ps) < 2 * ps,
+                  "%s of the feather tangent moves the handle by the drag (%.3f, 15 px = %.3f)"
+                  % (what, moved_by(before, after, 4), 15 * ps))
             check(moved_by(before, after, 0) < 1e-9, "%s of the feather tangent leaves the feather point" % what)
             check(canonical_under(probe) == view_before, "%s of the feather tangent does not pan the viewer" % what)
             trigger("undo")

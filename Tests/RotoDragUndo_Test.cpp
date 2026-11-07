@@ -37,6 +37,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QString>
+#include <QTemporaryDir>
+
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
@@ -95,7 +98,7 @@ dumpPoints(std::ostringstream& os,
 
     for (std::list<Serialization::BezierCPSerialization>::const_iterator it = points.begin(); it != points.end(); ++it, ++index) {
         os << kind << " " << index << " static " << hex(it->x) << " " << hex(it->y) << " " << hex(it->leftX) << " " << hex(it->leftY) << " "
-           << hex(it->rightX) << " " << hex(it->rightY) << "\n";
+           << hex(it->rightX) << " " << hex(it->rightY) << " broken " << it->broken << "\n";
         dumpCurve(os, "x", it->xCurve);
         dumpCurve(os, "y", it->yCurve);
         dumpCurve(os, "leftX", it->leftXCurve);
@@ -126,20 +129,7 @@ dumpGuiPoints(std::ostringstream& os,
     }
 }
 
-// Bezier::toSerialization writes every point as unbroken, so the flag is read from the points.
-void
-dumpBrokenFlags(std::ostringstream& os,
-                const char* kind,
-                const std::list<BezierCPPtr>& points)
-{
-    int index = 0;
-
-    for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it, ++index) {
-        os << kind << " " << index << " broken " << (*it)->getBroken() << "\n";
-    }
-}
-
-// The serialized shape, its broken flags, its GUI copy and the orientation the renderer reads at each
+// The serialized shape, its GUI copy and the orientation the renderer reads at each
 // keyframe.
 std::string
 dumpShape(const BezierPtr& shape)
@@ -151,8 +141,6 @@ dumpShape(const BezierPtr& shape)
     os << "closed " << s.closed << " open " << s.isOpenBezier << "\n";
     dumpPoints(os, "cp", s.controlPoints);
     dumpPoints(os, "fp", s.featherPoints);
-    dumpBrokenFlags(os, "cp", shape->getControlPoints());
-    dumpBrokenFlags(os, "fp", shape->getFeatherPoints());
     std::set<double> keys;
     shape->getKeyframeTimes(&keys);
     dumpGuiPoints(os, "cp", shape->getControlPoints(), keys);
@@ -648,6 +636,42 @@ TEST_F(RotoDragUndoTest, PenDownModifiersClearALostAltRelease)
     EXPECT_EQ(0, _ui->shiftDown);
 }
 
+TEST_F(RotoDragUndoTest, TangentDragMeasuresFromThePressNotTheLastHover)
+{
+    const PointPair point = pointAt(0);
+    double x, y;
+    point.first->getPositionAtTime(true, _time, ViewIdx(0), &x, &y);
+    _square->setPointAtIndex(false, 0, _time, x, y, x, y - 200., x, y + 200.);
+    _square->setPointAtIndex(true, 0, _time, x, y, x - 300., y, x + 300., y);
+
+    _ui->selectedTool = eRotoToolSelectAll;
+    _ui->selectedCps.clear();
+    _ui->selectedCps.push_back(point);
+
+    double timestamp = 0.;
+    const auto expectDragMovesRightHandle = [&](const BezierCPPtr& dragged,
+                                                double handleX,
+                                                double handleY) {
+        _ui->lastMousePos = QPointF(-500., -500.);
+
+        ASSERT_TRUE(_ui->onOverlayPenDown(_time, QPointF(handleX, handleY), 1., ++timestamp, ePenTypeLMB));
+        ASSERT_EQ(eEventStateDraggingRightTangent, _ui->state);
+        ASSERT_EQ(dragged, _ui->tangentBeingDragged);
+        _ui->onOverlayPenMotion(_time, QPointF(handleX + 3., handleY + 4.), 1., ++timestamp);
+        _ui->onOverlayPenMotion(_time, QPointF(handleX + 5., handleY + 6.), 1., ++timestamp);
+        _ui->onOverlayPenUp();
+
+        double rx, ry;
+        dragged->getRightBezierPointAtTime(true, _time, ViewIdx(0), &rx, &ry);
+        EXPECT_NEAR(handleX + 5., rx, 1e-6);
+        EXPECT_NEAR(handleY + 6., ry, 1e-6);
+    };
+
+    // The feather first: with the feather link on, a control point's drag moves its feather handle too.
+    expectDragMovesRightHandle(point.second, x + 300., y);
+    expectDragMovesRightHandle(point.first, x, y + 200.);
+}
+
 TEST_F(RotoDragUndoTest, AutoKeyedDragOfANonFirstPointUndoesTheKeyOnEveryPoint)
 {
     _node->getRotoContext()->setAutoKeyingEnabled(true);
@@ -782,4 +806,130 @@ TEST_F(RotoDragUndoTest, ClosingAndItsTangentDragAreOneUndoStep)
 
     std::shared_ptr<OpenCloseUndoCommand> keyless = std::make_shared<OpenCloseUndoCommand>(_ui, _square);
     EXPECT_FALSE(keyless->mergeWith(drag)) << "only the closing click takes in a drag";
+}
+
+TEST_F(RotoDragUndoTest, RedoOfAClosingDrawLeavesTheDrawTool)
+{
+    _square->setCurveFinished(false);
+    _ui->setCurrentTool(_ui->drawBezierAction.lock());
+    _ui->setBuiltBezier(_square);
+
+    std::shared_ptr<OpenCloseUndoCommand> closeCommand = std::make_shared<OpenCloseUndoCommand>(_ui, _square);
+    closeCommand->redo();
+    _ui->builtBezier.reset();
+    const KnobButtonPtr selectTool = _ui->getLastSelectTool();
+    _ui->setCurrentTool(selectTool);
+
+    closeCommand->undo();
+    EXPECT_EQ(_ui->drawBezierAction.lock(), _ui->selectedToolAction.lock());
+    EXPECT_EQ(_square, _ui->builtBezier);
+
+    closeCommand->redo();
+    EXPECT_TRUE(_square->isCurveFinished());
+    EXPECT_EQ(selectTool, _ui->selectedToolAction.lock());
+    EXPECT_FALSE(_ui->builtBezier);
+}
+
+namespace {
+
+// Breaks the point at index and pulls its two handles to non-collinear directions.
+void
+breakWithBentHandles(const BezierPtr& shape,
+                     int index,
+                     double time)
+{
+    shape->setTangentsBroken(shape->getControlPointAtIndex(index), shape->getFeatherPointAtIndex(index), time);
+    shape->moveLeftBezierPoint(index, time, -3., 7.);
+    shape->moveRightBezierPoint(index, time, 6., 2.);
+}
+
+void
+expectSameBrokenPoint(const BezierPtr& expected,
+                      const BezierPtr& actual,
+                      int index,
+                      double time)
+{
+    const BezierCPPtr points[2][2] = {
+        { expected->getControlPointAtIndex(index), actual->getControlPointAtIndex(index) },
+        { expected->getFeatherPointAtIndex(index), actual->getFeatherPointAtIndex(index) }
+    };
+
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_TRUE(points[i][0] && points[i][1]);
+        EXPECT_TRUE(points[i][1]->getBroken()) << i;
+        for (int gui = 0; gui < 2; ++gui) {
+            double ex, ey, elx, ely, erx, ery, ax, ay, alx, aly, arx, ary;
+            points[i][0]->getPositionAtTime(gui, time, ViewIdx(0), &ex, &ey);
+            points[i][0]->getLeftBezierPointAtTime(gui, time, ViewIdx(0), &elx, &ely);
+            points[i][0]->getRightBezierPointAtTime(gui, time, ViewIdx(0), &erx, &ery);
+            points[i][1]->getPositionAtTime(gui, time, ViewIdx(0), &ax, &ay);
+            points[i][1]->getLeftBezierPointAtTime(gui, time, ViewIdx(0), &alx, &aly);
+            points[i][1]->getRightBezierPointAtTime(gui, time, ViewIdx(0), &arx, &ary);
+            EXPECT_EQ(ex, ax) << i << " " << gui;
+            EXPECT_EQ(ey, ay) << i << " " << gui;
+            EXPECT_EQ(elx, alx) << i << " " << gui;
+            EXPECT_EQ(ely, aly) << i << " " << gui;
+            EXPECT_EQ(erx, arx) << i << " " << gui;
+            EXPECT_EQ(ery, ary) << i << " " << gui;
+        }
+    }
+}
+
+} // namespace
+
+TEST_F(RotoDragUndoTest, BrokenTangentsSurviveSerialization)
+{
+    breakWithBentHandles(_square, 1, _time);
+    ASSERT_TRUE(pointAt(1).first->getBroken());
+    ASSERT_FALSE(pointAt(0).first->getBroken());
+
+    Serialization::BezierSerialization s;
+    _square->toSerialization(&s);
+
+    BezierPtr loaded = std::make_shared<Bezier>(_node->getRotoContext(), "loaded", RotoLayerPtr(), false);
+    loaded->fromSerialization(s);
+
+    ASSERT_EQ(_square->getControlPointsCount(), loaded->getControlPointsCount());
+    expectSameBrokenPoint(_square, loaded, 1, _time);
+    EXPECT_FALSE(loaded->getControlPointAtIndex(0)->getBroken());
+    EXPECT_FALSE(loaded->getFeatherPointAtIndex(0)->getBroken());
+}
+
+TEST_F(RotoDragUndoTest, BrokenTangentsSurviveProjectSaveAndLoad)
+{
+    breakWithBentHandles(_square, 2, _time);
+    const std::string name = _square->getScriptName();
+    const std::string nodeName = _node->getScriptName();
+    const U64 hashBefore = _square->getContentHash();
+    const double time = _time;
+
+    // The reloaded shape is compared with a snapshot taken before the project is reset.
+    BezierPtr snapshot = std::make_shared<Bezier>(_node->getRotoContext(), "snapshot", RotoLayerPtr(), false);
+    Serialization::BezierSerialization s;
+    _square->toSerialization(&s);
+    snapshot->fromSerialization(s);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("broken-tangents.ntpz");
+    ProjectPtr project = getApp()->getProject();
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, NULL));
+
+    _square.reset();
+    _ui.reset();
+    _node.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr node = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr context = node->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr reloaded = std::dynamic_pointer_cast<Bezier>(context->getItemByName(name));
+    ASSERT_TRUE(bool(reloaded));
+
+    expectSameBrokenPoint(snapshot, reloaded, 2, time);
+    EXPECT_FALSE(reloaded->getControlPointAtIndex(1)->getBroken());
+    EXPECT_EQ(hashBefore, reloaded->getContentHash());
 }

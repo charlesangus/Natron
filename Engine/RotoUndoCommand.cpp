@@ -1496,7 +1496,15 @@ OpenCloseUndoCommand::redo()
         return;
     }
     if (_firstRedoCalled) {
-        roto->setCurrentTool( _selectedTool.lock() );
+        const KnobButtonPtr tool = _selectedTool.lock();
+        if ((tool == roto->drawBezierAction.lock()) || (tool == roto->drawOpenBezierAction.lock())) {
+            // Closing a shape ends its drawing. Staying in the draw tool would make the next press
+            // of its shortcut cycle to another drawing tool instead of starting a new shape.
+            roto->builtBezier.reset();
+            roto->setCurrentTool(roto->getLastSelectTool());
+        } else {
+            roto->setCurrentTool(tool);
+        }
     }
     _hostState = roto->getCurveContext()->saveHostState();
     _curve->setCurveFinished( !_curve->isCurveFinished() );

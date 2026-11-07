@@ -120,6 +120,18 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
   - size: L
 
+- [ ] M240.P3.T7 — ShapeFalloff parity on RADV
+  - files: `Tests/Native/ShapeFalloff_Test.cpp`, the shape falloff kernels and matching CPU code (M128 - Native Shape Generators)
+  - approach: On RADV at main a2906666a, `ShapeFalloffGpu.MatchesCpu` fails exact parity on the ellipse edge (worst 2.48e-5) and rounded box edge (worst 9.5e-6). lavapipe passes. Same method as P3.T3–T5: find the diverging step, most likely RADV's divide or sqrt, and route it through `exactdivide.slang`, or bound the comparison with a recorded reason if it is inherent.
+  - verify: `ctest -R ShapeFalloffGpu` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T8 — USDRenderStorm projection cases on RADV
+  - files: `Tests/Scene/USDRenderStorm_Test.cpp`, the projection path of M234 - Camera Projection Nodes
+  - approach: On RADV at main a2906666a, `USDRenderStormTest` `StormProject3DWorld`, `StormProject3DGeometryHeld`, both `ThroughAssignMaterial` variants and `StormProject3DOverscan` exceed the differing-pixel bound (433–686 pixels against about 73, worst 0.144; 89 against 74, worst 0.07 for overscan). lavapipe passes. Find whether this is hardware sampling or rasterisation at texture or silhouette edges, or a real projection bug. Fix a real bug in the node; otherwise bound the comparison with a recorded reason.
+  - verify: `ctest -R USDRenderStorm` passes on RADV and lavapipe.
+  - size: L
+
 ## Decisions
 
 - 2026-10-26 — **Started alongside M184 (user):** the user asked for it to be picked up in parallel. P1 is read-only and runs now. P2 starts once M184 - Variable-Size Filter Kit has merged (it brings `knobValueAsFloat`), on a branch rebased onto main.
@@ -175,3 +187,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-11-05 — **Second review round on PR #160 (Claude, on the P3.T6 commit only; Codex over its quota cap):** one major finding, fixed in e36d4b320: turning heal's `store4` into a macro stripped `NoContraction` from most `precise` arithmetic in eight kernels, which `kHealTolerance` cannot detect. Heal's accessors are generated per buffer as real functions now. 13 of 14 `.spv` files are byte-identical to the build before the fix, and `heal_tail` differs only by `Coherent` on `b`, `e` and `t`. RADV on e36d4b320 (main 06f3aba93): 718 of 719; only M310 - Device-Switch Shader Test Fix's test fails. Heal and AMaZE GPU suites pass 5 of 5 repeats.
 
 - 2026-11-07 — **Merged main at a2906666a (gpu):** merged rather than rebased, as this branch already carries merges of main and is squashed on landing. M95 - Knob Cleanup And Keyer Redesign rewrote the keyers, so the narrowing was re-applied to the new code: ChromaKeyer (`keyRamp`, `composite`, `readSettings`) and Keyer's range points in `KeyerRange.h` (f86af1706). Left alone under the 2026-10-27 trap policy: `trapezoidMatteFloat` in `KeyerMatte.h` and HSVKeyer's hue paths, which take non-finite or extreme range values per pixel in debug only. Nodes merged since the audit (M128 - Native Shape Generators, M160 - Lensfun Lens Correction and others) were not re-audited.
+
+- 2026-11-07 — **RADV gate on main at a2906666a (gpu, debug, f86af1706):** 749 of 752 pass. M196 - Copy-Compute Contention's branch on the same main fails the same two new suites with the same worst differences, so they come from main. They become P3.T7 and P3.T8, as earlier inherited failures did. The third failure is M310 - Device-Switch Shader Test Fix's test, which this gate does not count.

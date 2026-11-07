@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -57,17 +59,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const int kOfxMajor = 2;
 const double kTime = 1.;
-
-struct MorphologyVariant {
-    const char* id;
-    const char* name;
-    int nativeMajor;
-};
-
-const MorphologyVariant kErode = { PLUGINID_NATRON_ERODE, "Erode", PLUGIN_MAJOR_NATRON_ERODE };
-const MorphologyVariant kDilate = { PLUGINID_NATRON_DILATE, "Dilate", PLUGIN_MAJOR_NATRON_DILATE };
 
 // Rectangular minimum and maximum are exact in float.
 const ParityTolerance kTolerance = ParityTolerance::exact();
@@ -128,12 +120,11 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeErodeDilate64x48", 1.));
     }
 
-    ParityPair makePair(const MorphologyVariant& variant)
+    ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), variant.id, kOfxMajor, variant.nativeMajor);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_ERODEDILATE, PLUGIN_MAJOR_NATRON_ERODEDILATE);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX plugin is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -143,16 +134,14 @@ protected:
     }
 
     void expectParity(const ParityPair& pair,
-                      const MorphologyVariant& variant,
                       const std::string& caseName,
                       bool record)
     {
-        const std::string fullName = std::string(variant.name) + "-" + caseName;
+        const std::string fullName = std::string("ErodeDilate-") + caseName;
 
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, fullName, RectI(), mipmapLevel, kTolerance, record);
             EXPECT_TRUE(r.ok) << fullName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << fullName;
             std::cout << "[ parity ] " << fullName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -177,39 +166,71 @@ protected:
         }
     }
 
-    void runSizes(const MorphologyVariant& variant)
+    // The recorded cases, eroding at the sizes named, or dilating at them when `dilate` negates
+    // them.
+    void runSizes(bool dilate)
     {
         resetProject();
-        ParityPair pair = makePair(variant);
+        ParityPair pair = makePair();
         ASSERT_TRUE(bool(pair.native));
+        const double sign = dilate ? -1. : 1.;
+        const std::string mode = dilate ? "dilate-" : "erode-";
 
-        expectParity(pair, variant, "size-1x1", true);
+        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign, sign }));
+        expectParity(pair, mode + "size-1x1", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 5., 0. }));
-        expectParity(pair, variant, "size-5x0", true);
+        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * 5., 0. }));
+        expectParity(pair, mode + "size-5x0", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { -3., -3. }));
-        expectParity(pair, variant, "size-neg3x3", true);
+        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * -3., sign * -3. }));
+        expectParity(pair, mode + "size-neg3x3", true);
+    }
+
+    bool renderRGBA(const NodePtr& node,
+                    const RectI& window,
+                    std::vector<float>* pixels)
+    {
+        const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        if (!renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error) || (planes.size() != 1)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        *pixels = planes[0].pixels;
+
+        return true;
+    }
+
+    NodePtr makeNode(const NodePtr& source,
+                     double sizeX,
+                     double sizeY)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
+
+        EXPECT_TRUE(isNative(node));
+        if (node) {
+            connectNodes(source, node, 0, true);
+            EXPECT_TRUE(setKnobValues(node, kErodeDilateParamSize, { sizeX, sizeY }));
+        }
+
+        return node;
     }
 };
 
-TEST_F(NativeErodeDilateTest, UnversionedRequestsGetTheNativeNodes)
+TEST_F(NativeErodeDilateTest, UnversionedRequestsGetTheNativeNode)
 {
-    NodePtr erode = createNode(QString::fromUtf8(kErode.id));
-    ASSERT_TRUE(bool(erode));
-    EXPECT_TRUE(isNative(erode));
-    EXPECT_EQ(kErode.nativeMajor, erode->getMajorVersion());
-
-    NodePtr dilate = createNode(QString::fromUtf8(kDilate.id));
-    ASSERT_TRUE(bool(dilate));
-    EXPECT_TRUE(isNative(dilate));
-    EXPECT_EQ(kDilate.nativeMajor, dilate->getMajorVersion());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(isNative(node));
+    EXPECT_EQ(PLUGIN_MAJOR_NATRON_ERODEDILATE, node->getMajorVersion());
 }
 
 TEST_F(NativeErodeDilateTest, InputsAreSourceAndMask)
 {
     resetProject();
-    NodePtr node = createNode(QString::fromUtf8(kErode.id), kErode.nativeMajor);
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
     ASSERT_TRUE(isNative(node));
     EXPECT_EQ(std::string("Source"), node->getInputLabel(0));
     EXPECT_EQ(std::string("Mask"), node->getInputLabel(1));
@@ -218,7 +239,7 @@ TEST_F(NativeErodeDilateTest, InputsAreSourceAndMask)
     EXPECT_FALSE(bool(node->getKnobByName("hostUnPremultBy")));
 }
 
-TEST_F(NativeErodeDilateTest, SourceRegionOfInterestAndIdentityFollowTheOfxPlugin)
+TEST_F(NativeErodeDilateTest, SourceRegionOfInterestIdentityAndExpansion)
 {
     ErodeDilateParams params;
     const RectI rect(10, 20, 30, 40);
@@ -241,45 +262,89 @@ TEST_F(NativeErodeDilateTest, SourceRegionOfInterestAndIdentityFollowTheOfxPlugi
     EXPECT_TRUE(ErodeDilate::paramsAreIdentity(RenderScale::identity, params));
     params.sizeX = 1;
     EXPECT_FALSE(ErodeDilate::paramsAreIdentity(RenderScale::identity, params));
-    // floor(1 * 0.5) = 0 is identity, but floor(-1 * 0.5) = -1 is not: the plug-in's quirk.
+    // floor(|size| * 0.5) = 0 is identity at mipmap level 1, whichever the sign.
     EXPECT_TRUE(ErodeDilate::paramsAreIdentity(RenderScale::fromMipmapLevel(1), params));
     params.sizeX = -1;
-    EXPECT_FALSE(ErodeDilate::paramsAreIdentity(RenderScale::fromMipmapLevel(1), params));
+    EXPECT_FALSE(ErodeDilate::paramsAreIdentity(RenderScale::identity, params));
+    EXPECT_TRUE(ErodeDilate::paramsAreIdentity(RenderScale::fromMipmapLevel(1), params));
 
+    // Only a negative, dilating, size expands the region.
     int deltaX = -1;
     int deltaY = -1;
     params.sizeX = -3;
     params.sizeY = 5;
-    ErodeDilate::getExpansion(RenderScale::identity, params, false, &deltaX, &deltaY);
+    ErodeDilate::getExpansion(RenderScale::identity, params, &deltaX, &deltaY);
     EXPECT_EQ(3, deltaX);
     EXPECT_EQ(0, deltaY);
-    ErodeDilate::getExpansion(RenderScale::identity, params, true, &deltaX, &deltaY);
+    params.sizeX = 3;
+    params.sizeY = -5;
+    ErodeDilate::getExpansion(RenderScale::identity, params, &deltaX, &deltaY);
     EXPECT_EQ(0, deltaX);
     EXPECT_EQ(5, deltaY);
 }
 
+// A size of 0 passes the source through bit for bit.
+TEST_F(NativeErodeDilateTest, SizeZeroIsIdentity)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    NodePtr node = makeNode(source, 0., 0.);
+    ASSERT_TRUE(bool(node));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    std::vector<float> expected, actual;
+    ASSERT_TRUE(renderRGBA(source, window, &expected));
+    ASSERT_TRUE(renderRGBA(node, window, &actual));
+    EXPECT_EQ(expected, actual);
+}
+
+// Sizes of opposite signs filter X and then Y: the same as an ErodeDilate on X alone followed by
+// one on Y alone.
+TEST_F(NativeErodeDilateTest, OppositeSignsFilterXThenY)
+{
+    const double sizes[][2] = { { 3., -2. }, { -4., 1. } };
+    for (const double* size : sizes) {
+        resetProject();
+        NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+        ASSERT_TRUE(bool(source));
+        setParitySourceOrigin(source, 0, 0);
+        NodePtr node = makeNode(source, size[0], size[1]);
+        NodePtr first = makeNode(source, size[0], 0.);
+        NodePtr second = first ? makeNode(first, 0., size[1]) : NodePtr();
+        ASSERT_TRUE(bool(node) && bool(second));
+
+        const RectI window(-8, -8, kParitySourceWidth + 8, kParitySourceHeight + 8);
+        std::vector<float> expected, actual;
+        ASSERT_TRUE(renderRGBA(second, window, &expected));
+        ASSERT_TRUE(renderRGBA(node, window, &actual));
+        EXPECT_EQ(expected, actual) << size[0] << "x" << size[1];
+    }
+}
+
 TEST_F(NativeErodeDilateTest, ErodeSizes)
 {
-    runSizes(kErode);
+    runSizes(false);
 }
 
 TEST_F(NativeErodeDilateTest, DilateSizes)
 {
-    runSizes(kDilate);
+    runSizes(true);
 }
 
 TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
 {
     resetProject();
-    const MorphologyVariant variants[] = { kErode, kDilate };
-    for (std::size_t v = 0; v < 2; ++v) {
+    for (double sign : { 1., -1. }) {
+        const std::string name = (sign > 0.) ? "6x-3" : "-6x3";
         NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-        NodePtr node = createNode(QString::fromUtf8(variants[v].id), variants[v].nativeMajor);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
         ASSERT_TRUE(bool(source));
         ASSERT_TRUE(isNative(node));
         connectNodes(source, node, 0, true);
-        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { 6., -3. }));
-        expectSameBothWays(node, std::string(variants[v].name) + "-6x-3");
+        ASSERT_TRUE(setKnobValues(node, kErodeDilateParamSize, { sign * 6., sign * -3. }));
+        expectSameBothWays(node, name);
 
         NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
         ASSERT_TRUE(bool(mask));
@@ -288,12 +353,11 @@ TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
         ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
         ASSERT_TRUE(setChannelSelect(node, "maskChannel_Mask", "rgba.A"));
         ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
-        expectSameBothWays(node, std::string(variants[v].name) + "-6x-3-mask-mix");
+        expectSameBothWays(node, name + "-mask-mix");
     }
 }
 
 TEST_F(NativeErodeDilateTest, RegisteredIdentity)
 {
-    expectNativeIdentity(PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE, "Erode");
-    expectNativeIdentity(PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE, "Dilate");
+    expectNativeIdentity(PLUGINID_NATRON_ERODEDILATE, PLUGIN_MAJOR_NATRON_ERODEDILATE, "ErodeDilate");
 }

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include <QMetaObject>
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
@@ -44,6 +45,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -166,6 +168,15 @@ USDRender::initializeKnobs()
     renderer->setAnimationEnabled(false);
     page->addKnob(renderer);
     _renderer = renderer;
+
+    KnobBoolPtr headlight = createKnob<KnobBool>(tr("Headlight"));
+    headlight->setName(kUSDRenderParamHeadlight);
+    headlight->setHintToolTip(tr("Adds a light at the camera to the scene's own lights. Off, only the scene's lights light "
+                                 "it, and a scene with none renders its lit surfaces black."));
+    headlight->setDefaultValue(false);
+    headlight->setAnimationEnabled(false);
+    page->addKnob(headlight);
+    _headlight = headlight;
 } // USDRender::initializeKnobs
 
 void
@@ -398,6 +409,8 @@ struct USDRender::RenderSetup {
     HydraRender::Request request;
     // The render's pixels in the output image.
     RectI pixels;
+    // What renders but not as asked, shown once the render succeeds.
+    std::string warning;
 };
 
 bool
@@ -436,6 +449,8 @@ USDRender::prepareRender(double time,
     if (scene.isEmpty()) {
         return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
     }
+    // Hydra reads live textures from the store and never renders them: render the frame's first.
+    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene), time);
     // The camera is read from a pooled stage, given back before the render: Storm renders the
     // node's own stage on the render thread.
     SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
@@ -447,6 +462,13 @@ USDRender::prepareRender(double time,
 
         return false;
     }
+    QStringList unresolved;
+    for (const SceneProjectionCameras::Unresolved& projection : lease.getUnresolvedProjections()) {
+        unresolved.push_back(tr("%1 projects through %2, which the scene has no camera at: it projects nothing.")
+                                 .arg(QString::fromStdString(projection.shader.GetString()))
+                                 .arg(QString::fromStdString(projection.camera)));
+    }
+    setup->warning = unresolved.join(QLatin1Char('\n')).toStdString();
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     const PXR_NS::UsdTimeCode timeCode(SceneOps::frameToTimeCode(scene, time, fps));
@@ -472,6 +494,8 @@ USDRender::prepareRender(double time,
     setup->request.time = timeCode;
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
+    KnobBoolPtr headlightKnob = _headlight.lock();
+    setup->request.headlight = headlightKnob && headlightKnob->getValue();
     setup->request.renderer = rendererId();
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
@@ -567,10 +591,20 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    clearPersistentMessage(false);
+    showWarning(setup.warning);
 
     return eStatusOK;
 } // USDRender::render
+
+void
+USDRender::showWarning(const std::string& warning)
+{
+    if (warning.empty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeWarning, warning);
+    }
+}
 
 std::optional<OpKind>
 USDRender::opKind() const
@@ -631,6 +665,7 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
         return eStatusFailed;
     }
+    showWarning(setup.warning);
 
     return eStatusOK;
 #else

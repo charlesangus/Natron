@@ -8,7 +8,7 @@ section recolours a written frame in place with oiiotool (or OpenImageIO's Pytho
 is missing).
 
 Screenshots (cropped unless noted): m76-write-panel.png (the Write's properties panel),
-m76-output-colorspace-menu.png (the Output Colorspace menu open on a submenu),
+m76-output-colorspace-menu.png (the Colorspace menu open on a submenu),
 m76-colorspace-changed.png and m76-colorspace-reset.png, m76-save-dialog-filter.png (the create-time
 save dialog with its filter menu) and m76-render-finished.png (the whole screen after the render).
 
@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 POLL_TIMEOUT_S = 30.0
 STARTUP_TIMEOUT_S = 60.0
-WRITE_ID = "fr.inria.built-in.Write"
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
+WRITE_ID = "Write"
+CONSTANT_ID = "Constant"
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
@@ -397,9 +397,9 @@ try:
         require(panel is not None, "the Write's panel is open")
         rows = panel_rows(panel)
         report("NOTE panel labels top to bottom: %r" % rows)
-        order = ["File", "Overwrite", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
-                 "Frame Increment", "Output Colorspace", "OCIO Context", "Compression", "Write Metadata",
-                 "Read back file"]
+        order = ["Filename", "Overwrite", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
+                 "Frame Increment", "Colorspace", "OCIO Context", "Compression", "Write Metadata",
+                 "Read Back"]
         ys = [first_y(rows, n) for n in order]
         check(all(y is not None for y in ys) and ys == sorted(ys),
               "the Controls page runs file, overwrite, clip to RoD, range, increment, channels, colourspace, context, options, metadata, read back (%r)" % list(zip(order, ys)))
@@ -415,9 +415,9 @@ try:
         reload = panel_button(panel, "Reload")
         check(reload is not None, "the panel has one Reload button")
         if reload is not None:
-            ry = first_y(rows, "Read back file")
+            ry = first_y(rows, "Read Back")
             check(ry is not None and abs(reload.mapTo(panel, reload.rect().topLeft()).y() - ry) < 16,
-                  "the Reload button sits on the Read back file row")
+                  "the Reload button sits on the Read Back row")
             check(not reload.isEnabled(), "the Reload button is disabled while read back is off")
         screen_crop("m76-write-panel.png", global_rect(panel))
 
@@ -427,15 +427,19 @@ try:
         panel = panel_of(write)
         require(panel is not None, "the Write's panel is open")
         rows = panel_rows(panel)
-        combo = knob_combo(panel, first_y(rows, "Output Colorspace"))
-        require(combo is not None, "the Output Colorspace menu is on screen")
+        combo = knob_combo(panel, first_y(rows, "Colorspace"))
+        require(combo is not None, "the Colorspace menu is on screen")
         items = combo_items(combo)
         default_text = combo_current(combo)
-        space = write.getParam("ocioOutputSpace")
-        marker = write.getParam("ocioOutputSpaceSet")
-        report("NOTE Output Colorspace: %d entries, current %r, first entries %r" % (len(items), default_text, items[:12]))
-        check(bool(default_text), "the menu shows a default colourspace for an exr (%r)" % default_text)
-        check(not marker.getValue(), "no colourspace is marked as chosen yet")
+        space = write.getParam("colorspace")
+        require(space is not None, "the Write has a colorspace parameter")
+
+        def chosen_id():
+            return str(space.getOption(space.getValue()))
+
+        report("NOTE Colorspace: %d entries, current %r, first entries %r" % (len(items), default_text, items[:12]))
+        check(default_text == "Project default", "a new Write follows the project default (%r)" % default_text)
+        check(chosen_id() == "projectDefault", "the stored entry is Project default (%r)" % chosen_id())
 
         menu = {}
 
@@ -469,7 +473,7 @@ try:
         QTimer.singleShot(1200, grab_menu)
         click(combo)
         QApplication.processEvents()
-        check(bool(menu.get("top")), "the Output Colorspace menu opened as a popup")
+        check(bool(menu.get("top")), "the Colorspace menu opened as a popup")
         nested = [n for n, is_menu in menu.get("top", []) if is_menu]
         report("NOTE top-level menu entries: %r" % menu.get("top"))
         check(len(nested) >= 3, "the top level holds nested submenus (%r)" % nested)
@@ -484,16 +488,15 @@ try:
         require(choose(combo, alt), "pick %s in the menu" % alt)
         yield ("sleep", 500)
         check(combo_current(combo) != default_text, "the menu shows the new choice (%r)" % combo_current(combo))
-        check(bool(marker.getValue()), "the choice is marked as made")
-        chosen = str(space.getValue())
-        check(bool(chosen) and chosen != default_text, "the stored colourspace is the new one (%r)" % chosen)
+        chosen = chosen_id()
+        check(bool(chosen) and chosen != "projectDefault", "the stored colourspace is the new one (%r)" % chosen)
         screen_crop("m76-colorspace-changed.png", global_rect(panel))
 
         seen = reset_through_right_click(combo)
         check(seen.get("triggered", False), "the right-click menu offers an enabled Reset to default (%r)" % seen.get("entries"))
         yield ("sleep", 500)
         check(combo_current(combo) == default_text, "Reset to default returns the menu to %r (shows %r)" % (default_text, combo_current(combo)))
-        check(not marker.getValue(), "Reset to default clears the chosen mark")
+        check(chosen_id() == "projectDefault", "Reset to default stores Project default again (%r)" % chosen_id())
         screen_crop("m76-colorspace-reset.png", global_rect(panel))
 
         require(choose(combo, alt), "pick %s again" % alt)
@@ -502,7 +505,7 @@ try:
         again = combo_current(combo)
         require(choose(combo, alt), "pick %s a second time in a row" % alt)
         yield ("sleep", 300)
-        check(combo_current(combo) == again and bool(marker.getValue()), "picking the same colourspace twice keeps it")
+        check(combo_current(combo) == again and chosen_id() != "projectDefault", "picking the same colourspace twice keeps it")
 
         seen = reset_through_right_click(combo)
         yield ("sleep", 500)
@@ -662,7 +665,7 @@ try:
         check(ok, "Render Selected wrote the file")
 
     # The viewer widget only exists once a Viewer node does, so it is created before waiting for it.
-    viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
     require(viewer is not None, "a Viewer node exists")
 
     def steps():

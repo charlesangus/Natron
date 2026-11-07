@@ -30,11 +30,11 @@ THREADS = os.environ.get("BENCH_THREADS", "")
 MODE = os.environ.get("BENCH_MODE", "default")
 
 CHAIN = (
-    "fr.natron.RawPrepare",
-    "fr.natron.RawTemperature",
-    "fr.natron.RawHighlights",
-    "fr.natron.RawDemosaic",
-    "fr.natron.RawInputColor",
+    "RawPrepare",
+    "RawTemperature",
+    "RawHighlights",
+    "RawDemosaic",
+    "RawInputColor",
 )
 
 
@@ -67,19 +67,18 @@ def build():
     writer = app.createWriter(os.path.join(RENDER_DIR, "raw_large_####.exr"))
     writer.connectInput(0, previous)
     working = writer.getParam("ocioWorkingSpace").get()
-    writer.getParam("ocioOutputSpace").set(working)
-    writer.getParam("ocioOutputSpaceSet").set(True)
+    writer.getParam("colorspace").set(working)
     compression = writer.getParam("compression")
     if compression is not None:
         compression.set("none")
-    demosaic = nodes["fr.natron.RawDemosaic"]
+    demosaic = nodes["RawDemosaic"]
     if MODE == "lmmse":
         demosaic.getParam("method").set("LMMSE")
     elif MODE == "capture":
         demosaic.getParam("captureSharpen").set(True)
     elif MODE != "default":
         raise RuntimeError("unknown BENCH_MODE %r" % MODE)
-    return writer, nodes["fr.natron.RawTemperature"]
+    return writer, nodes["RawTemperature"]
 
 
 def render(writer):

@@ -35,18 +35,25 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cstddef>
+#include <memory>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWHOTPIXELS "fr.natron.RawHotPixels"
+#define PLUGINID_NATRON_RAWHOTPIXELS "RawHotPixels"
 #define PLUGIN_MAJOR_NATRON_RAWHOTPIXELS 1
 
 #define kRawHotPixelsParamThreshold "threshold"
 #define kRawHotPixelsParamStrength "strength"
 #define kRawHotPixelsParamPermissive "permissive"
+#define kRawHotPixelsParamMarkFixed "markFixed"
+
+#define kRawHotPixelsMarkPlaneFixed "markFixed"
+#define kRawHotPixelsMarkPlaneArms "markFixedArms"
 
 NATRON_NAMESPACE_ENTER
 
@@ -115,6 +122,7 @@ struct RawHotPixelsOp {
     KnobDoubleWPtr threshold;
     KnobDoubleWPtr strength;
     KnobBoolWPtr permissive;
+    KnobBoolWPtr markFixed;
 };
 
 static_assert(PassesOp<RawHotPixelsOp>);
@@ -130,6 +138,48 @@ public:
     explicit RawHotPixels(NodePtr node);
 
     virtual ~RawHotPixels();
+
+    /**
+     * @brief How many fixed pixels frame marks: its kRawHotPixelsMarkPlaneFixed samples above 0,
+     * so at the frame's own window and scale.
+     **/
+    static std::size_t fixedPixelCount(const OverlayImageFrame& frame) WARN_UNUSED_RETURN;
+
+    static std::string fixedPixelsLabel(std::size_t count) WARN_UNUSED_RETURN;
+
+    virtual void getRegionsOfInterest(double time,
+                                      const RenderScale& scale,
+                                      const RectD& outputRoD,
+                                      const RectD& renderWindow,
+                                      ViewIdx view,
+                                      RoIMap* ret) OVERRIDE FINAL;
+
+    virtual bool isOverlayImageViewOn() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool hasOverlayDrawList() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void buildOverlay(double time,
+                              const RenderScale& renderScale,
+                              ViewIdx view,
+                              OverlayDrawList* list) OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+protected:
+    virtual StatusEnum renderOp(const RenderActionArgs& args,
+                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+private:
+    StatusEnum publishMarks(const RenderActionArgs& args,
+                            const StagePlan& plan) WARN_UNUSED_RETURN;
+
+    // Only touched from buildOverlay(), on the main thread. Weak so that the frame's tiles go with
+    // the view.
+    std::weak_ptr<const OverlayImageFrame> _countedFrame;
+    std::size_t _fixedCount = 0;
 };
 
 NATRON_NAMESPACE_EXIT

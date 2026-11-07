@@ -34,8 +34,8 @@
 #include "NativeMetadataTestEffect.h"
 
 #include "Engine/Nodes/IO/RawMetadata.h"
-#include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataCopy.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
@@ -179,7 +179,7 @@ protected:
     // rounded, the white balance darktable's job packed: preset 4 with its logged as-shot
     // coefficients, which no longer equal the file's, so the CAT keeps their ratio to D65
     // (_get_white_balance_coeff()). Natron's As Shot to Reference takes the file's own, so a
-    // CopyMetadata after RawInputColor puts the rounded ones in raw/wb_applied.
+    // MetadataCopy after RawInputColor puts the rounded ones in raw/wb_applied.
     void compareCamera(const RawReference::CropSite& site,
                        const char* reference,
                        RawTemperatureModeEnum mode,
@@ -190,7 +190,7 @@ protected:
         NodePtr node = createCalibrated(site, mode, &chain);
         ASSERT_TRUE(bool(node)) << name;
         if (rounded) {
-            NodePtr copy = createNode(QString::fromUtf8(PLUGINID_NATRON_COPYMETADATA));
+            NodePtr copy = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATACOPY));
             NodePtr wb = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
             ASSERT_TRUE(copy && wb) << name;
             MetadataSourceTestEffect* wbEffect = dynamic_cast<MetadataSourceTestEffect*>(wb->getEffectInstance().get());
@@ -200,7 +200,7 @@ protected:
             wbEffect->setExtraMetadata(extra);
             insertAbove(node, copy);
             connectNodes(wb, copy, 1, true);
-            knob<KnobChoice>(copy, "mode")->setValue((int)CopyMetadata::eModeMergeBWins, ViewSpec::all(), 0);
+            knob<KnobChoice>(copy, "mode")->setValue((int)MetadataCopy::eModeMergeBWins, ViewSpec::all(), 0);
             knob<KnobString>(copy, "keys")->setValue(std::string(kRawMetadataWbApplied), ViewSpec::all(), 0);
         }
 

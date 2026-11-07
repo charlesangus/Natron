@@ -588,8 +588,10 @@ GuiApplicationManager::matchesKeybind(const std::string & stdgroup,
 
     for (std::list<Qt::KeyboardModifiers>::const_iterator it = keybind->modifiers.begin(); it != keybind->modifiers.end(); ++it, ++kit) {
         if ( matchesModifers(onlyCAS, *it, keybind->ignoreMask) ) {
-            // modifiers are equal, now test symbol
-            return matchesKey( (Qt::Key)symbol, *kit );
+            // modifiers are equal, now test symbol; other bindings of the same action may still match
+            if (matchesKey((Qt::Key)symbol, *kit)) {
+                return true;
+            }
         }
     }
 
@@ -797,6 +799,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionRenderAll, kShortcutDescActionRenderAll, Qt::NoModifier, Qt::Key_F5);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionEnableRenderStats, kShortcutDescActionEnableRenderStats, Qt::NoModifier, Qt::Key_F2);
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionToggleInteractive, kShortcutDescActionToggleInteractive, Qt::AltModifier, Qt::Key_U);
 
     // Note: keys 0-1 are handled by Gui::handleNativeKeys(), and should thus work even on international keyboards
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, kShortcutDescActionConnectViewerToInput1, Qt::NoModifier, Qt::Key_1);
@@ -909,7 +912,11 @@ GuiApplicationManager::populateShortcuts()
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DToggleSelection, kShortcutDescMouseViewer3DToggleSelection, eMouseGestureClick, preset);
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DMarquee, kShortcutDescMouseViewer3DMarquee, eMouseGestureDrag, preset);
         for (const Viewer3DKeyBinding& b : getViewer3DDefaultKeyBindings()) {
-            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
+            if (b.altKey) {
+                registerKeybind2(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key, b.altModifiers, b.altKey);
+            } else {
+                registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
+            }
         }
     }
 

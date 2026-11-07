@@ -765,8 +765,9 @@ void
 KnobChoice::appendExtraContentHash(ContentHasher& h,
                                    int dimension) const
 {
-    // The plug-in reads the index, so the entry it lands on is what counts; _currentEntry only
-    // stands in when the index is outside the menu, as after loading an option that no longer exists.
+    // A plug-in reading the index renders the entry the index lands on, and one reading the active
+    // entry renders _currentEntry, which can name an option the menu no longer has while the saved
+    // index stays. Both have to reach the hash.
     CurvePtr curve = getCurve(ViewIdx(0), dimension, true);
     KeyFrameSet keys;
     if (curve) {
@@ -776,9 +777,11 @@ KnobChoice::appendExtraContentHash(ContentHasher& h,
 
     QMutexLocker k(&_entriesMutex);
     const int nEntries = (int)_entries.size();
-    if ((index >= 0) && (index < nEntries)) {
+    const bool indexInMenu = (index >= 0) && (index < nEntries);
+    if (indexInMenu) {
         h.appendString(_entries[index].id);
-    } else {
+    }
+    if (!indexInMenu || (!_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0))) {
         h.appendString(_currentEntry.id);
     }
     for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
@@ -856,7 +859,8 @@ sameChoiceOptions(const std::vector<ChoiceOption>& a,
 }
 
 bool
-KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
+KnobChoice::populateChoices(const std::vector<ChoiceOption>& entries,
+                            bool notifyIfUnchanged)
 {
     std::vector<ChoiceOption> newEntries(entries);
     for (std::size_t i = 0; i < newEntries.size(); ++i) {
@@ -883,6 +887,10 @@ KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
         }
     }
     if (!hasChanged) {
+        if (notifyIfUnchanged) {
+            Q_EMIT populated();
+        }
+
         return false;
     }
     invalidateContentHash();
@@ -943,6 +951,20 @@ KnobChoice::getEntries_mt_safe() const
     QMutexLocker l(&_entriesMutex);
 
     return _entries;
+}
+
+bool
+KnobChoice::hasModificationsForSerialization() const
+{
+    return KnobIntBase::hasModificationsForSerialization() || isActiveEntryUnmatchedByEntries();
+}
+
+bool
+KnobChoice::isActiveEntryUnmatchedByEntries() const
+{
+    QMutexLocker k(&_entriesMutex);
+
+    return !_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0);
 }
 
 bool
@@ -1349,7 +1371,7 @@ KnobChoice::choiceRestoration(KnobChoice* knob,
             // we found a reasonable id
             _currentEntry = _entries[id]; // avoid numerous warnings in the GUI
         } else {
-            _currentEntry.id = optionID;
+            _currentEntry = ChoiceOption(optionID, optionID, std::string());
         }
     }
     invalidateContentHash();

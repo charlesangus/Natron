@@ -8,11 +8,11 @@ Sections:
   - tab menu: the Metadata folder of natron.nodesMenu(), the tab menu's node source, holds exactly
     the seven native metadata nodes and no action for an org.openfx.examples.metadata* plug-in, and
     none of those IDs is a registered plug-in;
-  - compare: a CompareMetadata over two Reads of one file lists no difference; after a ModifyMetadata
+  - compare: a MetadataCompare over two Reads of one file lists no difference; after a MetadataModify
     on B's branch sets a key, the Differences box reports that key as B only, and the viewer shows
-    the CompareMetadata.
+    the MetadataCompare.
 
-Shots: m140-compare-differences.png (the CompareMetadata panel and the viewer).
+Shots: m140-compare-differences.png (the MetadataCompare panel and the viewer).
 """
 import os
 import sys
@@ -25,15 +25,15 @@ POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 280
 
 NATIVE_METADATA_IDS = {
-    "fr.natron.CompareMetadata", "fr.natron.ContributeMetadata", "fr.natron.CopyMetadata",
-    "fr.natron.ModifyMetadata", "fr.natron.RemoveMetadata", "fr.natron.TimeCodeMetadata",
-    "fr.natron.ViewMetadata",
+    "MetadataCompare", "MetadataContribute", "MetadataCopy",
+    "MetadataModify", "MetadataRemove", "MetadataTimeCode",
+    "MetadataView",
 }
 OFX_EXAMPLE_PREFIX = "org.openfx.examples.metadata"
 METADATA_GROUPING = "Metadata"
-COMPARE_ID = "fr.natron.CompareMetadata"
-MODIFY_ID = "fr.natron.ModifyMetadata"
-VIEWER_ID = "fr.inria.built-in.Viewer"
+COMPARE_ID = "MetadataCompare"
+MODIFY_ID = "MetadataModify"
+VIEWER_ID = "Viewer"
 FIXTURE = "png-8bit.png"
 TEST_KEY = "m140.difference"
 TEST_VALUE = "present on B only"
@@ -120,23 +120,23 @@ try:
         read_b.setPosition(300, 0)
 
         modify = app.createNode(MODIFY_ID)
-        require(modify is not None, "create ModifyMetadata", gt.plugin_problem(MODIFY_ID))
+        require(modify is not None, "create MetadataModify", gt.plugin_problem(MODIFY_ID))
         modify.setPosition(300, 120)
-        require(modify.connectInput(0, read_b), "connect Read B to ModifyMetadata")
+        require(modify.connectInput(0, read_b), "connect Read B to MetadataModify")
 
         compare = app.createNode(COMPARE_ID)
-        require(compare is not None, "create CompareMetadata", gt.plugin_problem(COMPARE_ID))
+        require(compare is not None, "create MetadataCompare", gt.plugin_problem(COMPARE_ID))
         compare.setPosition(150, 260)
-        require(compare.connectInput(0, read_a), "connect Read A to CompareMetadata's A")
-        require(compare.connectInput(1, modify), "connect ModifyMetadata to CompareMetadata's B")
+        require(compare.connectInput(0, read_a), "connect Read A to MetadataCompare's A")
+        require(compare.connectInput(1, modify), "connect MetadataModify to MetadataCompare's B")
 
         viewer = app.getNode("Viewer1") or app.createNode(VIEWER_ID)
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(150, 400)
         viewer.disconnectInput(0)
-        require(viewer.connectInput(0, compare), "connect the Viewer to CompareMetadata")
+        require(viewer.connectInput(0, compare), "connect the Viewer to MetadataCompare")
 
-        require(compare.getParam("differences") is not None, "CompareMetadata has a differences param")
+        require(compare.getParam("differences") is not None, "MetadataCompare has a differences param")
         ok = yield ("until", gt.viewer_up, POLL_TIMEOUT_S)
         check(ok, "the viewer is up")
         yield ("sleep", 1000)
@@ -147,11 +147,11 @@ try:
 
         for name, value in (("operation1", 1), ("type1", 2)):
             param = modify.getParam(name)
-            require(param is not None, "ModifyMetadata has a " + name + " param")
+            require(param is not None, "MetadataModify has a " + name + " param")
             param.setValue(value)
         for name, value in (("key1", TEST_KEY), ("stringValue1", TEST_VALUE)):
             param = modify.getParam(name)
-            require(param is not None, "ModifyMetadata has a " + name + " param")
+            require(param is not None, "MetadataModify has a " + name + " param")
             param.setValue(value)
 
         ok = yield ("until", lambda: bool(differences(compare)), POLL_TIMEOUT_S)
@@ -160,7 +160,7 @@ try:
             ok = yield ("until", lambda: bool(differences(compare)), POLL_TIMEOUT_S)
         text = differences(compare)
         report("NOTE differences after Set: %r" % text)
-        check(ok, "the Differences box fills in after ModifyMetadata sets a key")
+        check(ok, "the Differences box fills in after MetadataModify sets a key")
         check(text is not None and "B only: " + TEST_KEY in text and TEST_VALUE in text,
               "the Differences box reports the key as B only with its value (%r)" % text)
         check(text is not None and len(text.strip().splitlines()) == 1,
@@ -169,7 +169,7 @@ try:
         app.selectNode(compare, True)
         QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of(compare) is not None, POLL_TIMEOUT_S)
-        check(ok, "open CompareMetadata's settings panel")
+        check(ok, "open MetadataCompare's settings panel")
         yield ("sleep", 800)
         check(gt.viewer_up(), "the viewer is showing")
         gt.shot("m140-compare-differences.png")

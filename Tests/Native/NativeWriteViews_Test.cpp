@@ -231,12 +231,7 @@ protected:
         _writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
         ASSERT_TRUE(bool(_writer));
         // The values are compared with the constants that went in, so the file is written without conversion.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_writer->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_writer->getKnobByName("ocioOutputSpaceSet").get());
-        ASSERT_TRUE(outputSpace != NULL);
-        ASSERT_TRUE(outputSpaceSet != NULL);
-        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        outputSpaceSet->setValue(true);
+        fileInWorkingSpace(_writer);
         connectNodes(_reader, _writer, 0, true);
         // Every view is checked on its colour and diffuse layers together, so the Write takes
         // every layer rather than only the colour its channel set selects by default.
@@ -307,11 +302,7 @@ protected:
             file->setValue(path);
         }
         // The values are compared with the constants that went in, so the file is read without conversion.
-        KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-        EXPECT_TRUE(inputSpace != NULL);
-        if (inputSpace) {
-            inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        }
+        fileInWorkingSpace(node);
         node->getEffectInstance()->dropCachedMetadata();
 
         return node;
@@ -407,7 +398,7 @@ protected:
 
 TEST_F(NativeWriteViewsTest, TheViewsMenuListsAllThenEveryProjectView)
 {
-    KnobChoice* views = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kNatronWriteParamViewsSelector).get());
+    KnobChoice* views = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kNatronWriteParamViews).get());
 
     ASSERT_TRUE(views != NULL);
     const std::vector<ChoiceOption> entries = views->getEntries_mt_safe();
@@ -439,7 +430,7 @@ setProjectViews(const ProjectPtr& project, const std::list<std::string>& names)
 std::vector<std::string>
 menuOf(const NodePtr& node)
 {
-    KnobChoice* views = dynamic_cast<KnobChoice*>(node->getKnobByName(kNatronWriteParamViewsSelector).get());
+    KnobChoice* views = dynamic_cast<KnobChoice*>(node->getKnobByName(kNatronWriteParamViews).get());
     std::vector<std::string> ids;
 
     if (views) {
@@ -454,7 +445,7 @@ menuOf(const NodePtr& node)
 std::string
 chosenView(const NodePtr& node)
 {
-    KnobChoice* views = dynamic_cast<KnobChoice*>(node->getKnobByName(kNatronWriteParamViewsSelector).get());
+    KnobChoice* views = dynamic_cast<KnobChoice*>(node->getKnobByName(kNatronWriteParamViews).get());
 
     return views ? views->getActiveEntry().id : std::string();
 }
@@ -470,7 +461,7 @@ TEST_F(NativeWriteViewsTest, AddedViewsAppearInTheMenu)
 
 TEST_F(NativeWriteViewsTest, RenamingTheChosenViewFallsBackToAll)
 {
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViewsSelector, _views[1]));
+    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViews, _views[1]));
     setProjectViews(getApp()->getProject(), { _views[0], "Renamed" });
 
     EXPECT_EQ((std::vector<std::string> { kNatronWriteViewsAll, _views[0], "Renamed" }), menuOf(_writer));
@@ -480,19 +471,19 @@ TEST_F(NativeWriteViewsTest, RenamingTheChosenViewFallsBackToAll)
 TEST_F(NativeWriteViewsTest, RemovingAnotherViewKeepsTheChosenViewByName)
 {
     setProjectViews(getApp()->getProject(), { _views[0], _views[1], "Extra" });
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViewsSelector, _views[1]));
+    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViews, _views[1]));
     setProjectViews(getApp()->getProject(), { _views[1], "Extra" });
 
     EXPECT_EQ((std::vector<std::string> { kNatronWriteViewsAll, _views[1], "Extra" }), menuOf(_writer));
     EXPECT_EQ(_views[1], chosenView(_writer));
-    KnobChoice* views = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kNatronWriteParamViewsSelector).get());
+    KnobChoice* views = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kNatronWriteParamViews).get());
     ASSERT_TRUE(views != NULL);
     EXPECT_EQ(1, views->getValue());
 }
 
 TEST_F(NativeWriteViewsTest, RemovingTheChosenViewFallsBackToAll)
 {
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViewsSelector, _views[1]));
+    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViews, _views[1]));
     setProjectViews(getApp()->getProject(), { _views[0] });
 
     EXPECT_EQ((std::vector<std::string> { kNatronWriteViewsAll, _views[0] }), menuOf(_writer));
@@ -502,7 +493,7 @@ TEST_F(NativeWriteViewsTest, RemovingTheChosenViewFallsBackToAll)
 TEST_F(NativeWriteViewsTest, AChosenViewSurvivesSaveAndLoad)
 {
     setProjectViews(getApp()->getProject(), { _views[0], _views[1], "Extra" });
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViewsSelector, "Extra"));
+    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViews, "Extra"));
     const std::string name = _writer->getScriptName();
 
     ProjectPtr project = getApp()->getProject();
@@ -524,18 +515,18 @@ TEST_F(NativeWriteViewsTest, TheViewKnobsFollowTheFormatAndTheViewPattern)
 {
     setFile(pathOf("shown.exr"));
     EXPECT_TRUE(isShown(kNatronWriteParamPartSplitting));
-    EXPECT_TRUE(isShown(kNatronWriteParamViewsSelector));
+    EXPECT_TRUE(isShown(kNatronWriteParamViews));
 
     setFile(pathOf("shown.png"));
     EXPECT_FALSE(isShown(kNatronWriteParamPartSplitting));
-    EXPECT_FALSE(isShown(kNatronWriteParamViewsSelector));
+    EXPECT_FALSE(isShown(kNatronWriteParamViews));
 
     setFile(pathOf("shown_%V.exr"));
     EXPECT_TRUE(isShown(kNatronWriteParamPartSplitting));
-    EXPECT_FALSE(isShown(kNatronWriteParamViewsSelector));
+    EXPECT_FALSE(isShown(kNatronWriteParamViews));
 
     setFile(pathOf("shown.exr"));
-    EXPECT_TRUE(isShown(kNatronWriteParamViewsSelector));
+    EXPECT_TRUE(isShown(kNatronWriteParamViews));
 }
 
 TEST_F(NativeWriteViewsTest, SinglePartHoldsEveryViewAndReadsBackPerView)
@@ -636,7 +627,7 @@ TEST_F(NativeWriteViewsTest, ChoosingOneViewWritesThatViewAlone)
     const std::string path = pathOf("right.exr");
 
     setFile(path);
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViewsSelector, _views[1]));
+    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamViews, _views[1]));
     renderFrame();
 
     std::vector<FilePart> parts;

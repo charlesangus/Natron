@@ -54,7 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -275,7 +275,7 @@ TEST_F(NativeReadReloadTest, FilenameEditsKeepTheReadersHashesRecoverable)
     ASSERT_TRUE(writeFlatExr(_path, kWidth, kHeight, kRgba, kFirst));
     ASSERT_TRUE(writeFlatExr(other, kWidth, kHeight, kRgba, kSecond));
     _read = createWorkingSpaceRead(_path);
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(_read && modify);
     KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
     KnobInt* value = dynamic_cast<KnobInt*>(modify->getKnobByName("intValue1").get());

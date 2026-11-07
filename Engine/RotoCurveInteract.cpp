@@ -41,10 +41,14 @@
 #include "Engine/Node.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/Project.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
 #include "Global/GLIncludes.h"
 
@@ -74,6 +78,8 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , shiftDown(0)
     , ctrlDown(0)
     , altDown(0)
+    , cloneOffset(0., 0.)
+    , mouseCenterOnSizeChange()
     , _host(host)
 {
 }
@@ -118,9 +124,12 @@ RotoCurveInteract::getCurrentTime() const
 std::pair<double, double>
 RotoCurveInteract::getPixelScale() const
 {
-    std::pair<double, double> pixelScale;
-
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    std::pair<double, double> pixelScale(1., 1.);
+    // Scripts and tests drive the pen without a viewer.
+    OverlaySupport* viewport = _host->getCurrentViewportForOverlays();
+    if (viewport) {
+        viewport->getPixelScale(pixelScale.first, pixelScale.second);
+    }
 
     return pixelScale;
 }
@@ -152,6 +161,25 @@ void
 RotoCurveInteract::redrawOverlays()
 {
     _host->redrawOverlayInteract();
+}
+
+void
+RotoCurveInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
+                                        double color[4]) const
+{
+    item->getOverlayColor(color);
+}
+
+BezierPtr
+RotoCurveInteract::nearbyShownBezier(const QPointF& pos,
+                                     double tolerance,
+                                     int* index,
+                                     double* t,
+                                     bool* feather) const
+{
+    return getCurveContext()->isNearbyBezier(pos.x(), pos.y(), tolerance, index, t, feather, [this](const BezierPtr& curve) {
+        return isCurveShown(curve);
+    });
 }
 
 bool
@@ -271,6 +299,131 @@ RotoCurveInteract::drawEllipse(double x,
     glEnd();
 
     glPopMatrix();
+}
+
+KnobButtonPtr
+RotoCurveInteract::createResetCloneOffsetKnob(const KnobPagePtr& page)
+{
+    KnobButtonPtr resetCloneOffset = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamResetCloneOffsetLabel));
+    resetCloneOffset->setName(kRotoUIParamResetCloneOffset);
+    resetCloneOffset->setHintToolTip(tr(kRotoUIParamResetCloneOffsetHint));
+    resetCloneOffset->setEvaluateOnChange(false);
+    resetCloneOffset->setSecretByDefault(true);
+    resetCloneOffset->setInViewerContextCanHaveShortcut(true);
+    resetCloneOffset->setInViewerContextNewLineActivated(true);
+    page->addKnob(resetCloneOffset);
+    _host->addOverlaySlaveParam(resetCloneOffset);
+    resetCloneOffsetButton = resetCloneOffset;
+
+    return resetCloneOffset;
+}
+
+bool
+RotoCurveInteract::isCloneOffsetDragModifier() const
+{
+    return ctrlDown && !shiftDown && !altDown;
+}
+
+void
+RotoCurveInteract::startCloneOffsetDrag(const QPointF& pos)
+{
+    state = eEventStateDraggingCloneOffset;
+    lastClickPos = pos;
+    lastMousePos = pos;
+}
+
+bool
+RotoCurveInteract::dragCloneOffset(double dx,
+                                   double dy)
+{
+    if (state != eEventStateDraggingCloneOffset) {
+        return false;
+    }
+    cloneOffset.first -= dx;
+    cloneOffset.second -= dy;
+
+    return true;
+}
+
+bool
+RotoCurveInteract::isBrushSizeDragModifier() const
+{
+    return shiftDown && !ctrlDown && !altDown;
+}
+
+void
+RotoCurveInteract::startBrushSizeDrag(const QPointF& pos)
+{
+    state = eEventStateDraggingBrushSize;
+    mouseCenterOnSizeChange = pos;
+}
+
+bool
+RotoCurveInteract::dragBrushSize(const KnobDoublePtr& size,
+                                 double dx,
+                                 double dy)
+{
+    if (state != eEventStateDraggingBrushSize) {
+        return false;
+    }
+    if (!size) {
+        return true;
+    }
+    double value = size->getValue() + ((dx + dy) / 2.);
+    const double step = 0.01;
+    value = std::floor(value / step + 0.5) * step;
+    size->setValue(std::max(1., value));
+
+    return true;
+}
+
+void
+RotoCurveInteract::drawCloneSource(const QPointF& centre,
+                                   const std::pair<double, double>& offset,
+                                   double radius,
+                                   double opacity,
+                                   double screenPixelRatio,
+                                   const std::pair<double, double>& viewportSize)
+{
+    GLdouble projection[16];
+    glGetDoublev(GL_PROJECTION_MATRIX, projection);
+    // How much to translate GL_PROJECTION by to move exactly one pixel on screen.
+    const double shadowX = 2. / (projection[0] * viewportSize.first);
+    const double shadowY = 2. / (projection[5] * viewportSize.second);
+    const double sourceX = centre.x() + offset.first;
+    const double sourceY = centre.y() + offset.second;
+
+    for (int l = 0; l < 2; ++l) {
+        glMatrixMode(GL_PROJECTION);
+        const int direction = (l == 0) ? 1 : -1;
+        glTranslated(direction * shadowX, -direction * shadowY, 0);
+        glMatrixMode(GL_MODELVIEW);
+
+        glColor3f(.5f * l * opacity, .5f * l * opacity, .5f * l * opacity);
+        glLineWidth(1.5 * screenPixelRatio);
+        glBegin(GL_LINES);
+        if (state == eEventStateDraggingCloneOffset) {
+            glVertex2d(centre.x(), centre.y());
+            glVertex2d(sourceX, sourceY);
+        }
+        glVertex2d(sourceX, sourceY - radius);
+        glVertex2d(sourceX, sourceY + radius);
+        glVertex2d(sourceX - radius, sourceY);
+        glVertex2d(sourceX + radius, sourceY);
+        glEnd();
+
+        drawEllipse(sourceX, sourceY, radius, radius, l, 1.f, 1.f, 1.f, opacity / 2.);
+    }
+}
+
+void
+RotoCurveInteract::startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item)
+{
+    KnobIntPtr frame = item ? item->getLifeTimeFrameKnob() : KnobIntPtr();
+    RotoCurveContextPtr context = getCurveContext();
+    if (frame && context) {
+        frame->setValue(context->getTimelineCurrentTime());
+    }
 }
 
 void
@@ -575,6 +728,8 @@ RotoCurveInteract::getRoleForGroup(const KnobGroupPtr& k,
         *role = eRotoRolePointsEdition;
     } else if (k == bezierEditionToolGroup.lock()) {
         *role = eRotoRoleBezierEdition;
+    } else if (objectSelect && (k == objectSelectToolGroup.lock())) {
+        *role = eRotoRoleObjectSelect;
     } else {
         ret = false;
     }
@@ -614,6 +769,12 @@ RotoCurveInteract::getToolForAction(const KnobButtonPtr& k,
         *tool = eRotoToolDrawEllipse;
     } else if (k == drawRectangleAction.lock()) {
         *tool = eRotoToolDrawRectangle;
+    } else if (k == drawOpenBezierAction.lock()) {
+        *tool = eRotoToolOpenBezier;
+    } else if (k == drawPointAction.lock()) {
+        *tool = eRotoToolDrawPoint;
+    } else if (objectSelect && (k == objectSelectAction.lock())) {
+        *tool = eRotoToolObjectSelect;
     } else {
         ret = false;
     }
@@ -644,14 +805,18 @@ RotoCurveInteract::onRoleChangedInternal(const KnobGroupPtr& roleGroup)
 
     // Roto action bar
     bool isPaintRole = (role == eRotoRolePaintBrush) || (role == eRotoRoleCloneBrush) || (role == eRotoRoleMergeBrush) || (role == eRotoRoleEffectBrush);
+    const bool isObjectRole = (role == eRotoRoleObjectSelect);
     const KnobButtonWPtr rotoButtons[] = {
         autoKeyingEnabledButton, featherLinkEnabledButton, displayFeatherEnabledButton, stickySelectionEnabledButton,
         bboxClickAnywhereButton, rippleEditEnabledButton, addKeyframeButton, removeKeyframeButton, showTransformHandle
     };
     for (const KnobButtonWPtr& button : rotoButtons) {
         if (KnobButtonPtr b = button.lock()) {
-            b->setInViewerContextSecret(isPaintRole);
+            b->setInViewerContextSecret(isPaintRole || isObjectRole);
         }
+    }
+    if (objectSelect) {
+        objectSelect->setActive(isObjectRole);
     }
 
     selectedRole = role;
@@ -910,6 +1075,61 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
             editBezierToolButton->addKnob(tool);
             drawRectangleAction = tool;
         }
+
+        if (toolSet & eRotoCurveToolSetOpenBezier) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamOpenBezierToolButtonActionLabel));
+            tool->setName(kRotoUIParamOpenBezierToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamOpenBezierToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawOpenBezierAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetPoint) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamPointToolButtonActionLabel));
+            tool->setName(kRotoUIParamPointToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamPointToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/locate-fixed.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawPointAction = tool;
+        }
+    }
+
+    if (toolSet & eRotoCurveToolSetObjectSelect) {
+        KnobGroupPtr objectToolButton = AppManager::createKnob<KnobGroup>(_host, tr(kRotoUIParamObjectSelectToolButtonLabel));
+        objectToolButton->setName(kRotoUIParamObjectSelectToolButton);
+        objectToolButton->setAsToolButton(true);
+        objectToolButton->setEvaluateOnChange(false);
+        objectToolButton->setSecretByDefault(true);
+        objectToolButton->setInViewerContextCanHaveShortcut(true);
+        objectToolButton->setIsPersistent(false);
+        toolbar->addKnob(objectToolButton);
+        objectSelectToolGroup = objectToolButton;
+
+        KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamObjectSelectToolButtonActionLabel));
+        tool->setName(kRotoUIParamObjectSelectToolButtonAction);
+        tool->setHintToolTip(tr(kRotoUIParamObjectSelectToolButtonActionHint));
+        tool->setCheckable(true);
+        tool->setDefaultValue(true);
+        tool->setSecretByDefault(true);
+        tool->setEvaluateOnChange(false);
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/scan-search.svg");
+        tool->setIsPersistent(false);
+        objectToolButton->addKnob(tool);
+        objectSelectAction = tool;
+
+        objectSelect.reset(new RotoObjectSelect(this));
+        objectSelect->setToolButton(tool);
     }
 
     return toolbar;
@@ -1035,6 +1255,30 @@ RotoCurveInteract::createViewerButtonKnobs(const KnobPagePtr& page)
     _host->addKnobToViewerUI(removeKeyframe);
     _host->addKnobToViewerUI(showTransform);
 } // RotoCurveInteract::createViewerButtonKnobs
+
+void
+RotoCurveInteract::createObjectSelectKnobs(const KnobPagePtr& page)
+{
+    if (objectSelect) {
+        objectSelect->createKnobs(page);
+    }
+}
+
+void
+RotoCurveInteract::onHostInputChanged()
+{
+    if (objectSelect) {
+        objectSelect->refreshSourceState();
+    }
+}
+
+void
+RotoCurveInteract::onHostEffectCreated(const CreateNodeArgs& args)
+{
+    if (objectSelect) {
+        objectSelect->onEffectCreated(args);
+    }
+}
 
 void
 RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
@@ -1171,6 +1415,36 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         page->addKnob(action);
         lockShapeMenuAction = action;
     }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionLinkToTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionLinkToTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionLinkToTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        linkToTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrackAndBake);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackAndBakeMenuAction = action;
+    }
 } // RotoCurveInteract::createRightClickMenuKnobs
 
 void
@@ -1221,9 +1495,12 @@ RotoCurveInteract::onCurveLockedChanged(int reason)
 }
 
 void
-RotoCurveInteract::refreshAfterTimeChanged(double /*time*/)
+RotoCurveInteract::refreshAfterTimeChanged(double time)
 {
     computeSelectedCpsBBOX();
+    if (objectSelect) {
+        objectSelect->onTimeChanged(time);
+    }
 }
 
 void
@@ -1252,6 +1529,9 @@ RotoCurveInteract::getToolbarShortcuts(int toolSet,
     }
     if (toolSet & eRotoCurveToolSetShapesDrawing) {
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamBezierEditionToolButton, kRotoUIParamBezierEditionToolButtonLabel, Key_V));
+    }
+    if (toolSet & eRotoCurveToolSetObjectSelect) {
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamObjectSelectToolButton, kRotoUIParamObjectSelectToolButtonLabel, Key_O));
     }
 }
 
@@ -1284,6 +1564,21 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
     KnobIPtr kShared = k->shared_from_this();
     KnobButtonPtr isBtn = std::dynamic_pointer_cast<KnobButton>(kShared);
     KnobGroupPtr isGrp = std::dynamic_pointer_cast<KnobGroup>(kShared);
+    if (objectSelect && objectSelect->onKnobChanged(k)) {
+        return true;
+    }
+    // Backspace and Enter reach the tool as these menu actions' shortcuts.
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        if (k == removeItemsMenuAction.lock().get()) {
+            *ret = objectSelect->removeLastPrompt();
+
+            return true;
+        } else if (k == openCloseMenuAction.lock().get()) {
+            *ret = objectSelect->commit();
+
+            return true;
+        }
+    }
     if (isBtn && onToolChangedInternal(isBtn)) {
         return true;
     } else if (isGrp && onRoleChangedInternal(isGrp)) {
@@ -1331,6 +1626,18 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         if (!removeFeatherForSelectedCurve()) {
             *ret = false;
         }
+    } else if (k == linkToTrackMenuAction.lock().get()) {
+        if (!linkSelectedPointsToTrack(time)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(false)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackAndBakeMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(true)) {
+            *ret = false;
+        }
     } else if (k == nudgeLeftMenuAction.lock().get()) {
         if (!moveSelectedCpsWithKeyArrows(-1, 0)) {
             *ret = false;
@@ -1353,6 +1660,10 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         if (selectedItems.empty()) {
             std::list<RotoDrawableItemPtr> bez = ctx->getCurvesByRenderOrder();
             for (std::list<RotoDrawableItemPtr>::const_iterator it = bez.begin(); it != bez.end(); ++it) {
+                BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
+                if (isBezier && !isCurveShown(isBezier)) {
+                    continue;
+                }
                 ctx->select(*it, RotoItem::eSelectionReasonOverlayInteract);
                 selectedItems.push_back(*it);
             }
@@ -1489,6 +1800,12 @@ RotoCurveInteract::getSelectedCpsBBOXCenter()
 void
 RotoCurveInteract::handleBezierSelection(const BezierPtr& curve)
 {
+    handleItemSelection(curve);
+}
+
+void
+RotoCurveInteract::handleItemSelection(const RotoDrawableItemPtr& curve)
+{
     /// find out if the bezier is already selected.
     bool found = false;
 
@@ -1547,7 +1864,7 @@ RotoCurveInteract::handleControlPointSelection(const std::pair<BezierCPPtr,
 }
 
 void
-RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
+RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
 {
     KnobChoicePtr menu = rightClickMenuKnob.lock();
 
@@ -1564,16 +1881,26 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
     menuKnobs.push_back(nudgeBottomMenuAction.lock());
     menuKnobs.push_back(nudgeRightMenuAction.lock());
     menuKnobs.push_back(nudgeTopMenuAction.lock());
+    menuKnobs.push_back(linkToTrackMenuAction.lock());
+    bool anyLinked = cp && cp->isLinkedToTrack();
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end() && !anyLinked; ++it) {
+        anyLinked = it->first->isLinkedToTrack();
+    }
+    if (anyLinked) {
+        menuKnobs.push_back(unlinkTrackMenuAction.lock());
+        menuKnobs.push_back(unlinkTrackAndBakeMenuAction.lock());
+    }
     menuKnobs.push_back(showInCurveEditorMenuAction.lock());
     menuKnobs.push_back(removeFromCurveEditorMenuAction.lock());
+    // The click selected the point's curve, which the host's actions work on.
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {
         choices[i].id = menuKnobs[i]->getName();
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
-    menu->populateChoices(choices);
-
+    menu->populateChoices(choices, true);
 } // showMenuForControlPoint
 
 void
@@ -1598,6 +1925,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
         menuKnobs.push_back(removeItemFeatherMenuAction.lock());
     }
     menuKnobs.push_back(lockShapeMenuAction.lock());
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {
@@ -1605,7 +1933,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
 
-    menu->populateChoices(choices);
+    menu->populateChoices(choices, true);
 } // showMenuForCurve
 
 bool
@@ -1613,7 +1941,7 @@ RotoCurveInteract::isNearbySelectedCpsCrossHair(const QPointF& pos) const
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     double xHairMidSizeX = kXHairSelectedCpsBox * pixelScale.first;
     double xHairMidSizeY = kXHairSelectedCpsBox * pixelScale.second;
@@ -2097,12 +2425,24 @@ RotoCurveInteract::getBezierBeingBuild() const
     return builtBezier;
 }
 
+BezierPtr
+RotoCurveInteract::makePointCurve(double x,
+                                  double y,
+                                  double time)
+{
+    // Held here: without a GUI the push runs redo() and drops the command.
+    std::shared_ptr<MakePointCurveUndoCommand> cmd = std::make_shared<MakePointCurveUndoCommand>(shared_from_this(), x, y, time);
+    _host->pushUndoCommand(cmd);
+
+    return cmd->getCurve();
+}
+
 bool
 RotoCurveInteract::smoothSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2148,7 +2488,7 @@ RotoCurveInteract::cuspSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2187,6 +2527,89 @@ RotoCurveInteract::cuspSelectedCurve()
     }
 
     return false;
+}
+
+std::list<std::pair<BezierPtr, int>>
+RotoCurveInteract::getSelectedPointRefs() const
+{
+    std::list<std::pair<BezierPtr, int>> ret;
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        const BezierCPPtr& point = it->first;
+        BezierPtr curve = point ? point->getBezier() : BezierPtr();
+        if (!curve) {
+            continue;
+        }
+        const int index = point->isFeatherPoint() ? curve->getFeatherPointIndex(point) : curve->getControlPointIndex(point);
+        if (index < 0) {
+            continue;
+        }
+        std::pair<BezierPtr, int> ref(curve, index);
+        if (std::find(ret.begin(), ret.end(), ref) == ret.end()) {
+            ret.push_back(ref);
+        }
+    }
+
+    return ret;
+}
+
+bool
+RotoCurveInteract::linkSelectedPointsToTrack(double time)
+{
+    std::list<std::pair<BezierPtr, int>> points = getSelectedPointRefs();
+    if (points.empty()) {
+        return false;
+    }
+
+    // Every track of every tracker in the project, as "tracker / track".
+    AppInstancePtr app = _host->getApp();
+    NodesList nodes;
+    app->getProject()->getNodes_recursive(nodes, true);
+    std::vector<std::string> labels;
+    std::vector<TrackMarkerPtr> markers;
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (!tracker) {
+            continue;
+        }
+        std::vector<TrackMarkerPtr> all;
+        tracker->getAllMarkers(&all);
+        for (std::vector<TrackMarkerPtr>::const_iterator itM = all.begin(); itM != all.end(); ++itM) {
+            labels.push_back((*it)->getFullyQualifiedName() + " / " + (*itM)->getScriptName_mt_safe());
+            markers.push_back(*itM);
+        }
+    }
+    if (markers.empty()) {
+        app->warningDialog(tr("Link To Track").toStdString(), tr("There is no track in the project to link to.").toStdString(), false);
+
+        return false;
+    }
+    const int chosen = app->chooseItemDialog(tr("Link To Track").toStdString(), tr("Track:").toStdString(), labels);
+    if ((chosen < 0) || (chosen >= (int)markers.size())) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, TrackLinkUndoCommand::eActionLink, markers[chosen], time));
+
+    return true;
+}
+
+bool
+RotoCurveInteract::unlinkSelectedPoints(bool bake)
+{
+    std::list<std::pair<BezierPtr, int>> points;
+    std::list<std::pair<BezierPtr, int>> all = getSelectedPointRefs();
+    for (std::list<std::pair<BezierPtr, int>>::const_iterator it = all.begin(); it != all.end(); ++it) {
+        BezierCPPtr cp = it->first->getControlPointAtIndex(it->second);
+        BezierCPPtr fp = it->first->getFeatherPointAtIndex(it->second);
+        if ((cp && cp->isLinkedToTrack()) || (fp && fp->isLinkedToTrack())) {
+            points.push_back(*it);
+        }
+    }
+    if (points.empty()) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, bake ? TrackLinkUndoCommand::eActionUnlinkAndBake : TrackLinkUndoCommand::eActionUnlink, TrackMarkerPtr(), 0.));
+
+    return true;
 }
 
 bool
@@ -2266,7 +2689,7 @@ RotoCurveInteract::moveSelectedCpsWithKeyArrows(int x,
 
     if (!points.empty()) {
         std::pair<double, double> pixelScale;
-        _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+        pixelScale = getPixelScale();
         double time = _host->getCurrentTime();
 
         MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
@@ -2379,7 +2802,7 @@ RotoCurveInteract::drawOverlay(double time)
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
                 if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
+                    getCurveOverlayColor(*it, curveColor);
                 } else {
                     curveColor[0] = 0.8;
                     curveColor[1] = 0.8;
@@ -2397,6 +2820,9 @@ RotoCurveInteract::drawOverlay(double time)
                     glEnd();
                 }
             } else if (isBezier) {
+                if (!isCurveShown(std::static_pointer_cast<Bezier>(*it))) {
+                    continue;
+                }
                 /// draw the bezier
                 // check if the bbox is visible
                 // if the bbox is visible, compute the polygon and draw it.
@@ -2424,7 +2850,7 @@ RotoCurveInteract::drawOverlay(double time)
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
                 if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
+                    getCurveOverlayColor(*it, curveColor);
                 } else {
                     curveColor[0] = 0.8;
                     curveColor[1] = 0.8;
@@ -2576,6 +3002,26 @@ RotoCurveInteract::drawOverlay(double time)
                         glVertex2f(x, y);
                         glEnd();
 
+                        // A point following a track gets a square around it: magenta while the
+                        // track resolves, red when it is lost.
+                        if ((*it2)->isLinkedToTrack()) {
+                            const double halfX = cpWidth * 1.5 * pixelScale.first;
+                            const double halfY = cpWidth * 1.5 * pixelScale.second;
+                            if ((*it2)->getResolvedTrack()) {
+                                glColor3f(1., 0.3, 1.);
+                            } else {
+                                glColor3f(1., 0.15, 0.15);
+                            }
+                            glLineWidth(1.5 * screenPixelRatio);
+                            glBegin(GL_LINE_LOOP);
+                            glVertex2f(x - halfX, y - halfY);
+                            glVertex2f(x + halfX, y - halfY);
+                            glVertex2f(x + halfX, y + halfY);
+                            glVertex2f(x - halfX, y + halfY);
+                            glEnd();
+                            colorChanged = true;
+                        }
+
                         if (colorChanged) {
                             glColor3d(0.85, 0.67, 0.);
                         }
@@ -2685,8 +3131,13 @@ RotoCurveInteract::drawOverlay(double time)
             glCheckError();
         } // for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
 
+        drawOverlayExtras(time, screenPixelRatio, pixelScale);
+
         if (!_host->isDrawingPassiveOverlay()) {
             drawPaintToolOverlay(screenPixelRatio, viewportSize);
+            if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+                objectSelect->draw(time);
+            }
         }
     } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
 
@@ -2744,7 +3195,7 @@ RotoCurveInteract::onViewportSelectionUpdated(const RectD& rectangle,
     std::list<RotoDrawableItemPtr> curves = ctx->getCurvesByRenderOrder();
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if ((*it)->isLockedRecursive()) {
+        if ((*it)->isLockedRecursive() || (isBezier && !isCurveShown(isBezier))) {
             continue;
         }
 
@@ -2788,14 +3239,14 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
     bool didSomething = false;
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     if (selectedTool == eRotoToolSelectAll) {
         double bezierSelectionTolerance = kBezierSelectionTolerance * pixelScale.first;
         double nearbyBezierT;
         int nearbyBezierCPIndex;
         bool isFeather;
-        BezierPtr nearbyBezier = getCurveContext()->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+        BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
 
         if (nearbyBezier) {
             /// If the bezier is already selected and we re-click on it, change the transform mode
@@ -2829,8 +3280,12 @@ RotoCurveInteract::onOverlayPenDown(double time,
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
 
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penDown(time, pos, shiftDown > 0);
+    }
+
     std::pair<double, double> pixelScale;
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     bool didSomething = false;
     double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
@@ -2850,7 +3305,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     double nearbyBezierT;
     int nearbyBezierCPIndex;
     bool isFeather;
-    BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+    BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
     std::pair<BezierCPPtr, BezierCPPtr> nearbyCP;
     int nearbyCpIndex = -1;
     if (nearbyBezier) {
@@ -3178,6 +3633,11 @@ RotoCurveInteract::onOverlayPenDown(double time,
     case eRotoToolDrawBSpline:
 
         break;
+    case eRotoToolDrawPoint:
+        makePointCurve(pos.x(), pos.y(), time);
+        evaluateOnPenUp = true;
+        didSomething = true;
+        break;
     case eRotoToolDrawEllipse: {
         click = pos;
         pushUndoCommand(new MakeEllipseUndoCommand(shared_from_this(), true, false, false, pos.x(), pos.y(), pos.x(), pos.y(), time));
@@ -3210,9 +3670,13 @@ RotoCurveInteract::onOverlayPenMotion(double time,
                                       double pressure,
                                       double timestamp)
 {
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penMotion(pos);
+    }
+
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     RotoCurveContextPtr context = getCurveContext();
     assert(context);
@@ -3286,7 +3750,7 @@ RotoCurveInteract::onOverlayPenMotion(double time,
             double nearbyBezierT;
             int nearbyBezierCPIndex;
             bool isFeather;
-            BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+            BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
             if (isFeather && !featherVisible) {
                 nearbyBezier.reset();
             }
@@ -3540,6 +4004,10 @@ RotoCurveInteract::onOverlayPenUp()
 {
     undoGesture.end();
 
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penUp();
+    }
+
     RotoCurveContextPtr context = getCurveContext();
 
     assert(context);
@@ -3598,6 +4066,16 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         ++ctrlDown;
     } else if ((key == Key_Alt_L) || (key == Key_Alt_R)) {
         ++altDown;
+    }
+
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        if (key == Key_Escape) {
+            return objectSelect->clearPrompts();
+        } else if ((key == Key_BackSpace) || (key == Key_Delete)) {
+            return objectSelect->removeLastPrompt();
+        } else if ((key == Key_Return) || (key == Key_KP_Enter)) {
+            return objectSelect->commit();
+        }
     }
 
     if (ctrlDown && !shiftDown && !altDown) {

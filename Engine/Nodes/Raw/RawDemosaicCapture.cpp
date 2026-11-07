@@ -784,7 +784,9 @@ captureSharpen(float* rgb,
                const std::uint8_t (*xtrans)[6],
                const float wbApplied[3],
                const CaptureSettings& settings,
-               const ParallelFor& parallel)
+               const ParallelFor& parallel,
+               float* sharpenedAreas,
+               float* sigmaIndex)
 {
     if ((width <= 0) || (height <= 0) || (frameWidth < 5) || (frameHeight < 5)) {
         return;
@@ -817,6 +819,13 @@ captureSharpen(float* rgb,
 
     std::vector<unsigned char> gaussIdx(pixels);
     gaussIndex(gaussIdx.data(), settings.radius, settings.boost, settings.center, p, parallel);
+
+    if (sharpenedAreas) {
+        std::copy(blendmask.begin(), blendmask.end(), sharpenedAreas);
+    }
+    if (sigmaIndex) {
+        std::transform(gaussIdx.begin(), gaussIdx.end(), sigmaIndex, [](unsigned char index) { return (float)index / 255.0f; });
+    }
 
     for (int iter = 0; iter < settings.iterations; iter++) {
         blurDiv(tmp1.data(), tmp2.data(), luminance.data(), blendmask.data(), gaussIdx.data(), p, parallel);

@@ -46,8 +46,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
+const char* const kGradePluginID = "Grade";
 
 } // namespace
 

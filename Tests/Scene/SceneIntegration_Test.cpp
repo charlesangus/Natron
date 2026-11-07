@@ -33,6 +33,7 @@
 #include <list>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -57,12 +58,16 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDReference.h"
+#include "Engine/Nodes/Scene/USDSetAttribute.h"
+#include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
@@ -177,6 +182,7 @@ protected:
 
 namespace {
 const char* const kReferenceScene = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
+const char* const kVariantScene = NATRON_TESTS_FIXTURES_DIR "/scene-variants.usda";
 
 QString
 cleanAbsolute(const QString& path)
@@ -344,6 +350,60 @@ TEST_F(SceneIntegrationTest, USDWriteRoundTripsTheSceneInBothModes)
 
 // Layered mode refers to the file USDRead reads, relative to the written file or absolute, rather
 // than copying it.
+// The scene nodes' prim patterns are USD path expressions: the space-separated list of paths a
+// picker writes selects each of them, and a pattern that does not parse is a node error naming it
+// until it parses again.
+TEST_F(SceneIntegrationTest, PrimPatternsAreUSDPathExpressions)
+{
+    NodePtr reader = createReader(kReferenceScene);
+    NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(reader && prune && transform);
+    KnobString* prunePattern = getKnob<KnobString>(prune, kUSDPruneParamPrimPattern);
+    KnobString* transformPattern = getKnob<KnobString>(transform, kUSDEditTransformParamPrimPattern);
+    ASSERT_TRUE(prunePattern && transformPattern);
+    ASSERT_TRUE(prune->connectInput(reader, 0));
+    ASSERT_TRUE(transform->connectInput(reader, 0));
+
+    const auto isActive = [](const PXR_NS::UsdStageRefPtr& stage, const char* path) {
+        return stage->GetPrimAtPath(PXR_NS::SdfPath(path)).IsActive();
+    };
+
+    prunePattern->setValue(std::string("/World/Box /World/Cam"));
+    PXR_NS::UsdStageRefPtr stage = composeOutput(prune);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(isActive(stage, "/World/Box"));
+    EXPECT_FALSE(isActive(stage, "/World/Cam"));
+    EXPECT_TRUE(isActive(stage, "/World/Ball"));
+
+    prunePattern->setValue(std::string("//B*"));
+    stage = composeOutput(prune);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(isActive(stage, "/World/Box"));
+    EXPECT_FALSE(isActive(stage, "/World/Ball"));
+    EXPECT_TRUE(isActive(stage, "/World/Cam"));
+
+    const std::pair<NodePtr, KnobString*> nodes[] = { { prune, prunePattern }, { transform, transformPattern } };
+    for (const std::pair<NodePtr, KnobString*>& node : nodes) {
+        node.second->setValue(std::string("/World/Box &"));
+        ScenePayload payload;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed,
+                  node.first->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+        EXPECT_NE(std::string::npos, error.find("/World/Box &")) << error;
+        ASSERT_TRUE(node.first->hasPersistentMessage());
+        QString message;
+        int type = 0;
+        node.first->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type);
+        EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Box &"))) << message.toStdString();
+
+        node.second->setValue(std::string("/World/Box"));
+        EXPECT_TRUE(bool(composeOutput(node.first)));
+        EXPECT_FALSE(node.first->hasPersistentMessage());
+    }
+}
+
 TEST_F(SceneIntegrationTest, USDWriteLayeredSublayersTheReadFile)
 {
     QTemporaryDir tmp;
@@ -880,4 +940,118 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Card"))).ComputeBoundMaterial();
     ASSERT_TRUE(bool(bound));
     EXPECT_EQ(PXR_NS::SdfPath("/World/Props/Card/Red"), bound.GetPath());
+}
+
+// The composition nodes in a chain, written in Layered mode:
+//
+//   USDRead -> USDReference -> USDVariant -> USDEditPrim -> USDSetAttribute -> USDWrite
+//
+// The written layer holds each node's opinions and nothing more: the reference arc, the variant
+// selection, the one camera attribute touched and the custom attribute.
+TEST_F(SceneIntegrationTest, CompositionNodesExportTheirOpinionsOnly)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr reader = createReader(kReferenceScene);
+    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREFERENCE));
+    NodePtr variant = createNode(QString::fromUtf8(PLUGINID_NATRON_USDVARIANT));
+    NodePtr edit = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITPRIM));
+    NodePtr setAttribute = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+    ASSERT_TRUE(reader && reference && variant && edit && setAttribute);
+
+    const auto setString = [](const NodePtr& node, const char* name, const std::string& value) {
+        KnobString* knob = getKnob<KnobString>(node, name);
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValue(value);
+    };
+    const auto setChoice = [](const NodePtr& node, const char* name, const std::string& id) {
+        KnobChoice* knob = getKnob<KnobChoice>(node, name);
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValueFromID(id, 0);
+    };
+
+    // The variants scene's /World referenced at /World/Set.
+    setString(reference, kSceneParamPrimPath, "/World/Set");
+    KnobFile* referencedFile = getKnob<KnobFile>(reference, kUSDReferenceParamFile);
+    ASSERT_TRUE(referencedFile != NULL);
+    referencedFile->setValue(std::string(kVariantScene));
+    // Its asset switched to blue shading.
+    setString(variant, kUSDVariantParamPrimPattern, "/World/Set/Asset");
+    setString(variant, kUSDVariantParamVariantSet, "shadingVariant");
+    setString(variant, kUSDVariantParamVariant, "blue");
+    // The camera's focal length, and nothing else of it.
+    setChoice(edit, kUSDEditPrimParamMode, "edit");
+    setChoice(edit, kUSDEditPrimParamSchema, "Camera");
+    setString(edit, kUSDEditPrimParamPrimPattern, "/World/Cam");
+    KnobDouble* focalLength = getKnob<KnobDouble>(edit, "focalLength");
+    ASSERT_TRUE(focalLength != NULL);
+    focalLength->setValue(80., ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+    // A custom attribute on the box.
+    setString(setAttribute, kUSDSetAttributeParamPrimPattern, "/World/Box");
+    setString(setAttribute, kUSDSetAttributeParamAttributeName, "userProperties:weight");
+    setChoice(setAttribute, kUSDSetAttributeParamValueType, "float");
+    KnobDouble* weight = getKnob<KnobDouble>(setAttribute, kUSDSetAttributeParamValue);
+    ASSERT_TRUE(weight != NULL);
+    weight->setValue(2.5);
+
+    ASSERT_TRUE(reference->connectInput(reader, 0));
+    ASSERT_TRUE(variant->connectInput(reference, 0));
+    ASSERT_TRUE(edit->connectInput(variant, 0));
+    ASSERT_TRUE(setAttribute->connectInput(edit, 0));
+
+    const QString path = tmp.path() + QString::fromUtf8("/out/composition.usda");
+    NodePtr writer = createWriter(setAttribute, path, USDWrite::eExportModeLayered, USDWrite::ePathModeAbsolute, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    render(writer);
+    ASSERT_EQ((U64)1, getWriter(writer)->getWriteCount());
+
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    // USDReference: the prim defined with one reference, to the variants file.
+    PXR_NS::SdfPrimSpecHandle set = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Set"));
+    ASSERT_TRUE(static_cast<bool>(set));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, set->GetSpecifier());
+    PXR_NS::SdfReferenceListOp references;
+    ASSERT_TRUE(layer->HasField(set->GetPath(), PXR_NS::SdfFieldKeys->References, &references));
+    const std::vector<PXR_NS::SdfReference> items = references.GetAppliedItems();
+    ASSERT_EQ((std::size_t)1, items.size());
+    EXPECT_EQ(cleanAbsolute(QString::fromUtf8(kVariantScene)), cleanAbsolute(QString::fromStdString(items[0].GetAssetPath())));
+    // USDVariant: the selection, and no other opinion on the asset.
+    PXR_NS::SdfPrimSpecHandle asset = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Set/Asset"));
+    ASSERT_TRUE(static_cast<bool>(asset));
+    EXPECT_EQ(PXR_NS::SdfSpecifierOver, asset->GetSpecifier());
+    EXPECT_TRUE(asset->GetProperties().empty());
+    const PXR_NS::SdfVariantSelectionMap selections = asset->GetVariantSelections();
+    ASSERT_EQ((std::size_t)1, selections.count("shadingVariant"));
+    EXPECT_EQ(std::string("blue"), selections.at("shadingVariant"));
+    // USDEditPrim: the touched attribute alone.
+    PXR_NS::SdfPrimSpecHandle cam = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"));
+    ASSERT_TRUE(static_cast<bool>(cam));
+    ASSERT_EQ((std::size_t)1, cam->GetProperties().size());
+    EXPECT_EQ(std::string("focalLength"), cam->GetProperties().front()->GetName());
+    // USDSetAttribute: the custom attribute alone.
+    PXR_NS::SdfPrimSpecHandle box = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
+    ASSERT_TRUE(static_cast<bool>(box));
+    ASSERT_EQ((std::size_t)1, box->GetProperties().size());
+    PXR_NS::SdfAttributeSpecHandle weightSpec = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.userProperties:weight"));
+    ASSERT_TRUE(static_cast<bool>(weightSpec));
+    EXPECT_TRUE(weightSpec->IsCustom());
+
+    // And composed, the file holds the scene the chain built.
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).GetTypeName());
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Set/Asset/Geo")).GetTypeName());
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Set/Asset/Geo"))).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Set/Looks/Blue"), bound.GetPath());
+    float focal = 0.f;
+    ASSERT_TRUE(PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"))).GetFocalLengthAttr().Get(&focal));
+    EXPECT_FLOAT_EQ(80.f, focal);
+    float weightValue = 0.f;
+    const PXR_NS::UsdAttribute weightAttribute = stage->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.userProperties:weight"));
+    ASSERT_TRUE(static_cast<bool>(weightAttribute));
+    ASSERT_TRUE(weightAttribute.Get(&weightValue));
+    EXPECT_FLOAT_EQ(2.5f, weightValue);
 }

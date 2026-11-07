@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,15 @@ struct SceneMaterialGraft {
     // Where the input's first material landed, which the geometry binds itself to. Empty when the
     // input holds no material.
     std::string materialPath;
-    // A hash of what the geometry's layer reads of payload: its metadata and materialPath. A
+    // When that material is a USDProject3D projection in Geometry space: the grafted path of its
+    // shader, which the geometry gives its own placement (authorProjectionGeometryFrame()). Empty
+    // otherwise.
+    std::string geometryProjectionShader;
+    // Whether that projection holds its camera, and at which project frame.
+    bool projectionHeld = false;
+    double projectionHoldFrame = 0.;
+    // A hash of what the geometry's layer reads of payload: its metadata, materialPath and the
+    // projection's fields. A
     // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
     U64 factsDigest = 0;
     std::vector<SceneUnmappedLink> unmappedLinks;
@@ -87,6 +96,61 @@ double getMetersPerUnit(const SceneLayerEdit& edit);
  * makes the paths relative to the file it writes when asked. Empty when the knob is.
  **/
 std::string getAnchoredFilePath(const KnobFilePtr& knob);
+
+/**
+ * @brief The live texture of layer of the image the node connected to consumer's input inputNb
+ * renders: the node, its content hash and whether it varies over time, without rendering it, over
+ * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
+ * authors them through recordLiveTexture().
+ **/
+bool getLiveTextureSource(const EffectInstance& consumer,
+                          int inputNb,
+                          const std::string& layer,
+                          LiveTextureSource* source);
+
+// What a layer authoring source reads of it.
+void appendLiveTextureSource(const LiveTextureSource& source,
+                             ContentHasher* h);
+
+/**
+ * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
+ * recorded: its getUri(frame) is what the layer authors at frame, and its getWindow(frame) where
+ * that texture lies over the image, found without rendering.
+ **/
+LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
+                                    const LiveTextureSource& source);
+
+// True when the window of recorded changes over the frames it was recorded for.
+bool liveTextureWindowVaries(const LiveTextureSource& recorded);
+
+/**
+ * @brief Connects the texture coordinates st of a texture showing recorded to coordinates, through
+ * a UsdTransform2d defined at transformPath that takes 0 to 1 over the image's format to the
+ * texture's whole window, time-sampled when the window changes over edit's frames. Coordinates
+ * outside 0 to 1 then read the overscan, and the texture's wrap mode applies beyond it.
+ **/
+bool connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                                   const SceneLayerEdit& edit,
+                                   const PXR_NS::SdfPath& transformPath,
+                                   const LiveTextureSource& recorded,
+                                   const PXR_NS::UsdShadeOutput& coordinates,
+                                   const PXR_NS::UsdShadeInput& st);
+
+/**
+ * @brief Connects the opacity of the UsdPreviewSurface surface to the alpha of the UsdUVTexture
+ * texture, in the "presence" opacity mode: the whole shaded colour, emission and specular included,
+ * is scaled by the alpha, as a premultiplied image composited over what is behind it. Storm then
+ * draws the surface in its translucent pass.
+ **/
+bool connectOpacityToAlpha(PXR_NS::UsdShadeShader surface,
+                           PXR_NS::UsdShadeShader texture);
+
+/**
+ * @brief Authors the inputs of the UsdPreviewSurface surface that leave only its emission showing,
+ * and creates its emissiveColor input for the caller to feed.
+ **/
+bool authorUnlitSurfaceInputs(PXR_NS::UsdShadeShader surface,
+                              PXR_NS::UsdShadeInput* emissive);
 
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
@@ -167,12 +231,80 @@ bool graftMaterialInput(const ScenePayload& material,
                         std::string* errorMessage);
 
 /**
+ * @brief Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
+ **/
+bool isProjectionShader(const PXR_NS::UsdShadeShader& shader);
+
+/**
+ * @brief For a geometry node whose Material input is a projection in Geometry space
+ * (graft.geometryProjectionShader set): authors the shader's geometryFrame input on stage, the
+ * geometry's local to world transform as the node places it, frameAt(frame) at a project frame:
+ * once at the projection's hold frame when it holds its camera, else as a default or, when
+ * animated, at every frame of getSampleFrames(). Does nothing for any other material.
+ **/
+bool authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
+                                   const SceneLayerEdit& edit,
+                                   const SceneMaterialGraft& graft,
+                                   bool animated,
+                                   const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+
+/**
  * @brief Binds prim to the material at materialPath (material:binding, with
  * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
  **/
 bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                            const std::string& materialPath,
                            std::string* errorMessage);
+
+/**
+ * @brief For a node assigning one shared material: grafts every root prim of material under the
+ * scope root /<scope> (typed Scope) through SceneOps::reparentRoots, memoized in memo, a root named
+ * like the scope passed through rather than nested. graft->materialPath is the grafted path of
+ * material's first UsdShadeMaterial, depth first. Returns false with *errorMessage set when scope
+ * is empty or authoring fails.
+ **/
+bool graftSharedMaterial(const ScenePayload& material,
+                         const std::string& scope,
+                         const std::string& layerTag,
+                         SceneGraftMemo* memo,
+                         SceneMaterialGraft* graft,
+                         std::string* errorMessage);
+
+/**
+ * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.
+ **/
+struct SceneCollectionBinding {
+    // The prims the collection includes, its expansion rule expandPrims taking their descendants.
+    std::vector<PXR_NS::SdfPath> includes;
+    std::string materialPath;
+    // Names both the collection (collection:<name>) and the binding; a single identifier.
+    std::string bindingName;
+    // UsdShadeTokens->allPurpose, full or preview.
+    PXR_NS::TfToken purpose;
+    // UsdShadeTokens->strongerThanDescendants or weakerThanDescendants.
+    PXR_NS::TfToken strength;
+    // The root's collection-binding properties already composed, strongest first: see
+    // getCollectionBindingNames().
+    std::vector<PXR_NS::TfToken> existingBindings;
+};
+
+/**
+ * @brief The collection-based material binding properties of prim, in native property order,
+ * which is their binding strength, strongest first, across every purpose.
+ **/
+std::vector<PXR_NS::TfToken> getCollectionBindingNames(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief Binds binding.materialPath to the prims binding.includes names, on root: applies
+ * UsdCollectionAPI collection:<name> including them (expandPrims) and UsdShadeMaterialBindingAPI,
+ * authors material:binding:collection[:<purpose>]:<name> = [collection, material] with
+ * bindMaterialAs = binding.strength, and writes root's propertyOrder with that binding first, then
+ * binding.existingBindings, so it is the strongest collection binding on root. Returns false with
+ * *errorMessage set when the binding name is not an identifier or authoring fails.
+ **/
+bool authorCollectionBinding(const PXR_NS::UsdPrim& root,
+                             const SceneCollectionBinding& binding,
+                             std::string* errorMessage);
 
 /**
  * @brief Authors knobs as xformable's op stack: xformOp:translate, xformOp:rotate<order> and
@@ -182,24 +314,6 @@ bool authorTransform(const SceneTransformKnobs& knobs,
                      const PXR_NS::UsdGeomXformable& xformable,
                      const SceneLayerEdit& edit,
                      std::string* errorMessage);
-/**
- * @brief Whether name matches glob, in which * stands for any run of characters (none included)
- * and ? for any one character.
- **/
-bool matchesGlob(const std::string& name,
-                 const std::string& glob);
-
-/**
- * @brief The prims of stage a prim pattern names. The pattern is a whitespace-separated list of
- * absolute prim paths whose names may hold the wildcards of matchesGlob(), so a last name of *
- * names every child of the prim before it. Only active, defined, non-abstract prims match. *paths holds them
- * in the order the pattern names them, each once. Returns false with *errorMessage set when an
- * entry is not an absolute path; an empty pattern names no prim.
- **/
-bool matchPrims(const PXR_NS::UsdStageRefPtr& stage,
-                const std::string& pattern,
-                std::vector<PXR_NS::SdfPath>* paths,
-                std::string* errorMessage);
 
 /**
  * @brief The transform that scales by scale, turns by rotate (degrees, in the rotate order) and

@@ -40,6 +40,8 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -67,11 +69,11 @@ buildConstantGradeChain(const AppInstancePtr& app,
                         const std::string& prefix,
                         std::vector<NodePtr>* chain)
 {
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, prefix + "Constant");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, prefix + "Constant");
     ASSERT_TRUE(bool(constant));
     chain->push_back(constant);
     for (int i = 1; i <= 3; ++i) {
-        NodePtr grade = createNamedNode(app, PLUGINID_OFX_GRADE, prefix + "Grade" + std::to_string(i));
+        NodePtr grade = createNamedNode(app, PLUGINID_NATRON_GRADE, prefix + "Grade" + std::to_string(i));
         ASSERT_TRUE(bool(grade));
         ASSERT_TRUE(grade->connectInput(chain->back(), 0));
         chain->push_back(grade);
@@ -150,13 +152,13 @@ TEST_F(GraphScalingTiming, DiamondLadderConnectIsFast)
 
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 
-    NodePtr previous = createNamedNode(app, PLUGINID_OFX_CONSTANT, "Root");
+    NodePtr previous = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "Root");
     ASSERT_TRUE(bool(previous));
 
     for (int level = 1; level <= kLevels; ++level) {
         const std::string suffix = std::to_string(level);
-        NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "Left" + suffix);
-        NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "Right" + suffix);
+        NodePtr left = createNamedNode(app, PLUGINID_NATRON_GRADE, "Left" + suffix);
+        NodePtr right = createNamedNode(app, PLUGINID_NATRON_GRADE, "Right" + suffix);
         NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "Join" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
@@ -169,7 +171,7 @@ TEST_F(GraphScalingTiming, DiamondLadderConnectIsFast)
         previous = join;
     }
 
-    NodePtr bottom = createNamedNode(app, PLUGINID_OFX_GRADE, "Bottom");
+    NodePtr bottom = createNamedNode(app, PLUGINID_NATRON_GRADE, "Bottom");
     ASSERT_TRUE(bool(bottom));
     ASSERT_TRUE(bottom->connectInput(previous, 0));
 
@@ -182,9 +184,9 @@ TEST_F(GraphScalingTest, ConnectingIntoOwnUpstreamIsRefused)
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr a = createNamedNode(app, PLUGINID_OFX_GRADE, "CycleA");
-    NodePtr b = createNamedNode(app, PLUGINID_OFX_GRADE, "CycleB");
-    NodePtr c = createNamedNode(app, PLUGINID_OFX_GRADE, "CycleC");
+    NodePtr a = createNamedNode(app, PLUGINID_NATRON_GRADE, "CycleA");
+    NodePtr b = createNamedNode(app, PLUGINID_NATRON_GRADE, "CycleB");
+    NodePtr c = createNamedNode(app, PLUGINID_NATRON_GRADE, "CycleC");
     ASSERT_TRUE(bool(a));
     ASSERT_TRUE(bool(b));
     ASSERT_TRUE(bool(c));
@@ -203,9 +205,9 @@ TEST_F(GraphScalingTest, InputFetchedFromOnInputChangedLeavesNoFrameArgsUpstream
 {
     const AppInstancePtr app = getApp();
 
-    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "FetchConstant");
-    NodePtr gradeA = createNamedNode(app, PLUGINID_OFX_GRADE, "FetchGradeA");
-    NodePtr gradeB = createNamedNode(app, PLUGINID_OFX_GRADE, "FetchGradeB");
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "FetchConstant");
+    NodePtr gradeA = createNamedNode(app, PLUGINID_NATRON_GRADE, "FetchGradeA");
+    NodePtr gradeB = createNamedNode(app, PLUGINID_NATRON_GRADE, "FetchGradeB");
     NodePtr fetcher = createNamedNode(app, kTestPluginIDInputChangedFetch, "Fetcher");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(gradeA));
@@ -259,13 +261,13 @@ TEST_F(GraphScalingTiming, FrameVaryingFallbackIsLinearOnDiamondLadder)
     const int kLevels = 30;
     const AppInstancePtr app = getApp();
 
-    NodePtr previous = createNamedNode(app, PLUGINID_OFX_CONSTANT, "Root");
+    NodePtr previous = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "Root");
     ASSERT_TRUE(bool(previous));
 
     for (int level = 1; level <= kLevels; ++level) {
         const std::string suffix = std::to_string(level);
-        NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "Left" + suffix);
-        NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "Right" + suffix);
+        NodePtr left = createNamedNode(app, PLUGINID_NATRON_GRADE, "Left" + suffix);
+        NodePtr right = createNamedNode(app, PLUGINID_NATRON_GRADE, "Right" + suffix);
         NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "Join" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));

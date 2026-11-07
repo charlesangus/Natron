@@ -1,0 +1,161 @@
+-- glslfx version 0.1
+
+//
+// Natron's camera projection surface for Storm: the plate, sampled where the
+// fragment's world position, or in Geometry space its position on the object,
+// projects through a camera, shown unlit and alpha-blended over what is behind
+// it. The plate holds straight colour, as live textures do; the surface returns
+// it premultiplied, which the translucent pass blends.
+//
+
+-- configuration
+{
+    "metadata": {
+        "materialTag": "translucent"
+    },
+    "parameters": {
+        "plate": {
+            "default": [0.0, 0.0, 0.0, 1.0],
+            "documentation": "The projected image, straight colour. Connect a texture's rgba output."
+        },
+        "worldToProjector": {
+            "default": [1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0],
+            "documentation": "World to the camera's clip space, with x and y mapped from -1..1 to 0..1 (row vectors, as GfMatrix4d)."
+        },
+        "plateTransform": {
+            "default": [1.0, 1.0, 0.0, 0.0],
+            "documentation": "Where the image's format lies in the plate texture, which covers the format and the data window around it: texture coordinates are the frame's 0..1 coordinates times xy plus zw."
+        },
+        "projectionSpace": {
+            "default": 0,
+            "documentation": "0 World: the projection stays where the camera is. 1 Geometry: positions are taken on the object and carried through geometryFrame, so the projection moves with the object."
+        },
+        "geometryFrame": {
+            "default": [1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0],
+            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d)."
+        },
+        "projectorOrigin": {
+            "default": [0.0, 0.0, 0.0, 1.0],
+            "documentation": "The camera's world position with w 1, or for an orthographic camera its backward view direction with w 0."
+        },
+        "projectOn": {
+            "default": 0,
+            "documentation": "0 both sides, 1 the faces facing the camera, 2 the faces facing away."
+        },
+        "crop": {
+            "default": 1,
+            "documentation": "1: outside the frame is transparent black; 0: the plate's data beyond the frame shows there."
+        },
+        "clip": {
+            "default": 0,
+            "documentation": "1: outside the camera's near and far planes is the outside mode."
+        },
+        "outside": {
+            "default": 0,
+            "documentation": "Where nothing projects: 0 opaque black, 1 transparent."
+        }
+    },
+    "techniques": {
+        "default": {
+            "displacementShader": {
+                "source": [ "NatronProject3D.Displacement" ]
+            },
+            "surfaceShader": {
+                "source": [ "NatronProject3D.Surface" ]
+            }
+        }
+    }
+}
+
+-- glsl NatronProject3D.Displacement
+
+vec4
+displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord)
+{
+    return Peye;
+}
+
+-- glsl NatronProject3D.Surface
+
+FORWARD_DECL(bool IsFlipped());
+FORWARD_DECL(MAT4 ApplyInstanceTransformInverse(MAT4 m));
+
+vec4
+natronProject3DOutside()
+{
+    if (HdGet_outside() == 1) {
+        discard;
+    }
+
+    return vec4(0.0, 0.0, 0.0, 1.0);
+}
+
+vec4
+surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
+{
+    // Derivatives before any branch. The geometric normal faces the viewer;
+    // the face's own side follows the winding.
+    vec3 Ng = normalize(cross(dFdx(Peye.xyz), dFdy(Peye.xyz)));
+    vec3 outward = (gl_FrontFacing != IsFlipped()) ? Ng : -Ng;
+
+    vec4 Pworld = vec4(mat4(GetWorldToViewInverseMatrix()) * vec4(Peye.xyz, 1.0));
+
+    // The space the camera values are in: the world, or the world as it was around the object
+    // where the projection was set up, however the object has moved since.
+    mat4 worldToReference = mat4(1.0);
+    if (HdGet_projectionSpace() == 1) {
+        worldToReference = mat4(HdGet_geometryFrame())
+            * mat4(ApplyInstanceTransformInverse(HdGet_transformInverse()));
+    }
+    vec4 Preference = worldToReference * Pworld;
+
+    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
+    // 0..1 across the format; the texture covers the format and the data window beyond it.
+    vec2 frame = c.xy / ((c.w > 0.0) ? c.w : 1.0);
+    vec4 window = HdGet_plateTransform();
+    vec2 uv = frame * window.xy + window.zw;
+    bool crop = HdGet_crop() != 0;
+    // Sampled before any fragment returns or discards: the texture's level of detail comes from
+    // the coordinates' differences across the 2x2 fragment quad, which are undefined once a
+    // neighbour has left, so a quad straddling the frame's edge would read a coarse, smeared
+    // level. Beyond the texture, the image's data window, the sampler reads transparent black.
+    vec4 plate = HdGet_plate(uv);
+
+    int projectOn = HdGet_projectOn();
+    if (projectOn != 0) {
+        vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * inverse(worldToReference)
+                           * HdGet_projectorOrigin());
+        vec3 toProjector = origin.xyz - Peye.xyz * origin.w;
+        bool facing = dot(outward, toProjector) > 0.0;
+        if (facing != (projectOn == 1)) {
+            return natronProject3DOutside();
+        }
+    }
+
+    // Behind the camera nothing projects.
+    if (c.w <= 0.0) {
+        return natronProject3DOutside();
+    }
+    float depth = c.z / c.w;
+    if (HdGet_clip() != 0 && (depth < -1.0 || depth > 1.0)) {
+        return natronProject3DOutside();
+    }
+    // The image is transparent black beyond its format when cropped and beyond its data window
+    // always, as the 2D viewer shows it. Where nothing shows the fragment is discarded rather than
+    // drawn transparent: Storm's pick applies no alpha threshold to translucent materials, so a
+    // transparent fragment would still pick the prim and take its selection highlight.
+    if (crop && (any(lessThan(frame, vec2(0.0))) || any(greaterThan(frame, vec2(1.0))))) {
+        discard;
+    }
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))) || (plate.a <= 0.0)) {
+        discard;
+    }
+
+    return ApplyColorOverrides(vec4(plate.rgb * plate.a, plate.a));
+}

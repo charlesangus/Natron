@@ -65,6 +65,7 @@
 #include "Engine/PluginMemory.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
@@ -686,6 +687,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             return eRenderRoIRetCodeOk;
         } // if (identity)
 
+        {
+            const RectI forwardedRoI = args.roi.intersect(pixelRod);
+            std::map<ImageLayerDesc, ImagePtr> forwarded;
+            RenderRoIRetCode forwardCode = eRenderRoIRetCodeOk;
+            if (!forwardedRoI.isNull() && forwardsOutput(args, requestedComponents, forwardedRoI, &forwarded, &forwardCode)) {
+                if (forwardCode == eRenderRoIRetCodeOk) {
+                    outputLayers->insert(forwarded.begin(), forwarded.end());
+                }
+
+                return forwardCode;
+            }
+        }
+
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         ////////////////////////////// End identity check ///////////////////////////////////////////////////////////////
 
@@ -872,7 +886,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
     bool createInCache;
     // Do not use the cache for OpenGL rendering
-    if (useOpenGL) {
+    if (useOpenGL || renderContextHasLoopVariables(frameArgs->context)) {
         createInCache = false;
     } else {
         // in Analysis, the node upstream of the analysis node should always cache
@@ -901,6 +915,21 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                           1.,
                                                           false,
                                                           renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
+
+    // Overlay images only exist as a side effect of the render action, so a cached image can't
+    // answer this render. byPassCache would reach the action too but deletes the entry, and an
+    // overlay must leave the cache as it found it: render next to the entry instead. With no entry
+    // the render fills the cache as usual, which spares the viewer's render the same work.
+    bool renderBesideCachedImage = false;
+    if (frameArgs->overlayImagePass) {
+        std::list<ImagePtr> entries;
+        appPTR->getImage(*key, &entries);
+        appPTR->getImage(*nonDraftKey, &entries);
+        renderBesideCachedImage = !entries.empty();
+        if (renderBesideCachedImage) {
+            createInCache = false;
+        }
+    }
 
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
     // A frame hash the node has already left would key the new image to a state the graph is
@@ -954,7 +983,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             }
             // A writer's render to disk must call the render action, which writes the file; a pull
             // through a writer, and every node upstream, may still use the cache.
-            bool doCacheLookup = !isWriter() || !isRenderingOwnSequence();
+            bool doCacheLookup = !renderBesideCachedImage && (!isWriter() || !isRenderingOwnSequence());
             if (doCacheLookup) {
                 int nLookups = draftModeSupported && frameArgs->draftMode ? 2 : 1;
 

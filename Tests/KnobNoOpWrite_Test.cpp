@@ -30,6 +30,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QObject>
+
 #include "BaseTest.h"
 
 #include "Engine/AppManager.h"
@@ -184,6 +186,32 @@ TEST_F(BaseTest, SameKeyframeSetValueAtTimeIsNoWrite)
         EXPECT_TRUE(window.marked());
     }
     EXPECT_EQ(4., knob->getValueAtTime(10, 0));
+}
+
+TEST_F(BaseTest, SameChoicesNotifyOnlyWhenAsked)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(node->getEffectInstance().get(), std::string("noOpMenu"), 1, false);
+    ASSERT_TRUE(bool(knob));
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("a", "A", ""));
+    options.push_back(ChoiceOption("b", "B", ""));
+
+    int populated = 0;
+    QObject receiver;
+    QObject::connect(knob.get(), &KnobChoice::populated, &receiver, [&populated]() { ++populated; });
+
+    EXPECT_TRUE(knob->populateChoices(options));
+    EXPECT_EQ(1, populated);
+    EXPECT_FALSE(knob->populateChoices(options));
+    EXPECT_EQ(1, populated);
+
+    DeriveWindow window(node);
+    EXPECT_FALSE(knob->populateChoices(options, true));
+    EXPECT_EQ(2, populated);
+    EXPECT_TRUE(window.settled());
+    EXPECT_FALSE(window.marked());
 }
 
 TEST_F(BaseTest, SameChoiceIsNoWrite)

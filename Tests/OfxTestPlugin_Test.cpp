@@ -68,7 +68,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/Nodes/Metadata/ViewMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataView.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
@@ -104,6 +104,13 @@ const TestPluginVersion kTestPlugins[] = {
     { kNatronTestMetadataContributePluginID, kNatronTestMetadataContributeMajor },
     { kNatronTestMetadataPrintPluginID, kNatronTestMetadataPrintMajor },
     { kNatronTestMetadataTimeCodePluginID, kNatronTestMetadataTimeCodeMajor },
+    { kNatronTestFooterClampBlackOnlyPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterClampWhiteOnlyPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterClampsInGroupPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterSecretAfterDividerPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterSecretAfterVisiblePluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestFooterMultiPlanarPluginID, kNatronTestFooterProbeMajor },
+    { kNatronTestOverlayParamsPluginID, kNatronTestOverlayParamsMajor },
 };
 
 const int kWindowSize = 4;
@@ -741,14 +748,14 @@ class OfxMetadataTestPluginTest
     : public OfxTestPluginTest {
 protected:
     // A native metadata source carrying ofx/sampletype and an ofx/framerate of `rate` (none when
-    // rate is 0), with `pluginID` under it and a ViewMetadata under that.
+    // rate is 0), with `pluginID` under it and a MetadataView under that.
     void buildChain(const char* pluginID,
                     int major,
                     double rate)
     {
         source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
         node = createNode(QString::fromUtf8(pluginID), major);
-        viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWMETADATA));
+        viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAVIEW));
         ASSERT_TRUE(source && node && viewer);
         MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
         ASSERT_TRUE(sourceEffect != nullptr);

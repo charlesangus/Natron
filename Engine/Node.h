@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -84,8 +85,7 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMixParamName "mix"
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"
-#define kWriteOIIOParamViewsSelector "viewsSelector"
-
+#define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
 
@@ -186,6 +186,12 @@ public:
      **/
     void fromSerialization(const Serialization::NodeSerialization& serialization,
                            bool updateKnobGui = false);
+
+    /**
+     * @brief Whether fromSerialization() is restoring the knobs, so a value change comes from the
+     * saved state rather than an edit. Main thread only.
+     **/
+    bool isRestoringKnobs() const;
 
     enum PresetApplyModeEnum {
         // A preset file. Knobs it leaves out are reset. The label, the sublabel, the disable
@@ -357,8 +363,8 @@ public:
      * knobs' read sources and getExtraContextReads() name, and the same for every node it
      * reads, through inputs and through expressions and links, less, for an input, the variables
      * the effect sets on it under every context (see
-     * EffectInstance::getOverriddenContextVariables(); not subtracted when the input reads this
-     * node back through an expression, the two then sharing one read-set). Memoized until the next
+     * EffectInstance::getOverriddenContextVariables()). Nodes reading each other in a cycle get the
+     * least sets satisfying this for each of them. Memoized until the next
      * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
      **/
     RenderContextReadSetConstPtr getUpstreamContextReadSet() const;
@@ -629,6 +635,12 @@ public:
     KnobChannelSelectPtr getUnPremultBySelector() const;
 
     /**
+     * @brief Sets an OpenFX plug-in's hidden "interactive" and "hidpi" style params from the
+     * global Interactive Updates setting and the screen's device pixel ratio.
+     **/
+    void refreshHostDrivenOverlayParams();
+
+    /**
      * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
      * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
      * to another layer and so is not one of plane's channels. That channel is the divisor, not
@@ -832,6 +844,21 @@ public:
      * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
      **/
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
+     * inputs of tail reach going up that the outputs of any of begins reach going down without
+     * passing end. With digest, sets it to tail's hash with each of begins standing for one fixed
+     * tag and each body node hashed in the same way from its inputs, so that it covers the body
+     * without folding in a hash that folds one of begins' own. Nested in such a walk, the
+     * enclosing walk's nodes are hashed the same way. With outsideSources, appends the nodes
+     * outside the body feeding it.
+     **/
+    static void walkLoopBody(const std::vector<NodePtr>& begins,
+                             const NodePtr& tail,
+                             const NodePtr& end,
+                             U64* digest,
+                             std::vector<NodePtr>* outsideSources);
 
     /**
      * @brief Each input name is appended to the vector, in the same order
@@ -1442,7 +1469,20 @@ public:
      **/
     void replaceCustomDataInlabel(const QString & data);
 
+    /**
+     * @brief Shows the effect's getSublabel() in the node's label, on the main thread.
+     **/
+    void refreshSublabel();
+
+    /**
+     * @brief The text shown in parentheses after the node's name: the
+     * kNatronOfxParamStringSublabelName knob's value if the node has one, otherwise the
+     * effect's getSublabel().
+     **/
+    std::string getSublabel() const;
+
 private:
+    void showSublabel(const QString& sublabel);
 
     void restoreSublabel();
 
@@ -1533,7 +1573,11 @@ private:
 
     void createUnPremultSelector(const KnobPagePtr& mainPage);
 
-    void createStageFooterSeparator(const KnobPagePtr& mainPage);
+    void adoptHostDrivenOverlayParams();
+
+    std::vector<KnobIPtr> moveClampKnobsToFooter(const KnobPagePtr& mainPage);
+
+    void createFooterSeparator(const KnobPagePtr& mainPage, const std::vector<KnobIPtr>& footerKnobs);
 
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,
@@ -1730,8 +1774,15 @@ public:
 
     void addRectangleInteract(const KnobDoublePtr& bottomLeft,
                               const KnobDoublePtr& size,
-                              const KnobBoolPtr& interactive,
                               const KnobBoolPtr& enable);
+
+    /**
+     * @brief Declares the ramp overlay: two draggable points, each with a dashed line through it
+     * orthogonal to the line between them. A null interactive follows the global preference.
+     **/
+    void addRampInteract(const KnobDoublePtr& point0,
+                         const KnobDoublePtr& point1,
+                         const KnobBoolPtr& interactive = KnobBoolPtr());
 
     /**
      * @brief Host overlays declared before the node has a GUI; they are handed to the GUI by
@@ -1747,8 +1798,7 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,
@@ -1763,8 +1813,7 @@ public:
                               const KnobBoolPtr& enable3,
                               const KnobBoolPtr& enable4,
                               const KnobChoicePtr& overlayPoints,
-                              const KnobBoolPtr& invert,
-                              const KnobBoolPtr& interactive);
+                              const KnobBoolPtr& invert);
 
     void removePositionHostOverlay(KnobI* knob);
 
@@ -1775,6 +1824,39 @@ public:
     void setCurrentViewportForHostOverlays(OverlaySupport* viewPort);
 
     bool hasHostOverlayForParam(const KnobI* knob) const;
+
+    /**
+     * @brief The overlay images of the node's last finished pass. Held on the node because a render
+     * clone produces them and the viewer reads them from the main instance.
+     **/
+    OverlayImageFrameConstPtr getOverlayImageFrame() const;
+
+    /**
+     * @brief What a pass captures before it reads the node's view knobs, to hand back to
+     * setOverlayImageFrame().
+     **/
+    std::uint64_t getOverlayImageGeneration() const;
+
+    /**
+     * @brief Publishes frame unless clearOverlayImageFrame() ran since generation was captured,
+     * and returns whether it did. Checked under the frame's lock, so a frame on the node is always
+     * of the current generation.
+     **/
+    bool setOverlayImageFrame(const OverlayImageFrameConstPtr& frame, std::uint64_t generation);
+
+    /**
+     * @brief Drops the overlay images and refuses the frames of passes already running. Returns
+     * whether there were any.
+     **/
+    bool clearOverlayImageFrame();
+
+    /**
+     * @brief Marks a pass as owed to the node until the returned token dies. While one is, the viewer
+     * keeps drawing the node's previous images.
+     **/
+    std::shared_ptr<void> markOverlayImagePassPending();
+
+    bool isOverlayImagePassPending() const;
 
     void setPluginIDAndVersionForGui(const std::list<std::string>& grouping,
                                      const std::string& pluginLabel,
@@ -1846,7 +1928,8 @@ public:
      * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
      * the draft flag, which is settled here for every node reached. The nodes whose settings panel
      * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown. Main thread only.
+     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
+     * only.
      **/
     void refreshShownDownstreamInputRelatedData();
 
@@ -2096,6 +2179,9 @@ private:
         // Other nodes whose hashes the knobs' content hashes fold: those whose metadata the
         // knobs' expressions read, directly or through the knobs they read.
         std::vector<NodePtr> metadataSources;
+        // Other nodes whose stored hashes the effect folds in (see
+        // EffectInstance::appendExtraHashSources()).
+        std::vector<NodePtr> extraSources;
     };
 
     /**
@@ -2175,7 +2261,13 @@ private:
      **/
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
+    /**
+     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored one
+     * when it is null.
+     **/
+    U64 computeContentHash(U64 projectDigest,
+                           const HashInputs& inputs,
+                           const std::function<U64(const Node&)>* inputHash = 0) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -2285,6 +2377,12 @@ Q_SIGNALS:
      * getInput() is not necessarily the same as the value returned by getGuiInput() since the node might still be rendering.
      */
     void inputChanged(int);
+
+    /**
+     * @brief Emitted once inputs or outputs changed during a render take effect, so getInput()
+     * and getOutputs_mt_safe() now match what inputChanged announced.
+     **/
+    void connectionsCommitted();
 
     void outputsChanged();
 

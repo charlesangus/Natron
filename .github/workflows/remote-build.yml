@@ -154,6 +154,7 @@ jobs:
             build/assets/Plugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
@@ -325,6 +326,7 @@ jobs:
             build/assets/Plugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
@@ -363,9 +365,9 @@ jobs:
           esac
 
       # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
-      # until GitHub's six-hour limit.
+      # until GitHub's six-hour limit. A debug suite runs for about 50 minutes, as in PR CI.
       - name: Run ctest suite (${{ matrix.scheduler }} scheduler)
-        timeout-minutes: ${{ inputs.shuffle_seeds == '' && 30 || 120 }}
+        timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 30 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}

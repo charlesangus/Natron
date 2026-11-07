@@ -185,6 +185,8 @@ private:
 
     // The Matte over the render window grown by the blur's halo and the edge detection's reach.
     virtual RectI opPassesInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

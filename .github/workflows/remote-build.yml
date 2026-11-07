@@ -200,6 +200,8 @@ jobs:
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
           xvfb-run --auto-servernum ctest -R '^NativeGoldenTest$' --timeout 300 --output-on-failure || rc=$?
+          # Storm skips and passes when no GL context can be made; REQUIRE_GL turns that into a failure.
+          NATRON_TEST_REQUIRE_GL=1 xvfb-run --auto-servernum ctest -R '^USDRenderStormTest$' --timeout 600 --output-on-failure || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           exit "$rc"
 

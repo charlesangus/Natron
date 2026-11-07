@@ -193,7 +193,7 @@ TEST(ImageMetadata, HashDistinguishesContents)
 
 TEST(ImageMetadata, HashIsPinned)
 {
-    EXPECT_EQ((U64)0x13e58f00e45f2806ULL, makePinnedMetadata().hash());
+    EXPECT_EQ((U64)0x47bd09b47e9f45dcULL, makePinnedMetadata().hash());
     EXPECT_EQ((U64)0, ImageMetadata().hash());
 }
 

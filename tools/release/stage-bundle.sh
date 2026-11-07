@@ -502,8 +502,11 @@ if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; 
     done < <(find "$MOONRAY_DEST" -type f 2>/dev/null)
 
     stage_oidn_cpu_modules "$MOONRAY_PREFIX/lib64/libdenoiser.so"
-else
+elif [[ "${NATRON_RELEASE_WITHOUT_MOONRAY:-0}" == "1" ]]; then
     echo "warning: no MoonRay install in $BUILD_DIR's configuration; the bundle ships no MoonRay" >&2
+else
+    echo "error: no MoonRay install in $BUILD_DIR's configuration (set NATRON_RELEASE_WITHOUT_MOONRAY=1 to ship without it)" >&2
+    exit 1
 fi
 
 resolve_deps() {

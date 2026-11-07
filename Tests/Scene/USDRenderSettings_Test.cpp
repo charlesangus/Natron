@@ -29,10 +29,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -47,6 +49,7 @@
 #include "BaseTest.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -73,6 +76,8 @@
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 #include "ofxNatron.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -147,6 +152,36 @@ protected:
         return lease->getStage();
     }
 };
+
+// A project saved where a renderer's delegate loads is opened where it does not: that renderer's
+// settings have no knobs, and saving again must not lose them.
+TEST_F(USDRenderSettingsTest, SavingKeepsTheSettingsOfARendererThatDidNotLoad)
+{
+    const char* const missing = "someRendererSamples";
+
+    Serialization::NodeSerializationPtr saved = std::make_shared<Serialization::NodeSerialization>();
+    saved->pluginID = PLUGINID_NATRON_USDRENDERSETTINGS;
+    saved->knobs.emplace_back();
+    saved->knobs.back().name = missing;
+    saved->knobs.back().typeName = "Int";
+    saved->knobs.back().dimension = 1;
+
+    for (int save = 0; save < 2; ++save) {
+        CreateNodeArgs args(PLUGINID_NATRON_USDRENDERSETTINGS, getApp()->getProject());
+        args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, saved);
+        NodePtr node = getApp()->createNode(args);
+        ASSERT_TRUE(bool(node));
+        EXPECT_FALSE(bool(node->getKnobByName(missing)));
+
+        Serialization::NodeSerializationPtr out = std::make_shared<Serialization::NodeSerialization>();
+        node->toSerialization(out.get());
+        const std::ptrdiff_t kept = std::count_if(out->knobs.begin(), out->knobs.end(), [missing](const Serialization::KnobSerialization& knob) {
+            return knob.name == missing;
+        });
+        EXPECT_EQ(1, kept) << "save " << save;
+        saved = out;
+    }
+}
 
 // The prim is the stage's active settings prim, its standard attributes as the knobs set them,
 // each authored once, as the schema's uniform attributes have no time samples.

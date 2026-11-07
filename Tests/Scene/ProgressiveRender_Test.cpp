@@ -420,6 +420,143 @@ TEST_F(ProgressiveRenderTest, AFailureReachesTheListener)
     _render.reset();
 }
 
+// A delegate can throw from any call on the worker, not only Render(): the render fails, the process
+// lives, nothing retries in a loop, and an edit starts it again. threads is the one thing a test can
+// make throw there, both before there is an engine and with one rendering.
+TEST_F(ProgressiveRenderTest, AThrowOutsideTheRenderFailsItAndAnEditRecovers)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    _render.reset();
+    std::atomic<int> calls(0);
+    std::atomic<bool> throwing(true);
+    SceneStage* stage = _stage.get();
+    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    _render->setThreads([&throwing]() -> int {
+        if (throwing.load()) {
+            throw std::runtime_error("delegate broke");
+        }
+
+        return 2;
+    });
+    _render->setRenderer(kRenderDelegateCyclesId);
+    _render->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GT(calls.load(), 0) << "the listener was not called";
+    EXPECT_NE(std::string::npos, _render->getStatus().error.find("delegate broke")) << _render->getStatus().error;
+    EXPECT_FALSE(_render->getStatus().active);
+    const int after = calls.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(after, calls.load());
+
+    throwing = false;
+    _render->invalidate();
+    while (!_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    EXPECT_TRUE(collectUntilDone(&frames));
+
+    throwing = true;
+    _render->invalidate();
+    while (_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_NE(std::string::npos, _render->getStatus().error.find("delegate broke")) << _render->getStatus().error;
+    EXPECT_FALSE(_render->getStatus().active);
+    throwing = false;
+    _render.reset();
+}
+
+// The pass that fails is edited while it runs: its failure still counts, though what it rendered
+// would be stale. The edit is a move of the view, after which the failure stays.
+TEST_F(ProgressiveRenderTest, AnEditDuringAFailingPassDoesNotHideTheFailure)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    _render.reset();
+    std::atomic<int> calls(0);
+    std::atomic<bool> armed(true);
+    SceneStage* stage = _stage.get();
+    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    ProgressiveRender::View moved = _view;
+    moved.width += 2;
+    RenderDelegates::setRenderFaultHook([this, &armed, moved]() {
+        if (armed.exchange(false)) {
+            _render->setView(moved);
+            throw std::runtime_error("texture commit failed");
+        }
+    });
+    _render->setRenderer(kRenderDelegateCyclesId);
+    _render->setThreads([]() { return 2; });
+    _render->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_FALSE(armed.load());
+    EXPECT_GT(calls.load(), 0) << "the listener was not called";
+    EXPECT_NE(std::string::npos, _render->getStatus().error.find("texture commit failed")) << _render->getStatus().error;
+    _render.reset();
+    RenderDelegates::setRenderFaultHook(nullptr);
+}
+
+// One throw does not stop the rendering for good: the next scene or settings edit builds an engine
+// that renders, while moving the view, which cannot be what the delegate failed on, does not.
+TEST_F(ProgressiveRenderTest, AFailureRetriesAtTheNextSceneEditAndNotAtAMove)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    _render.reset();
+    std::atomic<int> calls(0);
+    std::atomic<bool> armed(true);
+    SceneStage* stage = _stage.get();
+    RenderDelegates::setRenderFaultHook([&armed]() {
+        if (armed.exchange(false)) {
+            throw std::runtime_error("texture commit failed");
+        }
+    });
+    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    _render->setRenderer(kRenderDelegateCyclesId);
+    _render->setThreads([]() { return 2; });
+    _render->setView(_view);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GT(calls.load(), 0) << "the listener was not called";
+    EXPECT_FALSE(_render->getStatus().error.empty());
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    ProgressiveRender::View moved = _view;
+    moved.width += 2;
+    _render->setView(moved);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_FALSE(_render->getStatus().error.empty());
+
+    _render->setView(_view);
+    _render->invalidate();
+    while (!_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    EXPECT_TRUE(collectUntilDone(&frames));
+    EXPECT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+    _render.reset();
+    RenderDelegates::setRenderFaultHook(nullptr);
+}
+
 // An exception out of Hydra's Render() on the worker fails the render as one that cannot start,
 // and choosing the delegate again builds a fresh engine that renders.
 TEST_F(ProgressiveRenderTest, AnExceptionFromHydraFailsTheRenderAndALaterRenderRecovers)

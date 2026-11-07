@@ -328,8 +328,10 @@ std::string contextDescription(std::string* error);
  * (getCyclesThreads()), which the setThreads() budget asks for but another render may have
  * asked for since.
  *
- * A delegate that cannot start, or whose AOVs cannot be read, fails: Status::error says why, the
- * engine goes, and the listener is called.
+ * A delegate that cannot start, that throws, whose AOVs cannot be read or whose render session broke
+ * fails: Status::error says why, the engine goes, and the listener is called. It stays failed until
+ * the next invalidate(), setSettings() or setMaxSamples() that changes something, which try it
+ * again with a new engine, or until another renderer is set; setView() does not.
  *
  * The stage is read, and the engine renders, under the lock given at construction, the one that
  * guards the stage's edits; nothing else of the class takes that lock while holding its own.

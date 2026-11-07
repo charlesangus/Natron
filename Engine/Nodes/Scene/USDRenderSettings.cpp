@@ -30,6 +30,7 @@
 
 #include <QMetaObject>
 
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
@@ -43,6 +44,9 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -185,6 +189,25 @@ USDRenderSettings::initializeKnobs()
         _settings->addRenderer(id, RenderSettingsKnobs::descriptors(id), RenderSettingsKnobs::curatedFor(id));
     }
 } // USDRenderSettings::initializeKnobs
+
+void
+USDRenderSettings::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    const NodePtr node = getNode();
+
+    _unmatchedKnobs.clear();
+    for (const Serialization::KnobSerialization& saved : serialization->knobs) {
+        if (!node->getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name))) {
+            _unmatchedKnobs.push_back(saved);
+        }
+    }
+}
+
+void
+USDRenderSettings::appendUnmatchedKnobs(Serialization::NodeSerialization* serialization) const
+{
+    serialization->knobs.insert(serialization->knobs.end(), _unmatchedKnobs.begin(), _unmatchedKnobs.end());
+}
 
 void
 USDRenderSettings::onKnobsLoaded()

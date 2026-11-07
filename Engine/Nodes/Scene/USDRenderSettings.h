@@ -29,11 +29,14 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <list>
 #include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+
+#include "Serialization/SerializationFwd.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -101,6 +104,9 @@ public:
      **/
     void refreshCameraMenu();
 
+    // Adds to serialization, as Node::toSerialization() ends, the saved knobs this node has no knob for.
+    void appendUnmatchedKnobs(Serialization::NodeSerialization* serialization) const;
+
     // The knobs of every renderer's settings; null before the knobs are made.
     const RenderSettingsKnobs* renderSettings() const
     {
@@ -110,6 +116,7 @@ public:
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
@@ -132,6 +139,9 @@ private:
     // Authors the prim at primPath on edit's layer from the knobs.
     bool authorLayer(const SceneLayerEdit& edit, const std::string& primPath, std::string* errorMessage) const;
 
+    // A renderer's page exists only where its delegate loads: a project opened elsewhere must keep
+    // that renderer's settings when saved again. Set before the node can be saved, and not after.
+    std::list<Serialization::KnobSerialization> _unmatchedKnobs;
     KnobStringWPtr _primPath;
     KnobChoiceWPtr _camera;
     KnobIntWPtr _formatSize;

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -1454,6 +1455,84 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
     ASSERT_TRUE(refineTo(9));
     EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
+}
+
+// The frame count starts over with each delegate, so a frame after a switch can have the serial of
+// the one in the texture: it must be drawn all the same.
+TEST_F(SceneViewportStorm, TheRefinementDrawsItsNewFrameAfterASwitchOfRenderer)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    const QImage first = _fbo->toImage();
+
+    _renderer.setRendererId(kRenderDelegateStormId);
+    (void)render();
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth = 60.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_NE(first, _fbo->toImage());
+}
+
+// A throw on the refinement's worker shows as the renderer's error only until the next edit.
+TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
+    std::atomic<bool> armed(true);
+    RenderDelegates::setRenderFaultHook([&armed]() {
+        if (armed.exchange(false)) {
+            throw std::runtime_error("texture commit failed");
+        }
+    });
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find("texture commit failed")) << _renderer.getRendererError();
+
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
+    while (!_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(refineTo(9));
+}
+
+// A guide Storm picks at a pixel is picked there on a delegate's frame too.
+TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    _renderer.setShowGuides(true);
+    _renderer.setRecordDrawnGuides(true);
+    (void)render();
+    SceneViewportRenderer::DrawnGuide aimed;
+    for (const SceneViewportRenderer::DrawnGuide& guide : _renderer.getDrawnGuides()) {
+        if (_renderer.pick((int)guide.x, (int)guide.y, kSize, kSize) == guide.path) {
+            aimed = guide;
+            break;
+        }
+    }
+    ASSERT_FALSE(aimed.path.empty()) << "no guide Storm can pick";
+
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_EQ(aimed.path, _renderer.pick((int)aimed.x, (int)aimed.y, kSize, kSize));
 }
 
 TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRenderMakesAnother)

@@ -73,7 +73,8 @@ public:
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. Only the scene's lights light it, unless Headlight "
+                       "frame metadata maps each hash to its path. The renderers other than Storm also fill the "
+                       "normal layer: the shading normal in camera space, 0 where nothing was hit. Only the scene's lights light it, unless Headlight "
                        "adds one at the camera. Without a render settings prim, the scene's first camera renders the "
                        "project's format.",
         .grouping = PLUGIN_GROUP_3D_USD,

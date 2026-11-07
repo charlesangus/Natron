@@ -47,6 +47,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <QDebug>
+
 #ifdef emit
 #define NATRON_HYDRARENDER_RESTORE_EMIT
 #undef emit
@@ -2477,6 +2479,13 @@ struct ProgressiveRender::Implementation {
     TfToken depthAov;
     std::string rendererName;
     std::string failedRenderer;
+    // Bumped by each edit of the scene or the settings, and the count a failure happened under: a
+    // later edit may be what the delegate needed, while a resize or an orbit changes nothing it failed on.
+    std::uint64_t sceneEdits = 0;
+    std::uint64_t failedEdits = 0;
+    // What the worker's current iteration is about, for a failure that escapes it.
+    std::string workingRenderer;
+    std::uint64_t workingEdits = 0;
     TfToken samplesKey;
     int appliedCap = 0;
     bool paused = false;
@@ -2514,11 +2523,19 @@ struct ProgressiveRender::Implementation {
         wake.notify_all();
     }
 
+    // Must not throw: it ends the worker. The engine's stage scene index stays subscribed to the
+    // stage's notices until it is gone, its destructor does not revoke them and delivery holds no
+    // reference to it, so it may only die while no edit of the stage can be under way.
     void dropEngine()
     {
+        std::lock_guard<std::mutex> stageGuard(*stageLock);
         std::lock_guard<std::mutex> l(engineMutex);
         if (engine && paused) {
-            (void)engine->ResumeRenderer();
+            try {
+                (void)engine->ResumeRenderer();
+            } catch (...) {
+                qWarning("A render delegate threw while resuming to be released.");
+            }
         }
         engine.reset();
         engineRenderer.clear();
@@ -2701,6 +2718,56 @@ struct ProgressiveRender::Implementation {
         }
     }
 
+    void notifyListener()
+    {
+        if (!listener) {
+            return;
+        }
+        try {
+            listener();
+        } catch (...) {
+            qWarning("A progressive render listener threw.");
+        }
+    }
+
+    // Under mutex, and again on return. The delegate of id failed in an iteration begun at edits;
+    // it stays failed, without an engine, until a later edit or until another is chosen.
+    void fail(std::unique_lock<std::mutex>& lock,
+              const std::string& id,
+              const std::string& error,
+              std::uint64_t edits)
+    {
+        // Chosen away from during the iteration: the failure is not the new renderer's.
+        const bool current = id == renderer;
+        if (current) {
+            failedRenderer = id;
+            failedEdits = edits;
+            status.error = error;
+            status.active = false;
+        }
+        lock.unlock();
+        dropEngine();
+        if (current) {
+            notifyListener();
+        }
+        lock.lock();
+    }
+
+    // A delegate can throw from any call, not only Render(), and nothing above the worker's thread
+    // would catch it: the process would terminate.
+    void failWorker(std::unique_lock<std::mutex>& lock,
+                    const char* what)
+    {
+        if (!lock.owns_lock()) {
+            lock.lock();
+        }
+        RenderDelegates::Delegate delegate;
+        const std::string name = RenderDelegates::find(workingRenderer, &delegate) ? delegate.displayName : workingRenderer;
+        const std::string reason = (what && what[0]) ? what : "unknown exception";
+        fail(lock, workingRenderer, "The " + name + " render failed: " + reason, workingEdits);
+    }
+
+    void refine(std::unique_lock<std::mutex>& lock);
     void run();
 };
 
@@ -2709,6 +2776,24 @@ ProgressiveRender::Implementation::run()
 {
     lowerThreadPriority();
     std::unique_lock<std::mutex> lock(mutex);
+
+    while (!quit) {
+        try {
+            refine(lock);
+        } catch (const std::exception& e) {
+            failWorker(lock, e.what());
+        } catch (...) {
+            failWorker(lock, nullptr);
+        }
+    }
+    lock.unlock();
+    dropEngine();
+}
+
+// Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
+void
+ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
+{
     // The delegate's progress just before the first pass of the last restart, and whether it has
     // shown since that it began rendering again: until it does, its buffers may hold the pixels
     // of before (Cycles resets its session on its own thread, after the pass that edits it).
@@ -2724,8 +2809,12 @@ ProgressiveRender::Implementation::run()
     bool needRestart = true;
     // The engine is being made again for the same render: the frame shown stays until the new one.
     bool keepFrame = false;
+    // Lives no longer than the engine: what it kept of an earlier session must not fail a later one.
+    std::unique_ptr<MoonRayAovs::LogCapture> log;
 
     while (!quit) {
+        workingRenderer = renderer;
+        workingEdits = sceneEdits;
         const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !stageOf;
         if (idle || (renderer != engineRenderer)) {
             if (engine) {
@@ -2734,9 +2823,20 @@ ProgressiveRender::Implementation::run()
                 lock.lock();
                 continue;
             }
+            log.reset();
             status.active = false;
             status.converged = false;
             status.samples = -1;
+            if ((renderer == failedRenderer) && (sceneEdits != failedEdits)) {
+                if (pending) {
+                    const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
+                    if (Clock::now() < due) {
+                        wake.wait_until(lock, due);
+                        continue;
+                    }
+                }
+                failedRenderer.clear();
+            }
             if (renderer != failedRenderer) {
                 status.error.clear();
             }
@@ -2768,14 +2868,12 @@ ProgressiveRender::Implementation::run()
             const bool made = makeEngine(id, cycles, threads, primSettings, &cap, &error);
             lock.lock();
             if (!made) {
-                failedRenderer = id;
-                status.error = error;
-                if (listener) {
-                    lock.unlock();
-                    listener();
-                    lock.lock();
-                }
+                fail(lock, id, error, workingEdits);
                 continue;
+            }
+            if (MoonRayAovs::isMoonRay(id)) {
+                // After the engine, whose making loads the libraries that print.
+                log.reset(new MoonRayAovs::LogCapture);
             }
             failedRenderer.clear();
             status.error.clear();
@@ -2885,6 +2983,7 @@ ProgressiveRender::Implementation::run()
         VtDictionary stats;
         std::string error;
         std::string renderFailure;
+        std::string sessionFailure;
         std::shared_ptr<Frame> read;
         {
             std::unique_lock<std::mutex> stageGuard(*stageLock);
@@ -2919,6 +3018,10 @@ ProgressiveRender::Implementation::run()
                     rendered = true;
                     converged = engine->IsConverged();
                     stats = engine->GetRenderStats();
+                    if (log && !converged) {
+                        // A MoonRay session that could not start or broke never converges.
+                        sessionFailure = MoonRayAovs::sessionFailure(stats, log->notices());
+                    }
                 }
             }
         }
@@ -2928,21 +3031,18 @@ ProgressiveRender::Implementation::run()
         if (quit) {
             break;
         }
-        if (generation != passGeneration) {
-            // Edited during the pass: what it rendered is stale.
+        if (!renderFailure.empty()) {
+            // The engine is left in an unknown state: a retry builds a fresh one. Ahead of the
+            // generation, or an edit during the pass would hide the failure.
+            fail(lock, workingRenderer, "The " + rendererName + " render failed: " + renderFailure, workingEdits);
             continue;
         }
-        if (!renderFailure.empty()) {
-            // A delegate that throws would throw again: it fails as one that cannot start, and a later render builds a fresh engine.
-            failedRenderer = renderer;
-            status.error = renderFailure;
-            status.active = false;
-            lock.unlock();
-            dropEngine();
-            if (listener) {
-                listener();
-            }
-            lock.lock();
+        if (!sessionFailure.empty()) {
+            fail(lock, workingRenderer, sessionFailure, workingEdits);
+            continue;
+        }
+        if (generation != passGeneration) {
+            // Edited during the pass: what it rendered is stale.
             continue;
         }
         if (!rendered) {
@@ -2990,20 +3090,11 @@ ProgressiveRender::Implementation::run()
             if (quit) {
                 break;
             }
-            if (generation != passGeneration) {
+            if (!publish && !error.empty()) {
+                fail(lock, workingRenderer, error, workingEdits);
                 continue;
             }
-            if (!publish && !error.empty()) {
-                // AOVs that cannot be read now never will be: the delegate fails as one that cannot start.
-                failedRenderer = renderer;
-                status.error = error;
-                status.active = false;
-                lock.unlock();
-                dropEngine();
-                if (listener) {
-                    listener();
-                }
-                lock.lock();
+            if (generation != passGeneration) {
                 continue;
             }
         }
@@ -3029,9 +3120,7 @@ ProgressiveRender::Implementation::run()
             wake.wait_for(lock, kRefinePoll);
         }
     }
-    lock.unlock();
-    dropEngine();
-} // ProgressiveRender::Implementation::run
+} // ProgressiveRender::Implementation::refine
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
                                      const std::function<UsdStageRefPtr()>& stage,
@@ -3105,6 +3194,7 @@ ProgressiveRender::invalidate()
 {
     std::lock_guard<std::mutex> l(_imp->mutex);
 
+    ++_imp->sceneEdits;
     _imp->edited();
 }
 
@@ -3117,6 +3207,7 @@ ProgressiveRender::setSettings(const std::map<std::string, VtValue>& settings)
         return;
     }
     _imp->settings = settings;
+    ++_imp->sceneEdits;
     _imp->edited();
 }
 
@@ -3130,6 +3221,7 @@ ProgressiveRender::setMaxSamples(int samples)
         return;
     }
     _imp->maxSamples = samples;
+    ++_imp->sceneEdits;
     _imp->edited();
 }
 

@@ -325,6 +325,7 @@ set(GuiTests_SOURCES
     SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
+    SpinBox_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp

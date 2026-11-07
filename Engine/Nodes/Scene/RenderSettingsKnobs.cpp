@@ -30,11 +30,13 @@
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <set>
 #include <sstream>
 
+#include <QDebug>
 #include <QString>
 
 #include "Engine/AppManager.h"
@@ -489,7 +491,9 @@ declaredBy(const std::string& rendererId)
         return declared;
     }
     TfErrorMark mark;
-    {
+    // Reached at node creation and from a render thread's hash, with nothing above to catch what a
+    // delegate throws. The curated knobs do not depend on what it declares.
+    try {
         HdRendererPluginHandle plugin = HdRendererPluginRegistry::GetInstance().GetOrCreateRendererPlugin(TfToken(rendererId));
         if (plugin) {
             HdRenderSettingsMap settings;
@@ -520,6 +524,12 @@ declaredBy(const std::string& rendererId)
                 make();
             }
         }
+    } catch (const std::exception& e) {
+        qWarning("The renderer %s threw while declaring its settings: %s", rendererId.c_str(), e.what());
+        declared = Declared();
+    } catch (...) {
+        qWarning("The renderer %s threw while declaring its settings.", rendererId.c_str());
+        declared = Declared();
     }
     mark.Clear();
 

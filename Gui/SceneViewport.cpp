@@ -664,6 +664,9 @@ struct SceneViewportRenderer::Implementation {
     std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
     std::string rendererError;
+    // Why the refinement's delegate is not rendering now, from its status: unlike rendererError it
+    // does not stop the refinement, which tries the delegate again at the next edit.
+    std::string refineError;
     std::string renderError;
     // Whether the last render that kept its renderer found Scene Default naming another.
     bool rendererSwitchPending = false;
@@ -745,7 +748,9 @@ struct SceneViewportRenderer::Implementation {
     GLuint refineDepthBuffer = 0;
     int refineWidth = 0;
     int refineHeight = 0;
-    U64 refineSerial = 0;
+    // The frame in the texture. Kept alive, so that a later frame cannot have its address, and not
+    // told apart by its serial, which starts over with each delegate.
+    std::shared_ptr<const HydraRender::ProgressiveRender::Frame> uploadedFrame;
     int drawnSamples = -1;
     double uploadMs = -1.;
     int uploadPixels = 0;
@@ -882,6 +887,8 @@ struct SceneViewportRenderer::Implementation {
         }
         rendererId = renderer;
         rendererError.clear();
+        refineError.clear();
+        uploadedFrame.reset();
         // No Hgi to collect with: the engine's own goes with it, collecting as it does.
         StormGLSection section;
         engine.reset();
@@ -1221,6 +1228,13 @@ struct SceneViewportRenderer::Implementation {
         renderError = "The " + rendererId + " render failed: " + what;
     }
 
+    // Nothing above a paint catches what a delegate throws.
+    void engineFailedToStart(const std::string& what)
+    {
+        engine.reset();
+        rendererError = "The renderer " + rendererId + " could not be started: " + what + ".";
+    }
+
     // Needs the GL context current and stageMutex. False if there is nothing to draw. The engine
     // is made once per GL context and kept through every edit of the stage: it hears of them
     // through the stage's notices and updates on its next render.
@@ -1243,33 +1257,43 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
-        CyclesAovs::registerSceneIndices();
-        {
-            TfErrorMark mark;
-            engine.reset(new UsdImagingGLEngine(parameters));
-            ++engineCount;
-            ++engineConstructionCount;
-            if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
-                std::string reasons;
-                for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
-                    reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
-                }
-                mark.Clear();
-                engine.reset();
-                rendererError = "The renderer " + rendererId + " could not be started" + reasons + ".";
+        try {
+            CyclesAovs::registerSceneIndices();
+            {
+                TfErrorMark mark;
+                engine.reset(new UsdImagingGLEngine(parameters));
+                ++engineCount;
+                ++engineConstructionCount;
+                if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
+                    std::string reasons;
+                    for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+                        reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
+                    }
+                    mark.Clear();
+                    engine.reset();
+                    rendererError = "The renderer " + rendererId + " could not be started" + reasons + ".";
 
-                return false;
+                    return false;
+                }
             }
+            if (RenderDelegates::isStorm(rendererId)) {
+                applyStormPtexBudget(engine->GetHgi());
+            }
+            // Without a render output Storm draws straight into the bound framebuffer and the colour
+            // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
+            engine->SetRendererAov(HdAovTokens->color);
+            colorCorrectionDirty = true;
+            engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
+            applySelection();
+        } catch (const std::exception& e) {
+            engineFailedToStart(e.what());
+
+            return false;
+        } catch (...) {
+            engineFailedToStart("unknown exception");
+
+            return false;
         }
-        if (RenderDelegates::isStorm(rendererId)) {
-            applyStormPtexBudget(engine->GetHgi());
-        }
-        // Without a render output Storm draws straight into the bound framebuffer and the colour
-        // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
-        engine->SetRendererAov(HdAovTokens->color);
-        colorCorrectionDirty = true;
-        engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
-        applySelection();
 
         return true;
     }
@@ -2829,7 +2853,25 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
-    _imp->applyStormSettings();
+    {
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->applyStormSettings();
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return eRenderStatusDone;
+        }
+    }
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
@@ -2906,6 +2948,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     if (!_imp->rendererError.empty() || !stage) {
         progressive.setRenderer(std::string());
         _imp->refineRenderer.clear();
+        _imp->refineError.clear();
+        _imp->uploadedFrame.reset();
 
         return eRenderStatusDone;
     }
@@ -2926,9 +2970,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     progressive.setView(view);
 
     const HydraRender::ProgressiveRender::Status status = progressive.getStatus();
+    _imp->refineError = status.error;
     if (!status.error.empty()) {
-        _imp->rendererError = status.error;
-
         return eRenderStatusDone;
     }
     const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = progressive.getFrame();
@@ -2940,7 +2983,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             glGenFramebuffers(1, &_imp->refineFramebuffer);
             glGenBuffers(1, &_imp->refineDepthBuffer);
         }
-        if (frame->serial != _imp->refineSerial) {
+        if (frame != _imp->uploadedFrame) {
             const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
@@ -2967,7 +3010,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             _imp->uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             _imp->uploadPixels = frameWidth * frameHeight;
-            _imp->refineSerial = frame->serial;
+            _imp->uploadedFrame = frame;
         }
         // A frame of another size, while the one of this size renders, is stretched to the view.
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
@@ -3025,16 +3068,40 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
+        std::string guidePath;
+        double guideDepth = 1.;
+        {
+            std::lock_guard<std::mutex> lock(_imp->stageMutex);
+            if (_imp->showGuides) {
+                const GfFrustum frustum = _imp->computeFrustum(width, height);
+                const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+                const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
+                const SceneGizmo::View view(viewMatrix, projection, width, height);
+                GfVec3d guidePoint;
+                const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+                if (guide >= 0) {
+                    guidePath = _imp->guides[guide].path;
+                    guideDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
+                }
+            }
+        }
         // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
         // viewer lock itself.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
         if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
-            return std::string();
+            return guidePath;
         }
         const int fx = (int)((x + 0.5) * frame->width / width);
         const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
+        const std::string prim = _imp->progressive->pick(*frame, fx, fy);
+        if (!guidePath.empty() && !prim.empty()) {
+            const std::size_t pixel = (std::size_t)fy * (std::size_t)frame->width + (std::size_t)fx;
+            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < guideDepth)) {
+                return prim;
+            }
+        }
 
-        return _imp->progressive->pick(*frame, fx, fy);
+        return guidePath.empty() ? prim : guidePath;
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
@@ -3155,7 +3222,7 @@ SceneViewportRenderer::releaseGL()
     }
     _imp->refineWidth = 0;
     _imp->refineHeight = 0;
-    _imp->refineSerial = 0;
+    _imp->uploadedFrame.reset();
 }
 
 void
@@ -3166,6 +3233,7 @@ SceneViewportRenderer::setRendererId(const std::string& id)
     _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
     // The error is cleared even for the same id, so that choosing it again retries it.
     _imp->rendererError.clear();
+    _imp->refineError.clear();
     _imp->switchRenderer(_imp->effectiveRenderer());
 }
 
@@ -3213,7 +3281,7 @@ SceneViewportRenderer::takeRenderError()
 const std::string&
 SceneViewportRenderer::getRendererError() const
 {
-    return _imp->rendererError;
+    return _imp->rendererError.empty() ? _imp->refineError : _imp->rendererError;
 }
 
 std::string
@@ -3286,6 +3354,8 @@ SceneViewportRenderer::releaseRefinement()
 {
     _imp->progressive->setRenderer(std::string());
     _imp->refineRenderer.clear();
+    _imp->refineError.clear();
+    _imp->uploadedFrame.reset();
 }
 
 double

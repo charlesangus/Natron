@@ -67,7 +67,7 @@ Headlight, off by default, adds a light at the camera to the scene's own
 lights. With it off, only the scene's lights light it: a scene with no light
 renders its lit surfaces black, and only emission shows.
 
-The output has three layers:
+The output has three layers, and a fourth with the renderers other than Storm:
 
 - `rgba`: the colour as the renderer shades it, with the scene's materials and lights,
   in the project's working space with no colour transform. Where nothing was
@@ -80,6 +80,9 @@ The output has three layers:
   float. Where nothing was hit it is 0. The frame's metadata maps every value to
   its path under the key `primId/` followed by the value's bits as eight
   lowercase hexadecimal digits, for example `primId/1a2b3c4d` = `/World/Box`.
+- `normal`: the shading normal in camera space, in `normal.X`, `normal.Y` and
+  `normal.Z`. Where nothing was hit it is 0. Storm renders no normal, so the
+  layer is not there with Storm.
 
 Storm renders whole frames, one at a time, so renders of several USDRender
 nodes, or of several frames, take turns on one OpenGL context.

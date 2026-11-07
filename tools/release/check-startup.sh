@@ -41,6 +41,7 @@ if [[ $# -ne 1 ]]; then
     echo "  NATRON_STARTUP_CHECK_PRELOAD  LD_PRELOAD for the GUI probe only, for" >&2
     echo "                                hosts whose Mesa and LLVM disagree." >&2
     echo "  NATRON_STARTUP_CHECK_SCREENSHOT  write the X root grab here as PNG." >&2
+    echo "  NATRON_RELEASE_WITHOUT_MOONRAY=1  accept a bundle with no moonray/." >&2
     exit 1
 fi
 
@@ -340,6 +341,8 @@ if os.path.isdir(moonray_dir):
             fail("%s starts with %r, not the bundle's moonray/%s" % (variable, first, entry))
     if not os.access(os.path.join(moonray_dir, "bin", "execComp"), os.X_OK):
         fail("the bundle ships moonray/ without its execComp render process")
+elif os.environ.get("NATRON_RELEASE_WITHOUT_MOONRAY") != "1":
+    fail("the bundle ships no moonray/ (set NATRON_RELEASE_WITHOUT_MOONRAY=1 to ship without it)")
 
 # Cycles and MoonRay's denoiser share one OpenImageDenoise, which dlopen()s its CPU device module.
 oidn_core = glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_core.so*"))

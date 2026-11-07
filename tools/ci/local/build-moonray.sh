@@ -346,6 +346,12 @@ echo "build-moonray: compiled in $((SECONDS / 60)) min with ${jobs} jobs"
 cmake --install "$build" --prefix "$prefix" >/dev/null
 install -m 0644 "${src}/LICENSE" "${prefix}/LICENSE"
 install -m 0644 "${src}/THIRD-PARTY.md" "${prefix}/THIRD-PARTY.md"
+cat >"${prefix}/SOURCE" <<EOF
+MoonRay is built from ${repo_base}/openmoonray, version ${version}, commit ${commit},
+with the build-time patches in Natron's tools/ci/local/build-moonray.sh.
+MoonRay is licensed under the Apache License 2.0 (LICENSE); THIRD-PARTY.md lists what it bundles.
+EOF
+chmod 0644 "${prefix}/SOURCE"
 
 # The layout the delegate needs at run time.
 for file in plugin/hd_moonray.so plugin/hd_moonray_debug.so plugin/pxr/plugInfo.json \

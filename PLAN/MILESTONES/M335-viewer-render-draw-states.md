@@ -14,6 +14,9 @@ Acceptance sketch:
 - Render Everything loads the whole scene and matches what USDRender produces.
 - USDRender and USDWrite are unaffected either way.
 
+Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-heavy-scene-spike.md`:
+- Verify the filter binds on delegate engines; this is undocumented.
+
 ## Scope
 
 **Out:**

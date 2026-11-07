@@ -5,6 +5,10 @@ main thread. Today every payload loads on the first sync and bounds are measured
 Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. Line references below are at
 `b4f4fe783` and will have moved.
 
+Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-heavy-scene-spike.md`:
+- The first render took 1.3-1.9 s even with the root pruned and 11 s loaded, so it can't stay on the main thread if the flat stall gate is to pass; move it or say why not.
+- Test load continuity with larger loads: the spike's windows allowed only 2-3 mouse moves.
+
 ## Scope
 
 **In:**

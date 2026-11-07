@@ -4,6 +4,9 @@ The end-to-end proof that M231 - Scene Graph Panel lacked: every budget together
 fixtures, then the user on a real production scene. Design:
 `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 
+Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-heavy-scene-spike.md`:
+- Add loaded reveal and cancel, and run Island (119,220 meshes and 30.9M instances, never yet loaded fully in the GUI).
+
 ## Scope
 
 **In:**

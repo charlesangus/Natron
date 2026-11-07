@@ -71,7 +71,7 @@ the numbers that settle how draw states reach Hydra. Design:
 
 ## Phase 327.4: Decision
 
-- [ ] M327.P4.T1 — Write up results and get the mechanism decision
+- [x] M327.P4.T1 — Write up results and get the mechanism decision
   - files: `PLAN/DESIGN/<date>-heavy-scene-spike.md` (new, plan branch), this milestone's `## Decisions`
   - approach: one table comparing the mechanisms on every budget, plus the engine-cost answers, a recommendation, any budget revision proposed (one is allowed), and what M329 - Viewer Draw States should change. Ask the user under `# Open questions`.
   - verify: the user's decision is recorded here and in the design note.
@@ -80,6 +80,8 @@ the numbers that settle how draw states reach Hydra. Design:
 **Verification gate:** fixtures and harness merged; both mechanisms and both engine costs have numbers from a stripped release build on a GPU host; the user has chosen a mechanism; prototypes are not merged.
 
 ## Decisions
+
+- 2026-11-07 — **Draw states reach Hydra through a per-engine scene index filter with a GL box overlay, not session-layer draw mode (user).** Session didn't restore the scene after a prune on either scene, showed no change on a row where the filter did, hung Natron orbiting 10k boxes on the loaded city and never finished the wide flat scene. **The 100 ms state-change budget stays (user);** M329 - Viewer Draw States finds where the frame's time goes at 1M loaded, where the filter takes about 1.1 s. Write-up: `PLAN/DESIGN/2026-11-07-heavy-scene-spike.md`.
 
 - 2026-11-07 — Settle run, session on the loaded 1M city (AMD Radeon AI PRO R9700): peak RSS 12.27 GB with 46 GB free, so memory didn't cause the earlier hang. Open 14.7 s; prune 1896 ms, restore 39 ms; sibling set 10-16 ms; reveal first frame 1344 ms; cancel 1402 ms. `orbit10k` hung Natron, and the user killed it after 145 s; the machine stayed up this time. `sibling_shot` changed 0 pixels for both rows, with no filter control to judge it. Lobby was skipped because its path differs on that host.
 

@@ -6,6 +6,10 @@ stay correct. The user's idea; see `PLAN/DESIGN/2026-11-04-scene-graph-design.md
 Gaffer get this free from per-location evaluation; on our layer-per-node design it's an
 evaluation input.
 
+Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-heavy-scene-spike.md`:
+- Measure swap at 1M: the spike's 1.6-2.8 ms came from a stage of a few thousand prims.
+- Explain `rematch_calls` of 10 when only the last node changed, against the harness doc.
+
 ## Scope
 
 **In:**

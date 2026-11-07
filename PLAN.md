@@ -331,7 +331,7 @@ future core work has solid ground to build on.
 | M214 | Colour Balance RGB | done | - | bosley-native-nodes | E17 | | | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | done | M209, M214 | bosley-native-nodes | E17 | | | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | done | - | bosley-native-nodes | E17 | | | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
-| M217 | VectorGenerator Node | todo | M124 |  | E18 | F8 | | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
+| M217 | VectorGenerator Node | doing | M124 | misty-marten | E18 | F8 | | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
 | M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | F8 | | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
 | M219 | Curves Follow Vectors | todo | M217, M146 |  | E18 | F8 | | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
 | M220 | SplineWarp Follow Vectors | todo | M219, M148 |  | E18 | F8 | | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
@@ -363,7 +363,7 @@ future core work has solid ground to build on.
 | M303 | Interactive Edit Latency | todo | M301 |  | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
 | M277 | Graph Creation And Insert | done | M192, M193 | bosley-native-nodes | E10 | | | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | | | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
-| M279 | Utility Renderer Foundation | todo | M248 |  | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
+| M279 | Utility Renderer Foundation | doing | M248 | misty-marten | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
 | M280 | Utility Renderer GPU Path | todo | M279, M253 |  | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
 | M281 | Utility Materials And Lights | todo | M280, M233, M234 |  | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
 | M283 | Utility Sampling And Motion Blur | todo | M280, M253 |  | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
@@ -406,11 +406,11 @@ future core work has solid ground to build on.
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | | | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |
 | M324 | SplineWarp STMap And IDistort Outputs | todo | M274 |  | E3 | | | [M324-splinewarp-stmap-idistort-outputs.md](PLAN/MILESTONES/M324-splinewarp-stmap-idistort-outputs.md) |
 | M325 | MoonRay Fork | todo | M252 |  | E9 | | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
-| M326 | Legible Viewer Warning Banner | todo | - |  | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
-| M338 | Viewer Input Keys And Locks | todo | - |  | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
-| M339 | File Knob Reload Button Cleanup | todo | M52 |  | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
+| M326 | Legible Viewer Warning Banner | doing | - | misty-marten | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
+| M338 | Viewer Input Keys And Locks | doing | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
+| M339 | File Knob Reload Button Cleanup | doing | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
 | M340 | Viewer Gain Gamma On Rendered Pixels | todo | M234 |  | E9 | | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
-| M341 | Per-Placement Geometry Projection | todo | M234 |  | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
+| M341 | Per-Placement Geometry Projection | doing | M234 | misty-marten | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
 | M342 | Sticky Projections On Deforming Geometry | todo | M234 |  | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 | M343 | Live Textures In Delegates | todo | M233, M251, M252, M254 |  | E9 | F9 | | [M343-live-textures-in-delegates.md](PLAN/MILESTONES/M343-live-textures-in-delegates.md) |
 | M344 | Camera Projection In Delegates | todo | M234, M325, M343 |  | E9 | F9 | | [M344-camera-projection-in-delegates.md](PLAN/MILESTONES/M344-camera-projection-in-delegates.md) |
@@ -458,7 +458,7 @@ future core work has solid ground to build on.
 |----|------|--------|-------|-------|--------|------|
 | F1 | VDB Volumes | open |  |  | feature/f1-vdb-volumes | Bring a VDB into the scene, shade it with one material across Storm, Cycles and MoonRay, and inspect it in the viewer. |
 | F2 | Native Shader Networks | open |  |  | feature/f2-native-shader-networks | Build, tweak and render each renderer's native shading networks from one builder node, with full or nearly full coverage of Cycles and MoonRay. |
-| F3 | Cycles And MoonRay Delegates | open |  | uat | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
+| F3 | Cycles And MoonRay Delegates | shipping | misty-marten |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |

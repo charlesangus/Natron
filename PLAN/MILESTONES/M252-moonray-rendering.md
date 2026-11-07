@@ -57,7 +57,7 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
 
 ## Phase 252.2: MoonRay textures and Coding Errors (Lobby UAT, 2026-11-05)
 
-- [ ] M252.P2.T1 — Read plain jpg and png textures
+- [x] M252.P2.T1 — Read plain jpg and png textures
   - files: tools/ci/local/build-moonray.sh (patch), a delegate test and fixture
   - approach: All 1,256 Lobby images are plain jpg or png; 331 unique files fail with `Invalid image file ...: image was untiled`, then `FATAL: failed to open texture file`, leaving the interior black and 60,659 NaN pixels. `libtexturing_sampler.so` carries `accept_untiled`, `autotile` and `automip` strings; the exact setting was not read from source. Allow untiled reads with a patch, or convert to a cache on demand. Asking users to run `maketx` is not a fix.
   - verify: a textured quad with a `.jpg` matches the same image through `maketx` (was 0.012 against 0.12 average); the Lobby logs no texture failure and has no NaN pixels.
@@ -67,12 +67,12 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
   - approach: Open: with every image mip-tiled, a 4-sample 1080p frame did not finish in 560 s, against 41 s when textures failed. Slow, hung, or a side effect of the test copy, which stored mip-tiled TIFFs under `.jpg` and `.png` names. Measure after M252.P2.T1; file a fix if it is a fault.
   - verify: the Lobby renders a frame through MoonRay with all textures loaded, or the cause of the stall is identified and recorded.
   - size: M
-- [ ] M252.P2.T3 — The prim warning names the failing texture files
+- [x] M252.P2.T3 — The prim warning names the failing texture files
   - files: the hdMoonray render path that raises `MoonRay could not render these prims as authored`, a test
   - approach: The warning names 115 meshes when the fault is their textures. Name the texture files when a texture is the cause.
   - verify: a fixture with an unreadable texture warns with that file's name.
   - size: M
-- [ ] M252.P2.T4 — Trace hdMoonray's Coding Errors per textured material
+- [x] M252.P2.T4 — Trace hdMoonray's Coding Errors per textured material
   - files: tools/ci/local/build-moonray.sh (patch), a test
   - approach: Two `Attempted to get value of type 'TfToken' from empty VtValue` and one `MarkAllRprimsDirty ... requires emulation` per textured material, also on a one-material scene. Not traced. If the dirty call does nothing without emulation, material edits may not re-sync geometry, so check that as well.
   - verify: a one-material scene logs no Coding Error; a material edit visibly reaches the next MoonRay render.
@@ -81,6 +81,8 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
 **Verification gate:** CI green including the MoonRay test; a MoonRay USDRender comp renders headless with `NatronRenderer -w`; a rendered frame with its `depth.Z`, `normal` and `primId.id` views is shared with the user; Storm and Cycles references unchanged.
 
 ## Decisions
+
+- 2026-11-07 — F3 approved by the user at e87d296ea. M252.P2.T2 (the fully-textured Lobby's render time) stays open as a post-merge check.
 
 - 2026-11-06 — M252.P2.T3 and T4 written (not built): source puts both Coding Errors on lights, not materials (`Light.cc:408,420,433`), so they scaled with one light in the reported scene. `MarkAllRprimsDirty` posts the error but still applies its bits (`changeTracker.cpp` ~998), so it's noise. A material edit does reach MoonRay in the normal case: `Material::Sync` re-runs `updateTerminal` on the same object, reused by name; it goes stale only if the terminal node changes class. Confirm after the image rebuild; the material-edit half has no test yet.
 - 2026-11-06 — M252.P2.T1 written, box stays open until the image rebuild and Lobby check. `TextureSampler.cc:58-70` hardcodes `automip=0`, `autotile=0`, `accept_untiled=0`, `accept_unmipped=0`; patch sets the first three to 1 and keeps `autotile=0`, because JPEG scanlines read forwards and any backward seek reopens the file (`jpeginput.cpp:633`). At OIIO lookup level the patch matches `maketx` within 1/255; accept flags without automip differ by up to 0.67. Bears on M252.P2.T2: once decoded textures outgrow the 4000 MB default cache, each miss re-decodes a whole JPEG and the render stalls (331 4K files decode to about 16 GB). Next steps there: `texture_cache_size`, or convert on demand. The Lobby isn't on this host, so that check belongs to the `gpu` host or the F3 - Cycles And MoonRay Delegates UAT.

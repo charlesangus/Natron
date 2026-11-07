@@ -69,12 +69,12 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 
 ## Phase 249.4: Render exceptions and oversized Ptex (Island UAT, 2026-11-05)
 
-- [ ] M249.P4.T1 — Keep packed Ptex below USD's 32-bit overflow
+- [x] M249.P4.T1 — Keep packed Ptex below USD's 32-bit overflow
   - files: Gui/SceneViewport.cpp, Hydra engine setup in the viewport and Engine USD render path
   - approach: `HdStPtexMipmapTextureLoader::generateBuffers` (`pxr/imaging/hdSt/ptexMipmapTextureLoader.cpp:1051-1053`) does `int pageStride = ...; new unsigned char[pageStride * numPages]`, so a Ptex packing past 2 GiB goes negative (`isDunesB/Color/dune0001_geo.ptx`, about 2.07 GiB packed). Set a Ptex budget with `HdStResourceRegistry::SetMemoryRequestForTextureType` if Natron can reach the registry through the engine: `optimizePacking` honours `targetMemory`, which also bounds RAM. Neither route has been tried. If the registry is unreachable, patch USD to `size_t`, which means rebuilding it in the base image; put that to the user first.
   - verify: `.local/island/usd/island.usda` in a USDRead with the viewer connected no longer throws `std::bad_alloc`, including with `isBeach` and `isDunesB` active.
   - size: L
-- [ ] M249.P4.T2 — Catch exceptions around Hydra render calls
+- [x] M249.P4.T2 — Catch exceptions around Hydra render calls
   - files: Gui/SceneViewport.cpp (around line 2394), Engine HydraRenderImpl.cpp (render calls near lines 1218, 1235, 2891), a test
   - approach: The exception crosses TBB in `HdSt_TextureObjectRegistry::Commit`, rethrows on the GUI thread and goes up through `UsdImagingGLEngine::Render` from the paint event, with no handler, so any exception in Hydra terminates. Catch around `engine->Render`, report through `natronSceneError`, and discard the engine since Hydra's state is then unknown. USDRender runs its calls on a pool thread, so cover those too.
   - verify: a test that makes the engine throw shows an error and leaves Natron running; a later render builds a fresh engine.
@@ -88,6 +88,8 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 **Verification gate:** CI green; the image and the AppImage contain a Cycles delegate that the registry lists and instantiates; no duplicate library versions are loaded; image-size and build-time deltas are reported to the user.
 
 ## Decisions
+
+- 2026-11-07 — F3 approved by the user at e87d296ea. M249.P4.T3 (the Island on a real GPU) stays open as a post-merge check.
 
 - 2026-11-06 — M249.P3.T1, P4.T1 and P4.T2 written, not built. P3.T1 confirmed with gdb in the published image: SIGSEGV in `ccl::ShaderGraph::output()` from `HdCyclesMaterial::Sync`; Cycles fork 881df7642. P4.T1: `UsdImagingGLEngine` offers no registry accessor, but `HdStRenderDelegate` keeps one registry per Hgi, so a throwaway delegate on the engine's Hgi reaches it. Budget 512 MiB per texture: the largest power of two whose worst simulated packing stays under 2 GiB (2016 MiB, ratio 3.96; 39 of 193 cases overflow at 1 GiB). An authored `textureMemory` still replaces it, and `dune0001_geo.ptx` should lose about one mip. The island and the Lobby aren't on this host: their checks belong to the F3 - Cycles And MoonRay Delegates UAT or the `gpu` host. USD `size_t` patch remains the complete fix, and is the user's call.
 

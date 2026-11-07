@@ -73,7 +73,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Phase 217.1: Flow library (CPU)
 
-- [ ] M217.P1.T1 — Flow field type, pyramid and gradients
+- [x] M217.P1.T1 — Flow field type, pyramid and gradients
   - files: `Engine/Flow/FlowField.h` (new), `Engine/Flow/FlowPyramid.{h,cpp}` (new), `Engine/CMakeLists.txt`, `Tests/Flow/FlowPyramid_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - `FlowField` is a W×H float u/v plus confidence, with bilinear sampling and a warp-by-flow helper.
@@ -83,7 +83,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R FlowPyramid` passes. The test covers level sizes for odd dimensions, a constant image giving zero gradients, and a ramp giving the expected gradient.
   - size: M
 
-- [ ] M217.P1.T2 — DIS patch inverse search and densification
+- [x] M217.P1.T2 — DIS patch inverse search and densification
   - files: `Engine/Flow/DisFlow.{h,cpp}` (new), `Tests/Flow/DisFlow_Test.cpp` (new)
   - approach:
     - Follow Kroeger et al. 2016. At each level, coarse to fine, run an inverse-compositional Gauss-Newton search on overlapping patches (patch size and stride from `quality`), initialised from the upsampled coarser flow.
@@ -92,7 +92,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R DisFlow` passes. On a textured synthetic plate (fixed-seed noise), the mean endpoint error (EPE) stays within the thresholds the test records for a 3.5 px translation, a 2° rotation about the centre and a 20 px translation (the pyramid case). Record those thresholds in the test.
   - size: L
 
-- [ ] M217.P1.T3 — Variational refinement
+- [x] M217.P1.T3 — Variational refinement
   - files: `Engine/Flow/VariationalRefine.{h,cpp}` (new), `Engine/Flow/DisFlow.cpp`, `Tests/Flow/DisFlow_Test.cpp`
   - approach:
     - Implement the DIS paper's per-level refinement: a brightness-constancy data term, a gradient-constancy data term and a smoothness term, with robust penalisers.
@@ -101,7 +101,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R DisFlow` passes. EPE improves on the T2 cases by the margin the test records, and a piecewise-constant two-region motion keeps a sharp boundary.
   - size: L
 
-- [ ] M217.P1.T4 — TV-L1 flow
+- [x] M217.P1.T4 — TV-L1 flow
   - files: `Engine/Flow/TvL1Flow.{h,cpp}` (new), `Tests/Flow/TvL1Flow_Test.cpp` (new)
   - approach:
     - Use the coarse-to-fine TV-L1 duality scheme of Zach, Pock and Bischof (Wedel et al.'s variant).
@@ -110,7 +110,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R TvL1Flow` passes. It runs the same synthetic cases as DisFlow, with its own recorded EPE thresholds, and must at least match DIS on the rotation case.
   - size: L
 
-- [ ] M217.P1.T5 — Consistency confidence and matte-separated estimation
+- [x] M217.P1.T5 — Consistency confidence and matte-separated estimation
   - files: `Engine/Flow/FlowConfidence.{h,cpp}` (new), `Engine/Flow/FlowEstimate.{h,cpp}` (new), `Tests/Flow/FlowConfidence_Test.cpp` (new)
   - approach:
     - `FlowEstimate` is the single entry point. It takes the frames, the method, the parameters and an optional matte, and returns the forward and backward fields.
@@ -119,7 +119,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R FlowConfidence` passes. A static background with a moving square has confidence below 0.2 in the strip the square uncovers and above 0.9 elsewhere. With a matte on the square, background EPE in a 4 px band around it improves on the matte-less run by the margin the test records.
   - size: M
 
-- [ ] M217.P1.T6 — Temporal smoothing
+- [x] M217.P1.T6 — Temporal smoothing
   - files: `Engine/Flow/FlowTemporal.{h,cpp}` (new), `Engine/Flow/FlowEstimate.cpp`, `Tests/Flow/FlowTemporal_Test.cpp` (new)
   - approach:
     - Warp the t±1 fields to t through the t fields, then blend them confidence-weighted with the t fields by `smoothingStrength`.

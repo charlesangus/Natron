@@ -126,7 +126,7 @@ pixels in RAM.
 | `pinned` | bool | at creation | DiskCache node output |
 | `lastUse` | atomic wall-clock ns | real hits only | age term of the score; wall clock so it survives a restart |
 | `reuseCount` | atomic `U32` | real hits only | reuse multiplier; counted once per frame through `lastReuseFrame` |
-| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the index; the score itself recomputes it |
+| `priority` | atomic `float` | last score | the value last computed, for diagnostics and the file's stats block; the score itself recomputes it |
 | `recomputeCostNs` | atomic `float` | after each render | own render time scaled to the full bounds; see [Recompute cost](#recompute-cost) |
 
 The score scan reads atomics, so it takes no per-entry lock.
@@ -171,8 +171,8 @@ demotion cost, otherwise dropped. It requires that no render holds the entry.
 
 | Tier | `budget()` | `used()` | `demote` | `promote` |
 | --- | --- | --- | --- | --- |
-| Host (`Engine/CacheHostTier.cpp`) | `min(maxRAMPercent × total RAM, used + available RAM − keep-free RAM)`; defaults 50% and 20% (`Engine/Settings.cpp:1799-1800`), the second term replacing `checkCacheFreeMemoryIsGoodEnough` (`Engine/AppManager.cpp:3029-3035`) | live entries plus idle `HostImageMemory` pool, as today (`Engine/HostImageMemory.h`, class comment) | queue for the disk writer if worth it, else drop | allocate from `HostImageMemory`, copy from the mapped file, reload the bitmap |
-| Disk (`Engine/CacheDiskTier.cpp`) | the size preference, capped at 25% of free space at start | file bytes | drop: remove the file | not called: nothing lies below it |
+| Host (`Engine/CacheHostTier.cpp`) | `min(maxRAMPercent × total RAM, used + available RAM − keep-free RAM)`; defaults 50% and 20% (`Engine/Settings.cpp:1799-1800`), the second term replacing `checkCacheFreeMemoryIsGoodEnough` (`Engine/AppManager.cpp:3029-3035`) | live entries plus idle `HostImageMemory` pool, as today (`Engine/HostImageMemory.h`, class comment) | queue for the disk writer if worth it, else drop; the idle publisher also writes behind and keeps the RAM copy | allocate from `HostImageMemory`, `pread` the file, verify it, reload the bitmap |
+| Disk (`Engine/CacheDiskTier.cpp`) | the size preference, capped at 25% of free space; each process computes the cap and the smallest view wins | last scan plus the sum of the sessions' ledgers, refreshed each second | drop: unlink the file | not called: nothing lies below it |
 | Device (M301 - GPU Cache Tier) | see [Device tier hooks](#device-tier-hooks) | | | |
 
 Host demotion is off the cache lock. The current path syncs under `_lock` (`tryEvictInMemoryEntry`,
@@ -184,7 +184,7 @@ cancels the move. An allocation that finds the tier full waits on `_memoryFullCo
 instead, so a slow disk costs recomputes and not a stalled render.
 
 Promotion happens when a render reads the entry, on that render's thread, never during a probe. Pinned DiskCache
-entries are read through their mapping and not copied ([Pins](#pins-and-holds)).
+entries are read through their mapping and not copied on a local disk, and read into RAM on a network mount ([Pins](#pins-and-holds)).
 
 ## Score and high-water marks
 
@@ -310,17 +310,34 @@ A deep render hands its consumer a `DeepImagePtr`, not the entry, so that pointe
 
 **A pin** is a DiskCache node output (M300.P3.T3):
 
-- Forced to disk: `Engine/EffectInstanceRenderRoI.cpp:841` picks `eStorageModeDisk` for that node. It is written directly
-  to a mapped file, never passing through the host tier.
-- Persistent: listed in the tier's index with `pinned` set, in the subdirectory `pinned/`.
+- Forced to disk: `Engine/EffectInstanceRenderRoI.cpp:841` picks `eStorageModeDisk` for that node. It is written straight to
+  a file under `<tier>/<build>/pins/<cacheID>/`, never passing through the host tier, with the same temp file and `rename`
+  as an automatic entry ([Writing](#writing)).
+- Persistent, and outside sampling: the eviction pass never lists `pins/` ([Budget and eviction](#budget-and-eviction)).
 - On its own budget: `maxDiskCacheNode`, default 10 GiB (`Engine/Settings.cpp:1802`). A separate `CacheTier` instance whose
-  `demote` is never called by the automatic policy. It does not count against the 20 GiB automatic tier.
-- Read through its mapping, counted as RAM while mapped and against the open-file cap, as today
-  (`notifyEntryAllocated`, `Engine/Cache.h:1313`; the cap at `:823`).
+  `demote` is never called by the automatic policy. It does not count against the 20 GiB automatic tier. Its used figure is
+  kept as the automatic one is, from a scan of `pins/` and the sessions' ledgers.
+- Read in place on a local disk: mapped, counted as RAM while mapped and against the open-file cap, as today
+  (`notifyEntryAllocated`, `Engine/Cache.h:1313`; the cap at `:823`). On a network mount a pin is read into RAM instead,
+  because a peer's unlink there turns a mapping into `ESTALE`, which is `SIGBUS` ([Fallback](#fallback)).
+- Never truncated once published. Extending a pin (a larger render of the same output) copies it to a new temporary file
+  first and renames over it; a peer that has the old inode mapped keeps a valid mapping.
+- Marked by the sessions that hold it: each live session writes `pins/<cacheID>/.live-<session>`.
 
-What removes a pin: deleting the node (`Engine/AppManager.cpp:2543-2546`), the clear-cache actions, a new build, and the
-rule below. Today the DiskCache instance evicts by LRU past its budget (`Engine/Cache.h:846`, `:893`); "never evicted"
-means that stops, which leaves the question of a full pin budget. This note's answer:
+What removes a pin:
+
+- Deleting the node (`Engine/AppManager.cpp:2543-2546`) removes this session's marker, and unlinks the pins only if no live
+  peer's marker remains for that holder. A marker of a dead session does not count, since any session may reap it.
+- Clearing caches removes the pins of the holders this session has, and never another holder's. A peer re-renders and
+  re-pins.
+- A build with no live session being reclaimed ([Builds](#builds)), pins included.
+- The rule below.
+
+A deleted project's pins are not removed by anything else: they hold their budget until a clear or a new build. This is
+the user's choice.
+
+Today the DiskCache instance evicts by LRU past its budget (`Engine/Cache.h:846`, `:893`); "never evicted" means that
+stops, which leaves the question of a full pin budget. This note's answer:
 
 1. When a pin would exceed the budget, first drop this holder's pins at a different node hash. They are invalid, not
    evicted, and `removeAllEntriesWithDifferentNodeHashForHolderPrivate` already does this.
@@ -335,111 +352,179 @@ the rest of the design.
 Applies to the automatic tier and the pins. The `Cache<FrameEntry>` playback cache keeps its own files and table of
 contents (`Engine/AppManagerPrivate.cpp:408`, `:458`).
 
+The tier is shared by any number of sessions (the GUI, background renderers, several GUIs), none of them privileged. The
+protocol's correctness rests on `rename` alone. No lock gates access, and the locks and caches below only make it faster.
+Every file is immutable once published, so a reader sees a whole old file or a whole new one.
+
 ### Location and size
 
 Preferences: location (default `~/.cache/Natron/tier`), size (default 20 GiB). The effective budget is capped at 25% of
-free space at start. Free space here includes the tier's own files, or the cap would shrink a full tier a little more at
-every launch; this is an interpretation of the milestone's wording.
+free space. Free space here includes the tier's own files, or the cap would shrink a full tier a little more at every
+launch; this is an interpretation of the milestone's wording. Each process computes the cap from its own view of the free
+space and the smallest view wins.
 
 ### Layout
 
 ```
-<tier>/lock
-<tier>/index.bin
-<tier>/<aa>/<hash>[-n].ntc      automatic entries
-<tier>/pinned/<aa>/<hash>[-n].ntc
+<tier>/sessions/<host>-<boot>-<pid>-<start>        one writer: build, signed byte delta, heartbeat
+<tier>/tmp/<session>/
+<tier>/evict.lock                                  try-lock, optimisation only
+<tier>/<build>/auto/<xxx>/<base>-<variant>-<params>.ntc
+<tier>/<build>/pins/<cacheID>/<base>-<variant>-<params>.ntc
 ```
 
-The two-character fan-out is today's (`generateStringFromHash`, `Engine/CacheEntry.h`). The suffix exists because several
-entries can share a key and differ in params (`Engine/Cache.h:1549`).
+- `base` is the XXH3 of the key without mip level, layer and bit depth. `variant` is the XXH3 of those three, and `params`
+  of the entry's params (`Engine/Cache.h:1549`: several entries can share a key and differ in params). A file is named by
+  hash, never by content. `<xxx>` is a three-digit hexadecimal shard taken from `base`; at 300,000 files that is about 70
+  files per shard (an estimate).
+- A session is named by host, boot ID, process ID and process start time, so a recycled PID is a different session.
+- `base` leaving out mip, layer and depth is what lets a probe list one shard and filter by `base` to answer every variant
+  of an output in one call ([Reading](#reading-and-restoring)).
 
-An entry file holds the payload, then the bitmap run-length coded at its tail, or a flag for "all rendered". Deep payloads
-are not flat: counts, offsets, then a shared sample vector (`Engine/DeepImage.h:108-109`, `:168`), so each payload type
-provides its own write and read. They are written as those three sections in order.
-
-### Writing
-
-1. `posix_fallocate` the file to its full size, then map. `MemoryFile::resize` only calls `ftruncate`
-   (`Engine/MemoryFile.cpp:304`), which makes a sparse file: on a full disk it succeeds and the copy into the mapping dies
-   with `SIGBUS`. Without this step the disk-full edge case would be a crash. `ENOSPC` here is a clean failure.
-2. Copy, flush with `MemoryFile::flush(eFlushTypeSync)`, `fdatasync`. Close: only mapped entries hold a descriptor.
-3. Mark the entry disk-resident, free its RAM and its bitmap. Only now may a checkpoint list it.
-
-Any failure removes the partial file, drops the entry and logs one warning per session, through a once-only flag.
-
-### Index format
-
-`index.bin` is a fixed header followed by a boost binary archive, the form `Engine/CacheSerialization.h` and
-`Engine/AppManagerPrivate.cpp:378-405` already use.
+Each file holds, in order:
 
 | Part | Contents |
 | --- | --- |
-| Fixed header | magic, index format version, `NATRON_CACHE_VERSION` (`Global/GlobalDefines.h:97`), binary identity `U64`, entry count |
-| Each entry | payload kind, hash, typed key, typed params, relative file name, bytes, pinned, holder ID, `recomputeCostNs`, `reuseCount`, `lastUse` |
+| Header, 4 KiB | magic, format version, `NATRON_CACHE_VERSION` (`Global/GlobalDefines.h:97`), payload kind, typed key, typed params, bounds, sizes, payload XXH3, all-rendered flag |
+| Stats block | best-effort: `lastUse`, `reuseCount`, `priority`, `recomputeCostNs`. Rewritten in place, never trusted for correctness |
+| Bitmap | run-length coded, absent when the flag says all rendered, and for deep |
+| Payload | the pixels |
 
-M300.P1.T2's new key fields and the deep key and params need serializers. `Engine/CacheSerialization.h:83` iterates only
-what `SerializedEntry` knows, which M300.P3.T2 extends.
+Deep payloads are not flat: counts, offsets, then a shared sample vector (`Engine/DeepImage.h:108-109`, `:168`), so each
+payload type provides its own write and read, in those three sections. M300.P1.T2's new key fields and the deep key and
+params need serializers; `Engine/CacheSerialization.h:83` iterates only what `SerializedEntry` knows, which M300.P3.T2
+extends.
 
-It is replaced atomically (temporary file, `fsync`, `rename`, `fsync` of the directory): at clean exit, and from the writer
-thread every `indexCheckpointSeconds` while changed. Today's table is written only at exit and removed after reading
-(`restoreCache`, `Engine/AppManagerPrivate.cpp:418-455`), so a crash loses it, and with it every file. Here a crash loses
-at most the entries since the last checkpoint.
+The name is not an identity. `Hash64` is CRC-64, so two keys can name the same file. Every read compares the full key and
+params in the header with the requested ones and treats a difference as a miss. A 64-bit node-hash collision remains
+possible, at about 2×10⁻⁹ with 300,000 entries (computed from the birthday bound), as it is in RAM today.
 
-### Restoring
+### Writing
 
-At start, in the slot of `restoreCaches` (`Engine/AppManager.cpp:1135`), after taking the lock:
+1. Create the file in `tmp/<session>/`. `posix_fallocate` it to its full size. `MemoryFile::resize` only calls `ftruncate`
+   (`Engine/MemoryFile.cpp:304`), which makes a sparse file; the sparse file is the reason for the call, and `ENOSPC` is
+   then a clean failure at this step.
+2. `pwrite` the header, bitmap and payload, then `fdatasync`.
+3. If a file of that name exists in `auto/<xxx>/` (a `stat` and a header read) and has at least as many rendered pixels,
+   skip: remove the temporary file. Otherwise `rename` it over the old one. The larger result replaces the smaller.
+4. Mark the entry disk-resident, and free its RAM and bitmap if this was a demotion. Add the file's size to this session's
+   ledger.
 
-1. A short or unreadable index, a different format or cache version, or a different binary identity: wipe the tier,
-   pins included, and start empty.
-2. Otherwise stat each listed file. One that is missing or of the wrong size is forgotten.
-3. Remove files the index does not list, as `Cache<T>::restore` does (`Engine/CacheSerialization.h`, the sweep at the end
-   of `restore`).
-4. Enter each entry as disk-resident, with no RAM and no bitmap. Over budget (a lowered preference, less free space):
-   apply the score now.
+There is no pixel merge. GPU and CPU outputs share keys while differing by rounding, so merging the rendered parts of two
+files could leave a seam between them.
 
-Since M300.P1.T3 `Image::onMemoryAllocated` starts a restored entry unrendered, since nothing records which of its pixels
-were rendered. A restored entry therefore re-renders on a hit until bitmaps persist in M300.P3.
+A published inode is never truncated or written again, which is what keeps a concurrent `pread` or mapping safe.
 
-A restored entry is found only when the session computes the same key. It does:
+Any failure removes the temporary file, drops the entry and logs one warning per session, through a once-only flag.
+`RLIMIT_FSIZE` is such a failure.
 
-- Hashes are stable across sessions and AppImage remounts, by test (`docs/cache-invalidation/keys.md`, "Stability across
-  sessions"; `Tests/HashInvariants_Test.cpp`).
+**Publish-behind.** Demotion is not the only writer. An idle low-priority thread publishes entries that pass the
+recompute-versus-write test, and keeps their RAM copy, so a peer can see an entry before it is evicted and a crash loses
+nothing a peer could have used. The write-cost estimate has a per-file latency term next to `bytes ÷ throughput`, since
+thousands of `fdatasync` per second are not realistic; a small cheap entry is below the test whatever its size. A
+demotion of a published entry first `stat`s the file: a peer may have evicted it, and then the demotion writes again or
+drops by the usual test. A retracted entry (dropped, replaced or cleared) cancels its queued publish.
+
+### Reading and restoring
+
+There is no index and no start-up scan. A restart finds an entry by the name its key computes, so the first session to
+start has no advantage over the others.
+
+A probe runs off the cache lock, after a RAM miss:
+
+1. List the one shard `auto/<xxx>/` that `base` names, and keep the names with that `base`. One listing answers every mip,
+   layer and depth variant, which the fallbacks in [Existing classes](#existing-classes) need.
+2. For a candidate, open it, read and verify the header (magic, versions, full key and params), `pread` the payload and
+   check its XXH3. Any error, `ESTALE` or mismatch is a miss.
+3. A promoting render copies into a `HostImageMemory` buffer and reloads the bitmap. A non-promoting probe
+   (M300.P2.T5) reads only the header.
+
+Negative results are cached for 1 s, or 2 s for a listing on a network mount, and a listing is cached on a network mount.
+There is no `inotify` and no polling: a peer's publish is seen at the next probe after the negative result expires.
+
+Automatic entries are not mapped. With sharing, another client's unlink on a network mount gives `ESTALE`, which on a
+mapping is a `SIGBUS` rather than an error. Promotion copies the file anyway, so reading it with `pread` costs nothing
+extra. See [Departures](#departures-for-the-user), D2.
+
+A restored entry is found only when the session computes the same key. It does, with these provisos:
+
+- Hashes are expected to be stable across sessions and AppImage remounts (`docs/cache-invalidation/keys.md`, "Stability
+  across sessions"; `Tests/HashInvariants_Test.cpp`). This has been read in the code, not proved across processes:
+  `SameGraphHashesEqualInASecondAppInstance` runs both instances in one process. M300.P3.T4 proves it with real
+  processes, including `NatronRenderer`.
 - The holder is not in the hash or equality (`Engine/ImageKey.cpp`, `fillHash`, `operator==`). Project files keep a node's
   cache ID since M260 - Cache Invalidation Follow-ups, so a holder's later removal still finds its entries.
 - A changed source file changes the key: file knobs stamp path, mtime, size and inode (`computeStamp`,
-  `Engine/FileStampRegistry.cpp`), so the stale entry misses, and Reload re-reads the file. The stale entry ages out.
-- A volatile plug-in's hash is salted per process (`Engine/Plugin.cpp`, `kVolatilePlugins`), so its entries never hit in a
-  later session. They age out too. That is safe.
+  `Engine/FileStampRegistry.cpp`), so the stale entry misses, and Reload re-reads the file. The stale entry ages out. A
+  source rewritten while sessions run keeps its old stamp until Reload, so two running sessions can hold either version.
+- A volatile plug-in's hash is salted per process (`Engine/Plugin.cpp`, `kVolatilePlugins`). A salted hash, and every hash
+  downstream of one, is flagged and never published, so no file is written that could not hit.
 
-### Binary identity
+Since the bitmap travels in the file, a restored entry keeps its rendered pixels, and `Image::onMemoryAllocated` no longer
+starts it unrendered once M300.P3.T1 reads the bitmap.
 
-The hash of `NATRON_VERSION_STRING`, `GIT_COMMIT` and `runningExecutableStamp` (`Engine/Plugin.cpp:67`, mtime and size of
-`/proc/self/exe`).
+### Budget and eviction
 
-The key alone would already make any new build miss, since native plug-in stamps hash the same values
-(`Plugin::getBinaryContentStamp`, `Engine/Plugin.cpp:349`). The identity in the index exists so that the orphans free
-their space at once, rather than occupying the 20 GiB tier and the pin budget, where they could never be evicted. It
-also keeps the user's decision: the key keeps hashing the binary.
+Used bytes = the last scan of the tier + the sum of the sessions' ledgers (their signed deltas since that scan), refreshed
+each second. A slow scan, run in the background, corrects the drift. Concurrent writers can overshoot the budget by about
+processes × write rate × 1 s; this is assumed to fit inside the 2 GiB between the 90% mark and a 20 GiB budget (an
+estimate, to be checked in M300.P3.T4 with four writers).
 
-- `runningExecutableStamp` is file-local today and has to be exposed; see [Gaps](#gaps-against-the-task-list).
-- When `statx` fails, the stamp falls back to a per-process salt (`Engine/Plugin.cpp:74`, hole K8). The identity then differs
-  at each launch and the tier wipes. That is safe, and K8 stays with M260 - Cache Invalidation Follow-ups.
-- An OFX plug-in rebuild changes only its own nodes' keys (`Plugin::ofxBinaryStamp`). Those entries age out without a wipe.
+Past the mark, a session samples about 1024 files and unlinks the lowest 64 by the note's score
+([Score](#score-and-high-water-marks)), using the persisted stats. A process substitutes the live priority for the
+entries it knows. Files of builds with no live session are taken first. `evict.lock` is tried with `flock(LOCK_NB)` before
+sampling, and a session that does not get it skips the pass; it is only there to avoid duplicate work. Two evictors at
+once are harmless, and `ENOENT` on an unlink is fine.
 
-### Directory lock
+### Sessions and crashes
 
-`<tier>/lock`, opened `O_CLOEXEC`, held with `flock(LOCK_EX | LOCK_NB)` for the process's lifetime. The kernel releases it
-on a crash, so there is no stale-lock cleanup. `O_CLOEXEC` keeps spawned processes from inheriting it.
+Only `tmp/` ever holds partial data, so a crash leaves nothing that a reader can mistake for an entry.
 
-When the lock is taken, or `flock` fails for any other reason such as on a network mount: use a session-only scratch
-directory beside the tier, `<tier>.scratch-<pid>`, with its own lock. It behaves as a normal tier but restores nothing,
-checkpoints nothing, and is removed at exit. At start, any `<tier>.scratch-*` whose lock can be taken is left from a crash
-and is removed.
+Every session writes its ledger under `sessions/` and refreshes its heartbeat with the budget. Any session reaps a dead
+session's `tmp/<session>/` and ledger. Same host: dead means a different boot ID, or no process of that PID with that start
+time. Another host: dead means a stale heartbeat. The reaper first `rename`s the ledger to claim it, so two reapers do not
+both add its delta.
 
-Only the lock holder may wipe, so a second instance on another build cannot delete the first's files.
+A lock that fails (`flock` on some network mounts) loses an optimisation and never access.
 
-A background `NatronRenderer` started from the GUI is a second instance. It gets a scratch directory, so it neither
-reads nor writes the persisted tier, and that includes DiskCache pins.
+### Builds
+
+The identity is the hash of `NATRON_VERSION_STRING`, `GIT_COMMIT` and the executable stamp (`Engine/Plugin.cpp:67-72`),
+and it names the build directory. The key keeps hashing the binary as well (the user's decision), so a new build would miss anyway; the directory is what lets a dead build's files be found and reclaimed as a unit.
+
+- That stamp hashes `/proc/self/exe`, and Natron and NatronRenderer are separate executables, so the stamp must cover both
+  siblings, sorted by name, or the same build would key differently in the two. If the AppImage does not ship both in one
+  directory, it falls back to the running executable's own stamp; M300.P3.T4 confirms what the AppImage ships.
+- When `statx` fails, the stamp falls back to a per-process salt (`Engine/Plugin.cpp:74`, hole K8). Salted hashes
+  (`Engine/Plugin.cpp:74`, `:369`; `Engine/Knob.cpp:7286`, `:7319`) and everything downstream are flagged and never
+  published, so such a session reads but fills nothing. K8 stays with M260 - Cache Invalidation Follow-ups.
+- An OFX plug-in rebuild changes only its own nodes' keys (`Plugin::ofxBinaryStamp`). Those entries age out.
+
+Each identity has its own directory, so builds coexist and nobody wipes at start. A new build starts cold and touches no
+other build's files. A build with no live session is dead after 7 days (the user's choice), or earlier under budget
+pressure, oldest first, pins included (also the user's choice). A background `NatronRenderer` started from the GUI
+re-executes the same binary, so it has the same identity and shares the tier, DiskCache pins included.
+
+### Fallback
+
+At start the tier runs `statfs` and a `rename` self-test in `tmp/`. A network mount loses only the speed-ups: listings stay
+cached, and pins are read into RAM instead of mapped. If the self-test fails (a filesystem whose `rename` is not atomic or
+not permitted), every session uses the local default location, and if that fails too, RAM only, with one warning. The
+decision is the same in every session because it follows from the same test.
+
+### What each session sees
+
+| Case | Behaviour |
+| --- | --- |
+| Different projects | No shared hits except identical upstream. They share the budget by score, both persist, and closing one takes nothing from the other |
+| Same project | Hits on matching hashes, seen after publish-behind plus at most 1 s. Concurrent renders duplicate work, and the last larger publish wins |
+| A node is deleted | Its automatic files stay and age out. Its pins follow [Pins](#pins-and-holds) |
+| Clear caches | This build's automatic files and this session's pins go. Peers re-render and re-pin |
+
+### Assumed costs
+
+Unmeasured; M300.P3.T4's bench replaces them. A cached local miss is 10-30 µs. A cold miss is about 100 µs on NVMe, 10 ms on
+an HDD and about 1 ms on NFS. A frame with 1000 nodes missing costs about 30 ms before the negative cache.
 
 ## Device tier hooks
 
@@ -471,7 +556,7 @@ device. A mip-0 output of a non-scaling node is its own entry once mip is in the
 | `CacheEntryHolder` (`Engine/CacheEntryHolder.h:40-57`) | Interface with `getCacheID()`, a UUID on `Node` (`Engine/Node.cpp:912`) | Unchanged. Still owner identity for removal and stats, and now the key into `CacheRetention`, interned on the header |
 | `HostImageMemory` (`Engine/HostImageMemory.h`) | Pooled importable RAM; pool counts against the limit and is trimmed first (`trimTo`, `Engine/Cache.h:839`, `:1170-1176`) | The host tier's allocator, unchanged. The tier trims the idle pool before scoring anything. Promotion allocates here, so a promoted entry stays importable |
 | `DeepImageCacheEntry` (`Engine/DeepImageCacheEntry.h:58-59`) | `CacheEntryHelper<char, …>` with `DeepImagePtr` beside an unused generic buffer; size snapshot at `:86-90`; its own 2 GiB instance | A payload type with a header, without the buffer accounting (done in M300.P1.T4, its instance and setting retired). Its size is real bytes for the score. The old reason for its own budget (`Engine/AppManager.cpp:1112-1113`, a big deep render would evict all 2D) is answered by the score: large and cheap goes first, whatever the type |
-| `MemoryFile` (`Engine/MemoryFile.h`) | One mapped file, not MT-safe (`:43`); destructor keeps the file (`:98-100`) | Backs entry files and pins, used by one thread at a time. Needs a reservation step before mapping (`Engine/MemoryFile.cpp:304`) |
+| `MemoryFile` (`Engine/MemoryFile.h`) | One mapped file, not MT-safe (`:43`); destructor keeps the file (`:98-100`) | Backs pins on local disks only, used by one thread at a time; automatic entries use `pread` and `pwrite` on a plain descriptor. Its `ftruncate` at `Engine/MemoryFile.cpp:304` makes a sparse file, so the disk tier reserves with `posix_fallocate` instead |
 
 Also: `ImageKey` gains mip level, layer and bit depth (`Engine/ImageKey.h:42-51`, `Engine/ImageKey.cpp` `fillHash` and
 `operator==`). The filtering at `Engine/EffectInstance.cpp:2279-2326` that this makes redundant goes; the finer-mip downscale
@@ -554,7 +639,11 @@ measured nodes differ by factors of hundreds.
 | `evictionBatch` | 64 | Scan time from a profile of a cache with many small entries; a scan over 1 ms of lock hold lowers the scan rate by raising it |
 | `diskWriteBytesPerSecond` | 500 MB/s, then learned | Start value only; matters for the first writes. Set it from the median over the user's and a SATA host's first-minute rates |
 | `demotionQueueFraction` | 0.1 of host budget | Allocation stalls versus drops during a sustained run on a slow disk |
-| `indexCheckpointSeconds` | 30 | Index size and write time in a full 20 GiB tier: raise if a checkpoint costs visible I/O |
+| Negative-cache lifetime | 1 s; 2 s for a listing on a network mount | The bench of M300.P3.T4: raise it if misses cost more than 30 ms per 1000-node frame, lower it if a peer's publish is seen too late |
+| Budget refresh; slow scan period | 1 s; 60 s (unmeasured) | Overshoot of four writers in M300.P3.T4: shorten the refresh if they exceed the 2 GiB between the mark and the budget |
+| Eviction sample; unlinked per pass | about 1024; 64 (`evictionBatch`) | Sampling time on a 300,000-file tier |
+| Per-file write latency term | unmeasured | A small-entry publish bench with `fdatasync`; it decides how small an entry the write test rejects |
+| Dead build; heartbeat stale | 7 days (the user's choice); 60 s (unmeasured) | The age is fixed by the user; the heartbeat by false reaps seen on a network mount |
 | Default disk size and cap | 20 GiB, 25% | Fixed by the milestone; changed only by the user |
 | Entry-file bitmap coding | run-length | Average bitmap bytes per entry from a real tier: if partials are rare, a flag alone would do |
 
@@ -564,9 +653,9 @@ No constant caps the size of a user's image: an entry above every budget still r
 
 | Case | Behaviour |
 | --- | --- |
-| Disk full or a write error on demotion | Dropped, with one warning per session ([Writing](#writing)). `posix_fallocate` makes full-disk a clean error rather than `SIGBUS` |
-| A second Natron instance | [Directory lock](#directory-lock): scratch directory beside the tier, session-only |
-| A changed source file across sessions | Miss through the file stamps of M260 - Cache Invalidation Follow-ups; Reload re-reads ([Restoring](#restoring)) |
+| Disk full or a write error on demotion | Dropped, with one warning per session ([Writing](#writing)). `posix_fallocate` makes full-disk a clean error rather than a short file |
+| A second Natron instance | A peer on the same tier, none locked out or given scratch space ([What each session sees](#what-each-session-sees)) |
+| A changed source file across sessions | Miss through the file stamps of M260 - Cache Invalidation Follow-ups; Reload re-reads ([Reading and restoring](#reading-and-restoring)) |
 | An entry in use | In-use hold; never demoted while a render holds it ([Pins](#pins-and-holds)) |
 | A partially rendered entry | Bitmap goes with the file and returns on promotion ([Entry header](#entry-header)) |
 
@@ -601,7 +690,7 @@ M301.P2.T1 then extends this pass to device hits instead of walking on its own.
 | M300.P2.T3 | `Engine/RenderScheduler.cpp` | `:626` is a second consumer of `shouldCacheOutput`, and graph build refreshes the panel and branch signals. The hook is in `Engine/Node.cpp:2050`, which is listed, rather than `Engine/Knob.cpp` |
 | M300.P2.T4 | `Engine/EffectInstanceRenderRoI.cpp`, retiring `aggressiveCaching` | The state record at `:1380`, and the setting now duplicating `all` |
 | M300.P3.T1 | `Engine/MemoryFile.h/.cpp`, `Engine/Image.cpp`, `Engine/DeepImage.h` | Reservation before mapping; bitmaps need persisting, since `onMemoryAllocated` starts restored entries unrendered (`:792`, changed in M300.P1.T3 rather than here); deep needs a writer and reader |
-| M300.P3.T2 | `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp` | `runningExecutableStamp` is file-local (`:67`); the restore path lives there |
+| M300.P3.T2 | `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp` | `runningExecutableStamp` is file-local (`:67`) and has to stamp both executables; the old restore path lives in `AppManagerPrivate.cpp` and goes |
 
 **3. M300.P4.T1 cannot discriminate the policies on its current graph.** See [Admission](#admission). Proposed addition to its approach:
 "Also run a graph with off-branch work (a second viewer on an expensive branch, under memory pressure), since the policies coincide on a
@@ -612,7 +701,7 @@ so that passing by hits alone does not read as done.
 
 ## Departures for the user
 
-None of these is adopted. The design above follows the planned architecture.
+D1 and D3 are not adopted; the design above follows the planned architecture. D2 is adopted, for the reason given.
 
 **D1. Recompute cost that includes uncached upstream cost, in the demotion test and the score.** The milestone defines it as the node alone,
 excluding inputs. The user's decision is "spill to disk only when cheaper than a recompute", and the real recompute of a dropped entry is the
@@ -630,11 +719,12 @@ upstream. In the RAM score the own-cost rule largely heals itself: `RawInputColo
 `RawDemosaic`. So this matters mainly for demotion. **Recommendation:** keep own cost for now, have M300.P4.T1 count the case, and change
 the demotion test only if drops are seen re-running chains.
 
-**D2. `pread`/`pwrite` instead of mapping for automatic entries.** The milestone says mapped files, reusing `MemoryFile`. Evidence: with a mapping, a
-read error on a promoted entry is `SIGBUS`, not an error code. `posix_fallocate` covers the full-disk write side, not the read side. A
-`pread` into a `HostImageMemory` buffer would turn it into a drop and a recompute, and would keep demotion from depending on mapping limits. Pins
-are read in place and stay mapped either way. Against it: no failure has been observed, and the mapped path exists. **Recommendation:** stay mapped
-unless a disk failure in the field says otherwise.
+**D2. `pread`/`pwrite` instead of mapping for automatic entries (adopted).** The milestone says mapped files, reusing `MemoryFile`. With a
+mapping, a read error on a promoted entry is `SIGBUS`, not an error code, and with a disk tier shared between sessions that
+error is no longer rare: another client's unlink on a network mount gives `ESTALE`, which is a `SIGBUS` on a mapping. A `pread`
+into a `HostImageMemory` buffer turns it into a miss and a recompute, and keeps demotion from depending on mapping limits.
+Promotion copies anyway, so nothing is lost. Pins stay mapped on local disks, where an unlink leaves the inode alive, and are
+read into RAM on network mounts.
 
 **D3. Sharding the cache lock.** Not measured. `_getLock` and `_lock` serialise lookups today, and the design moves I/O off them, not the
 lookups. **Recommendation:** no change until the CacheStress concurrent run or a many-core profile shows contention.
@@ -657,15 +747,15 @@ Scope, In:
 - [x] Eviction score, per tier, only past the high-water mark; demote if recompute exceeds demotion cost, else drop: [Score and high-water marks](#score-and-high-water-marks), [Tier interface](#tier-interface)
 - [x] Retention signals (edited inputs with decay, open panels, viewer branch, expensive nodes, reuse multiplier): [Priority signals](#priority-signals), [Score and high-water marks](#score-and-high-water-marks)
 - [x] Two admission policies behind a setting; the benchmark decides, the user signs off: [Admission](#admission), [Benchmark results](#benchmark-results)
-- [x] Persistent disk tier, location and size preference, 25% cap, new build invalidates: [Persistence](#persistence), [Binary identity](#binary-identity)
-- [x] DiskCache node as a pin: forced to disk, persistent, own budget, never auto-evicted: [Pins and holds](#pins-and-holds)
+- [x] Persistent disk tier shared by concurrent sessions, location and size preference, 25% cap, a build directory per binary identity: [Persistence](#persistence), [Layout](#layout), [Builds](#builds)
+- [x] DiskCache node as a pin: forced to disk, persistent, own budget, never auto-evicted, shared by peers through live markers: [Pins and holds](#pins-and-holds)
 - [x] `ImageKey` completed with mip, layer, bit depth; finer-mip downscale stays as fallback: [Existing classes](#existing-classes)
 
 Edge cases:
 
 - [x] Disk full or write error on demotion: [Writing](#writing), [Edge cases](#edge-cases)
-- [x] Second Natron instance: [Directory lock](#directory-lock)
-- [x] Changed source file across sessions: [Restoring](#restoring)
+- [x] Second Natron instance, as a peer on one tier: [Sessions and crashes](#sessions-and-crashes), [What each session sees](#what-each-session-sees)
+- [x] Changed source file across sessions: [Reading and restoring](#reading-and-restoring)
 - [x] Entry in use: [Pins and holds](#pins-and-holds)
 - [x] Partially rendered entry: [Entry header](#entry-header)
 

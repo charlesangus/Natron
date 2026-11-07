@@ -122,7 +122,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: A tiny RAM budget demotes an expensive entry and drops a cheap one; promotion returns identical pixels. A second process hits an entry the first published. A forged key misses.
   - size: L
 
-- [ ] M300.P3.T2 — Persist without an index, and let builds coexist
+- [x] M300.P3.T2 — Persist without an index, and let builds coexist
   - files: `Engine/CacheDiskTier.cpp`, `Engine/CacheSerialization.h`, `Engine/AppManager.cpp`, `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp`
   - approach: Entries are found by name, so startup does no restore scan. Sessions register for liveness; any peer reaps dead sessions' temp files and ledgers. The identity stamps both executables (Natron and NatronRenderer) and selects the build directory; salted hashes are flagged and never published. A build with no live session is reclaimed after 7 days or sooner under pressure, oldest first. A rename self-test at start falls back to the default location, then to RAM only, with one warning.
   - verify: A restart gets hits, whichever session started first. Two identities run together with neither losing files. A dead build is reclaimed. Natron and NatronRenderer hash a project identically across processes.

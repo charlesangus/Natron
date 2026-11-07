@@ -156,6 +156,8 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Decisions
 
+- 2026-11-07 — Names (user): the state called Full + Load in the design and earlier tasks is now **Load All** (`loadAll`), everywhere it appears: draw column, viewer key action, USDRead `Initial Draw`, USDExpandHierarchy rules. The column stays Draw State (`drawState`).
+
 - 2026-11-07 — Budget (user): the 100 ms covers both the main-thread stall and the time until the changed picture appears. If Storm can't reach it, report the numbers rather than change the target.
 - 2026-11-07 — Hidden prims (user): hidden loaded prims always leave Hydra and free their memory, even if that misses the budget. Keeping them hidden in Hydra is off the table for P2.T4.
 - 2026-11-07 — Lights (user): lights under a BBox or Hidden row stop lighting in both states; only rows drawn in full contribute light.

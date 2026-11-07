@@ -175,6 +175,8 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Decisions
 
+- 2026-11-07 — User: the TV-L1 confidence bar for the uncovered strip moves to 0.4. `confidenceThreshold` stays and gets a real overlay with an engine hook, so the node gains that task before merging.
+
 - 2026-11-07 — Remote release gate green at 4a725657d. GUI gate script, timings and UAT remain.
 
 - 2026-11-07 — Node at ca4e94e08, unbuilt. PM defaults, awaiting the user: `vectorConfidence` has Forward and Backward channels, not one; matching compresses scene-linear values with a log curve (pivot 0.05) used only on the packed copy. `confidenceThreshold` exists but draws nothing: an overlay would need an engine hook so its pass can request `vectorConfidence`. Parity fixtures for M217.P2.T2 need recording on a build.

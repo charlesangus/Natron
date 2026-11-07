@@ -836,13 +836,17 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
             return prim.IsInstanceProxy();
         });
+        // HasValue() on a primvar with no attribute throws instead of answering false, which on the write thread terminates the process.
+        const auto hasValue = [](const PXR_NS::UsdGeomPrimvar& primvar) {
+            return primvar.GetAttr() && primvar.HasValue();
+        };
         const auto referenceOf = [&geometryProjection](const PXR_NS::UsdPrim& prim) {
             return geometryProjection.referencePrimvar.empty()
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(geometryProjection.referencePrimvar));
         };
-        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [&referenceOf](const PXR_NS::UsdPrim& prim) {
-            return !prim.IsA<PXR_NS::UsdGeomMesh>() && !referenceOf(prim).HasValue();
+        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [&referenceOf, &hasValue](const PXR_NS::UsdPrim& prim) {
+            return !prim.IsA<PXR_NS::UsdGeomMesh>() && !hasValue(referenceOf(prim));
         });
         const bool materialInstanced = shader.GetPrim().IsInstanceProxy();
         if (materialInstanced || gprims.empty() || (instanced != gprims.end()) || (other != gprims.end())) {
@@ -907,9 +911,9 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             const PXR_NS::UsdGeomPrimvar framePrimvar = geometryProjection.framePrimvar.empty()
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
-            const bool hasFrame = framePrimvar.HasValue();
+            const bool hasFrame = hasValue(framePrimvar);
             const PXR_NS::UsdGeomPrimvar referencePrimvar = referenceOf(prim);
-            const bool hasReference = referencePrimvar.HasValue();
+            const bool hasReference = hasValue(referencePrimvar);
             const bool hasFaces = prim.IsA<PXR_NS::UsdGeomMesh>();
             const bool varies = cameraVaries || (!hasReference && (meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying())));
             const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());

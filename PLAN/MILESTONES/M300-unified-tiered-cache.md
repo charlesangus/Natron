@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — M300.P1.T2 at 900e2277c, unbuilt until the phase gate. Dropped from the old filter: a differently laid out RGB, Alpha or XY entry (except RGB or Alpha from RGBA), and Short for a Half request. A miss costs up to 72 probes for Alpha byte at mip 8 (144 on draft), 1 for RGBA float at mip 0; watch this in the bench.
 - 2026-11-06 — Design note at 126e17bb4 on milestone/m300-unified-tiered-cache. Assumption on recompute cost was false: the scheduler stores no cost and task wall time can include nested inputs, so a stopwatch inside `renderRoI` subtracts nested time. Five open points in the note await the user: `priorityFloor` wording, the age term, the disk cap's free space, a full pin budget, background renderer scratch.
 - 2026-11-06 — **A cached output skips its dependencies (user):** "that's pretty much the whole point of the cache". The task graph must not run a task's dependencies when the consumer's output is already served by the cache. M276 - Upstream Reuse On Edits measured the opposite as `behind_hit`.
 - 2026-11-01 — **One cache logic across RAM, disk and VRAM (user):** "keep more in the cache if there's budget… just not evict stuff until we need to". Cost-aware tiers with demotion replace blind LRU. See `DECISIONS/2026-11-01-unified-tiered-cache.md`.
@@ -52,7 +53,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
   - verify: The note covers every `## Scope` In and Edge-case item; a reviewer checks it against the list.
   - size: L
 
-- [ ] M300.P1.T2 — Complete `ImageKey` with mip level, layer and bit depth
+- [x] M300.P1.T2 — Complete `ImageKey` with mip level, layer and bit depth
   - files: `Engine/ImageKey.h`, `Engine/ImageKey.cpp`, `Engine/EffectInstance.cpp` (lookup filter ~:2053-2166), `Engine/GpuPlacement.cpp` ~:1032, key serialization, `Tests/CacheStress_Test.cpp`
   - approach: Add the three fields to the key's hash and equality. Lookups ask for the exact key first. On a miss they fall back to the existing finer-mip-downscale path by probing the finer keys. Drop the per-entry filtering the key now makes redundant.
   - verify: A CacheStress case with RGB then RGBA requests of one node (I4, `RgbThenRgbaRequest`) and a mip0/mip1 pair passes, and existing cache suites pass.

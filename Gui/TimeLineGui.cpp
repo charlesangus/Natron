@@ -376,6 +376,11 @@ void
 TimeLineGui::discardGuiPointer()
 {
     _imp->gui = 0;
+    // The tab outlives its viewer node until the event loop deletes it, and a refresh firing in that
+    // gap would read the destroyed viewer.
+    _imp->cachedFramesRefreshTimer.stop();
+    _imp->viewer = 0;
+    disconnectSlotsFromViewerCache();
 }
 
 struct TimeLineKey

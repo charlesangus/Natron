@@ -25,6 +25,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/imaging/hd/materialNetwork2Interface.h>
 
 #include "Global/Macros.h"
@@ -1200,6 +1201,65 @@ TEST_F(LiveTextureTest, AMissingNormalMapLeavesTheGeometrysNormal)
     EXPECT_FALSE(hasTextureNode(network));
     EXPECT_EQ(0u, surfaceConnections(network, "normal"));
     EXPECT_TRUE(surfaceParameter(network, "normal").IsEmpty());
+}
+
+TEST_F(LiveTextureTest, TheCyclesFilterTurnsATransformIntoAMappingNode)
+{
+    const PXR_NS::SdfPath readerPath("/Material/Reader");
+    const PXR_NS::SdfPath transformPath("/Material/Transform");
+    const PXR_NS::SdfPath texturePath("/Material/Texture");
+
+    PXR_NS::HdMaterialNode2 transform;
+    transform.nodeTypeId = PXR_NS::TfToken("UsdTransform2d");
+    transform.parameters[PXR_NS::TfToken("scale")] = PXR_NS::VtValue(PXR_NS::GfVec2f(2.f, 4.f));
+    transform.parameters[PXR_NS::TfToken("rotation")] = PXR_NS::VtValue(90.f);
+    transform.parameters[PXR_NS::TfToken("translation")] = PXR_NS::VtValue(PXR_NS::GfVec2f(0.25f, 0.5f));
+    PXR_NS::HdMaterialConnection2 fromReader;
+    fromReader.upstreamNode = readerPath;
+    fromReader.upstreamOutputName = PXR_NS::TfToken("result");
+    transform.inputConnections[PXR_NS::TfToken("in")] = { fromReader };
+
+    PXR_NS::HdMaterialNode2 texture;
+    texture.nodeTypeId = PXR_NS::TfToken("UsdUVTexture");
+    PXR_NS::HdMaterialConnection2 fromTransform;
+    fromTransform.upstreamNode = transformPath;
+    fromTransform.upstreamOutputName = PXR_NS::TfToken("result");
+    texture.inputConnections[PXR_NS::TfToken("st")] = { fromTransform };
+
+    PXR_NS::HdMaterialNode2 reader;
+    reader.nodeTypeId = PXR_NS::TfToken("UsdPrimvarReader_float2");
+
+    PXR_NS::HdMaterialNetwork2 network;
+    network.nodes[readerPath] = reader;
+    network.nodes[transformPath] = transform;
+    network.nodes[texturePath] = texture;
+    applyFilter(LiveTextureSceneIndex::makeCyclesMaterialFilter(), &network);
+
+    const PXR_NS::HdMaterialNode2& mapping = network.nodes.at(transformPath);
+    EXPECT_EQ(PXR_NS::TfToken("cycles_mapping"), mapping.nodeTypeId);
+    EXPECT_EQ(PXR_NS::VtValue(PXR_NS::GfVec3f(2.f, 4.f, 1.f)), mapping.parameters.at(PXR_NS::TfToken("scale")));
+    const PXR_NS::VtValue rotation = mapping.parameters.at(PXR_NS::TfToken("rotation"));
+    ASSERT_TRUE(rotation.IsHolding<PXR_NS::GfVec3f>());
+    EXPECT_FLOAT_EQ(float(M_PI / 2.), rotation.UncheckedGet<PXR_NS::GfVec3f>()[2]);
+    EXPECT_EQ(PXR_NS::VtValue(PXR_NS::GfVec3f(0.25f, 0.5f, 0.f)), mapping.parameters.at(PXR_NS::TfToken("Location")));
+    EXPECT_TRUE(mapping.parameters.find(PXR_NS::TfToken("translation")) == mapping.parameters.end());
+    ASSERT_EQ(1u, mapping.inputConnections.count(PXR_NS::TfToken("Vector")));
+    EXPECT_EQ(readerPath, mapping.inputConnections.at(PXR_NS::TfToken("Vector"))[0].upstreamNode);
+    EXPECT_EQ(0u, mapping.inputConnections.count(PXR_NS::TfToken("in")));
+    const PXR_NS::HdMaterialConnection2& st = network.nodes.at(texturePath).inputConnections.at(PXR_NS::TfToken("st"))[0];
+    EXPECT_EQ(transformPath, st.upstreamNode);
+    EXPECT_EQ(PXR_NS::TfToken("Vector"), st.upstreamOutputName);
+}
+
+TEST_F(LiveTextureTest, TheOtherDelegatesFilterKeepsATransform)
+{
+    PXR_NS::HdMaterialNode2 transform;
+    transform.nodeTypeId = PXR_NS::TfToken("UsdTransform2d");
+    PXR_NS::HdMaterialNetwork2 network;
+    network.nodes[PXR_NS::SdfPath("/Material/Transform")] = transform;
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
+
+    EXPECT_EQ(PXR_NS::TfToken("UsdTransform2d"), network.nodes.at(PXR_NS::SdfPath("/Material/Transform")).nodeTypeId);
 }
 
 // Delegates must see magenta rather than a file that faults on first touch.

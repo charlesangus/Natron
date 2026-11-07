@@ -321,10 +321,10 @@ first = os.environ.get("OPENIMAGEIO_PLUGIN_PATH", "").split(":")[0]
 if os.path.realpath(first) != oiio_plugins:
     fail("OPENIMAGEIO_PLUGIN_PATH starts with %r, not the bundle's lib/oiio" % first)
 try:
-    if not hasattr(ctypes.CDLL(os.path.join(oiio_plugins, "natron.imageio.so")), "natron_imageio_version"):
-        fail("lib/oiio/natron.imageio.so is not an OIIO plug-in for .natron files")
+    if not hasattr(ctypes.CDLL(os.path.join(oiio_plugins, "natronlive.imageio.so")), "natronlive_imageio_version"):
+        fail("lib/oiio/natronlive.imageio.so is not an OIIO plug-in for .natron files")
 except OSError as error:
-    fail("lib/oiio/natron.imageio.so did not load: %s" % error)
+    fail("lib/oiio/natronlive.imageio.so did not load: %s" % error)
 
 # USD only dlopen()s the Cycles render delegate when a render asks for it, so load it here: that
 # resolves its whole library closure from the bundle, with LD_LIBRARY_PATH unset.

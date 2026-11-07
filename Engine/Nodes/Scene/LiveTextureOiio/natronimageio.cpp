@@ -116,7 +116,7 @@ class NatronInput final : public ImageInput {
 public:
     const char* format_name() const override
     {
-        return NatronLiveTexture::kFileExtension;
+        return NatronLiveTexture::kFormatName;
     }
 
     bool valid_file(const std::string& name) const override
@@ -260,20 +260,20 @@ private:
 } // namespace
 
 OIIO_PLUGIN_EXPORTS_BEGIN
-OIIO_EXPORT int natron_imageio_version = OIIO_PLUGIN_VERSION;
+OIIO_EXPORT int natronlive_imageio_version = OIIO_PLUGIN_VERSION;
 OIIO_EXPORT const char*
-natron_imageio_library_version()
+natronlive_imageio_library_version()
 {
     return nullptr;
 }
 
 OIIO_EXPORT ImageInput*
-natron_input_imageio_create()
+natronlive_input_imageio_create()
 {
     return new NatronInput;
 }
 
-OIIO_EXPORT const char* natron_input_extensions[] = { NatronLiveTexture::kFileExtension, nullptr };
+OIIO_EXPORT const char* natronlive_input_extensions[] = { NatronLiveTexture::kFileExtension, nullptr };
 OIIO_PLUGIN_EXPORTS_END
 
 OIIO_PLUGIN_NAMESPACE_END

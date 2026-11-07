@@ -166,7 +166,7 @@ TEST_F(LiveTextureOiioTest, RegisteringServesThePluginToDelegates)
     ASSERT_NE(nullptr, path);
     const std::string value(path);
     const std::string first = value.substr(0, value.find(':'));
-    EXPECT_TRUE(std::filesystem::is_regular_file(std::filesystem::path(first) / "natron.imageio.so")) << value;
+    EXPECT_TRUE(std::filesystem::is_regular_file(std::filesystem::path(first) / "natronlive.imageio.so")) << value;
 }
 
 TEST_F(LiveTextureOiioTest, EveryLevelReadsBackThroughTheTextureSystem)

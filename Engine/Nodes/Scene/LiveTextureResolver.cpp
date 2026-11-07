@@ -87,7 +87,7 @@ servePluginToDelegates()
         return;
     }
     const std::filesystem::path dir = (exe.parent_path() / ".." / "lib" / "oiio").lexically_normal();
-    if (!std::filesystem::is_regular_file(dir / "natron.imageio.so", ec)) {
+    if (!std::filesystem::is_regular_file(dir / "natronlive.imageio.so", ec)) {
         return;
     }
     const char* const current = std::getenv("OPENIMAGEIO_PLUGIN_PATH");

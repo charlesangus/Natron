@@ -62,6 +62,12 @@ void registerSceneIndices();
  * for as long as it lives, because both renderers can close a file and open it again mid-render.
  **/
 std::function<void(PXR_NS::HdMaterialNetworkInterface*)> makeMaterialFilter();
+
+/**
+ * @brief makeMaterialFilter's filter, which then turns every UsdTransform2d into the Cycles node doing the
+ * same, since hdCycles has no mapping of its own for one.
+ **/
+std::function<void(PXR_NS::HdMaterialNetworkInterface*)> makeCyclesMaterialFilter();
 } // namespace LiveTextureSceneIndex
 
 NATRON_NAMESPACE_EXIT

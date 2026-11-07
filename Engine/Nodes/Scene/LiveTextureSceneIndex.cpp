@@ -36,6 +36,8 @@
 #define NATRON_LIVETEXTURESCENEINDEX_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/base/gf/math.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
@@ -223,15 +225,85 @@ filterNetwork(HdMaterialNetworkInterface* network,
     }
 }
 
+/*
+ * hdCycles maps no UsdTransform2d, so it would drop the node and with it the connection to the texture's
+ * st, misplacing every image whose window is not the format. Cycles' mapping node computes the same
+ * scale, rotation and translation, in radians. Socket names match case-insensitively, so scale and
+ * rotation keep their names and only change type.
+ */
+void
+transformsToMappingNodes(HdMaterialNetworkInterface* network)
+{
+    static const TfToken transformType("UsdTransform2d");
+    static const TfToken mappingType("cycles_mapping");
+    static const TfToken inName("in");
+    static const TfToken resultName("result");
+    static const TfToken scaleName("scale");
+    static const TfToken rotationName("rotation");
+    static const TfToken translationName("translation");
+    static const TfToken vectorSocket("Vector");
+    static const TfToken locationSocket("Location");
+
+    const TfTokenVector nodes = network->GetNodeNames();
+
+    for (const TfToken& node : nodes) {
+        if (network->GetNodeType(node) != transformType) {
+            continue;
+        }
+        network->SetNodeType(node, mappingType);
+
+        const VtValue scale = network->GetNodeParameterValue(node, scaleName);
+        if (scale.IsHolding<GfVec2f>()) {
+            const GfVec2f& value = scale.UncheckedGet<GfVec2f>();
+            network->SetNodeParameterValue(node, scaleName, VtValue(GfVec3f(value[0], value[1], 1.f)));
+        }
+        const VtValue rotation = network->GetNodeParameterValue(node, rotationName);
+        if (rotation.IsHolding<float>()) {
+            network->SetNodeParameterValue(node, rotationName, VtValue(GfVec3f(0.f, 0.f, float(GfDegreesToRadians(rotation.UncheckedGet<float>())))));
+        }
+        const VtValue translation = network->GetNodeParameterValue(node, translationName);
+        if (translation.IsHolding<GfVec2f>()) {
+            const GfVec2f& value = translation.UncheckedGet<GfVec2f>();
+            network->SetNodeParameterValue(node, locationSocket, VtValue(GfVec3f(value[0], value[1], 0.f)));
+        }
+        network->DeleteNodeParameter(node, translationName);
+
+        const HdMaterialNetworkInterface::InputConnectionVector coordinates = network->GetNodeInputConnection(node, inName);
+        if (!coordinates.empty()) {
+            network->SetNodeInputConnection(node, vectorSocket, coordinates);
+            network->DeleteNodeInputConnection(node, inName);
+        }
+
+        for (const TfToken& downstream : nodes) {
+            for (const TfToken& input : network->GetNodeInputConnectionNames(downstream)) {
+                HdMaterialNetworkInterface::InputConnectionVector connections = network->GetNodeInputConnection(downstream, input);
+                bool renamed = false;
+                for (HdMaterialNetworkInterface::InputConnection& connection : connections) {
+                    if ((connection.upstreamNodeName == node) && (connection.upstreamOutputName == resultName)) {
+                        connection.upstreamOutputName = vectorSocket;
+                        renamed = true;
+                    }
+                }
+                if (renamed) {
+                    network->SetNodeInputConnection(downstream, input, connections);
+                }
+            }
+        }
+    }
+} // transformsToMappingNodes
+
+typedef std::function<void(HdMaterialNetworkInterface*)> MaterialFilter;
+
 class LiveTextureMaterialSceneIndex;
 typedef TfRefPtr<LiveTextureMaterialSceneIndex> LiveTextureMaterialSceneIndexRefPtr;
 
 class LiveTextureMaterialSceneIndex
     : public HdMaterialFilteringSceneIndexBase {
 public:
-    static LiveTextureMaterialSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+    static LiveTextureMaterialSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input,
+                                                   const MaterialFilter& filter)
     {
-        return TfCreateRefPtr(new LiveTextureMaterialSceneIndex(input));
+        return TfCreateRefPtr(new LiveTextureMaterialSceneIndex(input, filter));
     }
 
 protected:
@@ -241,9 +313,10 @@ protected:
     }
 
 private:
-    explicit LiveTextureMaterialSceneIndex(const HdSceneIndexBaseRefPtr& input)
+    LiveTextureMaterialSceneIndex(const HdSceneIndexBaseRefPtr& input,
+                                  const MaterialFilter& filter)
         : HdMaterialFilteringSceneIndexBase(input)
-        , _filter(LiveTextureSceneIndex::makeMaterialFilter())
+        , _filter(filter)
     {
     }
 
@@ -251,12 +324,13 @@ private:
 };
 
 void
-registerFor(const std::string& rendererDisplayName)
+registerFor(const std::string& rendererDisplayName,
+            MaterialFilter (*makeFilter)())
 {
     HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
         rendererDisplayName,
-        [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& /*args*/) -> HdSceneIndexBaseRefPtr {
-            return LiveTextureMaterialSceneIndex::New(input);
+        [makeFilter](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& /*args*/) -> HdSceneIndexBaseRefPtr {
+            return LiveTextureMaterialSceneIndex::New(input, makeFilter());
         },
         nullptr,
         0,
@@ -271,8 +345,8 @@ registerSceneIndices()
     static std::once_flag once;
 
     std::call_once(once, []() {
-        registerFor(kRenderDelegateCyclesDisplayName);
-        registerFor("Moonray");
+        registerFor(kRenderDelegateCyclesDisplayName, makeCyclesMaterialFilter);
+        registerFor("Moonray", makeMaterialFilter);
     });
 }
 
@@ -282,6 +356,17 @@ makeMaterialFilter()
     const std::shared_ptr<TextureHolds> holds = std::make_shared<TextureHolds>();
 
     return [holds](HdMaterialNetworkInterface* network) { filterNetwork(network, *holds); };
+}
+
+std::function<void(HdMaterialNetworkInterface*)>
+makeCyclesMaterialFilter()
+{
+    const std::function<void(HdMaterialNetworkInterface*)> filter = makeMaterialFilter();
+
+    return [filter](HdMaterialNetworkInterface* network) {
+        filter(network);
+        transformsToMappingNodes(network);
+    };
 }
 } // namespace LiveTextureSceneIndex
 

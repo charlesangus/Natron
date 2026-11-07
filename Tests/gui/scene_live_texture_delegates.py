@@ -8,6 +8,9 @@ the view's context menu, see the card red at the centre of the view, set the Con
 touch nothing else. The view must show the card green, with no error, within the timeout, and its
 restart count must have moved. A renderer this build lacks is reported as SKIP.
 
+The project format is small: every image lives in /dev/shm while a delegate may read it, and the 64 MB
+of a container's default holds only one 1920x1080 image with its mips.
+
 Screenshots, one file each, with a _viewer.png crop of the scene view beside each:
 scene_live_texture_<renderer>_red.png and scene_live_texture_<renderer>_green.png.
 
@@ -38,6 +41,11 @@ try:
         require(node is not None, "create " + plugin_id, plugin_problem(plugin_id))
         node.setPosition(x, y)
         return node
+
+    app.addFormat("liveTextureCard 256x256")
+    project_format = app.getProjectParam("outputFormat")
+    format_options = list(project_format.getOptions())
+    project_format.setValue(next((i for i, o in enumerate(format_options) if "liveTextureCard" in str(o)), len(format_options) - 1))
 
     constant = make("Constant", 0, 0)
     material = make("USDMaterial", 0, 100)
@@ -196,8 +204,8 @@ try:
         restarts = prop("natronSceneRestartCount")
         color.set(0.0, 1.0, 0.0, 1.0)
         ok = yield ("until", lambda: scene_drawn() and dominated_by(1), POLL_TIMEOUT_S)
-        check(ok, "editing the Constant turns the card green in %s with no viewport input (%r, error %r)"
-              % (label, centre_colour(), prop("natronSceneError")))
+        check(ok, "editing the Constant turns the card green in %s with no viewport input (%r, error %r, material %r)"
+              % (label, centre_colour(), prop("natronSceneError"), material.getPersistentMessage()))
         check(prop("natronSceneRestartCount") > restarts,
               "the edit restarted %s's refinement (%r, was %r)" % (label, prop("natronSceneRestartCount"), restarts))
         yield ("sleep", SETTLE_MS)

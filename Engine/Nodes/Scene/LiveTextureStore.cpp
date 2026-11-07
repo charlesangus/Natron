@@ -632,6 +632,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
 {
     LiveTextureBufferConstPtr source;
     LiveTextureBufferConstPtr replaced;
+    bool warned = false;
     {
         std::unique_lock<std::mutex> lock(_mutex);
         _rendered.wait(lock, [&]() { return (_rendering.find(uri) == _rendering.end()) && (_exporting.find(uri) == _exporting.end()); });
@@ -658,9 +659,8 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
 
             return LiveTextureBufferConstPtr();
         }
-        if (_failures.find(uri) != _failures.end()) {
-            return LiveTextureBufferConstPtr();
-        }
+        // Tried again every time: another texture letting go of its file can make room for this one.
+        warned = _failures.find(uri) != _failures.end();
         _exporting.insert(uri);
         source = found->second.buffer;
     }
@@ -697,6 +697,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
                 it = it->second.expired() ? _exported.erase(it) : std::next(it);
             }
             _exported[uri] = result;
+            _failures.erase(uri);
             if (found != _entries.end()) {
                 replaced = found->second.buffer;
                 _byteSize += result->getByteSize() - replaced->getByteSize();
@@ -706,7 +707,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
         } else {
             failure = "the image of " + nodeNameOfUri(uri) + " does not fit in shared memory (" + what + ": " + std::strerror(errorNumber) + ")";
             recordFailureLocked(uri, failure);
-            if (found != _entries.end()) {
+            if ((found != _entries.end()) && !warned) {
                 consumers = found->second.consumers;
             }
         }

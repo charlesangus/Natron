@@ -33,6 +33,9 @@ const char kMagic[8] = { 'N', 'T', 'L', 'I', 'V', 'E', 'T', 'X' };
 const std::size_t kHeaderSize = 16;
 const std::size_t kTexelBytes = 4 * sizeof(float);
 const char* const kFileExtension = "natron";
+// Must match the plug-in's file and symbol names. Never "natron": OIIO's EXR writer drops metadata
+// prefixed with a format's name, which would lose natron:outputHash.
+const char* const kFormatName = "natronlive";
 
 struct Level {
     int width;

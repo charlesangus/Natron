@@ -108,3 +108,5 @@ Scouted facts (2026-10-25; re-check at promotion):
 
 
 - 2026-11-07 — **RADV run on main at 42252a557 (gpu, debug, 2e07dd8bf):** 757 of 767 pass. All ten failing suites are main's. Seven are fixed by M240 - Float Trap And Denormal Audit, two more are its P3.T7 and P3.T8, and one is M310 - Device-Switch Shader Test Fix's. M240's branch, which lacks this milestone's changes, showed the same two new suites failing with the same worst differences on main a2906666a, so this milestone adds no RADV failure.
+
+- 2026-11-07 — **CI link limit, carried on this branch (gpu, f25490512):** this PR's CI was SIGKILLed (exit 137) three times at the final links, with a cold ccache. Measured peaks are Tests 6.8 GB, GuiTests 5.1, Natron 4.9 and NatronRenderer 4.1, against a cap of about 12 GB on a hosted runner, and a cold build leaves all four to overlap at the end. New `NATRON_LINK_JOBS` sets a Ninja link pool. `ci.yml` and `remote-build.yml` set it to 1; local builds are unchanged. It rides here because this PR cannot merge without it, though it is not copy-compute work.

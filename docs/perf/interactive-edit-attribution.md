@@ -1,7 +1,7 @@
 # Interactive edit attribution
 
 Why an edit at the end of a RAW chain re-runs the unchanged nodes above it. This is the attribution for
-M276 - Upstream Reuse On Edits. It is not the baseline: that comes from the user's host (M276.P2.T2).
+M276 - Upstream Reuse On Edits. The baseline is the user-host section below, recorded in `tools/bench/baselines/edit-latency.jsonl`; the software-host sections are not a baseline.
 
 ## Result
 
@@ -74,6 +74,132 @@ M300 - Unified Tiered Cache's gate requires no raw-chain execution after the fir
 would meet that gate, since each task would then hit. Its other policy, admitting above a priority floor, would
 not: a node below the floor re-runs behind a hit, and so does an evicted one. Either M300 prunes the graph behind
 a hit, or the admit-only policy cannot pass its gate. The legacy scheduler was not measured.
+
+## User-host results
+
+Recorded in `tools/bench/baselines/edit-latency.jsonl`: all 32 configurations (case, zoom, panel, `NATRON_GPU`
+off and auto, proxy), 10 edits each, 320 records, none timed out. The host has a Radeon RX 7900 XTX and ran with
+a light load (load average 1.2 to 5.7 across the run, against 5 to 22 on the software host). Compare it with
+`python3 -I tools/bench/compare.py tools/bench/baselines/edit-latency.jsonl <new>.jsonl`.
+
+### What the numbers show
+
+- **Fit is about 610 ms and 100% about 42 to 48 ms**, for Grade and HSVKeyer alike. Medians per zoom and panel
+  are 608 (fit, closed), 609 (fit, open), 44 (100%, closed) and 45 ms (100%, open); the slowest single edit is
+  629 ms at fit and 51 ms at 100%.
+- **The edited node does not matter.** Grade and HSVKeyer differ by under 7 ms in any pairing, and the edited node
+  itself takes about 1 ms.
+- **Latency at fit is the raw chain run in series.** The executed nodes' wall times sum to 608 ms (median) against
+  a latency of 608 ms. `RawDemosaic` is 384 ms, 63% of the edit; `RawHighlights` 108 ms (18%), `RawTemperature`
+  61 ms (10%), `RawPrepare` 54 ms (9%).
+- **At 100% the executed nodes sum to 34 ms of a 42 ms edit.** `RawPrepare` is the largest at 17 ms (39%), then
+  `RawDemosaic` 7 ms (16%), `RawTemperature` 6.5 ms (15%). The `Read1` cache hit costs 8 ms (19%) and is not part
+  of that sum.
+- **`NATRON_GPU=auto` does not change fit** (606 to 614 ms against 604 to 611 ms off). At 100% it adds about 5 ms
+  (46 to 48 ms against 41 to 42 ms). No task in any of the 320 records ran on a device, and none belongs to a GPU
+  region (`device` is `cpu`, `region` is -1 throughout), so auto on this host ran the same CPU chain. The
+  difference is not explained by the profile, and the GPU causes remain unmeasured.
+- **Opening the panel removes one upstream execution and saves nothing measurable.** `RawInputColor` hits with the
+  panel open, so 4 upstream executions per edit instead of 5 (40 against 50 per configuration over 10 edits).
+  Latency is unchanged: 609 against 608 ms at fit, 45 against 44 ms at 100%. `RawInputColor` costs 0.6 ms when it
+  runs, so there is nothing to save. The four raw nodes above it run behind the hit in every open edit, which is
+  the behind-a-hit cause above.
+- **Proxy on and off are the same** within 8 ms (most pairs within 3 ms), as expected with no drag.
+- **The 4-versus-5 count in panel-closed rows is a counting artefact.** In 6 of the 160 panel-closed edits the
+  profile gives `RawInputColor` 0.49 ms, under the benchmark's 0.5 ms no-work cutoff (`did_no_work`), so it is not
+  counted although its state is `bypass` and it executed. Those rows total 48 or 49 instead of 50.
+- **The recorded cache states fit the same two causes as before.** Panel closed, all five raw nodes are `bypass`
+  (800 records); panel open, `RawInputColor` is a `hit` and the four raw nodes above it are `bypass` in the same
+  frame (640 records). The classifier was not run on this data, so this is read from the cache states, not
+  classified.
+
+### Latency per configuration
+
+| case | zoom | panel | GPU | proxy | median ms | p95 ms | upstream executions (10 edits) | load average, min-max |
+|---|---|---|---|---|---|---|---|---|
+| grade | fit | closed | off | off | 608 | 615 | 49 | 2.6-4.0 |
+| grade | fit | closed | off | on | 611 | 617 | 49 | 4.2-4.9 |
+| grade | fit | closed | auto | off | 610 | 614 | 50 | 4.7-5.7 |
+| grade | fit | closed | auto | on | 607 | 615 | 48 | 4.1-4.8 |
+| grade | fit | open | off | off | 609 | 614 | 40 | 3.3-3.7 |
+| grade | fit | open | off | on | 610 | 613 | 40 | 2.6-3.0 |
+| grade | fit | open | auto | off | 609 | 622 | 40 | 3.1-3.7 |
+| grade | fit | open | auto | on | 610 | 615 | 40 | 2.8-4.0 |
+| grade | 100 | closed | off | off | 42 | 44 | 50 | 2.9-3.3 |
+| grade | 100 | closed | off | on | 42 | 44 | 50 | 2.3-2.6 |
+| grade | 100 | closed | auto | off | 47 | 50 | 50 | 2.1-2.2 |
+| grade | 100 | closed | auto | on | 47 | 51 | 50 | 1.8-2.0 |
+| grade | 100 | open | off | off | 41 | 44 | 40 | 1.5-1.6 |
+| grade | 100 | open | off | on | 42 | 45 | 40 | 1.4-1.5 |
+| grade | 100 | open | auto | off | 47 | 49 | 40 | 1.3-1.3 |
+| grade | 100 | open | auto | on | 48 | 49 | 40 | 1.2-1.3 |
+| hsv | fit | closed | off | off | 604 | 611 | 50 | 1.4-3.0 |
+| hsv | fit | closed | off | on | 607 | 618 | 49 | 2.3-2.6 |
+| hsv | fit | closed | auto | off | 607 | 618 | 50 | 2.3-2.4 |
+| hsv | fit | closed | auto | on | 611 | 629 | 49 | 2.1-2.2 |
+| hsv | fit | open | off | off | 606 | 619 | 40 | 1.9-2.2 |
+| hsv | fit | open | off | on | 607 | 627 | 40 | 1.9-3.2 |
+| hsv | fit | open | auto | off | 606 | 618 | 40 | 4.0-5.0 |
+| hsv | fit | open | auto | on | 614 | 620 | 40 | 3.6-4.2 |
+| hsv | 100 | closed | off | off | 42 | 43 | 50 | 2.9-3.2 |
+| hsv | 100 | closed | off | on | 42 | 43 | 50 | 2.2-2.6 |
+| hsv | 100 | closed | auto | off | 46 | 49 | 50 | 1.9-2.1 |
+| hsv | 100 | closed | auto | on | 48 | 49 | 50 | 1.6-1.8 |
+| hsv | 100 | open | off | off | 42 | 44 | 40 | 1.6-1.7 |
+| hsv | 100 | open | off | on | 41 | 43 | 40 | 1.6-1.7 |
+| hsv | 100 | open | auto | off | 47 | 49 | 40 | 1.4-1.5 |
+| hsv | 100 | open | auto | on | 47 | 48 | 40 | 1.5-1.6 |
+
+### Upstream nodes
+
+Over all 80 edits at each zoom and panel (both edited nodes, both GPU settings, both proxy settings). Every node ran
+on the CPU in every edit. The share is the node's median wall time over the median latency; the nodes run in series
+at fit and partly overlap at 100%.
+
+| zoom | panel | node | device | cache state | executed (of 80) | median wall ms | share of latency |
+|---|---|---|---|---|---|---|---|
+| fit | closed | Read1 | cpu | hit | 0 | 0.2 | 0% |
+| fit | closed | RawPrepare1 | cpu | bypass | 80 | 54.3 | 9% |
+| fit | closed | RawTemperature1 | cpu | bypass | 80 | 61.0 | 10% |
+| fit | closed | RawHighlights1 | cpu | bypass | 80 | 108.0 | 18% |
+| fit | closed | RawDemosaic1 | cpu | bypass | 80 | 383.6 | 63% |
+| fit | closed | RawInputColor1 | cpu | bypass | 80 | 0.6 | 0% |
+| fit | open | Read1 | cpu | hit | 0 | 0.2 | 0% |
+| fit | open | RawPrepare1 | cpu | bypass | 80 | 54.4 | 9% |
+| fit | open | RawTemperature1 | cpu | bypass | 80 | 61.1 | 10% |
+| fit | open | RawHighlights1 | cpu | bypass | 80 | 108.2 | 18% |
+| fit | open | RawDemosaic1 | cpu | bypass | 80 | 383.8 | 63% |
+| fit | open | RawInputColor1 | cpu | hit | 0 | 0.2 | 0% |
+| 100 | closed | Read1 | cpu | hit | 0 | 8.3 | 19% |
+| 100 | closed | RawPrepare1 | cpu | bypass | 80 | 17.3 | 39% |
+| 100 | closed | RawTemperature1 | cpu | bypass | 80 | 6.5 | 15% |
+| 100 | closed | RawHighlights1 | cpu | bypass | 80 | 0.8 | 2% |
+| 100 | closed | RawDemosaic1 | cpu | bypass | 80 | 7.1 | 16% |
+| 100 | closed | RawInputColor1 | cpu | bypass | 80 | 0.8 | 2% |
+| 100 | open | Read1 | cpu | hit | 0 | 8.3 | 18% |
+| 100 | open | RawPrepare1 | cpu | bypass | 80 | 17.5 | 39% |
+| 100 | open | RawTemperature1 | cpu | bypass | 80 | 6.5 | 14% |
+| 100 | open | RawHighlights1 | cpu | bypass | 80 | 0.8 | 2% |
+| 100 | open | RawDemosaic1 | cpu | bypass | 80 | 7.2 | 16% |
+| 100 | open | RawInputColor1 | cpu | hit | 0 | 0.3 | 1% |
+
+### Against the software-host conclusions
+
+- **Consistent:** the cause split (not admitted with the panel closed, behind a hit with it open), the counts of 5
+  and 4 upstream executions per edit, the fit-versus-100% gap, the independence from the edited node, and proxy on
+  and off giving the same result.
+- **Differs: absolute cost.** The software host measured seconds at fit (3.5 to 12.5 s) and called opening the panel a
+  saving of "about 15 ms or less". Here `RawInputColor` costs 0.6 ms, so the saving is under 1 ms, and fit is a
+  steady 610 ms. The software figures were load-bound, as that section says.
+- **Differs: `Read1` hits at 100%.** The report gave 23 to 103 ms medians under load and called this a large share
+  of M303 - Interactive Edit Latency's 33 ms. Here the hit costs 8 ms. It is still a fifth of a 42 ms edit, and the
+  executed nodes alone (34 ms) already exceed 33 ms.
+- **Differs: `RawDemosaic` at 100%.** The report gave 26 to 236 ms; here it is 7 ms, and `RawPrepare` (17 ms) is the
+  largest executed node.
+- **Differs: GPU.** The report expected the auto rows to show GPU placement on a real device. They do not: nothing
+  was placed, so `placement_iscached_miss` and `gpu_region_member` are still unmeasured. Why auto placed nothing is
+  not recorded in the profile.
+- **Not contradicted but still open:** a drag, eviction under pressure and the legacy scheduler.
 
 ## Software-host results
 
@@ -169,8 +295,8 @@ nothing about its refusals, and neither `natron.log` nor the profile says which 
 
 ## Not measured
 
-- **GPU on a real device.** All 16 configurations with `NATRON_GPU=auto` remain, and with them the reported "upstream
-  lights up" on the GPU path. On a GPU host's display:
+- **GPU on a real device.** The 16 `NATRON_GPU=auto` configurations ran on the user's host and placed nothing on the device
+  (see User-host results), so the GPU path is still unmeasured. On a GPU host's display:
 
   ```
   GUI_TEST_HOST_DISPLAY=:0 XAUTHORITY=$XAUTHORITY BENCH_GPUS=auto BENCH_EDITS=10 \
@@ -183,8 +309,7 @@ nothing about its refusals, and neither `natron.log` nor the profile says which 
   what auto-proxy costs. The `mip_or_draft_key` count of 0 means only that.
 - **Eviction under pressure.** The count of 0 comes from a run that stores only `Read`, the edited node's result of each
   edit and, with the panel open, `RawInputColor`. It does not show that eviction would stay away once more is admitted.
-- **The user's host and file**, and any latency fit for the gate. That is M276.P2.T2 and M303 - Interactive Edit
-  Latency.
+- **A latency fit for the gate.** That is M303 - Interactive Edit Latency.
 
 ## Fixture and harness checks
 

@@ -13,7 +13,8 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `sample_states.sh` | Counts running threads from `/proc` without stopping the process; use it for concurrency. |
 | `lib.sh` | Sourced by `run_matrix.sh` and `profile_run.sh`: cooldown, CPU frequency logging, and writing the clock into the result record. |
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
-| `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
+| `compare.py` | Compares two result files per (topology, n, resolution, named), or two edit-latency files per configuration; exits non-zero on a regression past `--threshold`. |
+| `baselines/edit-latency.jsonl` | The edit-latency baseline: all 32 configurations, 10 edits each, on the user's host. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
 | `page_fault_bench.c` | First-touch cost, huge-page coverage and THP counters of a fresh buffer allocated like `HostImageMemory`, with optional competing memcpy load. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
@@ -344,6 +345,23 @@ BENCH_CASES=grade BENCH_ZOOMS=fit BENCH_PANELS=closed BENCH_GPUS=off BENCH_AUTOP
 Under Xvfb the GPU is unused, so `NATRON_GPU=auto` only means something against a real display:
 set `GUI_TEST_HOST_DISPLAY=:0` (and `XAUTHORITY`) to run on the host's display. `BENCH_GPUS=force` also
 accepts lavapipe, a CPU Vulkan device; its region counts are usable and its timings are not.
+
+### Baseline and comparison
+
+`tools/bench/baselines/edit-latency.jsonl` is the `edit_latency.jsonl` of a full 32-configuration run with
+`BENCH_EDITS=10`, taken on a host with a Radeon RX 7900 XTX. To compare a fresh run, which needs the same
+hardware to mean anything:
+
+```
+python3 -I tools/bench/compare.py tools/bench/baselines/edit-latency.jsonl build/bench/edit-latency/edit_latency.jsonl
+```
+
+`compare.py` detects edit-latency files by their `upstream_executed` field. Per (case, zoom, panel, gpu,
+autoproxy) it prints median and p95 `latency_ms` and median `upstream_executed`, each as before->after with the
+delta, and the timed-out edits as before->after of the edits recorded. Timed-out edits are left out of the
+statistics. `--threshold` (default 1.5) flags a median, p95 or upstream ratio beyond it, and a configuration
+that has more timeouts after than before, no completed edit after, or is missing from the new file; any flag
+makes the exit status 1.
 
 ## Bezier keying cost
 

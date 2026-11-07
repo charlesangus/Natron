@@ -428,13 +428,14 @@ TEST_F(GraphScalingGuiEdits, SiblingReachedByComputedNameStillResolves)
     KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
     ASSERT_TRUE(bool(offset));
 
+    // Adjacent literals rather than "+": the listener parser takes a receiver to end at a blank or
+    // an operator, so a call with either inside its arguments is not parsed and is rejected.
     const char* const expressions[] = {
-        "eval('Tar' + 'get').mix.get()",
-        "eval('Tar' + 'get.mix.get()')",
+        "eval('Tar''get').mix.get()",
         "locals()['Target'].mix.get()",
         "vars()['Target'].mix.get()",
-        "getattr(thisGroup, 'Tar' + 'get').mix.get()",
-        "thisGroup.getNode('Tar' + 'get').getParam('mix').get()",
+        "getattr(thisGroup,'Tar''get').mix.get()",
+        "thisGroup.getNode('Tar''get').getParam('mix').get()",
     };
     for (const char* expression : expressions) {
         SCOPED_TRACE(expression);

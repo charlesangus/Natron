@@ -109,7 +109,7 @@ float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
-    // time, camera, size and headlight, and no barrier write since, reuses that render, so the
+    // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
     // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
     ScenePayload scene;
@@ -120,10 +120,15 @@ struct Request {
     // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
     // do, and a scene with none renders its lit surfaces black.
     bool headlight = false;
+    // Which prims of a purpose other than default are drawn. Default-purpose prims always are.
+    bool showRender = true;
+    bool showProxy = false;
+    bool showGuides = false;
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    // Polled on the calling thread while a render that is not Storm's runs; true stops the delegate
+    // and cancels the render. A delegate's stop waits for what cannot be interrupted to finish.
     std::function<bool()> aborted;
 };
 

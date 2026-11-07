@@ -37,8 +37,10 @@
 #include <iostream>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,8 @@ NATRON_NAMESPACE_USING
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
 const char* const kInstancerFixture = NATRON_TESTS_FIXTURES_DIR "/scene-instancer-prototypes.usda";
+const char* const kPurposeFixture = NATRON_TESTS_FIXTURES_DIR "/scene-purposes.usda";
+const char* const kNestedInstancesFixture = NATRON_TESTS_FIXTURES_DIR "/scene-nested-instances.usda";
 const int kWidth = 200;
 const int kHeight = 100;
 
@@ -192,6 +196,131 @@ referenceRequest(const PXR_NS::UsdStageRefPtr& stage,
     EXPECT_TRUE(HydraRender::cameraFrustum(stage, PXR_NS::SdfPath("/World/Cam"), request.time, double(kWidth) / kHeight, HydraRender::eFitModeFill, &request.frustum, &error)) << error;
 
     return request;
+}
+} // anonymous namespace
+
+namespace {
+// Storm resolves several samples per pixel where a ray takes one, so only pixels where the surface
+// is close to flat can be held to one depth: a limit of 2e-4 of the depth on the second difference
+// bounds what the resolve can add to well under the comparison's 1e-4.
+const double kFlatSurfaceLimit = 2e-4;
+const double kInteriorDepthTolerance = 1e-4;
+
+bool
+sameBits(float a,
+         float b)
+{
+    return std::memcmp(&a, &b, sizeof(float)) == 0;
+}
+
+bool
+isInteriorPixel(const std::vector<float>& depth,
+                const std::vector<float>& primId,
+                const std::vector<float>& otherPrimId,
+                int width,
+                int x,
+                int y)
+{
+    const std::size_t centre = (std::size_t)y * width + x;
+
+    if (!std::isfinite(depth[centre])) {
+        return false;
+    }
+    const std::size_t steps[] = { 1, (std::size_t)width };
+    for (const std::size_t step : steps) {
+        for (const std::size_t neighbour : { centre - step, centre + step }) {
+            if (!sameBits(primId[neighbour], primId[centre]) || !sameBits(otherPrimId[neighbour], primId[centre]) || !std::isfinite(depth[neighbour])) {
+                return false;
+            }
+        }
+        const double secondDifference = (double)depth[centre - step] + depth[centre + step] - 2. * depth[centre];
+        if (std::fabs(secondDifference) > kFlatSurfaceLimit * depth[centre]) {
+            return false;
+        }
+    }
+
+    return sameBits(otherPrimId[centre], primId[centre]);
+}
+
+// Holds a render's depth and primId to Storm's on the interior pixels, and returns how many there were.
+std::size_t
+expectInteriorMatchesStorm(const std::vector<float>& stormDepth,
+                           const std::vector<float>& stormPrimId,
+                           const std::vector<float>& depth,
+                           const std::vector<float>& primId,
+                           int width,
+                           int height)
+{
+    std::size_t compared = 0;
+    std::size_t depthFailures = 0;
+    double worst = 0.;
+
+    for (int y = 1; y < height - 1; ++y) {
+        for (int x = 1; x < width - 1; ++x) {
+            if (!isInteriorPixel(stormDepth, stormPrimId, primId, width, x, y)) {
+                continue;
+            }
+            ++compared;
+
+            const std::size_t i = (std::size_t)y * width + x;
+            const double relative = std::fabs((double)depth[i] - stormDepth[i]) / std::max(std::fabs((double)depth[i]), std::fabs((double)stormDepth[i]));
+
+            worst = std::max(worst, relative);
+            if (relative > kInteriorDepthTolerance) {
+                ++depthFailures;
+            }
+        }
+    }
+    EXPECT_EQ(0u, depthFailures) << "worst relative depth difference " << worst;
+    std::cout << "[ depth  ] " << compared << " interior pixels, worst relative difference from Storm " << worst << std::endl;
+
+    return compared;
+}
+
+std::set<std::string>
+primsIn(const std::vector<float>& primId,
+        const std::vector<std::string>& candidates)
+{
+    std::set<std::string> shown;
+
+    for (const std::string& path : candidates) {
+        const float value = HydraRender::hashToFloat(HydraRender::primPathHash(path));
+        for (const float pixel : primId) {
+            if (sameBits(pixel, value)) {
+                shown.insert(path);
+                break;
+            }
+        }
+    }
+
+    return shown;
+}
+
+// Each instance of the nested fixture has its own side of the frame, so a flattened list in the wrong
+// order names a wrong instance's path at these pixels.
+void
+expectNestedInstancesInPlace(const HydraRender::Result& result)
+{
+    const std::vector<std::string> paths = { "/World/Zed/Upper/Geo", "/World/Zed/Lower/Geo", "/World/Alpha/Upper/Geo", "/World/Alpha/Lower/Geo" };
+
+    for (const std::string& path : paths) {
+        EXPECT_EQ(1u, result.primPaths.count(HydraRender::primPathHash(path))) << path;
+    }
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const float value = result.primId[(std::size_t)y * kWidth + x];
+            if (sameBits(value, 0.f)) {
+                continue;
+            }
+            std::uint32_t hash = 0;
+            std::memcpy(&hash, &value, sizeof(hash));
+            const std::map<std::uint32_t, std::string>::const_iterator found = result.primPaths.find(hash);
+            ASSERT_TRUE(found != result.primPaths.end()) << "pixel " << x << ", " << y;
+            const std::string& path = found->second;
+            ASSERT_EQ(x < kWidth / 2, path.rfind("/World/Zed/", 0) == 0) << path << " at " << x << ", " << y;
+            ASSERT_EQ(y >= kHeight / 2, path.find("/Upper/") != std::string::npos) << path << " at " << x << ", " << y;
+        }
+    }
 }
 } // anonymous namespace
 
@@ -735,6 +864,217 @@ TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
     EXPECT_NE(stormHash, stubHash);
     ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
     EXPECT_EQ(stormHash, node->getHashValue());
+}
+
+TEST_F(USDRenderRendererTest, NatronUtilityMatchesStormOnInteriorPixels)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    const RectI window(0, 0, kWidth, kHeight);
+    std::vector<RenderedPlane> storm;
+    std::vector<RenderedPlane> utility;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, allPlanes(), &storm, &error)) << error;
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, allPlanes(), &utility, &error)) << error;
+    ASSERT_EQ(3u, storm.size());
+    ASSERT_EQ(3u, utility.size());
+
+    const std::size_t pixels = (std::size_t)kWidth * kHeight;
+    ASSERT_EQ(pixels * 4, utility[0].pixels.size());
+    ASSERT_EQ(pixels, utility[1].pixels.size());
+    ASSERT_EQ(pixels, utility[2].pixels.size());
+
+    const std::size_t compared = expectInteriorMatchesStorm(storm[1].pixels, storm[2].pixels, utility[1].pixels, utility[2].pixels, kWidth, kHeight);
+    EXPECT_GT(compared, 100u);
+
+    const float boxId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Box"));
+    const float ballId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Ball"));
+    std::size_t boxPixels = 0;
+    std::size_t ballPixels = 0;
+    for (int y = 1; y < kHeight - 1; ++y) {
+        for (int x = 1; x < kWidth - 1; ++x) {
+            if (!isInteriorPixel(storm[1].pixels, storm[2].pixels, utility[2].pixels, kWidth, x, y)) {
+                continue;
+            }
+            const std::size_t i = (std::size_t)y * kWidth + x;
+            if (sameBits(utility[2].pixels[i], ballId)) {
+                ++ballPixels;
+            } else if (sameBits(utility[2].pixels[i], boxId)) {
+                ++boxPixels;
+                EXPECT_NEAR(0.8f, utility[0].pixels[i * 4], 1e-5);
+                EXPECT_NEAR(0.2f, utility[0].pixels[i * 4 + 1], 1e-5);
+                EXPECT_NEAR(0.1f, utility[0].pixels[i * 4 + 2], 1e-5);
+                EXPECT_EQ(1.f, utility[0].pixels[i * 4 + 3]);
+            }
+        }
+    }
+    EXPECT_GT(boxPixels, 100u);
+    EXPECT_GT(ballPixels, 0u);
+}
+
+TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEachRendererDraws)
+{
+    NodePtr node = createRender(kPurposeFixture);
+    ASSERT_TRUE(bool(node));
+    KnobBool* render = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamRenderPurpose).get());
+    KnobBool* proxy = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamProxyPurpose).get());
+    KnobBool* guide = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamGuidePurpose).get());
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(render && proxy && guide && renderer);
+    EXPECT_EQ(std::string("Render Purpose"), render->getLabel());
+    EXPECT_EQ(std::string("Proxy Purpose"), proxy->getLabel());
+    EXPECT_EQ(std::string("Guide Purpose"), guide->getLabel());
+    EXPECT_TRUE(render->getValue());
+    EXPECT_FALSE(proxy->getValue());
+    EXPECT_FALSE(guide->getValue());
+
+    const std::string defaultPrim = "/World/Default";
+    const std::string renderPrim = "/World/Render";
+    const std::string proxyPrim = "/World/Proxy";
+    const std::string guidePrim = "/World/Guide";
+    const std::vector<std::string> prims = { defaultPrim, renderPrim, proxyPrim, guidePrim };
+    const auto shown = [&node, &prims]() {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+
+        EXPECT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+
+        return planes.size() == 3 ? primsIn(planes[2].pixels, prims) : std::set<std::string>();
+    };
+    const auto expectToggles = [&]() {
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim }), shown());
+        const U64 defaultHash = node->getHashValue();
+        proxy->setValue(true);
+        EXPECT_NE(defaultHash, node->getHashValue());
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim, proxyPrim }), shown());
+        render->setValue(false);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, proxyPrim }), shown());
+        guide->setValue(true);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, proxyPrim, guidePrim }), shown());
+        proxy->setValue(false);
+        guide->setValue(false);
+        render->setValue(true);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim }), shown());
+    };
+
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    expectToggles();
+    if (skipWithoutGL()) {
+        return;
+    }
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
+    expectToggles();
+}
+
+TEST_F(USDRenderRendererTest, TheMetadataFollowsThePurposeKnobs)
+{
+    NodePtr node = createRender(kPurposeFixture);
+    ASSERT_TRUE(bool(node));
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    KnobBool* render = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamRenderPurpose).get());
+    KnobBool* proxy = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamProxyPurpose).get());
+    KnobBool* guide = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamGuidePurpose).get());
+    ASSERT_TRUE(effect && render && proxy && guide);
+    const auto named = [effect](const char* path) {
+        char key[32];
+        std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
+
+        return effect->getOutputMetadata(1., ViewIdx(0)).getString(key).has_value();
+    };
+
+    EXPECT_TRUE(named("/World/Default"));
+    EXPECT_TRUE(named("/World/Render"));
+    EXPECT_FALSE(named("/World/Proxy"));
+    EXPECT_FALSE(named("/World/Guide"));
+    render->setValue(false);
+    proxy->setValue(true);
+    guide->setValue(true);
+    EXPECT_TRUE(named("/World/Default"));
+    EXPECT_FALSE(named("/World/Render"));
+    EXPECT_TRUE(named("/World/Proxy"));
+    EXPECT_TRUE(named("/World/Guide"));
+}
+
+// Each level of a nested instancer multiplies the flattened instance list, and the decoded path names
+// the instance only if its index counts through the levels in the order Storm's does.
+TEST(USDRenderRenderers, NatronUtilityDecodesNestedInstancesToTheirOwnPaths)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    HydraRender::Result utility;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
+    expectNestedInstancesInPlace(utility);
+    HydraRender::releaseAll();
+}
+
+TEST(USDRenderRenderers, NatronUtilityPicksNestedInstancesAsStormDoes)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
+    ASSERT_TRUE(stage);
+    const int stormOwner = 0;
+    const int utilityOwner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &stormOwner);
+    HydraRender::Result storm;
+    HydraRender::Result utility;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &storm, &error)) << error;
+    expectNestedInstancesInPlace(storm);
+    request.owner = &utilityOwner;
+    request.renderer = kRenderDelegateUtilityId;
+    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
+    EXPECT_GT(expectInteriorMatchesStorm(storm.depth, storm.primId, utility.depth, utility.primId, kWidth, kHeight), 100u);
+    HydraRender::releaseAll();
+}
+
+// The abort is first polled 20 ms in, and the render is large enough to be drawing tiles by then and
+// nowhere near done. Keeping the engine is the proof the delegate stopped: one that cannot stop has
+// its engine dropped.
+TEST(USDRenderRenderers, CancellingNatronUtilityStopsItKeepsItsEngineAndTheNextRenderWorks)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    HydraRender::Result before;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &before, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    HydraRender::Request large = request;
+    large.width = 4096;
+    large.height = 4096;
+    large.aborted = []() { return true; };
+    HydraRender::Result cancelled;
+    EXPECT_FALSE(HydraRender::render(large, &cancelled, &error));
+    EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    HydraRender::Result after;
+    error.clear();
+    ASSERT_TRUE(HydraRender::render(request, &after, &error)) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    ASSERT_EQ(before.depth.size(), after.depth.size());
+    EXPECT_EQ(0, std::memcmp(before.depth.data(), after.depth.data(), before.depth.size() * sizeof(float)));
+    EXPECT_EQ(0, std::memcmp(before.primId.data(), after.primId.data(), before.primId.size() * sizeof(float)));
+    HydraRender::releaseAll();
 }
 
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool

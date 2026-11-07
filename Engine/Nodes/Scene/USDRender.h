@@ -45,6 +45,9 @@
 #define kUSDRenderParamFitMode "fitMode"
 #define kUSDRenderParamHeadlight "headlight"
 #define kUSDRenderParamRenderer "renderer"
+#define kUSDRenderParamRenderPurpose "renderPurpose"
+#define kUSDRenderParamProxyPurpose "proxyPurpose"
+#define kUSDRenderParamGuidePurpose "guidePurpose"
 
 // The frame metadata key of the prim path behind a primId.id value: this prefix followed by the
 // value's bits as eight lowercase hexadecimal digits.
@@ -69,7 +72,8 @@ public:
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
                        "frame metadata maps each hash to its path. Only the scene's lights light it, unless Headlight "
-                       "adds one at the camera.",
+                       "adds one at the camera. Render Purpose, Proxy Purpose and Guide Purpose choose which prims of "
+                       "those purposes are drawn.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -181,6 +185,9 @@ private:
     KnobChoiceWPtr _camera;
     KnobChoiceWPtr _fitMode;
     KnobBoolWPtr _headlight;
+    KnobBoolWPtr _renderPurpose;
+    KnobBoolWPtr _proxyPurpose;
+    KnobBoolWPtr _guidePurpose;
     KnobChoiceWPtr _renderer;
     KnobChoiceWPtr _format;
     KnobIntWPtr _formatSize;

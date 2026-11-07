@@ -177,6 +177,33 @@ USDRender::initializeKnobs()
     headlight->setAnimationEnabled(false);
     page->addKnob(headlight);
     _headlight = headlight;
+
+    KnobBoolPtr renderPurpose = createKnob<KnobBool>(tr("Render Purpose"));
+    renderPurpose->setName(kUSDRenderParamRenderPurpose);
+    renderPurpose->setHintToolTip(tr("Draws the prims whose USD purpose is render, the full-detail geometry meant for final "
+                                     "images. Prims of the default purpose are always drawn."));
+    renderPurpose->setDefaultValue(true);
+    renderPurpose->setAnimationEnabled(false);
+    page->addKnob(renderPurpose);
+    _renderPurpose = renderPurpose;
+
+    KnobBoolPtr proxyPurpose = createKnob<KnobBool>(tr("Proxy Purpose"));
+    proxyPurpose->setName(kUSDRenderParamProxyPurpose);
+    proxyPurpose->setHintToolTip(tr("Draws the prims whose USD purpose is proxy, the lightweight stand-ins for render "
+                                    "geometry. With Render Purpose on too, both are drawn."));
+    proxyPurpose->setDefaultValue(false);
+    proxyPurpose->setAnimationEnabled(false);
+    page->addKnob(proxyPurpose);
+    _proxyPurpose = proxyPurpose;
+
+    KnobBoolPtr guidePurpose = createKnob<KnobBool>(tr("Guide Purpose"));
+    guidePurpose->setName(kUSDRenderParamGuidePurpose);
+    guidePurpose->setHintToolTip(tr("Draws the prims whose USD purpose is guide, the helper geometry not meant to be "
+                                    "seen in images."));
+    guidePurpose->setDefaultValue(false);
+    guidePurpose->setAnimationEnabled(false);
+    page->addKnob(guidePurpose);
+    _guidePurpose = guidePurpose;
 } // USDRender::initializeKnobs
 
 void
@@ -387,15 +414,23 @@ USDRender::deriveOutputMetadata(double time,
         return metadata;
     }
     // Point instancer prototypes are commonly authored as class or over prims, which the default traversal skips but Storm draws
-    // through the instancer, so every prim is visited. The render draws the default and proxy purposes only (HydraRender leaves
-    // showGuides and showRender off), so guide- and render-purpose prims get no entry.
+    // through the instancer, so every prim is visited.
+    const auto isOn = [](const KnobBoolWPtr& weak) {
+        const KnobBoolPtr knob = weak.lock();
+
+        return knob && knob->getValue();
+    };
+    const bool showRender = isOn(_renderPurpose);
+    const bool showProxy = isOn(_proxyPurpose);
+    const bool showGuides = isOn(_guidePurpose);
     const PXR_NS::UsdPrimRange all(stage->GetPseudoRoot(), PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate));
     for (const PXR_NS::UsdPrim& prim : all) {
         if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
             continue;
         }
         const PXR_NS::TfToken purpose = PXR_NS::UsdGeomImageable(prim).ComputePurpose();
-        if ((purpose != PXR_NS::UsdGeomTokens->default_) && (purpose != PXR_NS::UsdGeomTokens->proxy)) {
+        if (((purpose == PXR_NS::UsdGeomTokens->render) && !showRender) || ((purpose == PXR_NS::UsdGeomTokens->proxy) && !showProxy)
+            || ((purpose == PXR_NS::UsdGeomTokens->guide) && !showGuides)) {
             continue;
         }
         const std::string path = prim.GetPath().GetString();
@@ -496,6 +531,12 @@ USDRender::prepareRender(double time,
     setup->request.height = setup->pixels.height();
     KnobBoolPtr headlightKnob = _headlight.lock();
     setup->request.headlight = headlightKnob && headlightKnob->getValue();
+    KnobBoolPtr renderPurposeKnob = _renderPurpose.lock();
+    KnobBoolPtr proxyPurposeKnob = _proxyPurpose.lock();
+    KnobBoolPtr guidePurposeKnob = _guidePurpose.lock();
+    setup->request.showRender = renderPurposeKnob && renderPurposeKnob->getValue();
+    setup->request.showProxy = proxyPurposeKnob && proxyPurposeKnob->getValue();
+    setup->request.showGuides = guidePurposeKnob && guidePurposeKnob->getValue();
     setup->request.renderer = rendererId();
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {

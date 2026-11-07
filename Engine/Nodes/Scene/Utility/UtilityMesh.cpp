@@ -257,6 +257,18 @@ UtilityMesh::_InitRepr(const TfToken& reprToken,
     }
 }
 
+// Hydra updates a dirty tag even for a prim it will not sync, and that is the only call a prim whose
+// purpose moved out of the tracked tags gets.
+void
+UtilityMesh::UpdateRenderTag(HdSceneDelegate* delegate,
+                             HdRenderParam* renderParam)
+{
+    HdMesh::UpdateRenderTag(delegate, renderParam);
+    if (_geometry) {
+        static_cast<UtilityRenderParam*>(renderParam)->scene()->setRenderTag(_geometry, GetRenderTag());
+    }
+}
+
 void
 UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
                   HdRenderParam* renderParam,
@@ -272,6 +284,7 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
     } else {
         _geometry = scene->addGeometry(id, GetPrimId());
     }
+    scene->setRenderTag(_geometry, GetRenderTag());
     _UpdateVisibility(sceneDelegate, dirtyBits);
     if (!IsVisible()) {
         scene->setInstances(_geometry, std::vector<GfMatrix4d>());

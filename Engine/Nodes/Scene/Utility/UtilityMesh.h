@@ -56,6 +56,8 @@ public:
                       PXR_NS::HdDirtyBits* dirtyBits,
                       const PXR_NS::TfToken& reprToken) OVERRIDE;
     virtual void Finalize(PXR_NS::HdRenderParam* renderParam) OVERRIDE;
+    virtual void UpdateRenderTag(PXR_NS::HdSceneDelegate* delegate,
+                                 PXR_NS::HdRenderParam* renderParam) OVERRIDE;
 
 protected:
     virtual PXR_NS::HdDirtyBits _PropagateDirtyBits(PXR_NS::HdDirtyBits bits) const OVERRIDE;

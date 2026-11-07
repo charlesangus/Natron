@@ -105,6 +105,75 @@ HydraGLContextFactory gFactory;
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
 
+// A cancel asked for on the waiting caller's thread while the render thread is inside
+// UsdImagingGLEngine::Render, which only the delegate's stop can cut short. The render thread takes
+// _mutex only outside Render, so a stop blocking under it on the running pass cannot deadlock.
+class RenderCancel {
+public:
+    void request()
+    {
+        _requested.store(true);
+        const std::lock_guard<std::mutex> l(_mutex);
+        stopEngine();
+    }
+
+    bool requested() const
+    {
+        return _requested.load();
+    }
+
+    bool stopped() const
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        return _stopped;
+    }
+
+    // Makes the engine stoppable for its scope, past which it may be destroyed.
+    class Attachment {
+    public:
+        Attachment(RenderCancel* cancel,
+                   UsdImagingGLEngine* engine)
+            : _cancel(cancel)
+        {
+            if (_cancel) {
+                const std::lock_guard<std::mutex> l(_cancel->_mutex);
+                _cancel->_engine = engine;
+                _cancel->stopEngine();
+            }
+        }
+
+        ~Attachment()
+        {
+            if (_cancel) {
+                const std::lock_guard<std::mutex> l(_cancel->_mutex);
+                _cancel->_engine = nullptr;
+            }
+        }
+
+        Attachment(const Attachment&) = delete;
+        Attachment& operator=(const Attachment&) = delete;
+
+    private:
+        RenderCancel* _cancel;
+    };
+
+private:
+    void stopEngine()
+    {
+        if (_requested.load() && _engine && !_stopTried) {
+            _stopTried = true;
+            _stopped = _engine->StopRenderer();
+        }
+    }
+
+    std::atomic<bool> _requested { false };
+    mutable std::mutex _mutex;
+    UsdImagingGLEngine* _engine = nullptr;
+    bool _stopTried = false;
+    bool _stopped = false;
+};
+
 struct EngineEntry {
     // The render delegate the engine was made with, and the name its errors give it.
     std::string renderer;
@@ -115,6 +184,9 @@ struct EngineEntry {
     std::unique_ptr<UsdImagingGLEngine> engine;
     // Whether the engine lights the stage with a light at the camera.
     bool headlight = false;
+    // Whether a cancel left the delegate stopped. It stays so until the next render, or its threads
+    // would resume the cancelled frame.
+    bool stopped = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -129,6 +201,9 @@ struct EngineEntry {
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    bool showRender = false;
+    bool showProxy = false;
+    bool showGuides = false;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -433,9 +508,9 @@ public:
 
     // Renders request with its owner's engine, or reuses the engine's last render of the same
     // request; null with *error set on failure. cancel, when set, stops a render of a delegate
-    // other than Storm between its passes.
+    // other than Storm.
     EngineEntry* renderEngine(const HydraRender::Request& request,
-                              const std::atomic<bool>* cancel,
+                              RenderCancel* cancel,
                               std::string* error);
 
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
@@ -727,7 +802,7 @@ readInt(const unsigned char* at)
 
 EngineEntry*
 RenderThread::renderEngine(const HydraRender::Request& request,
-                           const std::atomic<bool>* cancel,
+                           RenderCancel* cancel,
                            std::string* error)
 {
     if (_gl && !ensureContext(error)) {
@@ -770,6 +845,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (!entry.engine || (request.headlight != entry.headlight)) {
         entry.engine.reset();
         entry.rendered = false;
+        entry.stopped = false;
         UsdImagingGLEngine::Parameters parameters;
         if (_gl) {
             parameters.driver.name = HgiTokens->renderDriver;
@@ -820,7 +896,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides)) {
         return &entry;
     }
     entry.rendered = false;
@@ -845,6 +921,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // The colour AOV is read as Storm shades it, in the scene's linear space.
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
+    params.showRender = request.showRender;
+    params.showProxy = request.showProxy;
+    params.showGuides = request.showGuides;
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
             engine->Render(stage->GetPseudoRoot(), params);
@@ -858,29 +937,51 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         // syncs the stage's changes into it.
         // Without an abort callback nothing could stop a delegate that never converges.
         const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-        for (;;) {
-            engine->Render(stage->GetPseudoRoot(), params);
-            if (engine->IsConverged()) {
-                break;
-            }
-            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
-                *error = "The " + entry.rendererName + " render did not converge within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
-                entry.engine.reset();
-                entry.rendered = false;
+        if (entry.stopped) {
+            engine->RestartRenderer();
+            entry.stopped = false;
+        }
+        bool timedOut = false;
+        bool cancelled = false;
+        {
+            const RenderCancel::Attachment attachment(cancel, engine);
 
-                return nullptr;
+            for (;;) {
+                if (cancel && cancel->requested()) {
+                    cancelled = true;
+                    break;
+                }
+                engine->Render(stage->GetPseudoRoot(), params);
+                if (engine->IsConverged()) {
+                    break;
+                }
+                if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
+                    timedOut = true;
+                    break;
+                }
+                yieldToBarrier();
+                std::this_thread::sleep_for(kConvergencePoll);
             }
-            if (cancel && cancel->load()) {
-                *error = "The " + entry.rendererName + " render was cancelled.";
-                // Its threads would go on rendering the cancelled frame; the next render makes
-                // the engine again.
-                entry.engine.reset();
-                entry.rendered = false;
+        }
+        entry.stopped = cancel && cancel->stopped();
+        if (timedOut) {
+            *error = "The " + entry.rendererName + " render did not converge within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
+            entry.engine.reset();
+            entry.stopped = false;
+            entry.rendered = false;
 
-                return nullptr;
+            return nullptr;
+        }
+        if (cancelled) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            // A delegate that cannot stop would go on rendering the cancelled frame on its own
+            // threads; the next render makes the engine again.
+            if (!entry.stopped) {
+                entry.engine.reset();
             }
-            yieldToBarrier();
-            std::this_thread::sleep_for(kConvergencePoll);
+            entry.rendered = false;
+
+            return nullptr;
         }
     }
 
@@ -892,6 +993,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.showRender = request.showRender;
+    entry.showProxy = request.showProxy;
+    entry.showGuides = request.showGuides;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -1560,12 +1664,12 @@ render(const Request& request,
     }
     RenderThread& thread = *routed;
     bool ok = false;
-    std::atomic<bool> cancel(false);
+    RenderCancel cancel;
     std::function<void()> whileWaiting;
     if (request.aborted && !thread.usesGl()) {
         whileWaiting = [&request, &cancel]() {
             if (request.aborted()) {
-                cancel = true;
+                cancel.request();
             }
         };
     }
@@ -1674,12 +1778,12 @@ renderWindow(const Request& request,
     }
     RenderThread& thread = *routed;
     bool ok = false;
-    std::atomic<bool> cancel(false);
+    RenderCancel cancel;
     std::function<void()> whileWaiting;
     if (request.aborted && !thread.usesGl()) {
         whileWaiting = [&request, &cancel]() {
             if (request.aborted()) {
-                cancel = true;
+                cancel.request();
             }
         };
     }

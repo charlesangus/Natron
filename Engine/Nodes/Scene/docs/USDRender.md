@@ -1,11 +1,19 @@
 # USDRender
 
-Renders its scene input through one of the scene's cameras with Storm, USD's
-OpenGL renderer, into an image. It needs an OpenGL 4.5 compatibility context:
-in the application it shares the viewer's OpenGL, and without a window system
-(`NatronRenderer`, a server without X) it makes its own through EGL, which
-Mesa's llvmpipe software renderer provides. Where neither is available the node
-reports why instead of rendering; image-only graphs are unaffected.
+Renders its scene input through one of the scene's cameras with a Hydra render
+delegate into an image. Renderer chooses the delegate from those installed:
+
+- Storm, USD's OpenGL renderer and the default. It needs an OpenGL 4.5
+  compatibility context: in the application it shares the viewer's OpenGL, and
+  without a window system (`NatronRenderer`, a server without X) it makes its own
+  through EGL, which Mesa's llvmpipe software renderer provides. Where neither is
+  available the node reports why instead of rendering; image-only graphs are
+  unaffected.
+- Natron Utility, Natron's own renderer. It draws on the CPU with no lighting:
+  `rgba` is each prim's display colour, and `depth.Z` and `primId.id` match
+  Storm's. Cancelling stops it between tiles; a change of scene being taken in or
+  a BVH being built finishes first.
+- Any other installed delegate, which renders on the CPU on its own threads.
 
 Camera lists the cameras of the input scene by path. Until one is chosen the
 scene's first camera is used. A chosen camera that the scene no longer has is
@@ -24,11 +32,17 @@ Headlight, off by default, adds a light at the camera to the scene's own
 lights. With it off, only the scene's lights light it: a scene with no light
 renders its lit surfaces black, and only emission shows.
 
+Render Purpose (on), Proxy Purpose (off) and Guide Purpose (off) choose which
+prims of those USD purposes are drawn; prims of the default purpose always are.
+With Render Purpose and Proxy Purpose both on, both are drawn. Natron Utility
+only rebuilds its list of instances for a change here: geometry already built
+for a purpose is kept while that purpose is off.
+
 The output has three layers:
 
-- `rgba`: the colour as Storm shades it, with the scene's materials and lights,
-  in the project's working space with no colour transform. Where nothing was
-  hit it is transparent black.
+- `rgba`: the colour as the renderer shades it, under Storm with the scene's
+  materials and lights, in the project's working space with no colour transform.
+  Where nothing was hit it is transparent black.
 - `depth.Z`: the distance from the camera along its view axis, in scene units,
   so a plane facing the camera has one depth throughout. Where nothing was hit
   it is +inf.

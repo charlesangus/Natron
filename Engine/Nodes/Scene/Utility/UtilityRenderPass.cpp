@@ -181,7 +181,7 @@ UtilityRenderPass::IsConverged() const
 
 void
 UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
-                            const TfTokenVector& /*renderTags*/)
+                            const TfTokenVector& renderTags)
 {
     const UtilityRenderParam::RenderScope renderScope(*_renderParam);
     const HdRenderPassAovBindingVector& bindings = renderPassState->GetAovBindings();
@@ -193,6 +193,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
         return;
     }
+
+    _renderParam->scene()->setRenderTags(renderTags);
 
     const UtilityScene::Snapshot snapshot = _renderParam->scene()->snapshot();
     WavefrontFrame frame;

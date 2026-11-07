@@ -38,6 +38,7 @@
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/sdf/path.h>
 
@@ -117,6 +118,11 @@ public:
     // One instance per transform, replacing the geometry's previous ones.
     void setInstances(GeometryId id,
                       const std::vector<PXR_NS::GfMatrix4d>& transforms);
+    void setRenderTag(GeometryId id,
+                      const PXR_NS::TfToken& tag);
+    // The render tags whose geometries contribute instances to snapshots and stats, all of them when
+    // empty as for Hydra. An excluded geometry stays in snapshots, so showing it again builds nothing.
+    void setRenderTags(const PXR_NS::TfTokenVector& tags);
 
     // Bumps on any change to the scene.
     std::uint64_t version() const;
@@ -127,11 +133,15 @@ private:
     struct Record {
         Geometry geometry;
         std::vector<PXR_NS::GfMatrix4d> transforms;
+        PXR_NS::TfToken renderTag;
     };
+
+    bool isIncluded(const Record& record) const;
 
     mutable std::mutex _mutex;
     GeometryId _nextId = 1;
     std::map<GeometryId, Record> _records;
+    PXR_NS::TfTokenVector _renderTags;
     std::uint64_t _version = 0;
     std::size_t _topologyBuilds = 0;
     std::size_t _pointUpdates = 0;

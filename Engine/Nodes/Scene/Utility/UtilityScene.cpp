@@ -25,6 +25,8 @@
 
 #include "UtilityScene.h"
 
+#include <algorithm>
+
 #include <pxr/base/tf/diagnostic.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -150,6 +152,36 @@ UtilityScene::setInstances(GeometryId id,
     }
 }
 
+void
+UtilityScene::setRenderTag(GeometryId id,
+                           const TfToken& tag)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end()) && it->second.renderTag != tag) {
+        it->second.renderTag = tag;
+        ++_version;
+    }
+}
+
+void
+UtilityScene::setRenderTags(const TfTokenVector& tags)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    if (_renderTags != tags) {
+        _renderTags = tags;
+        ++_version;
+    }
+}
+
+bool
+UtilityScene::isIncluded(const Record& record) const
+{
+    return _renderTags.empty() || std::find(_renderTags.begin(), _renderTags.end(), record.renderTag) != _renderTags.end();
+}
+
 std::uint64_t
 UtilityScene::version() const
 {
@@ -166,7 +198,9 @@ UtilityScene::stats() const
 
     stats.geometryCount = _records.size();
     for (const auto& entry : _records) {
-        stats.instanceCount += entry.second.transforms.size();
+        if (isIncluded(entry.second)) {
+            stats.instanceCount += entry.second.transforms.size();
+        }
         stats.triangleCount += entry.second.geometry.triangles.size();
     }
     stats.topologyBuilds = _topologyBuilds;
@@ -186,6 +220,9 @@ UtilityScene::snapshot() const
     snapshot.version = _version;
     for (const auto& entry : _records) {
         snapshot.geometries.emplace_hint(snapshot.geometries.end(), entry.first, entry.second.geometry);
+        if (!isIncluded(entry.second)) {
+            continue;
+        }
         for (std::size_t i = 0; i < entry.second.transforms.size(); ++i) {
             Instance instance;
 

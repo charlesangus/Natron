@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
@@ -141,6 +142,15 @@ const char* const kGreyAsset = "#usda 1.0\n"
 const float kChannelTolerance = 0.02f;
 const double kDifferingFraction = 0.005;
 const double kMeanTolerance = 0.002;
+
+/**
+ * The projection references were recorded on llvmpipe. Storm's samplers ask for 16x anisotropy, and
+ * llvmpipe's anisotropic path blurs some fragment quads across a checker edge even on a card seen
+ * square on, which radeonsi does not, so the two legitimately disagree this much within
+ * kProjectedEdgeReach plate pixels of an edge. Beyond that they agree exactly. It stays a tolerance
+ * rather than an exclusion because a projection that has moved takes these pixels further off.
+ **/
+const float kProjectedEdgeTolerance = 0.15f;
 
 // The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
 // the first EGL use, as the render thread's context is made once.
@@ -341,7 +351,8 @@ checkAgainstReference(const RenderedPlane& rgba,
 void
 checkCropAgainstReference(const RenderedPlane& rgba,
                           const RectI& crop,
-                          const char* goldenCase)
+                          const char* goldenCase,
+                          const std::function<bool(int, int)>& nearProjectedEdge = nullptr)
 {
     const int nComps = (int)rgba.channels.size();
     const int width = crop.width();
@@ -397,12 +408,15 @@ checkCropAgainstReference(const RenderedPlane& rgba,
     double sum = 0.;
     float worst = 0.;
     for (std::size_t p = 0; p < pixels.size() / (std::size_t)nComps; ++p) {
+        const int x = crop.x1 + (int)(p % (std::size_t)width);
+        const int y = crop.y1 + (int)(p / (std::size_t)width);
+        const float tolerance = (nearProjectedEdge && nearProjectedEdge(x, y)) ? kProjectedEdgeTolerance : kChannelTolerance;
         bool differs = false;
         for (int k = 0; k < nComps; ++k) {
             const float d = std::fabs(pixels[p * nComps + k] - reference[p * nComps + k]);
             sum += d;
             worst = std::max(worst, d);
-            differs = differs || (d > kChannelTolerance);
+            differs = differs || (d > tolerance);
         }
         differing += differs ? 1 : 0;
     }
@@ -495,6 +509,7 @@ const double kProjectorZ = 5.;
 const double kPlateBox = 25.;
 const double kCardWidth = 16.;
 const double kCardHeight = 8.;
+const double kProjectedEdgeReach = 2.5;
 
 // The z = 0 point render pixel (x, y)'s centre sees, rows counted from the bottom.
 void
@@ -552,6 +567,26 @@ expectedProjection(double u,
     const long sum = (long)std::floor(bu) + (long)std::floor(bv);
 
     return (sum % 2 == 0) ? eProjectedRed : eProjectedBlue;
+}
+
+// Whether render pixel (x, y) samples the plate within kProjectedEdgeReach of a checker edge. The
+// format's edges are checker edges too, as it holds a whole number of squares each side of its
+// centre; beyond the format nothing projects, so bleed there stays under the strict tolerance.
+bool
+isNearProjectedEdge(int x,
+                    int y,
+                    double cardShift)
+{
+    double X = 0., Y = 0., u = 0., v = 0.;
+    renderPixelToPlane(x, y, &X, &Y);
+    planeToPlate(X - cardShift, Y, &u, &v);
+    if ((u < 0.) || (u > kWidth) || (v < 0.) || (v > kHeight)) {
+        return false;
+    }
+    const double bu = (u - kWidth / 2.) / kPlateBox;
+    const double bv = (v - kHeight / 2.) / kPlateBox;
+
+    return std::min(std::fabs(bu - std::round(bu)), std::fabs(bv - std::round(bv))) * kPlateBox <= kProjectedEdgeReach;
 }
 
 ProjectedColourEnum
@@ -1169,7 +1204,7 @@ protected:
             return;
         }
         ASSERT_EQ(3u, planes.size());
-        checkCropAgainstReference(planes[0], goldenCrop, goldenCase);
+        checkCropAgainstReference(planes[0], goldenCrop, goldenCase, [cardShift](int x, int y) { return isNearProjectedEdge(x, y, cardShift); });
     }
 
     // The colour plane of render at frame 1, failing on a render error or a shader Storm could not

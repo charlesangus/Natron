@@ -45,3 +45,7 @@ Likely no longer reproduces: the screenshot `.local/knob_layout.png` (2026-11-02
   - size: M
 
 **Verification gate:** the remote sweep passes with zero violations; the user has seen the USDLight shot.
+
+## Decisions
+
+- 2026-11-07 — **Cancelled (user):** the user confirmed newer builds no longer show this; 7e55a1ca1 fixed it. The sweep isn't being built.

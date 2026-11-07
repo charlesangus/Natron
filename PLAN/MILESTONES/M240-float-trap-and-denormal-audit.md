@@ -197,3 +197,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-11-07 — **Third review on PR #160 (Claude, changes since the second round only; Codex out of quota, gpu):** past the usual two-round cap because this was new task work (merge resolution, P3.T7, P3.T8), not fixes to fixes. Four low-to-medium findings, closed in 4cbdc20c1. ChromaKeyer's CPU-only zero-product branch is gone, so a product underflowing to zero gives NaN as on main and in the kernel, and can still trap in debug. inf/inf in the keyer evaluators is accepted under the trap policy, with a bake-level test added.
 
 - 2026-11-07 — **RADV gate on main at 42252a557 (gpu, debug, b418af0d3):** 762 of 763 ctest entries pass. The one failure is M310 - Device-Switch Shader Test Fix's test, which this gate does not count.
+
+- 2026-11-07 — **Final RADV gate and merge (gpu, debug):** at 3b42e052e on main f08f47616, 770 of 771 ctest entries pass; the one failure is M310 - Device-Switch Shader Test Fix's `CacheStressGpuTest`, which this gate does not count. CI green on the same head. Merged as 6873fa44a (#160).

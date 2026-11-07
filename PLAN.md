@@ -188,7 +188,7 @@ future core work has solid ground to build on.
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
 | M238 | EdgeExtend Options | blocked | M123 | bosley-native-nodes | E3 | | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | | | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
-| M240 | Float Trap And Denormal Audit | doing | - | gpu | E14 | | | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
+| M240 | Float Trap And Denormal Audit | done | - | gpu | E14 | | | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
 | M241 | Up Axis And Units Policy | done | M226 |  | E9 | | | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
 | M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | | | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | | | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |

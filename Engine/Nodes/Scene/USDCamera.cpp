@@ -386,15 +386,13 @@ USDCamera::initializeKnobs()
     file->setName(kUSDCameraParamFile);
     file->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) holding the camera."));
     file->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
-    file->setAddNewLine(false);
     page->addKnob(file);
     _file = file;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDCameraParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it brings in, so the camera follows files changed on "
-                              "disk. Each changed file is read again in place: every scene using it shows the new content. "
-                              "Renders reading scenes are stopped or waited for first."));
+    KnobButtonPtr reload = file->createReloadButton(kUSDCameraParamReload,
+                                                    tr("Reads the file again, and every file it brings in, so the camera follows files changed on "
+                                                       "disk. Each changed file is read again in place: every scene using it shows the new content. "
+                                                       "Renders reading scenes are stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 

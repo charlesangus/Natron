@@ -37,12 +37,17 @@ Controls:
   moving after it slides through the image. Geometry fixes it to the geometry as
   the node it is connected to places it: transforms after that node
   carry the image along. With Use Frame Hold on, the geometry is also taken at
-  Frame Hold, so the image sticks to the geometry's own animation too. The primitive
-  nodes (USDCard, USDCube, USDSphere, USDCylinder) and USDAssignMaterial's Material
-  input place a projection; bound any other way, a Geometry projection takes the
-  camera in the geometry's own coordinates. USDAssignMaterial places it where the
-  matched geometry is at that node. The material holds one placement, so matches
-  at different places follow the first, with a node warning.
+  Frame Hold, so the image sticks to the geometry's own animation too. Each prim
+  bound to the material has its own placement, so one projection can lie on prims
+  at different places, each showing the image where the camera sees it. The
+  primitive nodes (USDCard, USDCube, USDSphere, USDCylinder) place what they create,
+  and USDAssignMaterial places the geometry it matches, whether the projection comes
+  from its Material input or its Material Path, where that geometry is at that node.
+  Bound any other way, a Geometry projection takes the camera in the geometry's own
+  coordinates. USDAssignMaterial's binding does not reach inside native instances
+  in Storm, so they show no projection, with a warning. The instances of a point
+  instancer share their prototype's placement, also with a warning: each shows the
+  image as it falls on the prototype.
 - Project On: Both, Front (faces facing the camera) or Back. A baked export ignores
   it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the

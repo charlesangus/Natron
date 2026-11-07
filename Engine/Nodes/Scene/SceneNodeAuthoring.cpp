@@ -541,14 +541,7 @@ namespace {
                         continue;
                     }
                     graft->materialPath = prim.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
-                    const PXR_NS::UsdShadeInput space = isProjectionShader(surface) ? surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace)) : PXR_NS::UsdShadeInput();
-                    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
-                    if (space && space.Get(&spaceValue) && (spaceValue == (int)USDProject3D::eProjectionSpaceGeometry)) {
-                        graft->geometryProjectionShader = surface.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                        const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
-                        graft->projectionHeld = hold && hold.Get(&graft->projectionHoldFrame);
-                    }
+                    readGeometryProjection(prim, &graft->projection);
                     break;
                 }
                 if (!graft->materialPath.empty()) {
@@ -560,9 +553,9 @@ namespace {
         ContentHasher facts;
         appendUpstreamMetadata(graft->payload, &facts);
         facts.appendString(graft->materialPath);
-        facts.appendString(graft->geometryProjectionShader);
-        facts.appendBool(graft->projectionHeld);
-        facts.appendDouble(graft->projectionHoldFrame);
+        facts.appendString(graft->projection.framePrimvar);
+        facts.appendBool(graft->projection.held);
+        facts.appendDouble(graft->projection.holdFrame);
         graft->factsDigest = facts.finalize();
 
         return true;
@@ -694,23 +687,57 @@ isProjectionShader(const PXR_NS::UsdShadeShader& shader)
 }
 
 bool
-authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                              const SceneLayerEdit& edit,
-                              const SceneMaterialGraft& graft,
-                              bool animated,
-                              const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+readGeometryProjection(const PXR_NS::UsdPrim& material,
+                       SceneGeometryProjection* projection)
 {
-    if (graft.geometryProjectionShader.empty()) {
+    *projection = SceneGeometryProjection();
+    if (!material || !material.IsA<PXR_NS::UsdShadeMaterial>()) {
+        return false;
+    }
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(material).ComputeSurfaceSource();
+    if (!isProjectionShader(surface)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput space = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
+    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
+    if (!space || !space.Get(&spaceValue) || (spaceValue != (int)USDProject3D::eProjectionSpaceGeometry)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput frame = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    PXR_NS::UsdShadeConnectableAPI reader;
+    PXR_NS::TfToken readerOutput;
+    PXR_NS::UsdShadeAttributeType readerOutputType;
+    if (!frame || !frame.GetConnectedSource(&reader, &readerOutput, &readerOutputType)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput varname = reader.GetInput(PXR_NS::TfToken("varname"));
+    std::string framePrimvar;
+    if (!varname || !varname.Get(&framePrimvar) || framePrimvar.empty()) {
+        return false;
+    }
+    projection->framePrimvar = framePrimvar;
+    const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
+    projection->held = hold && hold.Get(&projection->holdFrame);
+
+    return true;
+}
+
+bool
+authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                      const SceneLayerEdit& edit,
+                      const SceneGeometryProjection& projection,
+                      bool animated,
+                      const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+{
+    if (projection.framePrimvar.empty()) {
         return true;
     }
-    const PXR_NS::UsdPrim shader = stage->OverridePrim(PXR_NS::SdfPath(graft.geometryProjectionShader));
-    const PXR_NS::TfToken name(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
-    const PXR_NS::UsdAttribute attribute = shader ? shader.CreateAttribute(name, PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdAttribute();
-    if (graft.projectionHeld) {
-        return attribute && attribute.Set(frameAt(graft.projectionHoldFrame));
+    const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken(projection.framePrimvar), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::UsdGeomTokens->constant);
+    if (projection.held) {
+        return primvar && primvar.Set(frameAt(projection.holdFrame));
     }
 
-    return authorValue(attribute, edit, animated, frameAt);
+    return authorValue(primvar.GetAttr(), edit, animated, frameAt);
 }
 
 bool

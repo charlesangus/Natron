@@ -42,20 +42,24 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QFileInfo>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -65,6 +69,7 @@
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -84,6 +89,18 @@ PXR_NS::SdfPath
 getNodePath(const NodePtr& node)
 {
     return PXR_NS::SdfPath("/" + node->getScriptName_mt_safe());
+}
+
+// The placement prim carries for the projection bound to it.
+PXR_NS::UsdGeomPrimvar
+getFramePrimvar(const PXR_NS::UsdPrim& prim)
+{
+    SceneGeometryProjection projection;
+    const bool isProjection = SceneNodeAuthoring::readGeometryProjection(PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial().GetPrim(), &projection);
+
+    EXPECT_TRUE(isProjection) << prim.GetPath().GetString();
+
+    return isProjection ? PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(projection.framePrimvar)) : PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute());
 }
 
 // Where the shader puts world point p in the frame: (0, 0) at its bottom left, (1, 1) at its top right.
@@ -759,8 +776,10 @@ TEST_F(USDProject3DTest, InGeometrySpaceAHeldProjectionTakesTheGeometryAtTheHold
     const PXR_NS::UsdShadeShader shader = bound.ComputeSurfaceSource();
     ASSERT_TRUE(bool(shader));
     EXPECT_EQ((int)USDProject3D::eProjectionSpaceGeometry, getInt(shader, kUSDProject3DInputProjectionSpace));
-    const PXR_NS::UsdShadeInput frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
-    ASSERT_TRUE(bool(frame));
+    EXPECT_TRUE(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)).HasConnectedSource());
+    const PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
+    ASSERT_TRUE(frame.HasValue());
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->constant, frame.GetInterpolation());
     EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
     PXR_NS::GfMatrix4d geometryFrame(0.);
     ASSERT_TRUE(frame.Get(&geometryFrame));
@@ -775,10 +794,8 @@ TEST_F(USDProject3DTest, InGeometrySpaceAHeldProjectionTakesTheGeometryAtTheHold
     ASSERT_TRUE(bool(stage));
     const PXR_NS::UsdPrim moved = stage->GetPrimAtPath(getNodePath(card));
     ASSERT_TRUE(moved.IsValid());
-    const PXR_NS::UsdShadeShader followed = PXR_NS::UsdShadeMaterialBindingAPI(moved).ComputeBoundMaterial().ComputeSurfaceSource();
-    ASSERT_TRUE(bool(followed));
-    const PXR_NS::UsdShadeInput sampled = followed.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
-    ASSERT_TRUE(bool(sampled));
+    const PXR_NS::UsdGeomPrimvar sampled = getFramePrimvar(moved);
+    ASSERT_TRUE(sampled.HasValue());
     const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
     EXPECT_EQ(frames, sampled.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(sampled.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
@@ -887,10 +904,9 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
     PXR_NS::UsdStageRefPtr stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
     PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
-    PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
-    ASSERT_TRUE(prim && shader);
-    PXR_NS::UsdShadeInput frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
-    ASSERT_TRUE(bool(frame));
+    ASSERT_TRUE(bool(prim));
+    PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
+    ASSERT_TRUE(frame.HasValue());
     EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
     PXR_NS::GfMatrix4d geometryFrame(0.);
     ASSERT_TRUE(frame.Get(&geometryFrame));
@@ -901,10 +917,9 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceItTakesThePlacementOfTheMatches)
     stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
     prim = stage->GetPrimAtPath(getNodePath(card));
-    shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
-    ASSERT_TRUE(prim && shader);
-    frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
-    ASSERT_TRUE(bool(frame));
+    ASSERT_TRUE(bool(prim));
+    frame = getFramePrimvar(prim);
+    ASSERT_TRUE(frame.HasValue());
     const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
     EXPECT_EQ(frames, frame.GetAttr().GetNumTimeSamples());
     ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
@@ -936,10 +951,10 @@ TEST_F(USDProject3DTest, AnAssignedPlacementFollowsTheHoldFrameAndTheGeometry)
 
     const auto placedAtX = [&]() {
         const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
-        const PXR_NS::UsdShadeShader shader = stage ? getShader(stage, PXR_NS::SdfPath("/materials/Project1")) : PXR_NS::UsdShadeShader();
-        const PXR_NS::UsdShadeInput frame = shader ? shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(getNodePath(card)) : PXR_NS::UsdPrim();
+        const PXR_NS::UsdGeomPrimvar frame = prim ? getFramePrimvar(prim) : PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute());
         PXR_NS::GfMatrix4d matrix(0.);
-        EXPECT_TRUE(frame && frame.Get(&matrix));
+        EXPECT_TRUE(frame.HasValue() && frame.Get(&matrix));
 
         return matrix.ExtractTranslation()[0];
     };
@@ -951,7 +966,143 @@ TEST_F(USDProject3DTest, AnAssignedPlacementFollowsTheHoldFrameAndTheGeometry)
     EXPECT_NEAR(3., placedAtX(), 1e-9);
 }
 
-TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartItFollowsTheFirstAndWarns)
+// One material, each prim at its own place: a held projection and an animated one both.
+TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartEachTakesItsOwnPlacement)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    NodePtr near = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr far = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(near && far && merge && assign);
+    KnobDouble* farTranslate = getKnob<KnobDouble>(far, kSceneParamTranslate);
+    farTranslate->setValueAtTime(1., 3., ViewSpec::all(), 0);
+    farTranslate->setValueAtTime(11., 5., ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(near, 0));
+    ASSERT_TRUE(merge->connectInput(far, 1));
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(near).GetString() + " " + getNodePath(far).GetString());
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    PXR_NS::UsdGeomPrimvar nearFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(near)));
+    PXR_NS::UsdGeomPrimvar farFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(far)));
+    ASSERT_TRUE(nearFrame.HasValue() && farFrame.HasValue());
+    // Only what moves is sampled.
+    EXPECT_EQ((std::size_t)0, nearFrame.GetAttr().GetNumTimeSamples());
+    EXPECT_GT(farFrame.GetAttr().GetNumTimeSamples(), (std::size_t)1);
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(nearFrame.Get(&matrix, PXR_NS::UsdTimeCode(11.)));
+    EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
+    ASSERT_TRUE(farFrame.Get(&matrix, PXR_NS::UsdTimeCode(11.)));
+    EXPECT_NEAR(5., matrix.ExtractTranslation()[0], 1e-9);
+
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    nearFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(near)));
+    farFrame = getFramePrimvar(stage->GetPrimAtPath(getNodePath(far)));
+    ASSERT_TRUE(nearFrame.HasValue() && farFrame.HasValue());
+    EXPECT_EQ((std::size_t)0, farFrame.GetAttr().GetNumTimeSamples());
+    ASSERT_TRUE(nearFrame.Get(&matrix));
+    EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
+    ASSERT_TRUE(farFrame.Get(&matrix));
+    EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
+}
+
+TEST_F(USDProject3DTest, TwoAssignsSharingOneProjectionEachPlaceTheirOwnMatches)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    NodePtr near = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr far = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assignNear = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    NodePtr assignFar = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(near && far && merge && assignNear && assignFar);
+    getKnob<KnobDouble>(far, kSceneParamTranslate)->setValue(3., ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(near, 0));
+    ASSERT_TRUE(merge->connectInput(far, 1));
+    getKnob<KnobString>(assignNear, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(near).GetString());
+    ASSERT_TRUE(assignNear->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assignNear->connectInput(projector, kUSDAssignMaterialInputMaterial));
+    getKnob<KnobString>(assignFar, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(far).GetString());
+    ASSERT_TRUE(assignFar->connectInput(assignNear, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assignFar->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assignFar);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))).Get(&matrix));
+    EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
+}
+
+// The projection is in the scene already: nothing but the Material Path says what is bound.
+TEST_F(USDProject3DTest, BoundByMaterialPathInGeometrySpaceItPlacesTheMatches)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    getKnob<KnobString>(projector, kSceneParamPrimPath)->setValue("/Looks/Projection");
+    NodePtr near = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr far = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(near && far && merge && assign);
+    getKnob<KnobDouble>(far, kSceneParamTranslate)->setValue(3., ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(near, 0));
+    ASSERT_TRUE(merge->connectInput(far, 1));
+    ASSERT_TRUE(merge->connectInput(projector, 2));
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(near).GetString() + " " + getNodePath(far).GetString());
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamMaterialPath)->setValue("/Looks/Projection");
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(near))).Get(&matrix));
+    EXPECT_NEAR(0., matrix.ExtractTranslation()[0], 1e-9);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
+}
+
+TEST_F(USDProject3DTest, AWorldSpaceProjectionAssignedAddsNoPlacement)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(card && assign);
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(card).GetString());
+    ASSERT_TRUE(assign->connectInput(card, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(bool(prim));
+    for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(prim).GetAuthoredPrimvars()) {
+        EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame"));
+    }
+}
+
+// A prim a later edit brings under the pattern takes its placement like any other.
+TEST_F(USDProject3DTest, APrimAddedLaterIsPlacedToo)
 {
     createRig();
     ASSERT_TRUE(bool(projector));
@@ -963,17 +1114,62 @@ TEST_F(USDProject3DTest, AssignedInGeometrySpaceToPrimsApartItFollowsTheFirstAnd
     ASSERT_TRUE(near && far && merge && assign);
     getKnob<KnobDouble>(far, kSceneParamTranslate)->setValue(3., ViewSpec::all(), 0);
     ASSERT_TRUE(merge->connectInput(near, 0));
-    ASSERT_TRUE(merge->connectInput(far, 1));
-    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(getNodePath(near).GetString() + " " + getNodePath(far).GetString());
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/*");
     ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+    ASSERT_TRUE(bool(composeNode(assign)));
+
+    ASSERT_TRUE(merge->connectInput(far, 1));
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(getNodePath(far))).Get(&matrix));
+    EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
+}
+
+// What a placement per gprim cannot serve is named on the node. A plain match beside them is still placed.
+TEST_F(USDProject3DTest, AssignedToInstancesItWarnsWhatItCannotPlace)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/instances.usda");
+    {
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("#usda 1.0\n"
+                   "class Xform \"Proto\" {\n"
+                   "    def Mesh \"Box\" {}\n"
+                   "}\n"
+                   "def Xform \"World\" {\n"
+                   "    def Xform \"Left\" (instanceable = true references = </Proto>) {}\n"
+                   "    def Mesh \"Plain\" {\n"
+                   "        double3 xformOp:translate = (3, 0, 0)\n"
+                   "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                   "    }\n"
+                   "    def PointInstancer \"Scatter\" {\n"
+                   "        def Mesh \"Shape\" {}\n"
+                   "    }\n"
+                   "}\n");
+    }
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(reader && assign);
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(path.toStdString());
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/World");
+    ASSERT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
     ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
 
     const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(getMessage(assign).contains(QString::fromStdString(getNodePath(far).GetString()))) << getMessage(assign).toStdString();
-    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/materials/Project1"));
-    ASSERT_TRUE(bool(shader));
-    PXR_NS::GfMatrix4d geometryFrame(0.);
-    ASSERT_TRUE(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame)).Get(&geometryFrame));
-    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(getNodePath(near))).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)), geometryFrame, 1e-9));
+    const QString message = getMessage(assign);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Left/Box"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Scatter/Shape"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Plain"))) << message.toStdString();
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Plain"))).Get(&matrix));
+    EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
+    EXPECT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Scatter/Shape"))).HasValue());
 }

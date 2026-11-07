@@ -26,6 +26,7 @@
 #include "USDProject3D.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -56,6 +57,28 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // The layer of the Image input the live texture reads.
 const char* const kLiveTextureLayer = "rgba";
+
+// A name of its own per hold frame: two projections held at different frames can both reach one
+// prim, through its purposes or an assign over another, and each needs the prim where it held it.
+std::string
+framePrimvarName(bool held,
+                 double holdFrame)
+{
+    std::string name("natronProjectionFrame");
+    if (!held) {
+        return name;
+    }
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.17g", holdFrame);
+    name += "Hold";
+    for (const char* c = buffer; *c; ++c) {
+        name += (*c == '.') ? '_' : (*c == '-') ? 'm'
+            : (*c == '+')                       ? 'p'
+                                                : *c;
+    }
+
+    return name;
+}
 } // anonymous namespace
 
 // The camera as the shader reads it, once, or at every frame of the project range.
@@ -595,6 +618,18 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
             const PXR_NS::UsdAttribute hold = shader.GetPrim().CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold), PXR_NS::SdfValueTypeNames->Double, true);
             ok = hold && hold.Set(frameHold);
+        }
+        if (ok && (space == (int)eProjectionSpaceGeometry)) {
+            PXR_NS::UsdShadeShader frameReader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)));
+            const PXR_NS::UsdShadeInput frameName = frameReader ? frameReader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String) : PXR_NS::UsdShadeInput();
+            const PXR_NS::UsdShadeInput fallback = frameReader ? frameReader.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
+            const PXR_NS::UsdShadeOutput result = frameReader ? frameReader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeOutput();
+            ok = frameReader && frameReader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_matrix")))
+                && frameName && frameName.Set(framePrimvarName(useFrameHold, frameHold))
+                && fallback && fallback.Set(PXR_NS::GfMatrix4d(1.))
+                && result;
+            const PXR_NS::UsdShadeInput frame = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
+            ok = frame && frame.ConnectToSource(result);
         }
         const std::pair<const char*, int> ints[] = {
             { kUSDProject3DInputProjectionSpace, space },

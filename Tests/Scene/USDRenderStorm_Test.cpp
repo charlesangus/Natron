@@ -1172,11 +1172,12 @@ protected:
         checkCropAgainstReference(planes[0], goldenCrop, goldenCase);
     }
 
-    // The colour plane of render at frame 1, failing on a render error or a shader Storm could not
+    // The colour plane of render at frame, failing on a render error or a shader Storm could not
     // build.
     static void renderColour(const NodePtr& render,
                              const char* what,
-                             std::vector<float>* rgba)
+                             std::vector<float>* rgba,
+                             double frame = 1.)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
@@ -1184,7 +1185,7 @@ protected:
         std::string shaderProblems;
         {
             USDDiagnostics diagnostics;
-            rendered = renderOffMainThread(render, 1., &planes, &error);
+            rendered = renderOffMainThread(render, frame, &planes, &error);
             shaderProblems = diagnostics.shaderProblems();
         }
         EXPECT_TRUE(shaderProblems.empty()) << what << ": " << shaderProblems;
@@ -1192,6 +1193,87 @@ protected:
         ASSERT_EQ(3u, planes.size()) << what;
         ASSERT_EQ((std::size_t)kWidth * kHeight * 4, planes[0].pixels.size()) << what;
         *rgba = planes[0].pixels;
+    }
+
+    // The projection graph with two cards apart, each moving its own way by frame 11, and a held
+    // Geometry projection connected directly to both: the reference the shared material must match.
+    // *cards holds what the merge's first input needs to carry once the projection leaves their
+    // Material inputs; *rgba is the reference at frame 11, which shows the checker on both cards.
+    NodePtr createTwoPlacementGraph(NodePtr* projector,
+                                    NodePtr* cardA,
+                                    NodePtr* cardB,
+                                    NodePtr* cards,
+                                    std::vector<float>* rgba)
+    {
+        double first = 0., last = 0.;
+        getApp()->getFrameRange(&first, &last);
+        EXPECT_LE(first, 1.);
+        EXPECT_GE(last, 11.);
+        NodePtr plate;
+        NodePtr render = createProjectionGraph(&plate, projector, cardA);
+        if (!render) {
+            return render;
+        }
+        *cardB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        *cards = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        KnobChoice* space = knob<KnobChoice>(*projector, kUSDProject3DParamProjectionSpace);
+        KnobBool* useHold = knob<KnobBool>(*projector, kUSDProject3DParamUseFrameHold);
+        KnobDouble* hold = knob<KnobDouble>(*projector, kUSDProject3DParamFrameHold);
+        KnobDouble* translateA = knob<KnobDouble>(*cardA, kSceneParamTranslate);
+        KnobDouble* translateB = *cardB ? knob<KnobDouble>(*cardB, kSceneParamTranslate) : NULL;
+        if (!*cards || !space || !useHold || !hold || !translateA || !translateB
+            || !setTriple(*cardA, kSceneParamScale, 4., 4., 1.)
+            || !setString(*cardB, kSceneParamPrimPath, "/Card2")
+            || !setTriple(*cardB, kSceneParamScale, 4., 4., 1.)) {
+            ADD_FAILURE() << "could not set up the second card";
+
+            return NodePtr();
+        }
+        space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        useHold->setValue(true);
+        hold->setValue(1.);
+        translateA->setValueAtTime(1., -2.5, ViewSpec::all(), 0);
+        translateA->setValueAtTime(11., -3.5, ViewSpec::all(), 0);
+        translateB->setValueAtTime(1., 2.5, ViewSpec::all(), 0);
+        translateB->setValueAtTime(11., 4.5, ViewSpec::all(), 0);
+        connectNodes(*projector, *cardB, 0, true);
+        connectNodes(*cardB, render->getInput(0), 2, true);
+        renderColour(render, "the direct connection", rgba, 11.);
+
+        for (const std::pair<int, int>& halves : { std::make_pair(0, kWidth / 2), std::make_pair(kWidth / 2, kWidth) }) {
+            const RegionColours region = regionColours(*rgba, halves.first, 0, halves.second, kHeight);
+            EXPECT_GT(region.red, 100) << "the direct connection, pixels " << halves.first << " to " << halves.second;
+            EXPECT_GT(region.blue, 100) << "the direct connection, pixels " << halves.first << " to " << halves.second;
+        }
+
+        (*cardA)->disconnectInput(0);
+        (*cardB)->disconnectInput(0);
+        NodePtr merge = render->getInput(0);
+        merge->disconnectInput(0);
+        merge->disconnectInput(2);
+        connectNodes(*cardA, *cards, 0, true);
+        connectNodes(*cardB, *cards, 1, true);
+
+        return render;
+    } // createTwoPlacementGraph
+
+    // Renders frame 11 and compares it to the direct connection's, pixel for pixel.
+    static void expectMatchesReference(const NodePtr& render,
+                                       const std::vector<float>& reference,
+                                       const char* what)
+    {
+        std::vector<float> rgba;
+        renderColour(render, what, &rgba, 11.);
+        ASSERT_EQ(reference.size(), rgba.size()) << what;
+        std::size_t different = 0;
+        for (std::size_t i = 0; i < rgba.size(); i += 4) {
+            bool same = true;
+            for (std::size_t c = 0; c < 4; ++c) {
+                same = same && (std::fabs(rgba[i + c] - reference[i + c]) < 0.01f);
+            }
+            different += same ? 0 : 1;
+        }
+        EXPECT_EQ((std::size_t)0, different) << what;
     }
 
     /**
@@ -1892,6 +1974,66 @@ TEST_F(USDRenderStormTest, StormProject3DGeometryHeldThroughAssignMaterial)
     ASSERT_TRUE(assign != nullptr);
 
     renderProjection(render, projector, 11., shift, RectI(36, 6, 200, 94), kGoldenCaseProject3DGeometryHeld);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+// One material on two cards apart looks as the two grafted copies of a direct connection do.
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughOneAssign)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assign, render->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "one assign");
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughTwoAssigns)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr assignA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    NodePtr assignB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assignA && setString(assignA, kUSDAssignMaterialParamPrimPattern, "/Card"));
+    ASSERT_TRUE(assignB && setString(assignB, kUSDAssignMaterialParamPrimPattern, "/Card2"));
+    connectNodes(cards, assignA, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assignA, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assignA, assignB, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assignB, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assignB, render->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "two assigns");
+}
+
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsByMaterialPath)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
+    ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
+    connectNodes(projector, cards, 2, true);
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(assign, render->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "Material Path");
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
 

@@ -21,3 +21,22 @@ Findings (USD 0.26.8):
 - Time-sampled matrix, float4 and int inputs all animate (frames 1 and 2 differ as expected).
 - Entry points: surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord) and
   displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord).
+
+A frame per prim, one material (writes build/m341-spike/):
+    tools/spikes/storm-projection/run-placement.sh <name>:<mode>:<instances>[:<glslfx>] ...
+
+gen_placement.py writes cards apart and moving. Modes: "material" gives each card its own material
+(the reference), "reader" shares one material whose geometryFrame comes from a constant matrix primvar
+through UsdPrimvarReader_matrix, "metadata" names the primvar in the glslfx "primvars" metadata. Instances: 0
+none, 1 binding inside the prototype, 2 collection binding on an ancestor, 3 direct binding on the
+instance root.
+
+Findings:
+- reader renders pixel-identical to material at frames 1 and 2 outside the deliberately bare card.
+  Held and time-sampled primvars both read correctly; a card without the primvar gets the reader's
+  fallback; the glslfx code does not change. metadata was not run: it would need #ifdef HD_HAS_ in the
+  shader for the fallback that reader gets from Storm.
+- A primvar name may carry a hold frame (natronProjectionFrameHold1_5): same pixels as the plain name.
+- On a native instance root the primvar gives each instance its own placement, with instances 1 or 3.
+- With instances 2 the instances draw lit grey whatever the material: Storm does not take a collection
+  binding from an ancestor into an instance, and that is the form USDAssignMaterial authors.

@@ -38,7 +38,7 @@
                         0.0, 1.0, 0.0, 0.0,
                         0.0, 0.0, 1.0, 0.0,
                         0.0, 0.0, 0.0, 1.0],
-            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d)."
+            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d). Each prim carries its own in a constant matrix primvar, which a UsdPrimvarReader_matrix connects here; without one it is the identity."
         },
         "projectorOrigin": {
             "default": [0.0, 0.0, 0.0, 1.0],

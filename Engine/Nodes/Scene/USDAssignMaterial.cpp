@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -55,19 +56,44 @@ struct RootMatches {
     std::vector<PXR_NS::TfToken> existingBindings;
 };
 
-// What a projection in Geometry space takes from the prims it is assigned to. Matrices is empty
-// when the matches hold no geometry.
-struct ProjectionPlacement {
+struct PlacedPrim {
+    PXR_NS::SdfPath path;
     std::map<double, PXR_NS::GfMatrix4d> matrices;
     bool animated = false;
-    std::string followed;
-    std::string othersAt;
 };
+
+// What a projection in Geometry space takes from the prims it is assigned to.
+struct ProjectionPlacement {
+    std::vector<PlacedPrim> prims;
+    bool animated = false;
+    // Matches it cannot place one by one, comma separated.
+    std::string instanced;
+    std::string pointInstanced;
+};
+
+void
+appendPath(const PXR_NS::SdfPath& path,
+           std::string* list)
+{
+    *list += (list->empty() ? "" : ", ") + path.GetString();
+}
+
+bool
+isUnderPointInstancer(PXR_NS::UsdPrim prim)
+{
+    for (prim = prim.GetParent(); prim && !prim.IsPseudoRoot(); prim = prim.GetParent()) {
+        if (prim.IsA<PXR_NS::UsdGeomPointInstancer>()) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 ProjectionPlacement
 readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
                         const std::vector<RootMatches>& roots,
-                        const SceneMaterialGraft& projection,
+                        const SceneGeometryProjection& projection,
                         const ScenePayload& scene,
                         const SceneLayerEdit& range,
                         double framesPerSecond)
@@ -77,44 +103,47 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
     PXR_NS::SdfPathSet seen;
     for (const RootMatches& matches : roots) {
         for (const PXR_NS::SdfPath& path : matches.paths) {
-            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path))) {
-                if (prim.IsA<PXR_NS::UsdGeomGprim>() && seen.insert(prim.GetPath()).second) {
-                    gprims.push_back(prim);
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path), PXR_NS::UsdTraverseInstanceProxies())) {
+                if (!prim.IsA<PXR_NS::UsdGeomGprim>() || !seen.insert(prim.GetPath()).second) {
+                    continue;
+                }
+                if (prim.IsInstanceProxy()) {
+                    appendPath(prim.GetPath(), &placement.instanced);
+                    continue;
+                }
+                if (isUnderPointInstancer(prim)) {
+                    appendPath(prim.GetPath(), &placement.pointInstanced);
+                }
+                gprims.push_back(prim);
+            }
+        }
+    }
+
+    const auto cacheAt = [&scene, framesPerSecond](double frame) {
+        return PXR_NS::UsdGeomXformCache(PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(scene, frame, framesPerSecond)));
+    };
+    const double fixedFrame = projection.held ? projection.holdFrame : range.firstFrame;
+    PXR_NS::UsdGeomXformCache fixedCache = cacheAt(fixedFrame);
+    for (const PXR_NS::UsdPrim& prim : gprims) {
+        PlacedPrim placed;
+        placed.path = prim.GetPath();
+        placed.animated = !projection.held && SceneProjectionCameras::transformMightVary(prim);
+        if (placed.animated) {
+            placement.animated = true;
+        } else {
+            placed.matrices[fixedFrame] = fixedCache.GetLocalToWorldTransform(prim);
+        }
+        placement.prims.push_back(placed);
+    }
+    if (placement.animated) {
+        for (double frame : SceneNodeAuthoring::getSampleFrames(range)) {
+            PXR_NS::UsdGeomXformCache cache = cacheAt(frame);
+            for (std::size_t i = 0; i < gprims.size(); ++i) {
+                if (placement.prims[i].animated) {
+                    placement.prims[i].matrices[frame] = cache.GetLocalToWorldTransform(gprims[i]);
                 }
             }
         }
-    }
-    if (gprims.empty()) {
-        return placement;
-    }
-    placement.followed = gprims.front().GetPath().GetString();
-
-    std::vector<double> frames;
-    if (projection.projectionHeld) {
-        frames.push_back(projection.projectionHoldFrame);
-    } else {
-        for (const PXR_NS::UsdPrim& prim : gprims) {
-            placement.animated = placement.animated || SceneProjectionCameras::transformMightVary(prim);
-        }
-        if (placement.animated) {
-            frames = SceneNodeAuthoring::getSampleFrames(range);
-        } else {
-            frames.push_back(range.firstFrame);
-        }
-    }
-    PXR_NS::SdfPathSet elsewhere;
-    for (double frame : frames) {
-        PXR_NS::UsdGeomXformCache cache(PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(scene, frame, framesPerSecond)));
-        const PXR_NS::GfMatrix4d matrix = cache.GetLocalToWorldTransform(gprims.front());
-        placement.matrices[frame] = matrix;
-        for (const PXR_NS::UsdPrim& prim : gprims) {
-            if (!PXR_NS::GfIsClose(matrix, cache.GetLocalToWorldTransform(prim), 1e-9)) {
-                elsewhere.insert(prim.GetPath());
-            }
-        }
-    }
-    for (const PXR_NS::SdfPath& path : elsewhere) {
-        placement.othersAt += (placement.othersAt.empty() ? "" : ", ") + path.GetString();
     }
 
     return placement;
@@ -158,7 +187,7 @@ struct USDAssignMaterial::PlacementMemo {
     std::mutex lock;
     bool valid = false;
     U64 key = 0;
-    ProjectionPlacement placement;
+    std::shared_ptr<const ProjectionPlacement> placement;
 };
 
 USDAssignMaterial::USDAssignMaterial(NodePtr node)
@@ -287,8 +316,8 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
     ScenePayload base = upstream;
     std::string materialPath;
-    SceneMaterialGraft projection;
-    ProjectionPlacement placement;
+    SceneGeometryProjection projection;
+    std::shared_ptr<const ProjectionPlacement> placement = std::make_shared<ProjectionPlacement>();
     if (materialConnected) {
         SceneMaterialGraft graft;
         if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
@@ -306,9 +335,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             base = SceneOps::appendEntry(base, entry);
         }
         materialPath = graft.materialPath;
-        projection.geometryProjectionShader = graft.geometryProjectionShader;
-        projection.projectionHeld = graft.projectionHeld;
-        projection.projectionHoldFrame = graft.projectionHoldFrame;
+        projection = graft.projection;
         if (!graft.unmappedLinks.empty()) {
             QString warning = tr("These relationship targets and connections of the material lie under no root prim of the "
                                  "Material input, so the grafted properties are authored without them:");
@@ -387,17 +414,18 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             if (!materialPrim || !materialPrim.IsA<PXR_NS::UsdShadeMaterial>()) {
                 warnings += tr("%1 is not a material in the input scene; the binding is authored anyway.").arg(QString::fromStdString(materialPath));
             }
+            SceneNodeAuthoring::readGeometryProjection(materialPrim, &projection);
         }
-        if (!roots.empty() && !projection.geometryProjectionShader.empty()) {
+        if (!roots.empty() && !projection.framePrimvar.empty()) {
             SceneLayerEdit range;
             app->getProject()->getFrameRange(&range.firstFrame, &range.lastFrame);
             const double framesPerSecond = app->getProject()->getProjectFrameRate();
             ContentHasher keyHasher;
             keyHasher.appendU64(upstream.getStackHash());
             SceneNodeAuthoring::appendUpstreamMetadata(upstream, &keyHasher);
-            keyHasher.appendString(projection.geometryProjectionShader);
-            keyHasher.appendBool(projection.projectionHeld);
-            keyHasher.appendDouble(projection.projectionHoldFrame);
+            keyHasher.appendString(projection.framePrimvar);
+            keyHasher.appendBool(projection.held);
+            keyHasher.appendDouble(projection.holdFrame);
             keyHasher.appendDouble(range.firstFrame);
             keyHasher.appendDouble(range.lastFrame);
             keyHasher.appendDouble(framesPerSecond);
@@ -417,18 +445,21 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 }
             }
             if (!memoized) {
-                placement = readProjectionPlacement(stage, roots, projection, upstream, range, framesPerSecond);
+                placement = std::make_shared<const ProjectionPlacement>(readProjectionPlacement(stage, roots, projection, upstream, range, framesPerSecond));
                 std::lock_guard<std::mutex> l(_placementMemo->lock);
                 _placementMemo->valid = true;
                 _placementMemo->key = placementKey;
                 _placementMemo->placement = placement;
             }
-            if (!placement.othersAt.empty()) {
-                warnings += tr("A projection in Geometry space takes one placement per material, and the matches lie at "
-                               "several: it follows %1, so %2 shows it offset. Project them in World space, or through a "
-                               "projection of their own.")
-                                .arg(QString::fromStdString(placement.followed))
-                                .arg(QString::fromStdString(placement.othersAt));
+            if (!placement->instanced.empty()) {
+                warnings += tr("These matches lie inside native instances, which a binding from this node does not reach "
+                               "in Storm, so they show no projection: %1")
+                                .arg(QString::fromStdString(placement->instanced));
+            }
+            if (!placement->pointInstanced.empty()) {
+                warnings += tr("These matches are prototypes of a point instancer, whose instances share one placement: "
+                               "each shows the image as it falls on the prototype. %1")
+                                .arg(QString::fromStdString(placement->pointInstanced));
             }
         }
     }
@@ -478,18 +509,17 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 return false;
             }
         }
-        if (placement.matrices.empty()) {
-            return true;
-        }
-        const auto frameAt = [&placement](double frame) {
-            const std::map<double, PXR_NS::GfMatrix4d>::const_iterator found = placement.matrices.find(frame);
+        for (const PlacedPrim& placed : placement->prims) {
+            const auto frameAt = [&placed](double frame) {
+                const std::map<double, PXR_NS::GfMatrix4d>::const_iterator found = placed.matrices.find(frame);
 
-            return (found != placement.matrices.end()) ? found->second : placement.matrices.begin()->second;
-        };
-        if (!SceneNodeAuthoring::authorProjectionGeometryFrame(stage, edit, projection, placement.animated, frameAt)) {
-            *error = tr("USD could not author the projection's geometry frame.").toStdString();
+                return (found != placed.matrices.end()) ? found->second : placed.matrices.begin()->second;
+            };
+            if (!SceneNodeAuthoring::authorProjectionFrame(stage->OverridePrim(placed.path), edit, projection, placed.animated, frameAt)) {
+                *error = tr("USD could not author the projection's placement on %1.").arg(QString::fromStdString(placed.path.GetString())).toStdString();
 
-            return false;
+                return false;
+            }
         }
 
         return true;
@@ -513,20 +543,24 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             facts.appendString(name.GetString());
         }
     }
-    facts.appendU64(placement.matrices.size());
-    if (!placement.matrices.empty()) {
-        facts.appendString(projection.geometryProjectionShader);
-        facts.appendBool(projection.projectionHeld);
-        facts.appendBool(placement.animated);
-        for (const std::pair<const double, PXR_NS::GfMatrix4d>& sample : placement.matrices) {
-            facts.appendDouble(sample.first);
-            facts.appendBytes(sample.second.data(), 16 * sizeof(double));
+    facts.appendU64(placement->prims.size());
+    if (!placement->prims.empty()) {
+        facts.appendString(projection.framePrimvar);
+        facts.appendBool(projection.held);
+        facts.appendDouble(projection.holdFrame);
+        for (const PlacedPrim& placed : placement->prims) {
+            facts.appendString(placed.path.GetString());
+            facts.appendBool(placed.animated);
+            for (const std::pair<const double, PXR_NS::GfMatrix4d>& sample : placed.matrices) {
+                facts.appendDouble(sample.first);
+                facts.appendBytes(sample.second.data(), 16 * sizeof(double));
+            }
         }
     }
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
-    reads.frameRange = placement.animated;
+    reads.frameRange = placement->animated;
     if (!emitSceneLayer(base, reads, author, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 

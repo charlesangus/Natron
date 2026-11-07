@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -767,6 +768,9 @@ struct ProjectionBake {
     std::map<std::string, QStringList> ignoredControls;
     // The prim whose authoring failed, if one did.
     std::string failed;
+    // The frame primvars of the Geometry projections baked, and of those keeping their Storm shader.
+    std::set<std::string> bakedFrames;
+    std::set<std::string> keptFrames;
 };
 
 /**
@@ -827,6 +831,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const PXR_NS::SdfPath& materialPath = entry.first;
         const PXR_NS::UsdShadeShader& shader = entry.second;
         const std::vector<PXR_NS::UsdPrim>& gprims = bound[materialPath];
+        SceneGeometryProjection geometryProjection;
+        SceneNodeAuthoring::readGeometryProjection(scene->GetPrimAtPath(materialPath), &geometryProjection);
         const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
             return prim.IsInstanceProxy();
         });
@@ -835,6 +841,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         });
         const bool materialInstanced = shader.GetPrim().IsInstanceProxy();
         if (materialInstanced || gprims.empty() || (instanced != gprims.end()) || (other != gprims.end())) {
+            result->keptFrames.insert(geometryProjection.framePrimvar);
             if (materialInstanced) {
                 result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonInstanced, materialPath.GetString() });
             } else if (gprims.empty()) {
@@ -873,7 +880,6 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         }
 
         const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector));
-        const PXR_NS::UsdShadeInput geometryInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
         const PXR_NS::UsdShadeInput windowInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform));
         const PXR_NS::UsdShadeInput spaceInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
         int space = (int)USDProject3D::eProjectionSpaceWorld;
@@ -889,10 +895,14 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const auto mightVary = [](const PXR_NS::UsdShadeInput& input) {
             return input && input.GetAttr().ValueMightBeTimeVarying();
         };
-        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput) || (geometrySpace && mightVary(geometryInput));
+        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput);
         for (const PXR_NS::UsdPrim& prim : gprims) {
             const PXR_NS::UsdGeomMesh mesh(prim);
-            const bool varies = cameraVaries || meshMightVary(mesh);
+            const PXR_NS::UsdGeomPrimvar framePrimvar = geometryProjection.framePrimvar.empty()
+                ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
+                : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
+            const bool hasFrame = framePrimvar.HasValue();
+            const bool varies = cameraVaries || meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying());
             const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
             if (!over) {
                 result->failed = prim.GetPath().GetString();
@@ -925,8 +935,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 if (matrixInput) {
                     matrixInput.Get(&worldToProjector, time);
                 }
-                if (geometrySpace && geometryInput) {
-                    geometryInput.Get(&geometryFrame, time);
+                if (hasFrame) {
+                    framePrimvar.Get(&geometryFrame, time);
                 }
                 if (windowInput) {
                     windowInput.Get(&window, time);
@@ -1002,8 +1012,54 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
 
             return;
         }
+        result->bakedFrames.insert(geometryProjection.framePrimvar);
     }
 } // bakeProjections
+
+/**
+ * @brief Removes from layer what only the Storm projection reads: the frame primvars named in
+ * frames on every prim, and of the materials reading them, the reader and what the deactivated
+ * shader keeps of it.
+ **/
+void
+stripProjectionFrames(const PXR_NS::SdfLayerRefPtr& layer,
+                      const std::set<std::string>& frames)
+{
+    const std::string primvarPrefix("primvars:");
+    std::vector<PXR_NS::SdfPath> primvars;
+    std::vector<PXR_NS::SdfPath> readers;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (path.IsPrimPropertyPath()) {
+            const std::string& name = path.GetName();
+            if ((name.rfind(primvarPrefix, 0) == 0) && frames.count(name.substr(primvarPrefix.size()))) {
+                primvars.push_back(path);
+            }
+        } else if (path.IsPrimPath() && (path.GetName() == kUSDProject3DFrameReaderName)) {
+            const std::string varname = layer->GetFieldAs<std::string>(path.AppendProperty(PXR_NS::TfToken("inputs:varname")), PXR_NS::SdfFieldKeys->Default);
+            if (frames.count(varname)) {
+                readers.push_back(path);
+            }
+        }
+    });
+    const auto removeProperty = [&layer](const PXR_NS::SdfPath& path) {
+        const PXR_NS::SdfPropertySpecHandle property = layer->GetPropertyAtPath(path);
+        if (property) {
+            layer->GetPrimAtPath(path.GetPrimPath())->RemoveProperty(property);
+        }
+    };
+    for (const PXR_NS::SdfPath& path : primvars) {
+        removeProperty(path);
+    }
+    const PXR_NS::TfToken frameInput(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
+    for (const PXR_NS::SdfPath& path : readers) {
+        const PXR_NS::SdfPrimSpecHandle material = layer->GetPrimAtPath(path.GetParentPath());
+        for (const PXR_NS::SdfPrimSpecHandle& sibling : material->GetNameChildren()) {
+            removeProperty(sibling->GetPath().AppendProperty(frameInput));
+            removeProperty(sibling->GetPath().AppendProperty(PXR_NS::TfToken(kUSDProject3DAttrFrameHold)));
+        }
+        material->RemoveNameChild(layer->GetPrimAtPath(path));
+    }
+} // stripProjectionFrames
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -1381,6 +1437,21 @@ USDWrite::writeFrameRange(int firstFrame,
                 times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
             }
             bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, &projectionBake);
+            std::set<std::string> frames;
+            std::set_difference(projectionBake.bakedFrames.begin(), projectionBake.bakedFrames.end(),
+                                projectionBake.keptFrames.begin(), projectionBake.keptFrames.end(),
+                                std::inserter(frames, frames.end()));
+            frames.erase(std::string());
+            if (!frames.empty() && projectionBake.failed.empty()) {
+                for (const WrittenStack& stack : stacks) {
+                    stripProjectionFrames(stack.layout.output, frames);
+                    for (const StackItem& item : stack.layout.sublayers) {
+                        if (!item.external) {
+                            stripProjectionFrames(item.layer, frames);
+                        }
+                    }
+                }
+            }
             if (!projectionBake.failed.empty()) {
                 const std::string errors = takeUsdErrors(mark);
 

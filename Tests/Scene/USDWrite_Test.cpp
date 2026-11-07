@@ -1237,6 +1237,74 @@ TEST_F(USDWriteProjectionTest, AHeldGeometrySpaceProjectionBakesUVsThatStickToTh
     }
 }
 
+// Each mesh bakes from its own placement, as a direct connection to it does, and the export holds
+// nothing of how Storm read those placements.
+TEST_F(USDWriteProjectionTest, OneProjectionOnTwoCardsApartBakesEachFromItsOwnPlacement)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(other && merge && assign);
+    other->setScriptName("Card2");
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    KnobDouble* otherTranslate = getKnob<KnobDouble>(other, kSceneParamTranslate);
+    otherTranslate->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    otherTranslate->setValueAtTime(3., 0.25, ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(other, 1));
+
+    const auto check = [&](const NodePtr& input, const char* name, USDWrite::ExportModeEnum mode) {
+        const QString dir = tmp.path() + QLatin1Char('/') + QString::fromUtf8(name);
+        ASSERT_TRUE(QDir().mkpath(dir));
+        const QString path = dir + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(input, path, mode, 1, 3);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3)) << name;
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(bool(stage)) << name;
+        // A quarter of the frame is 0.5 world units: the second card starts that far right of the first.
+        const std::pair<const char*, float> cards[] = { std::make_pair("/Card1", 0.f), std::make_pair("/Card2", 0.25f) };
+        for (const std::pair<const char*, float>& expected : cards) {
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(expected.first));
+            ASSERT_TRUE(bool(prim)) << name << " " << expected.first;
+            const PXR_NS::UsdGeomPrimvar st = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st"));
+            ASSERT_TRUE(bool(st)) << name << " " << expected.first;
+            for (const double time : { 1., 3. }) {
+                const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(time));
+                EXPECT_NEAR(expected.second, bounds.first[0], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(expected.second + 1.f, bounds.second[0], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << name << " " << expected.first << " at " << time;
+            }
+        }
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "natronProjectionFrame", kUSDProject3DFrameReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DAttrFrameHold }) {
+                EXPECT_FALSE(file.second.contains(needle)) << name << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+    };
+
+    ASSERT_TRUE(other->connectInput(projector, 0));
+    check(merge, "direct", USDWrite::eExportModeFlattened);
+
+    card->disconnectInput(0);
+    other->disconnectInput(0);
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/Card1 /Card2");
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+    check(assign, "flattened", USDWrite::eExportModeFlattened);
+    check(assign, "layered", USDWrite::eExportModeLayered);
+}
+
 // The camera's frame is the plate's format: with overscan, the baked UVs reach only the format's part
 // of the exported texture, and as UVs cannot crop, the export warns that the overscan shows.
 TEST_F(USDWriteProjectionTest, AnOverscanPlateBakesUVsSpanningItsFormat)

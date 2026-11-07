@@ -42,6 +42,19 @@ NATRON_NAMESPACE_ENTER
 class ContentHasher;
 
 /**
+ * @brief What a USDProject3D projection in Geometry space asks of the prims bound to it:
+ * see SceneNodeAuthoring::readGeometryProjection().
+ **/
+struct SceneGeometryProjection {
+    // The constant matrix primvar its shader reads each prim's placement from. Empty when the
+    // material is not such a projection.
+    std::string framePrimvar;
+    // Whether it holds its camera, and at which project frame.
+    bool held = false;
+    double holdFrame = 0.;
+};
+
+/**
  * @brief What a geometry node's Material input adds to its scene: see
  * SceneNodeAuthoring::graftMaterialInput().
  **/
@@ -52,13 +65,8 @@ struct SceneMaterialGraft {
     // Where the input's first material landed, which the geometry binds itself to. Empty when the
     // input holds no material.
     std::string materialPath;
-    // When that material is a USDProject3D projection in Geometry space: the grafted path of its
-    // shader, which the geometry gives its own placement (authorProjectionGeometryFrame()). Empty
-    // otherwise.
-    std::string geometryProjectionShader;
-    // Whether that projection holds its camera, and at which project frame.
-    bool projectionHeld = false;
-    double projectionHoldFrame = 0.;
+    // That material's placement, for the geometry to author on itself (authorProjectionFrame()).
+    SceneGeometryProjection projection;
     // A hash of what the geometry's layer reads of payload: its metadata, materialPath and the
     // projection's fields. A
     // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
@@ -236,17 +244,23 @@ bool graftMaterialInput(const ScenePayload& material,
 bool isProjectionShader(const PXR_NS::UsdShadeShader& shader);
 
 /**
- * @brief For a geometry node whose Material input is a projection in Geometry space
- * (graft.geometryProjectionShader set): authors the shader's geometryFrame input on stage, the
- * geometry's local to world transform as the node places it, frameAt(frame) at a project frame:
- * once at the projection's hold frame when it holds its camera, else as a default or, when
- * animated, at every frame of getSampleFrames(). Does nothing for any other material.
+ * @brief Reads material as a USDProject3D projection in Geometry space. Returns false, leaving
+ * *projection empty, for any other material.
  **/
-bool authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                                   const SceneLayerEdit& edit,
-                                   const SceneMaterialGraft& graft,
-                                   bool animated,
-                                   const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+bool readGeometryProjection(const PXR_NS::UsdPrim& material,
+                            SceneGeometryProjection* projection);
+
+/**
+ * @brief Authors projection's frame primvar on prim, its local to world transform as the node
+ * places it, frameAt(frame) at a project frame: once at the projection's hold frame when it holds
+ * its camera, else as a default or, when animated, at every frame of getSampleFrames(). Does
+ * nothing when projection is empty.
+ **/
+bool authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                           const SceneLayerEdit& edit,
+                           const SceneGeometryProjection& projection,
+                           bool animated,
+                           const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with

@@ -26,12 +26,14 @@
 #include "OfxMetadataBridge.h"
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <ofxImageEffect.h>
+#include <ofxMetadata.h>
 // ofxhClip.h is not self-contained: ofxhImageEffect.h has to pull in the property headers first.
 // clang-format off
 #include <ofxhImageEffect.h>
@@ -50,6 +52,31 @@ NATRON_NAMESPACE_ENTER
 
 namespace OfxMetadataBridge {
 namespace {
+    // OpenFX plug-ins are compiled against ofxMetadata.h, so its ofx/ key names are string literals
+    // inside their binaries and the suite reserves that namespace for them. Those names therefore
+    // cannot change on the plug-in side, and each key is renamed as it crosses this boundary.
+    std::string
+    withPrefix(const std::string& key,
+               const char* from,
+               const char* to)
+    {
+        const std::size_t length = std::strlen(from);
+
+        return key.compare(0, length, from) == 0 ? to + key.substr(length) : key;
+    }
+
+    std::string
+    nativeKeyOf(const std::string& ofxKey)
+    {
+        return withPrefix(ofxKey, kOfxMetadataKeyPrefixStandard, kNatronMetadataKeyPrefixStandard);
+    }
+
+    std::string
+    ofxKeyOf(const std::string& nativeKey)
+    {
+        return withPrefix(nativeKey, kNatronMetadataKeyPrefixStandard, kOfxMetadataKeyPrefixStandard);
+    }
+
     template <class PropertyT, class ValueT>
     std::vector<ValueT>
     readValues(PropertyT& property)
@@ -102,6 +129,8 @@ fromOfxPropertySet(const OFX::Host::Property::Set& properties)
             continue;
         }
 
+        const std::string key = nativeKeyOf(it->first);
+
         switch (property->getType()) {
         case OFX::Host::Property::eInt: {
             OFX::Host::Property::Int* typed = dynamic_cast<OFX::Host::Property::Int*>(property);
@@ -110,9 +139,9 @@ fromOfxPropertySet(const OFX::Host::Property::Set& properties)
             }
             std::vector<int> values = readValues<OFX::Host::Property::Int, int>(*typed);
             if (values.size() == 1) {
-                metadata.setInt(it->first, values[0]);
+                metadata.setInt(key, values[0]);
             } else {
-                metadata.setIntVector(it->first, values);
+                metadata.setIntVector(key, values);
             }
             break;
         }
@@ -123,16 +152,16 @@ fromOfxPropertySet(const OFX::Host::Property::Set& properties)
             }
             std::vector<double> values = readValues<OFX::Host::Property::Double, double>(*typed);
             if (values.size() == 1) {
-                metadata.setDouble(it->first, values[0]);
+                metadata.setDouble(key, values[0]);
             } else {
-                metadata.setDoubleVector(it->first, values);
+                metadata.setDoubleVector(key, values);
             }
             break;
         }
         case OFX::Host::Property::eString: {
             OFX::Host::Property::String* typed = dynamic_cast<OFX::Host::Property::String*>(property);
             if (typed && (typed->getDimension() == 1)) {
-                metadata.setString(it->first, typed->getValue(0));
+                metadata.setString(key, typed->getValue(0));
             }
             break;
         }
@@ -155,7 +184,7 @@ toOfxPropertySet(const ImageMetadata& metadata,
     }
 
     for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
-        const std::string& key = it->first;
+        const std::string key = ofxKeyOf(it->first);
         const ImageMetadata::Value& value = it->second;
 
         if (const int* i = std::get_if<int>(&value)) {

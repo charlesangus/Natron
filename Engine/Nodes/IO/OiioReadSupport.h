@@ -296,10 +296,10 @@ bool decode(const std::string& path,
  * dropped: `Exif:` and `GPS:` attributes give `exif/`, `dpx:` `dpx/`, `cineon:` `cin/`,
  * `tiff:` `tiff/`, `openexr:` `exr/`, and `oiio:` `oiio/` (so `oiio:ColorSpace` is
  * `oiio/ColorSpace`). An attribute whose name already is a key in a metadata namespace
- * (`ofx/`, `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`) gives that key
+ * (`natron/`, `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`) gives that key
  * unchanged, in every format. An attribute with no prefix of its own gives `exr/` in an OpenEXR file and
- * `exif/` in any other, and one with any other prefix is dropped. The SMPTE timecode and keycode give the standard `ofx/timecode` and
- * `ofx/edgecode`. Integers give ints (wider ones doubles), floats and rationals doubles,
+ * `exif/` in any other, and one with any other prefix is dropped. The SMPTE timecode and keycode give the standard `natron/timecode` and
+ * `natron/edgecode`. Integers give ints (wider ones doubles), floats and rationals doubles,
  * strings strings, and arrays and aggregates vectors.
  **/
 ImageMetadata attributeMetadata(const std::string& path,

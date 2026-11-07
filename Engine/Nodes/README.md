@@ -224,7 +224,7 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
 Framework policies: `Merge` takes the metadata of its B input by default (its
 Metadata From choice picks A or B; the other input's when that one is not
 connected, and A means input A, not A2 onwards); the generators (`GeneratorNode`) output only
-`ofx/framerate` and `ofx/pixelaspect` (they have no source, and `ofx/frame` is the
+`natron/framerate` and `natron/pixelaspect` (they have no source, and `natron/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
 
@@ -237,11 +237,11 @@ expression) and `view` to 0. A missing key gives `None`. Types follow the
 stored value: int to `int`, double to `float`, string to `str`, a vector to a
 `list`; an OpenFX node's one-element vector comes back as a scalar.
 
-Keys carry the prefixes listed under "Metadata" below (`ofx/`, `exr/`,
+Keys carry the prefixes listed under "Metadata" below (`natron/`, `exr/`,
 `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`). Use
-`thisNode.metadata('ofx/frame')` or `app.Read1.metadata('exr/myString')` in an
+`thisNode.metadata('natron/frame')` or `app.Read1.metadata('exr/myString')` in an
 expression; a frame argument reads another frame, as in
-`Read1.metadata('ofx/frame', frame + 1)`.
+`Read1.metadata('natron/frame', frame + 1)`.
 
 - An expression that calls `X.metadata()` or `X.metadataKeys()` registers X as
   a dependency of its knob and is re-evaluated whenever X's hash changes, which
@@ -267,32 +267,37 @@ expression; a frame argument reads another frame, as in
 
 ## Metadata
 
-Keys are strings whose prefix names the namespace: `ofx/` (standard keys the
-engine and the OpenFX host define), `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`
+Keys are strings whose prefix names the namespace: `natron/` (standard keys the
+engine defines), `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`
 (format attributes), `oiio/` (OpenImageIO attributes) and `quicktime/`. Write
-routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
+routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`.
+`OfxMetadataBridge` renames `natron/` keys to `ofx/`, the namespace of the OpenFX
+metadata suite, as they enter an OpenFX input clip, and back as they leave an
+OpenFX output clip, so OpenFX plug-ins see only `ofx/` and the rest of the engine
+only `natron/`.
+
 
 - `exr/` goes to OpenEXR files only; `exif/` goes to every format; `tiff/`,
   `dpx/` and `cin/` go to TIFF, DPX and Cineon files respectively; `oiio/` goes
   to every format.
-- `ofx/timecode` and `ofx/edgecode` are written as `smpte:TimeCode` and
+- `natron/timecode` and `natron/edgecode` are written as `smpte:TimeCode` and
   `smpte:KeyCode`, except on PNG, which has no binary time code.
-- `ofx/creator`, `ofx/copyright` and `ofx/comment` are written as `Software`,
-  `Copyright` and `ImageDescription`, `ofx/framerate` as `FramesPerSecond`, and
-  `ofx/focallength`, `ofx/fnumber` and `ofx/exposuretime` as the EXIF
+- `natron/creator`, `natron/copyright` and `natron/comment` are written as `Software`,
+  `Copyright` and `ImageDescription`, `natron/framerate` as `FramesPerSecond`, and
+  `natron/focallength`, `natron/fnumber` and `natron/exposuretime` as the EXIF
   `FocalLength`, `FNumber` and `ExposureTime` (under `Exif:` on OpenEXR). A
   format-native key for the same tag wins, whichever spelling it is under.
 - The Write's `metadata` choice selects the mode. Default Metadata writes
-  everything above: the remaining `ofx/` keys, `quicktime/` keys and user keys
+  everything above: the remaining `natron/` keys, `quicktime/` keys and user keys
   are not written. All Metadata Except Input (the default) also writes those
-  under their full key name, along with the `ofx/` keys above, `oiio/` keys on
+  under their full key name, along with the `natron/` keys above, `oiio/` keys on
   OpenEXR and PNG (whose writers keep no `oiio:` attribute), and a time code the
   format cannot hold as one. PNG takes text only, and formats without custom
   attributes keep their standard tags. All Metadata adds the keys that describe
-  the input file: the file-identity keys `ofx/filepath`, `ofx/frame`,
-  `ofx/filesize` and `ofx/mtime`, and the source-layout keys `ofx/pixelaspect`,
-  `ofx/width`, `ofx/height`, `ofx/bitdepth`, `ofx/sampletype` and
-  `ofx/viewnames`, which can go stale after a Reformat. No Metadata writes none.
+  the input file: the file-identity keys `natron/filepath`, `natron/frame`,
+  `natron/filesize` and `natron/mtime`, and the source-layout keys `natron/pixelaspect`,
+  `natron/width`, `natron/height`, `natron/bitdepth`, `natron/sampletype` and
+  `natron/viewnames`, which can go stale after a Reformat. No Metadata writes none.
 - On OpenEXR a number is written as a float when a float holds it exactly, so a
   float read from a file stays one, and otherwise as a double; a double array
   whose length has no OpenEXR double type narrows to float, and names OIIO or

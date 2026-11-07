@@ -278,11 +278,23 @@ TEST(OiioReadSupport, DataWindowIsMirroredWithinTheDisplayWindow)
     EXPECT_EQ(10, r.y2);
 }
 
-TEST(OiioReadSupport, NamespacedAttributeNamesGiveTheirKeyVerbatim)
+TEST(OiioReadSupport, AnOfxPrefixedAttributeIsAnOrdinaryName)
 {
     OIIO::ImageSpec spec(4, 4, 1, OIIO::TypeDesc::FLOAT);
 
     spec.attribute("ofx/creator", "tool");
+
+    const ImageMetadata metadata = OiioReadSupport::attributeMetadata("a.exr", spec);
+
+    EXPECT_EQ(std::optional<std::string>("tool"), metadata.getString("exr/ofx/creator"));
+    EXPECT_FALSE(metadata.contains("natron/creator"));
+}
+
+TEST(OiioReadSupport, NamespacedAttributeNamesGiveTheirKeyVerbatim)
+{
+    OIIO::ImageSpec spec(4, 4, 1, OIIO::TypeDesc::FLOAT);
+
+    spec.attribute("natron/creator", "tool");
     spec.attribute("exif/Make", "cam");
     spec.attribute("quicktime/Reel", "r1");
     spec.attribute("shot", "sh010");
@@ -292,12 +304,12 @@ TEST(OiioReadSupport, NamespacedAttributeNamesGiveTheirKeyVerbatim)
         const bool exr = std::strcmp(path, "a.exr") == 0;
         const ImageMetadata metadata = OiioReadSupport::attributeMetadata(path, spec);
 
-        EXPECT_EQ(std::optional<std::string>("tool"), metadata.getString("ofx/creator")) << path;
+        EXPECT_EQ(std::optional<std::string>("tool"), metadata.getString("natron/creator")) << path;
         EXPECT_EQ(std::optional<std::string>("cam"), metadata.getString("exif/Make")) << path;
         EXPECT_EQ(std::optional<std::string>("r1"), metadata.getString("quicktime/Reel")) << path;
         EXPECT_EQ(std::optional<std::string>("m"), metadata.getString("exif/Model")) << path;
         EXPECT_EQ(std::optional<std::string>("sh010"), metadata.getString(exr ? "exr/shot" : "exif/shot")) << path;
-        EXPECT_FALSE(metadata.getString("exr/ofx/creator").has_value()) << path;
+        EXPECT_FALSE(metadata.getString("exr/natron/creator").has_value()) << path;
     }
 }
 

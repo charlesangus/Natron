@@ -35,8 +35,6 @@
 #include <set>
 #include <vector>
 
-#include <ofxMetadata.h>
-
 #include "Global/FloatingPointExceptions.h"
 
 #include "Engine/LayerRegistry.h"
@@ -681,7 +679,7 @@ namespace {
     };
 
     const char* const kMetadataNamespaces[] = {
-        "ofx/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/"
+        "natron/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/"
     };
 
     bool
@@ -717,10 +715,10 @@ namespace {
           bool openExr)
     {
         if (name == "smpte:TimeCode") {
-            return kOfxMetadataKeyTimecode;
+            return kNatronMetadataKeyTimecode;
         }
         if (name == "smpte:KeyCode") {
-            return kOfxMetadataKeyEdgecode;
+            return kNatronMetadataKeyEdgecode;
         }
         for (const KeyPrefix& prefix : kKeyPrefixes) {
             const std::size_t length = std::strlen(prefix.attribute);
@@ -735,7 +733,7 @@ namespace {
             return std::string();
         }
 
-        return std::string(openExr ? kOfxMetadataKeyPrefixExr : kOfxMetadataKeyPrefixExif) + name;
+        return std::string(openExr ? kNatronMetadataKeyPrefixExr : kNatronMetadataKeyPrefixExif) + name;
     }
 
     template <typename T>

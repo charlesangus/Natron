@@ -47,8 +47,6 @@
 
 #include <QDebug>
 
-#include <ofxMetadata.h>
-
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 
 NATRON_NAMESPACE_ENTER
@@ -858,10 +856,10 @@ namespace {
     // can leave them contradicting the file being written.
     bool isInputIdentityKey(const std::string& key)
     {
-        return oneOf({ kOfxMetadataKeyFilePath, kOfxMetadataKeySourceFrame, kOfxMetadataKeyFileSize,
-                       kOfxMetadataKeyMTime, kOfxMetadataKeyPixelAspect, kOfxMetadataKeyWidth,
-                       kOfxMetadataKeyHeight, kOfxMetadataKeyBitDepth, kOfxMetadataKeySampleType,
-                       kOfxMetadataKeyViewNames },
+        return oneOf({ kNatronMetadataKeyFilePath, kNatronMetadataKeySourceFrame, kNatronMetadataKeyFileSize,
+                       kNatronMetadataKeyMTime, kNatronMetadataKeyPixelAspect, kNatronMetadataKeyWidth,
+                       kNatronMetadataKeyHeight, kNatronMetadataKeyBitDepth, kNatronMetadataKeySampleType,
+                       kNatronMetadataKeyViewNames },
                      key);
     }
 
@@ -1054,9 +1052,9 @@ applyMetadata(OIIO::ImageSpec& spec,
         // layout of the file it came from.
         bool wholeKey = false;
 
-        if (key == kOfxMetadataKeyTimecode || key == kOfxMetadataKeyEdgecode) {
+        if (key == kNatronMetadataKeyTimecode || key == kNatronMetadataKeyEdgecode) {
             const std::string* text = std::get_if<std::string>(&it->second);
-            const bool isTimecode = key == kOfxMetadataKeyTimecode;
+            const bool isTimecode = key == kNatronMetadataKeyTimecode;
             // PNG stores no attribute that is not a string, so a binary time code would be lost.
             if (!png && text && (isTimecode ? setTimecode(spec, *text) : setKeycode(spec, *text))) {
                 continue;
@@ -1068,34 +1066,34 @@ applyMetadata(OIIO::ImageSpec& spec,
             }
             continue;
         }
-        if (startsWith(key, kOfxMetadataKeyPrefixExr)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExr));
+        if (startsWith(key, kNatronMetadataKeyPrefixExr)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixExr));
             writable = openExr && !describesSourceLayout(rest);
             wholeKey = !openExr && !describesSourceLayout(rest);
             keepDouble = openExr;
             name = rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixExif)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExif));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixExif)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixExif));
             writable = !describesSourceLayout(rest);
             if (startsWith(rest, "GPS:")) {
                 name = rest;
             } else {
                 name = (!openExr && isUnprefixedExifTag(rest)) ? rest : "Exif:" + rest;
             }
-        } else if (startsWith(key, kOfxMetadataKeyPrefixTiff)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixTiff));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixTiff)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixTiff));
             writable = formatName == "tiff" && !isExcludedTiffName(rest);
             wholeKey = formatName != "tiff" && !isExcludedTiffName(rest) && !describesSourceLayout(rest);
             name = "tiff:" + rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixDpx)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixDpx));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixDpx)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixDpx));
             writable = formatName == "dpx" && !isExcludedDpxName(rest);
             wholeKey = formatName != "dpx" && !isExcludedDpxName(rest) && !describesSourceLayout(rest);
             name = "dpx:" + rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixCin)) {
+        } else if (startsWith(key, kNatronMetadataKeyPrefixCin)) {
             writable = formatName == "cineon";
-            wholeKey = !writable && !describesSourceLayout(key.substr(std::strlen(kOfxMetadataKeyPrefixCin)));
-            name = "cineon:" + key.substr(std::strlen(kOfxMetadataKeyPrefixCin));
+            wholeKey = !writable && !describesSourceLayout(key.substr(std::strlen(kNatronMetadataKeyPrefixCin)));
+            name = "cineon:" + key.substr(std::strlen(kNatronMetadataKeyPrefixCin));
         } else if (startsWith(key, "oiio/")) {
             const std::string rest = key.substr(5);
             // OIIO's EXR and PNG writers treat every oiio: name as an instruction and store none
@@ -1104,7 +1102,7 @@ applyMetadata(OIIO::ImageSpec& spec,
             writable = !isExcludedOiioName(rest) && !(wholeKey && mode != WriteMetadataMode::Default);
             name = "oiio:" + rest;
         } else {
-            // Without a native attribute, the remaining ofx/ keys, quicktime/ keys and user keys
+            // Without a native attribute, the remaining natron/ keys, quicktime/ keys and user keys
             // can only go in under their own name, which is not worth a log line per frame in
             // Default mode.
             if (mode != WriteMetadataMode::Default && !describesSourceLayout(key) && !isExcludedOiioName(key)) {
@@ -1124,22 +1122,22 @@ applyMetadata(OIIO::ImageSpec& spec,
     }
     // Run after the loop so a format-native key for the same tag, which the loop has already
     // written, takes precedence.
-    struct OfxTag {
+    struct StandardTag {
         const char* key;
         const char* tag;
         // The names OIIO's EXR writer stores in the same attribute as `tag`.
         const char* exrNames[2];
     };
-    static const OfxTag ofxTags[] = {
-        { kOfxMetadataKeyCreator, "Software", {} },
-        { kOfxMetadataKeyCopyright, "Copyright", { "owner" } },
-        { kOfxMetadataKeyComment, "ImageDescription", { "comments", "description" } },
-        { kOfxMetadataKeyFrameRate, "FramesPerSecond", {} },
-        { kOfxMetadataKeyFocalLength, "FocalLength", {} },
-        { kOfxMetadataKeyFNumber, "FNumber", { "aperture" } },
-        { kOfxMetadataKeyExposureTime, "ExposureTime", { "expTime" } },
+    static const StandardTag standardTags[] = {
+        { kNatronMetadataKeyCreator, "Software", {} },
+        { kNatronMetadataKeyCopyright, "Copyright", { "owner" } },
+        { kNatronMetadataKeyComment, "ImageDescription", { "comments", "description" } },
+        { kNatronMetadataKeyFrameRate, "FramesPerSecond", {} },
+        { kNatronMetadataKeyFocalLength, "FocalLength", {} },
+        { kNatronMetadataKeyFNumber, "FNumber", { "aperture" } },
+        { kNatronMetadataKeyExposureTime, "ExposureTime", { "expTime" } },
     };
-    for (const OfxTag& tag : ofxTags) {
+    for (const StandardTag& tag : standardTags) {
         const ImageMetadata::Value* value = metadata.find(tag.key);
         if (!value) {
             continue;

@@ -61,8 +61,6 @@ namespace {
 
 const double kTime = 1.;
 
-const char* const kFilters[] = { "impulse", "box", "bilinear", "cubic", "keys", "simon", "rifman", "mitchell", "parzen", "notch" };
-
 struct KnobSetting {
     const char* name;
     std::vector<double> values;
@@ -336,21 +334,36 @@ TEST_F(NativeLensDistortionGpuTest, EveryModelMatchesTheCpu)
     }
 }
 
-TEST_F(NativeLensDistortionGpuTest, EveryFilterMatchesTheCpu)
+// One test per filter, as the wider kernels make the whole sweep slow on a loaded runner.
+class NativeLensDistortionGpuFilterTest
+    : public NativeLensDistortionGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeLensDistortionGpuFilterTest, MatchesTheCpu)
 {
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
     NodePtr node = makeLensDistortion(source, modelSetups().front());
     ASSERT_TRUE(bool(node));
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
     for (const char* direction : { kLensDistortionDirectionDistort, kLensDistortionDirectionUndistort }) {
         ASSERT_TRUE(setKnobValue(node, kLensDistortionParamDirection, std::string(direction)));
-        for (const char* filter : kFilters) {
-            ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
-            expectParity(source, node, std::string(direction) + " " + filter);
+        for (bool clamp : { false, true }) {
+            if (clamp && !Resampler::filterHonoursClamp((Resampler::FilterEnum)f)) {
+                continue;
+            }
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+            expectParity(source, node, std::string(direction) + " " + filters[f].id + (clamp ? " clamp" : ""));
         }
     }
 }
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeLensDistortionGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 // Clamp, Black Outside and Mix reach the kernel.
 TEST_F(NativeLensDistortionGpuTest, SettingsMatchTheCpu)

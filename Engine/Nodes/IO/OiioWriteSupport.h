@@ -189,22 +189,45 @@ struct WritePart {
     OIIO::ImageSpec spec;
 };
 
+enum class WriteMetadataMode {
+    Default,
+    AllExceptInput,
+    All
+};
+
 /**
  * @brief Adds to `spec` the attributes that carry `metadata` into a file of format `formatName`:
  * the inverse of OiioReadSupport::attributeMetadata(). exr/ keys go to OpenEXR only; exif/ keys
  * to every format, under the unprefixed name OIIO files the standard main-IFD tags under and
  * "Exif:" otherwise ("Exif:" always for OpenEXR, so a re-read lands on the same key); tiff/,
- * dpx/ and cin/ keys only to their own format; oiio/ keys to every format; ofx/timecode and
- * ofx/edgecode as smpte:TimeCode and smpte:KeyCode.
+ * dpx/ and cin/ keys only to their own format; oiio/ keys to every format; natron/timecode and
+ * natron/edgecode as smpte:TimeCode and smpte:KeyCode, except on PNG, which stores no binary time
+ * code. natron/creator, copyright, comment, framerate, focallength, fnumber and exposuretime go to the
+ * matching standard tag (Software, Copyright, ImageDescription, FramesPerSecond, FocalLength,
+ * FNumber, ExposureTime) unless a format-native key already set it under any spelling. On OpenEXR
+ * Software, Copyright and ImageDescription are unprefixed and the camera tags are under "Exif:".
  *
- * Never written: the file-identity keys (ofx/filepath, ofx/frame, ofx/framerate, ofx/filesize,
- * ofx/mtime), oiio/ColorSpace, whose owner is the colour handling, every other ofx/ and
- * quicktime/ key, and the keys that describe the layout of the file the metadata came from
- * (compression, tiling, packing, sub-image naming, line order, pixel aspect), which the writer
- * decides itself. A key that the format cannot hold is left for OIIO to drop; the others
- * dropped here are logged.
+ * AllExceptInput and All also write every key that has no native attribute in the file (the other
+ * natron/ keys, quicktime/ keys, user keys without a prefix, the keys of another format's namespace,
+ * and on OpenEXR and PNG oiio/ keys, a time code that does not parse, and on PNG any time code)
+ * under its full key name, and the natron/ keys above under theirs as well. OpenEXR takes numbers as
+ * floats when a float holds them exactly and as doubles otherwise, except that names OIIO or
+ * OpenEXR type as float are always float and double arrays of a length other than 2, 3, 9 or 16
+ * narrow to float, the only array type OIIO writes at other lengths. PNG takes strings only, so
+ * other types are written as their text; formats with no arbitrary attributes keep their standard
+ * tags only. All adds the keys that describe the input rather than the image: the file-identity
+ * keys (natron/filepath, natron/frame, natron/filesize, natron/mtime) and the source-layout keys
+ * (natron/pixelaspect, natron/width, natron/height, natron/bitdepth, natron/sampletype, natron/viewnames), which can
+ * go stale after a Reformat. AllExceptInput leaves them all out.
+ *
+ * Never written in any mode: oiio/ColorSpace, whose owner is the colour handling, the keys that
+ * describe the layout of the file the metadata came from (compression, tiling, packing, sub-image
+ * naming, line order, pixel aspect), which the writer decides itself, and names that instruct
+ * OIIO's writers (openexr:*, oiio:*, textureformat), all matched without regard to case. A key that
+ * the format cannot hold is left for OIIO to drop; the others dropped here are logged.
  **/
-void applyMetadata(OIIO::ImageSpec& spec, const ImageMetadata& metadata, const std::string& formatName);
+void applyMetadata(OIIO::ImageSpec& spec, const ImageMetadata& metadata, const std::string& formatName,
+                   WriteMetadataMode mode);
 
 /**
  * @brief Fills `band` with the rows [rowBegin, rowEnd) of part `part`, counted from the top row of

@@ -80,9 +80,12 @@ struct WarpGpuParams {
     uint32_t mapComps = 1;
     int32_t mapComponent = -1;
     float mapExponent = 1.f;
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
-static_assert(sizeof(WarpGpuParams) == 43 * 4, "stmap.slang reads 43 words");
+static_assert(sizeof(WarpGpuParams) == 46 * 4, "stmap.slang reads 46 words");
 
 inline constexpr uint32_t kWarpGpuClamp = 1;
 inline constexpr uint32_t kWarpGpuBlackOutside = 2;

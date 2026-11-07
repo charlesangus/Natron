@@ -2047,8 +2047,8 @@ OfxClipInstance::fetchMetadata(OfxTime time,
     } else if (NativeEffectBase* nativeInput = dynamic_cast<NativeEffectBase*>(inputNode.get())) {
         // The native node's metadata is the whole answer, with nothing derived from this clip
         // underneath: every standard key describes the source the image was read from, so a
-        // value the host made up from the clip or the timeline (ofx/frame from the render time,
-        // say) would misdescribe it, and the delivered image's own rate, aspect, size and
+        // value the host made up from the clip or the timeline (the source frame from the render
+        // time, say) would misdescribe it, and the delivered image's own rate, aspect, size and
         // depth already reach the plug-in through the clip's properties. View 0, because this
         // clip's cache is keyed by time alone: whichever view filled it would otherwise decide
         // what every later read sees.

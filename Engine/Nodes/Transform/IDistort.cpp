@@ -200,6 +200,8 @@ IDistort::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     _map.createKnobs(this, page, kMapWarpKnobHints);
 
     addStageKnobs(page);
@@ -211,26 +213,20 @@ IDistort::initializeKnobs()
     }
     _map.declareLayerKnob(node, kIDistortInputMap);
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // IDistort::initializeKnobs
 
 void
-IDistort::updateClampEnabled(double time,
-                             ViewIdx view)
+IDistort::updateFilterVisibility(double time,
+                                 ViewIdx view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _filterKnobs.updateVisibility(time, view);
 }
 
 void
 IDistort::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -242,7 +238,7 @@ IDistort::knobChanged(KnobI* k,
 {
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -255,13 +251,7 @@ IDistort::readSettings(double time,
                        ViewIdx view,
                        Settings* settings) const
 {
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        const int value = filter->getValueAtTime(time, 0, view);
-        if ((value >= (int)Resampler::eFilterImpulse) && (value <= (int)Resampler::eFilterNotch)) {
-            settings->filter = (Resampler::FilterEnum)value;
-        }
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -434,7 +424,7 @@ IDistort::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool impulse = settings.filter == Resampler::eFilterImpulse;
+    const bool impulse = settings.filter.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double uScale = productOrInfinity(settings.uScale, s.x);
     const double vScale = productOrInfinity(settings.vScale, s.y);
@@ -871,8 +861,12 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     const OfxPointD s = query.mappedScale.toOfxPointD();
 
     WarpGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
     setWarpGpuDouble(productOrInfinity(settings.uScale, s.x), params.uScale);

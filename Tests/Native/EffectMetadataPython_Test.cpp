@@ -88,7 +88,7 @@ TEST_F(EffectMetadataPythonTest, HelperReadsANativeNodeAndIgnoresNull)
     const ImageMetadata metadata = getEffectOutputMetadata(source->getEffectInstance(), 3., ViewIdx(0));
 
     EXPECT_EQ(std::string("natron"), metadata.getString("exr/owner").value_or(""));
-    EXPECT_EQ(3, metadata.getInt("ofx/frame").value_or(-1));
+    EXPECT_EQ(3, metadata.getInt("natron/frame").value_or(-1));
     EXPECT_TRUE(getEffectOutputMetadata(EffectInstancePtr(), 3., ViewIdx(0)).empty());
 }
 
@@ -109,14 +109,14 @@ TEST_F(EffectMetadataPythonTest, AbsentKeyIsNone)
 
 TEST_F(EffectMetadataPythonTest, FrameArgumentSelectsTheFrame)
 {
-    expectScript("n = " + nodeVar + "\n" + "assert n.metadata('ofx/frame', 2) == 2\n"
-                                           "assert n.metadata('ofx/frame', 7, 0) == 7\n");
+    expectScript("n = " + nodeVar + "\n" + "assert n.metadata('natron/frame', 2) == 2\n"
+                                           "assert n.metadata('natron/frame', 7, 0) == 7\n");
 }
 
 TEST_F(EffectMetadataPythonTest, FrameDefaultsToTheCurrentFrame)
 {
-    expectScript("n = " + nodeVar + "\n" + "assert n.metadata('ofx/frame') == n.getCurrentTime()\n"
-                                           "assert n.metadata('ofx/frame', n.getCurrentTime()) == n.metadata('ofx/frame')\n");
+    expectScript("n = " + nodeVar + "\n" + "assert n.metadata('natron/frame') == n.getCurrentTime()\n"
+                                           "assert n.metadata('natron/frame', n.getCurrentTime()) == n.metadata('natron/frame')\n");
 }
 
 TEST_F(EffectMetadataPythonTest, KeysAreSortedAndComplete)
@@ -124,7 +124,7 @@ TEST_F(EffectMetadataPythonTest, KeysAreSortedAndComplete)
     expectScript("n = " + nodeVar + "\n" + "keys = n.metadataKeys(1)\n"
                                            "assert keys == sorted(keys)\n"
                                            "assert keys == n.metadataKeys(1, 0)\n"
-                                           "for k in ('dpx/size', 'exr/chroma', 'exr/gain', 'exr/origin', 'exr/owner', 'exr/tag', 'ofx/frame'):\n"
+                                           "for k in ('dpx/size', 'exr/chroma', 'exr/gain', 'exr/origin', 'exr/owner', 'exr/tag', 'natron/frame'):\n"
                                            "    assert k in keys, k\n"
                                            "assert 'exr/missing' not in keys\n"
                                            "assert n.metadataKeys() == n.metadataKeys(n.getCurrentTime())\n");

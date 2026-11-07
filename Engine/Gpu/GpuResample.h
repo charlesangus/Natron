@@ -28,38 +28,41 @@ struct GpuResampleParams {
     uint32_t filter;
     uint32_t flags;
     uint32_t states;
-    // The matrix's six doubles: for the exact kernels (impulse, box and clamped Mitchell) each as
-    // its low then its high 32 bits, for the others the six high floats' bits and then the six low
-    // floats'.
+    // The matrix's six doubles: for the exact kernels (impulse, box, every clamped filter and every
+    // filter on a minifying matrix) each as its low then its high 32 bits, for the others the six
+    // high floats' bits and then the six low floats'.
     uint32_t matrix[12];
+    int32_t lobes;
+    float B;
+    float C;
+    uint32_t padding;
 };
-static_assert(sizeof(GpuResampleParams) == 112);
+static_assert(sizeof(GpuResampleParams) == 128);
 
 inline constexpr uint32_t kGpuResampleMaxChannels = 4;
-inline constexpr uint32_t kGpuResampleFilterCount = 10;
-inline constexpr uint32_t kGpuResampleMaxLevel = 4;
+inline constexpr uint32_t kGpuResampleFilterCount = 17;
 // The kernel picks a blurred sample's matrix with 32-bit integer arithmetic that needs the count
 // below 2^16.
 inline constexpr uint32_t kGpuResampleMaxMatrices = 65535;
 
-// What interpolateSuper does for one Jacobian of the matrix: nothing beyond the filter when it is
-// zero, else 3^levelX x 3^levelY supersamples when minifying (both levels 0 for none).
+// Whether one Jacobian of the matrix is zero, which sends box to its nearest pixel.
 struct GpuResampleJacobian {
     bool zero = true;
-    uint32_t levelX = 0;
-    uint32_t levelY = 0;
 };
 
 // One destination-to-source pixel matrix, rows (m[0] m[1] m[2]) and (m[3] m[4] m[5]) and the third
 // row `perspective`, with its Jacobians indexed by which axes sample inside the source: bit 0 x,
 // bit 1 y; entry 0 must be zero. A third row other than (0, 0, 1) makes the matrix projective, sampled
-// as Resampler's samplePixel does: divided by z, zero where z <= 0, with the Jacobian and its
-// supersampling worked out per pixel, so `jacobians` is not read. weight is only read by a weighted
-// blur.
+// as Resampler's samplePixel does: divided by z, zero where z <= 0, with the Jacobian and the kernel
+// scales worked out per pixel, so `jacobians` and the scales are not read. scaleX and scaleY are
+// Resampler::kernelScale of the two rows, carried as the CPU's doubles so that the exact kernels'
+// tap ranges fall where the CPU's do. weight is only read by a weighted blur.
 struct GpuResampleMatrix {
     std::array<double, 6> matrix {};
     std::array<double, 3> perspective { 0., 0., 1. };
     std::array<GpuResampleJacobian, 4> jacobians {};
+    double scaleX = 1.;
+    double scaleY = 1.;
     double weight = 1.;
 
     bool isProjective() const
@@ -80,9 +83,9 @@ struct GpuResampleBlur {
 };
 
 // Resampler::resampleRow over `output` for affine or projective inverse matrices. One matrix resamples it
-// directly; several are averaged per pixel as Resampler::motionBlurPixel does, with `blur`. filter
-// is the Resampler::FilterEnum value; clamp is only honoured by the filters that clamp on the CPU,
-// which the caller decides. A source without a buffer, or with empty bounds, renders zeros.
+// directly; several are averaged per pixel as Resampler::motionBlurPixel does, with `blur`. filter,
+// lobes, B and C are the Resampler::FilterSpec; clamp is only honoured by the filters that clamp on
+// the CPU, which the caller decides. A source without a buffer, or with empty bounds, renders zeros.
 struct GpuResample {
     GpuBlurImage src;
     GpuBlurImage dst;
@@ -90,6 +93,9 @@ struct GpuResample {
     GpuBlurRect output;
     uint32_t channels = 0;
     uint32_t filter = 0;
+    int32_t lobes = 4;
+    double B = 1. / 3.;
+    double C = 1. / 3.;
     bool clamp = false;
     bool blackOutside = true;
     std::vector<GpuResampleMatrix> matrices;

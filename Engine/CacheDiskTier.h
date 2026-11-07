@@ -197,7 +197,7 @@ public:
 class CacheDiskTier final
     : public CacheTier {
 public:
-    static const std::size_t kChunkBytes = 4 * 1024 * 1024;
+    static constexpr std::size_t kChunkBytes = 4 * 1024 * 1024;
 
     struct Config {
         std::string root;

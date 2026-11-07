@@ -77,6 +77,8 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Decisions
 
+- 2026-11-07 — A missing live texture shows bright magenta, not black, so it's obvious (user); the warning stays.
+
 - 2026-11-07 — **Route (user):** delegates read a real path, `/dev/shm/natron-<session>-<uri hash>.natron`, while USD keeps the `natron://` asset, so no fork patches or pin bumps. A scene-index filter registered for Cycles and MoonRay only sets the path and leaves Storm on its URI. A missing texture: the filter removes the texture node and feeds the `UsdUVTexture` fallback value downstream, keeping the existing warning. This replaces P3.T1's "`natron://` reaches `filename` unchanged" and P3.T2's passing the store name to `execComp`; only `OPENIMAGEIO_PLUGIN_PATH` is passed. `stage-bundle.sh` is in `tools/release/`. A small `/dev/shm` (64 MB in Docker) sends real plates to the fallback.
 
 - 2026-11-05 — **Filed outside the materials discussion (user):** "we definitely need to support live natron materials", regardless of the MaterialX outcome.

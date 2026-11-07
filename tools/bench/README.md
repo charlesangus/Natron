@@ -21,6 +21,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
+| `reformat_filter_bench.sh`, `reformat_filter_bench.py` | CPU cost of a 4x Reformat downscale with Cubic and Lanczos 3, a main AppImage against a branch AppImage. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
 

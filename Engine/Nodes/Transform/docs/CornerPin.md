@@ -1,5 +1,7 @@
 # CornerPin
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |

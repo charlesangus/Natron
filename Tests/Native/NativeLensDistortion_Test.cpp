@@ -38,6 +38,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -319,6 +320,20 @@ protected:
     }
 };
 
+TEST_F(NativeLensDistortionTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeStrongNuke(source, kLensDistortionDirectionDistort, "cubic");
+    ASSERT_TRUE(bool(node));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+}
+
 TEST_F(NativeLensDistortionTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_LENSDISTORTION, PLUGIN_MAJOR_NATRON_LENSDISTORTION, "LensDistortion");
@@ -360,6 +375,9 @@ TEST_F(NativeLensDistortionTest, KnobsAndInputs)
         kLensDistortionParamPanoToolsA,
         kLensDistortionParamPanoToolsT,
         kResamplerParamFilterType,
+        kResamplerParamLobes,
+        kResamplerParamBicubicB,
+        kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
         kOfxMixParamName,

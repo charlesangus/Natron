@@ -17,10 +17,15 @@
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
 #   --record-goldens  -> implies --tests; also records the native golden renders
+#                        (NativeGoldenTest, NativeIDistortAmountTest, NativeIWarpTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
-#                        recorded them (see STAMP).
+#                        recorded them (see STAMP). Also records the resampling
+#                        parity references of NativeTransformTest (CubicMinifyingAndRotated,
+#                        MaskedMixHalf, SkewYX) and NativeReformatTest (FitIntoAFixedBox,
+#                        ToFormatWithAPixelAspectRatio, ToProjectFormatFromTheSourceRoD)
+#                        into Tests/fixtures/native-parity/; no other parity reference changes.
 #   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
 #                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
 #                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
@@ -434,6 +439,20 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     fi
 fi
 
+PARITY_DIR=""
+if [[ "${RECORD_GOLDENS}" == "true" ]]; then
+    PARITY_DIR="${REPO_ROOT}/Tests/fixtures/native-parity"
+    PARITY_TMP="${OUT_DIR}/native-parity"
+    mkdir -p "${PARITY_TMP}"
+    if download_artifact "native-parity-${PRESET}-${HEAD_SHA}" "${PARITY_TMP}"; then
+        mkdir -p "${PARITY_DIR}"
+        cp -R "${PARITY_TMP}/." "${PARITY_DIR}/"
+    else
+        PARITY_DIR=""
+        RUN_STATUS=1
+    fi
+fi
+
 # The artifacts carry the tested commit's sha, which for --from-run is the other run's, so
 # they are looked up by prefix. A script passes only when its job succeeded.
 GUI_FAILED=0
@@ -490,6 +509,9 @@ else
 fi
 if [[ -n "${GOLDEN_DIR}" ]]; then
     echo "native goldens: ${GOLDEN_DIR}"
+fi
+if [[ -n "${PARITY_DIR}" ]]; then
+    echo "native parity references: ${PARITY_DIR}"
 fi
 if [[ -n "${CTEST_LOG_DIR}" ]]; then
     echo "ctest logs: ${CTEST_LOG_DIR}"

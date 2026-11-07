@@ -26,6 +26,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 
 ## Decisions
 
+- 2026-11-06 — Baseline committed at 72cea0987 on milestone/m276-cache-responsiveness-audit; merged into feature/f6-unified-tiered-cache as dcead9aeb (#201). User-host attribution is in `docs/perf/interactive-edit-attribution.md`: 610 ms at fit (RawDemosaic 384 ms), 44 ms at 100%, every node on the CPU.
 - M276 baseline run on the user's host received 2026-11-06 (Radeon RX 7900 XTX) in build/bench/edit-latency/: fit about 610 ms, 100% about 47 ms; four or five upstream executions per edit; GPU on or off makes no difference.
 - 2026-11-06 — Attribution on the software host (16 configs, GPU off): panel closed, 50 executions per config, `not_admitted`; panel open, 40, the new `behind_hit`: the task graph runs a task's dependencies without asking whether its consumer is cached, so `RawInputColor` hits while the four raw nodes above it run. Hashes never moved. M300 - Unified Tiered Cache's gate needs `behind_hit` gone and none of its tasks covers it: `/cat-plan` should add a pruning task there (recommended). `gpu_region_member`, `placement_iscached_miss`, eviction and the drag's draft switch are unmeasured: no region formed under lavapipe.
 - 2026-11-01 — **Broadened from "Cache Responsiveness Audit" (user):** the RAW → Grade report and the GPU-caching question fold in here. The fixes move to M300 - Unified Tiered Cache and M301 - GPU Cache Tier, so this milestone measures and baselines, and fixes only the independent placement-key bug.
@@ -60,7 +61,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
   - verify: an app-plus-cache test (`GpuPlacement_Test` uses fake inputs, so it can't show this) with a cached draft image keeps the node on the CPU. It fails before the fix and passes after.
   - size: M
 
-- [ ] M276.P2.T2 — Record the edit-latency baseline
+- [x] M276.P2.T2 — Record the edit-latency baseline
   - files: `tools/bench/baselines/edit-latency.jsonl` (new), `tools/bench/compare.py` (edit-latency mode), `tools/bench/README.md`
   - approach: Run the benchmark on the user's host with the release AppImage built from this branch. Commit the results as the baseline. `compare.py` reports per-configuration median and p95 latency and upstream execution counts against it.
   - verify: `compare.py` run on a fresh benchmark run against the committed baseline prints the per-configuration deltas.

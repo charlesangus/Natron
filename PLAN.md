@@ -356,8 +356,8 @@ future core work has solid ground to build on.
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | done | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | | | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
-| M276 | Upstream Reuse On Edits | doing | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
-| M300 | Unified Tiered Cache | todo | M276 |  | E6 | F6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
+| M276 | Upstream Reuse On Edits | done | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
+| M300 | Unified Tiered Cache | doing | M276 | misty-marten | E6 | F6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
 | M301 | GPU Cache Tier | todo | M300 |  | E6 | F6 | | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
 | M302 | Viewer Render State Cues | doing | - | misty-marten | E6 | F6 | | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
 | M303 | Interactive Edit Latency | todo | M301 |  | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |

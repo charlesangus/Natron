@@ -131,6 +131,42 @@ TEST_F(VectorSamplerTest, HasMotionLayersOnlyWhenTheNodeOutputsThem)
     EXPECT_FALSE(VectorSampler::hasMotionLayers(NodePtr(), 10.));
 }
 
+TEST_F(VectorSamplerTest, AForwardOnlySourceIsListedForForwardFollowsAlone)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+    setKnob<KnobChoice>(generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+
+    EXPECT_FALSE(VectorSampler::hasMotionLayers(generator, 10.));
+    EXPECT_TRUE(VectorSampler::hasForwardMotionLayer(generator, 10.));
+
+    std::string error;
+    EXPECT_TRUE(VectorSampler::checkSource(generator, roto, 10., &error)) << error;
+    EXPECT_TRUE(VectorSampler::checkSource(generator, roto, 10., VectorFollowDirection::eForward, &error)) << error;
+    EXPECT_FALSE(VectorSampler::checkSource(generator, roto, 10., VectorFollowDirection::eBackward, &error));
+    EXPECT_NE(error.find("no backward motion layer"), std::string::npos) << error;
+}
+
+TEST_F(VectorSamplerTest, AForwardOnlySourceReadsWithNoBackwardConfidence)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+    setKnob<KnobChoice>(generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+
+    VectorSampler sampler(generator);
+    ASSERT_TRUE(sampler.prepareFrame(10)) << sampler.lastError();
+
+    const VectorSample s = sampler.sample(10, kWidth / 2.25, kHeight / 2.25);
+    EXPECT_NEAR(s.forwardX, kShiftX, kTolerance);
+    EXPECT_NEAR(s.forwardY, kShiftY, kTolerance);
+    EXPECT_GT(s.forwardConfidence, kVectorFollowDefaultConfidenceThreshold);
+    EXPECT_EQ(s.backwardX, 0.);
+    EXPECT_EQ(s.backwardY, 0.);
+    EXPECT_EQ(s.backwardConfidence, 0.);
+}
+
 TEST_F(VectorSamplerTest, RefusesASourceWithoutLayers)
 {
     NodePtr texture = createTexture();

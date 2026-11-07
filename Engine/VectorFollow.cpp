@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <set>
 #include <sstream>
 
@@ -106,6 +107,13 @@ blendPoints(const std::vector<FollowPoint>& a,
             const std::vector<FollowPoint>& b,
             double weight)
 {
+    // A pass that ended holds no points, and the other one's must come through exactly.
+    if (weight <= 0.) {
+        return a;
+    }
+    if (weight >= 1.) {
+        return b;
+    }
     std::vector<FollowPoint> out(a.size());
     for (std::size_t i = 0; i < a.size(); ++i) {
         out[i].x = a[i].x * (1. - weight) + b[i].x * weight;
@@ -115,22 +123,131 @@ blendPoints(const std::vector<FollowPoint>& a,
     return out;
 }
 
+// A transform as seen from a pivot: where the pivot goes, then a rotation of a symmetric stretch,
+// then a perspective.
+struct TransformParts {
+    FollowPoint position;
+    double rotation = 0.;
+    double stretch00 = 1.;
+    double stretch01 = 0.;
+    double stretch11 = 1.;
+    double perspectiveX = 0.;
+    double perspectiveY = 0.;
+};
+
+// False when the pivot goes to infinity.
+bool
+decomposeTransform(const FollowMatrix& m,
+                   const FollowPoint& pivot,
+                   TransformParts* out)
+{
+    const FollowMatrix h = m * FollowMatrix::translation(pivot.x, pivot.y);
+    const double norm = h.m[8];
+    if (norm == 0.) {
+        return false;
+    }
+    const FollowPoint position(h.m[2] / norm, h.m[5] / norm);
+    const double vx = h.m[6] / norm;
+    const double vy = h.m[7] / norm;
+    const double a00 = h.m[0] / norm - position.x * vx;
+    const double a01 = h.m[1] / norm - position.x * vy;
+    const double a10 = h.m[3] / norm - position.y * vx;
+    const double a11 = h.m[4] / norm - position.y * vy;
+
+    const double rotation = std::atan2(a10 - a01, a00 + a11);
+    const double c = std::cos(rotation);
+    const double s = std::sin(rotation);
+    out->position = position;
+    out->rotation = rotation;
+    out->stretch00 = c * a00 + s * a10;
+    out->stretch01 = c * a01 + s * a11;
+    out->stretch11 = c * a11 - s * a01;
+    out->perspectiveX = vx;
+    out->perspectiveY = vy;
+
+    return true;
+}
+
+FollowMatrix
+composeTransform(const TransformParts& parts,
+                 const FollowPoint& pivot)
+{
+    const double c = std::cos(parts.rotation);
+    const double s = std::sin(parts.rotation);
+    const double a00 = c * parts.stretch00 - s * parts.stretch01;
+    const double a01 = c * parts.stretch01 - s * parts.stretch11;
+    const double a10 = s * parts.stretch00 + c * parts.stretch01;
+    const double a11 = s * parts.stretch01 + c * parts.stretch11;
+
+    FollowMatrix h;
+    h.m[0] = a00 + parts.position.x * parts.perspectiveX;
+    h.m[1] = a01 + parts.position.x * parts.perspectiveY;
+    h.m[2] = parts.position.x;
+    h.m[3] = a10 + parts.position.y * parts.perspectiveX;
+    h.m[4] = a11 + parts.position.y * parts.perspectiveY;
+    h.m[5] = parts.position.y;
+    h.m[6] = parts.perspectiveX;
+    h.m[7] = parts.perspectiveY;
+
+    return h * FollowMatrix::translation(-pivot.x, -pivot.y);
+}
+
+/*
+ * Blended matrix entries would shrink a shape midway between two rotations, so the rotation blends
+ * as an angle. It blends about the shape's centre: about the origin, a shape far from the origin
+ * would swing off the path both passes agree on.
+ */
 FollowMatrix
 blendTransforms(const VectorFollowShapeSetup& setup,
                 const FollowMatrix& a,
                 const FollowMatrix& b,
                 double weight)
 {
-    std::vector<FollowPoint> atA, atB;
-    atA.reserve(setup.corners.size());
-    atB.reserve(setup.corners.size());
-    for (const FollowPoint& corner : setup.corners) {
-        atA.push_back(a.apply(corner));
-        atB.push_back(b.apply(corner));
+    if (weight <= 0.) {
+        return a;
     }
-    const VectorFollowFit fit = solveFollowMotion(setup.model, setup.corners, blendPoints(atA, atB, weight));
+    if (weight >= 1.) {
+        return b;
+    }
+    if (setup.model == VectorFollowModel::eTranslate) {
+        return FollowMatrix::translation(a.m[2] * (1. - weight) + b.m[2] * weight, a.m[5] * (1. - weight) + b.m[5] * weight);
+    }
 
-    return fit.valid ? fit.matrix : a;
+    FollowPoint pivot;
+    for (const FollowPoint& corner : setup.corners) {
+        pivot.x += corner.x / (double)setup.corners.size();
+        pivot.y += corner.y / (double)setup.corners.size();
+    }
+    TransformParts partsA, partsB;
+    if (!decomposeTransform(a, pivot, &partsA) || !decomposeTransform(b, pivot, &partsB)) {
+        return (weight < 0.5) ? a : b;
+    }
+    const auto mix = [weight](double x, double y) {
+        return x * (1. - weight) + y * weight;
+    };
+    TransformParts out;
+    out.position = FollowPoint(mix(partsA.position.x, partsB.position.x), mix(partsA.position.y, partsB.position.y));
+    out.rotation = partsA.rotation + weight * std::remainder(partsB.rotation - partsA.rotation, 2. * M_PI);
+    out.stretch00 = mix(partsA.stretch00, partsB.stretch00);
+    out.stretch01 = mix(partsA.stretch01, partsB.stretch01);
+    out.stretch11 = mix(partsA.stretch11, partsB.stretch11);
+    out.perspectiveX = mix(partsA.perspectiveX, partsB.perspectiveX);
+    out.perspectiveY = mix(partsA.perspectiveY, partsB.perspectiveY);
+
+    return composeTransform(out, pivot);
+}
+
+void
+extendRange(VectorFollowFrameRange* range,
+            int frame)
+{
+    if (range->empty()) {
+        range->first = frame;
+        range->last = frame;
+    } else {
+        range->first = std::min(range->first, frame);
+        range->last = std::max(range->last, frame);
+    }
 }
 
 class ShapeWalker {
@@ -288,11 +405,17 @@ public:
     }
 
 private:
+    enum PassStepResult {
+        ePassStepAdvanced,
+        ePassStepEnded,
+        ePassStepAborted
+    };
+
     struct HeldState {
         std::vector<FollowPoint> points;
         FollowMatrix transform;
         bool inferred = false;
-        bool stopped = false;
+        bool ended = true;
     };
 
     VectorFollowShapeOutcome finish()
@@ -352,6 +475,59 @@ private:
         return true;
     }
 
+    bool checkAborted()
+    {
+        if (_aborted()) {
+            _outcome.aborted = true;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    PassStepResult stepPass(ShapeWalker& walker,
+                            VectorFollowPassEnd* reason)
+    {
+        if (checkAborted()) {
+            return ePassStepAborted;
+        }
+        switch (walker.step(_field)) {
+        case ShapeWalker::eStepDone:
+            return ePassStepAdvanced;
+        case ShapeWalker::eStepStopped:
+            *reason = VectorFollowPassEnd::eLowConfidence;
+
+            return ePassStepEnded;
+        case ShapeWalker::eStepUnreadable:
+            break;
+        }
+        // An abort also makes a read fail, and must not pass for a missing frame.
+        if (checkAborted()) {
+            return ePassStepAborted;
+        }
+        *reason = VectorFollowPassEnd::eUnreadable;
+
+        return ePassStepEnded;
+    }
+
+    bool hasLayerFor(bool forward) const
+    {
+        return forward || !_setup.forwardOnly;
+    }
+
+    static VectorFollowPassStop passStop(bool forward,
+                                         VectorFollowPassEnd reason,
+                                         int frame)
+    {
+        VectorFollowPassStop stop;
+        stop.direction = forward ? VectorFollowDirection::eForward : VectorFollowDirection::eBackward;
+        stop.reason = reason;
+        stop.frame = frame;
+
+        return stop;
+    }
+
     bool oneWay(const VectorFollowAnchor& anchor,
                 bool forward,
                 int end)
@@ -382,7 +558,7 @@ private:
     /*
      * The side away from the follow's direction is worked out first and only held in memory, then
      * the other side bakes frame by frame: an abort leaves a run of finished frames next to the
-     * anchor the follow comes from.
+     * anchor the follow comes from, each already blended from both sides.
      */
     bool bridge(const VectorFollowAnchor& a,
                 const VectorFollowAnchor& b,
@@ -394,34 +570,89 @@ private:
         }
 
         std::vector<HeldState> far(gapFrames);
-        {
+        std::optional<VectorFollowPassStop> farStop;
+        if (!hasLayerFor(!forward)) {
+            farStop = passStop(!forward, VectorFollowPassEnd::eNoLayer, (forward ? b : a).frame);
+        } else {
             ShapeWalker walker(_setup, forward ? b : a, !forward);
-            bool stopped = false;
             for (int n = 0; n < gapFrames; ++n) {
-                if (!stopped && !stepWalker(walker, &stopped)) {
+                VectorFollowPassEnd reason;
+                const PassStepResult result = stepPass(walker, &reason);
+                if (result == ePassStepAborted) {
                     return false;
                 }
-                const int frame = forward ? (b.frame - 1 - n) : (a.frame + 1 + n);
-                HeldState& state = far[frame - a.frame - 1];
+                if (result == ePassStepEnded) {
+                    farStop = passStop(!forward, reason, walker.frame());
+                    break;
+                }
+                HeldState& state = far[walker.frame() - a.frame - 1];
                 state.points = walker.points();
                 state.transform = walker.transform();
-                state.inferred = !stopped && walker.inferred();
-                state.stopped = stopped;
+                state.inferred = walker.inferred();
+                state.ended = false;
             }
         }
 
-        ShapeWalker walker(_setup, forward ? a : b, forward);
-        bool stopped = false;
-        for (int n = 0; n < gapFrames; ++n) {
-            if (!stopped && !stepWalker(walker, &stopped)) {
-                return false;
+        std::optional<VectorFollowPassStop> nearStop;
+        VectorFollowFrameRange unfollowed = { 1, 0 };
+        const auto report = [&]() {
+            for (const std::optional<VectorFollowPassStop>& stop : { nearStop, farStop }) {
+                if (stop) {
+                    _outcome.passStops.push_back(*stop);
+                }
             }
+            if (!unfollowed.empty()) {
+                _outcome.unfollowed.push_back(unfollowed);
+                recordStop(nearStop->frame);
+            }
+        };
+
+        const VectorFollowAnchor& nearAnchor = forward ? a : b;
+        if (!hasLayerFor(forward)) {
+            nearStop = passStop(forward, VectorFollowPassEnd::eNoLayer, nearAnchor.frame);
+        }
+        ShapeWalker walker(_setup, nearAnchor, forward);
+        for (int n = 0; n < gapFrames; ++n) {
+            if (nearStop) {
+                if (checkAborted()) {
+                    report();
+
+                    return false;
+                }
+            } else {
+                VectorFollowPassEnd reason;
+                const PassStepResult result = stepPass(walker, &reason);
+                if (result == ePassStepAborted) {
+                    report();
+
+                    return false;
+                }
+                if (result == ePassStepEnded) {
+                    nearStop = passStop(forward, reason, walker.frame());
+                }
+            }
+
             const int frameNumber = forward ? (a.frame + 1 + n) : (b.frame - 1 - n);
             const HeldState& other = far[frameNumber - a.frame - 1];
-            if (stopped && other.stopped) {
+            if (nearStop && other.ended) {
+                extendRange(&unfollowed, frameNumber);
                 continue;
             }
-            const double weight = followBridgeWeight(frameNumber, a.frame, b.frame);
+            if (nearStop) {
+                extendRange(&nearStop->otherOnly, frameNumber);
+            } else if (other.ended) {
+                extendRange(&farStop->otherOnly, frameNumber);
+            }
+
+            const bool aEnded = forward ? bool(nearStop) : other.ended;
+            const bool bEnded = forward ? other.ended : bool(nearStop);
+            double weight = followBridgeWeight(frameNumber, a.frame, b.frame);
+            if (aEnded) {
+                weight = 1.;
+            } else if (bEnded) {
+                weight = 0.;
+            }
+
             VectorFollowFrame frame;
             frame.frame = frameNumber;
             frame.points = forward ? blendPoints(walker.points(), other.points, weight)
@@ -430,9 +661,10 @@ private:
                 frame.transform = forward ? blendTransforms(_setup, walker.transform(), other.transform, weight)
                                           : blendTransforms(_setup, other.transform, walker.transform(), weight);
             }
-            frame.inferred = (!stopped && walker.inferred()) || other.inferred;
+            frame.inferred = (!nearStop && walker.inferred()) || (!other.ended && other.inferred);
             emitFrame(frame);
         }
+        report();
 
         return true;
     }
@@ -534,6 +766,22 @@ followVectorShape(VectorField& field,
     return ShapeFollower(field, setup, emit, aborted).run();
 }
 
+namespace {
+
+void
+writeFrameRanges(std::ostringstream& text,
+                 const std::vector<VectorFollowFrameRange>& ranges)
+{
+    for (std::size_t i = 0; i < ranges.size(); ++i) {
+        text << (i ? ", " : "") << ranges[i].first;
+        if (ranges[i].last != ranges[i].first) {
+            text << "-" << ranges[i].last;
+        }
+    }
+}
+
+} // anonymous namespace
+
 std::string
 formatVectorFollowReport(const VectorFollowReport& report)
 {
@@ -553,21 +801,45 @@ formatVectorFollowReport(const VectorFollowReport& report)
     }
     for (const VectorFollowShapeReport& shape : report.shapes) {
         text << shape.name << ":";
-        if (shape.inferred.empty() && !shape.stopped) {
-            text << " followed the vectors on every frame";
-        }
+        const char* separator = "";
         if (!shape.inferred.empty()) {
-            text << " inferred motion on frames";
-            for (std::size_t i = 0; i < shape.inferred.size(); ++i) {
-                text << (i ? ", " : " ") << shape.inferred[i].first;
-                if (shape.inferred[i].last != shape.inferred[i].first) {
-                    text << "-" << shape.inferred[i].last;
-                }
-            }
+            text << " inferred motion on frames ";
+            writeFrameRanges(text, shape.inferred);
+            separator = ";";
         }
-        if (shape.stopped) {
-            text << (shape.inferred.empty() ? "" : ";") << " stopped at frame " << shape.stopFrame
+        for (const VectorFollowPassStop& stop : shape.passStops) {
+            const bool forward = stop.direction == VectorFollowDirection::eForward;
+            text << separator << " the " << (forward ? "forward" : "backward") << " pass";
+            switch (stop.reason) {
+            case VectorFollowPassEnd::eLowConfidence:
+                text << " stopped at frame " << stop.frame << ", where too few of its points had confident vectors";
+                break;
+            case VectorFollowPassEnd::eUnreadable:
+                text << " stopped at frame " << stop.frame << ", whose vectors could not be read";
+                break;
+            case VectorFollowPassEnd::eNoLayer:
+                text << " could not run, as the source has no " << (forward ? "forward" : "backward") << " motion layer";
+                break;
+            }
+            if (!stop.otherOnly.empty()) {
+                text << ", so frames ";
+                writeFrameRanges(text, std::vector<VectorFollowFrameRange>(1, stop.otherOnly));
+                text << " use the " << (forward ? "backward" : "forward") << " pass alone";
+            }
+            separator = ";";
+        }
+        if (!shape.unfollowed.empty()) {
+            text << separator << " neither pass reached frames ";
+            writeFrameRanges(text, shape.unfollowed);
+            text << ", which keep their old motion";
+            separator = ";";
+        } else if (shape.stopped) {
+            text << separator << " stopped at frame " << shape.stopFrame
                  << ", where too few of its points had confident vectors";
+            separator = ";";
+        }
+        if (separator[0] == '\0') {
+            text << " followed the vectors on every frame";
         }
         text << "\n";
     }

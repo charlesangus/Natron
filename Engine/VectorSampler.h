@@ -40,7 +40,8 @@ NATRON_NAMESPACE_ENTER
  * definition. A few frames stay in memory: a follow only moves one frame at a time, in one direction.
  *
  * A point outside the region gets the vector at the border, of confidence 0. With no confidence
- * layer every vector inside the region has confidence 1.
+ * layer every vector inside the region has confidence 1. A node with no backward layer gives zero
+ * backward vectors of confidence 0.
  *
  * Renders on the calling thread. abort() may be called from any thread, and makes a render in
  * progress return early.
@@ -75,10 +76,17 @@ public:
      **/
     static bool hasMotionLayers(const NodePtr& node, double time);
 
+    // The forward motion layer is among the node's outputs, in the same sense.
+    static bool hasForwardMotionLayer(const NodePtr& node, double time);
+
     /**
-     * @brief Whether host's shapes may follow source: it must have the layers and must not depend
-     * on host, whose shapes the follow writes. On false, error says why. Main thread.
+     * @brief Whether host's shapes may follow source in that direction: it must have the layer of
+     * that direction, and the forward one in any case, and must not depend on host, whose shapes
+     * the follow writes. On false, error says why. Main thread.
      **/
+    static bool checkSource(const NodePtr& source, const NodePtr& host, double time, VectorFollowDirection direction, std::string* error);
+
+    // For a forward follow.
     static bool checkSource(const NodePtr& source, const NodePtr& host, double time, std::string* error);
 
 private:

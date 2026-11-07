@@ -314,7 +314,8 @@ VectorFollowTask::onPhaseDone(int phase,
     QObject::disconnect(source.get(), SIGNAL(deactivated(bool)), this, SLOT(onSourceDeactivated()));
     const bool sourceLost = _imp->sourceLost || !source->isActivated();
     // A follow the user stopped has no read error to tell: its sampler stopped because of that stop.
-    const std::string error = _imp->aborted ? std::string() : _imp->sampler->lastError();
+    // One that went on past an unreadable frame has none either: its report tells of that frame.
+    const std::string error = (_imp->aborted || !_imp->run->wasAborted()) ? std::string() : _imp->sampler->lastError();
     const VectorFollowReport report = _imp->run->finish(sourceLost, error);
     _imp->run.reset();
     _imp->sampler.reset();

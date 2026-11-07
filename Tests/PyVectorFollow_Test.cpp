@@ -36,6 +36,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/RotoCurveContext.h"
@@ -127,6 +128,35 @@ TEST_F(PyVectorFollowTest, OptionalArgumentsCanBeLeftOut)
 {
     expectScriptPasses("report = " + followCall(_generator, "forward", "translate") + "\n"
                                                                                       "assert shape.getScriptName() in report, str(report)\n");
+}
+
+TEST_F(PyVectorFollowTest, ABlendReportsNoPassStops)
+{
+    _bezier->setKeyframe(15.);
+    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint") + "\n"
+                                                                                     "entry = report[shape.getScriptName()]\n"
+                                                                                     "assert entry['passStops'] == [], str(entry)\n"
+                                                                                     "assert entry['unfollowed'] == [], str(entry)\n");
+}
+
+TEST_F(PyVectorFollowTest, AForwardOnlySourceFollowsForwardAndRaisesForBackward)
+{
+    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    expectScriptPasses(expectValueError(followCall(_generator, "backward", "perPoint")));
+    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint") + "\n"
+                                                                                     "assert report[shape.getScriptName()]['passStops'] == [], str(report)\n");
+}
+
+TEST_F(PyVectorFollowTest, ATwoWayFollowOfAForwardOnlySourceReportsTheMissingPass)
+{
+    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    _bezier->setKeyframe(15.);
+    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint") + "\n"
+                                                                                     "stops = report[shape.getScriptName()]['passStops']\n"
+                                                                                     "assert len(stops) == 1, str(stops)\n"
+                                                                                     "assert stops[0]['direction'] == 'backward', str(stops)\n"
+                                                                                     "assert stops[0]['reason'] == 'noLayer', str(stops)\n"
+                                                                                     "assert stops[0]['otherOnly'] == (6, 14), str(stops)\n");
 }
 
 TEST_F(PyVectorFollowTest, SourceWithoutLayersRaises)

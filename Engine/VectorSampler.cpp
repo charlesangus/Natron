@@ -95,6 +95,7 @@ struct SampledFrame {
     Plane backward;
     Plane confidence;
     bool hasConfidence = false;
+    bool hasBackward = false;
 };
 
 typedef std::shared_ptr<const SampledFrame> SampledFramePtr;
@@ -154,6 +155,19 @@ findLayer(const std::list<ImageLayerDesc>& layers,
     }
 
     return false;
+}
+
+std::list<ImageLayerDesc>
+presentLayersOf(const NodePtr& node,
+                double time)
+{
+    std::list<ImageLayerDesc> present;
+    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (effect) {
+        effect->getPresentLayers(time, ViewIdx(0), -1, &present);
+    }
+
+    return present;
 }
 
 } // anonymous namespace
@@ -271,10 +285,13 @@ VectorSampler::Imp::render(int frame)
     effect->getPresentLayers(frame, ViewIdx(0), -1, &present);
     ImageLayerDesc confidenceLayer;
     out->hasConfidence = findLayer(present, kVectorGeneratorConfidenceLayerID, &confidenceLayer);
+    out->hasBackward = findLayer(present, ImageLayerDesc::getBackwardMotionComponents().getLayerID());
 
     std::list<ImageLayerDesc> components;
     components.push_back(ImageLayerDesc::getForwardMotionComponents());
-    components.push_back(ImageLayerDesc::getBackwardMotionComponents());
+    if (out->hasBackward) {
+        components.push_back(ImageLayerDesc::getBackwardMotionComponents());
+    }
     if (out->hasConfidence) {
         components.push_back(confidenceLayer);
     }
@@ -300,7 +317,7 @@ VectorSampler::Imp::render(int frame)
         return SampledFramePtr();
     }
     bool copied = copyPlane(layers[ImageLayerDesc::getForwardMotionComponents()], roi, &out->forward)
-        && copyPlane(layers[ImageLayerDesc::getBackwardMotionComponents()], roi, &out->backward);
+        && (!out->hasBackward || copyPlane(layers[ImageLayerDesc::getBackwardMotionComponents()], roi, &out->backward));
     if (copied && out->hasConfidence) {
         copied = copyPlane(layers[confidenceLayer], roi, &out->confidence);
     }
@@ -338,6 +355,8 @@ VectorSampler::prepareFrame(int frame)
     if (!rendered) {
         return false;
     }
+    // A pass that ends on a frame it cannot read leaves the follow running; that is no failure of the follow.
+    _imp->setError(std::string());
     _imp->frames.push_front(rendered);
     while ((int)_imp->frames.size() > _imp->maxFrames) {
         _imp->frames.pop_back();
@@ -363,9 +382,12 @@ VectorSampler::sample(int frame,
     const double px = x / data->par;
     const double py = y;
 
-    float forward[2], backward[2];
+    float forward[2];
+    float backward[2] = { 0.f, 0.f };
     data->forward.read(px, py, forward);
-    data->backward.read(px, py, backward);
+    if (data->hasBackward) {
+        data->backward.read(px, py, backward);
+    }
     result.forwardX = forward[0] * data->par;
     result.forwardY = forward[1];
     result.backwardX = backward[0] * data->par;
@@ -375,6 +397,9 @@ VectorSampler::sample(int frame,
         data->confidence.read(px, py, confidence);
         result.forwardConfidence = confidence[0];
         result.backwardConfidence = confidence[1];
+    }
+    if (!data->hasBackward) {
+        result.backwardConfidence = 0.;
     }
 
     const Plane& plane = data->forward;
@@ -419,24 +444,24 @@ bool
 VectorSampler::hasMotionLayers(const NodePtr& node,
                                double time)
 {
-    if (!node) {
-        return false;
-    }
-    const EffectInstancePtr effect = node->getEffectInstance();
-    if (!effect) {
-        return false;
-    }
-    std::list<ImageLayerDesc> present;
-    effect->getPresentLayers(time, ViewIdx(0), -1, &present);
+    const std::list<ImageLayerDesc> present = presentLayersOf(node, time);
 
     return findLayer(present, ImageLayerDesc::getForwardMotionComponents().getLayerID())
         && findLayer(present, ImageLayerDesc::getBackwardMotionComponents().getLayerID());
 }
 
 bool
+VectorSampler::hasForwardMotionLayer(const NodePtr& node,
+                                     double time)
+{
+    return findLayer(presentLayersOf(node, time), ImageLayerDesc::getForwardMotionComponents().getLayerID());
+}
+
+bool
 VectorSampler::checkSource(const NodePtr& source,
                            const NodePtr& host,
                            double time,
+                           VectorFollowDirection direction,
                            std::string* error)
 {
     if (!source || !source->isActivated()) {
@@ -450,13 +475,27 @@ VectorSampler::checkSource(const NodePtr& source,
 
         return false;
     }
-    if (!hasMotionLayers(source, time)) {
-        *error = source->getScriptName() + " has no forward and backward motion layers.";
+    if (!hasForwardMotionLayer(source, time)) {
+        *error = source->getScriptName() + " has no forward motion layer.";
+
+        return false;
+    }
+    if ((direction == VectorFollowDirection::eBackward) && !hasMotionLayers(source, time)) {
+        *error = source->getScriptName() + " has no backward motion layer, so it can only be followed forward.";
 
         return false;
     }
 
     return true;
+}
+
+bool
+VectorSampler::checkSource(const NodePtr& source,
+                           const NodePtr& host,
+                           double time,
+                           std::string* error)
+{
+    return checkSource(source, host, time, VectorFollowDirection::eForward, error);
 }
 
 NATRON_NAMESPACE_EXIT

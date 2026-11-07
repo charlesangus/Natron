@@ -45,7 +45,7 @@
 
 #define kFollowParamSource "followSource"
 #define kFollowParamSourceLabel "Follow Source"
-#define kFollowParamSourceHint "The node whose motion vectors the shapes follow. Only nodes that output the forward and backward motion layers and do not depend on this node are listed."
+#define kFollowParamSourceHint "The node whose motion vectors the shapes follow. Only nodes that output the forward motion layer and do not depend on this node are listed. A node with no backward motion layer cannot be followed backward, and between keys it is followed forward only."
 
 #define kFollowParamModel "followModel"
 #define kFollowParamModelLabel "Follow Model"
@@ -61,11 +61,11 @@
 
 #define kFollowParamForwardOne "followForwardOne"
 #define kFollowParamForwardOneLabel "Follow Forward One"
-#define kFollowParamForwardOneHint "Follows the selection one frame forward."
+#define kFollowParamForwardOneHint "Follows the selection one frame forward, keeping the current frame as it shows now."
 
 #define kFollowParamForwardToEnd "followForwardToEnd"
 #define kFollowParamForwardToEndLabel "Follow Forward To End"
-#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. Press any of these buttons during a follow to stop it."
+#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. Up to a later key, it tracks forward from the current frame and backward from that key and blends the two, so the follow meets both exactly. Press any of these buttons during a follow to stop it."
 
 #define kFollowParamRange "followRange"
 #define kFollowParamRangeLabel "Follow Range"

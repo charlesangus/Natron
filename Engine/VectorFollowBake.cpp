@@ -444,6 +444,7 @@ struct VectorFollowRun::Imp {
     std::vector<std::unique_ptr<FollowShape>> shapes;
     std::shared_ptr<FollowVectorsUndoCommand> undo;
     bool aborted = false;
+    bool forwardOnly = false;
 
     Imp(const RotoCurveContextPtr& context_,
         const VectorFollowParams& params_)
@@ -501,6 +502,7 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
     shape->setup.first = params.first;
     shape->setup.last = params.last;
     shape->setup.model = params.model;
+    shape->setup.forwardOnly = forwardOnly;
 
     if (shape->bezier) {
         if (shape->bezier->getControlPointsCount() == 0) {
@@ -530,8 +532,11 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
     }
 
     shape->anchorFrames = anchorFramesOf(*shape);
-    if (shape->anchorFrames.empty()) {
-        shape->anchorFrames.insert(params.direction == VectorFollowDirection::eForward ? params.first : params.last);
+    const bool forward = params.direction == VectorFollowDirection::eForward;
+    // A forward follow starts from what the frame it starts on shows, also when a later key is what
+    // it must land on. That state then is an anchor like any key, and it bridges to that key.
+    if (shape->anchorFrames.empty() || (forward && !shape->anchorFrames.count(params.first))) {
+        shape->anchorFrames.insert(forward ? params.first : params.last);
         shape->setup.seedIsNew = true;
     }
 
@@ -691,9 +696,10 @@ VectorFollowRun::prepare(std::string* error)
 
         return false;
     }
-    if (!VectorSampler::checkSource(params.source, _imp->context->getNode(), params.first, error)) {
+    if (!VectorSampler::checkSource(params.source, _imp->context->getNode(), params.first, params.direction, error)) {
         return false;
     }
+    _imp->forwardOnly = !VectorSampler::hasMotionLayers(params.source, params.first);
 
     std::list<RotoDrawableItemPtr> items;
     for (const RotoDrawableItemPtr& item : params.items) {
@@ -710,6 +716,17 @@ VectorFollowRun::prepare(std::string* error)
     }
 
     _imp->undo = std::make_shared<FollowVectorsUndoCommand>(_imp->context, items);
+
+    // An anchor keyed on another knob only would slide once keys land around it on the extra matrix.
+    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
+        if ((shape->setup.model != VectorFollowModel::eAffine) && (shape->setup.model != VectorFollowModel::ePerspective)) {
+            continue;
+        }
+        const KnobDoublePtr extraKnob = doubleKnob(*shape->item, kRotoDrawableItemExtraMatrixParam);
+        for (int frame : shape->anchorFrames) {
+            shape->item->setExtraMatrix(true, frame, toTransformMatrix(extraMatrixAt(extraKnob, frame)));
+        }
+    }
 
     return true;
 }
@@ -824,13 +841,16 @@ VectorFollowRun::finish(bool sourceLost,
         VectorFollowShapeReport shapeReport;
         shapeReport.name = shape->item->getScriptName();
         shapeReport.inferred = shape->outcome.inferred;
+        shapeReport.passStops = shape->outcome.passStops;
+        shapeReport.unfollowed = shape->outcome.unfollowed;
         shapeReport.stopped = shape->outcome.stopped;
         shapeReport.stopFrame = shape->outcome.stopFrame;
         report.shapes.push_back(shapeReport);
     }
 
-    if (_imp->undo && wroteAnything) {
-        if (sourceLost) {
+    if (_imp->undo) {
+        // With nothing written, only the keys that pin anchors are there to take back.
+        if (sourceLost || !wroteAnything) {
             _imp->undo->undo();
         } else {
             _imp->undo->captureResult();

@@ -776,15 +776,60 @@ raiseValueError(const std::string& message)
 }
 
 PyObject*
+frameRangesToPython(const std::vector<VectorFollowFrameRange>& ranges)
+{
+    PyObject* list = PyList_New((Py_ssize_t)ranges.size());
+    Py_ssize_t index = 0;
+    for (const VectorFollowFrameRange& range : ranges) {
+        PyList_SetItem(list, index++, Py_BuildValue("(ii)", range.first, range.last));
+    }
+
+    return list;
+}
+
+const char*
+passEndName(VectorFollowPassEnd reason)
+{
+    switch (reason) {
+    case VectorFollowPassEnd::eLowConfidence:
+        return "lowConfidence";
+    case VectorFollowPassEnd::eUnreadable:
+        return "unreadable";
+    case VectorFollowPassEnd::eNoLayer:
+        return "noLayer";
+    }
+
+    return "";
+}
+
+PyObject*
+passStopsToPython(const std::vector<VectorFollowPassStop>& stops)
+{
+    PyObject* list = PyList_New((Py_ssize_t)stops.size());
+    Py_ssize_t index = 0;
+    for (const VectorFollowPassStop& stop : stops) {
+        PyObject* otherOnly;
+        if (stop.otherOnly.empty()) {
+            otherOnly = Py_None;
+            Py_INCREF(otherOnly);
+        } else {
+            otherOnly = Py_BuildValue("(ii)", stop.otherOnly.first, stop.otherOnly.last);
+        }
+        // N hands the reference to otherOnly over to the dict.
+        PyList_SetItem(list, index++, Py_BuildValue("{s:s,s:s,s:i,s:N}", "direction", stop.direction == VectorFollowDirection::eForward ? "forward" : "backward", "reason", passEndName(stop.reason), "frame", stop.frame, "otherOnly", otherOnly));
+    }
+
+    return list;
+}
+
+PyObject*
 followReportToPython(const VectorFollowReport& report)
 {
     PyObject* result = PyDict_New();
     for (const VectorFollowShapeReport& shape : report.shapes) {
-        PyObject* inferred = PyList_New((Py_ssize_t)shape.inferred.size());
-        Py_ssize_t index = 0;
-        for (const VectorFollowFrameRange& range : shape.inferred) {
-            PyList_SetItem(inferred, index++, Py_BuildValue("(ii)", range.first, range.last));
-        }
+        PyObject* inferred = frameRangesToPython(shape.inferred);
+        PyObject* passStops = passStopsToPython(shape.passStops);
+        PyObject* unfollowed = frameRangesToPython(shape.unfollowed);
         PyObject* stopFrame;
         if (shape.stopped) {
             stopFrame = PyLong_FromLong(shape.stopFrame);
@@ -795,8 +840,12 @@ followReportToPython(const VectorFollowReport& report)
         PyObject* entry = PyDict_New();
         PyDict_SetItemString(entry, "inferred", inferred);
         PyDict_SetItemString(entry, "stopFrame", stopFrame);
+        PyDict_SetItemString(entry, "passStops", passStops);
+        PyDict_SetItemString(entry, "unfollowed", unfollowed);
         PyDict_SetItemString(result, shape.name.c_str(), entry);
         Py_DECREF(inferred);
+        Py_DECREF(passStops);
+        Py_DECREF(unfollowed);
         Py_DECREF(stopFrame);
         Py_DECREF(entry);
     }
@@ -861,7 +910,7 @@ Roto::followVectors(const std::list<ItemBase*>& items,
 
     params.source = host->getApp()->getNodeByFullySpecifiedName(source.toStdString());
     std::string error;
-    if (!VectorSampler::checkSource(params.source, host, first, &error)) {
+    if (!VectorSampler::checkSource(params.source, host, first, params.direction, &error)) {
         return raiseValueError(source.toStdString() + ": " + error);
     }
     params.first = first;

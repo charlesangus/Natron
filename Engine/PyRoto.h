@@ -199,10 +199,16 @@ public:
     /**
      * @brief Moves each item with the motion vectors of the node source, a fully qualified name,
      * over first..last, and returns once done, as one undo step. direction is "forward" or
-     * "backward", model is "perPoint", "translate", "affine" or "perspective". Returns a dict
-     * of the items' names to {"inferred": [(first, last), ...], "stopFrame": frame or None}.
-     * Raises ValueError when source has no motion layers or depends on this node, and for a
-     * direction or model it does not know.
+     * "backward", model is "perPoint", "translate", "affine" or "perspective". Between first, or
+     * a key, and a later key, it tracks both ways and blends the two so it meets both exactly.
+     * Returns a dict of the items' names to {"inferred": [(first, last), ...], "stopFrame": frame
+     * or None, "passStops": [...], "unfollowed": [(first, last), ...]}. A passStops entry is a
+     * pass that ended before the later key, as {"direction": "forward" or "backward", "reason":
+     * "lowConfidence", "unreadable" or "noLayer", "frame": the last it reached, "otherOnly":
+     * (first, last) or None, the frames the other pass carried alone}; unfollowed lists the frames
+     * neither pass reached. Raises ValueError when source has no forward motion layer, has no
+     * backward one for a backward follow, or depends on this node, and for a direction or model it
+     * does not know.
      **/
     PyObject* followVectors(const std::list<ItemBase*>& items,
                             const QString& source,

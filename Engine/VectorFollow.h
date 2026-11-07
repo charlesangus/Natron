@@ -146,10 +146,13 @@ struct VectorFollowShapeSetup {
     double confidenceThreshold = kVectorFollowDefaultConfidenceThreshold;
     int first = 0;
     int last = 0;
-    // By frame, up. A shape with no key in [first, last] has its start state here, with seedIsNew.
+    // By frame, up. With seedIsNew the first one is a start state that is not a key yet.
     std::vector<VectorFollowAnchor> anchors;
     bool seedIsNew = false;
-    // A quad the shape's transform is applied to, to crossfade two transforms.
+    // The source has no backward layer, so a bridge between two anchors has only its forward pass.
+    bool forwardOnly = false;
+    // A quad around the shape, in the coordinates its transform applies to. Its centre is what two
+    // transforms blend about.
     std::vector<FollowPoint> corners;
 };
 
@@ -163,11 +166,32 @@ struct VectorFollowFrame {
 struct VectorFollowFrameRange {
     int first = 0;
     int last = 0;
+
+    bool empty() const { return first > last; }
+};
+
+enum class VectorFollowPassEnd {
+    eLowConfidence,
+    eUnreadable,
+    eNoLayer
+};
+
+// One of the two passes between two anchors ended before it reached the far anchor.
+struct VectorFollowPassStop {
+    VectorFollowDirection direction = VectorFollowDirection::eForward;
+    VectorFollowPassEnd reason = VectorFollowPassEnd::eLowConfidence;
+    // The last frame it reached.
+    int frame = 0;
+    // The frames the other pass carried alone.
+    VectorFollowFrameRange otherOnly = { 1, 0 };
 };
 
 struct VectorFollowShapeReport {
     std::string name;
     std::vector<VectorFollowFrameRange> inferred;
+    std::vector<VectorFollowPassStop> passStops;
+    // Frames between two anchors that neither pass reached, which keep their old motion.
+    std::vector<VectorFollowFrameRange> unfollowed;
     bool stopped = false;
     int stopFrame = 0;
 };
@@ -183,6 +207,8 @@ std::string formatVectorFollowReport(const VectorFollowReport& report);
 
 struct VectorFollowShapeOutcome {
     std::vector<VectorFollowFrameRange> inferred;
+    std::vector<VectorFollowPassStop> passStops;
+    std::vector<VectorFollowFrameRange> unfollowed;
     bool stopped = false;
     int stopFrame = 0;
     bool aborted = false;
@@ -191,7 +217,8 @@ struct VectorFollowShapeOutcome {
 /**
  * @brief Follows one shape over setup's range. Each frame is given to emit once it is final, so
  * whatever was emitted before an abort stands on its own. Anchors are not emitted, a new seed is.
- * Calls emit and aborted on the calling thread.
+ * Between two anchors, a pass that ends early leaves the frames past that point to the other pass
+ * alone, which is reported and is no failure. Calls emit and aborted on the calling thread.
  **/
 VectorFollowShapeOutcome followVectorShape(VectorField& field,
                                            const VectorFollowShapeSetup& setup,

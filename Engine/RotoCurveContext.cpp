@@ -1835,7 +1835,7 @@ RotoCurveContext::followVectors(const VectorFollowParams& params,
         run.applyReduction();
     }
 
-    return run.finish(false, sampler.lastError(), undo);
+    return run.finish(false, run.wasAborted() ? sampler.lastError() : std::string(), undo);
 }
 
 int

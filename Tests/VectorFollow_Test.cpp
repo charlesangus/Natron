@@ -18,6 +18,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -131,6 +132,39 @@ private:
     const double _dy;
 };
 
+// What either pass reads is set apart, and each can run out of confidence on its own.
+class PassField
+    : public VectorField {
+public:
+    double forwardX = 1.;
+    double backwardX = 0.;
+    int forwardLowFrom = 1 << 30;
+    int backwardLowDownFrom = -(1 << 30);
+    int unreadableFrame = -(1 << 30);
+
+    virtual bool prepareFrame(int frame) OVERRIDE FINAL
+    {
+        return frame != unreadableFrame;
+    }
+
+    virtual VectorSample sample(int frame,
+                                double /*x*/,
+                                double /*y*/) OVERRIDE FINAL
+    {
+        VectorSample s;
+        s.forwardX = forwardX;
+        s.backwardX = backwardX;
+        if (frame >= forwardLowFrom) {
+            s.forwardConfidence = 0.;
+        }
+        if (frame <= backwardLowDownFrom) {
+            s.backwardConfidence = 0.;
+        }
+
+        return s;
+    }
+};
+
 std::vector<FollowPoint>
 squarePoints()
 {
@@ -192,6 +226,23 @@ frameOf(const std::vector<VectorFollowFrame>& frames,
     }
 
     return nullptr;
+}
+
+// Two anchors in the same place at 0 and 10, so with PassField's defaults the forward pass drifts by
+// a pixel a frame and the backward one stands still.
+VectorFollowShapeSetup
+stillBridgeSetup()
+{
+    return perPointSetup(0, 10, { 0, 10 }, 0., 0.);
+}
+
+double
+offsetAt(const std::vector<VectorFollowFrame>& frames,
+         int frame)
+{
+    const VectorFollowFrame* found = frameOf(frames, frame);
+
+    return found ? found->points[0].x - squarePoints()[0].x : -1e30;
 }
 
 } // anonymous namespace
@@ -375,6 +426,228 @@ TEST(VectorFollow, AnUnreadableFrameEndsTheFollowAsAnAbort)
     const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
     EXPECT_TRUE(outcome.aborted);
     EXPECT_EQ(frames.back().frame, 2);
+}
+
+TEST(VectorFollow, ABridgeMeetsBothAnchorsAndBlendsPerPointBetweenThem)
+{
+    PassField field;
+    VectorFollowShapeSetup setup = stillBridgeSetup();
+    setup.seedIsNew = true;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
+
+    ASSERT_EQ(frames.size(), 10u);
+    EXPECT_EQ(frames.front().frame, 0);
+    EXPECT_DOUBLE_EQ(offsetAt(frames, 0), 0.);
+    EXPECT_EQ(frameOf(frames, 10), nullptr);
+    EXPECT_NEAR(offsetAt(frames, 5), 2.5, 1e-9);
+    for (int frame = 1; frame < 10; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
+    }
+    EXPECT_TRUE(outcome.passStops.empty());
+    EXPECT_TRUE(outcome.unfollowed.empty());
+    EXPECT_FALSE(outcome.stopped);
+}
+
+TEST(VectorFollow, ABridgeChecksForAnAbortOncePerFrameInBothPasses)
+{
+    constexpr int kGap = 9;
+    PassField field;
+    const VectorFollowShapeSetup setup = stillBridgeSetup();
+    const std::vector<VectorFollowFrame> whole = runFollow(field, setup);
+    ASSERT_EQ(whole.size(), (std::size_t)kGap);
+
+    for (int checks = 0; checks < 2 * kGap; ++checks) {
+        int calls = 0;
+        std::vector<VectorFollowFrame> frames;
+        const VectorFollowShapeOutcome outcome = followVectorShape(
+            field, setup, [&frames](const VectorFollowFrame& f) { frames.push_back(f); }, [&calls, checks]() { return calls++ >= checks; });
+
+        EXPECT_TRUE(outcome.aborted) << checks;
+        EXPECT_EQ(calls, checks + 1);
+        // Nothing comes out of the pass that is only held. Past it, a run of finished frames from the
+        // anchor the follow comes from, each what the whole follow makes of that frame.
+        ASSERT_EQ((int)frames.size(), std::max(0, checks - kGap)) << checks;
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            EXPECT_EQ(frames[i].frame, (int)i + 1);
+            EXPECT_DOUBLE_EQ(frames[i].points[0].x, whole[i].points[0].x);
+        }
+    }
+}
+
+TEST(VectorFollow, ABackwardBridgeBakesFromTheLaterAnchorAndAbortsToo)
+{
+    PassField field;
+    VectorFollowShapeSetup setup = stillBridgeSetup();
+    setup.direction = VectorFollowDirection::eBackward;
+    const std::vector<VectorFollowFrame> whole = runFollow(field, setup);
+    ASSERT_EQ(whole.size(), 9u);
+    EXPECT_EQ(whole.front().frame, 9);
+    EXPECT_NEAR(offsetAt(whole, 5), 2.5, 1e-9);
+
+    int calls = 0;
+    std::vector<VectorFollowFrame> frames;
+    const VectorFollowShapeOutcome outcome = followVectorShape(
+        field, setup, [&frames](const VectorFollowFrame& f) { frames.push_back(f); }, [&calls]() { return calls++ >= 12; });
+    EXPECT_TRUE(outcome.aborted);
+    ASSERT_EQ(frames.size(), 3u);
+    EXPECT_EQ(frames.back().frame, 7);
+}
+
+TEST(VectorFollow, ABackwardPassThatStopsLeavesTheForwardPassAlonePastThatPoint)
+{
+    PassField field;
+    field.backwardLowDownFrom = 6;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, stillBridgeSetup(), &outcome);
+
+    ASSERT_EQ(frames.size(), 9u);
+    for (int frame = 1; frame <= 5; ++frame) {
+        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+    }
+    for (int frame = 6; frame <= 9; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
+    }
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    EXPECT_TRUE(outcome.unfollowed.empty());
+    ASSERT_EQ(outcome.passStops.size(), 1u);
+    EXPECT_EQ(outcome.passStops[0].direction, VectorFollowDirection::eBackward);
+    EXPECT_EQ(outcome.passStops[0].reason, VectorFollowPassEnd::eLowConfidence);
+    EXPECT_EQ(outcome.passStops[0].frame, 6);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.first, 1);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.last, 5);
+}
+
+TEST(VectorFollow, AForwardPassThatStopsLeavesTheBackwardPassAlonePastThatPoint)
+{
+    PassField field;
+    field.forwardLowFrom = 4;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, stillBridgeSetup(), &outcome);
+
+    ASSERT_EQ(frames.size(), 9u);
+    for (int frame = 1; frame <= 4; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
+    }
+    for (int frame = 5; frame <= 9; ++frame) {
+        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), 0.) << frame;
+    }
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    ASSERT_EQ(outcome.passStops.size(), 1u);
+    EXPECT_EQ(outcome.passStops[0].direction, VectorFollowDirection::eForward);
+    EXPECT_EQ(outcome.passStops[0].frame, 4);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.first, 5);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.last, 9);
+}
+
+TEST(VectorFollow, AnUnreadableFrameInABridgeEndsBothPassesThereWithNoFailure)
+{
+    PassField field;
+    field.unreadableFrame = 8;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, stillBridgeSetup(), &outcome);
+
+    ASSERT_EQ(frames.size(), 9u);
+    EXPECT_DOUBLE_EQ(offsetAt(frames, 7), 7.);
+    EXPECT_NEAR(offsetAt(frames, 8), 8. * (1. - followBridgeWeight(8, 0, 10)), 1e-9);
+    EXPECT_DOUBLE_EQ(offsetAt(frames, 9), 0.);
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    ASSERT_EQ(outcome.passStops.size(), 2u);
+    for (const VectorFollowPassStop& stop : outcome.passStops) {
+        EXPECT_EQ(stop.reason, VectorFollowPassEnd::eUnreadable);
+        EXPECT_EQ(stop.frame, 8);
+    }
+}
+
+TEST(VectorFollow, AReadFailingBecauseOfAnAbortIsAnAbortInABridge)
+{
+    PassField field;
+    field.unreadableFrame = 8;
+    int calls = 0;
+    std::vector<VectorFollowFrame> frames;
+    const VectorFollowShapeOutcome outcome = followVectorShape(
+        field, stillBridgeSetup(), [&frames](const VectorFollowFrame& f) { frames.push_back(f); }, [&calls]() {
+            // The backward pass reaches the unreadable frame on its third step.
+            return ++calls > 3; });
+
+    EXPECT_TRUE(outcome.aborted);
+    EXPECT_TRUE(frames.empty());
+    EXPECT_TRUE(outcome.passStops.empty());
+}
+
+TEST(VectorFollow, FramesNeitherPassReachesAreLeftAloneAndReported)
+{
+    PassField field;
+    field.forwardLowFrom = 3;
+    field.backwardLowDownFrom = 7;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, stillBridgeSetup(), &outcome);
+
+    ASSERT_EQ(frames.size(), 6u);
+    for (int frame = 4; frame <= 6; ++frame) {
+        EXPECT_EQ(frameOf(frames, frame), nullptr) << frame;
+    }
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_TRUE(outcome.stopped);
+    EXPECT_EQ(outcome.stopFrame, 3);
+    ASSERT_EQ(outcome.unfollowed.size(), 1u);
+    EXPECT_EQ(outcome.unfollowed[0].first, 4);
+    EXPECT_EQ(outcome.unfollowed[0].last, 6);
+    EXPECT_EQ(outcome.passStops.size(), 2u);
+}
+
+TEST(VectorFollow, AForwardOnlySourceBridgesOnItsForwardPassAlone)
+{
+    PassField field;
+    field.backwardX = 100.;
+    VectorFollowShapeSetup setup = stillBridgeSetup();
+    setup.forwardOnly = true;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
+
+    ASSERT_EQ(frames.size(), 9u);
+    for (int frame = 1; frame <= 9; ++frame) {
+        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+    }
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    ASSERT_EQ(outcome.passStops.size(), 1u);
+    EXPECT_EQ(outcome.passStops[0].direction, VectorFollowDirection::eBackward);
+    EXPECT_EQ(outcome.passStops[0].reason, VectorFollowPassEnd::eNoLayer);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.first, 1);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.last, 9);
+}
+
+TEST(VectorFollow, ReportTellsOfPassStopsWithoutCallingThemAFailure)
+{
+    VectorFollowReport report;
+    VectorFollowShapeReport shape;
+    shape.name = "Bezier1";
+    VectorFollowPassStop low;
+    low.direction = VectorFollowDirection::eBackward;
+    low.frame = 6;
+    low.otherOnly.first = 1;
+    low.otherOnly.last = 5;
+    VectorFollowPassStop layer;
+    layer.reason = VectorFollowPassEnd::eNoLayer;
+    shape.passStops.push_back(low);
+    shape.passStops.push_back(layer);
+    VectorFollowFrameRange unfollowed;
+    unfollowed.first = 7;
+    unfollowed.last = 8;
+    shape.unfollowed.push_back(unfollowed);
+    report.shapes.push_back(shape);
+
+    const std::string text = formatVectorFollowReport(report);
+    EXPECT_NE(text.find("Follow Vectors is done"), std::string::npos);
+    EXPECT_NE(text.find("backward pass stopped at frame 6"), std::string::npos);
+    EXPECT_NE(text.find("frames 1-5 use the forward pass alone"), std::string::npos);
+    EXPECT_NE(text.find("no forward motion layer"), std::string::npos);
+    EXPECT_NE(text.find("neither pass reached frames 7-8"), std::string::npos);
+    EXPECT_EQ(text.find("every frame"), std::string::npos);
 }
 
 TEST(VectorFollow, ReportNamesInferredRangesAndTheStop)

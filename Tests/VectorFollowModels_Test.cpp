@@ -188,6 +188,44 @@ anchorOf(int frame,
     return anchor;
 }
 
+FollowMatrix
+rotationAboutTheOutlineCentre(double degrees)
+{
+    const double radians = degrees * M_PI / 180.;
+    FollowMatrix rotation;
+    rotation.m[0] = std::cos(radians);
+    rotation.m[1] = -std::sin(radians);
+    rotation.m[3] = std::sin(radians);
+    rotation.m[4] = std::cos(radians);
+
+    return FollowMatrix::translation(130., 130.) * rotation * FollowMatrix::translation(-130., -130.);
+}
+
+std::vector<VectorFollowFrame>
+bridgeOnStillPicture(VectorFollowModel model,
+                     const FollowMatrix& atFrame0,
+                     const FollowMatrix& atFrame10)
+{
+    MatrixField field { FollowMatrix() };
+
+    VectorFollowShapeSetup setup;
+    setup.first = 0;
+    setup.last = 10;
+    setup.model = model;
+    setup.corners = squareOutline();
+    VectorFollowAnchor a = anchorOf(0, false);
+    VectorFollowAnchor b = anchorOf(10, false);
+    a.transform = atFrame0;
+    b.transform = atFrame10;
+    setup.anchors.push_back(a);
+    setup.anchors.push_back(b);
+
+    std::vector<VectorFollowFrame> frames;
+    followVectorShape(field, setup, [&frames](const VectorFollowFrame& f) { frames.push_back(f); }, []() { return false; });
+
+    return frames;
+}
+
 } // anonymous namespace
 
 TEST(VectorFollowModels, ExactTranslateAffineAndHomographyAreRecovered)
@@ -345,6 +383,52 @@ TEST(VectorFollowModels, AFitFollowsItsMatrix)
     }
     expectSameMotion(frames.back().transform, expected, squareOutline());
     EXPECT_TRUE(frames.back().points.empty());
+}
+
+TEST(VectorFollowModels, FitsBlendAsARotationAboutTheShapeNotAsMatrixEntries)
+{
+    for (VectorFollowModel model : { VectorFollowModel::eAffine, VectorFollowModel::ePerspective }) {
+        const std::vector<VectorFollowFrame> frames = bridgeOnStillPicture(model, FollowMatrix(), rotationAboutTheOutlineCentre(40.));
+        ASSERT_EQ(frames.size(), 9u);
+        expectSameMotion(frames[4].transform, rotationAboutTheOutlineCentre(20.), squareOutline());
+        expectSameMotion(frames[1].transform, rotationAboutTheOutlineCentre(40. * followBridgeWeight(2, 0, 10)), squareOutline());
+    }
+}
+
+TEST(VectorFollowModels, ABlendTakesTheShortWayAroundARotation)
+{
+    const std::vector<VectorFollowFrame> frames = bridgeOnStillPicture(VectorFollowModel::eAffine, rotationAboutTheOutlineCentre(170.), rotationAboutTheOutlineCentre(-170.));
+    ASSERT_EQ(frames.size(), 9u);
+    expectSameMotion(frames[4].transform, rotationAboutTheOutlineCentre(180.), squareOutline());
+}
+
+TEST(VectorFollowModels, BlendingATransformWithItselfGivesItBack)
+{
+    FollowMatrix affine;
+    affine.m[0] = 1.3;
+    affine.m[1] = 0.4;
+    affine.m[2] = 12.;
+    affine.m[3] = -0.2;
+    affine.m[4] = 0.8;
+    affine.m[5] = -7.;
+    FollowMatrix perspective = affine;
+    perspective.m[6] = 1e-4;
+    perspective.m[7] = -2e-4;
+
+    const std::vector<VectorFollowFrame> fromAffine = bridgeOnStillPicture(VectorFollowModel::eAffine, affine, affine);
+    const std::vector<VectorFollowFrame> fromPerspective = bridgeOnStillPicture(VectorFollowModel::ePerspective, perspective, perspective);
+    ASSERT_EQ(fromAffine.size(), 9u);
+    ASSERT_EQ(fromPerspective.size(), 9u);
+    expectSameMotion(fromAffine[4].transform, affine, squareOutline());
+    expectSameMotion(fromPerspective[4].transform, perspective, squareOutline());
+}
+
+TEST(VectorFollowModels, AFitBlendsPositionLinearlyAcrossTheBridge)
+{
+    const std::vector<VectorFollowFrame> frames = bridgeOnStillPicture(VectorFollowModel::eTranslate, FollowMatrix::translation(2., 4.), FollowMatrix::translation(6., -4.));
+    ASSERT_EQ(frames.size(), 9u);
+    EXPECT_NEAR(frames[4].transform.m[2], 4., 1e-9);
+    EXPECT_NEAR(frames[4].transform.m[5], 0., 1e-9);
 }
 
 TEST(VectorFollowModels, AFitIsExactOnBothAnchorsOfABridge)

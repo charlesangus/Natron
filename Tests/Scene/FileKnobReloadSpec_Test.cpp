@@ -132,9 +132,9 @@ TEST_F(FileKnobReloadSpecTest, AnOfxFileParamGivesItsIconToTheReloadButtonOnItsR
 
 TEST_F(FileKnobReloadSpecTest, AnOfxFileParamWithoutAReloadButtonKeepsItsIcon)
 {
-    NodePtr node = createNode(QString::fromUtf8("net.sf.openfx.LensDistortion"));
+    NodePtr node = createNode(QString::fromUtf8("net.fxarena.openfx.Text"));
     ASSERT_TRUE(bool(node));
-    KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName("pfFile").get());
+    KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName("file").get());
     ASSERT_TRUE(file);
     EXPECT_TRUE(file->showsReloadButton());
     EXPECT_FALSE(bool(file->getReloadButton()));

@@ -200,11 +200,16 @@ referenceRequest(const PXR_NS::UsdStageRefPtr& stage,
 } // anonymous namespace
 
 namespace {
-// Storm resolves several samples per pixel where a ray takes one, so only pixels where the surface
-// is close to flat can be held to one depth: a limit of 2e-4 of the depth on the second difference
-// bounds what the resolve can add to well under the comparison's 1e-4.
-const double kFlatSurfaceLimit = 2e-4;
-const double kInteriorDepthTolerance = 1e-4;
+// Storm's default resolve keeps one MSAA sample per pixel, off the centre by a fraction of a pixel, so
+// its depth moves with the surface's slope and no tolerance on depth alone separates that from a wrong
+// ray. USDRenderSingleSampleTest therefore runs Storm with one sample, at the pixel's centre as a ray
+// is. Float window depth then leaves a worst difference of 1.2e-6 on the reference scene.
+const double kCentreDepthTolerance = 1e-5;
+
+// A centre within rounding of a silhouette can land either side of it, as Storm's fill rule and the
+// ray's test need not agree there: 0 pixels on the reference scene and 4 on the nested instances. A
+// sampling shift disagrees along whole edges, 26 pixels already for the offset of Storm's MSAA sample.
+const std::size_t kSilhouetteTies = 8;
 
 bool
 sameBits(float a,
@@ -213,66 +218,39 @@ sameBits(float a,
     return std::memcmp(&a, &b, sizeof(float)) == 0;
 }
 
-bool
-isInteriorPixel(const std::vector<float>& depth,
-                const std::vector<float>& primId,
-                const std::vector<float>& otherPrimId,
-                int width,
-                int x,
-                int y)
-{
-    const std::size_t centre = (std::size_t)y * width + x;
-
-    if (!std::isfinite(depth[centre])) {
-        return false;
-    }
-    const std::size_t steps[] = { 1, (std::size_t)width };
-    for (const std::size_t step : steps) {
-        for (const std::size_t neighbour : { centre - step, centre + step }) {
-            if (!sameBits(primId[neighbour], primId[centre]) || !sameBits(otherPrimId[neighbour], primId[centre]) || !std::isfinite(depth[neighbour])) {
-                return false;
-            }
-        }
-        const double secondDifference = (double)depth[centre - step] + depth[centre + step] - 2. * depth[centre];
-        if (std::fabs(secondDifference) > kFlatSurfaceLimit * depth[centre]) {
-            return false;
-        }
-    }
-
-    return sameBits(otherPrimId[centre], primId[centre]);
-}
-
-// Holds a render's depth and primId to Storm's on the interior pixels, and returns how many there were.
+// Holds a render's depth and primId to single-sample Storm's on every pixel, and returns how many
+// pixels hit the same prim in both.
 std::size_t
-expectInteriorMatchesStorm(const std::vector<float>& stormDepth,
-                           const std::vector<float>& stormPrimId,
-                           const std::vector<float>& depth,
-                           const std::vector<float>& primId,
-                           int width,
-                           int height)
+expectMatchesSingleSampleStorm(const std::vector<float>& stormDepth,
+                               const std::vector<float>& stormPrimId,
+                               const std::vector<float>& depth,
+                               const std::vector<float>& primId)
 {
     std::size_t compared = 0;
+    std::size_t primIdFailures = 0;
     std::size_t depthFailures = 0;
     double worst = 0.;
 
-    for (int y = 1; y < height - 1; ++y) {
-        for (int x = 1; x < width - 1; ++x) {
-            if (!isInteriorPixel(stormDepth, stormPrimId, primId, width, x, y)) {
-                continue;
-            }
-            ++compared;
+    for (std::size_t i = 0; i < stormDepth.size(); ++i) {
+        if (!sameBits(primId[i], stormPrimId[i])) {
+            ++primIdFailures;
+            continue;
+        }
+        if (!std::isfinite(stormDepth[i]) && !std::isfinite(depth[i])) {
+            continue;
+        }
+        ++compared;
 
-            const std::size_t i = (std::size_t)y * width + x;
-            const double relative = std::fabs((double)depth[i] - stormDepth[i]) / std::max(std::fabs((double)depth[i]), std::fabs((double)stormDepth[i]));
+        const double relative = std::fabs((double)depth[i] - stormDepth[i]) / std::max(std::fabs((double)depth[i]), std::fabs((double)stormDepth[i]));
 
-            worst = std::max(worst, relative);
-            if (relative > kInteriorDepthTolerance) {
-                ++depthFailures;
-            }
+        worst = std::max(worst, relative);
+        if (!(relative <= kCentreDepthTolerance)) {
+            ++depthFailures;
         }
     }
+    EXPECT_LE(primIdFailures, kSilhouetteTies);
     EXPECT_EQ(0u, depthFailures) << "worst relative depth difference " << worst;
-    std::cout << "[ depth  ] " << compared << " interior pixels, worst relative difference from Storm " << worst << std::endl;
+    std::cout << "[ depth  ] " << compared << " pixels, worst relative difference from Storm " << worst << ", " << primIdFailures << " primId differences" << std::endl;
 
     return compared;
 }
@@ -866,7 +844,20 @@ TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
     EXPECT_EQ(stormHash, node->getHashValue());
 }
 
-TEST_F(USDRenderRendererTest, NatronUtilityMatchesStormOnInteriorPixels)
+// HDX_MSAA_SAMPLE_COUNT is read once per process and would change the bits of every other Storm render
+// in it, so Tests/SuiteProperties.cmake sets it for this suite's process alone.
+class USDRenderSingleSampleTest
+    : public USDRenderRendererTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDRenderRendererTest::SetUp();
+        const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
+        ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
+    }
+};
+
+TEST_F(USDRenderSingleSampleTest, NatronUtilityMatchesStorm)
 {
     if (skipWithoutGL()) {
         return;
@@ -891,32 +882,49 @@ TEST_F(USDRenderRendererTest, NatronUtilityMatchesStormOnInteriorPixels)
     ASSERT_EQ(pixels, utility[1].pixels.size());
     ASSERT_EQ(pixels, utility[2].pixels.size());
 
-    const std::size_t compared = expectInteriorMatchesStorm(storm[1].pixels, storm[2].pixels, utility[1].pixels, utility[2].pixels, kWidth, kHeight);
+    const std::size_t compared = expectMatchesSingleSampleStorm(storm[1].pixels, storm[2].pixels, utility[1].pixels, utility[2].pixels);
     EXPECT_GT(compared, 100u);
 
     const float boxId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Box"));
     const float ballId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Ball"));
     std::size_t boxPixels = 0;
     std::size_t ballPixels = 0;
-    for (int y = 1; y < kHeight - 1; ++y) {
-        for (int x = 1; x < kWidth - 1; ++x) {
-            if (!isInteriorPixel(storm[1].pixels, storm[2].pixels, utility[2].pixels, kWidth, x, y)) {
-                continue;
-            }
-            const std::size_t i = (std::size_t)y * kWidth + x;
-            if (sameBits(utility[2].pixels[i], ballId)) {
-                ++ballPixels;
-            } else if (sameBits(utility[2].pixels[i], boxId)) {
-                ++boxPixels;
-                EXPECT_NEAR(0.8f, utility[0].pixels[i * 4], 1e-5);
-                EXPECT_NEAR(0.2f, utility[0].pixels[i * 4 + 1], 1e-5);
-                EXPECT_NEAR(0.1f, utility[0].pixels[i * 4 + 2], 1e-5);
-                EXPECT_EQ(1.f, utility[0].pixels[i * 4 + 3]);
-            }
+    for (std::size_t i = 0; i < pixels; ++i) {
+        if (sameBits(utility[2].pixels[i], ballId)) {
+            ++ballPixels;
+        } else if (sameBits(utility[2].pixels[i], boxId)) {
+            ++boxPixels;
+            EXPECT_NEAR(0.8f, utility[0].pixels[i * 4], 1e-5);
+            EXPECT_NEAR(0.2f, utility[0].pixels[i * 4 + 1], 1e-5);
+            EXPECT_NEAR(0.1f, utility[0].pixels[i * 4 + 2], 1e-5);
+            EXPECT_EQ(1.f, utility[0].pixels[i * 4 + 3]);
         }
     }
     EXPECT_GT(boxPixels, 100u);
     EXPECT_GT(ballPixels, 0u);
+}
+
+TEST_F(USDRenderSingleSampleTest, NatronUtilityPicksNestedInstancesAsStormDoes)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
+    ASSERT_TRUE(stage);
+    const int stormOwner = 0;
+    const int utilityOwner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &stormOwner);
+    HydraRender::Result storm;
+    HydraRender::Result utility;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &storm, &error)) << error;
+    expectNestedInstancesInPlace(storm);
+    request.owner = &utilityOwner;
+    request.renderer = kRenderDelegateUtilityId;
+    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
+    EXPECT_GT(expectMatchesSingleSampleStorm(storm.depth, storm.primId, utility.depth, utility.primId), 100u);
+    HydraRender::releaseAll();
 }
 
 TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEachRendererDraws)
@@ -1016,29 +1024,6 @@ TEST(USDRenderRenderers, NatronUtilityDecodesNestedInstancesToTheirOwnPaths)
 
     ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
     expectNestedInstancesInPlace(utility);
-    HydraRender::releaseAll();
-}
-
-TEST(USDRenderRenderers, NatronUtilityPicksNestedInstancesAsStormDoes)
-{
-    if (skipWithoutGL()) {
-        return;
-    }
-    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
-    ASSERT_TRUE(stage);
-    const int stormOwner = 0;
-    const int utilityOwner = 0;
-    HydraRender::Request request = referenceRequest(stage, 1., &stormOwner);
-    HydraRender::Result storm;
-    HydraRender::Result utility;
-    std::string error;
-
-    ASSERT_TRUE(HydraRender::render(request, &storm, &error)) << error;
-    expectNestedInstancesInPlace(storm);
-    request.owner = &utilityOwner;
-    request.renderer = kRenderDelegateUtilityId;
-    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
-    EXPECT_GT(expectInteriorMatchesStorm(storm.depth, storm.primId, utility.depth, utility.primId, kWidth, kHeight), 100u);
     HydraRender::releaseAll();
 }
 

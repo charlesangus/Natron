@@ -5,6 +5,10 @@ Graph: USDRead into Viewer1, of a stage with a grey default-purpose box and a bl
 in front of it. The viewer's purposes start with Render off, so the ball must be absent until the
 toggle and absent again after it, under Natron Utility and then under Storm.
 
+Only geometry may reach the colour counts: the grid (Ctrl+G) is hidden, as its blue axis line counts as
+blue and its lines as grey, and the view uses the headlight, as the default Scene Lights leaves Storm's
+surfaces black on this stage, which has no light.
+
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
@@ -18,6 +22,7 @@ POLL_TIMEOUT_S = 30.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 NUKE_PRESET = 0
+HEADLIGHT = 2
 HUD_MARGIN = 28
 UTILITY_ID = "HdNatronUtilityRendererPlugin"
 STORM_ID = "HdStormRendererPlugin"
@@ -71,6 +76,10 @@ try:
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
     navigation.setValue(NUKE_PRESET)
+    lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
+    require(lighting is not None, "Preferences have a viewer3DLighting parameter")
+    original_lighting = lighting.getValue()
+    lighting.setValue(HEADLIGHT)
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
@@ -240,6 +249,9 @@ try:
         report("NOTE scene view %dx%d" % (v.width(), v.height()))
         check(prop("natronSceneRenderer") == STORM_ID, "the view starts on Storm (%r)" % (prop("natronSceneRenderer"),))
         check(not bool(prop("natronScenePurposes")[1]), "the view starts with Render off")
+        check(prop("natronSceneLighting") == "headlight", "the view uses the headlight (%r)" % (prop("natronSceneLighting"),))
+        key(v, Qt.Key_G, Qt.ControlModifier)
+        check(not prop("natronSceneShowGrid"), "the grid is hidden")
         key(v, Qt.Key_A)
         yield settle()
 
@@ -252,6 +264,7 @@ try:
         yield from check_purpose_toggle(v, "Storm", "storm")
 
         navigation.setValue(original_navigation)
+        lighting.setValue(original_lighting)
 
     run(steps())
 except Exception:

@@ -18,7 +18,7 @@
 #                        ctest logs are downloaded even when the run fails.
 #   --record-goldens  -> implies --tests; also records the native golden renders
 #                        remotely and downloads them, STAMP included, into
-#                        Tests/fixtures/native-golden/ of this checkout. The
+#                        Tests/fixtures/native-golden/ of this checkout, with NatronUtilityGoldenTest's. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP).
 #   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once

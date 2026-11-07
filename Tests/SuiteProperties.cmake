@@ -82,3 +82,11 @@ if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
                         "update the suite name or it would silently lose its properties.")
 endif()
 set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
+
+# One MSAA sample puts Storm's depth at the pixel's centre for this suite's comparison with a ray. The
+# setting is read once per process and would change the bits of every other Storm render in it.
+if(NOT "USDRenderSingleSampleTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'USDRenderSingleSampleTest' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(USDRenderSingleSampleTest PROPERTIES ENVIRONMENT "HDX_MSAA_SAMPLE_COUNT=1")

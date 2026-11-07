@@ -262,6 +262,7 @@ public:
         , overlayColorSet(false)
         , overlayColor { 0., 0., 0. }
         , nativeOverlays()
+        , transformInteracts()
         , nodeCreated(false)
         , wasCreatedSilently(false)
         , paintStroke()
@@ -557,6 +558,7 @@ public:
     bool overlayColorSet;
     double overlayColor[3];
     std::list<HostOverlayKnobsPtr> nativeOverlays;
+    std::list<TransformInteractKnobs> transformInteracts;
     bool nodeCreated;
     bool wasCreatedSilently;
     RotoDrawableItemWPtr paintStroke;

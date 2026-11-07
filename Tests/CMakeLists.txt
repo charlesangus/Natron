@@ -63,6 +63,8 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    GlobalModeKind_Test.cpp
+    GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp
     GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
@@ -80,6 +82,7 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobValueRole_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp

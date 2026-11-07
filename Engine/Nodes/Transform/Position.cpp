@@ -40,6 +40,7 @@ PositionOp::createKnobs(KnobHolder* holder,
 {
     KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Translate"), 2);
     translateKnob->setName(kPositionParamTranslate);
+    translateKnob->setValueRole(eValueRoleTranslate);
     translateKnob->setHintToolTip(EffectInstance::tr("New position of the bottom-left pixel. Rounded to the closest pixel."));
     translateKnob->setSpatial(true);
     translateKnob->disableSlider();

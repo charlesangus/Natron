@@ -103,6 +103,7 @@ ColorWheelOp::createKnobs(KnobHolder* holder,
     rotate = addDoubleKnob(holder, page, kColorWheelParamRotate, "Rotate",
                            "The rotation of the hues around the wheel, in degrees. Negative values rotate clockwise.",
                            0., -DBL_MAX, DBL_MAX, -180., 180.);
+    rotate.lock()->setValueRole(eValueRoleRotate);
     softness = ShapeGenerator::addSoftnessKnob(holder, page,
                                                "How far inside the wheel's edge, in canonical pixels, its alpha fades to 0. At 0 the edge is hard but antialiased.");
 }

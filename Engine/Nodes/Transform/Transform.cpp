@@ -55,6 +55,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 {
     KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Translate"), 2);
     translateKnob->setName(kTransformNodeParamTranslate);
+    translateKnob->setValueRole(eValueRoleTranslate);
     translateKnob->setHintToolTip(EffectInstance::tr("Translation along the x and y axes in pixels. Can also be adjusted by clicking and dragging the center handle in the Viewer."));
     translateKnob->setSpatial(true);
     translateKnob->setDefaultValuesAreNormalized(true);
@@ -72,6 +73,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr rotateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Rotate"));
     rotateKnob->setName(kTransformNodeParamRotate);
+    rotateKnob->setValueRole(eValueRoleRotate);
     rotateKnob->setHintToolTip(EffectInstance::tr("Rotation angle in degrees around the Center. Can also be adjusted by clicking and dragging the rotation bar in the Viewer."));
     rotateKnob->setMinimum(-DBL_MAX);
     rotateKnob->setMaximum(DBL_MAX);
@@ -84,6 +86,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr scaleKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Scale"), 2);
     scaleKnob->setName(kTransformNodeParamScale);
+    scaleKnob->setValueRole(eValueRoleScale);
     scaleKnob->setHintToolTip(EffectInstance::tr("Scale factor along the x and y axes. Can also be adjusted by clicking and dragging the outer circle or the diameter handles in the Viewer."));
     scaleKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
@@ -99,6 +102,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew X"));
     skewXKnob->setName(kTransformNodeParamSkewX);
+    skewXKnob->setValueRole(eValueRoleSkew);
     skewXKnob->setHintToolTip(EffectInstance::tr("Skew along the x axis. Can also be adjusted by clicking and dragging the skew bar in the Viewer."));
     skewXKnob->setMinimum(-DBL_MAX);
     skewXKnob->setMaximum(DBL_MAX);
@@ -111,6 +115,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew Y"));
     skewYKnob->setName(kTransformNodeParamSkewY);
+    skewYKnob->setValueRole(eValueRoleSkew);
     skewYKnob->setHintToolTip(EffectInstance::tr("Skew along the y axis."));
     skewYKnob->setMinimum(-DBL_MAX);
     skewYKnob->setMaximum(DBL_MAX);

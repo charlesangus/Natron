@@ -177,6 +177,15 @@ public:
     }
 
     /**
+     * @brief Draws a node's overlay draw list in the current OpenGL context, in the coordinates
+     * the node's overlay is being drawn in.
+     **/
+    virtual void drawOverlayDrawList(const OverlayDrawList& /*list*/,
+                                     const OverlayDrawState& /*state*/)
+    {
+    }
+
+    /**
      * @brief Returns the font height, i.e: the height of the highest letter for this font
      **/
     virtual int getWidgetFontHeight() const = 0;

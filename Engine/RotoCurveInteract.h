@@ -43,6 +43,8 @@
 #include "Engine/BezierCP.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderEndWatch.h"
+#include "Engine/RotoDragRenderThrottle.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoGesture.h"
 #include "Global/Enums.h"
@@ -52,6 +54,7 @@ NATRON_NAMESPACE_ENTER
 
 class RotoObjectSelect;
 struct PluginActionShortcut;
+class RotoDragUndoCommand;
 
 #define kControlPointMidSize 3
 #define kBezierSelectionTolerance 8
@@ -168,6 +171,14 @@ struct PluginActionShortcut;
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeather "removeItemsFeatherAction"
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel "Remove Selected item(s) Feather"
 
+#define kRotoUIParamRightClickMenuActionIncreaseFeather "increaseFeather"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherLabel "Increase Feather"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels. The feather tangents grow with it, so a circle's feather stays a circle. Dragging a feather bar does the same; hold Alt while dragging to keep the tangents as they are."
+
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents "increaseFeatherKeepTangents"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel "Increase Feather Keep Tangents"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels, leaving the feather tangents as they are"
+
 #define kRotoUIParamRightClickMenuActionLinkToTrack "linkToTrack"
 #define kRotoUIParamRightClickMenuActionLinkToTrackLabel "Link To Track..."
 #define kRotoUIParamRightClickMenuActionLinkToTrackHint "Makes the selected control points follow a track, keeping their offsets from the track at the current frame"
@@ -241,6 +252,20 @@ struct PluginActionShortcut;
                                         " will move it by the same amount for all the keyframes " \
                                         "it has"
 
+#define kRotoUIParamRippleEditMode "rippleEditMode"
+#define kRotoUIParamRippleEditModeLabel "Ripple Edit Mode"
+#define kRotoUIParamRippleEditModeHint "Which keyframes a ripple edit applies to: all of them, those from the first " \
+                                       "key to the current frame, those from the current frame to the last key, "     \
+                                       "or those in the frame range set next to this menu"
+
+#define kRotoUIParamRippleRangeStart "rippleRangeStart"
+#define kRotoUIParamRippleRangeStartLabel "Ripple Range Start"
+#define kRotoUIParamRippleRangeStartHint "First frame of the ripple edit range (included)"
+
+#define kRotoUIParamRippleRangeEnd "rippleRangeEnd"
+#define kRotoUIParamRippleRangeEndLabel "Ripple Range End"
+#define kRotoUIParamRippleRangeEndHint "Last frame of the ripple edit range (included)"
+
 #define kRotoUIParamAddKeyFrame "addKeyframeButton"
 #define kRotoUIParamAddKeyFrameLabel "Add Keyframe"
 #define kRotoUIParamAddKeyFrameHint "Set a keyframe at the current time for the selected shape(s), if any"
@@ -281,6 +306,8 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    eEventStateSketchingBezier,
+    eEventStateDraggingCpsPivot,
     eEventStateDraggingCorrespondence,
     // A host's two-point line tool (eRotoToolDrawLine) is dragging the line's end.
     eEventStateBuildingLine,
@@ -385,6 +412,15 @@ public:
     SelectedCPs selectedCps;
     QRectF selectedCpsBbox;
     bool showCpsBbox;
+    // A pivot the user placed for the selected points' transform box; it applies while the
+    // selection is still cpsPivotSelection.
+    QPointF cpsPivot;
+    bool cpsPivotSet;
+    SelectedCPs cpsPivotSelection;
+    // The canonical positions sampled so far by a Ctrl-drag sketch.
+    std::list<std::pair<double, double>> sketchSamples;
+    // The right-tangent drag started by clicking the first point to close the shape.
+    bool closingTangentDrag;
 
     ////This is by default eSelectedCpsTransformModeTranslateAndScale. When clicking the cross-hair in the center this will toggle the transform mode
     ////like it does in inkscape.
@@ -408,6 +444,10 @@ public:
     int shiftDown;
     int ctrlDown;
     int altDown;
+    // Set when the viewer hands this interact an Alt+left press it would otherwise pan with.
+    bool altPressClaimed;
+    // The feather bar drag under way keeps the feather tangents, as Alt asks.
+    bool featherBarKeepsTangents;
     // From the pen to the point a clone brush, or a Retouch shape, takes its source from, canonical.
     // Ctrl+drag moves it and every later stroke or shape carries it.
     std::pair<double, double> cloneOffset;
@@ -437,6 +477,7 @@ public:
     KnobButtonWPtr drawBezierAction;
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
+    KnobButtonWPtr lastSelectToolAction;
     KnobButtonWPtr drawOpenBezierAction;
     KnobButtonWPtr drawPointAction;
 
@@ -451,6 +492,8 @@ public:
     KnobButtonWPtr cuspItemMenuAction;
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
+    KnobButtonWPtr increaseFeatherMenuAction;
+    KnobButtonWPtr increaseFeatherKeepTangentsMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
     KnobButtonWPtr linkToTrackMenuAction, unlinkTrackMenuAction, unlinkTrackAndBakeMenuAction;
     KnobButtonWPtr showInCurveEditorMenuAction, removeFromCurveEditorMenuAction;
@@ -467,6 +510,9 @@ public:
     KnobButtonWPtr stickySelectionEnabledButton;
     KnobButtonWPtr bboxClickAnywhereButton;
     KnobButtonWPtr rippleEditEnabledButton;
+    KnobChoiceWPtr rippleEditModeChoice;
+    KnobIntWPtr rippleRangeStartSpinBox;
+    KnobIntWPtr rippleRangeEndSpinBox;
     KnobButtonWPtr addKeyframeButton;
     KnobButtonWPtr removeKeyframeButton;
     KnobButtonWPtr showTransformHandle;
@@ -477,6 +523,30 @@ public:
 
 private:
     EffectInstance* _host;
+
+    // Renders requested from pen down to pen up, while a shape is dragged.
+    RotoDragRenderThrottle _dragRender;
+    RenderEndWatchPtr _dragRenderWatch;
+    U64 _dragRenderGesture;
+
+    void beginDragRender();
+    void requestDragRender();
+    void onDragRenderEnded(U64 gesture, double elapsedMs);
+    void applyDragRenderAction(RotoDragRenderThrottle::ActionEnum action);
+    void abortDragRenders();
+    void endDragRender();
+
+    // The undo step the current drag extends, kept from its first motion to pen up.
+    std::shared_ptr<RotoDragUndoCommand> _openDragCommand;
+
+    /**
+     * @brief The open drag command if it is a Cmd at time that the current gesture may still
+     * extend, otherwise null.
+     **/
+    template <class Cmd>
+    std::shared_ptr<Cmd> getOpenDragCommand(double time) const;
+
+    void pushDragCommand(const std::shared_ptr<RotoDragUndoCommand>& command);
 
     struct MakeSharedEnabler;
 
@@ -534,6 +604,16 @@ public:
      * host calls this before adding its own viewer knobs.
      **/
     void createViewerButtonKnobs(const KnobPagePtr& page);
+
+    /**
+     * @brief Shows the ripple mode menu in the shape roles, and the range fields only in range mode.
+     **/
+    void refreshRippleEditKnobsVisibility(bool isPaintRole);
+
+    /**
+     * @brief Outlines the viewer in red while ripple edit is on, so an edit's reach is never a surprise.
+     **/
+    void drawRippleEditBorder(double screenPixelRatio, const std::pair<double, double>& pixelScale);
 
     /**
      * @brief Creates the right-click menu choice and its actions on page.
@@ -718,6 +798,7 @@ public:
     bool smoothSelectedCurve();
     bool cuspSelectedCurve();
     bool removeFeatherForSelectedCurve();
+    bool increaseFeatherForSelection(bool keepTangents);
 
     // The selected control points as curve and index.
     std::list<std::pair<BezierPtr, int>> getSelectedPointRefs() const;
@@ -728,6 +809,17 @@ public:
 
     bool unlinkSelectedPoints(bool bake);
     bool lockSelectedCurves();
+
+    /**
+     * @brief The select tool used last, the Select All tool if none has been.
+     **/
+    KnobButtonPtr getLastSelectTool() const;
+
+    /**
+     * @brief The centre the selected points' transform box rotates and scales about: the pivot
+     * the user placed for this selection, or the centre of the box.
+     **/
+    QPointF getSelectedCpsPivot() const;
 
     /**
      *@brief Moves of the given pixel the selected control points.
@@ -749,6 +841,18 @@ public:
     // The host effect's overlay actions forward to these.
     void drawOverlay(double time);
     bool onOverlayPenDown(double time, const QPointF& pos, double pressure, double timestamp, PenType pen);
+    /**
+     * @brief True when an Alt+left press at pos would grab a feather handle (a feather point, a
+     * feather tangent or a feather bar), the only Alt drags this interact takes; every other Alt
+     * drag is left to the viewer's pan.
+     **/
+    bool claimsAltPenDown(double time, const QPointF& pos);
+    /**
+     * @brief Matches shiftDown, ctrlDown and altDown, counted from key events, to the modifiers
+     * held at a pen press. A modifier release the viewer never receives (a window manager or
+     * another widget taking it mid-gesture) would otherwise stay held for every later gesture.
+     **/
+    void syncModifiers(KeyboardModifiers modifiers);
     bool onOverlayPenMotion(double time, const QPointF& pos, double pressure, double timestamp);
     bool onOverlayPenUp();
     bool onOverlayPenDoubleClicked(const QPointF& pos);

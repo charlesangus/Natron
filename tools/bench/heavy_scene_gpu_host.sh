@@ -35,6 +35,9 @@
 #   SCENE_DIR          searched for World_Lobby.usd and island.usda by name, a few levels deep (default
 #                      .local of the main checkout); the one beside an Assembly, Assets or Materials
 #                      directory wins when several match, and the choice is printed
+#   LOBBY_DIR, ISLAND_DIR  each replaces SCENE_DIR for that scene alone. A directory is searched by name
+#                      as above; a path to the file itself is used as is. Relative paths resolve as
+#                      SCENE_DIR does. What each scene resolved to is printed.
 #   BENCH_SESSION_ORBIT  1 adds orbit10k to session's settle runs. It may hang the machine.
 #   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 24)
 #
@@ -140,7 +143,7 @@ find_scene() {
     local dir="$1" name="$2" best="" best_score=-1 score file here parent sibling
     shift 2
     if [ ! -d "$dir" ]; then
-        echo "scene: SCENE_DIR $dir is not a directory" >&2
+        echo "scene: $dir is not a directory or file" >&2
         return 1
     fi
     dir="$(cd "$dir" && pwd)"
@@ -158,15 +161,33 @@ find_scene() {
         echo "scene: candidate $file (matches $score of $# sibling directories)" >&2
     done < <(find "$dir" -maxdepth "$SCENE_SEARCH_DEPTH" -type f -name "$name" 2> /dev/null | LC_ALL=C sort)
     if [ -z "$best" ]; then
-        echo "scene: no $name within $SCENE_SEARCH_DEPTH levels of $dir (set SCENE_DIR)" >&2
+        echo "scene: no $name within $SCENE_SEARCH_DEPTH levels of $dir (set SCENE_DIR or the scene's own *_DIR)" >&2
         return 1
     fi
     echo "scene: using $best" >&2
     printf '%s\n' "$best"
 }
 
-LOBBY="$(find_scene "$SCENE_DIR" World_Lobby.usd Assembly Assets Materials Source)" || LOBBY=""
-ISLAND="$(find_scene "$SCENE_DIR" island.usda elements materials)" || ISLAND=""
+LOBBY_SRC="${LOBBY_DIR:-$SCENE_DIR}"
+ISLAND_SRC="${ISLAND_DIR:-$SCENE_DIR}"
+
+# A path to the file itself is used as is; anything else is searched by name.
+resolve_scene() {
+    local src="$1"
+    shift
+    if [ -f "$src" ]; then
+        src="$(readlink -f "$src")"
+        echo "scene: using $src (given as a file)" >&2
+        printf '%s\n' "$src"
+        return
+    fi
+    find_scene "$src" "$@"
+}
+
+LOBBY="$(resolve_scene "$LOBBY_SRC" World_Lobby.usd Assembly Assets Materials Source)" || LOBBY=""
+ISLAND="$(resolve_scene "$ISLAND_SRC" island.usda elements materials)" || ISLAND=""
+echo "scene: lobby  -> ${LOBBY:-not found (looked in $LOBBY_SRC)}" >&2
+echo "scene: island -> ${ISLAND:-not found (looked in $ISLAND_SRC)}" >&2
 
 # The gate refuses a software renderer, which is what keeps llvmpipe numbers out of this file.
 export GUI_TEST_HOST_DISPLAY="$DISPLAY"
@@ -256,7 +277,7 @@ run_scene() {
     local name="$1" file="$2" scenarios="$3" mech
     shift 3
     if [ ! -f "$file" ]; then
-        record_skip "$name" "not found by name under $SCENE_DIR, ${SCENE_SEARCH_DEPTH} levels deep (set SCENE_DIR)"
+        record_skip "$name" "not found by name under '$([ "$name" = island ] && echo "$ISLAND_SRC" || echo "$LOBBY_SRC")', ${SCENE_SEARCH_DEPTH} levels deep (set SCENE_DIR or ${name^^}_DIR)"
         return
     fi
     for mech in filter session; do
@@ -286,7 +307,7 @@ if [ "$MODE" = settle ]; then
         launch settle-lobby-session scene "$LOBBY" "$SETTLE_SESSION" \
             NATRON_DRAW_STATE_MECHANISM=session NATRON_DRAW_STATE_LOAD_NONE=0 "${LOBBY_ENV[@]}"
     else
-        record_skip settle-lobby "not found by name under $SCENE_DIR, $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR)"
+        record_skip settle-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
     fi
     echo "results: $RESULT ($(wc -l < "$RESULT") lines); screen grabs in $FIXTURE_DIR/out/settle-*"
     exit 0

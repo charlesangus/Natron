@@ -4780,13 +4780,21 @@ Project::extractTreesFromNodes(const NodesList& nodes,
             NodesTree tree;
             tree.output.node = *it;
             const NodesWList& outputs = (*it)->getGuiOutputs();
+            std::set<Node*> outputsSeen;
             for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
                 NodePtr output = it2->lock();
                 if (!output) {
                     continue;
                 }
-                int idx = output->inputIndex(*it);
-                tree.output.outputs.push_back( std::make_pair(idx, *it2) );
+                if (!outputsSeen.insert(output.get()).second) {
+                    continue;
+                }
+                const std::vector<NodeWPtr>& outputInputs = output->getGuiInputs();
+                for (std::size_t idx = 0; idx < outputInputs.size(); ++idx) {
+                    if (outputInputs[idx].lock() == *it) {
+                        tree.output.outputs.push_back(std::make_pair((int)idx, *it2));
+                    }
+                }
             }
 
             const std::vector<NodeWPtr>& inputs = (*it)->getGuiInputs();

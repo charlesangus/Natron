@@ -144,7 +144,6 @@ public:
         , knobEditDepth(0)
         , knobEditRenderPending(false)
         , knobs()
-        , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
         , lastRenderParams()
         , lastLookupMutex()
@@ -480,7 +479,6 @@ public:
         KnobDoubleWPtr gain; // f-stops
         KnobBoolWPtr enableGamma;
         KnobDoubleWPtr gamma;
-        KnobBoolWPtr autoContrast;
         KnobBoolWPtr checkerboard;
         KnobStringWPtr display; // empty: the project's default display and view
         KnobStringWPtr view;
@@ -490,6 +488,7 @@ public:
         KnobLayerSelectWPtr layer;
         KnobChannelSelectWPtr alphaChannel;
         KnobIntWPtr inputs[2]; // input numbers, -1 for none
+        KnobStringWPtr lockedInputs[10]; // script names in this viewer's collection, empty for none
         KnobChoiceWPtr operation;
         KnobDoubleWPtr wipeCenter;
         KnobDoubleWPtr wipeAmount;
@@ -510,8 +509,6 @@ public:
     };
     Knobs knobs;
 
-    ///Only accessed from MT
-    bool activateInputChangedFromViewer;
     mutable QMutex textureBeingRenderedMutex;
     QWaitCondition textureBeingRenderedCond;
     std::list<FrameEntryPtr> textureBeingRendered; ///< a list of all the texture being rendered simultaneously

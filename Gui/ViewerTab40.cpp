@@ -80,49 +80,13 @@ ViewerTab::onInputChanged(int inputNb)
 
 
     if (inp) {
-        ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(inputNb);
-        if ( found != _imp->inputNamesMap.end() ) {
-            NodePtr input = found->second.input.lock();
-            if (!input) {
-                return;
-            }
-            const std::string & curInputName = input->getLabel();
-            found->second.input = inp;
-            int indexInA = _imp->firstInputImage->itemIndex( QString::fromUtf8( curInputName.c_str() ) );
-            int indexInB = _imp->secondInputImage->itemIndex( QString::fromUtf8( curInputName.c_str() ) );
-            assert(indexInA != -1 && indexInB != -1);
-            found->second.name = QString::fromUtf8( inp->getLabel().c_str() );
-            _imp->firstInputImage->setItemText(indexInA, found->second.name);
-            _imp->secondInputImage->setItemText(indexInB, found->second.name);
-        } else {
-            ViewerTabPrivate::InputName inpName;
-            inpName.input = inp;
-            inpName.name = QString::fromUtf8( inp->getLabel().c_str() );
-            _imp->inputNamesMap.insert( std::make_pair(inputNb, inpName) );
-            _imp->firstInputImage->addItem(inpName.name);
-            _imp->secondInputImage->addItem(inpName.name);
-        }
+        ViewerTabPrivate::InputName& entry = _imp->inputNamesMap[inputNb];
+        entry.input = inp;
+        entry.name = QString::fromUtf8(inp->getLabel().c_str());
     } else {
-        ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(inputNb);
-
-        ///The input has been disconnected
-        if ( found != _imp->inputNamesMap.end() ) {
-            NodePtr input = found->second.input.lock();
-            if (!input) {
-                return;
-            }
-            const std::string & curInputName = input->getLabel();
-            _imp->firstInputImage->blockSignals(true);
-            _imp->secondInputImage->blockSignals(true);
-            _imp->firstInputImage->removeItem( QString::fromUtf8( curInputName.c_str() ) );
-            _imp->secondInputImage->removeItem( QString::fromUtf8( curInputName.c_str() ) );
-            _imp->firstInputImage->blockSignals(false);
-            _imp->secondInputImage->blockSignals(false);
-            _imp->inputNamesMap.erase(found);
-        }
+        _imp->inputNamesMap.erase(inputNb);
     }
-
-    //refreshLayerAndAlphaChannelComboBox();
+    rebuildInputMenus();
 } // ViewerTab::onInputChanged
 
 void
@@ -131,13 +95,11 @@ ViewerTab::onInputNameChanged(int inputNb,
 {
     ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(inputNb);
 
-    assert( found != _imp->inputNamesMap.end() );
-    int indexInA = _imp->firstInputImage->itemIndex(found->second.name);
-    int indexInB = _imp->secondInputImage->itemIndex(found->second.name);
-    assert(indexInA != -1 && indexInB != -1);
-    _imp->firstInputImage->setItemText(indexInA, name);
-    _imp->secondInputImage->setItemText(indexInB, name);
+    if (found == _imp->inputNamesMap.end()) {
+        return;
+    }
     found->second.name = name;
+    rebuildInputMenus();
 }
 
 void
@@ -476,14 +438,7 @@ ViewerTab::setInfobarVisible(bool visible)
     _imp->infobarVisible = visible;
     for (int i = 0; i < 2; ++i) {
         if (i == 1) {
-            int inputIndex = -1;
-
-            for (ViewerTabPrivate::InputNamesMap::iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
-                if ( it->second.name == _imp->secondInputImage->getCurrentIndexText() ) {
-                    inputIndex = it->first;
-                    break;
-                }
-            }
+            const int inputIndex = inputForMenuIndex(_imp->secondInputImage->activeIndex());
             if ( (getCompositingOperator() == eViewerCompositingOperatorNone) || (inputIndex == -1) ) {
                 continue;
             }

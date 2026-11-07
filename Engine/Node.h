@@ -2497,10 +2497,8 @@ public:
 
     virtual ~InspectorNode();
 
-
     /**
-     * @brief Same as connectInputBase but if another input is already connected to 'input' then
-     * it will disconnect it prior to connecting the input of the given number.
+     * @brief Same as connectInputBase but refuses a connection the input already has.
      **/
     virtual bool connectInput(const NodePtr& input, int inputNumber) OVERRIDE;
     virtual int getPreferredInputForConnection() const OVERRIDE FINAL;

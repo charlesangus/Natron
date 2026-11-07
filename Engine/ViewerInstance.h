@@ -48,7 +48,6 @@
 #define kViewerParamGain "gain"
 #define kViewerParamEnableGamma "enableGamma"
 #define kViewerParamGamma "gamma"
-#define kViewerParamAutoContrast "autoContrast"
 #define kViewerParamCheckerboard "enableCheckerBoard"
 #define kViewerParamDisplay "display"
 #define kViewerParamView "view"
@@ -59,6 +58,8 @@
 #define kViewerParamAlphaChannel "alphaChannel"
 #define kViewerParamAInput "aInput"
 #define kViewerParamBInput "bInput"
+// Followed by the input number, counted from 1.
+#define kViewerParamLockedInputPrefix "lockedInput"
 #define kViewerParamOperation "operation"
 #define kViewerParamWipeCenter "wipeCenter"
 #define kViewerParamWipeAmount "wipeAmount"
@@ -103,7 +104,6 @@ public:
     RenderingFlagSetterPtr isRenderingFlag;
     bool draftModeEnabled;
     unsigned int mipmapLevelWithDraft, mipmapLevelWithoutDraft;
-    bool autoContrast;
     DisplayChannelsEnum channels;
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
@@ -364,10 +364,6 @@ public:
 
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
 
-    bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;
-
-    void onAutoContrastChanged(bool autoContrast, bool refresh);
-
     /**
      * @brief Returns the current view, MT-safe
      **/
@@ -402,6 +398,16 @@ public:
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
     void getActiveInputs(int & a, int &b) const;
+
+    /**
+     * @brief The script name of the node the input is locked to, empty if it is not locked.
+     **/
+    std::string getLockedInput(int inputNb) const;
+
+    /**
+     * @brief Also keeps the viewer's label and colour in step with its locks. Main thread only.
+     **/
+    void setLockedInput(int inputNb, const std::string& nodeName);
 
     /**
      * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
@@ -472,11 +478,6 @@ public:
     bool isDoingPartialUpdates() const;
 
     virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
-
-    ///Only callable on MT
-    void setActivateInputChangeRequestedFromViewer(bool fromViewer);
-
-    bool isInputChangeRequestedFromViewer() const;
 
     void setViewerPaused(bool paused, bool allInputs);
 
@@ -649,6 +650,8 @@ private:
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
     bool refreshResolvedLayers();
+
+    void refreshLockDecoration();
 
     void requestRenderFromKnob();
     void redrawOrRenderForColorChange();

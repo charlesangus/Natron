@@ -265,6 +265,76 @@ triggerMergeShortcut(NodeGraph* graph,
 }
 } // anonymous namespace
 
+namespace {
+
+const char* const kViewerInputAKeys[] = {
+    kShortcutIDActionConnectViewerToInput1,
+    kShortcutIDActionConnectViewerToInput2,
+    kShortcutIDActionConnectViewerToInput3,
+    kShortcutIDActionConnectViewerToInput4,
+    kShortcutIDActionConnectViewerToInput5,
+    kShortcutIDActionConnectViewerToInput6,
+    kShortcutIDActionConnectViewerToInput7,
+    kShortcutIDActionConnectViewerToInput8,
+    kShortcutIDActionConnectViewerToInput9,
+    kShortcutIDActionConnectViewerToInput10
+};
+
+const char* const kViewerInputBKeys[] = {
+    kShortcutIDActionConnectViewerBToInput1,
+    kShortcutIDActionConnectViewerBToInput2,
+    kShortcutIDActionConnectViewerBToInput3,
+    kShortcutIDActionConnectViewerBToInput4,
+    kShortcutIDActionConnectViewerBToInput5,
+    kShortcutIDActionConnectViewerBToInput6,
+    kShortcutIDActionConnectViewerBToInput7,
+    kShortcutIDActionConnectViewerBToInput8,
+    kShortcutIDActionConnectViewerBToInput9,
+    kShortcutIDActionConnectViewerBToInput10
+};
+
+const char* const kViewerInputLockKeys[] = {
+    kShortcutIDActionGraphLockViewerInput1,
+    kShortcutIDActionGraphLockViewerInput2,
+    kShortcutIDActionGraphLockViewerInput3,
+    kShortcutIDActionGraphLockViewerInput4,
+    kShortcutIDActionGraphLockViewerInput5,
+    kShortcutIDActionGraphLockViewerInput6,
+    kShortcutIDActionGraphLockViewerInput7,
+    kShortcutIDActionGraphLockViewerInput8,
+    kShortcutIDActionGraphLockViewerInput9,
+    kShortcutIDActionGraphLockViewerInput10
+};
+
+const char* const kViewerInputUnlockKeys[] = {
+    kShortcutIDActionGraphUnlockViewerInput1,
+    kShortcutIDActionGraphUnlockViewerInput2,
+    kShortcutIDActionGraphUnlockViewerInput3,
+    kShortcutIDActionGraphUnlockViewerInput4,
+    kShortcutIDActionGraphUnlockViewerInput5,
+    kShortcutIDActionGraphUnlockViewerInput6,
+    kShortcutIDActionGraphUnlockViewerInput7,
+    kShortcutIDActionGraphUnlockViewerInput8,
+    kShortcutIDActionGraphUnlockViewerInput9,
+    kShortcutIDActionGraphUnlockViewerInput10
+};
+
+int
+viewerInputForKey(const char* group,
+                  const char* const (&ids)[10],
+                  Qt::KeyboardModifiers modifiers,
+                  Qt::Key key)
+{
+    for (int i = 0; i < 10; ++i) {
+        if (isKeybind(group, ids[i], modifiers, key)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+} // anonymous namespace
+
 void
 NodeGraph::keyPressEvent(QKeyEvent* e)
 {
@@ -282,6 +352,9 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
 
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)e->key();
+    // Shift or Alt can turn a digit into another symbol, depending on the keyboard layout.
+    const Qt::Key digitKey = (Qt::Key)Gui::handleNativeKeys(e->key(), e->nativeScanCode(), e->nativeVirtualKey());
+    int viewerInput = -1;
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
@@ -453,6 +526,14 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         } else {
             accept = false;
         }
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputAKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, true);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputBKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, false);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputLockKeys, modifiers, digitKey)) != -1) {
+        lockViewerInputToSelection(viewerInput);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputUnlockKeys, modifiers, digitKey)) != -1) {
+        unlockViewerInput(viewerInput);
     } else if (triggerMergeShortcut(this, e)) {
         // The Merge menu's Mask, Stencil or All Layers action was triggered.
     } else {

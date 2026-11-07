@@ -57,6 +57,7 @@
 #include "Gui/GuiAppInstance.h"
 #include "Gui/InfoViewerWidget.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeViewerContext.h"
 #include "Gui/ScaleSliderQWidget.h"
@@ -207,18 +208,6 @@ void
 ViewerTab::setUserRoIEnabled(bool b)
 {
     _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
-}
-
-bool
-ViewerTab::isAutoContrastEnabled() const
-{
-    return _imp->viewerNode->isAutoContrastEnabled();
-}
-
-void
-ViewerTab::setAutoContrastEnabled(bool b)
-{
-    _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
 }
 
 void
@@ -406,15 +395,6 @@ ViewerTab::discardInternalNodePointer()
     // node may finish loading first: a fit then would ask a node that is gone for its mipmap level.
     QObject::disconnect(_imp->projectLoadedConnection);
     _imp->viewerNode = 0;
-}
-
-void
-ViewerTab::onAutoContrastChanged(bool b)
-{
-    editViewerKnobs(tr("Auto Contrast"), [this, b]() {
-        _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
-    });
-    refreshColorControlsFromKnobs();
 }
 
 void
@@ -965,10 +945,11 @@ ViewerTab::getActiveInputs(int* a,
 }
 
 int
-ViewerTab::inputIndexForMenuText(const QString& text) const
+ViewerTab::inputForMenuIndex(int menuIndex) const
 {
-    for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
-        if (it->second.name == text) {
+    int index = 1;
+    for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it, ++index) {
+        if (index == menuIndex) {
             return it->first;
         }
     }
@@ -976,11 +957,45 @@ ViewerTab::inputIndexForMenuText(const QString& text) const
     return -1;
 }
 
+int
+ViewerTab::menuIndexForInput(int inputNb) const
+{
+    int index = 1;
+    for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it, ++index) {
+        if (it->first == inputNb) {
+            return index;
+        }
+    }
+
+    return 0;
+}
+
+void
+ViewerTab::rebuildInputMenus()
+{
+    std::map<QString, int> labelUses;
+    for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
+        ++labelUses[it->second.name];
+    }
+
+    ComboBox* menus[2] = { _imp->firstInputImage, _imp->secondInputImage };
+    for (int i = 0; i < 2; ++i) {
+        const bool wereBlocked = menus[i]->blockSignals(true);
+        menus[i]->clear();
+        menus[i]->addItem(QString::fromUtf8(" - "));
+        for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
+            menus[i]->addItem((labelUses[it->second.name] > 1) ? tr("%1 (Input %2)").arg(it->second.name).arg(it->first + 1) : it->second.name);
+        }
+        menus[i]->blockSignals(wereBlocked);
+    }
+    refreshInputMenusFromKnobs();
+}
+
 void
 ViewerTab::switchInputAAndB()
 {
-    const int inputAIndex = inputIndexForMenuText(_imp->firstInputImage->getCurrentIndexText());
-    const int inputBIndex = inputIndexForMenuText(_imp->secondInputImage->getCurrentIndexText());
+    const int inputAIndex = inputForMenuIndex(_imp->firstInputImage->activeIndex());
+    const int inputBIndex = inputForMenuIndex(_imp->secondInputImage->activeIndex());
 
     if (inputBIndex == inputAIndex) {
         return;
@@ -995,9 +1010,9 @@ ViewerTab::switchInputAAndB()
 
 ///Called when the user change the combobox choice
 void
-ViewerTab::onFirstInputNameChanged(const QString & text)
+ViewerTab::onFirstInputMenuChanged(int menuIndex)
 {
-    const int inputIndex = inputIndexForMenuText(text);
+    const int inputIndex = inputForMenuIndex(menuIndex);
 
     editViewerKnobs(tr("Input A"), [this, inputIndex]() {
         _imp->setViewerValue<int>(kViewerParamAInput, inputIndex);
@@ -1008,9 +1023,9 @@ ViewerTab::onFirstInputNameChanged(const QString & text)
 
 ///Called when the user change the combobox choice
 void
-ViewerTab::onSecondInputNameChanged(const QString & text)
+ViewerTab::onSecondInputMenuChanged(int menuIndex)
 {
-    const int inputIndex = inputIndexForMenuText(text);
+    const int inputIndex = inputForMenuIndex(menuIndex);
 
     editViewerKnobs(tr("Input B"), [this, inputIndex]() {
         _imp->setViewerValue<int>(kViewerParamBInput, inputIndex);
@@ -1034,9 +1049,7 @@ ViewerTab::refreshInputMenusFromKnobs()
 
     // A disconnected input index shows none.
     for (int i = 0; i < 2; ++i) {
-        ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(active[i]);
-        const int menuIndex = (found != _imp->inputNamesMap.end()) ? menus[i]->itemIndex(found->second.name) : -1;
-        menus[i]->setCurrentIndex_no_emit(std::max(menuIndex, 0));
+        menus[i]->setCurrentIndex_no_emit(menuIndexForInput(active[i]));
     }
     refreshCompositingOperatorFromKnob();
 }
@@ -1045,16 +1058,7 @@ ViewerTab::refreshInputMenusFromKnobs()
 void
 ViewerTab::onActiveInputsChanged()
 {
-    int activeInputs[2];
-
-    _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
     refreshInputMenusFromKnobs();
-
-    const bool autoWipe = getInternalNode()->isInputChangeRequestedFromViewer();
-    if (autoWipe && (activeInputs[0] != -1) && (activeInputs[1] != -1) && (activeInputs[0] != activeInputs[1])
-        && (getCompositingOperator() == eViewerCompositingOperatorNone) && !_imp->viewerNode->isWipeDisabledByDataKind()) {
-        setCompositingOperator(eViewerCompositingOperatorWipeUnder);
-    }
     _imp->viewer->updatePersistentMessage();
 }
 
@@ -1068,14 +1072,12 @@ ViewerTab::connectToInput(int inputNb,
     if (!node) {
         return;
     }
-    bool isAutoWipeEnabled = appPTR->getCurrentSettings()->isAutoWipeEnabled();
-    if (isAutoWipeEnabled) {
-        getInternalNode()->setActivateInputChangeRequestedFromViewer(true);
+    NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+    NodeGraph* graph = nodeGui ? nodeGui->getDagGui() : 0;
+    if (graph && graph->recallLockedViewerInput(nodeGui, inputNb, isASide)) {
+        return;
     }
     node->setActiveInputAndRefresh(inputNb, isASide);
-    if (isAutoWipeEnabled) {
-        getInternalNode()->setActivateInputChangeRequestedFromViewer(false);
-    }
 }
 
 void

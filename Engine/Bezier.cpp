@@ -2692,8 +2692,8 @@ Bezier::setKeyframeInternal(double time,
     Q_EMIT keyframeSet(time);
 }
 
-void
-Bezier::removeKeyframe(double time)
+bool
+Bezier::removeKeyframeInternal(double time)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
@@ -2701,7 +2701,7 @@ Bezier::removeKeyframe(double time)
         QMutexLocker l(&itemMutex);
 
         if ( !_imp->hasKeyframeAtTime(false, time) ) {
-            return;
+            return false;
         }
         assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
 
@@ -2720,8 +2720,76 @@ Bezier::removeKeyframe(double time)
     }
 
     invalidateContentHash();
+
+    return true;
+}
+
+void
+Bezier::removeKeyframe(double time)
+{
+    if (!removeKeyframeInternal(time)) {
+        return;
+    }
     getContext()->evaluateChange();
     Q_EMIT keyframeRemoved(time);
+}
+
+void
+Bezier::removeKeyframes(const std::set<double>& times)
+{
+    for (std::set<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        if (removeKeyframeInternal(*it)) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+}
+
+void
+Bezier::setFollowedPoints(double time,
+                          const std::vector<FollowedPoint>& points)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    setKeyframeInternal(time, false);
+    std::vector<BezierCPPtr> targets;
+    targets.reserve(points.size());
+    for (std::vector<FollowedPoint>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        targets.push_back(it->feather ? getFeatherPointAtIndex(it->index) : getControlPointAtIndex(it->index));
+    }
+    {
+        QMutexLocker l(&itemMutex);
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (!targets[i]) {
+                continue;
+            }
+            targets[i]->setPositionAtTime(false, time, points[i].x, points[i].y);
+            targets[i]->setLeftBezierPointAtTime(false, time, points[i].leftX, points[i].leftY);
+            targets[i]->setRightBezierPointAtTime(false, time, points[i].rightX, points[i].rightY);
+        }
+        eraseOrientationAroundTime(false, time);
+        copyInternalPointsToGuiAtTime(time);
+    }
+    invalidateContentHash();
+}
+
+void
+Bezier::notifyKeyframesRestored(const std::set<double>& before,
+                                const std::set<double>& after)
+{
+    {
+        QMutexLocker l(&itemMutex);
+        copyInternalPointsToGuiPoints();
+    }
+    for (std::set<double>::const_iterator it = before.begin(); it != before.end(); ++it) {
+        if (after.find(*it) == after.end()) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+    for (std::set<double>::const_iterator it = after.begin(); it != after.end(); ++it) {
+        if (before.find(*it) == before.end()) {
+            Q_EMIT keyframeSet(*it);
+        }
+    }
 }
 
 void

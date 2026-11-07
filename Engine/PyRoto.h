@@ -196,6 +196,24 @@ public:
     BezierCurve* createEllipse(double x, double y, double diameter, bool fromCenter, double time);
     BezierCurve* createRectangle(double x, double y, double size, double time);
 
+    /**
+     * @brief Moves each item with the motion vectors of the node source, a fully qualified name,
+     * over first..last, and returns once done, as one undo step. direction is "forward" or
+     * "backward", model is "perPoint", "translate", "affine" or "perspective". Returns a dict
+     * of the items' names to {"inferred": [(first, last), ...], "stopFrame": frame or None}.
+     * Raises ValueError when source has no motion layers or depends on this node, and for a
+     * direction or model it does not know.
+     **/
+    PyObject* followVectors(const std::list<ItemBase*>& items,
+                            const QString& source,
+                            int first,
+                            int last,
+                            const QString& direction,
+                            const QString& model,
+                            bool reduce = false,
+                            double tolerance = 0.5,
+                            double confidenceThreshold = 0.5);
+
 private:
     RotoCurveContextPtr _ctx;
 };

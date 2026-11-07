@@ -28,6 +28,7 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
@@ -37,8 +38,12 @@
 #include "Engine/PyNode.h"
 #include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/VectorFollowBake.h"
+#include "Engine/VectorSampler.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -749,6 +754,124 @@ Roto::createRectangle(double x,
     }
 
     return 0;
+}
+
+namespace {
+
+PyObject*
+raiseValueError(const std::string& message)
+{
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return nullptr;
+}
+
+PyObject*
+followReportToPython(const VectorFollowReport& report)
+{
+    PyObject* result = PyDict_New();
+    for (const VectorFollowShapeReport& shape : report.shapes) {
+        PyObject* inferred = PyList_New((Py_ssize_t)shape.inferred.size());
+        Py_ssize_t index = 0;
+        for (const VectorFollowFrameRange& range : shape.inferred) {
+            PyList_SetItem(inferred, index++, Py_BuildValue("(ii)", range.first, range.last));
+        }
+        PyObject* stopFrame;
+        if (shape.stopped) {
+            stopFrame = PyLong_FromLong(shape.stopFrame);
+        } else {
+            stopFrame = Py_None;
+            Py_INCREF(stopFrame);
+        }
+        PyObject* entry = PyDict_New();
+        PyDict_SetItemString(entry, "inferred", inferred);
+        PyDict_SetItemString(entry, "stopFrame", stopFrame);
+        PyDict_SetItemString(result, shape.name.c_str(), entry);
+        Py_DECREF(inferred);
+        Py_DECREF(stopFrame);
+        Py_DECREF(entry);
+    }
+
+    return result;
+}
+
+} // anonymous namespace
+
+PyObject*
+Roto::followVectors(const std::list<ItemBase*>& items,
+                    const QString& source,
+                    int first,
+                    int last,
+                    const QString& direction,
+                    const QString& model,
+                    bool reduce,
+                    double tolerance,
+                    double confidenceThreshold)
+{
+    if (refusesShapeEdit(_ctx)) {
+        return nullptr;
+    }
+    const NodePtr host = _ctx->getNode();
+    const RotoPaint* paint = dynamic_cast<const RotoPaint*>(host->getEffectInstance().get());
+    if (paint && paint->isVectorFollowRunning()) {
+        PyErr_SetString(PyExc_RuntimeError, "A follow is already running on this node.");
+
+        return nullptr;
+    }
+
+    VectorFollowParams params;
+    for (ItemBase* item : items) {
+        RotoDrawableItemPtr drawable = item ? std::dynamic_pointer_cast<RotoDrawableItem>(item->getInternalItem()) : RotoDrawableItemPtr();
+        if (drawable) {
+            params.items.push_back(drawable);
+        }
+    }
+    if (params.items.empty()) {
+        return raiseValueError("followVectors needs at least one shape or stroke.");
+    }
+
+    if (direction == QString::fromUtf8("forward")) {
+        params.direction = VectorFollowDirection::eForward;
+    } else if (direction == QString::fromUtf8("backward")) {
+        params.direction = VectorFollowDirection::eBackward;
+    } else {
+        return raiseValueError("direction must be \"forward\" or \"backward\", not \"" + direction.toStdString() + "\".");
+    }
+
+    if (model == QString::fromUtf8("perPoint")) {
+        params.model = VectorFollowModel::ePerPoint;
+    } else if (model == QString::fromUtf8("translate")) {
+        params.model = VectorFollowModel::eTranslate;
+    } else if (model == QString::fromUtf8("affine")) {
+        params.model = VectorFollowModel::eAffine;
+    } else if (model == QString::fromUtf8("perspective")) {
+        params.model = VectorFollowModel::ePerspective;
+    } else {
+        return raiseValueError("model must be \"perPoint\", \"translate\", \"affine\" or \"perspective\", not \"" + model.toStdString() + "\".");
+    }
+
+    params.source = host->getApp()->getNodeByFullySpecifiedName(source.toStdString());
+    std::string error;
+    if (!VectorSampler::checkSource(params.source, host, first, &error)) {
+        return raiseValueError(source.toStdString() + ": " + error);
+    }
+    params.first = first;
+    params.last = last;
+    params.reduce = reduce;
+    params.tolerance = tolerance;
+    params.confidenceThreshold = confidenceThreshold;
+
+    const VectorFollowReport report = _ctx->followVectors(params);
+    if (report.shapes.empty() && !report.error.empty()) {
+        return raiseValueError(report.error);
+    }
+    if (!report.error.empty()) {
+        PyErr_SetString(PyExc_RuntimeError, report.error.c_str());
+
+        return nullptr;
+    }
+
+    return followReportToPython(report);
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

@@ -39,12 +39,14 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/Curve.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoFeatherDrag.h"
@@ -2236,5 +2238,147 @@ CommitObjectMaskUndoCommand::redo()
     roto->setSelection(selection, std::list<std::pair<BezierCPPtr, BezierCPPtr>>());
     roto->evaluate(true);
 } // CommitObjectMaskUndoCommand::redo
+
+////////////////////////////
+
+namespace {
+
+KnobDoublePtr
+followedKnob(const RotoDrawableItem& item,
+             const char* name)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(item.getKnobByName(name));
+}
+
+void
+saveKnobCurves(const KnobDoublePtr& knob,
+               std::vector<CurvePtr>* curves,
+               std::vector<double>* values)
+{
+    curves->clear();
+    values->clear();
+    for (int dim = 0; dim < knob->getDimension(); ++dim) {
+        CurvePtr copy = std::make_shared<Curve>();
+        copy->clone(*knob->getCurve(ViewIdx(0), dim));
+        curves->push_back(copy);
+        values->push_back(knob->getValue(dim));
+    }
+}
+
+} // anonymous namespace
+
+FollowVectorsUndoCommand::FollowVectorsUndoCommand(const RotoCurveContextPtr& context,
+                                                   const std::list<RotoDrawableItemPtr>& items)
+    : UndoCommand()
+    , _context(context)
+    , _items()
+    , _done(false)
+{
+    for (const RotoDrawableItemPtr& item : items) {
+        ItemState state;
+        state.item = item;
+        state.bezier = std::dynamic_pointer_cast<Bezier>(item);
+        if (state.bezier) {
+            state.points = state.bezier->getControlPoints_mt_safe();
+            const std::list<BezierCPPtr> feathers = state.bezier->getFeatherPoints_mt_safe();
+            state.points.insert(state.points.end(), feathers.begin(), feathers.end());
+            for (const BezierCPPtr& point : state.points) {
+                state.before.push_back(std::make_shared<BezierCP>(*point));
+            }
+            state.bezier->getKeyframeTimes(&state.keysBefore);
+        }
+        for (const char* name : { kRotoDrawableItemTranslateParam, kRotoDrawableItemExtraMatrixParam }) {
+            KnobState knobState;
+            knobState.knob = followedKnob(*item, name);
+            if (knobState.knob) {
+                saveKnobCurves(knobState.knob, &knobState.before, &knobState.valuesBefore);
+                state.knobs.push_back(knobState);
+            }
+        }
+        _items.push_back(state);
+    }
+    setText(tr("Follow Vectors").toStdString());
+}
+
+FollowVectorsUndoCommand::~FollowVectorsUndoCommand()
+{
+}
+
+void
+FollowVectorsUndoCommand::captureResult()
+{
+    for (ItemState& state : _items) {
+        state.after.clear();
+        for (const BezierCPPtr& point : state.points) {
+            state.after.push_back(std::make_shared<BezierCP>(*point));
+        }
+        if (state.bezier) {
+            state.keysAfter.clear();
+            state.bezier->getKeyframeTimes(&state.keysAfter);
+        }
+        for (KnobState& knobState : state.knobs) {
+            saveKnobCurves(knobState.knob, &knobState.after, &knobState.valuesAfter);
+        }
+    }
+    _done = true;
+}
+
+void
+FollowVectorsUndoCommand::restore(bool after)
+{
+    for (ItemState& state : _items) {
+        const std::list<BezierCPPtr>& saved = after ? state.after : state.before;
+        std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();
+        for (std::list<BezierCPPtr>::const_iterator it = state.points.begin(); it != state.points.end() && itSaved != saved.end(); ++it, ++itSaved) {
+            (*it)->clone(**itSaved);
+        }
+
+        for (KnobState& knobState : state.knobs) {
+            const std::vector<CurvePtr>& curves = after ? knobState.after : knobState.before;
+            const std::vector<double>& values = after ? knobState.valuesAfter : knobState.valuesBefore;
+            knobState.knob->beginChanges();
+            for (std::size_t dim = 0; dim < curves.size(); ++dim) {
+                knobState.knob->cloneCurve(ViewIdx(0), (int)dim, *curves[dim]);
+                if (curves[dim]->getKeyFramesCount() == 0) {
+                    knobState.knob->setValue(values[dim], ViewSpec::all(), (int)dim);
+                }
+            }
+            knobState.knob->endChanges();
+        }
+
+        if (state.bezier) {
+            state.bezier->invalidateContentHash();
+            state.bezier->invalidatePolygonOrientation();
+            state.bezier->notifyKeyframesRestored(after ? state.keysBefore : state.keysAfter,
+                                                  after ? state.keysAfter : state.keysBefore);
+        }
+    }
+
+    RotoCurveContextPtr context = _context.lock();
+    if (context) {
+        context->refreshTrackLinkListeners();
+        context->emitRefreshViewerOverlays();
+        context->evaluateChange();
+    }
+}
+
+void
+FollowVectorsUndoCommand::undo()
+{
+    _done = false;
+    restore(false);
+}
+
+void
+FollowVectorsUndoCommand::redo()
+{
+    // The follow already wrote all of this, frame by frame, before the command was pushed.
+    if (_done) {
+        _done = false;
+
+        return;
+    }
+    restore(true);
+}
 
 NATRON_NAMESPACE_EXIT

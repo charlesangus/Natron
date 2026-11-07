@@ -52,6 +52,8 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
+#include "Engine/VectorSampler.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -1760,6 +1762,33 @@ RotoCurveContext::getCurvesByRenderOrder(bool onlyActivated) const
     }
 
     return ret;
+}
+
+VectorFollowReport
+RotoCurveContext::followVectors(const VectorFollowParams& params,
+                                UndoCommandPtr* undo)
+{
+    VectorFollowRun run(shared_from_this(), params);
+    std::string error;
+    if (!run.prepare(&error)) {
+        VectorFollowReport report;
+        report.error = error;
+
+        return report;
+    }
+
+    VectorSampler sampler(params.source);
+    const std::function<bool()> aborted = [&params]() {
+        return params.shouldAbort && params.shouldAbort();
+    };
+    run.compute(sampler, [&run](int shape, const VectorFollowFrame& frame) { run.applyFrame(shape, frame); }, aborted);
+    if (params.reduce && !run.wasAborted()) {
+        run.prepareReduction();
+        run.reduce(aborted);
+        run.applyReduction();
+    }
+
+    return run.finish(false, sampler.lastError(), undo);
 }
 
 int

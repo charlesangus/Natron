@@ -35,6 +35,8 @@
 NATRON_NAMESPACE_ENTER
 
 struct RotoPaintPrivate;
+class VectorFollowControls;
+
 class RotoPaint
     : public EffectInstance
 {
@@ -148,6 +150,11 @@ public:
     void abortObjectSelectEncoding(bool wait);
     bool isObjectSelectEncoding() const;
 
+    void abortVectorFollow(bool wait);
+    bool isVectorFollowRunning() const;
+
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 public Q_SLOTS:
 
     void onBreakMultiStrokeTriggered();
@@ -199,6 +206,7 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE WARN_UNUSED_RETURN;
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time)  OVERRIDE FINAL;
     std::unique_ptr<RotoPaintPrivate> _imp;
+    std::unique_ptr<VectorFollowControls> _vectorFollow;
 };
 
 /**

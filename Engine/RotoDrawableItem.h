@@ -190,6 +190,12 @@ public:
 
     void setExtraMatrix(bool setKeyframe, double time, const Transform::Matrix3x3& mat);
 
+    /**
+     * @brief Keys the translation alone, whatever the auto-key setting, and leaves the item's other
+     * transform knobs as they are.
+     **/
+    void setTranslateKeyframe(double time, double tx, double ty);
+
     NodePtr getEffectNode() const;
     NodePtr getMergeNode() const;
     NodePtr getTimeOffsetNode() const;

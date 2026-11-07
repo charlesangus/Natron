@@ -47,6 +47,7 @@
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/ViewIdx.h"
 
 #include "Global/GLIncludes.h"
@@ -426,6 +427,9 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(sourceType);
     addKnobToViewerUI(resetCloneOffset);
 
+    _vectorFollow.reset(new VectorFollowControls(this, _imp->ui.get()));
+    _vectorFollow->createKnobs(generalPage);
+
     KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
     _imp->ui->createObjectSelectKnobs(generalPage);
 
@@ -686,6 +690,9 @@ RotoPaint::knobChanged(KnobI* k,
     bool ret = false;
     if (_imp->ui->onKnobChanged(k, time, &ret)) {
         return ret;
+    }
+    if (_vectorFollow && _vectorFollow->onKnobChanged(k)) {
+        return true;
     }
 
     return ctx->knobChanged(k, reason, view, time, originatedFromMainThread);
@@ -1094,6 +1101,10 @@ RotoPaint::onOverlayFocusGained(double /*time*/,
                                 const RenderScale& /*renderScale*/,
                                 ViewIdx /*view*/)
 {
+    if (_vectorFollow) {
+        _vectorFollow->refreshSources();
+    }
+
     return false;
 } // onOverlayFocusGained
 
@@ -1123,6 +1134,26 @@ bool
 RotoPaint::isObjectSelectEncoding() const
 {
     return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
+}
+
+void
+RotoPaint::abortVectorFollow(bool wait)
+{
+    if (_vectorFollow) {
+        _vectorFollow->abortFollow(wait);
+    }
+}
+
+bool
+RotoPaint::isVectorFollowRunning() const
+{
+    return _vectorFollow && _vectorFollow->isFollowing();
+}
+
+RotoCurvePanelHook*
+RotoPaint::getCurvePanelHook() const
+{
+    return _vectorFollow.get();
 }
 
 void

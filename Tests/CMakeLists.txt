@@ -94,6 +94,11 @@ set(Tests_SOURCES
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     CurveTrackLink_Test.cpp
+    VectorSampler_Test.cpp
+    VectorFollow_Test.cpp
+    VectorFollowModels_Test.cpp
+    VectorFollowBake_Test.cpp
+    VectorFollowReduce_Test.cpp
     CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
@@ -144,6 +149,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyVectorFollow_Test.cpp
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp

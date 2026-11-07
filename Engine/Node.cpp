@@ -3164,6 +3164,9 @@ Node::areAllProcessingThreadsQuit() const
         if (rotoPaint && rotoPaint->isObjectSelectEncoding()) {
             return false;
         }
+        if (rotoPaint && rotoPaint->isVectorFollowRunning()) {
+            return false;
+        }
     }
 
     return true;
@@ -3194,6 +3197,7 @@ Node::quitAnyProcessing_non_blocking()
     if ( isRotoPaintingNode() ) {
         if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
             rotoPaint->abortObjectSelectEncoding(false);
+            rotoPaint->abortVectorFollow(false);
         }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
@@ -3244,6 +3248,7 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
     if ( isRotoPaintingNode() ) {
         if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
             rotoPaint->abortObjectSelectEncoding(true);
+            rotoPaint->abortVectorFollow(true);
         }
         NodesList rotopaintNodes;
         getRotoContext()->getRotoPaintTreeNodes(&rotopaintNodes);
@@ -3267,6 +3272,10 @@ Node::abortAnyProcessing_non_blocking()
         trackerContext->abortTracking();
     }
 
+    if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+        rotoPaint->abortVectorFollow(false);
+    }
+
     _imp->abortPreview_non_blocking();
 }
 
@@ -3287,6 +3296,10 @@ Node::abortAnyProcessing_blocking()
     TrackerContextPtr trackerContext = getTrackerContext();
     if (trackerContext) {
         trackerContext->abortTracking_blocking();
+    }
+
+    if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
+        rotoPaint->abortVectorFollow(true);
     }
 
     _imp->abortPreview_blocking(false);

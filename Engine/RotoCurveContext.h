@@ -58,6 +58,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+struct VectorFollowParams;
+struct VectorFollowReport;
 class ContentHasher;
 
 /**
@@ -160,6 +162,13 @@ public:
     BezierPtr makeEllipse(double x, double y, double diameter, bool fromCenter, double time);
     BezierPtr makeSquare(double x, double y, double initialSize, double time);
     std::string generateUniqueName(const std::string& baseName);
+
+    /**
+     * @brief Follows the given shapes along the vectors of a node, here and now: the keys are written
+     * on the main thread between reads of the source. The whole follow is one undo step, pushed on
+     * the node or handed over in undo when given. A refused source only sets the report's error.
+     **/
+    VectorFollowReport followVectors(const VectorFollowParams& params, UndoCommandPtr* undo = 0);
 
     /**
      * @brief Called on every drawable item made for this context, by creation, copy or load,

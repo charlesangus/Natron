@@ -81,6 +81,8 @@ the numbers that settle how draw states reach Hydra. Design:
 
 ## Decisions
 
+- 2026-11-07 — Host script rewritten on spike/m327-hydra-filter (user): no system PySide, fixtures in the dev image, Lobby and Island added (Lobby 2,786 prims loaded; Island 30.9M instances, skipped below 24 GB free, an estimate), per-scenario limits record `timed_out`, `settle` mode with a pixel check. `first_boxes_ms` renamed `first_frame_ms`. Tested under llvmpipe only; Island in the GUI is untested.
+
 - 2026-11-07 — GPU host run received (87 of 92 records; synthetic fixtures). `flat-session-all` and `flat-session-restorevalue` were killed by the user in `noedit`, after about 53 and 10 min (inferred from timestamps). **Recommendation, awaiting the user's choice:** draw states reach Hydra through a per-engine scene index filter with a GL box overlay, not session-layer draw mode. The filter finished reveal at 2 fps and cancelled in 120-1207 ms. Open: session on a loaded city is unmeasured, and the filter's 1.2-1.7 s state change at 1M loaded fails the 100 ms budget. A run of about 5 minutes closes this.
 
 - 2026-11-05 — M327.P1.T1 verified in natron-dev: city 3,901 prims with LoadNone, 997,501 with LoadAll; flat file 1,000,001 either way; 344 s to generate, 43 MB under build/bench.

@@ -120,13 +120,13 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
   - size: L
 
-- [ ] M240.P3.T7 — ShapeFalloff parity on RADV
+- [x] M240.P3.T7 — ShapeFalloff parity on RADV
   - files: `Tests/Native/ShapeFalloff_Test.cpp`, the shape falloff kernels and matching CPU code (M128 - Native Shape Generators)
   - approach: On RADV at main a2906666a, `ShapeFalloffGpu.MatchesCpu` fails exact parity on the ellipse edge (worst 2.48e-5) and rounded box edge (worst 9.5e-6). lavapipe passes. Same method as P3.T3–T5: find the diverging step, most likely RADV's divide or sqrt, and route it through `exactdivide.slang`, or bound the comparison with a recorded reason if it is inherent.
   - verify: `ctest -R ShapeFalloffGpu` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T8 — USDRenderStorm projection cases on RADV
+- [x] M240.P3.T8 — USDRenderStorm projection cases on RADV
   - files: `Tests/Scene/USDRenderStorm_Test.cpp`, the projection path of M234 - Camera Projection Nodes
   - approach: On RADV at main a2906666a, `USDRenderStormTest` `StormProject3DWorld`, `StormProject3DGeometryHeld`, both `ThroughAssignMaterial` variants and `StormProject3DOverscan` exceed the differing-pixel bound (433–686 pixels against about 73, worst 0.144; 89 against 74, worst 0.07 for overscan). lavapipe passes. Find whether this is hardware sampling or rasterisation at texture or silhouette edges, or a real projection bug. Fix a real bug in the node; otherwise bound the comparison with a recorded reason.
   - verify: `ctest -R USDRenderStorm` passes on RADV and lavapipe.
@@ -189,3 +189,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-11-07 — **Merged main at a2906666a (gpu):** merged rather than rebased, as this branch already carries merges of main and is squashed on landing. M95 - Knob Cleanup And Keyer Redesign rewrote the keyers, so the narrowing was re-applied to the new code: ChromaKeyer (`keyRamp`, `composite`, `readSettings`) and Keyer's range points in `KeyerRange.h` (f86af1706). Left alone under the 2026-10-27 trap policy: `trapezoidMatteFloat` in `KeyerMatte.h` and HSVKeyer's hue paths, which take non-finite or extreme range values per pixel in debug only. Nodes merged since the audit (M128 - Native Shape Generators, M160 - Lensfun Lens Correction and others) were not re-audited.
 
 - 2026-11-07 — **RADV gate on main at a2906666a (gpu, debug, f86af1706):** 749 of 752 pass. M196 - Copy-Compute Contention's branch on the same main fails the same two new suites with the same worst differences, so they come from main. They become P3.T7 and P3.T8, as earlier inherited failures did. The third failure is M310 - Device-Switch Shader Test Fix's test, which this gate does not count.
+
+- 2026-11-07 — **P3.T7 fix (gpu, 380b8e105):** every divide and root in `shapefalloff.slang` goes through `exactdivide.slang`, and the suite then passes. The RADV divide and sqrt cause is inferred from earlier cases and the code's shape, not measured step by step.
+
+- 2026-11-07 — **P3.T8 root cause and bound (gpu, d41b0966d):** the node is correct. These tests split on the GL driver, not the Vulkan ICD: Storm runs on EGL, so `VK_ICD_FILENAMES` doesn't change them, and the CI-side A/B is `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`. The goldens were recorded on llvmpipe, whose anisotropic path (Storm's samplers default to 16x) differs near checker lines. With anisotropy hidden from llvmpipe, it matches radeonsi to 0.0005, and a box-mip bilinear model of the plate matches radeonsi with no pixels over tolerance. The test now allows 0.15 within 2.5 plate pixels of a checker line inside the projector frame, and 0.02 everywhere else. Goldens are unchanged. Blind spot, from an offline simulation: a 0.25 plate-pixel shift or +0.2% scale still passes, while 0.5 px and +0.5% fail. Earlier "RADV" labels on Storm results really mean radeonsi.

@@ -32,6 +32,8 @@
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/tokens.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdSkel/animation.h>
 
 #include "Global/Macros.h"
 
@@ -101,6 +103,111 @@ getFramePrimvar(const PXR_NS::UsdPrim& prim)
     EXPECT_TRUE(isProjection) << prim.GetPath().GetString();
 
     return isProjection ? PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(projection.framePrimvar)) : PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute());
+}
+
+PXR_NS::VtVec3fArray
+quadPoints(float x,
+           float y)
+{
+    PXR_NS::VtVec3fArray points(4);
+    points[0] = PXR_NS::GfVec3f(x - 1.f, y - 1.f, 0.f);
+    points[1] = PXR_NS::GfVec3f(x + 1.f, y - 1.f, 0.f);
+    points[2] = PXR_NS::GfVec3f(x + 1.f, y + 1.f, 0.f);
+    points[3] = PXR_NS::GfVec3f(x - 1.f, y + 1.f, 0.f);
+
+    return points;
+}
+
+PXR_NS::UsdGeomMesh
+defineQuad(const PXR_NS::UsdStageRefPtr& stage,
+           const std::string& path)
+{
+    PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+    PXR_NS::VtIntArray indices(4);
+    for (int i = 0; i < 4; ++i) {
+        indices[i] = i;
+    }
+    mesh.CreateFaceVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+    mesh.CreateFaceVertexIndicesAttr().Set(indices);
+
+    return mesh;
+}
+
+// A quad at x whose points rise from y 0 at frame 1 to y 10 at frame 11.
+PXR_NS::UsdGeomMesh
+defineRisingQuad(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& path,
+                 float x)
+{
+    PXR_NS::UsdGeomMesh mesh = defineQuad(stage, path);
+    mesh.CreatePointsAttr().Set(quadPoints(x, 0.f), PXR_NS::UsdTimeCode(1.));
+    mesh.CreatePointsAttr().Set(quadPoints(x, 10.f), PXR_NS::UsdTimeCode(11.));
+
+    return mesh;
+}
+
+// The primvars of prim holding reference points, whichever hold they are for.
+std::vector<PXR_NS::UsdGeomPrimvar>
+getReferencePrimvars(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<PXR_NS::UsdGeomPrimvar> result;
+    for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvars()) {
+        if (primvar.GetPrimvarName().GetString().rfind("natronReferencePoints", 0) == 0) {
+            result.push_back(primvar);
+        }
+    }
+
+    return result;
+}
+
+void
+expectPointsNear(const PXR_NS::VtVec3fArray& expected,
+                 const PXR_NS::UsdGeomPrimvar& primvar,
+                 const std::string& what)
+{
+    PXR_NS::VtVec3fArray points;
+    ASSERT_TRUE(primvar.Get(&points)) << what;
+    ASSERT_EQ(expected.size(), points.size()) << what;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(expected[i][c], points[i][c], 1e-5f) << what << " point " << i;
+        }
+    }
+}
+
+// A skeleton of one joint that goes from the origin at frame 1 to x 1 at frame 11, under /Rig, which
+// stands at x 1, or on its own when underRoot is false, and a quad at /<parent>/Skinned bound to it.
+void
+defineSkinnedQuad(const PXR_NS::UsdStageRefPtr& stage,
+                  bool underRoot)
+{
+    const std::string parent(underRoot ? "/Rig" : "/Loose");
+    if (underRoot) {
+        PXR_NS::UsdGeomXformable(PXR_NS::UsdSkelRoot::Define(stage, PXR_NS::SdfPath(parent))).AddTranslateOp().Set(PXR_NS::GfVec3d(1., 0., 0.));
+    } else {
+        PXR_NS::UsdGeomXform::Define(stage, PXR_NS::SdfPath(parent));
+    }
+    const PXR_NS::UsdSkelSkeleton skeleton = PXR_NS::UsdSkelSkeleton::Define(stage, PXR_NS::SdfPath(parent + "/Skeleton"));
+    const PXR_NS::VtTokenArray joints(1, PXR_NS::TfToken("Joint"));
+    const PXR_NS::VtMatrix4dArray identity(1, PXR_NS::GfMatrix4d(1.));
+    skeleton.CreateJointsAttr().Set(joints);
+    skeleton.CreateBindTransformsAttr().Set(identity);
+    skeleton.CreateRestTransformsAttr().Set(identity);
+    const PXR_NS::UsdSkelAnimation animation = PXR_NS::UsdSkelAnimation::Define(stage, PXR_NS::SdfPath(parent + "/Skeleton/Animation"));
+    animation.CreateJointsAttr().Set(joints);
+    animation.CreateRotationsAttr().Set(PXR_NS::VtQuatfArray(1, PXR_NS::GfQuatf(1.f)));
+    animation.CreateScalesAttr().Set(PXR_NS::VtVec3hArray(1, PXR_NS::GfVec3h(1.f, 1.f, 1.f)));
+    animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+    animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(1.f, 0.f, 0.f)), PXR_NS::UsdTimeCode(11.));
+    PXR_NS::UsdSkelBindingAPI::Apply(skeleton.GetPrim()).CreateAnimationSourceRel().SetTargets({ animation.GetPath() });
+    PXR_NS::UsdGeomMesh mesh = defineQuad(stage, parent + "/Skinned");
+    mesh.CreatePointsAttr().Set(quadPoints(0.f, 0.f));
+    // Skinned points leave the prim's own transform out.
+    mesh.AddTranslateOp().Set(PXR_NS::GfVec3d(0., 5., 0.));
+    const PXR_NS::UsdSkelBindingAPI binding = PXR_NS::UsdSkelBindingAPI::Apply(mesh.GetPrim());
+    binding.CreateSkeletonRel().SetTargets({ skeleton.GetPath() });
+    binding.CreateJointIndicesPrimvar(true, 1).Set(PXR_NS::VtIntArray(1, 0));
+    binding.CreateJointWeightsPrimvar(true, 1).Set(PXR_NS::VtFloatArray(1, 1.f));
 }
 
 // Where the shader puts world point p in the frame: (0, 0) at its bottom left, (1, 1) at its top right.
@@ -207,6 +314,39 @@ protected:
         EXPECT_TRUE(shader.GetInput(PXR_NS::TfToken("worldToProjector")).Get(&matrix, time));
 
         return matrix;
+    }
+
+    void holdInGeometrySpace(const NodePtr& projection,
+                             double frame)
+    {
+        getKnob<KnobChoice>(projection, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        getKnob<KnobBool>(projection, kUSDProject3DParamUseFrameHold)->setValue(true);
+        getKnob<KnobDouble>(projection, kUSDProject3DParamFrameHold)->setValue(frame);
+    }
+
+    // The rig held at frame 1, and an assign binding it to pattern in the scene at file.
+    NodePtr createHeldAssignOf(const QString& file,
+                               const std::string& pattern)
+    {
+        double first = 0., last = 0.;
+        getApp()->getFrameRange(&first, &last);
+        EXPECT_LE(first, 1.);
+        EXPECT_GE(last, 11.);
+        createRig();
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        if (!projector || !reader || !assign) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return NodePtr();
+        }
+        holdInGeometrySpace(projector, 1.);
+        getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(file.toStdString());
+        getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(pattern);
+        EXPECT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
+        EXPECT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+        return assign;
     }
 
     static constexpr double kDistance = 50. / 18.;
@@ -1172,4 +1312,385 @@ TEST_F(USDProject3DTest, AssignedToInstancesItWarnsWhatItCannotPlace)
     ASSERT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Plain"))).Get(&matrix));
     EXPECT_NEAR(3., matrix.ExtractTranslation()[0], 1e-9);
     EXPECT_TRUE(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Scatter/Shape"))).HasValue());
+}
+
+TEST_F(USDProject3DTest, HeldInGeometrySpaceAnAnimatedTransformLeavesEachPointOnTheImage)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    holdInGeometrySpace(projector, 1.);
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(bool(card));
+    ASSERT_TRUE(card->connectInput(projector, 0));
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., 1., ViewSpec::all(), 0);
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(card);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(bool(prim));
+    const PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial().ComputeSurfaceSource();
+    ASSERT_TRUE(bool(shader));
+    PXR_NS::VtVec3fArray points;
+    ASSERT_TRUE(PXR_NS::UsdGeomMesh(prim).GetPointsAttr().Get(&points));
+    ASSERT_FALSE(points.empty());
+    const PXR_NS::UsdGeomPrimvar frame = getFramePrimvar(prim);
+    ASSERT_TRUE(frame.HasValue());
+    for (const PXR_NS::GfVec3f& point : points) {
+        PXR_NS::GfMatrix4d geometryFrame(0.);
+        ASSERT_TRUE(frame.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
+        const PXR_NS::GfVec3d local(point);
+        const PXR_NS::GfMatrix4d atHold = PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+        const PXR_NS::GfMatrix4d moved = PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.));
+        const PXR_NS::GfVec2d taken = projectThrough(getMatrix(shader, PXR_NS::UsdTimeCode(11.)), geometryFrame.Transform(local));
+        const PXR_NS::GfVec2d seen = projectThrough(getMatrix(shader, PXR_NS::UsdTimeCode(1.)), atHold.Transform(local));
+        const PXR_NS::GfVec2d slid = projectThrough(getMatrix(shader, PXR_NS::UsdTimeCode(11.)), moved.Transform(local));
+        EXPECT_NEAR(seen[0], taken[0], 1e-9);
+        EXPECT_NEAR(seen[1], taken[1], 1e-9);
+        EXPECT_GT(std::abs(slid[0] - taken[0]), 0.1);
+    }
+}
+
+// A held projection's shader names a primvar for its hold; a mesh whose points move takes its world
+// points there and a still one none, and changing the hold re-authors them.
+TEST_F(USDProject3DTest, AssignedHeldToAMovingMeshItAuthorsThePointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        PXR_NS::UsdGeomMesh moving = defineRisingQuad(file, "/Moving", 0.f);
+        moving.AddTranslateOp().Set(PXR_NS::GfVec3d(0., 0., 2.));
+        defineRisingQuad(file, "/Apart", 5.f);
+        defineQuad(file, "/Still").CreatePointsAttr().Set(quadPoints(0.f, -3.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Moving /Apart /Still");
+    ASSERT_TRUE(bool(assign));
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const auto shifted = [](float x, float y, float z) {
+        PXR_NS::VtVec3fArray points = quadPoints(x, y);
+        for (PXR_NS::GfVec3f& point : points) {
+            point[2] += z;
+        }
+
+        return points;
+    };
+    PXR_NS::UsdPrim moving = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+    std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(moving);
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    EXPECT_EQ(std::string("natronReferencePointsHold1"), primvars[0].GetPrimvarName().GetString());
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->vertex, primvars[0].GetInterpolation());
+    EXPECT_EQ((std::size_t)0, primvars[0].GetAttr().GetNumTimeSamples());
+    expectPointsNear(shifted(0.f, 0.f, 2.f), primvars[0], "the moving mesh");
+    primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Apart")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(quadPoints(5.f, 0.f), primvars[0], "the mesh apart");
+    const PXR_NS::UsdPrim still = stage->GetPrimAtPath(PXR_NS::SdfPath("/Still"));
+    EXPECT_TRUE(getReferencePrimvars(still).empty());
+    EXPECT_TRUE(getFramePrimvar(still).HasValue());
+    SceneGeometryProjection projection;
+    ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(PXR_NS::UsdShadeMaterialBindingAPI(moving).ComputeBoundMaterial().GetPrim(), &projection));
+    EXPECT_EQ(std::string("natronReferencePointsHold1"), projection.referencePrimvar);
+
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(6.);
+    stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    moving = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+    primvars = getReferencePrimvars(moving);
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    EXPECT_EQ(std::string("natronReferencePointsHold6"), primvars[0].GetPrimvarName().GetString());
+    expectPointsNear(shifted(0.f, 5.f, 2.f), primvars[0], "the moving mesh held later");
+
+    // USD's nearest sample, as for any read.
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(-20.);
+    stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(shifted(0.f, 0.f, 2.f), primvars[0], "the moving mesh held before its samples");
+}
+
+TEST_F(USDProject3DTest, TwoHoldsOnOneMeshGiveTwoPrimvarsAndOneHoldShares)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        defineRisingQuad(file, "/Moving", 0.f);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr first = createHeldAssignOf(path, "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(other && second);
+    other->setScriptName("Project2");
+    ASSERT_TRUE(other->connectInput(plate, kUSDProject3DInputImage));
+    ASSERT_TRUE(other->connectInput(camera, kUSDProject3DInputCamera));
+    holdInGeometrySpace(other, 11.);
+    getKnob<KnobString>(second, kUSDAssignMaterialParamPrimPattern)->setValue("/Moving");
+    ASSERT_TRUE(second->connectInput(first, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(second->connectInput(other, kUSDAssignMaterialInputMaterial));
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(second);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    EXPECT_EQ((std::size_t)2, getReferencePrimvars(primvars.GetPrim()).size());
+    expectPointsNear(quadPoints(0.f, 0.f), primvars.GetPrimvar(PXR_NS::TfToken("natronReferencePointsHold1")), "held at 1");
+    expectPointsNear(quadPoints(0.f, 10.f), primvars.GetPrimvar(PXR_NS::TfToken("natronReferencePointsHold11")), "held at 11");
+
+    getKnob<KnobDouble>(other, kUSDProject3DParamFrameHold)->setValue(1.);
+    stage = composeNode(second);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"))).size());
+}
+
+TEST_F(USDProject3DTest, UnchangedTopologySampledOverTimeStillTakesReferencePoints)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineRisingQuad(file, "/Moving", 0.f);
+        PXR_NS::VtIntArray indices;
+        ASSERT_TRUE(mesh.GetFaceVertexIndicesAttr().Get(&indices));
+        for (const double frame : { 1., 6., 11. }) {
+            mesh.GetFaceVertexIndicesAttr().Set(indices, PXR_NS::UsdTimeCode(frame));
+        }
+        ASSERT_TRUE(mesh.GetFaceVertexIndicesAttr().ValueMightBeTimeVarying());
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"))).size());
+}
+
+TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineRisingQuad(file, "/Remeshed", 0.f);
+        PXR_NS::VtIntArray indices;
+        ASSERT_TRUE(mesh.GetFaceVertexIndicesAttr().Get(&indices));
+        mesh.GetFaceVertexIndicesAttr().Set(indices, PXR_NS::UsdTimeCode(1.));
+        std::swap(indices[0], indices[1]);
+        mesh.GetFaceVertexIndicesAttr().Set(indices, PXR_NS::UsdTimeCode(11.));
+        defineRisingQuad(file, "/Fine", 5.f);
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/RecountedCurves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4), PXR_NS::UsdTimeCode(1.));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(2, 2), PXR_NS::UsdTimeCode(11.));
+        curves.CreatePointsAttr().Set(quadPoints(0.f, 0.f), PXR_NS::UsdTimeCode(1.));
+        curves.CreatePointsAttr().Set(quadPoints(0.f, 10.f), PXR_NS::UsdTimeCode(11.));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/RecountedPoints"));
+        points.CreatePointsAttr().Set(quadPoints(0.f, 0.f), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(2), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Remeshed /Fine /RecountedCurves /RecountedPoints");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    const QString message = getMessage(assign);
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/Fine"))) << message.toStdString();
+    EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Fine"))).size());
+    for (const char* name : { "/Remeshed", "/RecountedCurves", "/RecountedPoints" }) {
+        EXPECT_TRUE(message.contains(QString::fromUtf8(name))) << name << ": " << message.toStdString();
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
+        EXPECT_TRUE(getReferencePrimvars(prim).empty()) << name;
+        EXPECT_TRUE(getFramePrimvar(prim).HasValue()) << name;
+    }
+}
+
+TEST_F(USDProject3DTest, ADeformingMatchInsideAnInstanceWarnsAndTakesNoReferencePoints)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdPrim proto = file->CreateClassPrim(PXR_NS::SdfPath("/Proto"));
+        proto.SetTypeName(PXR_NS::TfToken("Xform"));
+        defineRisingQuad(file, "/Proto/Box", 0.f);
+        const PXR_NS::UsdPrim instance = PXR_NS::UsdGeomXform::Define(file, PXR_NS::SdfPath("/Left")).GetPrim();
+        instance.GetReferences().AddInternalReference(PXR_NS::SdfPath("/Proto"));
+        instance.SetInstanceable(true);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Left");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).contains(QString::fromUtf8("/Left/Box"))) << getMessage(assign).toStdString();
+    EXPECT_TRUE(getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left/Box"))).empty());
+}
+
+TEST_F(USDProject3DTest, AnAlembicCacheTakesItsPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/cache.abc");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateInMemory();
+        ASSERT_TRUE(bool(file));
+        defineRisingQuad(file, "/Moving", 0.f);
+        ASSERT_TRUE(file->Export(path.toStdString()));
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(quadPoints(0.f, 0.f), primvars[0], "the cache");
+}
+
+TEST_F(USDProject3DTest, ByMaterialPathADeformingMeshTakesWhatTheMaterialInputGivesIt)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        defineRisingQuad(file, "/Moving", 2.f);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr connected = createHeldAssignOf(path, "/Moving");
+    ASSERT_TRUE(bool(connected));
+    PXR_NS::VtVec3fArray expected;
+    {
+        const PXR_NS::UsdStageRefPtr stage = composeNode(connected);
+        ASSERT_TRUE(bool(stage));
+        const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+        ASSERT_EQ((std::size_t)1, primvars.size());
+        ASSERT_TRUE(primvars[0].Get(&expected));
+    }
+
+    NodePtr scene = connected->getInput(kUSDAssignMaterialInputScene);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(scene && merge && assign);
+    getKnob<KnobString>(projector, kSceneParamPrimPath)->setValue("/Looks/Projection");
+    ASSERT_TRUE(merge->connectInput(scene, 0));
+    ASSERT_TRUE(merge->connectInput(projector, 1));
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/Moving");
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamMaterialPath)->setValue("/Looks/Projection");
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(expected, primvars[0], "by Material Path");
+}
+
+// Half way the joint is at x 0.5 and the skeleton's parent at x 1. The file's points do not move, and
+// the mesh's own transform plays no part in skinning.
+TEST_F(USDProject3DTest, ASkinnedMeshTakesItsSkinnedPointsAtTheHoldInTheWorld)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        defineSkinnedQuad(file, true);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Rig/Skinned");
+    ASSERT_TRUE(bool(assign));
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(6.);
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Skinned")));
+    ASSERT_EQ((std::size_t)1, primvars.size());
+    expectPointsNear(quadPoints(1.5f, 0.f), primvars[0], "the skinned mesh");
+}
+
+TEST_F(USDProject3DTest, AMeshUSDCannotSkinWarnsAndStaysRigid)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        defineSkinnedQuad(file, false);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Loose/Skinned");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).contains(QString::fromUtf8("/Loose/Skinned"))) << getMessage(assign).toStdString();
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Loose/Skinned"));
+    EXPECT_TRUE(getReferencePrimvars(prim).empty());
+    EXPECT_TRUE(getFramePrimvar(prim).HasValue());
+}
+
+// Only the points are held: widths keep their samples.
+TEST_F(USDProject3DTest, MovingCurvesAndPointsTakeTheirPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(quadPoints(0.f, 0.f), PXR_NS::UsdTimeCode(1.));
+        curves.CreatePointsAttr().Set(quadPoints(0.f, 10.f), PXR_NS::UsdTimeCode(11.));
+        curves.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(4, 0.1f), PXR_NS::UsdTimeCode(1.));
+        curves.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(4, 0.2f), PXR_NS::UsdTimeCode(11.));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/Points"));
+        points.CreatePointsAttr().Set(quadPoints(5.f, 0.f), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(quadPoints(5.f, 10.f), PXR_NS::UsdTimeCode(11.));
+        points.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(4, 0.1f), PXR_NS::UsdTimeCode(1.));
+        points.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(4, 0.2f), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Curves /Points");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    const std::pair<const char*, float> prims[] = { std::make_pair("/Curves", 0.f), std::make_pair("/Points", 5.f) };
+    for (const std::pair<const char*, float>& expected : prims) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(expected.first));
+        const std::vector<PXR_NS::UsdGeomPrimvar> primvars = getReferencePrimvars(prim);
+        ASSERT_EQ((std::size_t)1, primvars.size()) << expected.first;
+        EXPECT_EQ(PXR_NS::UsdGeomTokens->vertex, primvars[0].GetInterpolation()) << expected.first;
+        expectPointsNear(quadPoints(expected.second, 0.f), primvars[0], expected.first);
+        EXPECT_EQ((std::size_t)2, prim.GetAttribute(PXR_NS::UsdGeomTokens->widths).GetNumTimeSamples()) << expected.first;
+    }
 }

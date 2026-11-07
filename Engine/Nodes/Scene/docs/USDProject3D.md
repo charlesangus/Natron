@@ -37,19 +37,30 @@ Controls:
   moving after it slides through the image. Geometry fixes it to the geometry as
   the node it is connected to places it: transforms after that node
   carry the image along. With Use Frame Hold on, the geometry is also taken at
-  Frame Hold, so the image sticks to the geometry's own animation too. Each prim
+  Frame Hold, so the image sticks to the geometry's own animation too, and through
+  USDAssignMaterial to points that move by themselves: time-sampled meshes, including
+  Alembic caches, skinned UsdSkel meshes, curves and points. Each such prim gets a
+  primvar per hold frame, natronReferencePointsHold followed by the frame, of its
+  world-space points at Frame Hold as they are at that node; the image, Project On and
+  Clip Near Far are all judged on that surface. A skinned mesh's points are its skinned
+  result at Frame Hold. A rest-position primvar on the prim is ignored: the image lines
+  up with the camera at the hold, not with a modelled pose. Frame Hold outside a cache's
+  range reads USD's nearest sample. A prim whose topology changes over the project's
+  frame range, or that USD cannot skin, stays rigid with a warning naming it, and slides.
+  Prims whose points do not move and are not skinned get no primvar. Each prim
   bound to the material has its own placement, so one projection can lie on prims
   at different places, each showing the image where the camera sees it. The
   primitive nodes (USDCard, USDCube, USDSphere, USDCylinder) place what they create,
   and USDAssignMaterial places the geometry it matches, whether the projection comes
   from its Material input or its Material Path, where that geometry is at that node.
-  Bound any other way, a Geometry projection takes the camera in the geometry's own
-  coordinates. USDAssignMaterial's binding does not reach inside native instances
+  Bound any other way, such as in a file or by a script, a Geometry projection takes
+  the camera in the geometry's own coordinates, and with no node to place it, deforming
+  geometry slides through the image. USDAssignMaterial's binding does not reach inside native instances
   in Storm, so they show no projection, with a warning. The instances of a point
   instancer share their prototype's placement, also with a warning: each shows the
   image as it falls on the prototype.
-- Project On: Both, Front (faces facing the camera) or Back. A baked export ignores
-  it, with a warning.
+- Project On: Both, Front (faces facing the camera) or Back. Curves and points have no
+  faces, so they show as Both. A baked export ignores it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
   image has no data, black. Off, the image's data beyond its format shows there, and
   its edge pixels extend beyond that. A baked export cannot crop, so it shows the

@@ -66,11 +66,11 @@ endif()
 
 # What Engine's scene code (Engine/Nodes/Scene/) links: authoring and composing layers, the stage,
 # UsdGeom's stage metadata (up axis, meters per unit), cameras and xforms, UsdLux's lights,
-# UsdShade's materials, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
+# UsdShade's materials, UsdSkel's skinned points for sticky projections, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
 # and USDRender's Storm render: UsdImagingGLEngine on HgiGL, its AOV render buffers, garch's GL
 # loader for the framebuffer it renders under, the camera framing and conforming and the GL
 # lights it hands the engine, and hio's image reader interface for the natron:// live textures.
-set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade sdr pcp ar kind plug vt gf tf work trace arch)
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade usdSkel sdr pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
 set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})

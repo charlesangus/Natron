@@ -718,6 +718,14 @@ readGeometryProjection(const PXR_NS::UsdPrim& material,
     projection->framePrimvar = framePrimvar;
     const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
     projection->held = hold && hold.Get(&projection->holdFrame);
+    const PXR_NS::UsdShadeInput reference = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputReferencePoints));
+    PXR_NS::UsdShadeConnectableAPI referenceReader;
+    if (reference && reference.GetConnectedSource(&referenceReader, &readerOutput, &readerOutputType)) {
+        const PXR_NS::UsdShadeInput referenceName = referenceReader.GetInput(PXR_NS::TfToken("varname"));
+        if (referenceName) {
+            referenceName.Get(&projection->referencePrimvar);
+        }
+    }
 
     return true;
 }
@@ -738,6 +746,188 @@ authorProjectionFrame(const PXR_NS::UsdPrim& prim,
     }
 
     return authorValue(primvar.GetAttr(), edit, animated, frameAt);
+}
+
+namespace {
+    // By value: a cache can re-sample unchanged arrays, and USD then reports them as time-varying.
+    template <typename ArrayType>
+    bool
+    holdsItsValueOverRange(const PXR_NS::UsdAttribute& attribute,
+                           const SceneReferenceContext& context)
+    {
+        ArrayType reference;
+        attribute.Get(&reference, context.holdTime);
+        std::vector<double> times;
+        attribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        ArrayType value;
+        for (const double time : times) {
+            if (!attribute.Get(&value, time) || (value != reference)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    topologyHoldsOverRange(const PXR_NS::UsdPrim& prim,
+                           const PXR_NS::UsdAttribute& pointsAttribute,
+                           std::size_t pointCount,
+                           const SceneReferenceContext& context)
+    {
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            const PXR_NS::UsdGeomMesh mesh(prim);
+
+            return holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexCountsAttr(), context)
+                && holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexIndicesAttr(), context);
+        }
+        if (prim.IsA<PXR_NS::UsdGeomCurves>()) {
+            return holdsItsValueOverRange<PXR_NS::VtIntArray>(PXR_NS::UsdGeomCurves(prim).GetCurveVertexCountsAttr(), context);
+        }
+        if (prim.IsA<PXR_NS::UsdGeomPoints>() && !holdsItsValueOverRange<PXR_NS::VtInt64Array>(PXR_NS::UsdGeomPoints(prim).GetIdsAttr(), context)) {
+            return false;
+        }
+        std::vector<double> times;
+        pointsAttribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        PXR_NS::VtVec3fArray value;
+        for (const double time : times) {
+            if (!pointsAttribute.Get(&value, time) || (value.size() != pointCount)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    isBoundToSkin(const PXR_NS::UsdPrim& prim)
+    {
+        const PXR_NS::UsdSkelBindingAPI binding(prim);
+        if (!binding.GetInheritedSkeleton()) {
+            return false;
+        }
+        // A skeleton inherited from far up reaches props with no weights too, which it does not move.
+        const PXR_NS::UsdGeomPrimvar indices = PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken("skel:jointIndices"));
+        const PXR_NS::UsdAttribute shapes = binding.GetBlendShapesAttr();
+
+        return (indices && indices.HasValue()) || (shapes && shapes.HasValue());
+    }
+
+    bool
+    applyBlendShapes(const PXR_NS::UsdSkelSkinningQuery& skinning,
+                     const PXR_NS::UsdSkelSkeletonQuery& skeleton,
+                     double time,
+                     PXR_NS::VtVec3fArray* points)
+    {
+        const PXR_NS::UsdSkelAnimQuery& animation = skeleton.GetAnimQuery();
+        PXR_NS::VtFloatArray animationWeights;
+        if (!animation || !animation.ComputeBlendShapeWeights(&animationWeights, PXR_NS::UsdTimeCode(time))) {
+            return true;
+        }
+        PXR_NS::VtFloatArray weights;
+        const PXR_NS::UsdSkelAnimMapperRefPtr& mapper = skinning.GetBlendShapeMapper();
+        if (!mapper || !mapper->Remap(animationWeights, &weights)) {
+            return false;
+        }
+        const PXR_NS::UsdSkelBlendShapeQuery shapes { PXR_NS::UsdSkelBindingAPI(skinning.GetPrim()) };
+        PXR_NS::VtFloatArray subShapeWeights;
+        PXR_NS::VtUIntArray shapeIndices;
+        PXR_NS::VtUIntArray subShapeIndices;
+        if (!shapes.ComputeSubShapeWeights(weights, &subShapeWeights, &shapeIndices, &subShapeIndices)) {
+            return false;
+        }
+
+        return shapes.ComputeDeformedPoints(subShapeWeights, shapeIndices, subShapeIndices,
+                                            shapes.ComputeBlendShapePointIndices(), shapes.ComputeSubShapePointOffsets(), *points);
+    }
+
+    // Joint-skinned points come out in the skeleton's space: the prim's own transform plays no part, as
+    // in Storm. *space gets the prim whose local to world carries them on.
+    bool
+    computeSkinnedPoints(const PXR_NS::UsdPrim& prim,
+                         SceneReferenceContext* context,
+                         PXR_NS::VtVec3fArray* points,
+                         PXR_NS::UsdPrim* space)
+    {
+        const PXR_NS::UsdSkelRoot root = PXR_NS::UsdSkelRoot::Find(prim);
+        if (!root) {
+            return false;
+        }
+        if (context->populatedRoots.insert(root.GetPath()).second && !context->skinning.Populate(root, PXR_NS::UsdTraverseInstanceProxies())) {
+            return false;
+        }
+        const PXR_NS::UsdSkelSkinningQuery skinning = context->skinning.GetSkinningQuery(prim);
+        const PXR_NS::UsdSkelSkeleton bound = PXR_NS::UsdSkelBindingAPI(prim).GetInheritedSkeleton();
+        const PXR_NS::UsdSkelSkeletonQuery skeleton = context->skinning.GetSkelQuery(bound);
+        if (!skinning || !skeleton) {
+            return false;
+        }
+        if (skinning.HasBlendShapes() && !applyBlendShapes(skinning, skeleton, context->holdTime, points)) {
+            return false;
+        }
+        if (!skinning.HasJointInfluences()) {
+            *space = prim;
+
+            return true;
+        }
+        PXR_NS::VtMatrix4dArray joints;
+        if (!skeleton.ComputeSkinningTransforms(&joints, PXR_NS::UsdTimeCode(context->holdTime))
+            || !skinning.ComputeSkinnedPoints(joints, points, PXR_NS::UsdTimeCode(context->holdTime))) {
+            return false;
+        }
+        *space = bound.GetPrim();
+
+        return true;
+    }
+} // anonymous namespace
+
+SceneReferencePoints
+readReferencePoints(const PXR_NS::UsdPrim& prim,
+                    SceneReferenceContext* context,
+                    PXR_NS::UsdGeomXformCache* xforms)
+{
+    SceneReferencePoints result;
+    if (!prim.IsA<PXR_NS::UsdGeomPointBased>()) {
+        return result;
+    }
+    const PXR_NS::UsdAttribute pointsAttribute = PXR_NS::UsdGeomPointBased(prim).GetPointsAttr();
+    const bool skinned = isBoundToSkin(prim);
+    if (!skinned && !pointsAttribute.ValueMightBeTimeVarying()) {
+        return result;
+    }
+    PXR_NS::VtVec3fArray points;
+    if (!pointsAttribute.Get(&points, context->holdTime) || points.empty()) {
+        return result;
+    }
+    if (!topologyHoldsOverRange(prim, pointsAttribute, points.size(), *context)) {
+        result.status = SceneReferencePoints::eStatusTopologyChanges;
+
+        return result;
+    }
+    PXR_NS::UsdPrim space = prim;
+    if (skinned && !computeSkinnedPoints(prim, context, &points, &space)) {
+        result.status = SceneReferencePoints::eStatusCannotSkin;
+
+        return result;
+    }
+    const PXR_NS::GfMatrix4d toWorld = xforms->GetLocalToWorldTransform(space);
+    for (PXR_NS::GfVec3f& point : points) {
+        point = PXR_NS::GfVec3f(toWorld.Transform(PXR_NS::GfVec3d(point)));
+    }
+    result.status = SceneReferencePoints::eStatusRead;
+    result.points = points;
+
+    return result;
+}
+
+bool
+authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                      const SceneGeometryProjection& projection,
+                      const PXR_NS::VtVec3fArray& points)
+{
+    const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
+
+    return primvar && primvar.Set(points);
 }
 
 bool

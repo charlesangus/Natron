@@ -836,12 +836,18 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
             return prim.IsInstanceProxy();
         });
-        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
-            return !prim.IsA<PXR_NS::UsdGeomMesh>();
+        const auto referenceOf = [&geometryProjection](const PXR_NS::UsdPrim& prim) {
+            return geometryProjection.referencePrimvar.empty()
+                ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
+                : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(geometryProjection.referencePrimvar));
+        };
+        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [&referenceOf](const PXR_NS::UsdPrim& prim) {
+            return !prim.IsA<PXR_NS::UsdGeomMesh>() && !referenceOf(prim).HasValue();
         });
         const bool materialInstanced = shader.GetPrim().IsInstanceProxy();
         if (materialInstanced || gprims.empty() || (instanced != gprims.end()) || (other != gprims.end())) {
             result->keptFrames.insert(geometryProjection.framePrimvar);
+            result->keptFrames.insert(geometryProjection.referencePrimvar);
             if (materialInstanced) {
                 result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonInstanced, materialPath.GetString() });
             } else if (gprims.empty()) {
@@ -902,7 +908,10 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
             const bool hasFrame = framePrimvar.HasValue();
-            const bool varies = cameraVaries || meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying());
+            const PXR_NS::UsdGeomPrimvar referencePrimvar = referenceOf(prim);
+            const bool hasReference = referencePrimvar.HasValue();
+            const bool hasFaces = prim.IsA<PXR_NS::UsdGeomMesh>();
+            const bool varies = cameraVaries || (!hasReference && (meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying())));
             const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
             if (!over) {
                 result->failed = prim.GetPath().GetString();
@@ -916,7 +925,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                     attribute.Clear();
                 }
             }
-            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, PXR_NS::UsdGeomTokens->faceVarying);
+            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, hasFaces ? PXR_NS::UsdGeomTokens->faceVarying : PXR_NS::UsdGeomTokens->vertex);
             if (!primvar) {
                 result->failed = prim.GetPath().GetString();
 
@@ -944,12 +953,19 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 if (crop && ((window[0] < 1.f) || (window[1] < 1.f))) {
                     result->overscan.insert(materialPath.GetString());
                 }
-                mesh.GetPointsAttr().Get(&points, time);
-                mesh.GetFaceVertexCountsAttr().Get(&counts, time);
-                mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                if (hasReference) {
+                    referencePrimvar.Get(&points);
+                } else {
+                    mesh.GetPointsAttr().Get(&points, time);
+                }
+                if (hasFaces) {
+                    mesh.GetFaceVertexCountsAttr().Get(&counts, time);
+                    mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                }
                 // In Geometry space the projection was set up on the geometry as its own node placed
-                // it, wherever it has been moved since.
-                const PXR_NS::GfMatrix4d toReference = geometrySpace ? geometryFrame : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
+                // it, wherever it has been moved since. Reference points are already in the world.
+                const PXR_NS::GfMatrix4d toReference = hasReference ? PXR_NS::GfMatrix4d(1.) : geometrySpace ? geometryFrame
+                                                                                                             : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
                 const PXR_NS::GfMatrix4d toProjector = toReference * worldToProjector;
 
                 PXR_NS::VtVec2fArray uvs(points.size());
@@ -977,7 +993,10 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                         result->behind.insert(prim.GetPath().GetString());
                     }
                 }
-                if (!primvar.Set(uvs, authored) || !primvar.SetIndices(indices, authored)) {
+                if (!hasFaces && !depths.empty() && (*std::min_element(depths.begin(), depths.end()) <= 0.)) {
+                    result->behind.insert(prim.GetPath().GetString());
+                }
+                if (!primvar.Set(uvs, authored) || (hasFaces && !primvar.SetIndices(indices, authored))) {
                     result->failed = prim.GetPath().GetString();
 
                     return;
@@ -1013,6 +1032,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             return;
         }
         result->bakedFrames.insert(geometryProjection.framePrimvar);
+        result->bakedFrames.insert(geometryProjection.referencePrimvar);
     }
 } // bakeProjections
 
@@ -1034,7 +1054,7 @@ stripProjectionFrames(const PXR_NS::SdfLayerRefPtr& layer,
             if ((name.rfind(primvarPrefix, 0) == 0) && frames.count(name.substr(primvarPrefix.size()))) {
                 primvars.push_back(path);
             }
-        } else if (path.IsPrimPath() && (path.GetName() == kUSDProject3DFrameReaderName)) {
+        } else if (path.IsPrimPath() && ((path.GetName() == kUSDProject3DFrameReaderName) || (path.GetName() == kUSDProject3DReferenceReaderName))) {
             const std::string varname = layer->GetFieldAs<std::string>(path.AppendProperty(PXR_NS::TfToken("inputs:varname")), PXR_NS::SdfFieldKeys->Default);
             if (frames.count(varname)) {
                 readers.push_back(path);
@@ -1051,10 +1071,12 @@ stripProjectionFrames(const PXR_NS::SdfLayerRefPtr& layer,
         removeProperty(path);
     }
     const PXR_NS::TfToken frameInput(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
+    const PXR_NS::TfToken referenceInput(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputReferencePoints);
     for (const PXR_NS::SdfPath& path : readers) {
         const PXR_NS::SdfPrimSpecHandle material = layer->GetPrimAtPath(path.GetParentPath());
         for (const PXR_NS::SdfPrimSpecHandle& sibling : material->GetNameChildren()) {
             removeProperty(sibling->GetPath().AppendProperty(frameInput));
+            removeProperty(sibling->GetPath().AppendProperty(referenceInput));
             removeProperty(sibling->GetPath().AppendProperty(PXR_NS::TfToken(kUSDProject3DAttrFrameHold)));
         }
         material->RemoveNameChild(layer->GetPrimAtPath(path));

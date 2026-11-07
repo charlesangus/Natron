@@ -61,13 +61,10 @@ const char* const kLiveTextureLayer = "rgba";
 // A name of its own per hold frame: two projections held at different frames can both reach one
 // prim, through its purposes or an assign over another, and each needs the prim where it held it.
 std::string
-framePrimvarName(bool held,
-                 double holdFrame)
+heldPrimvarName(const char* base,
+                double holdFrame)
 {
-    std::string name("natronProjectionFrame");
-    if (!held) {
-        return name;
-    }
+    std::string name(base);
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%.17g", holdFrame);
     name += "Hold";
@@ -625,11 +622,24 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             const PXR_NS::UsdShadeInput fallback = frameReader ? frameReader.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
             const PXR_NS::UsdShadeOutput result = frameReader ? frameReader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeOutput();
             ok = frameReader && frameReader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_matrix")))
-                && frameName && frameName.Set(framePrimvarName(useFrameHold, frameHold))
+                && frameName && frameName.Set(useFrameHold ? heldPrimvarName("natronProjectionFrame", frameHold) : std::string("natronProjectionFrame"))
                 && fallback && fallback.Set(PXR_NS::GfMatrix4d(1.))
                 && result;
             const PXR_NS::UsdShadeInput frame = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
             ok = frame && frame.ConnectToSource(result);
+        }
+        if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
+            PXR_NS::UsdShadeShader referenceReader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kUSDProject3DReferenceReaderName)));
+            const PXR_NS::UsdShadeInput referenceName = referenceReader ? referenceReader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String) : PXR_NS::UsdShadeInput();
+            const PXR_NS::UsdShadeInput fallback = referenceReader ? referenceReader.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeInput();
+            const PXR_NS::UsdShadeOutput result = referenceReader ? referenceReader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeOutput();
+            // Storm defines the primvar's accessor either way; this value is how the surface knows a prim lacks it.
+            ok = referenceReader && referenceReader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float3")))
+                && referenceName && referenceName.Set(heldPrimvarName("natronReferencePoints", frameHold))
+                && fallback && fallback.Set(PXR_NS::GfVec3f(1e30f))
+                && result;
+            const PXR_NS::UsdShadeInput reference = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputReferencePoints), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeInput();
+            ok = reference && reference.ConnectToSource(result);
         }
         const std::pair<const char*, int> ints[] = {
             { kUSDProject3DInputProjectionSpace, space },

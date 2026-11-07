@@ -40,3 +40,29 @@ Findings:
 - On a native instance root the primvar gives each instance its own placement, with instances 1 or 3.
 - With instances 2 the instances draw lit grey whatever the material: Storm does not take a collection
   binding from an ancestor into an instance, and that is the form USDAssignMaterial authors.
+
+Reference points on deforming prims:
+
+run-sticky.sh renders gen_sticky.py's scene at frames 1 and 2 in one held Geometry material: a deforming
+mesh, linear and cubic curves, points and a rigid moving card. "reader" reads a vertex primvar of each
+prim's world-space points at the hold through UsdPrimvarReader_float3; "baked" has st baked from the same
+points under a plain textured surface. compare_sticky.py counts where they differ, per prim.
+SPIKE_PROJECT_ON sets Project On, SPIKE_BARE_WIDTHS drops authored widths and subdivides the mesh,
+SPIKE_COMPLEXITY sets usdrecord's complexity.
+
+Findings:
+- The checker stays on the same part of every deforming prim at both frames, and the rigid card beside
+  them takes its frame primvar in the same material. The reader's fallback, 1e30, marks a prim without the
+  primvar; HD_HAS_referencePoints is defined either way, so the preprocessor cannot tell them apart.
+- The two modes differ along checker edges and on the point sprites: 2839 pixels of 31795 drawn by both at
+  frame 1, 1940 of 31393 at frame 2. The bake interpolates its UVs across a quad and colours a whole
+  sprite from one UV, where the surface projects per fragment. No region of the image is displaced. The
+  white strip on the bake's card is the plate's white corner, which the surface discards as out of frame.
+- IsFlipped() and ApplyInstanceTransformInverse() are defined for meshes only. A surface calling them
+  does not link on curves or points, and those prims draw grey, in World space too. HD_HAS_ptexFaceOffset
+  is defined after the surface, and HD_HAS_widths only where widths are authored, so nothing in the
+  preprocessor tells the prim types apart. The surface carries its own flip test and reads the points
+  primvar for the position on the object.
+- At run time, fwidth(patchCoord.x) is zero on curves and points, whose patch coordinate has no u, and
+  not on mesh faces. Back hides the mesh and card and leaves curves and points showing, at low and high
+  complexity.

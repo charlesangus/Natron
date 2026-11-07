@@ -26,6 +26,8 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdSkel/animation.h>
 
 #include "Global/Macros.h"
 
@@ -58,6 +60,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -924,6 +927,104 @@ protected:
     }
 
     // The bounds of the card's UVs at time.
+    // A quad filling the projector's frame when offset is 0.
+    static PXR_NS::VtVec3fArray framePoints(float offset)
+    {
+        PXR_NS::VtVec3fArray points(4);
+        points[0] = PXR_NS::GfVec3f(offset - 1.f, -0.5f, 0.f);
+        points[1] = PXR_NS::GfVec3f(offset + 1.f, -0.5f, 0.f);
+        points[2] = PXR_NS::GfVec3f(offset + 1.f, 0.5f, 0.f);
+        points[3] = PXR_NS::GfVec3f(offset - 1.f, 0.5f, 0.f);
+
+        return points;
+    }
+
+    static PXR_NS::UsdGeomMesh defineFrameQuad(const PXR_NS::UsdStageRefPtr& stage,
+                                               const char* path)
+    {
+        PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+        PXR_NS::VtIntArray indices(4);
+        for (int i = 0; i < 4; ++i) {
+            indices[i] = i;
+        }
+        mesh.CreateFaceVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        mesh.CreateFaceVertexIndicesAttr().Set(indices);
+
+        return mesh;
+    }
+
+    // The rig's projection held at frame 1, assigned to pattern in the scene at file, in place of the card.
+    NodePtr createHeldAssignOf(const QString& file,
+                               const std::string& pattern)
+    {
+        createRig();
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        if (!projector || !card || !reader || !assign) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return NodePtr();
+        }
+        card->disconnectInput(0);
+        getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+        getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+        getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(file.toStdString());
+        getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(pattern);
+        EXPECT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
+        EXPECT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+        return assign;
+    }
+
+    static void expectNoProjectionData(const QString& dir,
+                                       const char* what)
+    {
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "natronProjectionFrame", "natronReferencePoints", kUSDProject3DFrameReaderName, kUSDProject3DReferenceReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints, kUSDProject3DAttrFrameHold }) {
+                EXPECT_FALSE(file.second.contains(needle)) << what << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+    }
+
+    // That st holds one set of values for all time, the frame's bottom left to its top right around the quad.
+    static void expectFrameQuadUVs(const PXR_NS::UsdPrim& prim,
+                                   const PXR_NS::TfToken& interpolation,
+                                   const char* what)
+    {
+        const PXR_NS::UsdGeomPrimvar st = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st"));
+        ASSERT_TRUE(bool(st)) << what;
+        EXPECT_EQ(interpolation, st.GetInterpolation()) << what;
+        EXPECT_EQ((std::size_t)0, st.GetAttr().GetNumTimeSamples()) << what;
+        const PXR_NS::GfVec2f expected[] = { PXR_NS::GfVec2f(0.f, 0.f), PXR_NS::GfVec2f(1.f, 0.f), PXR_NS::GfVec2f(1.f, 1.f), PXR_NS::GfVec2f(0.f, 1.f) };
+        for (const double time : { 1., 3. }) {
+            PXR_NS::VtVec2fArray uvs;
+            ASSERT_TRUE(st.ComputeFlattened(&uvs, PXR_NS::UsdTimeCode(time))) << what;
+            ASSERT_EQ((std::size_t)4, uvs.size()) << what;
+            for (std::size_t i = 0; i < 4; ++i) {
+                EXPECT_NEAR(expected[i][0], uvs[i][0], 1e-4f) << what << " corner " << i << " at " << time;
+                EXPECT_NEAR(expected[i][1], uvs[i][1], 1e-4f) << what << " corner " << i << " at " << time;
+            }
+        }
+    }
+
+    PXR_NS::UsdStageRefPtr writeAndOpen(const NodePtr& input,
+                                        const QString& dir,
+                                        USDWrite::ExportModeEnum mode)
+    {
+        EXPECT_TRUE(QDir().mkpath(dir));
+        const QString path = dir + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(input, path, mode, 1, 3);
+        if (!writer || !getWriter(writer)) {
+            ADD_FAILURE() << "no writer";
+
+            return PXR_NS::UsdStageRefPtr();
+        }
+        EXPECT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
+
+        return PXR_NS::UsdStage::Open(path.toStdString());
+    }
+
     static std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> boundsOf(const PXR_NS::UsdGeomPrimvar& st,
                                                                 PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default())
     {
@@ -1303,6 +1404,148 @@ TEST_F(USDWriteProjectionTest, OneProjectionOnTwoCardsApartBakesEachFromItsOwnPl
     ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
     check(assign, "flattened", USDWrite::eExportModeFlattened);
     check(assign, "layered", USDWrite::eExportModeLayered);
+}
+
+TEST_F(USDWriteProjectionTest, ADeformingMeshBakesOneSetOfUVsFromItsPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        std::make_pair("flattened", USDWrite::eExportModeFlattened),
+        std::make_pair("layered", USDWrite::eExportModeLayered),
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const QString dir = tmp.path() + QLatin1Char('/') + QString::fromUtf8(mode.first);
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+        ASSERT_TRUE(bool(prim)) << mode.first;
+        expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->faceVarying, mode.first);
+        PXR_NS::VtVec3fArray moved;
+        ASSERT_TRUE(PXR_NS::UsdGeomMesh(prim).GetPointsAttr().Get(&moved, PXR_NS::UsdTimeCode(3.))) << mode.first;
+        ASSERT_EQ((std::size_t)4, moved.size()) << mode.first;
+        EXPECT_NEAR(0.f, moved[0][0], 1e-5f) << mode.first;
+        expectNoProjectionData(dir, mode.first);
+    }
+}
+
+TEST_F(USDWriteProjectionTest, ASkinnedMeshBakesOneSetOfUVsFromItsSkinnedPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        PXR_NS::UsdSkelRoot::Define(file, PXR_NS::SdfPath("/Rig"));
+        const PXR_NS::UsdSkelSkeleton skeleton = PXR_NS::UsdSkelSkeleton::Define(file, PXR_NS::SdfPath("/Rig/Skeleton"));
+        const PXR_NS::VtTokenArray joints(1, PXR_NS::TfToken("Joint"));
+        const PXR_NS::VtMatrix4dArray identity(1, PXR_NS::GfMatrix4d(1.));
+        skeleton.CreateJointsAttr().Set(joints);
+        skeleton.CreateBindTransformsAttr().Set(identity);
+        skeleton.CreateRestTransformsAttr().Set(identity);
+        const PXR_NS::UsdSkelAnimation animation = PXR_NS::UsdSkelAnimation::Define(file, PXR_NS::SdfPath("/Rig/Skeleton/Animation"));
+        animation.CreateJointsAttr().Set(joints);
+        animation.CreateRotationsAttr().Set(PXR_NS::VtQuatfArray(1, PXR_NS::GfQuatf(1.f)));
+        animation.CreateScalesAttr().Set(PXR_NS::VtVec3hArray(1, PXR_NS::GfVec3h(1.f, 1.f, 1.f)));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(1.f, 0.f, 0.f)), PXR_NS::UsdTimeCode(3.));
+        PXR_NS::UsdSkelBindingAPI::Apply(skeleton.GetPrim()).CreateAnimationSourceRel().SetTargets({ animation.GetPath() });
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Rig/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f));
+        const PXR_NS::UsdSkelBindingAPI binding = PXR_NS::UsdSkelBindingAPI::Apply(mesh.GetPrim());
+        binding.CreateSkeletonRel().SetTargets({ skeleton.GetPath() });
+        binding.CreateJointIndicesPrimvar(true, 1).Set(PXR_NS::VtIntArray(1, 0));
+        binding.CreateJointWeightsPrimvar(true, 1).Set(PXR_NS::VtFloatArray(1, 1.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Rig/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Moving"));
+    ASSERT_TRUE(bool(prim));
+    expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->faceVarying, "the skinned mesh");
+    expectNoProjectionData(dir, "the skinned mesh");
+}
+
+TEST_F(USDWriteProjectionTest, DeformingCurvesAndPointsBakeOneSetOfVertexUVs)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        curves.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/Points"));
+        points.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves /Points");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    for (const char* name : { "/Curves", "/Points" }) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
+        ASSERT_TRUE(bool(prim)) << name;
+        expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->vertex, name);
+    }
+    expectNoProjectionData(dir, "curves and points");
+}
+
+// A still prim holds no reference points to bake from, so it keeps the live projection as it always has.
+TEST_F(USDWriteProjectionTest, StillCurvesAndPointsStayUnbaked)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/Points"));
+        points.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves /Points");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    for (const char* name : { "/Curves", "/Points" }) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
+        ASSERT_TRUE(bool(prim)) << name;
+        EXPECT_FALSE(PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st")).HasValue()) << name;
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(material)) << name;
+        SceneGeometryProjection projection;
+        EXPECT_TRUE(SceneNodeAuthoring::readGeometryProjection(material.GetPrim(), &projection)) << name;
+        EXPECT_TRUE(PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(projection.framePrimvar)).HasValue()) << name;
+    }
 }
 
 // The camera's frame is the plate's format: with overscan, the baked UVs reach only the format's part

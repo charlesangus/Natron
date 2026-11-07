@@ -49,9 +49,43 @@ struct SceneGeometryProjection {
     // The constant matrix primvar its shader reads each prim's placement from. Empty when the
     // material is not such a projection.
     std::string framePrimvar;
+    // The vertex primvar its shader projects from, for prims whose points move. Empty unless it
+    // holds its camera.
+    std::string referencePrimvar;
     // Whether it holds its camera, and at which project frame.
     bool held = false;
     double holdFrame = 0.;
+};
+
+/**
+ * @brief A prim's points as a held projection takes them: see SceneNodeAuthoring::readReferencePoints().
+ **/
+struct SceneReferencePoints {
+    enum StatusEnum {
+        // Its points neither move nor are skinned: the frame primvar places it.
+        eStatusStill,
+        // points holds its world-space points at the hold.
+        eStatusRead,
+        // Its points cannot apply over the frame range, so it stays rigid.
+        eStatusTopologyChanges,
+        eStatusCannotSkin
+    };
+
+    StatusEnum status = eStatusStill;
+    PXR_NS::VtVec3fArray points;
+};
+
+/**
+ * @brief What SceneNodeAuthoring::readReferencePoints() shares across the prims of one stage. The
+ * time codes are the hold's and the project frame range's.
+ **/
+struct SceneReferenceContext {
+    double holdTime = 0.;
+    double firstTime = 0.;
+    double lastTime = 0.;
+    PXR_NS::UsdSkelCache skinning;
+    // Populating walks the whole skeleton root, so it must not repeat for each prim under one.
+    PXR_NS::SdfPathSet populatedRoots;
 };
 
 /**
@@ -261,6 +295,22 @@ bool authorProjectionFrame(const PXR_NS::UsdPrim& prim,
                            const SceneGeometryProjection& projection,
                            bool animated,
                            const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+
+/**
+ * @brief Reads prim's points as a projection held at context.holdTime takes them: its world-space
+ * points there, skinned when it is bound to a skeleton. xforms is a cache at the hold. A prim whose
+ * points neither move nor are skinned, or that is no UsdGeomPointBased, reads as still.
+ **/
+SceneReferencePoints readReferencePoints(const PXR_NS::UsdPrim& prim,
+                                         SceneReferenceContext* context,
+                                         PXR_NS::UsdGeomXformCache* xforms);
+
+/**
+ * @brief Authors points on prim as projection's reference primvar.
+ **/
+bool authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                           const SceneGeometryProjection& projection,
+                           const PXR_NS::VtVec3fArray& points);
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with

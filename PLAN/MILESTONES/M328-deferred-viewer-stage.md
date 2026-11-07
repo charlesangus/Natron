@@ -76,4 +76,6 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Decisions
 
+- 2026-11-07 — Phase 328.1 remote gate green at f26c43835 (release, full ctest, viewer GUI scripts under llvmpipe). The threaded first render hasn't run on a real GPU.
+
 - 2026-11-07 — Phase 328.1 at f26c43835, unbuilt. First render moved off the main thread (PM-accepted implementer's design, not in the plan): the engine lives on a per-viewport render thread with a shared GL context. A frame taking in a stage change renders there with main free; any other frame blocks main while it draws, then blits. Without threaded GL the engine stays on main.

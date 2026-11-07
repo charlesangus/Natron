@@ -45,7 +45,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWNEURALDENOISE "fr.natron.RawNeuralDenoise"
+#define PLUGINID_NATRON_RAWNEURALDENOISE "RawNeuralDenoise"
 #define PLUGIN_MAJOR_NATRON_RAWNEURALDENOISE 1
 
 #define kRawNeuralDenoiseParamStrength "strength"

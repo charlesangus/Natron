@@ -256,7 +256,7 @@ protected:
 };
 
 // Strength 0 is the bilinear demosaic and needs no model: with AI off and nothing installed the
-// render still succeeds, and every photosite keeps its own sample.
+// render still succeeds, and every red and blue photosite keeps its own sample.
 TEST_F(NativeRawNeuralDenoiseTest, StrengthZeroNeedsNoModel)
 {
     appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("aiEnabled")->setValue(false);
@@ -283,7 +283,25 @@ TEST_F(NativeRawNeuralDenoiseTest, StrengthZeroNeedsNoModel)
                 float rgb[3];
                 scene(x, y, rgb);
                 const int own = layout.colourAt(x, y);
-                ASSERT_NEAR(rgb[own], rawTestPlaneValue(plane, x, y, own), 1e-6) << x << "," << y;
+                float expectedOwn = rgb[own];
+                if (own == 1) {
+                    // The demosaic's green is the mean of the two greens: the site's own and the
+                    // mean of the other green's sites among its diagonal neighbours.
+                    float other = 0.f;
+                    int count = 0;
+                    for (int dy = -1; dy <= 1; dy += 2) {
+                        for (int dx = -1; dx <= 1; dx += 2) {
+                            if (rod.contains(x + dx, y + dy)) {
+                                float neighbour[3];
+                                scene(x + dx, y + dy, neighbour);
+                                other += neighbour[1];
+                                ++count;
+                            }
+                        }
+                    }
+                    expectedOwn = 0.5f * (rgb[1] + other / (float)count);
+                }
+                ASSERT_NEAR(expectedOwn, rawTestPlaneValue(plane, x, y, own), 1e-6) << x << "," << y;
                 if (pass == 0) {
                     for (int c = 0; c < 3; ++c) {
                         ASSERT_NEAR(rgb[c], rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
@@ -304,11 +322,15 @@ TEST_F(NativeRawNeuralDenoiseTest, EveryPlaneAndEdgeReachesTheModelAsDarktablePa
     const int width = 36;
     const int height = 28;
     const RectI rod(0, 0, width, height);
-    NodePtr node = createSceneChain(rod, hashedScene);
+    // The pattern's origin puts a red photosite on the top-left corner, so the whole image is the
+    // model's working region; from the bottom-left origin the top row would be a green and blue one
+    // that the model, forced to RGGB, skips.
+    const ImageMetadata metadata = rawTestMetadata("RGGB", 0, (height - 1) & 1, eRawStagePrepared);
+    const RawLayout layout = *RawLayout::fromMetadata(metadata);
+    NodePtr node = createChain(rod, mosaicOf(hashedScene, layout), metadata);
     ASSERT_TRUE(bool(node));
     selectModel(node, RawNeuralDenoiseModels::kPlanes);
 
-    const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
     const RawTestSource::ValueFn mosaic = mosaicOf(hashedScene, layout);
     // Plane `plane` of block (row, column) counted from the top-left: R, G1, G2, B at its sites.
     const auto packed = [&](int plane, int row, int column) {

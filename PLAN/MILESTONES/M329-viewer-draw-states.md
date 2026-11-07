@@ -42,7 +42,7 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Phase 329.1: State model
 
-- [ ] M329.P1.T1 — `SceneDrawStates` with effective-state resolution.
+- [x] M329.P1.T1 — `SceneDrawStates` with effective-state resolution.
   - files: `Engine/Nodes/Scene/SceneDrawStates.{h,cpp}` (new), `Engine/CMakeLists.txt`, `Tests/Scene/SceneDrawStates_Test.cpp` (new).
   - approach: pxr-free; states BBox, Children, Full, Full + Load, Hidden by path. Nearest set state wins, a Children row's unset children default to BBox, BBox and Hidden stop what's below, and setting Full or Full + Load switches blocking ancestors to Children. Resolution takes a graph-policy layer, empty until M330 - Graph Draw Policy, then the default Full. It reports a delta of drawn, boxed and hidden paths plus load requests: Children set directly on an unloaded payload loads only that payload, Full + Load loads with descendants. Cost scales with the changed subtree, not all states.
   - verify: gtest — every rule above, kept missing paths, remembered deeper states, one delta with 100k stored states.
@@ -50,13 +50,13 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Phase 329.2: Filter and the state-change budget
 
-- [ ] M329.P2.T1 — Port the filter.
+- [x] M329.P2.T1 — Port the filter.
   - files: `Gui/SceneDrawFilter.{h,cpp}` (new), `Gui/SceneViewport.{h,cpp}`, `Gui/CMakeLists.txt`, `Tests/SceneDrawFilter_Test.cpp` (new), `Tests/CMakeLists.txt`.
   - approach: port from `.worktrees/m327-filter/Gui/SceneHydraFilter.{h,cpp}`, don't cherry-pick; no session mechanism or `NATRON_DRAW_STATE_MECHANISM`. Register before render index construction and keep `UNDOCUMENTED` marks. Add exceptions below a pruned prefix for Children and hide only rprims and instancers, keeping materials and cameras. Changes go as `postToRenderThread` jobs (`SceneViewport.cpp:3863`), never `callOnRenderThread` (`:3874`), and a pending delta makes `needsBackgroundFrame` true so it takes the background frame path, not `paintGL`'s blocking one (`:5510-5520`). Under C++20 compare `get_pointer()`s, not weak with ref pointers.
   - verify: gtest over a retained scene index — notices and paths for prune, restore and nested exceptions; two viewers on one stage keep separate states; GUI pixel check on a control row.
   - size: L
 
-- [ ] M329.P2.T2 — Port the harness and add gate scenarios.
+- [x] M329.P2.T2 — Port the harness and add gate scenarios.
   - files: `tools/bench/heavy_scene_bench.py`, `tools/bench/heavy_scene_frame.py` (new), `tools/bench/heavy_scene_rows.py`, `tools/bench/heavy_scene_gpu_host.sh`, `tools/bench/heavy_scene_watchdog.sh`, `tools/bench/README.md`.
   - approach: port every spike scenario and control (`prune_restore`, `sibling_state`, `sibling_shot`, `reveal_cancel`, `orbit10k`, populate, pixel check with control row, per-scenario limits); all run under the watchdog, since a spike settle run hung the machine for a cause never established. Drive them through `SceneDrawStates`, not spike commands, and add them to `gate`.
   - verify: under Xvfb each scenario prints one JSON line, frame rates as not valid; `gate` lists the new scenarios.
@@ -155,6 +155,11 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 **Verification gate:** release gate green; `heavy_scene_gpu_host.sh gate` passes on the GPU host (Xvfb can't prove timing); all M329 GUI scripts pass; the user has seen screenshots and accepted the UAT.
 
 ## Decisions
+
+- 2026-11-07 — Budget (user): the 100 ms covers both the main-thread stall and the time until the changed picture appears. If Storm can't reach it, report the numbers rather than change the target.
+- 2026-11-07 — Hidden prims (user): hidden loaded prims always leave Hydra and free their memory, even if that misses the budget. Keeping them hidden in Hydra is off the table for P2.T4.
+- 2026-11-07 — Lights (user): lights under a BBox or Hidden row stop lighting in both states; only rows drawn in full contribute light.
+- 2026-11-07 — P1.T1, P2.T1, P2.T2 written at 94dde8516 on milestone/m329-viewer-draw-states. Standalone state and filter tests pass; the Xvfb scenarios and GuiTests/EngineTests need the gate.
 
 - 2026-11-07 — Filter only (user, M327 - Heavy Scene Spike). Elaboration rejected `UsdImagingDrawModeSceneIndex` because it reads authored draw modes inside the usdImaging chain, and `HdsiPrefixPathPruningSceneIndex` because a prefix is its only unit of change, so it can't reveal part of a subtree. `HdsiPrimManagingSceneIndex` exists only as `HdsiPrimManagingSceneIndexObserver`, an observer and not needed.
 - 2026-11-07 — Per-viewer state follows Gaffer's small expansion object beside a lazy scene (`gaffer/1.7.5.0/WorkingWithScenes/AnatomyOfAScene`); neither Katana nor Gaffer holds it per viewer (research note). Solaris changes USD draw mode for expansion (`solaris/support/expansionstates.html`), which our rule that display state stays out of layers forbids.

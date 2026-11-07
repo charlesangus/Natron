@@ -177,6 +177,8 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 ## Decisions
 
+- 2026-11-07 — Bench move (user): the host rebooted during the Xvfb bench (cause unproven, no kernel log visible; the partial chain-only run is discarded). All benchmarking runs at one time on the GPU host, before and after in the same sitting so the numbers are fair and comparable. This replaces P5.T1's three Xvfb runs on this host; the comparison uses a before build run there, not the old Xvfb baseline.
+
 - 2026-11-07 — Remote release gate green with M118's GUI scripts at 32fa7e605.
 
 - 2026-11-06 — Bench `delete_1000`'s stall was the per-node broken-link modal, then a real runaway in the untimed undo: `deactivate`/`activate` replace Param wrappers, losing `.expression0`, so reads fail repeatedly (147,649 failed evaluations in 300 s at n=60) and each failure wrote content and invalidated the hash. Baseline never had `delete_1000`, `undo` or `redo`. Fixed, not yet built. Hover has no regression: main-thread CPU per event matches a pre-merge control, and the 41 s figure was host load.

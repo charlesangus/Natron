@@ -467,7 +467,7 @@ TransformNode::initializeKnobs()
     this->addStageKnobs(page);
 
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = this->getNode();
     if (node) {
@@ -501,17 +501,17 @@ TransformNode::updateShutterEnabled()
 }
 
 void
-TransformNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+TransformNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    this->op().filterKnobs.updateEnabled(time, view);
+    this->op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -555,7 +555,7 @@ TransformNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

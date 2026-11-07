@@ -448,7 +448,7 @@ LensDistortion::initializeKnobs()
     addStageKnobs(page);
     _extentKnobs.finishKnobs();
     updateModelVisibility();
-    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // LensDistortion::initializeKnobs
 
 void
@@ -469,7 +469,7 @@ LensDistortion::onKnobsLoaded()
 {
     _extentKnobs.updateVisibility();
     updateModelVisibility();
-    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -490,7 +490,7 @@ LensDistortion::knobChanged(KnobI* k,
     }
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        _filterKnobs.updateEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        _filterKnobs.updateVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

@@ -405,7 +405,7 @@ private:
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
 
-    void updateClampEnabled(double time, ViewIdx view);
+    void updateFilterVisibility(double time, ViewIdx view);
 
     // Point moves only apply under a selected tool action, so a new node needs one as much as a
     // loaded one.

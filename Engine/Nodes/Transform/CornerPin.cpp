@@ -738,7 +738,7 @@ CornerPinNode::initializeKnobs()
     page->addKnob(srcClipChanged);
     _srcClipChanged = srcClipChanged;
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -751,16 +751,16 @@ CornerPinNode::initializeKnobs()
 } // CornerPinNode::initializeKnobs
 
 void
-CornerPinNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+CornerPinNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    op().filterKnobs.updateEnabled(time, view);
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 CornerPinNode::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -865,7 +865,7 @@ CornerPinNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = o.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

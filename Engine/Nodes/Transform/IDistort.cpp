@@ -210,20 +210,20 @@ IDistort::initializeKnobs()
     }
     _map.declareLayerKnob(node, kIDistortInputMap);
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // IDistort::initializeKnobs
 
 void
-IDistort::updateClampEnabled(double time,
-                             ViewIdx view)
+IDistort::updateFilterVisibility(double time,
+                                 ViewIdx view)
 {
-    _filterKnobs.updateEnabled(time, view);
+    _filterKnobs.updateVisibility(time, view);
 }
 
 void
 IDistort::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -235,7 +235,7 @@ IDistort::knobChanged(KnobI* k,
 {
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

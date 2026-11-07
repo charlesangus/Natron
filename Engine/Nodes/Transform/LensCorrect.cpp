@@ -540,7 +540,7 @@ LensCorrect::updateVisibility()
     const bool tca = tcaOverride && tcaOverride->getValue();
     setEnabled(_tcaRed.lock(), tca);
     setEnabled(_tcaBlue.lock(), tca);
-    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void

@@ -100,7 +100,7 @@ ITransform::initializeKnobs()
     addStageKnobs(page);
 
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -133,17 +133,17 @@ ITransform::updateShutterEnabled()
 }
 
 void
-ITransform::updateClampEnabled(double time,
-                               ViewSpec view)
+ITransform::updateFilterVisibility(double time,
+                                   ViewSpec view)
 {
-    _op.filterKnobs.updateEnabled(time, view);
+    _op.filterKnobs.updateVisibility(time, view);
 }
 
 void
 ITransform::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -186,7 +186,7 @@ ITransform::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

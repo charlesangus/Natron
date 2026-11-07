@@ -222,7 +222,7 @@ private:
 
     void resolveUVChannels(double time, ViewIdx view, UVChannel* u, UVChannel* v);
 
-    void updateClampEnabled(double time, ViewIdx view);
+    void updateFilterVisibility(double time, ViewIdx view);
 
     KnobChannelSelectWPtr _channelU;
     KnobChannelSelectWPtr _channelV;

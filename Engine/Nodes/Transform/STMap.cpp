@@ -289,13 +289,13 @@ STMap::initializeKnobs()
 
     addStageKnobs(page);
 
-    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // STMap::initializeKnobs
 
 void
 STMap::onKnobsLoaded()
 {
-    _filterKnobs.updateEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -307,7 +307,7 @@ STMap::knobChanged(KnobI* k,
 {
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        _filterKnobs.updateEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        _filterKnobs.updateVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

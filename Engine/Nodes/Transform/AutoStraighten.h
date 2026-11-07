@@ -435,7 +435,7 @@ private:
 
     void refreshVisibility();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     RotoCurveInteractPtr _ui;
     KnobChoiceWPtr _structure;

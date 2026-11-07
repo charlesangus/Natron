@@ -614,7 +614,7 @@ SplineWarp::initializeKnobs()
         });
     }
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     updateCookieKnobsEnabled();
     registerOutputMaskLayer();
@@ -630,10 +630,10 @@ SplineWarp::selectDefaultTool()
 }
 
 void
-SplineWarp::updateClampEnabled(double time,
-                               ViewIdx view)
+SplineWarp::updateFilterVisibility(double time,
+                                   ViewIdx view)
 {
-    _filterKnobs.updateEnabled(time, view);
+    _filterKnobs.updateVisibility(time, view);
 }
 
 void
@@ -959,7 +959,7 @@ SplineWarp::shouldDrawHostOverlay() const
 void
 SplineWarp::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     syncAmountKnobs();
     syncTransformKnobs();
@@ -982,7 +982,7 @@ SplineWarp::knobChanged(KnobI* k,
 
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

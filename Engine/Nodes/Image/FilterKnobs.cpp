@@ -83,8 +83,8 @@ FilterKnobs::create(KnobHolder* holder,
 }
 
 void
-FilterKnobs::updateEnabled(double time,
-                           ViewSpec view) const
+FilterKnobs::updateVisibility(double time,
+                              ViewSpec view) const
 {
     const KnobChoicePtr filter = _filter.lock();
 
@@ -94,16 +94,16 @@ FilterKnobs::updateEnabled(double time,
     const FilterEnum chosen = (FilterEnum)filter->getValueAtTime(time, 0, view);
 
     if (const KnobBoolPtr clamp = _clamp.lock()) {
-        clamp->setAllDimensionsEnabled(filterHonoursClamp(chosen));
+        clamp->setSecret(!filterHonoursClamp(chosen));
     }
     if (const KnobIntPtr lobes = _lobes.lock()) {
-        lobes->setAllDimensionsEnabled(chosen == eFilterSinc);
+        lobes->setSecret(chosen != eFilterSinc);
     }
     if (const KnobDoublePtr bicubicB = _bicubicB.lock()) {
-        bicubicB->setAllDimensionsEnabled(chosen == eFilterBicubic);
+        bicubicB->setSecret(chosen != eFilterBicubic);
     }
     if (const KnobDoublePtr bicubicC = _bicubicC.lock()) {
-        bicubicC->setAllDimensionsEnabled(chosen == eFilterBicubic);
+        bicubicC->setSecret(chosen != eFilterBicubic);
     }
 }
 

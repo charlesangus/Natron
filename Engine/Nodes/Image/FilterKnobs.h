@@ -49,8 +49,8 @@ public:
     /// Adds one row of parameter knobs to page. Call it after the knob that ends the Filter row.
     void create(KnobHolder* holder, const KnobPagePtr& page, const KnobChoicePtr& filter, const KnobBoolPtr& clamp);
 
-    /// Enables Clamp, Lobes, Bicubic B and Bicubic C for what the Filter choice reads at time.
-    void updateEnabled(double time, ViewSpec view) const;
+    /// Shows Clamp, Lobes, Bicubic B and Bicubic C only when the Filter choice at time reads them.
+    void updateVisibility(double time, ViewSpec view) const;
 
     /// Lobes, Bicubic B and Bicubic C, for a node that hides its Filter row by method.
     std::array<KnobIPtr, 3> parameterKnobs() const WARN_UNUSED_RETURN;

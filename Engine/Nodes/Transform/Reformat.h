@@ -322,7 +322,7 @@ private:
      **/
     void refreshVisibility();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;

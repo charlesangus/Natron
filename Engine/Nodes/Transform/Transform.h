@@ -259,7 +259,7 @@ private:
 
     void updateShutterEnabled();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 };
 
 NATRON_NAMESPACE_EXIT

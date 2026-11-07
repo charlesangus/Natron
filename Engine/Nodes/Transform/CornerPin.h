@@ -275,7 +275,7 @@ protected:
 private:
     bool getSourceRoD(double time, RectD* rod) const;
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     static bool isPointsEdit(ValueChangedReasonEnum reason);
 

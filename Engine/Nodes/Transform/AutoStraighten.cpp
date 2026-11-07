@@ -885,7 +885,7 @@ AutoStraighten::initializeKnobs()
     addStageKnobs(page);
 
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // AutoStraighten::initializeKnobs
 
 void
@@ -911,10 +911,10 @@ AutoStraighten::refreshVisibility()
 }
 
 void
-AutoStraighten::updateClampEnabled(double time,
-                                   ViewSpec view)
+AutoStraighten::updateFilterVisibility(double time,
+                                       ViewSpec view)
 {
-    op().filterKnobs.updateEnabled(time, view);
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
@@ -926,7 +926,7 @@ AutoStraighten::onKnobsLoaded()
     _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
     _ui->onToolChangedInternal(defaultAction);
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -965,7 +965,7 @@ AutoStraighten::knobChanged(KnobI* k,
     KnobChoicePtr filterKnob = op().filter.lock();
 
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, viewIdx);
+        updateFilterVisibility(time, viewIdx);
 
         return true;
     }

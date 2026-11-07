@@ -222,10 +222,10 @@ TEST_F(NativeTransformTest, FilterParameterKnobsAndTheirDefaults)
     EXPECT_DOUBLE_EQ(1. / 3., c->getDefaultValue(0));
 
     // The default Cubic reads none of them and is never clamped.
-    EXPECT_FALSE(lobes->isEnabled(0));
-    EXPECT_FALSE(b->isEnabled(0));
-    EXPECT_FALSE(c->isEnabled(0));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(lobes->getIsSecret());
+    EXPECT_TRUE(b->getIsSecret());
+    EXPECT_TRUE(c->getIsSecret());
+    EXPECT_TRUE(clamp->getIsSecret());
 }
 
 TEST_F(NativeTransformTest, CubicMinifyingAndRotated)
@@ -392,7 +392,7 @@ TEST_F(NativeTransformTest, IdentityRules)
     EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
+TEST_F(NativeTransformTest, ClampIsShownOnlyForFiltersThatHonourIt)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
@@ -400,11 +400,11 @@ TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
     KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
     ASSERT_TRUE(bool(clamp));
 
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "keys"));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "cubic"));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
 }
 
 TEST_F(NativeTransformTest, ConnectingASourceCentresTheTransformOnce)

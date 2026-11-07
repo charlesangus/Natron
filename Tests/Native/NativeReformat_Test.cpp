@@ -337,7 +337,7 @@ TEST_F(NativeReformatTest, NoResizeNoCenterIsIdentity)
     EXPECT_TRUE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-TEST_F(NativeReformatTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
+TEST_F(NativeReformatTest, ClampIsShownOnlyForFiltersThatHonourIt)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
@@ -345,11 +345,11 @@ TEST_F(NativeReformatTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
     KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
     ASSERT_TRUE(bool(clamp));
 
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "keys"));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "cubic"));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
 }
 
 TEST_F(NativeReformatTest, UnversionedRequestsGetTheNativeReformat)

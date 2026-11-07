@@ -466,7 +466,7 @@ Reformat::initializeKnobs()
     addStageKnobs(page);
 
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // Reformat::initializeKnobs
 
 Reformat::ReformatTypeEnum
@@ -514,16 +514,16 @@ Reformat::refreshVisibility()
 }
 
 void
-Reformat::updateClampEnabled(double time, ViewSpec view)
+Reformat::updateFilterVisibility(double time, ViewSpec view)
 {
-    op().filterKnobs.updateEnabled(time, view);
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 Reformat::onKnobsLoaded()
 {
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -535,7 +535,7 @@ Reformat::knobChanged(KnobI* k,
 {
     KnobChoicePtr filterKnob = op().filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

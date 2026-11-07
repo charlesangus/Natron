@@ -1,7 +1,8 @@
 """Screenshots of Transform's and STMap's properties panels showing the resampling Filter list and
-its controls, one PNG per node in $NATRON_GUI_TEST_OUT/shots/. For every filter it checks that Clamp,
-Lobes, Bicubic B and Bicubic C are enabled only with the filters that read them,
-and that the Filter row and its controls fit a 1920x1080 screen.
+its controls, one PNG per node in $NATRON_GUI_TEST_OUT/shots/. For every filter on every node that
+has the shared filter controls it checks that Clamp, Lobes, Bicubic B and Bicubic C are visible only
+with the filters that read them, also after a project load, and that the Filter row and its visible
+controls fit a 1920x1080 screen with the hidden ones' labels gone.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m270_filter_panels.py <Natron.AppImage>
 """
@@ -13,14 +14,16 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 
-# (node, filter shown in its screenshot); between them the shots show Lobes and the Bicubic pair lit.
+# (node, filter shown in its screenshot); between them the shots show Lobes and the Bicubic pair.
 NODES = [("Transform", "sinc"), ("STMap", "bicubic")]
+OTHER_NODES = ("Reformat", "CornerPin", "IDistort", "LensDistortion", "LensCorrect", "SplineWarp")
+CHECKED_NODES = tuple(name for name, _ in NODES) + OTHER_NODES
 FILTERS = (
     "impulse", "box", "bilinear", "cubic", "keys", "simon", "rifman", "mitchell", "parzen", "notch",
     "lanczos2", "lanczos3", "lanczos4", "sinc", "blackmanHarris", "gaussian", "bicubic",
 )
 CLAMPED = ("keys", "simon", "rifman", "mitchell", "lanczos2", "lanczos3", "lanczos4", "sinc", "bicubic")
-LABELS = ("Filter", "Clamp", "Black outside", "Lobes", "Bicubic B", "Bicubic C")
+LABEL_OF = {"clamp": "Clamp", "lobes": "Lobes", "bicubicB": "Bicubic B", "bicubicC": "Bicubic C"}
 
 try:
     from PySide6.QtCore import QMetaObject, QRect
@@ -79,19 +82,26 @@ try:
         else:
             check(False, "save screenshot " + path)
 
-    def check_state(name, node, filter_id):
-        expected = {
+    def expected_visible(filter_id):
+        return {
             "clamp": filter_id in CLAMPED,
             "lobes": filter_id == "sinc",
             "bicubicB": filter_id == "bicubic",
             "bicubicC": filter_id == "bicubic",
         }
-        for script_name, want in expected.items():
+
+    def check_state(name, node, filter_id):
+        for script_name, want in expected_visible(filter_id).items():
             param = node.getParam(script_name)
             require(param is not None, "%s has %s" % (name, script_name))
-            check(param.getIsEnabled() == want, "%s %s enabled=%s with %s" % (name, script_name, want, filter_id))
+            check(param.getIsVisible() == want, "%s %s visible=%s with %s" % (name, script_name, want, filter_id))
+            check(param.getIsEnabled(), "%s %s stays enabled with %s" % (name, script_name, filter_id))
 
-    def check_enabling(name, node, panel):
+    def filter_controls_present(node):
+        choice = node.getParam("filter")
+        return choice is not None and choice.getIsVisible()
+
+    def check_all_filters(name, node):
         choice = node.getParam("filter")
         options = choice.getOptions()
         check(tuple(options) == FILTERS, "%s offers the seventeen filters in order, got %r" % (name, options))
@@ -99,42 +109,62 @@ try:
             choice.set(filter_id)
             yield ("sleep", 100)
             check_state(name, node, filter_id)
-        report("NOTE %s enabling checked over %d filters" % (name, len(FILTERS)))
+        report("NOTE %s visibility checked over %d filters" % (name, len(FILTERS)))
+
+    def check_other_nodes():
+        for name in OTHER_NODES:
+            node = app.createNode(name)
+            require(node is not None, "create " + name, gt.plugin_problem(name))
+            if not filter_controls_present(node):
+                report("NOTE %s shows no filter controls here, skipped" % name)
+                node.destroy()
+                continue
+            yield from check_all_filters(name, node)
+            node.destroy()
+            yield ("sleep", 200)
 
     def check_after_reload():
         path = os.path.join(gt.OUT, "m270_filter_panels.ntpz")
         created = {}
-        for name, shown in NODES:
+        for name in CHECKED_NODES:
             node = app.createNode(name)
             require(node is not None, "create " + name, gt.plugin_problem(name))
+            if not filter_controls_present(node):
+                node.destroy()
+                continue
+            shown = dict(NODES).get(name, "bicubic")
             node.getParam("filter").set(shown)
-            created[name] = node.getScriptName()
+            created[name] = (node.getScriptName(), shown)
         yield ("sleep", 300)
         require(app.saveProjectAs(path), "save the project to " + path)
         require(app.resetProject(), "reset the project")
         reloaded = app.loadProject(path)
         yield ("sleep", 800)
         require(reloaded is not None, "reload " + path)
-        for name, shown in NODES:
-            node = reloaded.getNode(created[name])
+        for name, (script_name, shown) in created.items():
+            node = reloaded.getNode(script_name)
             require(node is not None, "the reloaded project has " + name)
             choice = node.getParam("filter")
             check(choice.getOption(choice.getValue()) == shown, "%s keeps filter %s after reload" % (name, shown))
             check_state(name + " after reload", node, shown)
-            other = "lanczos3"
+            other = "sinc" if shown != "sinc" else "lanczos3"
             node.getParam("filter").set(other)
             yield ("sleep", 100)
             check_state(name + " after reload", node, other)
-        report("NOTE enabling checked after project load")
+        report("NOTE visibility checked after project load on %d nodes" % len(created))
 
-    def check_labels_fit(name, panel):
+    def check_labels_fit(name, panel, filter_id):
         height = QGuiApplication.primaryScreen().geometry().height()
-        for text in LABELS:
+        shown = ["Filter", "Black outside"] + [LABEL_OF[k] for k, want in expected_visible(filter_id).items() if want]
+        for text in shown:
             found = label_widgets(panel, text)
-            check(bool(found), "%s shows the %s label" % (name, text))
+            check(bool(found), "%s shows the %s label with %s" % (name, text, filter_id))
             for w in found:
                 bottom = w.mapToGlobal(w.rect().bottomLeft()).y()
                 check(0 <= bottom < height, "%s's %s label is on screen, bottom at %d" % (name, text, bottom))
+        for key, text in LABEL_OF.items():
+            if text not in shown:
+                check(not label_widgets(panel, text), "%s has no %s label on screen with %s" % (name, text, filter_id))
 
     def steps():
         gt.section("filter panels")
@@ -153,15 +183,16 @@ try:
             yield ("sleep", 800)
             panel = panel_of(node)
             enlarge(panel)
-            yield from check_enabling(name, node, panel)
+            yield from check_all_filters(name, node)
             node.getParam("filter").set(shown)
             yield ("sleep", 800)
-            check_labels_fit(name, panel)
+            check_labels_fit(name, panel, shown)
             screen_crop(name + "_filter_panel", panel)
             del panel
             node.destroy()
             yield ("sleep", 200)
         gt.close_all_panels()
+        yield from check_other_nodes()
         yield from check_after_reload()
 
     gt.run(steps())

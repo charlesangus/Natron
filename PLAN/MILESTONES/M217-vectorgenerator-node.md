@@ -129,7 +129,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Phase 217.2: VectorGenerator node
 
-- [ ] M217.P2.T1 — Write the VectorGenerator node
+- [x] M217.P2.T1 — Write the VectorGenerator node
   - files: `Engine/Nodes/Time/VectorGenerator.{h,cpp}` (new), `Engine/Nodes/Time/VectorGenerator.reg.inc` (new), `Engine/CMakeLists.txt`
   - approach:
     - Read `Engine/Nodes/README.md` first.
@@ -155,7 +155,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R NativeVectorGenerator` passes.
   - size: M
 
-- [ ] M217.P2.T3 — Icon and doc
+- [x] M217.P2.T3 — Icon and doc
   - files: `Gui/Resources/Images/NativeNodes/` (icon), `Engine/Nodes/Time/docs/VectorGenerator.md` (new)
   - approach:
     - Follow the M120 fragment conventions.
@@ -174,6 +174,8 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 - An AppImage built with `package.sh` for UAT.
 
 ## Decisions
+
+- 2026-11-07 — Node at ca4e94e08, unbuilt. PM defaults, awaiting the user: `vectorConfidence` has Forward and Backward channels, not one; matching compresses scene-linear values with a log curve (pivot 0.05) used only on the packed copy. `confidenceThreshold` exists but draws nothing: an overlay would need an engine hook so its pass can request `vectorConfidence`. Parity fixtures for M217.P2.T2 need recording on a build.
 
 - 2026-10-25 — **Classical methods first, neural later (user):** DIS and TV-L1 both ship as `method` choices. The neural method is M221 - Neural Optical Flow.
 - 2026-10-25 — **Forward and backward layers, in pixels (user):** this matches the OFX/Nuke convention and M191 - Native VectorBlur's input.

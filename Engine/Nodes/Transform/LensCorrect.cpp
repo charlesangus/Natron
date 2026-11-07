@@ -44,6 +44,7 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -57,6 +58,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -481,6 +483,8 @@ LensCorrect::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     KnobStringPtr info = createKnob<KnobString>(tr("Info"));
     info->setName(kLensCorrectParamInfo);
     info->setHintToolTip(tr("What the lensfun database was searched for and found, and where each value came from: "
@@ -524,6 +528,9 @@ LensCorrect::updateVisibility()
     for (const KnobIPtr& knob : lensfunKnobs) {
         setSecretAndDisabled(knob, !lensfun);
     }
+    for (const KnobIPtr& knob : _filterKnobs.parameterKnobs()) {
+        setSecretAndDisabled(knob, !lensfun);
+    }
     if (!lensfun) {
         return;
     }
@@ -533,6 +540,7 @@ LensCorrect::updateVisibility()
     const bool tca = tcaOverride && tcaOverride->getValue();
     setEnabled(_tcaRed.lock(), tca);
     setEnabled(_tcaBlue.lock(), tca);
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -567,7 +575,7 @@ LensCorrect::knobChanged(KnobI* k,
     if (!k || (info && (k == info.get()))) {
         return false;
     }
-    const KnobIPtr visibility[] = { _method.lock(), _autoScale.lock(), _tcaOverride.lock() };
+    const KnobIPtr visibility[] = { _method.lock(), _autoScale.lock(), _tcaOverride.lock(), _filter.lock() };
     for (const KnobIPtr& knob : visibility) {
         if (knob && (k == knob.get())) {
             updateVisibility();
@@ -922,9 +930,7 @@ LensCorrect::readSettings(double time,
     if (KnobBoolPtr k = _showVignetteMask.lock()) {
         s->showVignetteMask = k->getValueAtTime(time, 0, view);
     }
-    if (KnobChoicePtr k = _filter.lock()) {
-        s->filter = (Resampler::FilterEnum)k->getValueAtTime(time, 0, view);
-    }
+    s->filter = _filterKnobs.read(time, view);
     if (KnobBoolPtr k = _clamp.lock()) {
         s->clamp = k->getValueAtTime(time, 0, view);
     }
@@ -1166,7 +1172,7 @@ LensCorrect::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
+    const bool jacobians = (settings.filter.filter != Resampler::eFilterImpulse);
     const Model model = buildModel(args.time, args.view, settings);
     const LensCorrectProfile::Profile& profile = model.profile;
     const bool moves = profile.movesPixels();
@@ -1362,12 +1368,16 @@ struct LensCorrectGpuParams {
     float vignettingTerms[4] = {};
     // Per coordinate step: the op, then its five terms.
     uint32_t coord[LensCorrectProfile::kMaxCoordSteps * 6] = {};
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
 static_assert(offsetof(LensCorrectGpuParams, tcaTerms) == 20 * 4, "lenscorrect.slang reads the TCA terms from word 20");
 static_assert(offsetof(LensCorrectGpuParams, vignettingTerms) == 32 * 4, "lenscorrect.slang reads the vignetting terms from word 32");
 static_assert(offsetof(LensCorrectGpuParams, coord) == 36 * 4, "lenscorrect.slang reads the steps from word 36");
-static_assert(sizeof(LensCorrectGpuParams) == 60 * 4, "lenscorrect.slang reads 60 words");
+static_assert(offsetof(LensCorrectGpuParams, lobes) == 60 * 4, "lenscorrect.slang reads lobes, B and C from word 60");
+static_assert(sizeof(LensCorrectGpuParams) == 63 * 4, "lenscorrect.slang reads 63 words");
 
 const uint32_t kLensCorrectGpuClamp = 1;
 const uint32_t kLensCorrectGpuBlackOutside = 2;
@@ -1443,8 +1453,12 @@ LensCorrect::renderOpGpu(const GpuRenderArgs& args)
     const LensCorrectProfile::Profile& profile = model.profile;
 
     LensCorrectGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kLensCorrectGpuClamp : 0u) | (settings.blackOutside ? kLensCorrectGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensCorrectGpuClamp : 0u) | (settings.blackOutside ? kLensCorrectGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
     if (!model.format.isNull()) {
         params.flags |= kLensCorrectGpuSample;
     }

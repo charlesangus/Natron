@@ -198,10 +198,6 @@ RotoDrawableItem::fromSerialization(const Serialization::RotoDrawableItemSeriali
     restoreSavedKnobs(serialization.knobs, serialization.overlayColor);
 }
 
-// Saving and loading a bezier have always gone through a copy of each point made with
-// BezierCP::clone, which leaves the broken flag out, so project files record every tangent as
-// unbroken and a loaded bezier starts with unbroken tangents whatever the file says.
-
 void
 Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
 {
@@ -219,11 +215,9 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
         for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
             serialization->controlPoints.push_back(Serialization::BezierCPSerialization());
             (*it)->toSerialization(&serialization->controlPoints.back());
-            serialization->controlPoints.back().broken = false;
             if (useFeather && (featherIt != _imp->featherPoints.end())) {
                 serialization->featherPoints.push_back(Serialization::BezierCPSerialization());
                 (*featherIt)->toSerialization(&serialization->featherPoints.back());
-                serialization->featherPoints.back().broken = false;
                 ++featherIt;
             }
         }
@@ -248,13 +242,11 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
         for (std::list<Serialization::BezierCPSerialization>::const_iterator it = serialization.controlPoints.begin(); it != serialization.controlPoints.end(); ++it) {
             BezierCPPtr controlPoint = std::make_shared<BezierCP>(thisShared);
             controlPoint->fromSerialization(*it);
-            controlPoint->setBroken(false);
             _imp->points.push_back(controlPoint);
 
             if (useFeather && (featherIt != serialization.featherPoints.end())) {
                 BezierCPPtr featherPoint = std::make_shared<FeatherPoint>(thisShared);
                 featherPoint->fromSerialization(*featherIt);
-                featherPoint->setBroken(false);
                 _imp->featherPoints.push_back(featherPoint);
                 ++featherIt;
             }
@@ -399,6 +391,9 @@ RotoCurveContext::toSerialization(Serialization::RotoContextSerialization* seria
     serialization->autoKeying = _imp->autoKeying;
     serialization->featherLink = _imp->featherLink;
     serialization->rippleEdit = _imp->rippleEdit;
+    serialization->rippleEditMode = (int)_imp->rippleEditMode;
+    serialization->rippleEditRangeFirst = _imp->rippleEditRangeFirst;
+    serialization->rippleEditRangeLast = _imp->rippleEditRangeLast;
 
     assert(!_imp->layers.empty());
     if (!_imp->layers.empty()) {
@@ -420,6 +415,11 @@ RotoCurveContext::fromSerialization(const Serialization::RotoContextSerializatio
     _imp->autoKeying = serialization.autoKeying;
     _imp->featherLink = serialization.featherLink;
     _imp->rippleEdit = serialization.rippleEdit;
+    _imp->rippleEditMode = (serialization.rippleEditMode >= eRippleEditModeAll && serialization.rippleEditMode <= eRippleEditModeRange)
+        ? (RippleEditModeEnum)serialization.rippleEditMode
+        : eRippleEditModeAll;
+    _imp->rippleEditRangeFirst = serialization.rippleEditRangeFirst;
+    _imp->rippleEditRangeLast = serialization.rippleEditRangeLast;
 
     // Which of these knobs are on follows from the selection restored below, not from what the
     // node's knobs loaded.

@@ -93,6 +93,9 @@ struct SpinBoxPrivate
     bool hasChangedSinceLastValidation;
     double valueAfterLastValidation;
     bool valueInitialized; //< false when setValue has never been called yet.
+    // The rounded text a huge value is displayed as, empty if it is not, and that value.
+    QString compactText;
+    double compactValue;
     bool useLineColor;
     QColor lineColor;
     SpinBoxValidator* customValidator;
@@ -143,6 +146,8 @@ struct SpinBoxPrivate
         , hasChangedSinceLastValidation(false)
         , valueAfterLastValidation(0)
         , valueInitialized(false)
+        , compactText()
+        , compactValue(0.)
         , useLineColor(false)
         , lineColor(Qt::black)
         , customValidator(0)
@@ -221,7 +226,7 @@ void
 SpinBox::setValue_internal(double d,
                            bool reformat)
 {
-    if ( ( d == text().toDouble() ) && !reformat && _imp->valueInitialized ) {
+    if ((d == value()) && !reformat && _imp->valueInitialized) {
         // the value is already OK
         return;
     }
@@ -249,9 +254,21 @@ SpinBox::setValue_internal(double d,
     }
     assert( !str.isEmpty() );
 
+    // The field holds about six characters, so a huge value such as FLT_MAX would show as a clipped run of
+    // digits that reads as a small number. Only the display is rounded: until the text is edited
+    // value() and increment() use the full value, and unchanged text is never committed.
+    _imp->compactText.clear();
+    if ((std::abs(d) >= 1e6) && (d == d) && (std::abs(d) <= std::numeric_limits<double>::max())) {
+        str = QString::number(d, 'g', 2);
+        str.replace(QLatin1String("e+0"), QLatin1String("e")).replace(QLatin1String("e+"), QLatin1String("e"));
+        str.replace(QLatin1String("e-0"), QLatin1String("e-"));
+        _imp->compactText = str;
+        _imp->compactValue = (_imp->type == eSpinBoxTypeInt) ? (double)(int)d : d;
+    }
+
     ///Remove trailing 0s by hand...
     int decimalPtPos = str.indexOf( QLatin1Char('.') );
-    if (decimalPtPos != -1) {
+    if ((decimalPtPos != -1) && !str.contains(QLatin1Char('e'), Qt::CaseInsensitive)) {
         int i = str.size() - 1;
         while ( i > decimalPtPos && str.at(i) == QLatin1Char('0') ) {
             --i;
@@ -293,6 +310,18 @@ SpinBox::setText(const QString &str,
     setCursorPosition(cursorPos);
     _imp->hasChangedSinceLastValidation = false;
     _imp->valueAfterLastValidation = value();
+}
+
+bool
+SpinBox::showsCompactValue() const
+{
+    return !_imp->compactText.isEmpty() && (text() == _imp->compactText);
+}
+
+double
+SpinBox::value() const
+{
+    return showsCompactValue() ? _imp->compactValue : text().toDouble();
 }
 
 double
@@ -364,14 +393,17 @@ SpinBox::increment(int delta,
     bool ok;
     QString str = text();
     //qDebug() << "increment from " << str;
-    const double oldVal = str.toDouble(&ok);
+    const bool compact = showsCompactValue();
+    const double textValue = str.toDouble(&ok);
+    const double oldVal = compact ? _imp->compactValue : textValue;
 
     if (!ok) {
         // Not a valid double value, don't do anything
         return;
     }
 
-    bool useCursorPositionIncr = appPTR->getCurrentSettings()->useCursorPositionIncrements();
+    // No digit of the full value is under the cursor in its rounded text.
+    bool useCursorPositionIncr = !compact && appPTR->getCurrentSettings()->useCursorPositionIncrements();
 
     // First, treat the standard case: use the Knob increment
     if (!useCursorPositionIncr) {
@@ -743,14 +775,17 @@ SpinBox::focusOutEvent(QFocusEvent* e)
     //qDebug() << "focusout";
     QString str = text();
 
-    if (str != _imp->valueWhenEnteringFocus) {
+    if ((str != _imp->valueWhenEnteringFocus) && !showsCompactValue()) {
         if ( validateText() ) {
             //setValue_internal(text().toDouble(), true, true); // force a reformat
             bool ok;
             QString newValueStr = text();
             double newValue = newValueStr.toDouble(&ok);
 
-            if (!ok) {
+            if (ok) {
+                // A custom validator may have turned what was typed into a huge value.
+                newValue = value();
+            } else {
                 newValueStr = _imp->valueWhenEnteringFocus;
                 newValue = newValueStr.toDouble(&ok);
                 assert(ok);
@@ -835,6 +870,11 @@ SpinBox::validateWithCustomValidator(const QString& txt)
 bool
 SpinBox::validateInternal()
 {
+    if (showsCompactValue()) {
+        // Unedited: parsed, it would replace the value with its rounded form.
+        return true;
+    }
+
     QString txt = text();
     const QValidator* validator = 0;
 

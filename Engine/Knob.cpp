@@ -595,6 +595,8 @@ struct KnobHelperPrivate
     std::atomic<U64> contentGeneration;
     std::shared_ptr<std::atomic<U64>> contentGenerationObserver;
     std::atomic<bool> hashExempt;
+    mutable QMutex hashNamespaceMutex; // protects hashNamespace
+    std::string hashNamespace;
     mutable QMutex contentHashMutex; // protects the 3 members below
     mutable std::vector<U64> contentDimensionHashes;
     mutable U64 contentHashesGeneration;
@@ -5176,6 +5178,26 @@ bool
 KnobHelper::isHashExempt() const
 {
     return _imp->hashExempt;
+}
+
+void
+KnobHelper::setHashNamespace(const std::string& hashNamespace)
+{
+    {
+        QMutexLocker k(&_imp->hashNamespaceMutex);
+        _imp->hashNamespace = hashNamespace;
+    }
+    // Moves the knob between the node hash and a namespace digest.
+    moveHashedMetadataSourcesGeneration();
+    invalidateContentHash();
+}
+
+std::string
+KnobHelper::getHashNamespace() const
+{
+    QMutexLocker k(&_imp->hashNamespaceMutex);
+
+    return _imp->hashNamespace;
 }
 
 bool

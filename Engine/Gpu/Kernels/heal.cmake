@@ -10,5 +10,5 @@ slang_add_kernel(heal_relax Kernels/heal.slang ENTRY heal_relax REGISTRY NatronG
 slang_add_kernel(heal_residual Kernels/heal.slang ENTRY heal_residual REGISTRY NatronGpu)
 slang_add_kernel(heal_restrict Kernels/heal.slang ENTRY heal_restrict REGISTRY NatronGpu)
 slang_add_kernel(heal_prolong Kernels/heal.slang ENTRY heal_prolong REGISTRY NatronGpu)
-slang_add_kernel(heal_tail Kernels/heal.slang ENTRY heal_tail REGISTRY NatronGpu)
+slang_add_kernel(heal_tail Kernels/heal.slang ENTRY heal_tail REGISTRY NatronGpu FLAGS -DHEAL_READS_WITHIN_DISPATCH)
 slang_add_kernel(heal_finish Kernels/heal.slang ENTRY heal_finish REGISTRY NatronGpu)

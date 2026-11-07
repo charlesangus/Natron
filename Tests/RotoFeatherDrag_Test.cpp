@@ -28,8 +28,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <list>
 
+#include "Engine/Bezier.h"
 #include "Engine/RotoFeatherDrag.h"
+#include "Engine/Transform.h"
 
 NATRON_NAMESPACE_USING
 
@@ -53,6 +56,22 @@ length(const Point& p)
 {
     return std::sqrt(p.x * p.x + p.y * p.y);
 }
+}
+
+TEST(RotoFeatherDrag, BarReachesPastAFeatherMovedAlongOneAxis)
+{
+    const std::list<BezierCPPtr> noFeathers;
+    const Transform::Matrix3x3 identity(1., 0., 0., 0., 1., 0., 0., 0., 1.);
+
+    Point vertical = pt(10, 30);
+    Bezier::expandToFeatherDistance(true, pt(10, 10), &vertical, 5., 1., true, identity, noFeathers.end(), noFeathers.end(), noFeathers.end());
+    EXPECT_NEAR(vertical.x, 10., kEps);
+    EXPECT_NEAR(vertical.y, 35., kEps);
+
+    Point horizontal = pt(30, 10);
+    Bezier::expandToFeatherDistance(true, pt(10, 10), &horizontal, 5., 1., true, identity, noFeathers.end(), noFeathers.end(), noFeathers.end());
+    EXPECT_NEAR(horizontal.x, 35., kEps);
+    EXPECT_NEAR(horizontal.y, 10., kEps);
 }
 
 TEST(RotoFeatherDrag, BarDirectionIsUnitVectorFromControlPointToFeather)
@@ -162,4 +181,54 @@ TEST(RotoFeatherDrag, DegenerateDerivativesGiveNoMovement)
     EXPECT_EQ(dir.x, 0.);
     EXPECT_EQ(dir.y, 0.);
     EXPECT_EQ(featherDragDistance(dir, 10, -4), 0.);
+}
+
+TEST(RotoFeatherDrag, CurvatureOfACircleArcPointsToTheCentre)
+{
+    // A quarter circle of radius 50 about (100, 100), from (150, 100) to (100, 150).
+    const double r = 50.;
+    const double h = r * 4. / 3. * std::tan(std::atan(1.) / 2.);
+    const Point k = featherCurvature(pt(150, 100), pt(150, 100 + h), pt(100, 150));
+
+    EXPECT_NEAR(k.y, 0., kEps);
+    EXPECT_LT(k.x, 0.);
+    EXPECT_NEAR(length(k) * r, 1., kEps);
+    // The handle length does not matter, only its direction.
+    const Point shortHandle = featherCurvature(pt(150, 100), pt(150, 101), pt(100, 150));
+    EXPECT_NEAR(shortHandle.x, k.x, kEps);
+    EXPECT_NEAR(shortHandle.y, k.y, kEps);
+    // The reversed segment curves the same way.
+    const Point back = featherCurvature(pt(150, 100), pt(150, 100 - h), pt(100, 50));
+    EXPECT_NEAR(back.x, k.x, kEps);
+    EXPECT_NEAR(back.y, k.y, kEps);
+}
+
+TEST(RotoFeatherDrag, StraightOrCollapsedTangentsHaveNoCurvature)
+{
+    const Point straight = featherCurvature(pt(0, 0), pt(10, 0), pt(20, 0));
+    EXPECT_NEAR(length(straight), 0., kEps);
+    const Point collapsed = featherCurvature(pt(5, 5), pt(5, 5), pt(20, 0));
+    EXPECT_EQ(collapsed.x, 0.);
+    EXPECT_EQ(collapsed.y, 0.);
+    EXPECT_EQ(featherTangentScale(collapsed, pt(30, -7)), 1.);
+}
+
+TEST(RotoFeatherDrag, TangentScaleGrowsAwayFromTheCentreAndShrinksTowardsIt)
+{
+    // Curvature of a circle of radius 40 seen from a point to the right of its centre.
+    const Point k = pt(-1. / 40., 0.);
+
+    EXPECT_NEAR(featherTangentScale(k, pt(10, 0)), 50. / 40., kEps);
+    EXPECT_NEAR(featherTangentScale(k, pt(-10, 0)), 30. / 40., kEps);
+    EXPECT_NEAR(featherTangentScale(k, pt(0, 10)), 1., kEps);
+    EXPECT_EQ(featherTangentScale(k, pt(-60, 0)), 0.);
+}
+
+TEST(RotoFeatherDrag, GrownTangentReachesAtMostHalfWayToItsNeighbour)
+{
+    EXPECT_NEAR(clampFeatherTangentScale(6., 2., 10.), 2.5, kEps);
+    EXPECT_NEAR(clampFeatherTangentScale(1.5, 2., 100.), 1.5, kEps) << "far neighbours leave the growth alone";
+    EXPECT_NEAR(clampFeatherTangentScale(0.5, 4., 2.), 0.5, kEps) << "shrinking is never limited";
+    EXPECT_NEAR(clampFeatherTangentScale(3., 4., 6.), 1., kEps) << "a tangent already past the limit keeps its length";
+    EXPECT_NEAR(clampFeatherTangentScale(3., 0., 6.), 3., kEps);
 }

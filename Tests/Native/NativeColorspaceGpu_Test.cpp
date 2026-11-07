@@ -62,9 +62,11 @@ namespace {
 
 const double kTime = 1.;
 
-// The kernel computes as the CPU does, statement for statement, but Vulkan leaves division
-// within 2.5 ulp rather than correctly rounded, and the hue, chroma and xy divisions carry that
-// into the later steps.
+// The kernel computes as the CPU does, statement for statement, and divides through
+// divideRounded, which rounds as the CPU does only while the operands and the quotient lie between
+// 2^-100 and 2^100. Outside that the device's own quotient, within 2.5 ulp, stands, and a device
+// may flush subnormal intermediates; the hue, chroma and xy divisions carry either into the later
+// steps.
 ParityTolerance
 toleranceFor(int in)
 {

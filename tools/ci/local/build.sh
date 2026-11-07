@@ -262,6 +262,9 @@ if ! in_container; then
     if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
         ENV_FORWARD+=("NATRON_BUILD_JOBS=${NATRON_BUILD_JOBS}")
     fi
+    if [[ -n "${NATRON_LINK_JOBS:-}" ]]; then
+        ENV_FORWARD+=("NATRON_LINK_JOBS=${NATRON_LINK_JOBS}")
+    fi
     exec "${SCRIPT_DIR}/devshell.sh" env "${ENV_FORWARD[@]}" "${REPO_ROOT}/tools/ci/local/build.sh" "${ORIG_ARGS[@]}"
 fi
 
@@ -303,6 +306,7 @@ CMAKE_ARGS=(
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DNATRON_BUILD_TESTS="${BUILD_TESTS}"
+    -DNATRON_LINK_JOBS="${NATRON_LINK_JOBS:-}"
     "${EXTRA_CMAKE_ARGS[@]}"
     "${REPO_ROOT}"
 )
@@ -313,6 +317,15 @@ if [[ -f "${CMAKE_CACHE}" ]]; then
     CACHED_TESTS="$(sed -n 's/^NATRON_BUILD_TESTS:[A-Z]*=//p' "${CMAKE_CACHE}")"
     if [[ "${CACHED_TESTS:-ON}" != "${BUILD_TESTS}" ]]; then
         echo "== build.sh: NATRON_BUILD_TESTS is ${CACHED_TESTS:-ON} in the cache, want ${BUILD_TESTS} -- reconfiguring =="
+        RECONFIGURE=1
+    fi
+fi
+
+# Same for the link-job limit: a tree configured under another value keeps its old ninja pool.
+if [[ -f "${CMAKE_CACHE}" ]]; then
+    CACHED_LINK_JOBS="$(sed -n 's/^NATRON_LINK_JOBS:[A-Z]*=//p' "${CMAKE_CACHE}")"
+    if [[ "${CACHED_LINK_JOBS}" != "${NATRON_LINK_JOBS:-}" ]]; then
+        echo "== build.sh: NATRON_LINK_JOBS is '${CACHED_LINK_JOBS}' in the cache, want '${NATRON_LINK_JOBS:-}' -- reconfiguring =="
         RECONFIGURE=1
     fi
 fi
@@ -339,7 +352,9 @@ JOBS="${NATRON_BUILD_JOBS:-3}"
 echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} =="
 echo "+ cd ${BUILD_DIR}"
 echo "+ ninja -j${JOBS}"
+if [[ -n "${CI:-}" ]]; then free -m; fi
 ( cd "${BUILD_DIR}" && ninja -j"${JOBS}" )
+if [[ -n "${CI:-}" ]]; then free -m; fi
 
 echo "== build.sh: build complete: ${BUILD_DIR} =="
 

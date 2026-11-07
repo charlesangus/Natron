@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <string>
 
@@ -120,7 +121,7 @@ protected:
      * @brief The knob values a render reads besides the transform, at one time and view.
      **/
     struct WarpSettings {
-        Resampler::FilterEnum filter = Resampler::eFilterCubic;
+        Resampler::FilterSpec filter;
         bool clamp = false;
         bool blackOutside = true;
         bool invert = false;
@@ -164,15 +165,22 @@ protected:
     /**
      * @brief The region the transforms at time make of from: forward pushes a source region to the
      * output. With a Map or a directional blur it holds every point the corners of from reach
-     * along the matrix curve over all Map values (MatrixCurve::pointRange()).
+     * along the matrix curve over all Map values (MatrixCurve::pointRange()). visitMatrix, when
+     * given, sees each canonical matrix the region was taken over.
      **/
-    void warpRegion(const RectD& from, double time, ViewIdx view, bool forward, RectD* to) const;
+    void warpRegion(const RectD& from,
+                    double time,
+                    ViewIdx view,
+                    bool forward,
+                    RectD* to,
+                    const std::function<void(const TransformMath::Mat3&)>& visitMatrix = nullptr) const;
 
 private:
     /**
      * @brief The Source over the output window pulled back through the transforms (see
-     * getRegionOfDefinition()), grown for the filter, and the Map over the window grown by one
-     * pixel, for its gradient.
+     * getRegionOfDefinition()), grown for the filter at the transforms' scale, or the whole Source
+     * with a Map connected, whose gradient bounds no footprint; and the Map over the window grown
+     * by one pixel, for its gradient.
      **/
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,

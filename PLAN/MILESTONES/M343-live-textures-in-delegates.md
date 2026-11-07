@@ -41,13 +41,13 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Phase 343.2: Shared store and plug-in
 
-- [ ] M343.P2.T1 — Serve live textures from shared memory
+- [x] M343.P2.T1 — Serve live textures from shared memory
   - files: `Engine/Nodes/Scene/LiveTextureStore.{h,cpp}`, `Tests/Scene/LiveTexture_Test.cpp`
   - approach: store rendered images in session-named, read-only shared-memory objects that keep M233's immutable, hash-keyed entries and LRU budget, so Storm's resolver and the plug-in read the same pixels with no copy. Build the mip chain on first export to a delegate. Remove stale objects from dead sessions at startup.
   - verify: gtest — another process maps an entry and reads the expected pixels; eviction while mapped leaves the mapping readable; a stale object from a dead session is removed; the existing `LiveTexture_Test` cases still pass.
   - size: L
 
-- [ ] M343.P2.T2 — The OIIO format plug-in
+- [x] M343.P2.T2 — The OIIO format plug-in
   - files: new `Engine/Nodes/Scene/LiveTextureOiio/` plug-in source, `Engine/CMakeLists.txt`, `tools/ci/local/stage-bundle.sh`, `Tests/Scene/LiveTextureOiio_Test.cpp`
   - approach: an `ImageInput` serving T1's URI form from P2.T1's store: float RGBA, linear, tiled, with the mip chain. It depends on no Natron library, so it loads in `execComp`. Install it on the OIIO plug-in search path in the build tree and the AppImage, and set that path in `MoonRayRuntime`'s environment and for Cycles.
   - verify: gtest — `OIIO::TextureSystem` with `accept_untiled=false` samples an entry to its expected values at each mip; a missing entry fails to open without crashing; the bundle's startup check finds the plug-in.
@@ -55,19 +55,19 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Phase 343.3: Delegates
 
-- [ ] M343.P3.T1 — Cycles renders live textures
+- [x] M343.P3.T1 — Cycles renders live textures
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Tests/Scene/USDRenderCycles_Test.cpp`, one reference crop (≤256 px, half-float, zip)
   - approach: make sure `natron://` reaches `filename` unchanged and that the pre-render covers it. If Hydra hands Cycles an empty resolved path, fix it in the scene-index layer, as the implicit-surface filter does. Report a failed open as the node warning. Include normal-map and opacity inputs, subject to M251 - Cycles Rendering's normal-map fix.
   - verify: gtest — a Constant into a card's material renders its colour through Cycles; an animated Ramp differs at frames 1 and 10; a deleted source gives the fallback and a warning naming it.
   - size: M
 
-- [ ] M343.P3.T2 — MoonRay renders live textures
+- [x] M343.P3.T2 — MoonRay renders live textures
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/MoonRayRuntime.{h,cpp}`, `Tests/Scene/USDRenderMoonRay_Test.cpp`, one reference crop (≤256 px, half-float, zip)
   - approach: pass the session's store name and the plug-in path to `execComp` through the session environment. hdMoonray skips a `UsdUVTexture` whose resolved path is empty (`Material.cc:277`), so the resolver must return the URI there. Replace the misleading "could not render these prims" notice with the failing source node's name.
   - verify: gtest — the same three cases as P3.T1 pass through MoonRay in `execComp`, and a second frame range in one process doesn't leak shared-memory objects.
   - size: M
 
-- [ ] M343.P3.T3 — Upstream edits restart progressive refinement
+- [x] M343.P3.T3 — Upstream edits restart progressive refinement
   - files: `Gui/SceneViewport.cpp`, `Tests/gui/scene_live_texture_delegates.py`
   - approach: in M254 - Progressive Viewer Render, an upstream edit changes the URI's hash, so the delegate must re-sync the material and restart. Make sure both delegates reload the image rather than reusing a cached name. Fix any stale-image case in the viewer's sync.
   - verify: an Xvfb GUI script at 1920x1080 selects each delegate, edits a Constant feeding a card, and shows the new colour in the viewer; screenshots go to the user (one file each).

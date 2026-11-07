@@ -497,6 +497,10 @@ const double kProjectorZ = 5.;
 const double kPlateBox = 25.;
 const double kCardWidth = 16.;
 const double kCardHeight = 8.;
+// The rigid and reference point paths round the plate's coordinates differently, and the texture level
+// chosen from those coordinates' derivatives turns that into up to 0.071 along the checker's edges. A
+// slide of an eighth of a render pixel already reaches 0.16.
+const float kReferencePathTolerance = 0.08f;
 
 // The z = 0 point render pixel (x, y)'s centre sees, rows counted from the bottom.
 void
@@ -1262,20 +1266,24 @@ protected:
     // Renders frame 11 and compares it to the direct connection's, pixel for pixel.
     static void expectMatchesReference(const NodePtr& render,
                                        const std::vector<float>& reference,
-                                       const char* what)
+                                       const char* what,
+                                       float tolerance = 0.01f)
     {
         std::vector<float> rgba;
         renderColour(render, what, &rgba, 11.);
         ASSERT_EQ(reference.size(), rgba.size()) << what;
         std::size_t different = 0;
+        float worst = 0.f;
         for (std::size_t i = 0; i < rgba.size(); i += 4) {
             bool same = true;
             for (std::size_t c = 0; c < 4; ++c) {
-                same = same && (std::fabs(rgba[i + c] - reference[i + c]) < 0.01f);
+                const float difference = std::fabs(rgba[i + c] - reference[i + c]);
+                worst = std::max(worst, difference);
+                same = same && (difference < tolerance);
             }
             different += same ? 0 : 1;
         }
-        EXPECT_EQ((std::size_t)0, different) << what;
+        EXPECT_EQ((std::size_t)0, different) << what << ": worst difference " << worst;
     }
 
     static PXR_NS::VtVec3fArray quadPoints(double x,
@@ -2334,7 +2342,7 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingMeshBesideARigidPrimThroughThe
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
     connectNodes(assign, render->getInput(0), 0, true);
-    expectMatchesReference(render, reference, "a deforming mesh through the Material input");
+    expectMatchesReference(render, reference, "a deforming mesh through the Material input", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
 
@@ -2359,7 +2367,7 @@ TEST_F(USDRenderStormTest, StormProject3DDeformingMeshByMaterialPath)
     connectNodes(projector, cards, 2, true);
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(assign, render->getInput(0), 0, true);
-    expectMatchesReference(render, reference, "a deforming mesh by Material Path");
+    expectMatchesReference(render, reference, "a deforming mesh by Material Path", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
 
@@ -2382,7 +2390,7 @@ TEST_F(USDRenderStormTest, StormProject3DSkinnedMeshSticks)
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
     connectNodes(assign, render->getInput(0), 0, true);
-    expectMatchesReference(render, reference, "a skinned mesh");
+    expectMatchesReference(render, reference, "a skinned mesh", kReferencePathTolerance);
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
 

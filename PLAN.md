@@ -170,8 +170,8 @@ future core work has solid ground to build on.
 | M230 | 3D Transform Widgets | done | M226, M229 | bosley-native-nodes | E9 | | | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | done | M229 | bosley-native-nodes | E9 | | | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
 | M232 | Scene Selection To Nodes | done | M226, M231 | bosley-native-nodes | E9 | | | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
-| M327 | Heavy Scene Spike | doing | M231, M232 | misty-marten | E9 | | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
-| M328 | Deferred Viewer Stage | todo | M327 |  | E9 | F4 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
+| M327 | Heavy Scene Spike | done | M231, M232 | misty-marten | E9 | | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
+| M328 | Deferred Viewer Stage | doing | M327 | misty-marten | E9 | F4 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
 | M329 | Viewer Draw States | todo | M327, M328 |  | E9 | F4 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
 | M330 | Graph Draw Policy | todo | M329 |  | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
 | M331 | Deferred Pattern Matching | todo | M52, M327, M328 |  | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
@@ -472,7 +472,6 @@ future core work has solid ground to build on.
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 
 # Open questions
-- **M327 - Heavy Scene Spike (PM, 2026-11-07):** the mechanism decision needs the full matrix on a GPU host: `build/appimages/Natron-m327-heavy-scene-spike.AppImage` with the steps in its `.md`. Run it yourself, or tell the `gpu` PM to. F4 - Heavy Scene Viewer's M328 - Deferred Viewer Stage and later wait on it.
 - **M276 - Upstream Reuse On Edits (PM, 2026-11-06):** the latency baseline and GPU counts need your host: `build/appimages/Natron-m276-upstream-reuse-on-edits.AppImage` with the steps in its `.md`. Also: add a task to M300 - Unified Tiered Cache that prunes dependencies behind a cache hit? Recommend yes; its gate can't pass without it.
 - **M118 - Large Graph GUI Responsiveness, bulk delete prompt (PM, 2026-11-06):** deleting nodes whose knobs other nodes link to prompts once per node, so a bulk delete means N clicks. Show one summary prompt instead? Recommend yes.
 - **NativeSplineWarpGpuTest timeouts (PM, 2026-11-06):** the suite takes about 150-285 s against a 300 s limit on loaded runners and timed out in one leg on the M296 - Raw Prepare Output Format, M333 - Prim Inspector and M320 - Write All Input Metadata runs, with no spline or warp code touched. Treated as runner load. M270 - Lanczos Sinc Resampling Filters adds filters to this suite, so it raises the limit or splits the suite in P2.T4.

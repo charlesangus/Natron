@@ -3,7 +3,7 @@
   python3 tools/bench/heavy_scene_make.py [--out build/bench] [--prims 1000000]
           [--blocks 300] [--buildings-per-block 12] [--floors 16]
 
-Needs the pxr Python module (the natron-dev image has it). Writes under --out:
+Needs the pxr Python module (the published dev image has it; `heavy_scene_gpu_host.sh fixtures` runs this there). Writes under --out:
 
   heavy_city.usda          payload city: /World > Block_N (group) > B_M (assembly), one payload per building
   heavy_city_payloads/     one .usdc per building, each holding floors (component) of cube leaves

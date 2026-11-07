@@ -338,28 +338,37 @@ scaling linearly with the keyframe count.
 
 ## Heavy scene fixtures
 
-`heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under
-`build/bench`: a payload city (about 300 blocks of buildings, one `.usdc` payload per building,
-about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine in ten
-buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
-container. The fixtures are never committed; only the generator is.
+`heavy_scene_make.py` generates the two scale controls the scene-viewer budgets run against: a
+payload city (about 300 blocks of buildings, one `.usdc` payload per building, about 1M prims once
+loaded and a few thousand before, `extentsHint` authored on nine in ten buildings) and a 1M-prim flat
+file. It needs the pxr module, so it runs in the published dev image; `heavy_scene_gpu_host.sh
+fixtures` does that with the checkout mounted at its own path, and stops with the tag to pull if
+docker or the image is absent. The fixtures are never committed; only the generator is.
 
 ```
-docker exec natron-dev bash -lc "cd $PWD && python3 tools/bench/heavy_scene_make.py"
+FIXTURE_DIR=build/bench tools/bench/heavy_scene_gpu_host.sh fixtures
 ```
 
 ## Heavy scene budgets
 
-`heavy_scene_bench.py` runs one action per scenario against a heavy fixture inside Natron under
-Xvfb and prints one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the
-layers the action loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
-`not_applicable` against the scene-graph budgets. Frame rate and time to first boxes need a real
-GPU: without `BENCH_GPU=1` they are measured but marked `not_valid`. Stall and unrequested-payload
-checks are valid under llvmpipe. Until the viewer draws boxes, the first finished frame stands in
-for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`);
-`BENCH_SCENARIOS` picks and orders them, and a later milestone adds its own action.
+`heavy_scene_bench.py` runs one action per scenario against a heavy fixture or any USD file inside
+Natron and writes one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the
+layers the action loaded, the GL renderer, the rows acted on, and the action's own numbers, each
+marked `pass`, `fail`, `not_valid` or `not_applicable` against the scene-graph budgets. Frame rate and
+time to the first frame need a real GPU: without `BENCH_GPU=1` they are measured but marked
+`not_valid`. Stall and unrequested-payload checks are valid under llvmpipe. `first_frame_ms` is the
+first finished frame showing the scene; first boxes at open are not measured, since no box is drawn
+then. The scenarios are the harness's `ACTIONS` table; `BENCH_SCENARIOS` picks and orders them, and
+`BENCH_FIXTURE=scene` with `BENCH_FILE` runs any file, with rows from `heavy_scene_rows.py`. It runs
+on the AppImage's own Python, so the host needs no PySide6 or pxr.
+
+A scenario that does not apply is recorded as `skipped` with its reason. `heavy_scene_watchdog.sh`
+holds each scenario to `BENCH_SCENARIO_LIMIT_S` (300) or, when it opens the file,
+`BENCH_OPEN_LIMIT_S` (1800), from outside the process: on expiry it writes `timed_out` and ends
+Natron, and a crash mid-scenario leaves `aborted`. On a GPU host, `heavy_scene_gpu_host.sh settle`
+is the short run and `heavy_scene_gpu_host.sh all` the full matrix; its header has the details.
 
 ```
-docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \
-    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
+BENCH_FIXTURE=scene BENCH_FILE=$PWD/scene.usd BENCH_SCENARIOS=populate_full,sibling_state,sibling_shot \
+    GUI_TEST_TIMEOUT=1800 Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
 ```

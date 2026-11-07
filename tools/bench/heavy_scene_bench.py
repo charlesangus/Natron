@@ -2,7 +2,9 @@
 
   Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py [natron-binary]
       Runs inside Natron (GUI, under Xvfb) and is configured by the environment:
-        BENCH_FIXTURE    flat (default) or city: which tools/bench/heavy_scene_make.py output USDRead reads
+        BENCH_FIXTURE    flat (default) or city: which tools/bench/heavy_scene_make.py output USDRead
+                         reads, with the rows the earlier results used; or scene: any USD file named by
+                         BENCH_FILE, with rows picked by tools/bench/heavy_scene_rows.py
         BENCH_FILE       overrides the fixture path (the fixture kind still selects the budgets)
         BENCH_SCENARIOS  comma-separated actions run in order (default open,orbit)
         BENCH_ORBIT_S    seconds the orbit action runs (default 5)
@@ -15,8 +17,11 @@
                          filter off)
         NATRON_DRAW_STATE_RESTORE  session only: remove (default) drops a restored row's spec, value
                          keeps it and sets model:drawMode=default, which recomposes nothing
-        BENCH_SIBLING_ROW  prim path sibling_state acts on (default city /World/Block0/B1, flat
-                         /World/c5)
+        BENCH_ROWS_DIR   where a scene's picked rows are cached, per file and load state (default
+                         $NATRON_GUI_TEST_OUT/rows)
+        BENCH_ROOT       prim path populate_pruned and orbit10k hide (default city and flat /World)
+        BENCH_SIBLING_ROW  prim path sibling_state and sibling_shot act on (default city
+                         /World/Block0/B1, flat /World/c5)
         BENCH_BRANCH     prim path prune_restore, noedit and reveal_cancel act on (default city
                          /World/Block0, flat /World)
         BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
@@ -33,6 +38,10 @@
         BENCH_CHAIN_MODE     deactivate (default) or hide: what the chain's matching nodes do
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
+        BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario that does not open the file (default
+                         300; 0 for none)
+        BENCH_OPEN_LIMIT_S  the same for open, populate_full, populate_pruned, open_chain (default 1800)
+        BENCH_PICK_LIMIT_S  wall-clock limit of picking a scene's rows (default 900)
         BENCH_RESULT     JSON-lines file the results are appended to
                          (default $NATRON_GUI_TEST_OUT/heavy_scene_bench.jsonl)
 
@@ -40,7 +49,19 @@ Each scenario runs one action under a 10 ms heartbeat on the main thread and pri
 the longest gap between heartbeats, the layers loaded by the action, and the action's own numbers,
 each judged against the design's budgets as pass, fail, not_valid (measured, but not a number the
 display can vouch for) or not_applicable. Actions are the ACTIONS table; a later milestone adds its
-own (twirl, reveal, draw state) by adding an entry.
+own (twirl, reveal, draw state) by adding an entry. Each record carries the GL renderer, the rows the
+scenario could act on and how they were chosen, wall_s and peak_rss_mb.
+
+A record's result is pass or fail, or one with no budgets: skipped (with a reason: the scene has no
+such row, or the load state rules the scenario out), timed_out (over its wall-clock limit, with
+elapsed_s, main_thread_state and peak_rss_mb; the process is then ended and the scenarios left in it
+are recorded as skipped) or aborted (the process died during the scenario).
+heavy_scene_watchdog.sh writes the last two from outside Natron, so a hung run leaves a record.
+
+sibling_shot takes screen grabs around one state change on sibling_row and one on branch, into
+$NATRON_GUI_TEST_OUT: before, set as soon as the frame reported done, set a second later, restored.
+It records the viewport pixels that differ from before at each, the only evidence so far that a state
+change drew anything. The camera is the viewer's framing of the whole scene.
 
 The Hydra filter actions need a binary with SceneHydraFilter. populate_pruned and populate_full open
 the file themselves, so one of them comes first in place of open, once per process. An action
@@ -71,11 +92,17 @@ stage's sync; swap_frame_ms is the frame that drew it. root_resyncs counts resyn
 stage. rematch_offset is the control: a USDRead frame offset is the edit known to resync the whole
 stage, so root_resyncs at 0 there means the counter is not working.
 
-Budgets: main-thread stall under 100 ms; first boxes under 2 s on the payload city; no payload file
-opened that the action did not request; orbit at or above 30 fps.
+first_frame_ms is from setting the file to the first finished frame. The design's budget is first
+boxes, but no box is drawn at open, so the budget is judged against that frame and named for what it
+measures. boxes_first_drawn_ms in orbit10k is from the boxes command to the first frame with boxes.
+
+Budgets: main-thread stall under 100 ms; first finished frame under 2 s on a payload scene; no
+payload file opened that the action did not request; orbit at or above 30 fps. On a scene, payload
+files are those its unloaded composition names, and the check applies only with payloads unloaded.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -83,14 +110,25 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STALL_BUDGET_MS = 100.0
-FIRST_BOXES_BUDGET_MS = 2000.0
+FIRST_FRAME_BUDGET_MS = 2000.0
 ORBIT_BUDGET_FPS = 30.0
 HEARTBEAT_MS = 10
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
+SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
+OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
+PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
+OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "open_chain")
+SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
+ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
+                   "reveal_branch", "box_depth", "box_depth_rows", "payload_rows", "load_building", "load_block",
+                   "chain_block", "chain_names", "prims", "gprims", "instances", "prototypes")
+ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH_SIBLING_ROW",
+           "reveal_branch": "BENCH_REVEAL_BRANCH", "load_building": "BENCH_LOAD_BUILDING",
+           "load_block": "BENCH_LOAD_BLOCK", "chain_block": "BENCH_CHAIN_BLOCK"}
 
 try:
-    from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
-    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QTimer, Qt
+    from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent, QOffscreenSurface, QOpenGLContext
     from PySide6.QtWidgets import QApplication
     import NatronEngine
 
@@ -98,15 +136,81 @@ try:
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
-    require(fixture in ("flat", "city"), "BENCH_FIXTURE %r is one of flat, city" % fixture)
-    default_files = {"flat": "heavy_flat.usdc", "city": "heavy_city.usda"}
+    require(fixture in ("flat", "city", "scene"), "BENCH_FIXTURE %r is one of flat, city, scene" % fixture)
+    require(fixture != "scene" or "BENCH_FILE" in os.environ, "BENCH_FIXTURE=scene comes with BENCH_FILE")
+    default_files = {"flat": "heavy_flat.usdc", "city": "heavy_city.usda", "scene": ""}
     path = os.environ.get("BENCH_FILE", os.path.join(ROOT, "build", "bench", default_files[fixture]))
     require(os.path.isfile(path), "the fixture exists: " + path)
+    path = os.path.abspath(path)
     result_path = os.environ.get("BENCH_RESULT", os.path.join(OUT, "heavy_scene_bench.jsonl"))
     payload_mark = os.environ.get("BENCH_PAYLOAD_MARK", "heavy_city_payloads")
-    gpu = os.environ.get("BENCH_GPU") == "1" or (HOST_DISPLAY and os.environ.get("BENCH_GPU") != "0")
+
+    def gl_strings():
+        """Asks a context of our own, on the same display and driver the viewer gets."""
+        surface = QOffscreenSurface()
+        surface.create()
+        context = QOpenGLContext()
+        if not context.create() or not context.makeCurrent(surface):
+            return None, None
+        gl_vendor, gl_renderer = 0x1F00, 0x1F01
+        functions = context.functions()
+        strings = functions.glGetString(gl_vendor), functions.glGetString(gl_renderer)
+        context.doneCurrent()
+        return strings
+
+    gl_vendor_name, gl_renderer_name = gl_strings()
+    software_gl = any(name in (gl_renderer_name or "") for name in SOFTWARE_RENDERERS)
+    gpu = (os.environ.get("BENCH_GPU") == "1" or (HOST_DISPLAY and os.environ.get("BENCH_GPU") != "0")) and not software_gl
     label = os.environ.get("BENCH_LABEL", "")
     orbit_s = float(os.environ.get("BENCH_ORBIT_S", "5"))
+    box_count = int(os.environ.get("BENCH_BOXES", "10000"))
+    mechanism = os.environ.get("NATRON_DRAW_STATE_MECHANISM", "filter")
+    require(mechanism in ("filter", "session"), "NATRON_DRAW_STATE_MECHANISM is filter or session, not %r" % mechanism)
+    session = mechanism == "session"
+    load_none = os.environ.get("NATRON_DRAW_STATE_LOAD_NONE", "1" if session else "0") == "1"
+    file_stem = os.path.splitext(os.path.basename(path))[0]
+    chain_length = 10
+
+    def picker_command():
+        beside_natron = os.path.join(os.path.dirname(os.path.realpath("/proc/self/exe")), "natron-python")
+        # The bundle's interpreter first: it composes with the USD build the viewer will use.
+        if os.access(beside_natron, os.X_OK):
+            return [beside_natron, "-I"]
+        return ["python3"]
+
+    def picked_rows():
+        load = "none" if load_none else "all"
+        rows_dir = os.environ.get("BENCH_ROWS_DIR", os.path.join(OUT, "rows"))
+        cached = os.path.join(rows_dir, "%s-load-%s-boxes-%d.json" % (file_stem, load, box_count))
+        if not os.path.isfile(cached) or os.path.getmtime(cached) < os.path.getmtime(path):
+            picker = os.path.join(ROOT, "tools", "bench", "heavy_scene_rows.py")
+            done = subprocess.run(picker_command() + [picker, path, "--load", load, "--boxes", str(box_count), "--out", cached],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PICK_LIMIT_S)
+            require(done.returncode == 0, "the scene's rows were picked", done.stderr.decode(errors="replace")[-2000:])
+        with open(cached) as f:
+            return json.load(f)
+
+    def fixture_rows():
+        """Fixed so the fixtures stay comparable with results from before rows were picked."""
+        if fixture == "flat":
+            return {"root": "/World", "branch": "/World", "sibling_row": "/World/c5", "reveal_branch": "/World", "box_depth": 2}
+        return {"root": "/World", "branch": "/World/Block0", "sibling_row": "/World/Block0/B1", "reveal_branch": "/World",
+                "box_depth": 3 if load_none else 4, "load_building": "/World/Block0/B1", "load_block": "/World/Block1",
+                "chain_block": "/World/Block2", "chain_names": ["Floor%d" % i for i in range(chain_length)]}
+
+    rows = picked_rows() if fixture == "scene" else fixture_rows()
+    rows["source"] = "picked" if fixture == "scene" else "fixture"
+    if fixture == "scene" and rows.get("chain_names"):
+        # Only the even nodes match at open, and the last, odd one is what rematch_match turns on, so
+        # those six positions must get distinct names.
+        rows["chain_names"] = [rows["chain_names"][((i + 1) // 2) % len(rows["chain_names"])] for i in range(chain_length)]
+    for row_name, variable in ROW_ENV.items():
+        if variable in os.environ:
+            rows[row_name] = os.environ[variable]
+            rows["source"] += "+env"
+    if "BENCH_BOX_DEPTH" in os.environ:
+        rows["box_depth"] = int(os.environ["BENCH_BOX_DEPTH"])
+        rows["source"] += "+env"
 
     try:
         from pxr import Sdf
@@ -185,14 +289,19 @@ try:
         t0 = time.time()
         usd.getParam("filename").setValue(path)
         require(viewer.connectInput(0, scene_output[0]), "connect the Viewer to the scene")
-        ok = yield ("until", first_frame_drawn, TIMEOUT_S)
+        t0_ms = int(t0 * 1000.0)
+
+        # A view with nothing synced yet also finishes frames, so the scene has to have reached it.
+        def scene_frame_drawn():
+            if not first_frame_drawn():
+                return False
+            synced_at = prop("natronSceneSyncedAtMs", 0)
+            return prop("natronSceneSynced") is None or (synced_at >= t0_ms and prop("natronSceneLastPaintMs", 0) >= synced_at)
+
+        ok = yield ("until", scene_frame_drawn, TIMEOUT_S)
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
-        # No viewer yet marks the first box frame, so the first finished frame stands in for it.
-        boxes_at = prop("natronSceneFirstBoxesMs")
-        end = boxes_at if boxes_at is not None else (painted if painted is not None else time.time() * 1000.0)
-        m.values["first_boxes_ms"] = round(end - t0 * 1000.0, 1)
-        m.values["first_boxes_signal"] = "natronSceneFirstBoxesMs" if boxes_at is not None else "first_finished_frame"
+        m.values["first_frame_ms"] = round((painted if painted is not None else time.time() * 1000.0) - t0 * 1000.0, 1)
 
     def action_edit(m):
         knob = usd.getParam("frameOffset")
@@ -249,18 +358,13 @@ try:
         m.values["orbit_fps"] = round(len(paints) / elapsed, 1) if elapsed > 0 else None
         m.values["boxes_drawn"] = prop("natronSceneBoxCount")
 
-    root_prim = "/World"
-    branch = os.environ.get("BENCH_BRANCH", {"city": "/World/Block0", "flat": root_prim}[fixture])
-    reveal_branch = os.environ.get("BENCH_REVEAL_BRANCH", root_prim)
+    root_prim = rows.get("root")
+    branch = rows.get("branch")
+    reveal_branch = rows.get("reveal_branch")
     reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
     reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
-    box_count = int(os.environ.get("BENCH_BOXES", "10000"))
-    mechanism = os.environ.get("NATRON_DRAW_STATE_MECHANISM", "filter")
-    require(mechanism in ("filter", "session"), "NATRON_DRAW_STATE_MECHANISM is filter or session, not %r" % mechanism)
-    session = mechanism == "session"
-    load_none = os.environ.get("NATRON_DRAW_STATE_LOAD_NONE", "1" if session else "0") == "1"
-    box_depth = int(os.environ.get("BENCH_BOX_DEPTH", {"city": "3" if load_none else "4", "flat": "2"}[fixture]))
-    sibling_row = os.environ.get("BENCH_SIBLING_ROW", {"city": "/World/Block0/B1", "flat": "/World/c5"}[fixture])
+    box_depth = rows.get("box_depth")
+    sibling_row = rows.get("sibling_row")
 
     def spike_stats():
         text = prop("natronHydraSpikeStats")
@@ -366,12 +470,15 @@ try:
             yield from clear_pruned(root_prim)
         else:
             yield from prepare_pruned(root_prim)
+        boxes_sent_ms = time.time() * 1000.0
         yield from spike("boxes %d %d" % (box_depth, box_count))
         ok = yield ("until", lambda: not spike_stats().get("boxesBuilding", True) and spike_stats().get("boxesDrawn", 0) == spike_stats().get("boxesReady", -1), TIMEOUT_S)
         check(ok, "orbit10k: the boxes were built and drawn")
         stats = spike_stats()
+        boxes_drawn_at = prop("natronSceneFirstBoxesMs")
         m.values["boxes_requested"] = box_count
         m.values["boxes_build_ms"] = round(stats["boxesBuildMs"], 1)
+        m.values["boxes_first_drawn_ms"] = None if boxes_drawn_at is None else round(boxes_drawn_at - boxes_sent_ms, 1)
         heartbeat.start()
         yield from action_orbit(m)
 
@@ -405,6 +512,53 @@ try:
         m.values["sibling_resynced_paths"] = after["resyncedPaths"] - before["resyncedPaths"]
         m.values["sibling_info_only_paths"] = after["infoOnlyPaths"] - before["infoOnlyPaths"]
 
+    def viewport_image(file_name, area):
+        return QImage(file_name).copy(area).convertToFormat(QImage.Format_RGBX8888)
+
+    def changed_pixels(first, second):
+        if first.isNull() or first.size() != second.size():
+            return None
+        a = bytes(first.constBits())[:first.sizeInBytes()]
+        b = bytes(second.constBits())[:second.sizeInBytes()]
+        if a == b:
+            return 0
+        return sum(1 for i in range(0, len(a), 4) if a[i:i + 3] != b[i:i + 3])
+
+    def shoot_state_change(m, tag, row, area):
+        yield from clear_pruned(row)
+        yield ("sleep", 1000)
+        stem = "%s_%s_%s_load-%s" % (tag, mechanism, file_stem, "none" if load_none else "all")
+        before_path = shot(stem + "_0_before.png")
+        before = viewport_image(before_path, area)
+        pruned = yield from spike("prune " + row)
+        immediate_path = shot(stem + "_1_set_immediate.png")
+        yield ("sleep", 1000)
+        settled_path = shot(stem + "_2_set_settled.png")
+        restored = yield from spike("restore " + row)
+        yield ("sleep", 1000)
+        restored_path = shot(stem + "_3_restored.png")
+        m.values[tag + "_shot_row"] = row
+        m.values[tag + "_shot_files"] = [os.path.basename(p) for p in (before_path, immediate_path, settled_path, restored_path)]
+        m.values[tag + "_shot_changed_immediate"] = changed_pixels(before, viewport_image(immediate_path, area))
+        m.values[tag + "_shot_changed_settled"] = changed_pixels(before, viewport_image(settled_path, area))
+        m.values[tag + "_shot_changed_restored"] = changed_pixels(before, viewport_image(restored_path, area))
+        m.values[tag + "_shot_set_frame_ms"] = round(pruned["frameMs"], 2)
+        m.values[tag + "_shot_clear_frame_ms"] = round(restored["frameMs"], 2)
+
+    def action_sibling_shot(m):
+        v = view()
+        require(v is not None, "sibling_shot: a scene view is visible")
+        corner = v.mapToGlobal(v.rect().topLeft()) - QGuiApplication.primaryScreen().geometry().topLeft()
+        area = QRect(corner.x(), corner.y(), v.width(), v.height())
+        m.values["shot_viewport_pixels"] = v.width() * v.height()
+        yield from shoot_state_change(m, "sibling", sibling_row, area)
+        # One row of a large scene can cover a few pixels, which cannot tell "drew nothing" from "too
+        # small to see"; the branch holds enough of the scene to settle it, with the same camera.
+        if branch != sibling_row:
+            yield from shoot_state_change(m, "branch", branch, area)
+        # The grabs and the comparison are this harness's cost, not the viewer's.
+        heartbeat.start()
+
     def action_noedit(m):
         def edits():
             stats = spike_stats()
@@ -425,13 +579,12 @@ try:
         m.values["stage_edit_count"] = after[1] - before[1]
         m.values["stage_edits"] = m.values["stage_notices"] + m.values["stage_edit_count"]
 
-    load_building = os.environ.get("BENCH_LOAD_BUILDING", "/World/Block0/B1")
-    load_block = os.environ.get("BENCH_LOAD_BLOCK", "/World/Block1")
+    load_building = rows.get("load_building")
+    load_block = rows.get("load_block")
     load_mode = os.environ.get("BENCH_LOAD_MODE", "preopen")
     require(load_mode in ("preopen", "direct"), "BENCH_LOAD_MODE is preopen or direct, not %r" % load_mode)
 
     def prepare_load():
-        require(fixture == "city" and load_none, "load actions need the city with NATRON_DRAW_STATE_LOAD_NONE=1")
         return (yield from spike("unload_all"))
 
     def request_load(prim, mode):
@@ -501,8 +654,8 @@ try:
     def action_load_hover(m):
         yield from load_while_moving(m, False)
 
-    chain_length = 10
-    chain_block = os.environ.get("BENCH_CHAIN_BLOCK", "/World/Block2")
+    chain_block = rows.get("chain_block")
+    chain_names = rows.get("chain_names") or []
     chain_mode = os.environ.get("BENCH_CHAIN_MODE", "deactivate")
     require(chain_mode in ("deactivate", "hide"), "BENCH_CHAIN_MODE is deactivate or hide, not %r" % chain_mode)
     chain = []
@@ -515,11 +668,10 @@ try:
 
     def chain_pattern(i):
         if i % 2 == 0:
-            return "%s//Floor%d" % (chain_block, i)
+            return "%s//%s" % (chain_block, chain_names[i])
         return "%s//NoMatch%d*" % (chain_block, i)
 
     def action_open_chain(m):
-        require(fixture == "city" and load_none, "open_chain needs the city with NATRON_DRAW_STATE_LOAD_NONE=1")
         previous = usd
         for i in range(chain_length):
             node = app.createNode("USDPrune")
@@ -573,7 +725,7 @@ try:
 
     def action_rematch_chain(m):
         head = pattern_knob(chain[0])
-        yield from measure_edit(m, head, "%s /World/Unused%d" % (chain_pattern(0), next_pattern_serial()))
+        yield from measure_edit(m, head, "%s %s/Unused%d" % (chain_pattern(0), root_prim, next_pattern_serial()))
 
     def action_rematch_nomatch(m):
         last = pattern_knob(chain[-1])
@@ -581,7 +733,7 @@ try:
 
     def action_rematch_match(m):
         last = pattern_knob(chain[-1])
-        yield from measure_edit(m, last, "%s//Floor%d" % (chain_block, chain_length - 1))
+        yield from measure_edit(m, last, "%s//%s" % (chain_block, chain_names[chain_length - 1]))
 
     def action_rematch_offset(m):
         require(chain, "run open_chain first")
@@ -602,6 +754,7 @@ try:
         "orbit10k": action_orbit10k,
         "boxes_shot": action_boxes_shot,
         "sibling_state": action_sibling_state,
+        "sibling_shot": action_sibling_shot,
         "noedit": action_noedit,
         "load_building_preopen": load_action(load_building, "preopen"),
         "load_building_direct": load_action(load_building, "direct"),
@@ -617,6 +770,29 @@ try:
         "rematch_offset": action_rematch_offset,
     }
 
+    def skip_reason(name):
+        """Why a scenario cannot run on this scene in this load state, or None if it can."""
+        needs_row = {"populate_pruned": root_prim, "prune_restore": branch, "noedit": branch, "reveal_cancel": branch,
+                     "reveal": reveal_branch, "sibling_state": sibling_row, "sibling_shot": sibling_row,
+                     "orbit10k": box_depth, "boxes_shot": box_depth}
+        if name in needs_row and needs_row[name] is None:
+            return "the scene has no such row: no prim here holds the geometry %s needs" % name
+        chain_scenarios = ("open_chain", "chain_load", "rematch_chain", "rematch_nomatch", "rematch_match", "rematch_offset")
+        load_rows = {"load_orbit": load_block, "load_hover": load_block}
+        for mode in ("preopen", "direct"):
+            load_rows["load_building_" + mode] = load_building
+            load_rows["load_block_" + mode] = load_block
+        for scenario in chain_scenarios:
+            load_rows[scenario] = chain_block
+        if name in load_rows:
+            if load_rows[name] is None:
+                return "the scene has no payloads"
+            if not load_none:
+                return "needs NATRON_DRAW_STATE_LOAD_NONE=1: the payloads are already loaded"
+        if name in chain_scenarios and not chain_names:
+            return "no prim names below the chain block for its patterns to match"
+        return None
+
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
             status = "not_applicable"
@@ -628,16 +804,23 @@ try:
             status = "pass" if ((value <= limit) if below_is_good else (value >= limit)) else "fail"
         return {"value": value, "limit": limit, "status": status}
 
+    scene_payload_layers = set(rows.get("payload_assets", ()))
+
+    def is_payload_layer(identifier):
+        if fixture == "scene":
+            return identifier in scene_payload_layers
+        return payload_mark in identifier
+
     def judge(action, m, stall_ms, new_layers):
         budgets = {"stall_ms": verdict(round(stall_ms, 1), STALL_BUDGET_MS, True)}
-        if "first_boxes_ms" in m.values:
-            budgets["first_boxes_ms"] = verdict(m.values["first_boxes_ms"], FIRST_BOXES_BUDGET_MS, True,
-                                                valid=gpu, applicable=(fixture == "city"))
+        if "first_frame_ms" in m.values:
+            budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
+                                                applicable=(fixture == "city" or bool(rows.get("payload_rows"))))
         if new_layers is None:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_valid"}
         else:
-            unrequested = sorted(i for i in new_layers if payload_mark in i and i not in m.requested_layers)
-            budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
+            unrequested = sorted(i for i in new_layers if is_payload_layer(i) and i not in m.requested_layers)
+            budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True, applicable=(fixture != "scene" or load_none))
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "stage_edits" in m.values:
             budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True, applicable=not session)
@@ -647,11 +830,66 @@ try:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
         return budgets
 
+    common_fields = {
+        "label": label,
+        "fixture": fixture,
+        "mechanism": mechanism,
+        "load_none": load_none,
+        "file": os.path.basename(path),
+        "gpu": bool(gpu),
+        "gl_renderer": gl_renderer_name,
+        "gl_vendor": gl_vendor_name,
+        "frame_rate": "valid" if gpu else "not valid on this display",
+        "rows_source": rows["source"],
+        "rows": {key: rows[key] for key in ROW_RECORD_KEYS if key in rows},
+    }
+    progress_path = os.path.join(OUT, "bench_progress")
+
+    def write_progress(text):
+        temporary = progress_path + ".tmp"
+        with open(temporary, "w") as f:
+            f.write(text)
+        os.replace(temporary, progress_path)
+
+    def mark_running(name, remaining, started, limit):
+        write_progress("%d %d\n%s\n%s\n%s\n" % (started, limit, name, " ".join(remaining), json.dumps(common_fields)[1:-1]))
+
+    def write_record(record):
+        line = json.dumps(record)
+        print(line)
+        with open(result_path, "a") as f:
+            f.write(line + "\n")
+        report("RESULT " + line)
+
+    def peak_rss_mb():
+        with open("/proc/self/status") as f:
+            for status_line in f:
+                if status_line.startswith("VmHWM:"):
+                    return int(status_line.split()[1]) // 1024
+        return None
+
+    def start_watchdog():
+        write_progress("idle\n")
+        script = os.path.join(ROOT, "tools", "bench", "heavy_scene_watchdog.sh")
+        # Natron's library and Python paths are for the bundle, not for the system's shell tools.
+        env = {k: v for k, v in os.environ.items() if k not in ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH")}
+        return subprocess.Popen(["bash", script, str(os.getpid()), progress_path, os.path.abspath(result_path)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+
+    watchdog = start_watchdog()
+
     def steps():
         names = [s.strip() for s in os.environ.get("BENCH_SCENARIOS", "open,orbit").split(",") if s.strip()]
         for name in names:
             require(name in ACTIONS, "scenario %r is a known action (%s)" % (name, ", ".join(sorted(ACTIONS))))
-        for name in names:
+        for index, name in enumerate(names):
+            reason = skip_reason(name)
+            if reason is not None:
+                write_record(dict(common_fields, scenario=name, result="skipped", reason=reason, time=time.strftime("%Y-%m-%dT%H:%M:%S")))
+                continue
+            started = time.time()
+            mark_running(name, names[index + 1:], started, OPEN_LIMIT_S if name in OPEN_SCENARIOS else SCENARIO_LIMIT_S)
             m = Measure()
             before = loaded_layers()
             heartbeat.start()
@@ -661,28 +899,21 @@ try:
             after = loaded_layers()
             new_layers = None if before is None or after is None else after - before
             budgets = judge(name, m, stall_ms, new_layers)
-            record = {
-                "label": label,
+            record = dict(common_fields)
+            record.update({
                 "scenario": name,
-                "fixture": fixture,
-                "mechanism": mechanism,
-                "load_none": load_none,
-                "file": os.path.basename(path),
-                "gpu": bool(gpu),
-                "frame_rate": "valid" if gpu else "not valid on llvmpipe",
+                "wall_s": round(time.time() - started, 1),
+                "peak_rss_mb": peak_rss_mb(),
                 "layers_before": None if before is None else len(before),
                 "layers_after": None if after is None else len(after),
                 "layers_loaded": None if new_layers is None else len(new_layers),
                 "budgets": budgets,
                 "result": "fail" if any(b["status"] == "fail" for b in budgets.values()) else "pass",
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }
+            })
             record.update(m.values)
-            line = json.dumps(record)
-            print(line)
-            with open(result_path, "a") as f:
-                f.write(line + "\n")
-            report("RESULT " + line)
+            write_record(record)
+            write_progress("idle\n")
             check(record["result"] == "pass", "%s: within budget" % name)
 
     run(steps())

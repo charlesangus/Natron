@@ -12,8 +12,9 @@
 #
 # An AppImage binary (name ending in .AppImage) is extracted once into a temp directory and its
 # AppRun is launched, so no FUSE is needed. Its bundled plugins and libraries are used as shipped,
-# with two test-only additions: PySide6.QtTest from the container's matching PySide6 (the bundle
-# leaves QtTest out and the test scripts import it), and an oiiotool shim that keeps the
+# with two test-only additions: PySide6.QtTest from the container's matching PySide6, only for a
+# script that names QtTest or QTest (the bundle leaves QtTest out, and a host without PySide6 has to
+# be able to run the scripts that don't need it), and an oiiotool shim that keeps the
 # container's library path. It runs under a throwaway HOME seeded only with
 # checkForUpdates=false, so it neither depends on nor rewrites the container's Natron settings
 # and caches, and the first-run "check for updates?" question cannot block the script.
@@ -83,25 +84,27 @@ if [ "$APPIMAGE" -eq 1 ]; then
     fi
     NATRON="$EXTRACT_DIR/squashfs-root/AppRun"
 
-    BUNDLE_PYSIDE="$(ls -d "$EXTRACT_DIR"/squashfs-root/lib/python3*/site-packages/PySide6 2>/dev/null | head -n 1)"
-    HOST_PYSIDE="$(python3 -c 'import os, PySide6; print(os.path.dirname(PySide6.__file__))' 2>/dev/null)"
-    if [ -z "$BUNDLE_PYSIDE" ] || [ -z "$HOST_PYSIDE" ]; then
-        echo "no PySide6 in the bundle or in the container's python3" >&2
-        exit 2
-    fi
-    if [ ! -e "$BUNDLE_PYSIDE/QtTest.abi3.so" ]; then
-        if ! cmp -s "$BUNDLE_PYSIDE/_git_pyside_version.py" "$HOST_PYSIDE/_git_pyside_version.py"; then
-            echo "the container's PySide6 ($HOST_PYSIDE) is not the bundle's version; cannot add QtTest" >&2
+    if grep -Eq 'QtTest|QTest' "$SCRIPT"; then
+        BUNDLE_PYSIDE="$(ls -d "$EXTRACT_DIR"/squashfs-root/lib/python3*/site-packages/PySide6 2>/dev/null | head -n 1)"
+        HOST_PYSIDE="$(python3 -c 'import os, PySide6; print(os.path.dirname(PySide6.__file__))' 2>/dev/null)"
+        if [ -z "$BUNDLE_PYSIDE" ] || [ -z "$HOST_PYSIDE" ]; then
+            echo "no PySide6 in the bundle or in the container's python3" >&2
             exit 2
         fi
-        QTTEST_LIB="$(ldd "$HOST_PYSIDE/QtTest.abi3.so" 2>/dev/null | sed -n 's/^[[:space:]]*libQt6Test\.so\.6 => \([^ ]*\).*/\1/p')"
-        if [ -z "$QTTEST_LIB" ]; then
-            echo "cannot find PySide6.QtTest or libQt6Test.so.6 in the container" >&2
-            exit 2
+        if [ ! -e "$BUNDLE_PYSIDE/QtTest.abi3.so" ]; then
+            if ! cmp -s "$BUNDLE_PYSIDE/_git_pyside_version.py" "$HOST_PYSIDE/_git_pyside_version.py"; then
+                echo "the container's PySide6 ($HOST_PYSIDE) is not the bundle's version; cannot add QtTest" >&2
+                exit 2
+            fi
+            QTTEST_LIB="$(ldd "$HOST_PYSIDE/QtTest.abi3.so" 2>/dev/null | sed -n 's/^[[:space:]]*libQt6Test\.so\.6 => \([^ ]*\).*/\1/p')"
+            if [ -z "$QTTEST_LIB" ]; then
+                echo "cannot find PySide6.QtTest or libQt6Test.so.6 in the container" >&2
+                exit 2
+            fi
+            # QtTest.abi3.so's RUNPATH starts with $ORIGIN, so libQt6Test goes beside it.
+            cp "$HOST_PYSIDE/QtTest.abi3.so" "$BUNDLE_PYSIDE/"
+            cp -L "$QTTEST_LIB" "$BUNDLE_PYSIDE/libQt6Test.so.6"
         fi
-        # QtTest.abi3.so's RUNPATH starts with $ORIGIN, so libQt6Test goes beside it.
-        cp "$HOST_PYSIDE/QtTest.abi3.so" "$BUNDLE_PYSIDE/"
-        cp -L "$QTTEST_LIB" "$BUNDLE_PYSIDE/libQt6Test.so.6"
     fi
 
     TEST_HOME="$EXTRACT_DIR/home"
@@ -234,7 +237,8 @@ fi
 # Natron's output goes to a file: a caller that stops draining our stdout would otherwise block
 # Natron on a write and turn any failure into a timeout.
 rm -f "$OUT/results.txt"
-timeout "$TIMEOUT" "$NATRON" "$SCRIPT" > "$OUT/natron.log" 2>&1 < /dev/null
+# Natron's SIGTERM handler only asks the main thread to quit, so a hung one needs the SIGKILL too.
+timeout -k 30 "$TIMEOUT" "$NATRON" "$SCRIPT" > "$OUT/natron.log" 2>&1 < /dev/null
 rc=$?
 if [ -f "$OUT/results.txt" ]; then
     cat "$OUT/results.txt"
@@ -245,7 +249,7 @@ if [ "$rc" -ne 0 ]; then
     echo "--- last lines of $OUT/natron.log"
     tail -n 30 "$OUT/natron.log"
 fi
-if [ "$rc" -eq 124 ]; then
+if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     echo "FAIL timed out after ${TIMEOUT}s"
 fi
 echo "natron exit=$rc (results in $OUT)"

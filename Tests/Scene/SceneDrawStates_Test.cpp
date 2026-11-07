@@ -53,14 +53,14 @@ expectState(const SceneDrawStates& states,
 
 TEST(SceneDrawStates, StateNamesReadAsScriptNames)
 {
-    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateFullLoad, eSceneDrawStateHidden }) {
+    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
         SceneDrawStateEnum parsed = eSceneDrawStateFull;
         ASSERT_TRUE(sceneDrawStateFromName(sceneDrawStateName(state), &parsed));
         EXPECT_EQ(state, parsed);
     }
-    EXPECT_STREQ("fullLoad", sceneDrawStateName(eSceneDrawStateFullLoad));
+    EXPECT_STREQ("loadAll", sceneDrawStateName(eSceneDrawStateLoadAll));
     SceneDrawStateEnum parsed = eSceneDrawStateFull;
-    EXPECT_FALSE(sceneDrawStateFromName("Full + Load", &parsed));
+    EXPECT_FALSE(sceneDrawStateFromName("Load All", &parsed));
 }
 
 TEST(SceneDrawStates, NothingSetResolvesToFull)
@@ -217,11 +217,11 @@ TEST(SceneDrawStates, FullNeverLoads)
     EXPECT_TRUE(states.setState("/gone", eSceneDrawStateHidden).loads.empty());
 }
 
-TEST(SceneDrawStates, FullLoadLoadsWithDescendants)
+TEST(SceneDrawStates, LoadAllLoadsWithDescendants)
 {
     SceneDrawStates states;
 
-    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateFullLoad);
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
 
     ASSERT_EQ(1u, delta.loads.size());
     EXPECT_EQ("/a", delta.loads[0].path);
@@ -232,10 +232,10 @@ TEST(SceneDrawStates, FullLoadLoadsWithDescendants)
 TEST(SceneDrawStates, SettingAgainAsksAgainForItsLoad)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateFullLoad);
+    states.setState("/a", eSceneDrawStateLoadAll);
     states.setState("/b", eSceneDrawStateChildren);
 
-    EXPECT_EQ(1u, states.setState("/a", eSceneDrawStateFullLoad).loads.size());
+    EXPECT_EQ(1u, states.setState("/a", eSceneDrawStateLoadAll).loads.size());
     EXPECT_EQ(1u, states.setState("/b", eSceneDrawStateChildren).loads.size());
 }
 
@@ -252,25 +252,291 @@ TEST(SceneDrawStates, BlockedRowsLoadOnlyWhenUnblocked)
     EXPECT_FALSE(delta.loads[0].withDescendants);
 }
 
-TEST(SceneDrawStates, FullLoadSwitchingAncestorsLoadsOnlyItsRow)
+TEST(SceneDrawStates, LoadAllSwitchingAncestorsLoadsOnlyItsRow)
 {
     SceneDrawStates states;
     states.setState("/a", eSceneDrawStateBBox);
 
-    const SceneDrawDelta delta = states.setState("/a/b", eSceneDrawStateFullLoad);
+    const SceneDrawDelta delta = states.setState("/a/b", eSceneDrawStateLoadAll);
 
     ASSERT_EQ(1u, delta.loads.size());
     EXPECT_EQ("/a/b", delta.loads[0].path);
     EXPECT_TRUE(delta.loads[0].withDescendants);
 }
 
-TEST(SceneDrawStates, LoadsBelowAFullLoadAreAlreadyAskedFor)
+TEST(SceneDrawStates, LoadsBelowALoadAllAreAlreadyAskedFor)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateFullLoad);
+    states.setState("/a", eSceneDrawStateLoadAll);
 
-    EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateFullLoad).loads.empty());
-    EXPECT_TRUE(states.setState("/a/c", eSceneDrawStateChildren).loads.empty());
+    EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateLoadAll).loads.empty());
+    EXPECT_TRUE(states.setState("/a/c", eSceneDrawStateFull).loads.empty());
+}
+
+TEST(SceneDrawStates, LoadAllExcludesBBoxAndHiddenRowsBelow)
+{
+    SceneDrawStates states;
+    states.setState("/a/box", eSceneDrawStateBBox);
+    states.setState("/a/gone", eSceneDrawStateHidden);
+    states.setState("/a/keep", eSceneDrawStateFull);
+    states.setState("/other", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_EQ((Paths { "/a/box", "/a/gone" }), delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, ALoadAllExcludesOnlyTheTopmostRowOfAStoppedBranch)
+{
+    SceneDrawStates states;
+    states.setState("/a/box/deep", eSceneDrawStateHidden);
+    states.setState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ(Paths { "/a/box" }, delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, ALoadAllBelowALoadAllSharesItsExclusions)
+{
+    SceneDrawStates states;
+    states.setState("/a/b", eSceneDrawStateLoadAll);
+    states.setState("/a/b/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a", delta.loads[0].path);
+    EXPECT_EQ(Paths { "/a/b/box" }, delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, SettingAgainAsksAgainWithTheCurrentExclusions)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ(Paths { "/a/box" }, delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, BoxingARowBelowALoadAllAsksForNothing)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+
+    const SceneDrawDelta delta = states.setState("/a/box", eSceneDrawStateBBox);
+
+    EXPECT_TRUE(delta.loads.empty());
+    EXPECT_EQ(Paths { "/a/box" }, delta.boxed);
+}
+
+TEST(SceneDrawStates, AChildrenRowBelowALoadAllLoadsItselfAndWhatItDraws)
+{
+    SceneDrawStates states;
+    states.setState("/a/kids", eSceneDrawStateChildren);
+    states.setState("/a/kids/full", eSceneDrawStateFull);
+    states.setState("/a/kids/full/box", eSceneDrawStateBBox);
+    states.setState("/a/kids/box", eSceneDrawStateBBox);
+    states.setState("/a/kids/nested", eSceneDrawStateChildren);
+    states.setState("/a/kids/nested/all", eSceneDrawStateLoadAll);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(5u, delta.loads.size());
+    EXPECT_EQ("/a", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_EQ(Paths { "/a/kids" }, delta.loads[0].excluded);
+    EXPECT_EQ("/a/kids", delta.loads[1].path);
+    EXPECT_FALSE(delta.loads[1].withDescendants);
+    EXPECT_TRUE(delta.loads[1].excluded.empty());
+    EXPECT_EQ("/a/kids/full", delta.loads[2].path);
+    EXPECT_TRUE(delta.loads[2].withDescendants);
+    EXPECT_EQ(Paths { "/a/kids/full/box" }, delta.loads[2].excluded);
+    EXPECT_EQ("/a/kids/nested", delta.loads[3].path);
+    EXPECT_FALSE(delta.loads[3].withDescendants);
+    EXPECT_EQ("/a/kids/nested/all", delta.loads[4].path);
+    EXPECT_TRUE(delta.loads[4].withDescendants);
+}
+
+TEST(SceneDrawStates, ASwitchedAncestorBelowALoadAllLoadsSoItsRowCanCompose)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a/box/deep", eSceneDrawStateFull);
+
+    ASSERT_EQ(2u, delta.loads.size());
+    EXPECT_EQ("/a/box", delta.loads[0].path);
+    EXPECT_FALSE(delta.loads[0].withDescendants);
+    EXPECT_EQ("/a/box/deep", delta.loads[1].path);
+    EXPECT_TRUE(delta.loads[1].withDescendants);
+}
+
+TEST(SceneDrawStates, ClearingAnExcludedRowAsksForWhatTheLoadAllLeftOut)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+    states.setState("/a/box/gone", eSceneDrawStateHidden);
+
+    const SceneDrawDelta delta = states.clearState("/a/box");
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a/box", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_EQ(Paths { "/a/box/gone" }, delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, DrawingAnExcludedRowInFullAsksForIt)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a/box", eSceneDrawStateFull);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a/box", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_TRUE(states.setState("/a/box", eSceneDrawStateFull).loads.empty());
+}
+
+TEST(SceneDrawStates, ExclusionsFollowThePolicyToo)
+{
+    SceneDrawStates states;
+    states.setPolicyState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ(Paths { "/a/box" }, delta.loads[0].excluded);
+}
+
+TEST(SceneDrawStates, FullWithoutALoadAllStillLoadsNothing)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateChildren);
+
+    EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateFull).loads.empty());
+}
+
+TEST(SceneDrawStates, ClearBelowForgetsEverySetStateUnderTheRowAndKeepsItsOwn)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateChildren);
+    states.setState("/a/b", eSceneDrawStateFull);
+    states.setState("/a/b/c", eSceneDrawStateHidden);
+    states.setState("/a/d/deep", eSceneDrawStateFull);
+    states.setState("/a-b", eSceneDrawStateHidden);
+    states.setState("/z", eSceneDrawStateHidden);
+    const std::size_t outside = 2;
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/a");
+
+    EXPECT_EQ(1u + outside, states.storedCount());
+    SceneDrawStateEnum set = eSceneDrawStateFull;
+    ASSERT_TRUE(states.getSetState("/a", &set));
+    EXPECT_EQ(eSceneDrawStateChildren, set);
+    EXPECT_FALSE(states.getSetState("/a/b", &set));
+    EXPECT_FALSE(states.getSetState("/a/b/c", &set));
+    EXPECT_TRUE(states.getSetState("/a-b", &set));
+    EXPECT_EQ((Paths { "/a/b", "/a/b/c", "/a/d", "/a/d/deep" }), delta.cleared);
+    expectState(states, "/a/b", eSceneDrawStateBBox, eSceneDrawOriginInherited);
+}
+
+TEST(SceneDrawStates, ClearBelowARowWithNoStateOfItsOwn)
+{
+    SceneDrawStates states;
+    states.setState("/a/b", eSceneDrawStateHidden);
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/a");
+
+    EXPECT_EQ(Paths { "/a/b" }, delta.cleared);
+    EXPECT_EQ(0u, states.storedCount());
+    SceneDrawStateEnum set = eSceneDrawStateFull;
+    EXPECT_FALSE(states.getSetState("/a", &set));
+}
+
+TEST(SceneDrawStates, ClearBelowTheRootLeavesTheRootAndThePolicy)
+{
+    SceneDrawStates states;
+    states.setState("/", eSceneDrawStateFull);
+    states.setState("/a", eSceneDrawStateHidden);
+    states.setPolicyState("/b", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/");
+
+    EXPECT_EQ(1u, states.storedCount());
+    EXPECT_EQ(Paths { "/a" }, delta.cleared);
+    expectState(states, "/b", eSceneDrawStateBBox, eSceneDrawOriginGraphPolicy);
+}
+
+TEST(SceneDrawStates, ClearBelowForgetsRememberedStatesWithoutADelta)
+{
+    SceneDrawStates states;
+    states.setState("/a/b", eSceneDrawStateHidden);
+    states.setState("/a", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/a");
+
+    EXPECT_TRUE(delta.isEmpty());
+    EXPECT_EQ(1u, states.storedCount());
+    const SceneDrawDelta shown = states.setState("/a", eSceneDrawStateFull);
+    EXPECT_TRUE(shown.hidden.empty());
+}
+
+TEST(SceneDrawStates, ClearBelowCostsItsSubtree)
+{
+    SceneDrawStates states;
+    for (int row = 0; row < 1000; ++row) {
+        states.setState("/big/r" + std::to_string(row), eSceneDrawStateHidden);
+    }
+    for (int row = 0; row < 3; ++row) {
+        states.setState("/small/r" + std::to_string(row), eSceneDrawStateHidden);
+    }
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/small");
+
+    EXPECT_EQ(3u, delta.cleared.size());
+    EXPECT_LE(delta.visited, 3u);
+    EXPECT_EQ(1000u, states.storedCount());
+}
+
+TEST(SceneDrawStates, ClearBelowALoadAllAsksAgainForTheRowsItHadLeftOut)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/a");
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].excluded.empty());
+    EXPECT_EQ(Paths { "/a/box" }, delta.cleared);
+}
+
+TEST(SceneDrawStates, ClearBelowAnUnsetRowInsideALoadAllAsksForThatRow)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/c/box", eSceneDrawStateBBox);
+    states.setState("/a/c/keep", eSceneDrawStateFull);
+
+    const SceneDrawDelta delta = states.clearStatesBelow("/a/c");
+
+    ASSERT_EQ(1u, delta.loads.size());
+    EXPECT_EQ("/a/c", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_TRUE(delta.loads[0].excluded.empty());
 }
 
 TEST(SceneDrawStates, MissingPathsAreKept)
@@ -331,12 +597,12 @@ TEST(SceneDrawStates, ViewerFullSwitchesABlockingPolicyRow)
     expectState(states, "/a/b", eSceneDrawStateFull, eSceneDrawOriginViewer);
 }
 
-TEST(SceneDrawStates, PolicyChildrenDoesNotLoadButPolicyFullLoadDoes)
+TEST(SceneDrawStates, PolicyChildrenDoesNotLoadButPolicyLoadAllDoes)
 {
     SceneDrawStates states;
 
     EXPECT_TRUE(states.setPolicyState("/a", eSceneDrawStateChildren).loads.empty());
-    EXPECT_EQ(1u, states.setPolicyState("/b", eSceneDrawStateFullLoad).loads.size());
+    EXPECT_EQ(1u, states.setPolicyState("/b", eSceneDrawStateLoadAll).loads.size());
 }
 
 TEST(SceneDrawStates, PolicyRowsBelowAViewerStateMergeInPathOrder)

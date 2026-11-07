@@ -39,12 +39,23 @@ enum FrameKindEnum {
     eFrameBlocked
 };
 
+const int kNoRequest = -1;
+
 struct Frame {
     std::string path;
     FrameKindEnum kind;
-    // A Full + Load above asks for every payload here already.
+    // A Load All above wants what is drawn here. Only a drawn frame is covered by a load with
+    // descendants; a Children row has left that load, so what its rows draw must be asked for anew.
     bool loading;
+    // The row in this walk whose load covers this frame, or kNoRequest if that row is above the root.
+    int request;
 };
+
+bool
+coveredByLoad(const Frame& frame)
+{
+    return frame.loading && (frame.kind == eFrameDrawn);
+}
 
 bool
 isBelow(const std::string& path,
@@ -139,7 +150,7 @@ descend(const Frame& parent,
     if (parent.kind == eFrameBlocked) {
         return parent;
     }
-    Frame frame { path, parent.kind, parent.loading };
+    Frame frame { path, parent.kind, parent.loading, parent.request };
     if (!found) {
         if (parent.kind == eFrameExpanded) {
             frame.kind = eFrameBlocked;
@@ -158,7 +169,7 @@ descend(const Frame& parent,
     case eSceneDrawStateFull:
         frame.kind = eFrameDrawn;
         break;
-    case eSceneDrawStateFullLoad:
+    case eSceneDrawStateLoadAll:
         frame.kind = eFrameDrawn;
         frame.loading = true;
         break;
@@ -195,7 +206,7 @@ appendLoad(SceneDrawDelta* delta,
            const SceneDrawStates::Effect& effect)
 {
     if (effect.load != SceneDrawStates::eLoadNone) {
-        delta->loads.push_back(SceneDrawLoadRequest { effect.path, effect.load == SceneDrawStates::eLoadWithDescendants });
+        delta->loads.push_back(SceneDrawLoadRequest { effect.path, effect.load == SceneDrawStates::eLoadWithDescendants, effect.excluded });
     }
 }
 } // anon namespace
@@ -210,8 +221,8 @@ sceneDrawStateName(SceneDrawStateEnum state)
         return "children";
     case eSceneDrawStateFull:
         return "full";
-    case eSceneDrawStateFullLoad:
-        return "fullLoad";
+    case eSceneDrawStateLoadAll:
+        return "loadAll";
     case eSceneDrawStateHidden:
         return "hidden";
     }
@@ -223,7 +234,7 @@ bool
 sceneDrawStateFromName(const std::string& name,
                        SceneDrawStateEnum* state)
 {
-    for (SceneDrawStateEnum candidate : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateFullLoad, eSceneDrawStateHidden }) {
+    for (SceneDrawStateEnum candidate : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
         if (name == sceneDrawStateName(candidate)) {
             *state = candidate;
 
@@ -252,12 +263,12 @@ SceneDrawStates::PathLess::operator()(const std::string& a,
     return a.size() < b.size();
 }
 
-std::vector<SceneDrawStates::Effect>
+SceneDrawStates::Effects
 SceneDrawStates::effectsUnder(const std::string& root,
                               std::size_t* visited) const
 {
-    std::vector<Effect> effects;
-    Frame base { std::string(), eFrameDrawn, false };
+    Effects effects;
+    Frame base { std::string(), eFrameDrawn, false, kNoRequest };
     for (const std::string& ancestor : ancestorsOf(root)) {
         SceneDrawStateEnum state = eSceneDrawStateFull;
         const bool found = lookUp(_states, _policy, ancestor, &state);
@@ -267,6 +278,11 @@ SceneDrawStates::effectsUnder(const std::string& root,
         return effects;
     }
     base.path = parentOf(root);
+    {
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        const bool found = lookUp(_states, _policy, root, &state);
+        effects.rootCovered = coveredByLoad(base) && coveredByLoad(descend(base, root, found, state));
+    }
 
     StateMap::const_iterator set = _states.lower_bound(root);
     PolicyMap::const_iterator policed = _policy.lower_bound(root);
@@ -293,7 +309,8 @@ SceneDrawStates::effectsUnder(const std::string& root,
             // An unset child of a Children row is a box, which stops this row and its neighbours.
             skip = pastSubtree(childTowards(parent.path, path));
         } else {
-            Effect effect { path, eRuleNone, eLoadNone };
+            const bool covered = coveredByLoad(parent);
+            Effect effect { path, eRuleNone, eLoadNone, std::vector<std::string>() };
             switch (state) {
             case eSceneDrawStateBBox:
                 // A box is what a Children row's child is already.
@@ -304,23 +321,32 @@ SceneDrawStates::effectsUnder(const std::string& root,
                 break;
             case eSceneDrawStateChildren:
                 effect.rule = eRuleExpanded;
-                effect.load = (direct && !parent.loading) ? eLoadOwn : eLoadNone;
+                effect.load = (direct || parent.loading) ? eLoadOwn : eLoadNone;
                 break;
             case eSceneDrawStateFull:
                 effect.rule = (parent.kind == eFrameDrawn) ? eRuleNone : eRuleDrawn;
+                effect.load = (parent.loading && !covered) ? eLoadWithDescendants : eLoadNone;
                 break;
-            case eSceneDrawStateFullLoad:
+            case eSceneDrawStateLoadAll:
                 effect.rule = (parent.kind == eFrameDrawn) ? eRuleNone : eRuleDrawn;
-                effect.load = parent.loading ? eLoadNone : eLoadWithDescendants;
+                effect.load = covered ? eLoadNone : eLoadWithDescendants;
                 break;
             }
+            if (covered && (stops(state) || (state == eSceneDrawStateChildren))) {
+                std::vector<std::string>& excluded = (parent.request == kNoRequest) ? effects.excludedBelowRoot : effects.rows[parent.request].excluded;
+                excluded.push_back(path);
+            }
             if ((effect.rule != eRuleNone) || (effect.load != eLoadNone)) {
-                effects.push_back(effect);
+                effects.rows.push_back(effect);
             }
             if (stops(state)) {
                 skip = pastSubtree(path);
             } else {
-                stack.push_back(descend(parent, path, true, state));
+                Frame frame = descend(parent, path, true, state);
+                if (effect.load == eLoadWithDescendants) {
+                    frame.request = static_cast<int>(effects.rows.size()) - 1;
+                }
+                stack.push_back(frame);
             }
         }
 
@@ -345,35 +371,46 @@ SceneDrawStates::effectsUnder(const std::string& root,
 SceneDrawDelta
 SceneDrawStates::applyEdit(const std::string& root,
                            const std::string& retryLoad,
-                           const std::vector<Effect>& before,
+                           const Effects& before,
                            std::size_t visited) const
 {
     SceneDrawDelta delta;
     delta.visited = visited;
-    const std::vector<Effect> after = effectsUnder(root, &delta.visited);
+    const Effects afterEffects = effectsUnder(root, &delta.visited);
+    const std::vector<Effect>& was = before.rows;
+    const std::vector<Effect>& after = afterEffects.rows;
+    // The load above the root will not come back for what it had left out, so this edit asks for it.
+    if (afterEffects.rootCovered && (!before.rootCovered || (before.excludedBelowRoot != afterEffects.excludedBelowRoot))) {
+        delta.loads.push_back(SceneDrawLoadRequest { root, true, afterEffects.excludedBelowRoot });
+    }
     const PathLess less;
     std::size_t b = 0;
     std::size_t a = 0;
-    while ((b < before.size()) || (a < after.size())) {
-        if ((a == after.size()) || ((b < before.size()) && less(before[b].path, after[a].path))) {
-            if (before[b].rule != eRuleNone) {
-                delta.cleared.push_back(before[b].path);
+    bool retryBelow = false;
+    while ((b < was.size()) || (a < after.size())) {
+        if ((a == after.size()) || ((b < was.size()) && less(was[b].path, after[a].path))) {
+            if (was[b].rule != eRuleNone) {
+                delta.cleared.push_back(was[b].path);
             }
             ++b;
-        } else if ((b == before.size()) || less(after[a].path, before[b].path)) {
+        } else if ((b == was.size()) || less(after[a].path, was[b].path)) {
             if (after[a].rule != eRuleNone) {
                 appendRule(&delta, after[a]);
             }
             appendLoad(&delta, after[a]);
+            retryBelow = retryBelow || ((after[a].path == retryLoad) && (after[a].load == eLoadWithDescendants));
             ++a;
         } else {
-            if (before[b].rule != after[a].rule) {
+            if (was[b].rule != after[a].rule) {
                 appendRule(&delta, after[a]);
             }
-            // Setting the row again asks again: an earlier load of it may have been cancelled.
-            if ((before[b].load != after[a].load) || (after[a].path == retryLoad)) {
+            // Setting the row again asks again: an earlier load of it may have been cancelled. A load
+            // with descendants asks for its whole subtree, and what it excludes it no longer covers.
+            const bool retried = (after[a].path == retryLoad) || (retryBelow && isBelow(after[a].path, retryLoad));
+            if ((was[b].load != after[a].load) || (was[b].excluded != after[a].excluded) || retried) {
                 appendLoad(&delta, after[a]);
             }
+            retryBelow = retryBelow || ((after[a].path == retryLoad) && (after[a].load == eLoadWithDescendants));
             ++b;
             ++a;
         }
@@ -388,8 +425,8 @@ SceneDrawStates::setState(const std::string& path,
 {
     std::string root = path;
     std::vector<std::string> switched;
-    if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateFullLoad)) {
-        Frame frame { std::string(), eFrameDrawn, false };
+    if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateLoadAll)) {
+        Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
         for (const std::string& ancestor : ancestorsOf(path)) {
             SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
             const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
@@ -406,7 +443,7 @@ SceneDrawStates::setState(const std::string& path,
         }
     }
     std::size_t visited = 0;
-    const std::vector<Effect> before = effectsUnder(root, &visited);
+    const Effects before = effectsUnder(root, &visited);
     for (const std::string& ancestor : switched) {
         _states[ancestor] = Stored { eSceneDrawStateChildren, false };
     }
@@ -419,8 +456,23 @@ SceneDrawDelta
 SceneDrawStates::clearState(const std::string& path)
 {
     std::size_t visited = 0;
-    const std::vector<Effect> before = effectsUnder(path, &visited);
+    const Effects before = effectsUnder(path, &visited);
     _states.erase(path);
+
+    return applyEdit(path, std::string(), before, visited);
+}
+
+SceneDrawDelta
+SceneDrawStates::clearStatesBelow(const std::string& path)
+{
+    std::size_t visited = 0;
+    const Effects before = effectsUnder(path, &visited);
+    const StateMap::iterator first = _states.upper_bound(path);
+    StateMap::iterator last = first;
+    while ((last != _states.end()) && isBelow(last->first, path)) {
+        ++last;
+    }
+    _states.erase(first, last);
 
     return applyEdit(path, std::string(), before, visited);
 }
@@ -429,7 +481,7 @@ SceneDrawDelta
 SceneDrawStates::clearAllStates()
 {
     std::size_t visited = 0;
-    const std::vector<Effect> before = effectsUnder("/", &visited);
+    const Effects before = effectsUnder("/", &visited);
     _states.clear();
 
     return applyEdit("/", std::string(), before, visited);
@@ -440,7 +492,7 @@ SceneDrawStates::setPolicyState(const std::string& path,
                                 SceneDrawStateEnum state)
 {
     std::size_t visited = 0;
-    const std::vector<Effect> before = effectsUnder(path, &visited);
+    const Effects before = effectsUnder(path, &visited);
     _policy[path] = state;
 
     return applyEdit(path, std::string(), before, visited);
@@ -450,7 +502,7 @@ SceneDrawDelta
 SceneDrawStates::clearPolicyState(const std::string& path)
 {
     std::size_t visited = 0;
-    const std::vector<Effect> before = effectsUnder(path, &visited);
+    const Effects before = effectsUnder(path, &visited);
     _policy.erase(path);
 
     return applyEdit(path, std::string(), before, visited);
@@ -473,7 +525,7 @@ SceneDrawResolved
 SceneDrawStates::resolve(const std::string& path) const
 {
     SceneDrawResolved resolved { eSceneDrawStateFull, eSceneDrawOriginDefault, false };
-    Frame frame { std::string(), eFrameDrawn, false };
+    Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
     std::vector<std::string> levels = ancestorsOf(path);
     levels.push_back(path);
     for (const std::string& level : levels) {

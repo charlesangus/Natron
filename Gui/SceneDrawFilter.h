@@ -51,15 +51,19 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Hides geometry from what one engine's render index sees, by subtree, without touching the
- * stage.
+ * @brief Hides geometry and lights from what one engine's render index sees, by subtree, without
+ * touching the stage.
  *
- * A hidden rprim or instancer keeps its place with an empty type and no data source, the way
- * HdsiPrimTypePruningSceneIndex (pxr/imaging/hdsi/primTypePruningSceneIndex.h) preserves hierarchy.
- * Every other prim passes through, because drawn geometry keeps needing a material or camera that
- * lives under a boxed row. That rules out a RemovedPrimEntry, which takes the whole subtree, and so
- * a hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is out too, since a prefix
- * is its only unit of change and it cannot release part of a subtree.
+ * A hidden rprim, instancer or light keeps its place in this scene index with an empty type and no
+ * data source, the way HdsiPrimTypePruningSceneIndex (pxr/imaging/hdsi/primTypePruningSceneIndex.h)
+ * preserves hierarchy. The render index holds nothing for an empty type, so the prim leaves Hydra
+ * and its memory goes with it. Every other prim passes through, because drawn geometry keeps needing
+ * a material or camera that lives under a boxed row. That rules out a RemovedPrimEntry, which takes
+ * the whole subtree, and so a hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is
+ * out too, since a prefix is its only unit of change and it cannot release part of a subtree.
+ *
+ * Only a row drawn in full, or a Children row's own prim, lights the scene: the same rule that hides
+ * geometry takes the light away.
  *
  * Every method that changes state sends notices that reach the render index directly, so callers
  * hold the viewer lock and the GL context, between renders. Hydra reads GetPrim() from its sync

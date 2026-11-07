@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -37,10 +38,16 @@
 #define NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/renderDelegate.h>
+#include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/retainedSceneIndex.h>
+#include <pxr/imaging/hd/rprim.h>
 #include <pxr/imaging/hd/sceneIndexObserver.h>
+#include <pxr/imaging/hd/sprim.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #define emit
@@ -141,6 +148,127 @@ makeScene()
 
 const PathSet kAllGeometry = { "/World/a/m1", "/World/a/deep/m2", "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" };
 
+// /World/rig (xform), rig/key (a light row), rig/key/fill (light below a light), rig/dome (domeLight),
+// rig/subrig/spot (sphereLight), rig/mesh (mesh)
+void
+addLights(const HdRetainedSceneIndexRefPtr& scene)
+{
+    const auto add = [&scene](const char* path, const TfToken& type) {
+        scene->AddPrims({ { SdfPath(path), type, someData() } });
+    };
+    add("/World/rig", TfToken("xform"));
+    add("/World/rig/key", HdPrimTypeTokens->rectLight);
+    add("/World/rig/key/fill", HdPrimTypeTokens->distantLight);
+    add("/World/rig/dome", HdPrimTypeTokens->domeLight);
+    add("/World/rig/subrig", TfToken("xform"));
+    add("/World/rig/subrig/spot", HdPrimTypeTokens->sphereLight);
+    add("/World/rig/mesh", HdPrimTypeTokens->mesh);
+}
+
+class NullLight
+    : public HdSprim {
+public:
+    explicit NullLight(const SdfPath& id)
+        : HdSprim(id)
+    {
+    }
+
+    void Sync(HdSceneDelegate* /*sceneDelegate*/,
+              HdRenderParam* /*renderParam*/,
+              HdDirtyBits* dirtyBits) override
+    {
+        *dirtyBits = HdChangeTracker::Clean;
+    }
+
+    HdDirtyBits GetInitialDirtyBitsMask() const override
+    {
+        return HdChangeTracker::AllDirty;
+    }
+};
+
+// Hd_UnitTestNullRenderDelegate is final and makes no lights, so this forwards to one and adds them.
+class CountingRenderDelegate
+    : public HdRenderDelegate {
+public:
+    const TfTokenVector& GetSupportedRprimTypes() const override { return _null.GetSupportedRprimTypes(); }
+    const TfTokenVector& GetSupportedBprimTypes() const override { return _null.GetSupportedBprimTypes(); }
+    HdResourceRegistrySharedPtr GetResourceRegistry() const override { return _null.GetResourceRegistry(); }
+
+    const TfTokenVector& GetSupportedSprimTypes() const override
+    {
+        static const TfTokenVector types = [this]() {
+            TfTokenVector all = _null.GetSupportedSprimTypes();
+            all.push_back(HdPrimTypeTokens->rectLight);
+            all.push_back(HdPrimTypeTokens->domeLight);
+
+            return all;
+        }();
+
+        return types;
+    }
+
+    HdRenderPassSharedPtr CreateRenderPass(HdRenderIndex* index,
+                                           const HdRprimCollection& collection) override
+    {
+        return _null.CreateRenderPass(index, collection);
+    }
+
+    HdInstancer* CreateInstancer(HdSceneDelegate* delegate,
+                                 const SdfPath& id) override
+    {
+        return _null.CreateInstancer(delegate, id);
+    }
+
+    void DestroyInstancer(HdInstancer* instancer) override { _null.DestroyInstancer(instancer); }
+
+    HdRprim* CreateRprim(const TfToken& typeId,
+                         const SdfPath& id) override
+    {
+        return _null.CreateRprim(typeId, id);
+    }
+
+    void DestroyRprim(HdRprim* rprim) override
+    {
+        ++rprimsDestroyed;
+        _null.DestroyRprim(rprim);
+    }
+
+    HdSprim* CreateSprim(const TfToken& typeId,
+                         const SdfPath& id) override
+    {
+        return HdPrimTypeIsLight(typeId) ? new NullLight(id) : _null.CreateSprim(typeId, id);
+    }
+
+    HdSprim* CreateFallbackSprim(const TfToken& typeId) override
+    {
+        return HdPrimTypeIsLight(typeId) ? new NullLight(SdfPath::EmptyPath()) : _null.CreateFallbackSprim(typeId);
+    }
+
+    void DestroySprim(HdSprim* sprim) override
+    {
+        if (dynamic_cast<NullLight*>(sprim)) {
+            delete sprim;
+        } else {
+            _null.DestroySprim(sprim);
+        }
+    }
+
+    HdBprim* CreateBprim(const TfToken& typeId,
+                         const SdfPath& id) override
+    {
+        return _null.CreateBprim(typeId, id);
+    }
+
+    HdBprim* CreateFallbackBprim(const TfToken& typeId) override { return _null.CreateFallbackBprim(typeId); }
+    void DestroyBprim(HdBprim* bprim) override { _null.DestroyBprim(bprim); }
+    void CommitResources(HdChangeTracker* tracker) override { _null.CommitResources(tracker); }
+
+    int rprimsDestroyed = 0;
+
+private:
+    Hd_UnitTestNullRenderDelegate _null;
+};
+
 class SceneDrawFilterTest
     : public ::testing::Test {
 protected:
@@ -180,7 +308,7 @@ TEST_F(SceneDrawFilterTest, NoRulesPassEverythingThrough)
     EXPECT_EQ(kAllGeometry, drawnGeometry());
     EXPECT_TRUE(recorder.hides.empty());
     EXPECT_EQ(HdPrimTypeTokens->mesh, filter->GetPrim(SdfPath("/World/c")).primType);
-    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/c")).dataSource);
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/c")).dataSource != nullptr);
 }
 
 TEST_F(SceneDrawFilterTest, PruneHidesOnlyRprimsAndInstancersBelow)
@@ -195,7 +323,7 @@ TEST_F(SceneDrawFilterTest, PruneHidesOnlyRprimsAndInstancersBelow)
     EXPECT_EQ(HdPrimTypeTokens->camera, filter->GetPrim(SdfPath("/World/cam")).primType);
     const HdSceneIndexPrim hidden = filter->GetPrim(SdfPath("/World/c"));
     EXPECT_TRUE(hidden.primType.IsEmpty());
-    EXPECT_FALSE(hidden.dataSource);
+    EXPECT_TRUE(hidden.dataSource == nullptr);
 }
 
 TEST_F(SceneDrawFilterTest, PruneKeepsTheHierarchy)
@@ -449,6 +577,110 @@ TEST_F(SceneDrawFilterTest, SeededRulesApplyWithoutNotices)
     EXPECT_TRUE(freshRecorder.hides.empty());
     EXPECT_TRUE(fresh->GetPrim(SdfPath("/World/a/m1")).primType.IsEmpty());
     EXPECT_FALSE(fresh->GetPrim(SdfPath("/World/b/m3")).primType.IsEmpty());
+}
+
+TEST_F(SceneDrawFilterTest, LightsStopInBBox)
+{
+    addLights(scene);
+    ASSERT_TRUE(drawn("/World/rig/key"));
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(drawn("/World/rig/key"));
+    EXPECT_FALSE(drawn("/World/rig/key/fill"));
+    EXPECT_FALSE(drawn("/World/rig/dome"));
+    EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
+    EXPECT_EQ(1u, recorder.hides.count("/World/rig/dome"));
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/rig/dome")).primType.IsEmpty());
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/rig/dome")).dataSource == nullptr);
+}
+
+TEST_F(SceneDrawFilterTest, LightsStopInHidden)
+{
+    addLights(scene);
+
+    filter->applyDelta(states.setState("/World/rig/subrig", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
+    EXPECT_TRUE(drawn("/World/rig/dome"));
+    EXPECT_EQ((PathSet { "/World/rig/subrig/spot" }), recorder.hides);
+}
+
+TEST_F(SceneDrawFilterTest, LightsComeBackWithTheirTypeWhenDrawnInFull)
+{
+    addLights(scene);
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateFull));
+
+    EXPECT_EQ(1u, recorder.shows.count("/World/rig/dome"));
+    EXPECT_EQ(HdPrimTypeTokens->domeLight, filter->GetPrim(SdfPath("/World/rig/dome")).primType);
+    EXPECT_EQ(HdPrimTypeTokens->sphereLight, filter->GetPrim(SdfPath("/World/rig/subrig/spot")).primType);
+}
+
+TEST_F(SceneDrawFilterTest, AChildrenRowKeepsItsOwnLightAndDrawnRowsButNotItsBoxedChildren)
+{
+    addLights(scene);
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateChildren));
+    EXPECT_FALSE(drawn("/World/rig/key"));
+    EXPECT_FALSE(drawn("/World/rig/dome"));
+    EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
+
+    filter->applyDelta(states.setState("/World/rig/key", eSceneDrawStateChildren));
+    EXPECT_TRUE(drawn("/World/rig/key"));
+    EXPECT_FALSE(drawn("/World/rig/key/fill"));
+
+    filter->applyDelta(states.setState("/World/rig/dome", eSceneDrawStateFull));
+    EXPECT_TRUE(drawn("/World/rig/dome"));
+
+    filter->applyDelta(states.setState("/World/rig/subrig/spot", eSceneDrawStateFull));
+    EXPECT_TRUE(drawn("/World/rig/subrig/spot"));
+}
+
+TEST_F(SceneDrawFilterTest, ALightAddedBelowABoxedRowDoesNotReachHydra)
+{
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    recorder.reset();
+
+    scene->AddPrims({ { SdfPath("/World/b/late"), HdPrimTypeTokens->rectLight, someData() } });
+
+    EXPECT_EQ((PathSet { "/World/b/late" }), recorder.hides);
+    EXPECT_FALSE(drawn("/World/b/late"));
+}
+
+TEST_F(SceneDrawFilterTest, HiddenPrimsLeaveARealRenderIndex)
+{
+    addLights(scene);
+    CountingRenderDelegate delegate;
+    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&delegate, HdDriverVector()));
+    ASSERT_TRUE(index != nullptr);
+    index->InsertSceneIndex(filter, SdfPath::AbsoluteRootPath());
+    const SdfPath mesh("/World/a/m1");
+    const SdfPath mat("/World/a/Looks/mat");
+    const SdfPath light("/World/rig/key");
+    const SdfPath dome("/World/rig/dome");
+    ASSERT_TRUE(index->GetRprim(mesh));
+    ASSERT_TRUE(index->GetSprim(HdPrimTypeTokens->rectLight, light));
+    ASSERT_TRUE(index->GetSprim(HdPrimTypeTokens->domeLight, dome));
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(index->GetRprim(mesh));
+    EXPECT_FALSE(index->GetRprim(SdfPath("/World/a/deep/m2")));
+    EXPECT_FALSE(index->GetSprim(HdPrimTypeTokens->rectLight, light));
+    EXPECT_FALSE(index->GetSprim(HdPrimTypeTokens->domeLight, dome));
+    EXPECT_EQ(3, delegate.rprimsDestroyed);
+    EXPECT_TRUE(index->GetRprim(SdfPath("/World/b/m3")));
+    EXPECT_TRUE(index->GetSprim(HdPrimTypeTokens->material, mat));
+
+    filter->applyDelta(states.clearState("/World/a"));
+    filter->applyDelta(states.clearState("/World/rig"));
+
+    EXPECT_TRUE(index->GetRprim(mesh));
+    EXPECT_TRUE(index->GetSprim(HdPrimTypeTokens->rectLight, light));
 }
 
 TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)

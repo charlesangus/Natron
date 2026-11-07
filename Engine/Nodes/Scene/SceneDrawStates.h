@@ -39,7 +39,7 @@ enum SceneDrawStateEnum {
     eSceneDrawStateBBox,
     eSceneDrawStateChildren,
     eSceneDrawStateFull,
-    eSceneDrawStateFullLoad,
+    eSceneDrawStateLoadAll,
     eSceneDrawStateHidden
 };
 
@@ -50,7 +50,7 @@ enum SceneDrawOriginEnum {
     eSceneDrawOriginDefault
 };
 
-/** @brief "bbox", "children", "full", "fullLoad" or "hidden". */
+/** @brief "bbox", "children", "full", "loadAll" or "hidden". */
 const char* sceneDrawStateName(SceneDrawStateEnum state);
 bool sceneDrawStateFromName(const std::string& name, SceneDrawStateEnum* state);
 
@@ -64,6 +64,9 @@ struct SceneDrawResolved {
 struct SceneDrawLoadRequest {
     std::string path;
     bool withDescendants;
+    // Subtrees a load with descendants leaves alone. They stay as they are: one already loaded is
+    // not unloaded, and the rows drawn inside one come as requests of their own.
+    std::vector<std::string> excluded;
 };
 
 /**
@@ -97,11 +100,17 @@ struct SceneDrawDelta {
  * Resolution is the viewer's state, then the graph policy, then Full. The nearest set state wins. A
  * Children row's unset children are boxes. BBox and Hidden stop everything below, and what is set
  * below is remembered.
+ *
+ * Load All loads what it draws. A BBox or Hidden row below it stays out of the load, and so does a
+ * Children row's subtree, whose unset children are boxes the model cannot name: the Children row
+ * loads on its own and the rows drawn below it load by their own requests.
  */
 class SceneDrawStates {
 public:
     SceneDrawDelta setState(const std::string& path, SceneDrawStateEnum state);
     SceneDrawDelta clearState(const std::string& path);
+    /** @brief Forgets every state set below the row, remembered ones too. The row's own stays. */
+    SceneDrawDelta clearStatesBelow(const std::string& path);
     SceneDrawDelta clearAllStates();
 
     SceneDrawDelta setPolicyState(const std::string& path, SceneDrawStateEnum state);
@@ -140,11 +149,20 @@ public:
         std::string path;
         RuleEnum rule;
         LoadEnum load;
+        std::vector<std::string> excluded;
+    };
+
+    struct Effects {
+        std::vector<Effect> rows;
+        // The root's subtree under a load with descendants asked for above it, and the rows below the
+        // root which that load leaves out.
+        bool rootCovered = false;
+        std::vector<std::string> excludedBelowRoot;
     };
 
 private:
-    std::vector<Effect> effectsUnder(const std::string& root, std::size_t* visited) const;
-    SceneDrawDelta applyEdit(const std::string& root, const std::string& retryLoad, const std::vector<Effect>& before, std::size_t visited) const;
+    Effects effectsUnder(const std::string& root, std::size_t* visited) const;
+    SceneDrawDelta applyEdit(const std::string& root, const std::string& retryLoad, const Effects& before, std::size_t visited) const;
 
     std::map<std::string, Stored, PathLess> _states;
     std::map<std::string, SceneDrawStateEnum, PathLess> _policy;

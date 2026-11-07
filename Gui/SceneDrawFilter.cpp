@@ -96,7 +96,7 @@ isHideable(const TfToken& primType)
         HdPrimTypeTokens->instancer
     };
 
-    return hideable.count(primType) != 0;
+    return (hideable.count(primType) != 0) || HdPrimTypeIsLight(primType);
 }
 
 bool

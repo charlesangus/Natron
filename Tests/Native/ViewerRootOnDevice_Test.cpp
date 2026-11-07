@@ -744,6 +744,7 @@ TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
     connectNodes(_read, reformat, 0, true);
     connectNodes(reformat, _grade, 0, true);
     ASSERT_TRUE(_grade->isDraftModeUsed());
+    ASSERT_TRUE(setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }));
 
     FrameRun run;
     std::string error;
@@ -751,6 +752,7 @@ TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
     const int index = taskOf(run.graph, _grade);
     ASSERT_GE(index, 0);
     const FrameGraph::Task task = run.graph.tasks[index];
+    ASSERT_FALSE(task.isIdentity);
     ASSERT_FALSE(task.components.empty());
 
     const PlacementInputs inputs = makeRenderPlacementInputs(run.context);

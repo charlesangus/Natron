@@ -3116,6 +3116,12 @@ AppManager::getNodeCacheHostTier() const
     return _imp->_nodeCache->hostTier();
 }
 
+std::shared_ptr<CacheDiskTier>
+AppManager::getNodeCacheDiskTier() const
+{
+    return _imp->_nodeCache->diskTier();
+}
+
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {

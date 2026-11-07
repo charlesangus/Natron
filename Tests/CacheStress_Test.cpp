@@ -25,10 +25,19 @@
 
 #include "Global/Macros.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <ctime>
+#include <filesystem>
 #include <iostream>
 #include <list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -48,10 +57,16 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Cache.h"
+#include "Engine/CacheDiskTier.h"
+#include "Engine/CacheTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Format.h"
+#include "Engine/Image.h"
+#include "Engine/ImageKey.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/ImageParams.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
@@ -1076,4 +1091,325 @@ TEST_F(CacheStressTest, IdentityAcrossScales)
     options.scripted.push_back(scriptedStep(eOpMipmap, mipmapPrim(1)));
     options.scripted.push_back(scriptedStep(eOpMipmap, mipmapPrim(0)));
     EXPECT_EQ(0, expectClean(getApp(), buildErode, { 1u }, options));
+}
+
+namespace {
+
+const int kTierSide = 64;
+const float kTierCostNs = 1e9f;
+const char* const kTierBuild = "stress-build";
+
+ImageKey
+tierKeyOf(U64 hash,
+          const CacheEntryHolder* holder = nullptr)
+{
+    return Image::makeKey(holder, hash, false, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+}
+
+ImageParamsPtr
+tierParams()
+{
+    return Image::makeParams(RectD(0, 0, kTierSide, kTierSide), 1., 0, false,
+                             ImageLayerDesc::getRGBAComponents(),
+                             eImageBitDepthFloat,
+                             eImageFieldingOrderNone);
+}
+
+float
+tierSampleAt(float seed,
+             int x,
+             int y,
+             int component)
+{
+    return seed + (float)x * 0.001f + (float)y * 0.25f + (float)component * 16.f;
+}
+
+void
+fillForTier(const ImagePtr& image,
+            float seed)
+{
+    image->allocateMemory();
+    {
+        Image::WriteAccess access = image->getWriteRights();
+        for (int y = 0; y < kTierSide; ++y) {
+            for (int x = 0; x < kTierSide; ++x) {
+                float* const pixel = reinterpret_cast<float*>(access.pixelAt(x, y));
+                for (int c = 0; c < 4; ++c) {
+                    pixel[c] = tierSampleAt(seed, x, y, c);
+                }
+            }
+        }
+    }
+    image->markForRendered(RectI(0, 0, kTierSide, kTierSide));
+    image->getEntryHeader()->recomputeCostNs.store(kTierCostNs);
+    image->getEntryHeader()->lastUse.store(CacheEviction::nowNs());
+}
+
+bool
+holdsTierSamples(const ImagePtr& image,
+                 float seed)
+{
+    if (!image) {
+        return false;
+    }
+    Image::ReadAccess access = image->getReadRights();
+    for (int y = 0; y < kTierSide; ++y) {
+        for (int x = 0; x < kTierSide; ++x) {
+            const float* const pixel = reinterpret_cast<const float*>(access.pixelAt(x, y));
+            for (int c = 0; c < 4; ++c) {
+                if (pixel[c] != tierSampleAt(seed, x, y, c)) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+class TierHolder final
+    : public CacheEntryHolder {
+public:
+    explicit TierHolder(const std::string& id)
+        : _id(id)
+    {
+    }
+
+    virtual std::string getCacheID() const override final
+    {
+        return _id;
+    }
+
+private:
+    std::string _id;
+};
+
+// A cache and a tier of their own, in this process, standing for one launch of one build.
+class TierLaunch {
+public:
+    TierLaunch(const QString& root,
+               const char* name,
+               const char* build,
+               std::uint64_t sizeBytes = 256ULL * 1024 * 1024)
+        : cache(name, 1, 64ULL * 1024 * 1024, 1.)
+    {
+        CacheDiskTier::Config config;
+        config.root = root.toStdString();
+        config.buildId = build;
+        config.sizeBytes = sizeBytes;
+        config.idlePublisher = false;
+        config.backgroundMaintenance = false;
+        tier = CacheDiskTier::open(config);
+        cache.useEvictionScore();
+        cache.setDiskTier(tier);
+        tier->setPinBudget(1024ULL * 1024 * 1024);
+    }
+
+    bool store(U64 hash,
+               float seed)
+    {
+        ImagePtr image;
+
+        if (cache.getOrCreate(tierKeyOf(hash), tierParams(), 0, &image) || !image) {
+            return false;
+        }
+        fillForTier(image, seed);
+
+        return true;
+    }
+
+    void pushOutOfRam()
+    {
+        cache.setMaximumCacheSize(1024);
+        cache.setMaximumInMemorySize(1.);
+        cache.clearExceedingEntries();
+        (void)tier->waitIdle(30000);
+        cache.setMaximumCacheSize(64ULL * 1024 * 1024);
+        cache.setMaximumInMemorySize(1.);
+    }
+
+    ImagePtr lookup(U64 hash)
+    {
+        std::list<ImagePtr> found;
+
+        tier->forgetProbes();
+
+        return (cache.get<Image>(tierKeyOf(hash), &found) && !found.empty()) ? found.front() : ImagePtr();
+    }
+
+    bool pin(const TierHolder& holder,
+             U64 hash,
+             float seed)
+    {
+        ImagePtr image;
+
+        if (cache.getOrCreatePinned(tierKeyOf(hash, &holder), tierParams(), &image) || !image) {
+            return false;
+        }
+        fillForTier(image, seed);
+
+        return tier->publishPin(holder.getCacheID(), image) == CacheDiskTier::ePinOutcomePublished;
+    }
+
+    ImagePtr lookupPinned(const TierHolder& holder,
+                          U64 hash)
+    {
+        std::list<ImagePtr> found;
+
+        tier->forgetProbes();
+
+        return (cache.getPinned<Image>(tierKeyOf(hash, &holder), &found) && !found.empty()) ? found.front() : ImagePtr();
+    }
+
+    Cache<Image> cache;
+    CacheDiskTierPtr tier;
+};
+
+std::uint64_t
+tierBytesUnder(const std::string& dir)
+{
+    std::uint64_t total = 0;
+    std::error_code ec;
+
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && (it != end); it.increment(ec)) {
+        if (it->is_regular_file(ec)) {
+            total += it->file_size(ec);
+        }
+    }
+
+    return total;
+}
+
+} // anon namespace
+
+// Automatic files and RAM are both over budget for the whole run, from threads the test does not
+// pace. A pin answers every time with its own pixels, and only automatic files go.
+TEST_F(CacheStressTest, PinnedEntriesUnderPressure)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::uint64_t kBudget = 4ULL * 1024 * 1024;
+    const std::string autoDir = dir.path().toStdString() + "/" + kTierBuild + "/auto";
+    const int kPins = 8;
+    const int kPerThread = stepBudget(100);
+
+    TierLaunch launch(dir.path(), "PinnedEntriesUnderPressure", kTierBuild, kBudget);
+    ASSERT_TRUE(launch.tier != nullptr);
+
+    const TierHolder holder("pressure");
+    for (int p = 0; p < kPins; ++p) {
+        ASSERT_TRUE(launch.pin(holder, 100 + p, (float)p));
+    }
+    const std::uint64_t pinnedBytes = launch.tier->pinnedBytesOf(holder.getCacheID());
+    ASSERT_GT(pinnedBytes, 0U);
+
+    std::atomic<int> running(2);
+    std::vector<std::thread> fillers;
+    for (int t = 0; t < 2; ++t) {
+        fillers.emplace_back([&launch, &running, kPerThread, t]() {
+            for (int i = 0; i < kPerThread; ++i) {
+                const ImagePtr image = std::make_shared<Image>(tierKeyOf(10000 * (t + 1) + i), tierParams(), &launch.cache);
+                fillForTier(image, (float)i);
+                if (!launch.tier->offerDemotion(image)) {
+                    (void)launch.tier->waitIdle(30000);
+                    (void)launch.tier->offerDemotion(image);
+                }
+            }
+            --running;
+        });
+    }
+
+    int passes = 0;
+    while ((running.load() > 0) || (passes == 0)) {
+        launch.pushOutOfRam();
+        launch.tier->maintainNow(false);
+        for (int p = 0; p < kPins; ++p) {
+            EXPECT_TRUE(holdsTierSamples(launch.lookupPinned(holder, 100 + p), (float)p)) << "pin " << p << " on pass " << passes;
+        }
+        ++passes;
+    }
+    for (std::thread& filler : fillers) {
+        filler.join();
+    }
+
+    for (int pass = 0; pass < 64; ++pass) {
+        launch.pushOutOfRam();
+        launch.tier->maintainNow(true);
+        if (tierBytesUnder(autoDir) <= launch.tier->budget()) {
+            break;
+        }
+    }
+    EXPECT_GT(launch.tier->publishedFiles() * (std::uint64_t)(kTierSide * kTierSide * 4 * sizeof(float)), kBudget);
+    EXPECT_LE(tierBytesUnder(autoDir), launch.tier->budget());
+    EXPECT_EQ(pinnedBytes, launch.tier->pinnedBytesOf(holder.getCacheID()));
+    for (int p = 0; p < kPins; ++p) {
+        EXPECT_TRUE(holdsTierSamples(launch.lookupPinned(holder, 100 + p), (float)p)) << "pin " << p;
+    }
+}
+
+// A new binary reads none of the old one's files and writes beside them, the old binary keeps
+// everything if it comes back, and only once it has been gone for the retention does it all go.
+TEST_F(CacheStressTest, RestartWithAChangedBinaryIdentity)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.path().toStdString();
+    const char* const kOld = "old-binary";
+    const char* const kNew = "new-binary";
+    const int kEntries = 8;
+    const TierHolder holder("restart");
+
+    {
+        TierLaunch first(dir.path(), "FirstLaunch", kOld);
+        ASSERT_TRUE(first.tier != nullptr);
+        for (int e = 1; e <= kEntries; ++e) {
+            ASSERT_TRUE(first.store(e, (float)e));
+            first.pushOutOfRam();
+        }
+        ASSERT_TRUE(first.pin(holder, 100, 50.f));
+        first.tier->maintainNow(false);
+    }
+    const std::uint64_t oldBytes = tierBytesUnder(root + "/" + kOld + "/auto");
+    ASSERT_GT(oldBytes, 0U);
+
+    {
+        TierLaunch changed(dir.path(), "ChangedBinary", kNew);
+        ASSERT_TRUE(changed.tier != nullptr);
+        for (int e = 1; e <= kEntries; ++e) {
+            EXPECT_TRUE(changed.lookup(e) == nullptr) << "entry " << e;
+        }
+        EXPECT_TRUE(changed.lookupPinned(holder, 100) == nullptr);
+        for (int e = 1; e <= kEntries; ++e) {
+            ASSERT_TRUE(changed.store(e, (float)e + 20.f));
+            changed.pushOutOfRam();
+            EXPECT_TRUE(holdsTierSamples(changed.lookup(e), (float)e + 20.f)) << "entry " << e;
+        }
+        changed.tier->maintainNow(true);
+        EXPECT_EQ(oldBytes, tierBytesUnder(root + "/" + kOld + "/auto"));
+    }
+
+    {
+        TierLaunch back(dir.path(), "BackToTheOldBinary", kOld);
+        ASSERT_TRUE(back.tier != nullptr);
+        back.tier->maintainNow(true);
+        for (int e = 1; e <= kEntries; ++e) {
+            EXPECT_TRUE(holdsTierSamples(back.lookup(e), (float)e)) << "entry " << e;
+        }
+        EXPECT_TRUE(holdsTierSamples(back.lookupPinned(holder, 100), 50.f));
+    }
+
+    const std::string stamp = root + "/" + kOld + "/lastlive";
+    struct timespec times[2];
+    times[0].tv_sec = ::time(NULL) - 8 * 24 * 3600;
+    times[0].tv_nsec = 0;
+    times[1] = times[0];
+    ASSERT_EQ(0, ::utimensat(AT_FDCWD, stamp.c_str(), times, 0));
+
+    TierLaunch latest(dir.path(), "AfterTheRetention", kNew);
+    ASSERT_TRUE(latest.tier != nullptr);
+    latest.tier->maintainNow(true);
+    EXPECT_FALSE(std::filesystem::exists(root + "/" + kOld));
+    for (int e = 1; e <= kEntries; ++e) {
+        EXPECT_TRUE(holdsTierSamples(latest.lookup(e), (float)e + 20.f)) << "entry " << e;
+    }
 }

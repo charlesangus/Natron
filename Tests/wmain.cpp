@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <list>
 #include <map>
@@ -16,6 +17,7 @@
 #include "Engine/PluginActionShortcut.h"
 
 #include "Ai/AiModelTestEffect.h"
+#include "CacheDiskTierWorker.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -261,6 +263,9 @@ GTEST_API_ int main(int argc, char **argv)
     // does not depend on load(), which would cost a cold OFX rescan plus Python and OCIO init.
     if (::testing::GTEST_FLAG(list_tests)) {
         return RUN_ALL_TESTS();
+    }
+    if ((argc > 1) && (strcmp(argv[1], cacheDiskTierWorkerFlag()) == 0)) {
+        return runCacheDiskTierWorker(argc - 2, argv + 2);
     }
     PerProcessUserDirs userDirs;
     // A renderer whose library is missing, for the tests of unavailable delegates. Hydra

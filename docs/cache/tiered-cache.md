@@ -686,8 +686,32 @@ decision is the same in every session because it follows from the same test.
 
 ### Assumed costs
 
-Unmeasured; M300.P3.T4's bench replaces them. A cached local miss is 10-30 µs. A cold miss is about 100 µs on NVMe, 10 ms on
-an HDD and about 1 ms on NFS. A frame with 1000 nodes missing costs about 30 ms before the negative cache.
+Unmeasured until `tools/bench/cache_probe_bench.py` has been run against a built `Tests`; the numbers below are estimates. A
+cached local miss is 10-30 µs. A cold miss is about 100 µs on NVMe, 10 ms on an HDD and about 1 ms on NFS. A frame with 1000
+nodes missing costs about 30 ms before the negative cache.
+
+```
+python3 tools/bench/cache_probe_bench.py --tests build/release/Tests/Tests --dir <a directory on the disk under test>
+```
+
+It plants 300,000 sparse files and appends one line to `build/bench/cache-probe.jsonl`. `miss_per_frame_ms` is one frame's
+worth of 1000 missing nodes over a second at 24 fps, one frame of it paying for the probes and the rest answered by the
+negative cache; the bench exits non-zero when that passes 30 ms. `miss_no_negative_cache_ms` is the same frame with the
+negative cache forgotten before every probe, `scan_ms` the slow scan, `tick_ms` a budget tick and `tick_with_eviction_ms` a
+tick that samples and unlinks. The planted files have no valid header, so a sample reading one sees what a corrupt file costs.
+
+### Testing across processes
+
+`Tests/CacheDiskTierProcess_Test.cpp` runs sessions as separate processes through a worker mode of the test executable
+(`Tests --natron-tier-worker`, which skips loading the application). Four free-running writers may pass the budget between
+budget refreshes, by design: the test prints the peak it saw and asserts the budget where all four have just ticked.
+
+The content-hash case compares two test processes, then a hard-linked `Natron` and `NatronRenderer` in one directory, because
+a build tree keeps them apart and each would stamp only itself. A release's own `.bin` pair is checked by hand:
+
+```
+tools/bench/cache_hash_pair.sh <AppImage or bundle directory>
+```
 
 ## Device tier hooks
 
@@ -814,9 +838,9 @@ measured nodes differ by factors of hundreds.
 | `unmeasuredCost` | 16 ms, as `expensiveCostMs` | How restored entries fare against measured ones once persistence lands |
 | `diskWriteBytesPerSecond` | 500 MB/s, then learned | Start value only; matters for the first writes. Set it from the median over the user's and a SATA host's first-minute rates |
 | `demotionQueueFraction` | 0.1 of host budget | Allocation stalls versus drops during a sustained run on a slow disk |
-| Negative-cache lifetime | 1 s; 2 s for a listing on a network mount | The bench of M300.P3.T4: raise it if misses cost more than 30 ms per 1000-node frame, lower it if a peer's publish is seen too late |
-| Budget refresh; slow scan period | 1 s; 60 s (unmeasured) | Overshoot of four writers in M300.P3.T4: shorten the refresh if they exceed the 2 GiB between the mark and the budget |
-| Eviction sample; unlinked per pass | about 1024; 64 (`evictionBatch`) | Sampling time on a 300,000-file tier |
+| Negative-cache lifetime | 1 s; 2 s for a listing on a network mount | `tools/bench/cache_probe_bench.py`: raise it if misses cost more than 30 ms per 1000-node frame, lower it if a peer's publish is seen too late |
+| Budget refresh; slow scan period | 1 s; 60 s (unmeasured) | Overshoot of four writers in `CacheDiskTierProcess_Test`: shorten the refresh if they exceed the 2 GiB between the mark and the budget |
+| Eviction sample; unlinked per pass | about 1024; 64 (`evictionBatch`) | Sampling time on a 300,000-file tier: `tick_with_eviction_ms` of `tools/bench/cache_probe_bench.py` |
 | Per-file write latency term | 2 ms, unmeasured | A small-entry publish bench with `fdatasync`; it decides how small an entry the write test rejects |
 | Dead build; heartbeat stale | 7 days (the user's choice); 60 s (unmeasured) | The age is fixed by the user; the heartbeat by false reaps seen on a network mount |
 | Default disk size and cap | 20 GiB, 25% | Fixed by the milestone; changed only by the user |

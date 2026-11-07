@@ -22,6 +22,8 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
+| `cache_probe_bench.py` | Probe, miss and sampling cost of a disk tier holding 300,000 files, through the worker mode of `Tests`; see Disk tier probe bench. |
+| `cache_hash_pair.sh` | Whether a release's `Natron` and `NatronRenderer` compute the same content hash, from an AppImage or bundle directory. |
 | `edit_latency.sh`, `edit_latency_bench.py` | Edit-to-viewer latency of Read(raw) -> Develop RAW chain -> Grade or HSVKeyer -> Viewer from a Natron AppImage, with each node's cache state and device per edit; see Edit latency. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
@@ -238,6 +240,17 @@ its task record's `wallNs` (device timestamps). `pred xfer` is the record's `pre
 transfer time placement's transfer model predicts for the region's `uploadBytes` and `downloadBytes`, to
 compare with `uploadMs + downloadMs`; it reads `n/a` when the model knows no bandwidth (`null`).
 `--self-test` checks the breakdown, the floor and the labelling on `gpu-region-profile-sample.jsonl`.
+
+## Disk tier probe bench
+
+`cache_probe_bench.py` needs a built `Tests` and nothing else; it runs by hand, not in ctest.
+
+```
+python3 tools/bench/cache_probe_bench.py --tests build/release/Tests/Tests --dir <directory on the disk under test>
+```
+
+`docs/cache/tiered-cache.md` (Assumed costs) says what each number means and what it decides. Results are appended to
+`build/bench/cache-probe.jsonl`; the exit code is non-zero when `miss_per_frame_ms` passes the 30 ms estimate.
 
 ## Page-fault bench
 

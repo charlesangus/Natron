@@ -100,6 +100,7 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<std::size_t()>& getAccountedMemory,
                                             const std::function<bool()>& evictOnce);
 
+class CacheDiskTier;
 class CacheHostTier;
 struct AppManagerPrivate;
 class AppManager
@@ -408,6 +409,8 @@ public:
     void checkCacheFreeMemoryIsGoodEnough();
 
     CacheHostTier& getNodeCacheHostTier() const;
+    // Null when the node cache has no disk tier.
+    std::shared_ptr<CacheDiskTier> getNodeCacheDiskTier() const;
 
     /**
      * @brief Evicts the least-recently-used in-memory entry of the node cache, image or deep.

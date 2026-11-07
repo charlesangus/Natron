@@ -1818,7 +1818,12 @@ EffectInstance::getImage(int inputNb,
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
     std::list<ImagePtr> storedImages;
-    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages, &inputContext);
+    // The request pass asked the input for this region in the input's own pixels. At this clip's ratio
+    // instead, an admitted input would grow its cached entry past that, so what this node reads
+    // would depend on whether the input's output is cached.
+    const RectI inputPixelRoI = roi.toPixelEnclosing(renderScaleOneUpstreamIfRenderScaleSupportDisabled ? 0 : mipmapLevel,
+                                                     inputEffect->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
+    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, inputPixelRoI, &storedImages, &inputContext);
     if (fromStore) {
         // The pre-render of this render already counted the store images it handed over.
         bool handedOverByPreRender = false;
@@ -1853,7 +1858,7 @@ EffectInstance::getImage(int inputNb,
                                                                         renderMappedMipmapLevel,
                                                                         view,
                                                                         byPassCache,
-                                                                        pixelRoI,
+                                                                        inputPixelRoI,
                                                                         RectD(),
                                                                         requestedComps,
                                                                         depth,

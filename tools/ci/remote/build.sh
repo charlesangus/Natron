@@ -18,7 +18,8 @@
 #                        ctest logs are downloaded even when the run fails.
 #   --record-goldens  -> implies --tests; also records the native and Cycles golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
-#                        NativeIWarpTest, USDRenderCyclesTest)
+#                        NativeIWarpTest, USDRenderCyclesTest,
+#                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that

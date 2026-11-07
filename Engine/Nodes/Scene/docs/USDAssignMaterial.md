@@ -32,10 +32,12 @@ USDScopePrim or other re-parenting node moves them, as the graft re-points one
 relationship per root. Each binding is written as the strongest on its root, so
 where two assigns name the same prims the later node in the graph wins.
 
-A USDProject3D in Geometry space connected to the Material input takes its
-placement from the matched geometry at this node. The material holds one placement:
-matches at different places follow the first in stage order, with a node warning, and of several
-assigns sharing one projection node the later one sets it.
+A USDProject3D in Geometry space, from the Material input or at Material Path, takes
+each matched gprim's placement at this node, so matches at different places and
+several assigns sharing one projection node each show it from where they are. This
+binding does not reach inside native instances in Storm, so they show no projection,
+with a warning. The instances of a point instancer share their prototype's placement,
+also with a warning.
 
 Knobs:
 

@@ -58,8 +58,9 @@ namespace {
         uint32_t patchesY;
         uint32_t lastX;
         uint32_t lastY;
+        uint32_t firstRow;
     };
-    static_assert(sizeof(FlowDisPush) == 76);
+    static_assert(sizeof(FlowDisPush) == 80);
     static_assert(sizeof(FlowDisPush) <= GpuKernel::kMaxPushConstantBytes);
 
     struct FlowRefinePush {
@@ -129,6 +130,10 @@ namespace {
     constexpr uint32_t kTvL1SolutionStride = 2;
     constexpr uint32_t kTvL1DualStride = 4;
     constexpr int kTvL1AbortCheckIterations = 10;
+    constexpr uint64_t kPassWorkPerThread = 8;
+    constexpr uint64_t kMedianWorkPerThread = 32;
+    constexpr uint64_t kDensifyWorkPerSample = 4;
+    constexpr uint32_t kDisRowsPerWorkgroup = 8;
     constexpr uint32_t kWeightInside = 0;
     constexpr uint32_t kWeightOutside = 1;
     constexpr uint32_t kOutputVectors = 0;
@@ -169,11 +174,30 @@ namespace {
     }
 
     template <typename Params>
-    GpuStatus run(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, const Params& params, uint32_t x, uint32_t y)
+    GpuStatus run(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, const Params& params, uint32_t x, uint32_t y,
+                  uint64_t workPerThread = kPassWorkPerThread)
     {
         GpuStatus status = ctx.dispatch(kernel, buffers, params, { x, y, 1u });
         if (status) {
             ctx.computeBarrier();
+            status = ctx.chargeWork(uint64_t(x) * y * workPerThread);
+        }
+        return status;
+    }
+
+    // A DIS search or densify over a whole large level is more work than a slow device does in a submit, and no row
+    // depends on another's results, so it runs as dispatches a batch can end between. Whole workgroups of rows keep
+    // a dispatch's rounding up from running the next dispatch's first rows too.
+    template <typename Params>
+    GpuStatus runRows(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, Params params, uint32_t x, uint32_t rows,
+                      uint64_t workPerThread)
+    {
+        const uint64_t fitting = std::min<uint64_t>(ctx.batchWork() / std::max<uint64_t>(uint64_t(x) * workPerThread, 1), rows);
+        const uint32_t step = std::max(static_cast<uint32_t>(fitting) / kDisRowsPerWorkgroup, 1u) * kDisRowsPerWorkgroup;
+        GpuStatus status;
+        for (uint32_t first = 0; status && (first < rows); first += step) {
+            params.firstRow = first;
+            status = run(ctx, kernel, buffers, params, x, std::min(step, rows - first), workPerThread);
         }
         return status;
     }
@@ -611,12 +635,15 @@ GpuFlow::solveDis(GpuRecordContext& ctx, const GpuFlowPyramid& from, const GpuFl
             break;
         }
         const std::initializer_list<const GpuBuffer*> buffers = { from.buffer, to.buffer, weights ? weights->buffer : unused, field.buffer, patches, unused };
-        status = run(ctx, GpuKernelId::flow_dis_search, buffers, push, push.patchesX, push.patchesY);
+        const uint64_t searchWork = uint64_t(push.iterations) * patchSize * patchSize * from.channels;
+        status = runRows(ctx, GpuKernelId::flow_dis_search, buffers, push, push.patchesX, push.patchesY, searchWork);
         if (status) {
             status = checkAborted();
         }
         if (status) {
-            status = run(ctx, GpuKernelId::flow_dis_densify, buffers, push, source.width, source.height);
+            const uint64_t overlap = patchSize / stride + 1;
+            const uint64_t densifyWork = overlap * overlap * from.channels * kDensifyWorkPerSample;
+            status = runRows(ctx, GpuKernelId::flow_dis_densify, buffers, push, source.width, source.height, densifyWork);
         }
         release(patches);
         if (status && (params.refineFixedPointIterations > 0)) {
@@ -700,7 +727,7 @@ GpuFlow::solveTvL1Level(GpuRecordContext& ctx, const GpuFlowPyramid& from, const
             }
         }
         if (status) {
-            status = run(ctx, GpuKernelId::flow_tvl1_median, buffers, push, width, height);
+            status = run(ctx, GpuKernelId::flow_tvl1_median, buffers, push, width, height, kMedianWorkPerThread);
         }
         if (status) {
             std::swap(flow->buffer, filtered);

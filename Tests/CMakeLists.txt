@@ -116,6 +116,7 @@ set(Tests_SOURCES
     Gpu/GpuDisFlow_Test.cpp
     Gpu/GpuTvL1Flow_Test.cpp
     Gpu/GpuFlowConfidence_Test.cpp
+    Gpu/GpuSplitWork_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/InferenceSession_Test.cpp

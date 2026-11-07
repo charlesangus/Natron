@@ -30,6 +30,7 @@ struct FlowDisParams
     uint patchesY;
     uint lastX;
     uint lastY;
+    uint firstRow;
 };
 
 [[vk::push_constant]] ConstantBuffer<FlowDisParams> params;
@@ -218,16 +219,17 @@ uint originOf(uint index, uint last)
 [numthreads(8, 8, 1)]
 void flow_dis_search(uint3 tid : SV_DispatchThreadID)
 {
-    if ((tid.x >= params.patchesX) || (tid.y >= params.patchesY)) {
+    uint row = tid.y + params.firstRow;
+    if ((tid.x >= params.patchesX) || (row >= params.patchesY)) {
         return;
     }
     uint originX = originOf(tid.x, params.lastX);
-    uint originY = originOf(tid.y, params.lastY);
+    uint originY = originOf(row, params.lastY);
     float centre = 0.5f * float(params.patchSize - 1);
     float u = sampleFlow(float(originX) + centre, float(originY) + centre, 0);
     float v = sampleFlow(float(originX) + centre, float(originY) + centre, 1);
     searchPatch(originX, originY, u, v);
-    uint index = params.patchOffset + (tid.y * params.patchesX + tid.x) * 2;
+    uint index = params.patchOffset + (row * params.patchesX + tid.x) * 2;
     patchBuf[index] = u;
     patchBuf[index + 1] = v;
 }
@@ -247,11 +249,11 @@ uint firstPatchOver(uint position)
 [numthreads(8, 8, 1)]
 void flow_dis_densify(uint3 tid : SV_DispatchThreadID)
 {
-    if ((tid.x >= params.width) || (tid.y >= params.height)) {
+    uint y = tid.y + params.firstRow;
+    if ((tid.x >= params.width) || (y >= params.height)) {
         return;
     }
     uint x = tid.x;
-    uint y = tid.y;
     uint size = params.patchSize;
     float channelScale = 1.f / float(params.channels);
     float pixelWeight = weightAt(x, y);

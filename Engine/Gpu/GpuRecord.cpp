@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -13,6 +16,26 @@ namespace gpu {
 
 namespace {
     std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
+    std::atomic<uint64_t> gBatchWorkForTests { 0 };
+    std::mutex gBatchFinishedHookMutex;
+    std::function<void()> gBatchFinishedHook;
+    std::atomic<bool> gHasBatchFinishedHook { false };
+
+    // A device's speed spans a factor of hundreds, between a software rasterizer and a discrete GPU, so a batch size
+    // is learned from how long batches take. Until then the minimum is used, small enough that the slowest device
+    // still gives a short submit, at the cost of a little idling on a fast one.
+    constexpr uint64_t kMinBatchWork = 1ull << 24;
+    constexpr uint64_t kMaxBatchWork = 1ull << 34;
+    constexpr uint64_t kBatchTargetNs = 100'000'000ull;
+
+    // A paced batch waits behind whatever else is on the queue, which GpuTransfer::wait tolerates this long too.
+    constexpr uint64_t kPacedBatchTimeoutNs = 60'000'000'000ull;
+    constexpr uint64_t kStopPollNs = 20'000'000ull;
+
+    GpuStatus stopped()
+    {
+        return { VK_INCOMPLETE, "GpuRecordContext: stopped between command buffers" };
+    }
 } // namespace
 
 GpuStatus
@@ -30,19 +53,7 @@ GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordC
         return s;
     }
 
-    VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    ai.commandPool = ctx->pool_;
-    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (GpuStatus s = device.check(vkAllocateCommandBuffers(device.device(), &ai, &ctx->cmd_),
-                                   "vkAllocateCommandBuffers");
-        !s) {
-        return s;
-    }
-
-    VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (GpuStatus s = device.check(vkBeginCommandBuffer(ctx->cmd_, &bi), "vkBeginCommandBuffer"); !s) {
+    if (GpuStatus s = ctx->beginCommandBuffer(ctx->cmd_); !s) {
         return s;
     }
     ctx->open_ = true;
@@ -52,10 +63,83 @@ GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordC
 
 GpuRecordContext::~GpuRecordContext()
 {
+    const VkDevice vk = registry_.device().device();
     if (cmd_) {
-        vkFreeCommandBuffers(registry_.device().device(), pool_, 1, &cmd_);
+        vkFreeCommandBuffers(vk, pool_, 1, &cmd_);
+    }
+    for (const FinishedBatch& batch : finished_) {
+        vkFreeCommandBuffers(vk, pool_, 1, &batch.cmd);
     }
     registry_.recordingEnded();
+}
+
+GpuStatus
+GpuRecordContext::beginCommandBuffer(VkCommandBuffer& out)
+{
+    GpuDevice& device = registry_.device();
+    VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    ai.commandPool = pool_;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    if (GpuStatus s = device.check(vkAllocateCommandBuffers(device.device(), &ai, &out), "vkAllocateCommandBuffers"); !s) {
+        return s;
+    }
+    VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    return device.check(vkBeginCommandBuffer(out, &bi), "vkBeginCommandBuffer");
+}
+
+GpuStatus
+GpuRecordContext::chargeWork(uint64_t work)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::chargeWork: context already submitted" };
+    }
+    work_ += work;
+    if (work_ < batchWork()) {
+        return {};
+    }
+    GpuDevice& device = registry_.device();
+    VkCommandBuffer next = VK_NULL_HANDLE;
+    GpuStatus status = beginCommandBuffer(next);
+    if (status) {
+        status = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer");
+    }
+    if (!status) {
+        if (next) {
+            vkFreeCommandBuffers(device.device(), pool_, 1, &next);
+        }
+        return status;
+    }
+    finished_.push_back({ cmd_, work_ });
+    cmd_ = next;
+    work_ = 0;
+    return {};
+}
+
+uint64_t
+GpuRecordContext::batchWork() const
+{
+    const uint64_t forced = gBatchWorkForTests.load(std::memory_order_relaxed);
+    if (forced != 0) {
+        return forced;
+    }
+    const uint64_t learned = registry_.learnedBatchWork_.load(std::memory_order_relaxed);
+    return (learned != 0) ? learned : kMinBatchWork;
+}
+
+void
+GpuRecordContext::setBatchWorkForTests(uint64_t work)
+{
+    gBatchWorkForTests.store(work, std::memory_order_relaxed);
+}
+
+void
+GpuRecordContext::setBatchFinishedHookForTests(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> lock(gBatchFinishedHookMutex);
+    gBatchFinishedHook = hook;
+    gHasBatchFinishedHook.store(bool(hook), std::memory_order_release);
 }
 
 GpuStatus
@@ -427,7 +511,7 @@ GpuRecordContext::writeTimestamp(VkQueryPool pool, uint32_t query)
 }
 
 GpuStatus
-GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal)
+GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop)
 {
     if (!open_) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: context already submitted" };
@@ -446,6 +530,18 @@ GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue sig
             waitInfos.push_back(w.waitInfo());
         }
     }
+    if (!finished_.empty()) {
+        // The batches are held back on the host because a submit behind one still blocked on its wait would leave
+        // nothing for stop to cancel. The first still carries the waits: a host wait does not make the uploads'
+        // writes visible to the device.
+        if (GpuStatus s = waitBeforeBatches(waits, kPacedBatchTimeoutNs, stop); !s) {
+            return s;
+        }
+        if (GpuStatus s = runBatchesBeforeLast(waitInfos, kPacedBatchTimeoutNs, stop); !s) {
+            return s;
+        }
+        waitInfos.clear();
+    }
     const VkSemaphoreSubmitInfo signalInfo = signal.waitInfo();
     VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
     ci.commandBuffer = cmd_;
@@ -460,29 +556,41 @@ GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue sig
 }
 
 GpuStatus
-GpuRecordContext::submitAndWait(uint64_t timeoutNs)
+GpuRecordContext::submitAndWait(uint64_t timeoutNs, const std::function<bool()>& stop)
 {
     if (!open_) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submitAndWait: context already submitted" };
     }
     open_ = false;
     GpuDevice& device = registry_.device();
-    const VkDevice vk = device.device();
     if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
         return s;
     }
+    std::vector<VkSemaphoreSubmitInfo> waitInfos = externalWaitInfos();
+    if (!finished_.empty()) {
+        if (GpuStatus s = runBatchesBeforeLast(waitInfos, timeoutNs, stop); !s) {
+            return s;
+        }
+        waitInfos.clear();
+    }
+    return submitFenced(cmd_, waitInfos, timeoutNs);
+}
 
+GpuStatus
+GpuRecordContext::submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs)
+{
+    GpuDevice& device = registry_.device();
+    const VkDevice vk = device.device();
     VkFence fence = VK_NULL_HANDLE;
     VkFenceCreateInfo fi { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     if (GpuStatus s = device.check(vkCreateFence(vk, &fi, nullptr, &fence), "vkCreateFence"); !s) {
         return s;
     }
     VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-    ci.commandBuffer = cmd_;
-    const std::vector<VkSemaphoreSubmitInfo> waitInfos = externalWaitInfos();
+    ci.commandBuffer = cmd;
     VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
-    submit.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
-    submit.pWaitSemaphoreInfos = waitInfos.data();
+    submit.waitSemaphoreInfoCount = static_cast<uint32_t>(waits.size());
+    submit.pWaitSemaphoreInfos = waits.data();
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &ci;
     GpuStatus s = device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
@@ -492,10 +600,8 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
         if (waited == VK_TIMEOUT) {
             std::fprintf(stderr, "GpuRecordContext::submitAndWait: the device work did not finish within %llu ms; the GPU device is treated as lost\n",
                          static_cast<unsigned long long>(timeoutNs / 1000000));
-            device.abandonInFlightWork("vkWaitForFences");
-            parkInFlightWork();
-            // The fence is leaked with the rest, and the command buffer goes with its pool.
-            cmd_ = VK_NULL_HANDLE;
+            // The fence is leaked with the rest.
+            abandonWork("vkWaitForFences");
             return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
         }
         if (waited != VK_SUCCESS) {
@@ -505,10 +611,94 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     }
     vkDestroyFence(vk, fence, nullptr);
     if (mayBePending) {
-        // After a loss the command buffer may still be pending, and freeing it then is invalid.
+        // After a loss a command buffer may still be pending, and freeing it then is invalid.
         cmd_ = VK_NULL_HANDLE;
+        finished_.clear();
     }
     return s;
+}
+
+GpuStatus
+GpuRecordContext::waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop)
+{
+    GpuDevice& device = registry_.device();
+    for (const TimelineValue& w : waits) {
+        if (!w) {
+            continue;
+        }
+        VkSemaphoreWaitInfo wi { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        wi.semaphoreCount = 1;
+        wi.pSemaphores = &w.semaphore;
+        wi.pValues = &w.value;
+        for (uint64_t waitedNs = 0;; waitedNs += kStopPollNs) {
+            const VkResult waited = vkWaitSemaphores(device.device(), &wi, kStopPollNs);
+            if (waited == VK_SUCCESS) {
+                break;
+            }
+            if (waited != VK_TIMEOUT) {
+                return device.check(waited, "vkWaitSemaphores");
+            }
+            if (stop && stop()) {
+                return stopped();
+            }
+            if (waitedNs >= timeoutNs) {
+                std::fprintf(stderr, "GpuRecordContext::submit: what the work waits for did not finish within %llu ms; the GPU device is treated as lost\n",
+                             static_cast<unsigned long long>(timeoutNs / 1000000));
+                abandonWork("vkWaitSemaphores");
+                return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submit: the work's waits timed out" };
+            }
+        }
+    }
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop)
+{
+    for (size_t i = 0; i < finished_.size(); ++i) {
+        if (stop && stop()) {
+            return stopped();
+        }
+        const uint64_t work = finished_[i].work;
+        const auto begin = std::chrono::steady_clock::now();
+        GpuStatus status = submitFenced(finished_[i].cmd, (i == 0) ? waits : std::span<const VkSemaphoreSubmitInfo>(), timeoutNs);
+        if (!status) {
+            return status;
+        }
+        const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count());
+        // A batch behind others on the queue looks slow, which only makes later batches shorter than they need be.
+        if ((ns > 0) && (work > 0) && ((i > 0) || externalWaits_.empty())) {
+            const double sample = static_cast<double>(work) * static_cast<double>(kBatchTargetNs) / static_cast<double>(ns);
+            const uint64_t measured = (sample >= static_cast<double>(kMaxBatchWork)) ? kMaxBatchWork : std::max(kMinBatchWork, static_cast<uint64_t>(sample));
+            std::atomic<uint64_t>& learned = registry_.learnedBatchWork_;
+            const uint64_t previous = learned.load(std::memory_order_relaxed);
+            learned.store((previous != 0) ? (previous * 3 + measured) / 4 : measured, std::memory_order_relaxed);
+        }
+        if (gHasBatchFinishedHook.load(std::memory_order_acquire)) {
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> lock(gBatchFinishedHookMutex);
+                hook = gBatchFinishedHook;
+            }
+            if (hook) {
+                hook();
+            }
+        }
+    }
+    if (stop && stop()) {
+        return stopped();
+    }
+    return {};
+}
+
+void
+GpuRecordContext::abandonWork(const char* what)
+{
+    registry_.device().abandonInFlightWork(what);
+    parkInFlightWork();
+    // The command buffers go with their pool.
+    cmd_ = VK_NULL_HANDLE;
+    finished_.clear();
 }
 
 std::vector<VkSemaphoreSubmitInfo>

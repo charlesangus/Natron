@@ -1037,8 +1037,8 @@ gpuFlowImageOf(const GpuImageView& view,
 
 // The solve of one render. Each plane is a member of its own in a region, and all of a render's
 // planes come from one solve, as they do on the CPU. Its results live in scratch buffers of the
-// recorder that recorded it, so it is shared within that recorder only, and goes with it: a retry
-// after running out of memory, or the next strip, starts again.
+// recorders that recorded it, so it is shared within their GpuRenderArgs::recordScope only, and goes
+// with them: a retry after running out of memory, or the next strip, starts again.
 struct GpuSolve {
     using Inputs = std::array<std::pair<const void*, uint32_t>, 2 * kFrameSlots>;
 
@@ -1048,7 +1048,7 @@ struct GpuSolve {
     {
     }
 
-    const void* recorder = nullptr;
+    const void* scope = nullptr;
     const void* effect = nullptr;
     double time = 0.;
     int view = 0;
@@ -1243,13 +1243,13 @@ VectorGenerator::renderOpGpu(const GpuRenderArgs& args)
 
     static thread_local std::weak_ptr<GpuSolve> lastSolve;
     std::shared_ptr<GpuSolve> solve = lastSolve.lock();
-    const bool sameRender = solve && (solve->recorder == &args.context) && (solve->effect == this) && (solve->time == query.time)
+    const bool sameRender = solve && (solve->scope == args.recordScope) && (solve->effect == this) && (solve->time == query.time)
         && (solve->view == (int)query.view) && (solve->scale == query.mappedScale)
         && (solve->window == window) && (solve->inputs == inputs);
     if (!sameRender) {
         const gpu::GpuFlowFormat format = gpuFormatOf(window, nComps, s.params.channels);
         solve = std::make_shared<GpuSolve>(gpuEstimateParams(s.params, format), [this]() { return aborted(); });
-        solve->recorder = &args.context;
+        solve->scope = args.recordScope;
         solve->effect = this;
         solve->time = query.time;
         solve->view = (int)query.view;

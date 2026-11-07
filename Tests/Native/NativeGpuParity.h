@@ -213,6 +213,51 @@ EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const GpuFrameDone& onGpuFrame = GpuFrameDone(),
                               unsigned mipmapLevel = 0);
 
+#ifdef NATRON_HAVE_GPU
+// What renderWithAbortMidSolve() saw of each of its three frames.
+struct AbortedSolveResult {
+    bool skipped = false;
+    std::string error;
+
+    // The clean frame in one command buffer per region part, and its pixels.
+    std::vector<float> unsplit;
+
+    // The frame aborted after `abortAfterBatches` command buffers.
+    bool abortFired = false;
+    EffectInstance::RenderRoIRetCode abortedCode = EffectInstance::eRenderRoIRetCodeOk;
+    bool abortedHasPlanes = false;
+    double abortToEndMs = 0.;
+    int batchesAfterAbort = 0;
+    std::map<std::string, int> abortedFallbacks;
+
+    // Pool bytes still held once the clean frame, then the aborted one, have gone and the caches were cleared.
+    unsigned long long liveAfterClean = 0;
+    unsigned long long liveAfterAbort = 0;
+
+    // The frame rendered after the abort without clearing the caches, split at every charge.
+    std::vector<float> split;
+    int splitBatches = 0;
+    std::map<std::string, int> splitGpuTasksPerNode;
+};
+
+// Renders `root` over `window` on the GPU three times under a forced GPU context: clean and unsplit; split at every
+// charge and aborted after abortAfterBatches command buffers have finished; and split again, reading whatever the aborted
+// frame left in the caches.
+AbortedSolveResult renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
+                                           const NodePtr& root,
+                                           const RectI& window,
+                                           double time,
+                                           int abortAfterBatches);
+
+// The command buffers a frame split at every charge ran beyond each context's last. Negative when there is no device or
+// the frame failed; *error is empty only when there is no device.
+int countBatchesOfFrame(const std::vector<NodePtr>& graph,
+                        const NodePtr& root,
+                        const RectI& window,
+                        double time,
+                        std::string* error);
+#endif // NATRON_HAVE_GPU
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_TESTS_NATIVEGPUPARITY_H

@@ -64,6 +64,13 @@ constexpr std::uint64_t kImagesInTightBudget = 4;
 
 constexpr double kTime = 3.;
 
+// Most of the solve is still to run when the abort comes.
+constexpr int kBatchesBeforeAbort = 3;
+constexpr double kAbortBoundMs = 2000.;
+
+// The output pass of a plane and the segment boundary it brings, with room for a pass the solve would add.
+constexpr int kBatchesOfOutputPlane = 8;
+
 // One layer's two channels from the RGBA a Shuffle wrote them to.
 RenderedPlane
 twoChannelsOf(const std::vector<float>& rgba,
@@ -330,6 +337,36 @@ protected:
         EXPECT_LT(meanDistance(twoChannelsOf(result.gpu, windowAt(0), 0), kShiftX, kShiftY, kMargin), kDisEpe);
     }
 
+#ifdef NATRON_HAVE_GPU
+    void expectAbortLeavesNothingBehind(const std::string& method)
+    {
+        NodePtr generator = createGenerator(createMovingTexture());
+        ASSERT_TRUE(bool(generator));
+        ASSERT_TRUE(setKnobValue(generator, kVectorGeneratorParamMethod, method));
+        NodePtr reader = createReader(generator, kNatronForwardMotionVectorsLayerID, kNatronBackwardMotionVectorsLayerID);
+        ASSERT_TRUE(bool(reader));
+        const AbortedSolveResult result = renderWithAbortMidSolve(std::vector<NodePtr>({ generator }), reader, windowAt(0), kTime, kBatchesBeforeAbort);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.error.empty()) << result.error;
+
+        EXPECT_TRUE(result.abortFired);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, result.abortedCode);
+        EXPECT_FALSE(result.abortedHasPlanes);
+        EXPECT_TRUE(result.abortedFallbacks.empty()) << "the abort moved work to the CPU";
+        EXPECT_EQ(0, result.batchesAfterAbort) << "work ran after the abort";
+        EXPECT_LT(result.abortToEndMs, kAbortBoundMs);
+        EXPECT_LE(result.liveAfterAbort, result.liveAfterClean) << "the aborted solve still holds pool buffers";
+
+        EXPECT_GT(result.splitBatches, kBatchesBeforeAbort * 4);
+        const std::map<std::string, int>::const_iterator ran = result.splitGpuTasksPerNode.find(generator->getScriptName_mt_safe());
+        EXPECT_TRUE((ran != result.splitGpuTasksPerNode.end()) && (ran->second > 0)) << "the aborted solve's image was cached";
+        const ImageDiff diff = compareImages(result.unsplit, result.split, ParityTolerance::exact());
+        EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+    }
+#endif // NATRON_HAVE_GPU
+
     void expectVectorsMatchTruth(const NodePtr& generator,
                                  double threshold)
     {
@@ -589,5 +626,40 @@ TEST_F(NativeVectorGeneratorGpuTest, APoolTooSmallForTheSolveTakesTheCpuPath)
 {
     expectFallsBackWithBudget(kImagesInTightBudget * kWidth * kHeight * 4 * sizeof(float));
 }
+
+#ifdef NATRON_HAVE_GPU
+TEST_F(NativeVectorGeneratorGpuTest, AbortingADisSolveStopsItAndLeavesNothingBehind)
+{
+    expectAbortLeavesNothingBehind(kVectorGeneratorMethodDIS);
+}
+
+TEST_F(NativeVectorGeneratorGpuTest, AbortingATvL1SolveStopsItAndLeavesNothingBehind)
+{
+    expectAbortLeavesNothingBehind(kVectorGeneratorMethodTVL1);
+}
+
+TEST_F(NativeVectorGeneratorGpuTest, TwoPlanesOfARegionShareOneSolve)
+{
+    NodePtr generator = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(generator));
+    ASSERT_TRUE(setKnobValue(generator, kVectorGeneratorParamMethod, kVectorGeneratorMethodDIS));
+    NodePtr confidenceOnly = createReader(generator, kVectorGeneratorConfidenceLayerID, std::string());
+    ASSERT_TRUE(bool(confidenceOnly));
+    std::string error;
+    const int alone = countBatchesOfFrame(std::vector<NodePtr>({ generator }), confidenceOnly, windowAt(0), kTime, &error);
+    if (alone < 0) {
+        ASSERT_TRUE(error.empty()) << error;
+
+        return;
+    }
+
+    NodePtr both = createReader(generator, kVectorGeneratorConfidenceLayerID, kNatronForwardMotionVectorsLayerID);
+    ASSERT_TRUE(bool(both));
+    const int shared = countBatchesOfFrame(std::vector<NodePtr>({ generator }), both, windowAt(0), kTime, &error);
+    ASSERT_GE(shared, 0) << error;
+    EXPECT_GT(alone, kBatchesOfOutputPlane * 4);
+    EXPECT_LE(shared, alone + kBatchesOfOutputPlane) << "the second plane solved again";
+}
+#endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_EXIT

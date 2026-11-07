@@ -613,7 +613,8 @@ RawNeuralDenoise::sourceRegionFor(const RectI& window,
         return window;
     }
     RectI need = bilinearSourceRegion(window, g->rod);
-    const std::optional<Policy> p = resolvePolicy(time, view, &error);
+    const double strength = KnobReader(time, view).value(_strength);
+    const std::optional<Policy> p = (strength > 0.) ? resolvePolicy(time, view, &error) : std::nullopt;
     if (p) {
         const PackedPlan plan = planPacked(window, *g, *p);
         if (plan.any) {
@@ -701,18 +702,20 @@ RawNeuralDenoise::renderOp(const RenderActionArgs& args,
         return eStatusFailed;
     }
     const Geometry& g = *found;
-    const std::optional<Policy> policy = resolvePolicy(args.time, args.view, &error);
-    if (!policy) {
-        if (error.empty()) {
-            _message.withdraw(node);
-        } else {
-            _message.post(node, eMessageTypeError, error);
-        }
-
-        return eStatusFailed;
-    }
-    const Policy& p = *policy;
     const float strength = (float)std::max(0., std::min(1., (double)KnobReader(args.time, args.view).value(_strength)));
+    std::optional<Policy> policy;
+    if (strength > 0.f) {
+        policy = resolvePolicy(args.time, args.view, &error);
+        if (!policy) {
+            if (error.empty()) {
+                _message.withdraw(node);
+            } else {
+                _message.post(node, eMessageTypeError, error);
+            }
+
+            return eStatusFailed;
+        }
+    }
     const int sourceInput = getSourceInput();
 
     RawNodeSupport::LockedSource source;
@@ -756,8 +759,9 @@ RawNeuralDenoise::renderOp(const RenderActionArgs& args,
         }
     });
 
-    const PackedPlan plan = (strength > 0.f) ? planPacked(roi, g, p) : PackedPlan();
+    const PackedPlan plan = policy ? planPacked(roi, g, *policy) : PackedPlan();
     if (plan.any) {
+        const Policy& p = *policy;
         const RectI modelRect = modelSourceRegion(plan.packed, g, p);
         RawNodeSupport::TopDownBuffer mosaic;
         mosaic.allocate(modelRect, 1);
@@ -856,7 +860,8 @@ RawNeuralDenoise::renderOp(const RenderActionArgs& args,
         spec.linearBlend = true;
         try {
             const std::shared_ptr<InferenceSession> session = InferenceSession::open(p.file, AiSessionOptions::fromPreferences(AiGraphOptimization::eAll));
-            const std::vector<int64_t>& shape = session->inputs().front().shape;
+            // runTiled reports a session without exactly one input.
+            const std::vector<int64_t> shape = (session->inputs().size() == 1) ? session->inputs().front().shape : std::vector<int64_t>();
             if ((shape.size() == 4) && (((shape[2] > 0) && (shape[2] != p.tile)) || ((shape[3] > 0) && (shape[3] != p.tile)))) {
                 _message.post(node, eMessageTypeError, "the model runs on " + std::to_string(shape[2]) + " x " + std::to_string(shape[3]) + " tiles only; set Tile Size to 0 or " + std::to_string(shape[2]) + ".");
 

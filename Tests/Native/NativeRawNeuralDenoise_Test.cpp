@@ -49,6 +49,7 @@
 
 #include "Engine/Ai/ModelDownloader.h"
 #include "Engine/Ai/ModelRegistry.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -60,6 +61,7 @@
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -98,7 +100,125 @@ mosaicOf(const SceneFn& scene,
     };
 }
 
+// Every photosite a different value, so any shifted, swapped or mis-mirrored read is visible.
+void
+hashedScene(int x,
+            int y,
+            float rgb[3])
+{
+    for (int c = 0; c < 3; ++c) {
+        const unsigned h = ((unsigned)x * 73856093u) ^ ((unsigned)y * 19349663u) ^ ((unsigned)(c + 1) * 83492791u);
+        rgb[c] = 0.05f + 0.9f * (float)((h >> 7) % 1000u) / 1000.f;
+    }
+}
+
+int
+reflect(int i,
+        int n)
+{
+    const int period = 2 * (n - 1);
+
+    i = ((i % period) + period) % period;
+
+    return (i >= n) ? (period - i) : i;
+}
+
+struct PlaneTap {
+    int plane;
+    int down;
+    int right;
+    float weight;
+};
+
+// make-test-rawdenoise.py's PLANE_TAPS: the taps of the red, green and blue outputs.
+const std::vector<std::vector<PlaneTap>> kPlaneTaps = {
+    { { 0, 0, 0, 1.f }, { 1, 0, -1, 0.5f }, { 3, 1, 0, 0.25f } },
+    { { 1, 0, 0, 0.5f }, { 2, 0, 0, 0.25f }, { 2, -1, 0, 0.25f }, { 1, 0, 1, 0.125f } },
+    { { 3, 0, 0, 1.f }, { 2, 1, 1, 0.5f }, { 0, -1, -1, 0.25f } },
+};
+
 // The 512 x 512 crop of the Canon fixture tools/raw/make-neural-restore-reference.py takes from
+// Strength 0 is the bilinear demosaic and needs no model: with AI off and nothing installed the
+// render still succeeds, and every photosite keeps its own sample.
+TEST_F(NativeRawNeuralDenoiseTest, StrengthZeroNeedsNoModel)
+{
+    appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("aiEnabled")->setValue(false);
+    const RectI rod(0, 0, 75, 61);
+    const SceneFn flat = [](int, int, float rgb[3]) {
+        rgb[0] = 0.62f;
+        rgb[1] = 0.35f;
+        rgb[2] = 0.48f;
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+        const SceneFn scene = (pass == 0) ? flat : SceneFn(texturedScene);
+        NodePtr node = createSceneChain(rod, scene);
+        ASSERT_TRUE(bool(node));
+        KnobDoublePtr strength = node->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kRawNeuralDenoiseParamStrength);
+        ASSERT_TRUE(bool(strength));
+        strength->setValue(0.);
+
+        const RenderedPlane plane = render(node, rod);
+        EXPECT_EQ(std::string(), persistentError(node));
+        ASSERT_EQ(4u, plane.channels.size());
+        const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
+        for (int y = rod.y1; y < rod.y2; ++y) {
+            for (int x = rod.x1; x < rod.x2; ++x) {
+                float rgb[3];
+                scene(x, y, rgb);
+                const int own = layout.colourAt(x, y);
+                ASSERT_NEAR(rgb[own], rawTestPlaneValue(plane, x, y, own), 1e-6) << x << "," << y;
+                if (pass == 0) {
+                    for (int c = 0; c < 3; ++c) {
+                        ASSERT_NEAR(rgb[c], rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The planes model reads the neighbouring blocks with a different tap per plane and direction. The
+// expected values are taken from the mosaic by hand, with the rows and columns past each edge
+// mirrored photosite by photosite, so a swapped green plane, a shifted block grid or another edge
+// rule shows up at the image's own edges.
+TEST_F(NativeRawNeuralDenoiseTest, EveryPlaneAndEdgeReachesTheModelAsDarktablePacksIt)
+{
+    install();
+    const int width = 36;
+    const int height = 28;
+    const RectI rod(0, 0, width, height);
+    NodePtr node = createSceneChain(rod, hashedScene);
+    ASSERT_TRUE(bool(node));
+    selectModel(node, RawNeuralDenoiseModels::kPlanes);
+
+    const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
+    const RawTestSource::ValueFn mosaic = mosaicOf(hashedScene, layout);
+    // Plane `plane` of block (row, column) counted from the top-left: R, G1, G2, B at its sites.
+    const auto packed = [&](int plane, int row, int column) {
+        const int r = reflect(2 * row + (plane >> 1), height);
+        const int c = reflect(2 * column + (plane & 1), width);
+
+        return mosaic(c, height - 1 - r, 0);
+    };
+
+    const RenderedPlane plane = render(node, rod);
+    EXPECT_EQ(std::string(), persistentError(node));
+    ASSERT_EQ(4u, plane.channels.size());
+    for (int y = rod.y1; y < rod.y2; ++y) {
+        for (int x = rod.x1; x < rod.x2; ++x) {
+            const int row = (height - 1 - y) / 2;
+            const int column = x / 2;
+            for (int c = 0; c < 3; ++c) {
+                float expected = 0.f;
+                for (const PlaneTap& tap : kPlaneTaps[c]) {
+                    expected += tap.weight * packed(tap.plane, row + tap.down, column + tap.right);
+                }
+                ASSERT_NEAR(expected, rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
+            }
+        }
+    }
+}
+
 // darktable's neural restore DNG, from the top-left of the visible image.
 const char* const kReferenceFile = "canon-eos-5d-mark-iii-neural-restore.tif";
 const int kReferenceSize = 512;
@@ -136,6 +256,7 @@ protected:
         ASSERT_TRUE(_models->install(&error)) << error;
         ASSERT_TRUE(_models->installed(RawNeuralDenoiseModels::kMatchGain));
         ASSERT_TRUE(_models->installed(RawNeuralDenoiseModels::kAbsolute));
+        ASSERT_TRUE(_models->installed(RawNeuralDenoiseModels::kPlanes));
     }
 
     NodePtr createChain(const RectI& rod,
@@ -202,6 +323,14 @@ protected:
         EXPECT_FALSE(renderRawTestPlane(node, window, &plane, &error));
 
         return persistentError(node);
+    }
+
+    // The bundled gtest has no GTEST_SKIP; this prints the line its runner would.
+    static void skipped(const std::string& reason)
+    {
+        const ::testing::TestInfo* const info = ::testing::UnitTest::GetInstance()->current_test_info();
+
+        std::cout << "[  SKIPPED ] " << info->test_case_name() << "." << info->name() << ": " << reason << std::endl;
     }
 
     std::unique_ptr<RawNeuralDenoiseModels> _models;
@@ -418,14 +547,15 @@ TEST_F(NativeRawNeuralDenoiseTest, AnOddCropMatchesTheUncroppedRun)
 
 // darktable's neural restore of the Canon fixture with RawNIND, re-mosaiced, against the node's
 // output at each photosite's own colour. Runs when the model is installed in the folder
-// NATRON_TEST_AI_MODELS_DIR names, else in the default models folder.
+// NATRON_TEST_AI_MODELS_DIR names, else in the default models folder, and reports itself skipped
+// otherwise.
 TEST_F(NativeRawNeuralDenoiseTest, MatchesDarktableNeuralRestore)
 {
     const char* const env = std::getenv("NATRON_TEST_AI_MODELS_DIR");
     const std::string modelsDirectory = env ? std::string(env) : ModelRegistry::defaultModelsDirectory();
     ModelDownloader downloader(std::make_shared<const ModelRegistry>(ModelRegistry::builtinManifest(), modelsDirectory));
     if (downloader.registry()->resolve("rawdenoise-nind-bayer").status != AiModelStatus::eInstalled) {
-        std::cout << "skipped: rawdenoise-nind is not installed in " << modelsDirectory << std::endl;
+        skipped("rawdenoise-nind is not installed in " + modelsDirectory);
 
         return;
     }
@@ -435,7 +565,7 @@ TEST_F(NativeRawNeuralDenoiseTest, MatchesDarktableNeuralRestore)
     int height = 0;
     std::string error;
     if (!RawReference::readReference(reference, &expected, &width, &height, &error)) {
-        std::cout << "skipped: no reference: " << error << std::endl;
+        skipped("no reference: " + error);
 
         return;
     }

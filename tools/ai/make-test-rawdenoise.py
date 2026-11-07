@@ -10,6 +10,10 @@ block's (R, (G1 + G2) / 2, B), so the result depends on no neighbour and no tile
 - model_bayer.onnx returns that times 1000, under output_scale match_gain, which brings a grey
   field back to its input level.
 - model_bayer_absolute.onnx returns it as is, under output_scale absolute.
+- model_bayer_planes.onnx, under output_scale absolute, reads a 3x3 block neighbourhood with a
+  different tap for each of the four planes and each of the four directions, so a swapped green
+  plane, a shifted block grid or a wrong mirror at the image edge changes the result. Every site
+  of an output block takes the block's (R, G, B); PLANE_TAPS lists the taps.
 
 The package is laid out like make-test-dtmodel.py's, and the output is byte-identical from run
 to run; --check writes nothing and exits non-zero when the committed package differs.
@@ -56,21 +60,23 @@ CONFIG = {
         "input_sizes": [TILE],
         "model_bayer": dict(POLICY, output_scale="match_gain"),
         "model_bayer_absolute": dict(POLICY, output_scale="absolute"),
+        "model_bayer_planes": dict(POLICY, output_scale="absolute"),
     },
 }
 
 
-def superpixel(name, gain):
-    # Output channel c * 4 + k of the 1x1 convolution lands on site k of colour c's 2x2 block
-    # (DepthToSpace, CRD).
-    rows = [[gain, 0., 0., 0.], [0., 0.5 * gain, 0.5 * gain, 0.], [0., 0., 0., gain]]
-    weights = []
-    for row in rows:
-        for _ in range(4):
-            weights.extend(row)
-    w = helper.make_tensor("w", TensorProto.FLOAT, [12, 4, 1, 1], weights)
+# (plane, rows down, columns right, weight) of each output colour; planes are R, G1, G2, B.
+PLANE_TAPS = [
+    [(0, 0, 0, 1.0), (1, 0, -1, 0.5), (3, 1, 0, 0.25)],
+    [(1, 0, 0, 0.5), (2, 0, 0, 0.25), (2, -1, 0, 0.25), (1, 0, 1, 0.125)],
+    [(3, 0, 0, 1.0), (2, 1, 1, 0.5), (0, -1, -1, 0.25)],
+]
+
+
+def convolution(name, weights, kernel):
+    w = helper.make_tensor("w", TensorProto.FLOAT, [12, 4, kernel, kernel], weights)
     nodes = [
-        helper.make_node("Conv", ["input", "w"], ["blocks"]),
+        helper.make_node("Conv", ["input", "w"], ["blocks"], pads=[kernel // 2] * 4),
         helper.make_node("DepthToSpace", ["blocks"], ["output"], blocksize=2, mode="CRD"),
     ]
     graph = helper.make_graph(nodes, name,
@@ -83,6 +89,26 @@ def superpixel(name, gain):
                           ir_version=IR_VERSION)
     onnx.checker.check_model(m, full_check=True)
     return m.SerializeToString()
+
+
+def planes(name):
+    weights = [0.] * (12 * 4 * 9)
+    for colour, taps in enumerate(PLANE_TAPS):
+        for plane, down, right, weight in taps:
+            for site in range(4):
+                weights[(((colour * 4 + site) * 4 + plane) * 3 + 1 + down) * 3 + 1 + right] = weight
+    return convolution(name, weights, 3)
+
+
+def superpixel(name, gain):
+    # Output channel c * 4 + k of the 1x1 convolution lands on site k of colour c's 2x2 block
+    # (DepthToSpace, CRD).
+    rows = [[gain, 0., 0., 0.], [0., 0.5 * gain, 0.5 * gain, 0.], [0., 0., 0., gain]]
+    weights = []
+    for row in rows:
+        for _ in range(4):
+            weights.extend(row)
+    return convolution(name, weights, 1)
 
 
 def member(name):
@@ -99,6 +125,7 @@ def build():
         archive.writestr(member("config.json"), json.dumps(CONFIG, indent=4) + "\n")
         archive.writestr(member("model_bayer.onnx"), superpixel("model_bayer", 1000.))
         archive.writestr(member("model_bayer_absolute.onnx"), superpixel("model_bayer_absolute", 1.))
+        archive.writestr(member("model_bayer_planes.onnx"), planes("model_bayer_planes"))
     return buffer.getvalue()
 
 

@@ -100,8 +100,6 @@ namespace {
         return file ? file->getValue() : std::string();
     }
 
-    // The demosaic the chain gets: RawNeuralDenoise when the preference asks for it and it can run
-    // on read's raw file, else RawDemosaic, with the reason logged.
     const char*
     demosaicPluginID(const NodePtr& read)
     {

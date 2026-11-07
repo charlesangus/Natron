@@ -49,7 +49,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief A model manager over the two models of Tests/fixtures/ai/rawdenoise.dtmodel, in a
+ * @brief A model manager over the three models of Tests/fixtures/ai/rawdenoise.dtmodel, in a
  * temporary folder, that RawNeuralDenoise nodes and the Develop RAW chain use while it lives, with
  * AI enabled on the CPU through the build tree's ONNX Runtime. Nothing is installed until
  * install() is called. Create it after the test application exists; destroy it after the nodes.
@@ -57,16 +57,19 @@ NATRON_NAMESPACE_ENTER
 class RawNeuralDenoiseModels {
 public:
     // Written by tools/ai/make-test-rawdenoise.py.
-    static constexpr const char* kSha256 = "e0668f9d568ec01f273fcbfc1b4c01777e22c1d2a1b27ea4f738e73c63aa5536";
-    static constexpr int kSize = 1228;
+    static constexpr const char* kSha256 = "6665d7ed071bf682b18a34c652f748b2dc9bb134b38d1a857331b939eb42a3af";
+    static constexpr int kSize = 1704;
     // The default: times 1000 under match_gain.
     static constexpr const char* kMatchGain = "test-rawdenoise";
     static constexpr const char* kAbsolute = "test-rawdenoise-absolute";
+    // Absolute, and reads the neighbouring blocks with a different tap per plane.
+    static constexpr const char* kPlanes = "test-rawdenoise-planes";
 
     RawNeuralDenoiseModels()
     {
         const QJsonArray models { entry(kMatchGain, "Raw Denoise Match Gain", "model_bayer.onnx"),
-                                  entry(kAbsolute, "Raw Denoise Absolute", "model_bayer_absolute.onnx") };
+                                  entry(kAbsolute, "Raw Denoise Absolute", "model_bayer_absolute.onnx"),
+                                  entry(kPlanes, "Raw Denoise Planes", "model_bayer_planes.onnx") };
         const QJsonObject root { { QStringLiteral("schema"), 1 }, { QStringLiteral("models"), models } };
         _downloader.reset(new ModelDownloader(std::make_shared<const ModelRegistry>(QJsonDocument(root).toJson().toStdString(),
                                                                                     _directory.path().toStdString())));
@@ -92,7 +95,7 @@ public:
         return _directory.isValid();
     }
 
-    // Installs the package, which holds both models.
+    // Installs the package, which holds all the models.
     bool install(std::string* error)
     {
         return _downloader->download(kMatchGain, error);

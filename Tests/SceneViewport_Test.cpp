@@ -1517,6 +1517,12 @@ TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
     if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
         return;
     }
+    // The fixture's camera sits in the plane of the default view's eye, so its guide would project
+    // behind or outside the frame; pulled back, it is on screen and in front of the box.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.distance = 30.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setGuideSize(4.);
     _renderer.setShowGuides(true);
     _renderer.setRecordDrawnGuides(true);
     (void)render();

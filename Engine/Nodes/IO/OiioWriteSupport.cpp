@@ -48,6 +48,7 @@
 #include <QDebug>
 
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -940,7 +941,11 @@ namespace {
         if (asDouble) {
             spec.attribute(name, type, doubles.data());
         } else {
-            const std::vector<float> floats(doubles.begin(), doubles.end());
+            std::vector<float> floats;
+            floats.reserve(doubles.size());
+            for (const double v : doubles) {
+                floats.push_back(knobValueAsFloat(v));
+            }
             spec.attribute(name, type, floats.data());
         }
     }
@@ -962,7 +967,7 @@ namespace {
                 spec.attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::DOUBLE), d);
             } else {
                 // The standard tags of every format take a float.
-                spec.attribute(name, (float)*d);
+                spec.attribute(name, knobValueAsFloat(*d));
             }
         } else if (const std::string* str = std::get_if<std::string>(&value)) {
             spec.attribute(name, *str);

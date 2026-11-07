@@ -68,6 +68,7 @@
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -2240,7 +2241,7 @@ NativeWrite::render(const RenderActionArgs& args)
             }
         }
         if (window.par != 1.) {
-            spec.attribute("PixelAspectRatio", (float)window.par);
+            spec.attribute("PixelAspectRatio", knobValueAsFloat(window.par));
         }
         if (caps.displayWindow) {
             spec.x = dataWindow.x1;

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <list>
 #include <string>
@@ -396,6 +397,33 @@ TEST_F(NativeKeyerTest, RangePointsStayOrdered)
     }
     EXPECT_FLOAT_EQ(0.3f, params.range[2]);
     EXPECT_FLOAT_EQ(0.5f, params.range[3]);
+}
+
+// Range values past the float range still give points in double, and where the double sum itself
+// would overflow the point is the infinity of its sign instead of a trapped overflow.
+TEST_F(NativeKeyerTest, RangePointsPastTheFloatRangeStayFinite)
+{
+    double p[4];
+    const double wide[KnobDouble::eRangeWidgetDimensionCount] = { 1e300, 1e300, 0., 1e300, 1e300 };
+    keyerRangePoints(wide, p);
+    EXPECT_DOUBLE_EQ(-2e300, p[0]);
+    EXPECT_DOUBLE_EQ(-1e300, p[1]);
+    EXPECT_DOUBLE_EQ(1e300, p[2]);
+    EXPECT_DOUBLE_EQ(2e300, p[3]);
+
+    const double high[KnobDouble::eRangeWidgetDimensionCount] = { 1e308, 1., DBL_MAX, 1., 1e308 };
+    keyerRangePoints(high, p);
+    EXPECT_DOUBLE_EQ(DBL_MAX - 1e308, p[0]);
+    EXPECT_DOUBLE_EQ(DBL_MAX, p[1]);
+    EXPECT_DOUBLE_EQ(DBL_MAX, p[2]);
+    EXPECT_TRUE(std::isinf(p[3]) && (p[3] > 0.));
+
+    const double low[KnobDouble::eRangeWidgetDimensionCount] = { 1e308, 1., -DBL_MAX, 1., 1e308 };
+    keyerRangePoints(low, p);
+    EXPECT_TRUE(std::isinf(p[0]) && (p[0] < 0.));
+    EXPECT_DOUBLE_EQ(-DBL_MAX, p[1]);
+    EXPECT_DOUBLE_EQ(-DBL_MAX, p[2]);
+    EXPECT_DOUBLE_EQ(-DBL_MAX + 1e308, p[3]);
 }
 
 // The host mask limits the key: where the mask is 0.25 the alpha moves a quarter of the way from

@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -40,6 +41,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Interpolation.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -401,7 +403,9 @@ ColorCorrectOp::bake(const KnobReader& reader) const
             }
         }
         for (int i = 0; i < 4; ++i) {
-            group.invGamma[i] = 1. / group.gamma[i];
+            // 1 / g reaches 2^1024 once |g| is at most 2^-1024, which includes zero.
+            const double g = group.gamma[i];
+            group.invGamma[i] = reciprocalOrInfinity(g);
         }
         group.active = !isIdentityGroup(group);
     }
@@ -483,7 +487,7 @@ ColorCorrectOp::row(const Params& params,
 
         for (int c = 0; (c < nComps) && (c < 4); ++c) {
             if (process[bits[c]]) {
-                dst[c] = (float)clampOutput(params, p.v[bits[c]]);
+                dst[c] = knobValueAsFloat(clampOutput(params, p.v[bits[c]]));
             }
         }
     }
@@ -515,11 +519,11 @@ ColorCorrectOp::gpu(const Params& params) const
         const Group& group = params.groups[g];
         const int base = kGpuGroups + g * kGpuGroupWords;
         for (int i = 0; i < 4; ++i) {
-            putFloat(words, base + i, (float)group.saturation[i]);
-            putFloat(words, base + 4 + i, (float)group.contrast[i]);
-            putFloat(words, base + 8 + i, (float)group.invGamma[i]);
-            putFloat(words, base + 12 + i, (float)group.gain[i]);
-            putFloat(words, base + 16 + i, (float)group.offset[i]);
+            putFloat(words, base + i, knobValueAsFloat(group.saturation[i]));
+            putFloat(words, base + 4 + i, knobValueAsFloat(group.contrast[i]));
+            putFloat(words, base + 8 + i, knobValueAsFloat(group.invGamma[i]));
+            putFloat(words, base + 12 + i, knobValueAsFloat(group.gain[i]));
+            putFloat(words, base + 16 + i, knobValueAsFloat(group.offset[i]));
         }
     }
     std::copy(tones.gpuCurves.begin(), tones.gpuCurves.end(), words.begin() + kGpuCurveBase);

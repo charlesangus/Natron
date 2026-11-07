@@ -46,7 +46,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace OfxMetadataBridge {
 /**
- * @brief Converts an OpenFX metadata property set to ImageMetadata.
+ * @brief Converts an OpenFX metadata property set to ImageMetadata. A key under OpenFX's ofx/
+ * prefix becomes the same name under natron/; every other key keeps its name.
  *
  * An int or double property of dimension 1 becomes a scalar; of any other dimension,
  * including 0, a vector of that type. A string property of dimension 1 becomes a string.
@@ -58,7 +59,8 @@ ImageMetadata fromOfxPropertySet(const OFX::Host::Property::Set& properties) WAR
 
 /**
  * @brief Writes every entry of metadata into properties, replacing a property of the same
- * name whatever its type. Scalars become properties of dimension 1, vectors properties whose
+ * name whatever its type. A key under natron/ becomes the same name under OpenFX's ofx/ prefix;
+ * every other key keeps its name. Scalars become properties of dimension 1, vectors properties whose
  * dimension is the vector's size. An empty vector is skipped, leaving any property of that
  * name in place, because OpenFX metadata has no key of dimension 0. A one-element vector
  * reads back through fromOfxPropertySet() as a scalar, since dimension is all OpenFX records.

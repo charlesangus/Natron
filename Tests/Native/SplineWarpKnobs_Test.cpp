@@ -83,6 +83,9 @@ auditRows()
         { kSplineWarpParamPreviewResolution, "Preview Resolution", kRender, { 25. } },
         { kSplineWarpParamSolver, "Solver", kRender, { 0. } },
         { kResamplerParamFilterType, "Filter", kRender, { (double)Resampler::eFilterCubic } },
+        { kResamplerParamLobes, "Lobes", kRender, { 4. } },
+        { kResamplerParamBicubicB, "Bicubic B", kRender, { 1. / 3. } },
+        { kResamplerParamBicubicC, "Bicubic C", kRender, { 1. / 3. } },
         { kOfxMaskInvertParamName, "Invert Mask", kWarp, { 0. } },
         { kOfxMixParamName, "Mix", kWarp, { 1. } },
 

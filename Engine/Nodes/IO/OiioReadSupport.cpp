@@ -35,8 +35,6 @@
 #include <set>
 #include <vector>
 
-#include <ofxMetadata.h>
-
 #include "Global/FloatingPointExceptions.h"
 
 #include "Engine/LayerRegistry.h"
@@ -680,6 +678,23 @@ namespace {
         { "openexr:", "exr/" }
     };
 
+    const char* const kMetadataNamespaces[] = {
+        "natron/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/"
+    };
+
+    bool
+    isNamespacedKey(const std::string& name)
+    {
+        for (const char* ns : kMetadataNamespaces) {
+            const std::size_t length = std::strlen(ns);
+            if (name.size() > length && name.compare(0, length, ns) == 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool
     isOpenExrPath(const std::string& path)
     {
@@ -700,10 +715,10 @@ namespace {
           bool openExr)
     {
         if (name == "smpte:TimeCode") {
-            return kOfxMetadataKeyTimecode;
+            return kNatronMetadataKeyTimecode;
         }
         if (name == "smpte:KeyCode") {
-            return kOfxMetadataKeyEdgecode;
+            return kNatronMetadataKeyEdgecode;
         }
         for (const KeyPrefix& prefix : kKeyPrefixes) {
             const std::size_t length = std::strlen(prefix.attribute);
@@ -711,11 +726,14 @@ namespace {
                 return std::string(prefix.key) + name.substr(length);
             }
         }
+        if (isNamespacedKey(name)) {
+            return name;
+        }
         if (name.empty() || name.find(':') != std::string::npos) {
             return std::string();
         }
 
-        return std::string(openExr ? kOfxMetadataKeyPrefixExr : kOfxMetadataKeyPrefixExif) + name;
+        return std::string(openExr ? kNatronMetadataKeyPrefixExr : kNatronMetadataKeyPrefixExif) + name;
     }
 
     template <typename T>

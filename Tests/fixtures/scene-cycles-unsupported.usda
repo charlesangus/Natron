@@ -1,0 +1,45 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Card"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        color3f[] primvars:displayColor = [(0.8, 0.2, 0.1)]
+    }
+
+    def CylinderLight "LampA"
+    {
+        float inputs:intensity = 10
+        float inputs:length = 2
+        float inputs:radius = 0.1
+        double3 xformOp:translate = (-3, 0, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def CylinderLight "LampB"
+    {
+        float inputs:intensity = 10
+        float inputs:length = 2
+        float inputs:radius = 0.1
+        double3 xformOp:translate = (3, 0, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Camera "Cam"
+    {
+        float focalLength = 35
+        float horizontalAperture = 20.955
+        float verticalAperture = 20.955
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

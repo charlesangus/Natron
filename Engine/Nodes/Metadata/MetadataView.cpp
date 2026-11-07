@@ -84,7 +84,8 @@ MetadataView::getMetadataDisplayText() const
 }
 
 void
-MetadataView::refreshMetadataDisplay(double time)
+MetadataView::refreshMetadataDisplay(double time,
+                                     ViewIdx view)
 {
     KnobStringPtr display = _display.lock();
 
@@ -92,7 +93,7 @@ MetadataView::refreshMetadataDisplay(double time)
         return;
     }
 
-    const ImageMetadata metadata = getOutputMetadata(time, ViewIdx(0));
+    const ImageMetadata metadata = getOutputMetadata(time, view);
     std::ostringstream text;
 
     if (metadata.empty()) {
@@ -127,21 +128,21 @@ MetadataView::scheduleRefresh()
         _refreshPending = false;
         AppInstancePtr app = getApp();
         if (app) {
-            refreshMetadataDisplay(app->getTimeLine()->currentFrame());
+            refreshMetadataDisplay(app->getTimeLine()->currentFrame(), MetadataText::displayedView(app, ViewSpec::current()));
         } }, Qt::QueuedConnection);
 }
 
 bool
 MetadataView::knobChanged(KnobI* k,
                           ValueChangedReasonEnum /*reason*/,
-                          ViewSpec /*view*/,
+                          ViewSpec view,
                           double time,
                           bool /*originatedFromMainThread*/)
 {
     KnobButtonPtr refresh = _refreshButton.lock();
 
     if (refresh && (k == refresh.get())) {
-        refreshMetadataDisplay(time);
+        refreshMetadataDisplay(time, MetadataText::displayedView(getApp(), view));
 
         return true;
     }
@@ -161,7 +162,14 @@ MetadataView::refreshExtraStateAfterTimeChanged(bool isPlayback,
                                                 double time)
 {
     NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
-    refreshMetadataDisplay(time);
+    refreshMetadataDisplay(time, MetadataText::displayedView(getApp(), ViewSpec::current()));
+}
+
+void
+MetadataView::dropCachedOutputMetadata()
+{
+    NativeEffectBase::dropCachedOutputMetadata();
+    scheduleRefresh();
 }
 
 void

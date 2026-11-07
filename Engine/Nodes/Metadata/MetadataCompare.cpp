@@ -127,7 +127,8 @@ MetadataCompare::getDifferencesDisplayText() const
 }
 
 void
-MetadataCompare::refreshDifferencesDisplay(double time)
+MetadataCompare::refreshDifferencesDisplay(double time,
+                                           ViewIdx view)
 {
     KnobStringPtr display = _display.lock();
 
@@ -135,7 +136,7 @@ MetadataCompare::refreshDifferencesDisplay(double time)
         return;
     }
 
-    const std::string text = differences(getInputMetadata(0, time, ViewIdx(0)), getInputMetadata(1, time, ViewIdx(0)));
+    const std::string text = differences(getInputMetadata(0, time, view), getInputMetadata(1, time, view));
 
     if (text != display->getValue()) {
         PassiveKnobUpdate passive(this, display);
@@ -156,21 +157,21 @@ MetadataCompare::scheduleRefresh()
         _refreshPending = false;
         AppInstancePtr app = getApp();
         if (app) {
-            refreshDifferencesDisplay(app->getTimeLine()->currentFrame());
+            refreshDifferencesDisplay(app->getTimeLine()->currentFrame(), MetadataText::displayedView(app, ViewSpec::current()));
         } }, Qt::QueuedConnection);
 }
 
 bool
 MetadataCompare::knobChanged(KnobI* k,
                              ValueChangedReasonEnum /*reason*/,
-                             ViewSpec /*view*/,
+                             ViewSpec view,
                              double time,
                              bool /*originatedFromMainThread*/)
 {
     KnobButtonPtr refresh = _refreshButton.lock();
 
     if (refresh && (k == refresh.get())) {
-        refreshDifferencesDisplay(time);
+        refreshDifferencesDisplay(time, MetadataText::displayedView(getApp(), view));
 
         return true;
     }
@@ -213,7 +214,14 @@ MetadataCompare::refreshExtraStateAfterTimeChanged(bool isPlayback,
                                                    double time)
 {
     NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
-    refreshDifferencesDisplay(time);
+    refreshDifferencesDisplay(time, MetadataText::displayedView(getApp(), ViewSpec::current()));
+}
+
+void
+MetadataCompare::dropCachedOutputMetadata()
+{
+    NativeEffectBase::dropCachedOutputMetadata();
+    scheduleRefresh();
 }
 
 void

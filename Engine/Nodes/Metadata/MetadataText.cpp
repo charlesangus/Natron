@@ -33,6 +33,10 @@
 
 #include <QString>
 
+#include "Engine/AppInstance.h"
+#include "Engine/Node.h"
+#include "Engine/ViewerInstance.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -100,6 +104,19 @@ std::string
 formatValueHtml(const ImageMetadata::Value& value)
 {
     return escapeHtml(formatValuePlain(value));
+}
+
+ViewIdx
+displayedView(const AppInstancePtr& app,
+              ViewSpec requested)
+{
+    if (!requested.isAll() && !requested.isCurrent()) {
+        return ViewIdx(requested.value());
+    }
+    const NodePtr viewerNode = app ? app->getActiveViewerNode() : NodePtr();
+    const ViewerInstance* viewer = viewerNode ? viewerNode->isEffectViewer() : nullptr;
+
+    return viewer ? viewer->getViewerCurrentView() : ViewIdx(0);
 }
 } // namespace MetadataText
 

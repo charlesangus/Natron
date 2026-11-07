@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QString>
 
 #include <gtest/gtest.h>
@@ -35,6 +36,7 @@
 #include "BaseTest.h"
 #include "NativeMetadataTestEffect.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -42,6 +44,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/MetadataView.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -100,7 +103,7 @@ TEST_F(MetadataViewTest, PassesMetadataThrough)
 
 TEST_F(MetadataViewTest, DisplayListsEveryKeyAndValue)
 {
-    effect->refreshMetadataDisplay(1.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
 
     const std::string text = effect->getMetadataDisplayText();
 
@@ -117,7 +120,7 @@ TEST_F(MetadataViewTest, DisplayListsEveryKeyAndValue)
 
 TEST_F(MetadataViewTest, KeysAreSorted)
 {
-    effect->refreshMetadataDisplay(1.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
 
     const std::string text = effect->getMetadataDisplayText();
 
@@ -128,10 +131,10 @@ TEST_F(MetadataViewTest, KeysAreSorted)
 
 TEST_F(MetadataViewTest, DisplayFollowsTheFrame)
 {
-    effect->refreshMetadataDisplay(1.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
     const std::string first = effect->getMetadataDisplayText();
 
-    effect->refreshMetadataDisplay(2.);
+    effect->refreshMetadataDisplay(2., ViewIdx(0));
     const std::string second = effect->getMetadataDisplayText();
 
     EXPECT_NE(first, second);
@@ -141,7 +144,7 @@ TEST_F(MetadataViewTest, DisplayFollowsTheFrame)
 
 TEST_F(MetadataViewTest, SpecialCharactersAreEscaped)
 {
-    effect->refreshMetadataDisplay(1.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
 
     const std::string text = effect->getMetadataDisplayText();
 
@@ -153,8 +156,8 @@ TEST_F(MetadataViewTest, RefreshDoesNotChangeTheNodeHash)
 {
     const U64 before = view->getHashValue();
 
-    effect->refreshMetadataDisplay(1.);
-    effect->refreshMetadataDisplay(2.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
+    effect->refreshMetadataDisplay(2., ViewIdx(0));
 
     EXPECT_EQ(before, view->getHashValue());
 }
@@ -166,7 +169,7 @@ TEST_F(MetadataViewTest, UnconnectedNodeShowsAnEmptyNotice)
     MetadataView* loneEffect = dynamic_cast<MetadataView*>(lone->getEffectInstance().get());
 
     ASSERT_TRUE(loneEffect != NULL);
-    loneEffect->refreshMetadataDisplay(1.);
+    loneEffect->refreshMetadataDisplay(1., ViewIdx(0));
 
     EXPECT_TRUE(contains(loneEffect->getMetadataDisplayText(), "No metadata"));
 }
@@ -205,12 +208,47 @@ TEST_F(MetadataViewTest, RefreshRunsNeitherKnobChangedNorEvaluation)
 
     ASSERT_TRUE(reset());
     const U64 hashBefore = view->getHashValue();
-    effect->refreshMetadataDisplay(1.);
-    effect->refreshMetadataDisplay(2.);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
+    effect->refreshMetadataDisplay(2., ViewIdx(0));
 
     EXPECT_NE(std::string("plain edit"), effect->getMetadataDisplayText());
     EXPECT_TRUE(callCount(0));
     EXPECT_EQ(hashBefore, view->getHashValue());
     EXPECT_FALSE(effect->isEvaluationBlocked());
     EXPECT_FALSE(display->isValueChangesBlocked());
+}
+
+TEST_F(MetadataViewTest, DisplayFollowsMetadataInvalidatedUnderTheSameHashUpstream)
+{
+    MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect != NULL);
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
+    ASSERT_TRUE(contains(effect->getMetadataDisplayText(), "exr/gain"));
+
+    const U64 hash = source->getHashValue();
+    ImageMetadata extra;
+    extra.setDouble("exr/exposure", 2.5);
+    sourceEffect->setExtraMetadata(extra);
+    sourceEffect->changeMetadataUnderSameHash();
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(hash, source->getHashValue());
+    EXPECT_TRUE(contains(effect->getMetadataDisplayText(), "exr/exposure"));
+    EXPECT_FALSE(contains(effect->getMetadataDisplayText(), "exr/gain"));
+}
+
+TEST_F(MetadataViewTest, DisplayShowsTheViewItIsAskedFor)
+{
+    getApp()->getProject()->createProjectViews(std::vector<std::string>(1, "Right"));
+    MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect != NULL);
+    ImageMetadata rightOnly;
+    rightOnly.setInt("exr/right", 9);
+    sourceEffect->setViewExtraMetadata(ViewIdx(1), rightOnly);
+
+    effect->refreshMetadataDisplay(1., ViewIdx(0));
+    EXPECT_FALSE(contains(effect->getMetadataDisplayText(), "exr/right"));
+
+    effect->refreshMetadataDisplay(1., ViewIdx(1));
+    EXPECT_TRUE(contains(effect->getMetadataDisplayText(), "exr/right"));
 }

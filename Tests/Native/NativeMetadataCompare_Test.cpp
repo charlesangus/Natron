@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QString>
 #include <QStringList>
 
@@ -37,6 +38,7 @@
 #include "NativeMetadataTestEffect.h"
 #include "NativePluginIdentity.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -45,6 +47,7 @@
 #include "Engine/Nodes/Metadata/MetadataCompare.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Plugin.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -96,9 +99,10 @@ protected:
         connectNodes(b, compare, 1, true);
     }
 
-    std::string displayAt(double time)
+    std::string displayAt(double time,
+                          ViewIdx view = ViewIdx(0))
     {
-        effect->refreshDifferencesDisplay(time);
+        effect->refreshDifferencesDisplay(time, view);
 
         return effect->getDifferencesDisplayText();
     }
@@ -205,4 +209,34 @@ TEST_F(MetadataCompareTest, RefreshDoesNotChangeTheNodeHash)
 
     EXPECT_EQ(before, compare->getHashValue());
     EXPECT_FALSE(effect->isEvaluationBlocked());
+}
+
+TEST_F(MetadataCompareTest, DisplayFollowsMetadataInvalidatedUnderTheSameHashUpstream)
+{
+    makeSourcesDiffer();
+    connectBoth();
+    ASSERT_NE(std::string::npos, displayAt(1.).find("differs: exr/shared: A=x B=y"));
+
+    const U64 hash = b->getHashValue();
+    ImageMetadata bExtra;
+    bExtra.setInt("exr/bonly", 7);
+    bExtra.setString("exr/shared", "z");
+    sourceEffectOf(b)->setExtraMetadata(bExtra);
+    sourceEffectOf(b)->changeMetadataUnderSameHash();
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(hash, b->getHashValue());
+    EXPECT_NE(std::string::npos, effect->getDifferencesDisplayText().find("differs: exr/shared: A=x B=z"));
+}
+
+TEST_F(MetadataCompareTest, ComparesTheViewItIsAskedFor)
+{
+    getApp()->getProject()->createProjectViews(std::vector<std::string>(1, "Right"));
+    connectBoth();
+    ImageMetadata rightOnly;
+    rightOnly.setInt("exr/right", 9);
+    sourceEffectOf(a)->setViewExtraMetadata(ViewIdx(1), rightOnly);
+
+    EXPECT_EQ("", displayAt(1., ViewIdx(0)));
+    EXPECT_EQ("A only: exr/right=9", displayAt(1., ViewIdx(1)));
 }

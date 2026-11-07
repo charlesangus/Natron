@@ -54,9 +54,9 @@ public:
     explicit MetadataView(NodePtr node);
 
     /**
-     * @brief Rebuilds the table from this node's metadata at time. Main thread only.
+     * @brief Rebuilds the table from this node's metadata at time and view. Main thread only.
      **/
-    void refreshMetadataDisplay(double time);
+    void refreshMetadataDisplay(double time, ViewIdx view);
 
     /**
      * @brief The table the settings panel currently shows.
@@ -99,6 +99,7 @@ private:
 
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     void scheduleRefresh();

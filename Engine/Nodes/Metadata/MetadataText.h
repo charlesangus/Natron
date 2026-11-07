@@ -30,7 +30,9 @@
 
 #include <string>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -53,6 +55,12 @@ std::string formatValuePlain(const ImageMetadata::Value& value);
  * @brief formatValuePlain(), escaped for a rich-text label.
  **/
 std::string formatValueHtml(const ImageMetadata::Value& value);
+
+/**
+ * @brief The view a metadata display reads: requested when it names one view, else the view the
+ * app's active viewer shows, else the first. Main thread only.
+ **/
+ViewIdx displayedView(const AppInstancePtr& app, ViewSpec requested);
 } // namespace MetadataText
 
 NATRON_NAMESPACE_EXIT

@@ -63,9 +63,9 @@ public:
     static std::string differences(const ImageMetadata& a, const ImageMetadata& b) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Rebuilds the display from the metadata of A and B at time. Main thread only.
+     * @brief Rebuilds the display from the metadata of A and B at time and view. Main thread only.
      **/
-    void refreshDifferencesDisplay(double time);
+    void refreshDifferencesDisplay(double time, ViewIdx view);
 
     /**
      * @brief The text the settings panel currently shows.
@@ -121,6 +121,7 @@ private:
 
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void dropCachedOutputMetadata() OVERRIDE FINAL;
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     void scheduleRefresh();

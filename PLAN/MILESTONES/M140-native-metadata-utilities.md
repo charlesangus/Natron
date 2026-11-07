@@ -146,6 +146,8 @@ Do this phase last: it removes the fixtures' old source. Native nodes are in fro
 
 ## Decisions
 
+- 2026-11-07 — Merged as fbefda06c (#168). Plain Metadata<Function> IDs (user). Also fixes a crash: a viewer request queued behind a render reads a dead Node.
+
 - M140 UAT 2026-11-06 (user): fine, but give the nodes plain IDs per M111 and name them Metadata<Function> (MetadataView, MetadataCompare) so they group in the tab menu.
 - 2026-11-02: audit (plan state caught up with the branch). Every task committed and pushed; no PR. The last remote build (f462c414e) failed in its Build step. The gate's Xvfb check has no script yet.
 - 2026-10-28: phases 1–4 implemented (builds pending). CompareMetadata compares by displayed text; PassiveKnobUpdate shared by both display nodes; CompareMetadata outputs A's metadata. Test-only OFX bridge plug-ins (natronTestMetadata, raw OFX C API, host via OfxPlugin::setHost, grouped under Other) replace openfx-metadata. PM call: no Engine/OfxRetired markers for the three org.openfx.examples.metadata* IDs (a marker means the bundle still ships; no backward compatibility) — fetch-assets deletes stale copies.

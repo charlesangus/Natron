@@ -5046,9 +5046,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
             ///stack follow always the same order.
             NodePtr outputHasInput = output->getInput(it->second);
             if (outputHasInput) {
-                bool ok = getApp()->getProject()->disconnectNodes(outputHasInput, output);
-                assert(ok);
-                Q_UNUSED(ok);
+                ignore_result(output->disconnectInput(it->second));
             }
 
             ///and connect the output to this node

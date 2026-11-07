@@ -45,6 +45,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QDebug>
 #include <QFutureWatcher>
 #include <QMutex>
+#include <QRegularExpression>
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
@@ -448,6 +449,36 @@ knobChangesDisplay(const std::string& name)
     return (name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook);
 }
 
+// The label is rich text: once edited in the panel its lines sit inside a font tag, possibly
+// ahead of a custom-data tag, so the lock lines have to go inside those too.
+QString
+withLockLines(QString label,
+              const QString& lockLines)
+{
+    const QString lockLine = QString::fromUtf8("Locked input \\d+ to [^\\n<]*");
+    const QString fontStart = QString::fromUtf8("<font[^>]*>");
+
+    label.remove(QRegularExpression(QString::fromUtf8("\\n") + lockLine));
+    label.replace(QRegularExpression(QString::fromUtf8("(^|") + fontStart + QString::fromUtf8(")") + lockLine + QString::fromUtf8("\\n?")),
+                  QString::fromUtf8("\\1"));
+    if (lockLines.isEmpty()) {
+        return label;
+    }
+
+    int insertAt = label.indexOf(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+    if (insertAt == -1) {
+        insertAt = label.lastIndexOf(QString::fromUtf8(kFontEndTag));
+    }
+    if (insertAt == -1) {
+        insertAt = label.size();
+    }
+    const QString before = label.left(insertAt);
+    const bool startsContent = before.isEmpty() || before.contains(QRegularExpression(fontStart + QString::fromUtf8("$")));
+    label.insert(insertAt, (startsContent ? QString() : QString::fromUtf8("\n")) + lockLines);
+
+    return label;
+}
+
 class SetterKnobWrites {
 public:
     explicit SetterKnobWrites(int* depth)
@@ -599,6 +630,14 @@ ViewerInstance::initializeKnobs()
         k.inputs[i] = input;
     }
 
+    for (int i = 0; i < getNInputs(); ++i) {
+        const std::string lockName = kViewerParamLockedInputPrefix + std::to_string(i + 1);
+        KnobStringPtr lock = createViewerKnob<KnobString>(this, page, tr("Locked Input %1").arg(i + 1), lockName.c_str(),
+                                                          tr("The script name of the node this input is locked to, empty for none."));
+        lock->setSecretByDefault(true);
+        k.lockedInputs[i] = lock;
+    }
+
     KnobChoicePtr operation = createViewerKnob<KnobChoice>(this, page, tr("Operation"), kViewerParamOperation,
                                                            tr("Operation applied between inputs A and B. a and b are the alphas of "
                                                               "the inputs, d the wipe dissolve factor (Wipe Amount)."));
@@ -722,6 +761,69 @@ ViewerInstance::initializeKnobs()
         node->declareLayerKnob(alphaChannel, 0, LayerKnobSpec::eRoleInputBound);
     }
 } // ViewerInstance::initializeKnobs
+
+std::string
+ViewerInstance::getLockedInput(int inputNb) const
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs())) {
+        return std::string();
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+
+    return knob ? knob->getValue() : std::string();
+}
+
+void
+ViewerInstance::setLockedInput(int inputNb,
+                               const std::string& nodeName)
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs())) {
+        return;
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+    if (!knob || (knob->getValue() == nodeName)) {
+        return;
+    }
+    {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(nodeName);
+    }
+    refreshLockDecoration();
+}
+
+void
+ViewerInstance::refreshLockDecoration()
+{
+    NodePtr node = getNode();
+    QString lockLines;
+    bool anyLock = false;
+
+    for (int i = 0; i < getNInputs(); ++i) {
+        const std::string name = getLockedInput(i);
+        if (name.empty()) {
+            continue;
+        }
+        if (anyLock) {
+            lockLines += QLatin1Char('\n');
+        }
+        lockLines += QString::fromUtf8("Locked input %1 to %2").arg(i + 1).arg(QString::fromUtf8(name.c_str()));
+        anyLock = true;
+    }
+
+    KnobStringPtr label = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUserLabelKnobName));
+    if (label) {
+        const QString updated = withLockLines(QString::fromUtf8(label->getValue().c_str()), lockLines);
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        label->setValue(updated.toStdString());
+    }
+
+    if (anyLock) {
+        const double grey = 0x11 / 255.;
+        node->setColor(grey, grey, grey);
+    } else {
+        node->resetColor();
+    }
+}
 
 bool
 ViewerInstance::knobChanged(KnobI* k,
@@ -4860,21 +4962,6 @@ ViewIdx
 ViewerInstance::getViewerCurrentView() const
 {
     return _imp->uiContext ? _imp->uiContext->getCurrentView() : ViewIdx(0);
-}
-
-void
-ViewerInstance::setActivateInputChangeRequestedFromViewer(bool fromViewer)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->activateInputChangedFromViewer = fromViewer;
-}
-
-bool
-ViewerInstance::isInputChangeRequestedFromViewer() const
-{
-    assert( QThread::currentThread() == qApp->thread() );
-
-    return _imp->activateInputChangedFromViewer;
 }
 
 void

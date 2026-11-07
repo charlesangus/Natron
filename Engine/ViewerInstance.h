@@ -59,6 +59,8 @@
 #define kViewerParamAlphaChannel "alphaChannel"
 #define kViewerParamAInput "aInput"
 #define kViewerParamBInput "bInput"
+// Followed by the input number, counted from 1.
+#define kViewerParamLockedInputPrefix "lockedInput"
 #define kViewerParamOperation "operation"
 #define kViewerParamWipeCenter "wipeCenter"
 #define kViewerParamWipeAmount "wipeAmount"
@@ -404,6 +406,16 @@ public:
     void getActiveInputs(int & a, int &b) const;
 
     /**
+     * @brief The script name of the node the input is locked to, empty if it is not locked.
+     **/
+    std::string getLockedInput(int inputNb) const;
+
+    /**
+     * @brief Also keeps the viewer's label and colour in step with its locks. Main thread only.
+     **/
+    void setLockedInput(int inputNb, const std::string& nodeName);
+
+    /**
      * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
      * the viewer shows a 2D image or a scene. eDataKindImage when A has nothing connected, and
      * eDataKindPolymorphic when the input is ambiguous. MT-safe.
@@ -472,11 +484,6 @@ public:
     bool isDoingPartialUpdates() const;
 
     virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
-
-    ///Only callable on MT
-    void setActivateInputChangeRequestedFromViewer(bool fromViewer);
-
-    bool isInputChangeRequestedFromViewer() const;
 
     void setViewerPaused(bool paused, bool allInputs);
 
@@ -649,6 +656,8 @@ private:
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
     bool refreshResolvedLayers();
+
+    void refreshLockDecoration();
 
     void requestRenderFromKnob();
     void redrawOrRenderForColorChange();

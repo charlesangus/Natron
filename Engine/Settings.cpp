@@ -1290,13 +1290,6 @@ Settings::initializeKnobsViewers()
     _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
     _viewersTab->addKnob(_checkerboardColor2);
 
-    _autoWipe = AppManager::createKnob<KnobBool>( this, tr("Automatically enable wipe") );
-    _autoWipe->setName("autoWipeForViewer");
-    _autoWipe->setHintToolTip( tr("When checked, the wipe tool of the viewer will be automatically enabled "
-                                  "when the mouse is hovering the viewer and changing an input of a viewer." ) );
-    _viewersTab->addKnob(_autoWipe);
-
-
     _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>( this, tr("Automatically enable proxy when scrubbing the timeline") );
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
     _autoProxyWhenScrubbingTimeline->setHintToolTip( tr("When checked, the proxy mode will be at least at the level "
@@ -1836,7 +1829,6 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 1);
     _checkerboardColor2->setDefaultValue(0., 2);
     _checkerboardColor2->setDefaultValue(0., 3);
-    _autoWipe->setDefaultValue(true);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
@@ -2677,12 +2669,6 @@ Settings::getCheckerboardColor2(double* r,
     *g = _checkerboardColor2->getValue(1);
     *b = _checkerboardColor2->getValue(2);
     *a = _checkerboardColor2->getValue(3);
-}
-
-bool
-Settings::isAutoWipeEnabled() const
-{
-    return _autoWipe->getValue();
 }
 
 bool

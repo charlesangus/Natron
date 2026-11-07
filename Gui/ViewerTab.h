@@ -418,9 +418,9 @@ public Q_SLOTS:
 
     void onCompositingOperatorIndexChanged(int index);
 
-    void onFirstInputNameChanged(const QString & text);
+    void onFirstInputMenuChanged(int menuIndex);
 
-    void onSecondInputNameChanged(const QString & text);
+    void onSecondInputMenuChanged(int menuIndex);
 
     void switchInputAAndB();
 
@@ -542,7 +542,9 @@ private:
     void refreshDisplayTransformMenus();
 
     // The input index whose menu entry reads text, -1 for none.
-    int inputIndexForMenuText(const QString& text) const;
+    int inputForMenuIndex(int menuIndex) const;
+    int menuIndexForInput(int inputNb) const;
+    void rebuildInputMenus();
 
     // Gives the scene viewport the menus' display and view, as the GL viewer has them.
     void refreshSceneDisplayTransform();

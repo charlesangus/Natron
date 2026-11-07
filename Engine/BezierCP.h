@@ -37,8 +37,9 @@
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -107,11 +108,11 @@ public:
     void removeAnimation(bool useGuiCurves, double currentTime);
 
     ///returns true if a keyframe was set
-    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
+    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
-    ///returns true if a keyframe was set
-    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
-
+    /// returns true if a keyframe was set. transform is the curve's at time: the caller reads it
+    /// before taking itemMutex, because composing it may lock that mutex.
+    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const Transform::Matrix3x3& transform, const std::pair<double, double>& pixelScale);
 
     virtual bool isFeatherPoint() const
     {
@@ -170,6 +171,13 @@ public:
     void cloneInternalCurvesToGuiCurves();
 
     void cloneGuiCurvesToInternalCurves();
+
+    /**
+     * @brief Copies the GUI curves, static positions, broken flag, track link and offsets of other,
+     * which are never behind its internal ones, onto this point's GUI copy, and onto its internal
+     * state too when alsoInternal is true.
+     **/
+    void cloneGuiState(const BezierCP& other, bool alsoInternal);
 
     /**
      * @brief Mirrors the internal keyframe at time, or its absence, and its neighbours onto the

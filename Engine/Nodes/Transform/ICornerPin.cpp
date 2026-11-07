@@ -105,7 +105,7 @@ ICornerPin::initializeKnobs()
     page->addKnob(srcClipChanged);
     _srcClipChanged = srcClipChanged;
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -118,22 +118,16 @@ ICornerPin::initializeKnobs()
 } // ICornerPin::initializeKnobs
 
 void
-ICornerPin::updateClampEnabled(double time,
-                               ViewSpec view)
+ICornerPin::updateFilterVisibility(double time,
+                                   ViewSpec view)
 {
-    KnobChoicePtr filter = _op.filter.lock();
-    KnobBoolPtr clamp = _op.clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _op.filterKnobs.updateVisibility(time, view);
 }
 
 void
 ICornerPin::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -212,7 +206,7 @@ ICornerPin::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

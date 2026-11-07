@@ -37,6 +37,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -431,6 +432,21 @@ TEST_F(NativeIDistortTest, UVFromAnyLayer)
             EXPECT_EQ(0, unplannedPulls[p]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[p];
         }
     }
+}
+
+TEST_F(NativeIDistortTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr uv = makeConstantUV(1.25, -0.5);
+    ASSERT_TRUE(source && uv);
+    NodePtr node = makeIDistort(source, uv, "cubic");
+    ASSERT_TRUE(bool(node));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
 }
 
 TEST_F(NativeIDistortTest, FilteredFieldIsIndependentOfTheWindow)

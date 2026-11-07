@@ -239,6 +239,10 @@ struct RotoContextSerialization {
     std::list<std::string> selectedItems;
     bool autoKeying;
     bool rippleEdit;
+    // 0 all keys, 1 from start, 2 to end, 3 the range below
+    int rippleEditMode;
+    double rippleEditRangeFirst;
+    double rippleEditRangeLast;
     bool featherLink;
 
     // Set by a SplineWarp host's context only.
@@ -250,6 +254,9 @@ struct RotoContextSerialization {
         , selectedItems()
         , autoKeying(false)
         , rippleEdit(false)
+        , rippleEditMode(0)
+        , rippleEditRangeFirst(1.)
+        , rippleEditRangeLast(100.)
         , featherLink(false)
         , hasSplineWarp(false)
         , splineWarp()

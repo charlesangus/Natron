@@ -29,6 +29,7 @@
 #include <cmath>
 #include <list>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,17 @@ lensCorrectTolerance()
 {
     return ParityTolerance::make(2e-4, 1e-4);
 }
+
+// A floor a float position lands on the far side of, where the CPU's double does not. The 1e-5 pixel
+// position difference decides impulse wherever a position lies that close to a pixel edge, as
+// fisheye to rectilinear's red does at (1, 0). The pixel it then reads is one source step away in
+// the parity source's ramps, 2 / 48 plus their sine terms.
+struct FloorFlipAllowance {
+    std::size_t values = 0;
+    double worst = 0.;
+};
+
+const FloorFlipAllowance kImpulseFloorFlips = { 8, 1. / 16. };
 
 StagedImageEffect*
 effectOf(const NodePtr& node)
@@ -142,9 +154,10 @@ protected:
     void expectParity(const NodePtr& source,
                       const NodePtr& node,
                       const std::string& what,
-                      unsigned mipmapLevel = 0)
+                      unsigned mipmapLevel = 0,
+                      const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
-        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel);
+        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel, flips);
     }
 
     void expectParityOverRegion(const NodePtr& node,
@@ -161,7 +174,8 @@ protected:
     void expectParityOver(const NodePtr& node,
                           const RectI& window,
                           const std::string& what,
-                          unsigned mipmapLevel)
+                          unsigned mipmapLevel,
+                          const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
 
@@ -172,7 +186,19 @@ protected:
         EXPECT_TRUE(result.ranInRegion(node)) << what;
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
         const ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
-        EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+        const auto valueAt = [&](std::size_t index) {
+            const std::size_t pixel = index / 4;
+            const int width = window.width();
+            std::ostringstream text;
+            text << "(" << window.x1 + (int)(pixel % width) << "," << window.y1 + (int)(pixel / width) << ") channel " << index % 4
+                 << " gpu " << result.gpu[index] << " cpu " << result.cpu[index];
+            return text.str();
+        };
+        const std::string where = diff.mismatches == 0 ? std::string() : ", first at " + valueAt(diff.firstMismatchIndex) + ", worst at " + valueAt(diff.worstIndex);
+        EXPECT_LE(diff.mismatches, flips.values) << what << ": worst " << diff.worstAbsolute << where;
+        if (flips.values != 0) {
+            EXPECT_LE(diff.worstAbsolute, flips.worst) << what << where;
+        }
         const auto notFinite = [](float v) {
             return !std::isfinite(v);
         };
@@ -248,6 +274,39 @@ TEST_F(NativeLensCorrectGpuTest, SettingsMatchTheCpu)
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMethod, std::string(kLensCorrectMethodVignette)));
     expectParity(source, node, "manual vignette only");
 }
+
+// One test per filter, as the wider kernels make the whole sweep slow on a loaded runner. The first
+// setup splits the channels and the second changes the projection.
+class NativeLensCorrectGpuFilterTest
+    : public NativeLensCorrectGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeLensCorrectGpuFilterTest, MatchesTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    for (const LensSetup* setup : { &kSetups[0], &kSetups[4] }) {
+        NodePtr node = makeLensCorrect(source, *setup);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
+        for (bool clamp : { false, true }) {
+            if (clamp && !Resampler::filterHonoursClamp((Resampler::FilterEnum)f)) {
+                continue;
+            }
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+            const bool floorDecides = setup == &kSetups[4] && (Resampler::FilterEnum)f == Resampler::eFilterImpulse;
+            expectParity(source, node, std::string(setup->what) + " " + filters[f].id + (clamp ? " clamp" : ""), 0u,
+                         floorDecides ? kImpulseFloorFlips : FloorFlipAllowance());
+        }
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeLensCorrectGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 TEST_F(NativeLensCorrectGpuTest, ScaledRendersMatchTheCpu)
 {

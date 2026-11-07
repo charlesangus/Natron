@@ -138,87 +138,6 @@ const std::vector<std::vector<PlaneTap>> kPlaneTaps = {
 };
 
 // The 512 x 512 crop of the Canon fixture tools/raw/make-neural-restore-reference.py takes from
-// Strength 0 is the bilinear demosaic and needs no model: with AI off and nothing installed the
-// render still succeeds, and every photosite keeps its own sample.
-TEST_F(NativeRawNeuralDenoiseTest, StrengthZeroNeedsNoModel)
-{
-    appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("aiEnabled")->setValue(false);
-    const RectI rod(0, 0, 75, 61);
-    const SceneFn flat = [](int, int, float rgb[3]) {
-        rgb[0] = 0.62f;
-        rgb[1] = 0.35f;
-        rgb[2] = 0.48f;
-    };
-    for (int pass = 0; pass < 2; ++pass) {
-        const SceneFn scene = (pass == 0) ? flat : SceneFn(texturedScene);
-        NodePtr node = createSceneChain(rod, scene);
-        ASSERT_TRUE(bool(node));
-        KnobDoublePtr strength = node->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kRawNeuralDenoiseParamStrength);
-        ASSERT_TRUE(bool(strength));
-        strength->setValue(0.);
-
-        const RenderedPlane plane = render(node, rod);
-        EXPECT_EQ(std::string(), persistentError(node));
-        ASSERT_EQ(4u, plane.channels.size());
-        const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
-        for (int y = rod.y1; y < rod.y2; ++y) {
-            for (int x = rod.x1; x < rod.x2; ++x) {
-                float rgb[3];
-                scene(x, y, rgb);
-                const int own = layout.colourAt(x, y);
-                ASSERT_NEAR(rgb[own], rawTestPlaneValue(plane, x, y, own), 1e-6) << x << "," << y;
-                if (pass == 0) {
-                    for (int c = 0; c < 3; ++c) {
-                        ASSERT_NEAR(rgb[c], rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
-                    }
-                }
-            }
-        }
-    }
-}
-
-// The planes model reads the neighbouring blocks with a different tap per plane and direction. The
-// expected values are taken from the mosaic by hand, with the rows and columns past each edge
-// mirrored photosite by photosite, so a swapped green plane, a shifted block grid or another edge
-// rule shows up at the image's own edges.
-TEST_F(NativeRawNeuralDenoiseTest, EveryPlaneAndEdgeReachesTheModelAsDarktablePacksIt)
-{
-    install();
-    const int width = 36;
-    const int height = 28;
-    const RectI rod(0, 0, width, height);
-    NodePtr node = createSceneChain(rod, hashedScene);
-    ASSERT_TRUE(bool(node));
-    selectModel(node, RawNeuralDenoiseModels::kPlanes);
-
-    const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
-    const RawTestSource::ValueFn mosaic = mosaicOf(hashedScene, layout);
-    // Plane `plane` of block (row, column) counted from the top-left: R, G1, G2, B at its sites.
-    const auto packed = [&](int plane, int row, int column) {
-        const int r = reflect(2 * row + (plane >> 1), height);
-        const int c = reflect(2 * column + (plane & 1), width);
-
-        return mosaic(c, height - 1 - r, 0);
-    };
-
-    const RenderedPlane plane = render(node, rod);
-    EXPECT_EQ(std::string(), persistentError(node));
-    ASSERT_EQ(4u, plane.channels.size());
-    for (int y = rod.y1; y < rod.y2; ++y) {
-        for (int x = rod.x1; x < rod.x2; ++x) {
-            const int row = (height - 1 - y) / 2;
-            const int column = x / 2;
-            for (int c = 0; c < 3; ++c) {
-                float expected = 0.f;
-                for (const PlaneTap& tap : kPlaneTaps[c]) {
-                    expected += tap.weight * packed(tap.plane, row + tap.down, column + tap.right);
-                }
-                ASSERT_NEAR(expected, rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
-            }
-        }
-    }
-}
-
 // darktable's neural restore DNG, from the top-left of the visible image.
 const char* const kReferenceFile = "canon-eos-5d-mark-iii-neural-restore.tif";
 const int kReferenceSize = 512;
@@ -335,6 +254,87 @@ protected:
 
     std::unique_ptr<RawNeuralDenoiseModels> _models;
 };
+
+// Strength 0 is the bilinear demosaic and needs no model: with AI off and nothing installed the
+// render still succeeds, and every photosite keeps its own sample.
+TEST_F(NativeRawNeuralDenoiseTest, StrengthZeroNeedsNoModel)
+{
+    appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("aiEnabled")->setValue(false);
+    const RectI rod(0, 0, 75, 61);
+    const SceneFn flat = [](int, int, float rgb[3]) {
+        rgb[0] = 0.62f;
+        rgb[1] = 0.35f;
+        rgb[2] = 0.48f;
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+        const SceneFn scene = (pass == 0) ? flat : SceneFn(texturedScene);
+        NodePtr node = createSceneChain(rod, scene);
+        ASSERT_TRUE(bool(node));
+        KnobDoublePtr strength = node->getEffectInstance()->getKnobByNameAndType<KnobDouble>(kRawNeuralDenoiseParamStrength);
+        ASSERT_TRUE(bool(strength));
+        strength->setValue(0.);
+
+        const RenderedPlane plane = render(node, rod);
+        EXPECT_EQ(std::string(), persistentError(node));
+        ASSERT_EQ(4u, plane.channels.size());
+        const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
+        for (int y = rod.y1; y < rod.y2; ++y) {
+            for (int x = rod.x1; x < rod.x2; ++x) {
+                float rgb[3];
+                scene(x, y, rgb);
+                const int own = layout.colourAt(x, y);
+                ASSERT_NEAR(rgb[own], rawTestPlaneValue(plane, x, y, own), 1e-6) << x << "," << y;
+                if (pass == 0) {
+                    for (int c = 0; c < 3; ++c) {
+                        ASSERT_NEAR(rgb[c], rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The planes model reads the neighbouring blocks with a different tap per plane and direction. The
+// expected values are taken from the mosaic by hand, with the rows and columns past each edge
+// mirrored photosite by photosite, so a swapped green plane, a shifted block grid or another edge
+// rule shows up at the image's own edges.
+TEST_F(NativeRawNeuralDenoiseTest, EveryPlaneAndEdgeReachesTheModelAsDarktablePacksIt)
+{
+    install();
+    const int width = 36;
+    const int height = 28;
+    const RectI rod(0, 0, width, height);
+    NodePtr node = createSceneChain(rod, hashedScene);
+    ASSERT_TRUE(bool(node));
+    selectModel(node, RawNeuralDenoiseModels::kPlanes);
+
+    const RawLayout layout = *RawLayout::fromMetadata(rawTestMetadata("RGGB", 0, 0, eRawStagePrepared));
+    const RawTestSource::ValueFn mosaic = mosaicOf(hashedScene, layout);
+    // Plane `plane` of block (row, column) counted from the top-left: R, G1, G2, B at its sites.
+    const auto packed = [&](int plane, int row, int column) {
+        const int r = reflect(2 * row + (plane >> 1), height);
+        const int c = reflect(2 * column + (plane & 1), width);
+
+        return mosaic(c, height - 1 - r, 0);
+    };
+
+    const RenderedPlane plane = render(node, rod);
+    EXPECT_EQ(std::string(), persistentError(node));
+    ASSERT_EQ(4u, plane.channels.size());
+    for (int y = rod.y1; y < rod.y2; ++y) {
+        for (int x = rod.x1; x < rod.x2; ++x) {
+            const int row = (height - 1 - y) / 2;
+            const int column = x / 2;
+            for (int c = 0; c < 3; ++c) {
+                float expected = 0.f;
+                for (const PlaneTap& tap : kPlaneTaps[c]) {
+                    expected += tap.weight * packed(tap.plane, row + tap.down, column + tap.right);
+                }
+                ASSERT_NEAR(expected, rawTestPlaneValue(plane, x, y, c), 1e-5) << x << "," << y << " channel " << c;
+            }
+        }
+    }
+}
 
 TEST_F(NativeRawNeuralDenoiseTest, Identity)
 {

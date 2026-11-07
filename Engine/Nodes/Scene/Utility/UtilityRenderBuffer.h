@@ -29,6 +29,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -69,6 +70,19 @@ public:
      **/
     void clear(const PXR_NS::VtValue& value);
     void setConverged(bool converged);
+
+    /**
+     * @brief Writes one pixel; one outside the buffer is ignored. Components the buffer's format does
+     * not have are dropped and the ones count does not supply are left as they are. MT-safe for
+     * distinct pixels.
+     **/
+    void setPixel(unsigned int x,
+                  unsigned int y,
+                  const float* components,
+                  std::size_t count);
+    void setPixel(unsigned int x,
+                  unsigned int y,
+                  std::int32_t value);
 
 private:
     virtual void _Deallocate() OVERRIDE;

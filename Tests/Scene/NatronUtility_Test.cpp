@@ -37,12 +37,14 @@
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
+#include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/rendererCreateArgsSchema.h>
 #include <pxr/imaging/hd/rendererPlugin.h>
 #include <pxr/imaging/hd/rendererPluginHandle.h>
 #include <pxr/imaging/hd/rendererPluginRegistry.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hd/types.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hf/pluginDesc.h>
 #include <pxr/usd/sdf/layer.h>
@@ -87,6 +89,30 @@ twoCubes()
         + "def Mesh \"B\" {" + kCubeGeometry + "}\n";
 }
 
+const int kRenderSize = 16;
+const double kCameraZ = 30.;
+
+// The window holds float depth with the camera's near plane at 0.1, so a distance of about 30 comes back
+// only to within about a thousandth.
+const double kDistanceTolerance = 5e-3;
+
+const char* const kRedColor = "    color3f[] primvars:displayColor = [(1, 0, 0)] (interpolation = \"constant\")\n";
+
+std::string
+cubeAt(const char* name,
+       const std::string& attributes)
+{
+    return std::string("def Mesh \"") + name + "\" {" + kCubeGeometry + attributes + "}\n";
+}
+
+std::string
+translated(double x,
+           double y)
+{
+    return "    double3 xformOp:translate = (" + std::to_string(x) + ", " + std::to_string(y) + ", 0)\n"
+                                                                                                "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n";
+}
+
 // Renders a stage with the delegate through the same engine the node drives it with, and reads back
 // what the delegate's scene holds.
 class UtilityRender {
@@ -110,14 +136,17 @@ public:
 
     void render()
     {
-        const int size = 16;
-        GfFrustum frustum;
+        renderWithoutChecks();
+        EXPECT_TRUE(_engine->IsConverged());
+    }
 
-        frustum.SetPerspective(45., 1., 0.1, 1000.);
-        frustum.SetPosition(GfVec3d(0., 0., 30.));
-        _engine->SetRenderBufferSize(GfVec2i(size, size));
-        _engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), size, size)));
-        _engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
+    void renderWithoutChecks()
+    {
+        const GfFrustum camera = frustum();
+
+        _engine->SetRenderBufferSize(GfVec2i(kRenderSize, kRenderSize));
+        _engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), kRenderSize, kRenderSize)));
+        _engine->SetCameraState(camera.ComputeViewMatrix(), camera.ComputeProjectionMatrix());
 
         UsdImagingGLRenderParams params;
 
@@ -126,7 +155,59 @@ public:
         params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
         params.highlight = false;
         _engine->Render(stage->GetPseudoRoot(), params);
-        EXPECT_TRUE(_engine->IsConverged());
+    }
+
+    bool isConverged() const
+    {
+        return _engine->IsConverged();
+    }
+
+    bool stopRenderer()
+    {
+        return _engine->StopRenderer();
+    }
+
+    bool restartRenderer()
+    {
+        return _engine->RestartRenderer();
+    }
+
+    GfVec4f colorAt(int x,
+                    int y) const
+    {
+        return pixelAt<GfVec4f>(HdAovTokens->color, x, y);
+    }
+
+    float windowDepthAt(int x,
+                        int y) const
+    {
+        return pixelAt<float>(HdAovTokens->depth, x, y);
+    }
+
+    // The window depth at the pixel's centre, carried back through the camera to a distance along its axis.
+    double distanceAt(int x,
+                      int y) const
+    {
+        const GfMatrix4d inverse = frustum().ComputeProjectionMatrix().GetInverse();
+        const double ndcX = (x + 0.5) / kRenderSize * 2. - 1.;
+        const double ndcY = (y + 0.5) / kRenderSize * 2. - 1.;
+        const double ndcZ = windowDepthAt(x, y) * 2. - 1.;
+        const double z = ndcX * inverse[0][2] + ndcY * inverse[1][2] + ndcZ * inverse[2][2] + inverse[3][2];
+        const double w = ndcX * inverse[0][3] + ndcY * inverse[1][3] + ndcZ * inverse[2][3] + inverse[3][3];
+
+        return -z / w;
+    }
+
+    int primIdAt(int x,
+                 int y) const
+    {
+        return pixelAt<std::int32_t>(HdAovTokens->primId, x, y);
+    }
+
+    int instanceIdAt(int x,
+                     int y) const
+    {
+        return pixelAt<std::int32_t>(HdAovTokens->instanceId, x, y);
     }
 
     std::size_t stat(const char* key) const
@@ -154,6 +235,40 @@ public:
     UsdStageRefPtr stage;
 
 private:
+    static GfFrustum frustum()
+    {
+        GfFrustum camera;
+
+        camera.SetPerspective(45., 1., 0.1, 1000.);
+        camera.SetPosition(GfVec3d(0., 0., kCameraZ));
+
+        return camera;
+    }
+
+    template <class T>
+    T pixelAt(const TfToken& aov,
+              int x,
+              int y) const
+    {
+        HdRenderBuffer* buffer = _engine->GetAovRenderBuffer(aov);
+
+        if (!buffer) {
+            ADD_FAILURE() << "no buffer for " << aov.GetString();
+
+            return T();
+        }
+        EXPECT_EQ(sizeof(T), HdDataSizeOfFormat(buffer->GetFormat()));
+        EXPECT_EQ(static_cast<unsigned int>(kRenderSize), buffer->GetWidth());
+        EXPECT_EQ(static_cast<unsigned int>(kRenderSize), buffer->GetHeight());
+
+        const T* pixels = static_cast<const T*>(buffer->Map());
+        const T value = pixels[y * kRenderSize + x];
+
+        buffer->Unmap();
+
+        return value;
+    }
+
     SdfLayerRefPtr _layer;
     std::unique_ptr<UsdImagingGLEngine> _engine;
 };
@@ -471,4 +586,170 @@ TEST(NatronUtility, ImplicitPrimsArriveAsMeshes)
     render.render();
     EXPECT_EQ(1u, render.stat(kUtilityStatGeometryCount));
     EXPECT_EQ(12u, render.stat(kUtilityStatTriangleCount));
+}
+
+// The cube is two units wide at 29 from the camera, which covers the four pixels around the image's centre.
+TEST(NatronUtilityRender, RedCubeShowsColorDepthAndIds)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.render();
+
+    for (const int x : { 7, 8 }) {
+        for (const int y : { 7, 8 }) {
+            const GfVec4f color = render.colorAt(x, y);
+
+            EXPECT_FLOAT_EQ(1.f, color[0]);
+            EXPECT_FLOAT_EQ(0.f, color[1]);
+            EXPECT_FLOAT_EQ(0.f, color[2]);
+            EXPECT_FLOAT_EQ(1.f, color[3]);
+            EXPECT_NEAR(kCameraZ - 1., render.distanceAt(x, y), kDistanceTolerance);
+            EXPECT_GE(render.primIdAt(x, y), 0);
+            EXPECT_EQ(0, render.instanceIdAt(x, y));
+        }
+    }
+}
+
+TEST(NatronUtilityRender, MissedPixelsKeepTheirClearValues)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.render();
+
+    const int last = kRenderSize - 1;
+
+    for (const auto& corner : { GfVec2i(0, 0), GfVec2i(last, 0), GfVec2i(0, last), GfVec2i(last, last) }) {
+        EXPECT_EQ(GfVec4f(0.f), render.colorAt(corner[0], corner[1]));
+        EXPECT_EQ(1.f, render.windowDepthAt(corner[0], corner[1]));
+        EXPECT_EQ(-1, render.primIdAt(corner[0], corner[1]));
+        EXPECT_EQ(-1, render.instanceIdAt(corner[0], corner[1]));
+    }
+}
+
+TEST(NatronUtilityRender, ImageRowsRunUpwardFromTheBottom)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor + translated(0., 6.)));
+
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 12)[3]);
+    EXPECT_FLOAT_EQ(0.f, render.colorAt(8, 3)[3]);
+}
+
+TEST(NatronUtilityRender, AMeshWithoutColorIsOpaqueNeutral)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", ""));
+
+    render.render();
+
+    const GfVec4f color = render.colorAt(8, 8);
+
+    EXPECT_GT(color[0], 0.f);
+    EXPECT_LT(color[0], 1.f);
+    EXPECT_FLOAT_EQ(color[0], color[1]);
+    EXPECT_FLOAT_EQ(color[0], color[2]);
+    EXPECT_FLOAT_EQ(1.f, color[3]);
+}
+
+TEST(NatronUtilityRender, ColorIsPremultipliedByOpacity)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", std::string(kRedColor) + "    float[] primvars:displayOpacity = [0.5] (interpolation = \"constant\")\n"));
+
+    render.render();
+
+    const GfVec4f color = render.colorAt(8, 8);
+
+    EXPECT_FLOAT_EQ(0.5f, color[0]);
+    EXPECT_FLOAT_EQ(0.f, color[1]);
+    EXPECT_FLOAT_EQ(0.5f, color[3]);
+}
+
+TEST(NatronUtilityRender, TwoMeshesHaveDifferentPrimIds)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + cubeAt("Left", kRedColor + translated(-6., 0.))
+                         + cubeAt("Right", kRedColor + translated(6., 0.)));
+
+    render.render();
+
+    const int left = render.primIdAt(3, 8);
+    const int right = render.primIdAt(12, 8);
+
+    EXPECT_GE(left, 0);
+    EXPECT_GE(right, 0);
+    EXPECT_NE(left, right);
+    EXPECT_EQ(-1, render.primIdAt(8, 8));
+}
+
+TEST(NatronUtilityRender, InstancesOfOneMeshHaveDifferentInstanceIds)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + "def PointInstancer \"Scatter\" {\n"
+                           "    point3f[] positions = [(-6, 0, 0), (6, 0, 0)]\n"
+                           "    int[] protoIndices = [0, 0]\n"
+                           "    rel prototypes = </Scatter/Protos/Cube>\n"
+                           "    def Scope \"Protos\" {\n"
+                         + cubeAt("Cube", kRedColor)
+                         + "    }\n"
+                           "}\n");
+
+    render.render();
+
+    const int left = render.instanceIdAt(3, 8);
+    const int right = render.instanceIdAt(12, 8);
+
+    EXPECT_GE(left, 0);
+    EXPECT_GE(right, 0);
+    EXPECT_NE(left, right);
+    EXPECT_EQ(render.primIdAt(3, 8), render.primIdAt(12, 8));
+}
+
+TEST(NatronUtilityRender, AnEmptyStageIsClearAndConverged)
+{
+    UtilityRender render("#usda 1.0\n");
+
+    render.render();
+    EXPECT_EQ(GfVec4f(0.f), render.colorAt(8, 8));
+    EXPECT_EQ(1.f, render.windowDepthAt(8, 8));
+    EXPECT_EQ(-1, render.primIdAt(8, 8));
+}
+
+// A pixel the earlier frame wrote must not survive into the next one.
+TEST(NatronUtilityRender, HidingTheMeshClearsItsPixels)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[3]);
+
+    render.imageable("/Cube").MakeInvisible();
+    render.render();
+    EXPECT_EQ(GfVec4f(0.f), render.colorAt(8, 8));
+    EXPECT_EQ(1.f, render.windowDepthAt(8, 8));
+}
+
+TEST(NatronUtilityRender, AStoppedRendererDoesNotConvergeUntilRestarted)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    EXPECT_TRUE(render.stopRenderer());
+    render.renderWithoutChecks();
+    EXPECT_FALSE(render.isConverged());
+
+    EXPECT_TRUE(render.restartRenderer());
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+}
+
+TEST(NatronUtilityRender, RestartingAfterAFinishedFrameRedrawsIt)
+{
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.render();
+    EXPECT_TRUE(render.stopRenderer());
+    render.renderWithoutChecks();
+    EXPECT_FALSE(render.isConverged());
+
+    EXPECT_TRUE(render.restartRenderer());
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
 }

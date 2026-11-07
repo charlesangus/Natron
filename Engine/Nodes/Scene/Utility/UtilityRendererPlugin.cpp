@@ -148,6 +148,11 @@ defineUtilityRendererTypes()
 {
     HdRendererPluginRegistry::Define<HdNatronUtilityRendererPlugin>();
     HdSceneIndexPluginRegistry::Define<HdNatronUtilityImplicitSurfaceSceneIndexPlugin>();
+}
+
+void
+registerUtilitySceneIndexPlugins()
+{
     HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
                                                                             TfToken(kImplicitSurfacePluginId),
                                                                             nullptr,

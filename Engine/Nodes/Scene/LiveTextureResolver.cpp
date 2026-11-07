@@ -165,7 +165,10 @@ registerLiveTextures(std::string* errorMessage)
         PXR_NS::PlugRegistry::GetInstance().RegisterPlugins(dir.string());
         if (!PXR_NS::PlugRegistry::GetInstance().GetPluginWithName(kPluginName)) {
             error = "Live textures are unavailable: OpenUSD did not register " + (dir / "plugInfo.json").string();
+
+            return;
         }
+        registerUtilitySceneIndexPlugins();
     });
     if (!error.empty() && errorMessage) {
         *errorMessage = error;

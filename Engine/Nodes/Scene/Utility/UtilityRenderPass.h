@@ -28,24 +28,47 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
+#include <cstdint>
+
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/renderPass.h>
 
 #include "Global/Macros.h"
 
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
+
 NATRON_NAMESPACE_ENTER
 
+class UtilityRenderParam;
+
 /**
- * @brief Fills every bound AOV with its clear value and reports it converged.
+ * @brief Clears the bound AOVs and has the delegate's executor draw the scene into them. A frame already
+ * in the buffers is not drawn again. A stopped render leaves its buffers unconverged, and the next
+ * render after a restart draws the frame in full.
  **/
 class UtilityRenderPass : public PXR_NS::HdRenderPass {
 public:
     UtilityRenderPass(PXR_NS::HdRenderIndex* index,
-                      const PXR_NS::HdRprimCollection& collection);
+                      const PXR_NS::HdRprimCollection& collection,
+                      UtilityRenderParam* renderParam);
     virtual ~UtilityRenderPass();
+
+    virtual bool IsConverged() const OVERRIDE;
 
 private:
     virtual void _Execute(const PXR_NS::HdRenderPassStateSharedPtr& renderPassState,
                           const PXR_NS::TfTokenVector& renderTags) OVERRIDE;
+
+    UtilityRenderParam* _renderParam;
+    std::atomic<bool> _converged { false };
+    bool _hasDrawn = false;
+    std::uint64_t _drawnVersion = 0;
+    PXR_NS::GfMatrix4d _drawnWorldToView;
+    PXR_NS::GfMatrix4d _drawnProjection;
+    WavefrontRect _drawnWindow;
+    PXR_NS::HdRenderPassAovBindingVector _drawnBindings;
 };
 
 NATRON_NAMESPACE_EXIT

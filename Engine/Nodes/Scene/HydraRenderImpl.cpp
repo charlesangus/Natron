@@ -80,6 +80,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -1568,7 +1569,11 @@ render(const Request& request,
             }
         };
     }
+    const int threadBudget = AppTLS::currentThreadBudget();
     const bool ran = thread.runAndWait([&]() {
+        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+        AppTLS::ThreadBudgetScope budget(threadBudget);
+
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, result, error);
@@ -1678,7 +1683,11 @@ renderWindow(const Request& request,
             }
         };
     }
+    const int threadBudget = AppTLS::currentThreadBudget();
     const bool ran = thread.runAndWait([&]() {
+        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+        AppTLS::ThreadBudgetScope budget(threadBudget);
+
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (!entry) {

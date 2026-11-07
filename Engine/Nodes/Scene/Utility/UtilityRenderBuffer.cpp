@@ -248,6 +248,49 @@ UtilityRenderBuffer::setConverged(bool converged)
 }
 
 void
+UtilityRenderBuffer::setPixel(unsigned int x,
+                              unsigned int y,
+                              const float* components,
+                              std::size_t count)
+{
+    if (x >= _width || y >= _height) {
+        return;
+    }
+    const HdFormat componentFormat = HdGetComponentFormat(_format);
+    const std::size_t componentCount = HdGetComponentCount(_format);
+    const std::size_t pixelSize = HdDataSizeOfFormat(_format);
+    const std::size_t written = std::min(componentCount, count);
+    std::uint8_t* pixel = _pixels.data() + (static_cast<std::size_t>(y) * _width + x) * pixelSize;
+
+    if (componentFormat == HdFormatFloat32) {
+        std::memcpy(pixel, components, written * sizeof(float));
+
+        return;
+    }
+    const std::size_t componentSize = pixelSize / componentCount;
+
+    for (std::size_t c = 0; c < written; ++c) {
+        encodeComponent(componentFormat, components[c], pixel + c * componentSize);
+    }
+}
+
+void
+UtilityRenderBuffer::setPixel(unsigned int x,
+                              unsigned int y,
+                              std::int32_t value)
+{
+    if (x >= _width || y >= _height) {
+        return;
+    }
+    const HdFormat componentFormat = HdGetComponentFormat(_format);
+    const std::size_t pixelSize = HdDataSizeOfFormat(_format);
+    std::uint8_t* pixel = _pixels.data() + (static_cast<std::size_t>(y) * _width + x) * pixelSize;
+
+    // A double holds every int32 exactly, so this is the same integer whichever format it lands in.
+    encodeComponent(componentFormat, static_cast<double>(value), pixel);
+}
+
+void
 UtilityRenderBuffer::_Deallocate()
 {
     TF_VERIFY(!IsMapped());

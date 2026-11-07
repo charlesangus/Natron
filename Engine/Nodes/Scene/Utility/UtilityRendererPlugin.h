@@ -76,6 +76,13 @@ NATRON_NAMESPACE_ENTER
  **/
 void defineUtilityRendererTypes();
 
+/**
+ * @brief Adds the renderer's scene indices to Hydra's chain. Must run after plugInfo.json is registered:
+ * the scene index registry discovers its plug-ins once, when first touched, and drops any type whose
+ * metadata is not known by then.
+ **/
+void registerUtilitySceneIndexPlugins();
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Scene_Utility_UtilityRendererPlugin_h

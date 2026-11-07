@@ -39,6 +39,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -48,8 +49,10 @@ namespace {
 std::atomic<int> gLiveDelegates { 0 };
 } // anon namespace
 
-UtilityRenderParam::UtilityRenderParam(UtilityScene* scene)
+UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
+                                       WavefrontExecutor* executor)
     : _scene(scene)
+    , _executor(executor)
 {
 }
 
@@ -57,6 +60,48 @@ UtilityScene*
 UtilityRenderParam::scene() const
 {
     return _scene;
+}
+
+WavefrontExecutor*
+UtilityRenderParam::executor() const
+{
+    return _executor;
+}
+
+const std::atomic<bool>&
+UtilityRenderParam::stopFlag() const
+{
+    return _stop;
+}
+
+bool
+UtilityRenderParam::isStopped() const
+{
+    return _stop.load();
+}
+
+void
+UtilityRenderParam::stop(bool blocking)
+{
+    _stop.store(true);
+    if (blocking) {
+        const std::lock_guard<std::mutex> waitForRender(_renderMutex);
+    }
+}
+
+void
+UtilityRenderParam::restart()
+{
+    _stop.store(false);
+}
+
+UtilityRenderParam::RenderScope::RenderScope(UtilityRenderParam& param)
+    : _lock(param._renderMutex)
+{
+}
+
+UtilityRenderParam::RenderScope::~RenderScope()
+{
 }
 
 UtilityRenderDelegate::UtilityRenderDelegate()
@@ -75,7 +120,8 @@ UtilityRenderDelegate::construct()
 {
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
     _scene.reset(new UtilityScene());
-    _renderParam.reset(new UtilityRenderParam(_scene.get()));
+    _executor.reset(new WavefrontCpu());
+    _renderParam.reset(new UtilityRenderParam(_scene.get(), _executor.get()));
     ++gLiveDelegates;
 }
 
@@ -130,7 +176,7 @@ HdRenderPassSharedPtr
 UtilityRenderDelegate::CreateRenderPass(HdRenderIndex* index,
                                         const HdRprimCollection& collection)
 {
-    return std::make_shared<UtilityRenderPass>(index, collection);
+    return std::make_shared<UtilityRenderPass>(index, collection, _renderParam.get());
 }
 
 HdInstancer*
@@ -234,6 +280,34 @@ UtilityRenderDelegate::GetDefaultAovDescriptor(const TfToken& name) const
     }
 
     return HdAovDescriptor();
+}
+
+bool
+UtilityRenderDelegate::IsStopSupported() const
+{
+    return true;
+}
+
+bool
+UtilityRenderDelegate::IsStopped() const
+{
+    return _renderParam->isStopped();
+}
+
+bool
+UtilityRenderDelegate::Stop(bool blocking)
+{
+    _renderParam->stop(blocking);
+
+    return true;
+}
+
+bool
+UtilityRenderDelegate::Restart()
+{
+    _renderParam->restart();
+
+    return true;
 }
 
 VtDictionary

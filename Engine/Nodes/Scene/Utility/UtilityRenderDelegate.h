@@ -28,13 +28,16 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 
 #include <pxr/imaging/hd/renderDelegate.h>
 
 #include "Global/Macros.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
 // The GetRenderStats keys, each holding a std::size_t.
 #define kUtilityStatGeometryCount "utilityGeometryCount"
@@ -52,12 +55,41 @@ NATRON_NAMESPACE_ENTER
  **/
 class UtilityRenderParam : public PXR_NS::HdRenderParam {
 public:
-    explicit UtilityRenderParam(UtilityScene* scene);
+    UtilityRenderParam(UtilityScene* scene,
+                       WavefrontExecutor* executor);
 
     UtilityScene* scene() const;
+    WavefrontExecutor* executor() const;
+
+    // The flag running renders poll. It stays set until restart(), so renders that start meanwhile
+    // draw nothing. MT-safe.
+    const std::atomic<bool>& stopFlag() const;
+    bool isStopped() const;
+    // Sets the flag and, when blocking, waits for the running render to return. MT-safe.
+    void stop(bool blocking);
+    void restart();
+
+    /**
+     * @brief Held for the length of a render: it makes renders take turns on the shared executor, and
+     * is what a blocking stop waits on.
+     **/
+    class RenderScope {
+    public:
+        explicit RenderScope(UtilityRenderParam& param);
+        ~RenderScope();
+
+        RenderScope(const RenderScope&) = delete;
+        RenderScope& operator=(const RenderScope&) = delete;
+
+    private:
+        std::lock_guard<std::mutex> _lock;
+    };
 
 private:
     UtilityScene* _scene;
+    WavefrontExecutor* _executor;
+    std::atomic<bool> _stop { false };
+    std::mutex _renderMutex;
 };
 
 /**
@@ -97,12 +129,17 @@ public:
     virtual void CommitResources(PXR_NS::HdChangeTracker* tracker) OVERRIDE;
     virtual PXR_NS::HdAovDescriptor GetDefaultAovDescriptor(const PXR_NS::TfToken& name) const OVERRIDE;
     virtual PXR_NS::VtDictionary GetRenderStats() const OVERRIDE;
+    virtual bool IsStopSupported() const OVERRIDE;
+    virtual bool IsStopped() const OVERRIDE;
+    virtual bool Stop(bool blocking = true) OVERRIDE;
+    virtual bool Restart() OVERRIDE;
 
 private:
     void construct();
 
     PXR_NS::HdResourceRegistrySharedPtr _resourceRegistry;
     std::unique_ptr<UtilityScene> _scene;
+    std::unique_ptr<WavefrontExecutor> _executor;
     std::unique_ptr<UtilityRenderParam> _renderParam;
 };
 

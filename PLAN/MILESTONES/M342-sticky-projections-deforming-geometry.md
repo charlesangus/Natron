@@ -38,49 +38,49 @@ Make a projection stick to animated geometry (user, 2026-11-05). M234 - Camera P
 
 ## Phase 342.1: Project from reference points
 
-- [ ] M342.P1.T1 — Confirm rigid stickiness and try reference points
+- [x] M342.P1.T1 — Confirm rigid stickiness and try reference points
   - files: `Tests/Scene/USDProject3D_Test.cpp`, `tools/spikes/storm-projection/`, `## Decisions` here
   - approach: test that today's Geometry space with Use Frame Hold sticks on an animated transform. Then try a vertex primvar holding each point's world position at the reference frame, named by a primvar reader on the material and read by the glslfx surface in place of the current position, on a generated deforming mesh, curves and points. A prim without the primvar in the same material must take the rigid path. Check the pxr headers, and how much authoring, the by-value topology check and each frame cost on a heavy mesh.
   - verify: a rigid test passes or the bug is fixed; a spike renders a deforming mesh, curves and points with the image stuck, and a rigid prim beside them; the cost is recorded in `## Decisions`.
   - size: M
 
-- [ ] M342.P1.T2 — Read reference points in the surface
+- [x] M342.P1.T2 — Read reference points in the surface
   - files: `Engine/Nodes/Scene/USDProject3D.{h,cpp}`, `Engine/Nodes/Scene/shaders/natronProject3D.glslfx`, `Engine/Nodes/Scene/docs/USDProject3D.md`, `Tests/Scene/USDRenderStorm_Test.cpp`
   - approach: USDProject3D, held in Geometry space, authors a primvar reader named for its Frame Hold. Where the prim has that primvar, the surface projects from it, skipping `geometryFrame`, and derives Project On's facing from it too. Otherwise it takes today's path. Project On is Both on prims with no faces. Document the behaviour and its limits.
   - verify: a gtest authors the primvar by hand on a deforming mesh; its Storm render stays stuck across frames, Front keeps the same faces as the mesh turns, and a prim without the primvar matches today's reference.
   - size: L
 
-- [ ] M342.P1.T4 — Author reference points through the Material input
+- [x] M342.P1.T4 — Author reference points through the Material input
   - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Tests/Scene/USDProject3D_Test.cpp`
   - approach: for a held Geometry projection, author each matched mesh's world-space points at Frame Hold as a vertex primvar named for that hold, over meshes whose points are time-sampled. Points that don't vary keep today's path. Changing Frame Hold re-authors them. Compare topology by value with the reference frame; where it differs, or the prim is an instance proxy, leave it rigid and warn naming the prim.
   - verify: gtests over generated scenes: time-sampled USD and an Alembic export both get the primvar at the hold's values; two meshes apart keep their own; two holds on one mesh give two primvars; unchanged indices re-sampled over time still stick; changing topology and an instance proxy warn.
   - size: L
 
-- [ ] M342.P1.T5 — Author reference points through Material Path
+- [x] M342.P1.T5 — Author reference points through Material Path
   - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Engine/Nodes/Scene/docs/USDProject3D.md`, `Tests/Scene/USDProject3D_Test.cpp`
   - approach: with the Material input unconnected, read the material at Material Path from the input stage, and when it is a held Geometry projection, author as the Material input does. Share the shader check with the graft's so that M341 - Per-Placement Geometry Projection can use it, or reuse it if M341 landed first. The docs say only bindings outside USDAssignMaterial slide.
   - verify: a gtest binds a held projection by Material Path to a deforming mesh; its primvar matches the Material input's, and its Storm render matches that reference.
   - size: M
 
-- [ ] M342.P1.T6 — Reference points for skinned meshes
+- [x] M342.P1.T6 — Reference points for skinned meshes
   - files: `cmake/NatronUsd.cmake`, `Engine/Nodes/Scene/SceneNodeAuthoring.cpp`, `Tests/Scene/USDProject3D_Test.cpp`
   - approach: link `usdSkel`. Detect meshes bound to a skeleton and compute their skinned points at Frame Hold with `UsdSkelCache` and `UsdSkelSkinningQuery` (check the pxr headers), check which space that result is in, carry the points to world space at the hold, and author them as any others. A mesh the query can't skin warns and stays rigid.
   - verify: a gtest generates a small skinned mesh in code; its primvar matches the skinned points at the hold, and its Storm render stays stuck across frames.
   - size: M
 
-- [ ] M342.P1.T7 — Reference points on curves and points
+- [x] M342.P1.T7 — Reference points on curves and points
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.cpp`, `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Tests/Scene/USDRenderStorm_Test.cpp`
   - approach: extend authoring from meshes to `UsdGeomPointBased`, with the same by-value topology check using each type's own counts. Curve width and point size stay live.
   - verify: gtests render deforming curves and points in Storm, stuck across frames, and show them with Project On set to Front.
   - size: M
 
-- [ ] M342.P1.T3 — USDWrite bakes sticky projections
+- [x] M342.P1.T3 — USDWrite bakes sticky projections
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: on a mesh carrying its material's reference primvar, bake UVs from that primvar with no `geometryFrame`, so the exported UVs hold across frames, and don't export the authoring primvar as Natron data.
   - verify: a gtest exports a deforming mesh, checks its UVs don't vary over time and match the reference-frame projection, and finds no Natron data; a skinned mesh likewise.
   - size: M
 
-- [ ] M342.P1.T8 — USDWrite bakes curves and points
+- [x] M342.P1.T8 — USDWrite bakes curves and points
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: the bake assumes faces and leaves other gprims out. Give prims with reference points a path that writes vertex-interpolated `st` from them. Non-deforming curves and points stay as they are today.
   - verify: a gtest exports deforming curves and points; each has time-constant vertex `st` matching the reference-frame projection, and no Natron data.

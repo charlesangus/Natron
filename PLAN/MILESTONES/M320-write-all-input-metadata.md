@@ -83,6 +83,8 @@ new attribute names back.
 
 ## Decisions
 
+- 2026-11-07 — Merged as df8fd5e78 (#200). The user approved UAT apart from the prefix; standard metadata keys are `natron/`, and the OFX bridge translates at its boundary.
+
 - 2026-11-06 — **Rename the `ofx/` metadata prefix to `natron/`, in this milestone (user):** no OFX is involved in these keys, so the name misleads.
 
 - M320 UAT 2026-11-06 (user): writes metadata correctly; asked why `ofx/` keys appear when no OFX node ran.

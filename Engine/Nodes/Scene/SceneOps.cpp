@@ -36,6 +36,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include <pxr/usd/sdf/listOp.h>
+#include <pxr/usd/sdf/payload.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/schema.h>
+#include <pxr/usd/sdf/variantSetSpec.h>
+#include <pxr/usd/sdf/variantSpec.h>
+
 #include "Engine/ContentHasher.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
@@ -522,9 +529,42 @@ compose(const ScenePayload& payload)
     return openStage(resolved);
 }
 
+namespace {
+    void
+    collectAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec,
+                            std::set<std::string>* assets)
+    {
+        for (const PXR_NS::SdfPayload& payload : spec->GetFieldAs<PXR_NS::SdfPayloadListOp>(PXR_NS::SdfFieldKeys->Payload).GetAppliedItems()) {
+            assets->insert(payload.GetAssetPath());
+        }
+        for (const PXR_NS::SdfPrimSpecHandle& child : spec->GetNameChildren()) {
+            collectAuthoredPayloads(child, assets);
+        }
+        for (const auto& variantSet : spec->GetVariantSets()) {
+            const PXR_NS::SdfVariantSetSpecHandle set = variantSet.second;
+            for (const PXR_NS::SdfVariantSpecHandle& variant : set->GetVariantList()) {
+                collectAuthoredPayloads(variant->GetPrimSpec(), assets);
+            }
+        }
+    }
+} // anonymous namespace
+
+std::set<std::string>
+getAuthoredPayloadAssets(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::set<std::string> assets;
+
+    if (layer) {
+        collectAuthoredPayloads(layer->GetPseudoRoot(), &assets);
+    }
+
+    return assets;
+}
+
 std::vector<PXR_NS::SdfLayerRefPtr>
 getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
-                    std::vector<std::string>* missingPaths)
+                    std::vector<std::string>* missingPaths,
+                    std::vector<std::string>* payloadPaths)
 {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
 
@@ -533,9 +573,12 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
     }
 
     // GetCompositionAssetDependencies lists one layer's own sublayer, reference and payload asset
-    // paths, without recursing (sdf/layer.h), so the walk recurses itself.
+    // paths, without recursing (sdf/layer.h), so the walk recurses itself. It does not say which
+    // is which, so the layer's payloads are subtracted: an asset both referenced and payloaded
+    // goes unopened here, and the stage composing the reference opens it.
     std::set<std::string> visited;
     std::set<std::string> missing;
+    std::set<std::string> payloads;
     std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
     PXR_NS::TfErrorMark mark;
     while (!pending.empty()) {
@@ -547,8 +590,16 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
         if (!current->IsAnonymous()) {
             closure.push_back(current);
         }
+        const std::set<std::string> authoredPayloads = getAuthoredPayloadAssets(current);
         for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
             if (assetPath.empty()) {
+                continue;
+            }
+            if (authoredPayloads.count(assetPath)) {
+                const std::string anchored = PXR_NS::SdfComputeAssetPathRelativeToLayer(current, assetPath);
+                if (payloadPaths && !anchored.empty() && payloads.insert(anchored).second) {
+                    payloadPaths->push_back(anchored);
+                }
                 continue;
             }
             // Resolves assetPath against current's location; FindOrOpenRelativeToLayer needs a
@@ -569,6 +620,39 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
     mark.Clear();
 
     return closure;
+}
+
+std::vector<PXR_NS::SdfLayerRefPtr>
+getOpenFileLayers(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> open;
+
+    if (!layer) {
+        return open;
+    }
+    std::set<std::string> visited;
+    std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
+    while (!pending.empty()) {
+        const PXR_NS::SdfLayerRefPtr current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current->GetIdentifier()).second) {
+            continue;
+        }
+        if (!current->IsAnonymous()) {
+            open.push_back(current);
+        }
+        for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
+            if (assetPath.empty()) {
+                continue;
+            }
+            const PXR_NS::SdfLayerHandle dependency = PXR_NS::SdfLayer::FindRelativeToLayer(current, assetPath);
+            if (dependency) {
+                pending.push_back(PXR_NS::SdfLayerRefPtr(dependency));
+            }
+        }
+    }
+
+    return open;
 }
 
 namespace {

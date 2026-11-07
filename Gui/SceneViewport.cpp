@@ -622,7 +622,8 @@ struct SceneViewportRenderer::Implementation {
     bool sceneLit = false;
     FreeCamera freeCamera;
     ClipPlanes clipPlanes;
-    bool framedOnce = false;
+    // Read by the threads that work out the first framing.
+    std::atomic<bool> framedOnce { false };
     std::string lookThrough;
     // The transform the camera at lookThroughOverridePath is drawn with instead of its prim's.
     std::string lookThroughOverridePath;
@@ -663,12 +664,23 @@ struct SceneViewportRenderer::Implementation {
     };
     BackgroundFrame backgroundFrame;
 
-    // The guide prims of the stage as of an edit count, and their guides as of a time: both need
-    // stageMutex.
-    std::vector<SceneGuides::GuidePrim> guidePrims;
-    bool stageHasLights = false;
-    bool guidePrimsValid = false;
-    U64 guidePrimsEditCount = 0;
+    // What a traversal of the stage found, as of an edit count. The threads that change the stage
+    // publish it before anyone is told of the change, and nothing else traverses, so no frame or
+    // menu on the main thread walks a large stage.
+    struct StageSummary {
+        U64 editCount = 0;
+        std::vector<SceneGuides::GuidePrim> guidePrims;
+        bool hasLights = false;
+        std::vector<std::string> cameraPaths;
+    };
+    mutable std::mutex summaryMutex;
+    std::shared_ptr<const StageSummary> stageSummary;
+    // Where a stage camera turns about. Kept from the last time the scene's bounds were worked
+    // out: a heuristic, not worth a walk of the stage for each pose a drag asks for.
+    GfRange3d pivotBounds;
+
+    // The guides as of a summary and a time: need stageMutex.
+    std::shared_ptr<const StageSummary> guidesSummary;
     std::vector<SceneGuides::Guide> guides;
     bool guidesValid = false;
     double guidesTimeCode = 0.;
@@ -734,27 +746,41 @@ struct SceneViewportRenderer::Implementation {
         return (shown && sceneStage) ? sceneStage->getStage() : UsdStageRefPtr();
     }
 
-    // Finds the guide prims again after the stage is edited. Needs stageMutex.
-    void refreshGuidePrims()
+    std::shared_ptr<const StageSummary> getStageSummary() const
+    {
+        std::lock_guard<std::mutex> lock(summaryMutex);
+
+        return stageSummary;
+    }
+
+    // Traverses the stage if it changed since the last summary. Needs stageMutex, shared being
+    // enough: readers carry on meanwhile.
+    void refreshStageSummary()
     {
         const UsdStageRefPtr stage = currentStage();
-        if (!stage) {
-            guidePrims.clear();
-            stageHasLights = false;
-            guidePrimsValid = false;
-            guidesValid = false;
+        std::shared_ptr<StageSummary> summary;
 
-            return;
+        if (stage) {
+            // Loads compose prims too; both counts only grow, so their sum moves with either.
+            const U64 editCount = sceneStage->getEditCount() + sceneStage->getLoadEditCount();
+            const std::shared_ptr<const StageSummary> current = getStageSummary();
+            if (current && (current->editCount == editCount)) {
+                return;
+            }
+            summary = std::make_shared<StageSummary>();
+            summary->editCount = editCount;
+            summary->guidePrims = SceneGuides::findGuidePrims(stage, &summary->hasLights);
+            for (const SceneGuides::GuidePrim& guidePrim : summary->guidePrims) {
+                if (guidePrim.kind == SceneGuides::eGuideKindCamera) {
+                    const UsdPrim prim = stage->GetPrimAtPath(guidePrim.path);
+                    if (prim && !prim.IsInstanceProxy()) {
+                        summary->cameraPaths.push_back(guidePrim.path.GetString());
+                    }
+                }
+            }
         }
-        // Loads compose prims too; both counts only grow, so their sum moves with either.
-        const U64 editCount = sceneStage->getEditCount() + sceneStage->getLoadEditCount();
-        if (guidePrimsValid && (guidePrimsEditCount == editCount)) {
-            return;
-        }
-        guidePrims = SceneGuides::findGuidePrims(stage, &stageHasLights);
-        guidePrimsEditCount = editCount;
-        guidePrimsValid = true;
-        guidesValid = false;
+        std::lock_guard<std::mutex> lock(summaryMutex);
+        stageSummary = summary;
     }
 
     double guideLength() const
@@ -768,11 +794,13 @@ struct SceneViewportRenderer::Implementation {
     // stageMutex.
     const std::vector<SceneGuides::Guide>& currentGuides()
     {
-        refreshGuidePrims();
+        const std::shared_ptr<const StageSummary> summary = getStageSummary();
         const double time = timeCode();
         const double length = guideLength();
-        if (!guidesValid || (guidesTimeCode != time) || (guidesLength != length)) {
-            guides = SceneGuides::buildGuides(currentStage(), guidePrims, UsdTimeCode(time), length);
+        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length)) {
+            const UsdStageRefPtr stage = currentStage();
+            guides = (stage && summary) ? SceneGuides::buildGuides(stage, summary->guidePrims, UsdTimeCode(time), length) : std::vector<SceneGuides::Guide>();
+            guidesSummary = summary;
             guidesTimeCode = time;
             guidesLength = length;
             guidesValid = true;
@@ -808,7 +836,7 @@ struct SceneViewportRenderer::Implementation {
         return std::find(selected.begin(), selected.end(), path) != selected.end();
     }
 
-    // Whether the shaded mode is lit by the stage's lights. Needs stageMutex.
+    // Whether the shaded mode is lit by the stage's lights.
     bool usesSceneLights()
     {
         return usesSceneLights(lightingMode);
@@ -817,10 +845,11 @@ struct SceneViewportRenderer::Implementation {
     bool usesSceneLights(LightingModeEnum mode)
     {
         switch (mode) {
-        case eLightingModeAuto:
-            refreshGuidePrims();
+        case eLightingModeAuto: {
+            const std::shared_ptr<const StageSummary> summary = getStageSummary();
 
-            return stageHasLights;
+            return summary && summary->hasLights;
+        }
         case eLightingModeScene:
             return true;
         case eLightingModeHeadlight:
@@ -1688,35 +1717,39 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
-    if (!_imp->sceneStage) {
-        // The viewer shows what was asked for: nothing loads until a load is requested.
-        _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
-        _imp->loadStage = _imp->sceneStage.get();
-    }
-    if (!_imp->sceneStage->isValid()) {
-        _imp->shown = false;
-        if (error) {
-            *error = "OpenUSD could not open a stage for the scene.";
+    {
+        std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+        if (!_imp->sceneStage) {
+            // The viewer shows what was asked for: nothing loads until a load is requested.
+            _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            _imp->loadStage = _imp->sceneStage.get();
         }
+        if (!_imp->sceneStage->isValid()) {
+            _imp->shown = false;
+            if (error) {
+                *error = "OpenUSD could not open a stage for the scene.";
+            }
 
-        return false;
+            return false;
+        }
+        if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
+            // In the same step as the sync, so no frame shows the scene without the drag.
+            _imp->clearPreviewLocked();
+        }
+        _imp->sceneStage->sync(payload);
+        if (framesPerSecond > 0.) {
+            _imp->frame = frame;
+            _imp->framesPerSecond = framesPerSecond;
+        }
+        const SceneMetadata& metadata = payload.getMetadata();
+        _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
+        _imp->metersPerUnit = metadata.metersPerUnit;
+        _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
+        _imp->shown = !payload.isEmpty();
+        _imp->stageEditCount = _imp->sceneStage->getEditCount();
     }
-    if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
-        // In the same step as the sync, so no frame shows the scene without the drag.
-        _imp->clearPreviewLocked();
-    }
-    _imp->sceneStage->sync(payload);
-    if (framesPerSecond > 0.) {
-        _imp->frame = frame;
-        _imp->framesPerSecond = framesPerSecond;
-    }
-    const SceneMetadata& metadata = payload.getMetadata();
-    _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
-    _imp->metersPerUnit = metadata.metersPerUnit;
-    _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
-    _imp->shown = !payload.isEmpty();
-    _imp->stageEditCount = _imp->sceneStage->getEditCount();
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    _imp->refreshStageSummary();
 
     return true;
 }
@@ -1842,13 +1875,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
 
-    if (frame.lightingMode == eLightingModeAuto) {
-        // Finding the stage's lights fills caches the main thread reads while sharing the lock.
-        std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
-        frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
-    } else {
-        frame.params.enableSceneLights = (frame.lightingMode == eLightingModeScene);
-    }
+    frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
     StormGLSection section;
@@ -1930,7 +1957,7 @@ SceneViewportRenderer::serviceStageLoads()
     }
     Implementation* imp = _imp.get();
 
-    return stage->serviceLoads([imp](const std::function<void()>& section) {
+    const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
         section(); }, [imp, stage](const std::function<void()>& section) {
@@ -1938,6 +1965,11 @@ SceneViewportRenderer::serviceStageLoads()
         std::lock_guard<std::shared_mutex> lock(imp->stageMutex);
         section();
         imp->stageLoadEditCount = stage->getLoadEditCount(); });
+    SceneWriteBarrier::ReadScope read;
+    std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+    imp->refreshStageSummary();
+
+    return serviced;
 }
 
 U64
@@ -2299,13 +2331,12 @@ SceneViewportRenderer::getViewPose(int width,
         const GfVec3d eye = cameraToWorld.ExtractTranslation();
         const GfVec3d forward = -cameraToWorld.TransformDir(GfVec3d(0., 0., 1.)).GetNormalized();
         double depth = 0.;
-        if (const UsdStageRefPtr stage = _imp->currentStage()) {
-            UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
-            const GfRange3d range = bboxes.ComputeWorldBound(stage->GetPseudoRoot()).ComputeAlignedRange();
-            if (!range.IsEmpty()) {
-                depth = GfDot(range.GetMidpoint() - eye, forward);
+        {
+            std::lock_guard<std::mutex> summaryLock(_imp->summaryMutex);
+            if (!_imp->pivotBounds.IsEmpty()) {
+                depth = GfDot(_imp->pivotBounds.GetMidpoint() - eye, forward);
                 if (depth <= 1e-6) {
-                    depth = range.GetSize().GetLength() * 0.5;
+                    depth = _imp->pivotBounds.GetSize().GetLength() * 0.5;
                 }
             }
         }
@@ -2329,51 +2360,32 @@ SceneViewportRenderer::getViewPose(int width,
     return true;
 }
 
-void
-SceneViewportRenderer::frameScene()
+SceneViewportRenderer::FrameBounds
+SceneViewportRenderer::computeFrameBounds(const std::vector<std::string>& selection,
+                                          double timeCode) const
 {
-    _imp->lookThrough.clear();
+    FrameBounds bounds;
+
+    bounds.selection = !selection.empty();
+    // Before the viewer lock, the order every reader takes them in.
+    SceneWriteBarrier::ReadScope read;
+    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    const UsdStageRefPtr stage = _imp->currentStage();
+    if (!stage) {
+        return bounds;
+    }
+    const UsdTimeCode time(timeCode);
+    // With useExtentsHint, an unloaded model counts by the extent hint authored over its payload
+    // (usdGeom/bboxCache.h), so framing never reads a payload.
+    UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
     GfRange3d range;
-    {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        const UsdStageRefPtr stage = _imp->currentStage();
-        if (!stage) {
-            return;
-        }
-        UsdGeomBBoxCache bboxes(UsdTimeCode(_imp->timeCode()), { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+    if (selection.empty()) {
         range = bboxes.ComputeWorldBound(stage->GetPseudoRoot()).ComputeAlignedRange();
-    }
-    if (range.IsEmpty()) {
-        return;
-    }
-    const GfVec3d centre = range.GetMidpoint();
-    const double radius = std::max(range.GetSize().GetLength() * 0.5, 1e-6);
-    _imp->freeCamera.pivot[0] = centre[0];
-    _imp->freeCamera.pivot[1] = centre[1];
-    _imp->freeCamera.pivot[2] = centre[2];
-    _imp->freeCamera.distance = radius / std::sin(degreesToRadians(_imp->freeCamera.fovY) * 0.5) * 1.05;
-    _imp->framedOnce = true;
-}
-
-void
-SceneViewportRenderer::frameSelection()
-{
-    if (_imp->selected.empty()) {
-        frameScene();
-
-        return;
-    }
-    GfRange3d range;
-    {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        const UsdStageRefPtr stage = _imp->currentStage();
-        if (!stage) {
-            return;
-        }
-        const UsdTimeCode time(_imp->timeCode());
-        UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+        std::lock_guard<std::mutex> summaryLock(_imp->summaryMutex);
+        _imp->pivotBounds = range;
+    } else {
         UsdGeomXformCache xforms(time);
-        for (const std::string& path : _imp->selected) {
+        for (const std::string& path : selection) {
             if (!SdfPath::IsValidPathString(path)) {
                 continue;
             }
@@ -2390,20 +2402,50 @@ SceneViewportRenderer::frameSelection()
             }
         }
     }
-    if (range.IsEmpty()) {
+    if (!range.IsEmpty()) {
+        for (int i = 0; i < 3; ++i) {
+            bounds.min[i] = range.GetMin()[i];
+            bounds.max[i] = range.GetMax()[i];
+        }
+        bounds.empty = false;
+    }
+
+    return bounds;
+} // SceneViewportRenderer::computeFrameBounds
+
+void
+SceneViewportRenderer::applyFrameBounds(const FrameBounds& bounds)
+{
+    if (!bounds.selection) {
+        _imp->lookThrough.clear();
+    }
+    if (bounds.empty) {
         return;
     }
     _imp->lookThrough.clear();
+    const GfRange3d range(GfVec3d(bounds.min[0], bounds.min[1], bounds.min[2]), GfVec3d(bounds.max[0], bounds.max[1], bounds.max[2]));
     const GfVec3d centre = range.GetMidpoint();
     double radius = range.GetSize().GetLength() * 0.5;
     if (radius < 1e-6) {
-        radius = kDefaultFrameRadius;
+        radius = bounds.selection ? kDefaultFrameRadius : 1e-6;
     }
     _imp->freeCamera.pivot[0] = centre[0];
     _imp->freeCamera.pivot[1] = centre[1];
     _imp->freeCamera.pivot[2] = centre[2];
     _imp->freeCamera.distance = radius / std::sin(degreesToRadians(_imp->freeCamera.fovY) * 0.5) * 1.05;
     _imp->framedOnce = true;
+}
+
+void
+SceneViewportRenderer::frameScene()
+{
+    applyFrameBounds(computeFrameBounds(std::vector<std::string>(), _imp->timeCode()));
+}
+
+void
+SceneViewportRenderer::frameSelection()
+{
+    applyFrameBounds(computeFrameBounds(_imp->selected, _imp->timeCode()));
 }
 
 void
@@ -2448,20 +2490,9 @@ SceneViewportRenderer::dolly(double factor)
 std::vector<std::string>
 SceneViewportRenderer::getStageCameraPaths() const
 {
-    std::vector<std::string> paths;
+    const std::shared_ptr<const Implementation::StageSummary> summary = _imp->getStageSummary();
 
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-    const UsdStageRefPtr stage = _imp->currentStage();
-    if (!stage) {
-        return paths;
-    }
-    for (const UsdPrim& prim : stage->Traverse()) {
-        if (prim.IsA<UsdGeomCamera>()) {
-            paths.push_back(prim.GetPath().GetString());
-        }
-    }
-
-    return paths;
+    return summary ? summary->cameraPaths : std::vector<std::string>();
 }
 
 void
@@ -3600,6 +3631,13 @@ struct SceneViewport::Implementation {
     // frame it had until the worker has rendered them, so Hydra never asks for one not stored.
     U64 requestedSerial = 0;
     U64 syncedSerial = 0;
+    // A framing the worker has yet to take, newest only; the ids it was asked for and last answered.
+    U64 pendingFramingId = 0;
+    std::vector<std::string> pendingFramingSelection;
+    U64 framingRequested = 0;
+    U64 framingDone = 0;
+    // The worker has yet to find where a newly looked-through stage camera turns about.
+    bool pendingPivot = false;
     // A new engine reads each texture once and caches a fallback for one the store lacks under a
     // URI that does not change, so after the store was emptied it draws nothing until this sync.
     U64 paintHeldUntilSerial = 0;
@@ -3906,8 +3944,10 @@ SceneViewport::SceneViewport(QWidget* parent)
                 }
             }
             imp->renderer.serviceStageLoads();
+            // Payloads without extent hints leave nothing to frame until one of them loads.
+            const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this]() { onStageLoadsServiced(); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this, bounds]() { onStageLoadsServiced(bounds); }, Qt::QueuedConnection);
         }
     });
     _imp->worker = std::thread([this, imp]() {
@@ -3917,32 +3957,55 @@ SceneViewport::SceneViewport(QWidget* parent)
             LiveTextureSourceList liveTextures;
             double frame = 0.;
             double framesPerSecond = 0.;
+            bool sync = false;
+            U64 framingId = 0;
+            std::vector<std::string> framingSelection;
+            bool pivot = false;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
-                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending; });
+                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || (imp->pendingFramingId != 0) || imp->pendingPivot; });
                 if (imp->quit) {
                     return;
                 }
-                payload = imp->pending;
-                imp->pending = ScenePayload();
-                imp->hasPending = false;
-                serial = imp->pendingSerial;
-                liveTextures.swap(imp->pendingLiveTextures);
-                frame = imp->pendingFrame;
-                framesPerSecond = imp->pendingFramesPerSecond;
+                sync = imp->hasPending;
+                if (sync) {
+                    payload = imp->pending;
+                    imp->pending = ScenePayload();
+                    imp->hasPending = false;
+                    serial = imp->pendingSerial;
+                    liveTextures.swap(imp->pendingLiveTextures);
+                    frame = imp->pendingFrame;
+                    framesPerSecond = imp->pendingFramesPerSecond;
+                }
+                framingId = imp->pendingFramingId;
+                imp->pendingFramingId = 0;
+                framingSelection.swap(imp->pendingFramingSelection);
+                pivot = imp->pendingPivot;
+                imp->pendingPivot = false;
             }
-            std::string error;
-            bool ok;
-            if (liveTextures.empty()) {
-                ok = imp->renderer.syncScene(payload, &error, serial);
-            } else {
-                LiveTextureStore::instance().prepare(liveTextures, frame);
-                liveTextures.clear();
-                ok = imp->renderer.syncScene(payload, frame, framesPerSecond, &error, serial);
+            if (sync) {
+                std::string error;
+                bool ok;
+                if (liveTextures.empty()) {
+                    ok = imp->renderer.syncScene(payload, &error, serial);
+                } else {
+                    LiveTextureStore::instance().prepare(liveTextures, frame);
+                    liveTextures.clear();
+                    ok = imp->renderer.syncScene(payload, frame, framesPerSecond, &error, serial);
+                }
+                const QString qerror = QString::fromStdString(error);
+                // The first framing lands with the sync, so the first frame drawn is framed.
+                const SceneViewportRenderer::FrameBounds bounds = (!ok || imp->renderer.isFramed()) ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
+                // Dropped by Qt if the widget is gone by then.
+                QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds]() { onSynced(serial, ok, qerror, bounds); }, Qt::QueuedConnection);
             }
-            const QString qerror = QString::fromStdString(error);
-            // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, serial, ok, qerror]() { onSynced(serial, ok, qerror); }, Qt::QueuedConnection);
+            if (framingId != 0) {
+                const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
+                QMetaObject::invokeMethod(this, [this, framingId, bounds]() { onFramingComputed(framingId, bounds); }, Qt::QueuedConnection);
+            }
+            if (pivot) {
+                imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
+            }
         }
     });
     publishState();
@@ -4002,7 +4065,8 @@ SceneViewport::requestSync(const ScenePayload& payload,
 void
 SceneViewport::onSynced(U64 serial,
                         bool ok,
-                        const QString& error)
+                        const QString& error,
+                        const SceneViewportRenderer::FrameBounds& bounds)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
     if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
@@ -4032,7 +4096,7 @@ SceneViewport::onSynced(U64 serial,
         _imp->renderer.clearLookThroughTransform();
     }
     if (ok && _imp->renderer.hasScene() && !_imp->renderer.isFramed()) {
-        _imp->renderer.frameScene();
+        _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
     }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
@@ -4046,7 +4110,7 @@ SceneViewport::onSynced(U64 serial,
 bool
 SceneViewport::isSceneSynced() const
 {
-    if (_imp->syncedSerial != _imp->requestedSerial) {
+    if ((_imp->syncedSerial != _imp->requestedSerial) || (_imp->framingDone != _imp->framingRequested)) {
         return false;
     }
     // A view nobody sees takes nothing in until it is shown.
@@ -4094,8 +4158,12 @@ SceneViewport::onBackgroundFrameDone()
 }
 
 void
-SceneViewport::onStageLoadsServiced()
+SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds)
 {
+    if (!bounds.empty && !_imp->renderer.isFramed()) {
+        _imp->renderer.applyFrameBounds(bounds);
+        endLockOutsideLookThrough();
+    }
     startBackgroundFrame();
     publishState();
     update();
@@ -4395,6 +4463,13 @@ SceneViewport::setLookThroughCamera(const QString& path)
     }
     _imp->lockedMoveAwaitsSync = false;
     _imp->renderer.setLookThroughCamera(path.toStdString());
+    if (!path.isEmpty()) {
+        {
+            std::lock_guard<std::mutex> lock(_imp->queueMutex);
+            _imp->pendingPivot = true;
+        }
+        _imp->queueChanged.notify_one();
+    }
     endLockOutsideLookThrough();
     _imp->lockMessage.clear();
     publishState();
@@ -4402,21 +4477,42 @@ SceneViewport::setLookThroughCamera(const QString& path)
 }
 
 void
-SceneViewport::frameScene()
+SceneViewport::requestFraming(const std::vector<std::string>& selection)
 {
-    _imp->renderer.frameScene();
+    {
+        std::lock_guard<std::mutex> lock(_imp->queueMutex);
+        _imp->pendingFramingId = ++_imp->framingRequested;
+        _imp->pendingFramingSelection = selection;
+    }
+    _imp->queueChanged.notify_one();
+    publishState();
+}
+
+void
+SceneViewport::onFramingComputed(U64 id,
+                                 const SceneViewportRenderer::FrameBounds& bounds)
+{
+    // A later request was taken with this one or follows it, and its answer is on its way.
+    if (id != _imp->framingRequested) {
+        return;
+    }
+    _imp->framingDone = id;
+    _imp->renderer.applyFrameBounds(bounds);
     endLockOutsideLookThrough();
     publishState();
     update();
 }
 
 void
+SceneViewport::frameScene()
+{
+    requestFraming(std::vector<std::string>());
+}
+
+void
 SceneViewport::frameSelection()
 {
-    _imp->renderer.frameSelection();
-    endLockOutsideLookThrough();
-    publishState();
-    update();
+    requestFraming(_imp->renderer.getSelectedPrims());
 }
 
 QString

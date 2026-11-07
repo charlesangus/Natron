@@ -26,7 +26,9 @@
 #include "SceneFileSource.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <random>
 
 #include <QFileInfo>
 #include <QString>
@@ -64,10 +66,29 @@ upAxisName(SceneMetadata::UpAxisEnum upAxis)
 {
     return (upAxis == SceneMetadata::eUpAxisZ) ? QString::fromUtf8("Z") : QString::fromUtf8("Y");
 }
+
+// Random across sessions and never repeated within one. Until the walk knows which files the node
+// reads, a digest must not name anything a persisted cache holds: those files may have changed
+// since it was stored.
+U64
+makeUnwalkedDigest()
+{
+    static std::atomic<U64> next([]() {
+        std::random_device random;
+
+        return (U64(random()) << 32) | U64(random());
+    }());
+    ContentHasher h;
+    h.appendU64(next.fetch_add(1));
+
+    return h.finalize();
+}
 } // anonymous namespace
 
 SceneFileSource::SceneFileSource()
-    : _closureReloadCount(0)
+    : _loadCount(0)
+    , _walked(false)
+    , _closureReloadCount(0)
     , _digest(0)
 {
 }
@@ -121,13 +142,15 @@ SceneFileSource::setClosure(const PXR_NS::SdfLayerRefPtr& layer)
     // Read before the walk, so a reload during it leaves the result marked stale.
     const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
     std::vector<std::string> missing;
-    std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer, &missing) : std::vector<PXR_NS::SdfLayerRefPtr>();
+    std::vector<std::string> payloads;
+    std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer, &missing, &payloads) : std::vector<PXR_NS::SdfLayerRefPtr>();
     std::vector<std::string> paths;
-    paths.reserve(layers.size() + missing.size());
+    paths.reserve(layers.size() + missing.size() + payloads.size());
     for (const PXR_NS::SdfLayerRefPtr& l : layers) {
         paths.push_back(l->GetRealPath());
     }
     paths.insert(paths.end(), missing.begin(), missing.end());
+    paths.insert(paths.end(), payloads.begin(), payloads.end());
     SceneLinkIndex links = SceneOps::findLayerStackLinks(layer);
     std::lock_guard<std::mutex> lock(_mutex);
     _closure.swap(layers);
@@ -182,20 +205,70 @@ SceneFileSource::getLastStage() const
 void
 SceneFileSource::load(const std::string& path)
 {
-    PXR_NS::SdfLayerRefPtr layer;
+    // Destroying a large file's layers takes as long as reading them, so the walk that replaces
+    // them lets go of them, off the main thread.
+    std::lock_guard<std::mutex> lock(_mutex);
 
-    if (!path.empty() && SceneOps::checkUsdRuntime(nullptr)) {
-        // Opens files, as authoring does: no layer reload may run meanwhile.
-        SceneWriteBarrier::ReadScope read;
+    if (path == _path) {
+        return;
+    }
+    _path = path;
+    ++_loadCount;
+    _retired.insert(_retired.end(), _closure.begin(), _closure.end());
+    _closure.clear();
+    _closurePaths.clear();
+    _links = SceneLinkIndex();
+    _walked = false;
+    _digest = path.empty() ? 0 : makeUnwalkedDigest();
+}
+
+bool
+SceneFileSource::walk(const std::string& path)
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        // File layers are never edited, so only a reload changes what they bring in.
+        if (_walked && (_path == path) && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
+            return false;
+        }
+    }
+    if (!SceneOps::checkUsdRuntime(nullptr)) {
+        return false;
+    }
+    // Opens files: no layer reload may run meanwhile. Taken before the mutex, so a thread waiting
+    // on it holds no write off.
+    SceneWriteBarrier::ReadScope read;
+    std::lock_guard<std::mutex> walkLock(_walkMutex);
+    std::uint64_t loadCount;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        loadCount = _loadCount;
+        if (_walked && (_path == path) && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
+            return false;
+        }
+    }
+    PXR_NS::SdfLayerRefPtr layer;
+    {
+        // Authoring reports a file USD cannot read.
         PXR_NS::TfErrorMark mark;
         layer = PXR_NS::SdfLayer::FindOrOpen(path);
-        // Authoring reports a file USD cannot read.
-        mark.Clear();
         setClosure(layer);
-    } else {
-        setClosure(PXR_NS::SdfLayerRefPtr());
+        mark.Clear();
     }
-    _digest = stampClosurePaths();
+    std::vector<PXR_NS::SdfLayerRefPtr> retired;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        // The file changed during the walk: its result stays unwalked, for the next walk to redo.
+        if (_loadCount != loadCount) {
+            return false;
+        }
+        _path = path;
+        _walked = true;
+        retired.swap(_retired);
+    }
+    const U64 digest = stampClosurePaths();
+
+    return _digest.exchange(digest) != digest;
 }
 
 bool
@@ -203,8 +276,10 @@ SceneFileSource::reload(const std::string& path,
                         std::string* errorMessage,
                         std::vector<std::string>* reloadedFiles)
 {
-    // The layers to read again: those the last walk found, or, if there was none, those of the
-    // file's layer if another consumer has it open.
+    // The layers to read again: those the last walk found and those it left closed that a stage
+    // has loaded since. Before any walk, those of the file's layer if another consumer has it
+    // open. Nothing closed is opened here: the next evaluation walks again, reloadFileLayers()
+    // having moved the count, and that finds files that were missing.
     std::vector<PXR_NS::SdfLayerRefPtr> layers;
     std::vector<std::string> before;
     {
@@ -212,20 +287,18 @@ SceneFileSource::reload(const std::string& path,
         layers = _closure;
         before = _closurePaths;
     }
-    if (layers.empty() && !path.empty()) {
-        PXR_NS::SdfLayerHandle open = PXR_NS::SdfLayer::Find(path);
-        if (open) {
-            layers = SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open));
-        }
+    PXR_NS::SdfLayerRefPtr root;
+    if (!layers.empty()) {
+        root = layers.front();
+    } else if (!path.empty()) {
+        root = PXR_NS::SdfLayerRefPtr(PXR_NS::SdfLayer::Find(path));
     }
+    const std::vector<PXR_NS::SdfLayerRefPtr> open = SceneOps::getOpenFileLayers(root);
+    layers.insert(layers.end(), open.begin(), open.end());
     for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
         before.push_back(layer->GetRealPath());
     }
     const bool reloaded = layers.empty() || SceneOps::reloadFileLayers(layers, errorMessage);
-    // A reload can change what the file brings in. The file's layer is the same object, reloaded
-    // in place.
-    setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
-    // A file the reload left out of the closure was still reloaded for every other consumer.
     FileStampRegistry& stamps = FileStampRegistry::instance();
     for (const std::string& file : before) {
         if (!file.empty()) {
@@ -233,10 +306,7 @@ SceneFileSource::reload(const std::string& path,
         }
     }
     reloadedFiles->insert(reloadedFiles->end(), before.begin(), before.end());
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        reloadedFiles->insert(reloadedFiles->end(), _closurePaths.begin(), _closurePaths.end());
-    }
+    takeDigest();
 
     return reloaded;
 } // SceneFileSource::reload
@@ -244,31 +314,22 @@ SceneFileSource::reload(const std::string& path,
 bool
 SceneFileSource::refresh(const std::vector<std::string>& paths)
 {
-    PXR_NS::SdfLayerRefPtr root;
     bool reads = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
+        // Before any walk the closure is empty, but the named file is known.
+        reads = !_path.empty() && (std::find(paths.begin(), paths.end(), _path) != paths.end());
         for (const std::string& path : _closurePaths) {
             if (std::find(paths.begin(), paths.end(), path) != paths.end()) {
                 reads = true;
                 break;
             }
         }
-        if (!_closure.empty()) {
-            root = _closure.front();
-        }
     }
     if (!reads) {
         return false;
     }
-    if (root && SceneOps::checkUsdRuntime(nullptr)) {
-        // The reloaded layers can bring in other files; the walk opens them.
-        SceneWriteBarrier::ReadScope read;
-        PXR_NS::TfErrorMark mark;
-        setClosure(root);
-        mark.Clear();
-    }
-    _digest = stampClosurePaths();
+    takeDigest();
 
     return true;
 }
@@ -299,7 +360,24 @@ SceneFileSource::purgeStamps()
             stamps.invalidate(path);
         }
     }
-    _digest = stampClosurePaths();
+    takeDigest();
+}
+
+void
+SceneFileSource::takeDigest()
+{
+    bool walked;
+    bool named;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        walked = _walked;
+        named = !_path.empty();
+    }
+    if (walked) {
+        _digest = stampClosurePaths();
+    } else if (named) {
+        _digest = makeUnwalkedDigest();
+    }
 }
 
 U64

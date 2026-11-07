@@ -672,6 +672,11 @@ TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
 
     NodePtr reader = createReader(top);
     ASSERT_TRUE(bool(reader));
+    {
+        ScenePayload whileAbsent;
+        std::string evaluateError;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &whileAbsent, &evaluateError)) << evaluateError;
+    }
     const U64 whileMissing = reader->getHashValue();
 
     writeFile(leaf, leafWithRadius(1.));
@@ -687,6 +692,110 @@ TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
     SceneQueryPool::Lease lease = borrow(after);
     EXPECT_DOUBLE_EQ(1., leafRadius(lease.getStage()));
+}
+
+namespace {
+// A file with one payload arc, named Building, on the file at buildingFile.
+std::string
+sceneWithPayload(const std::string& buildingFile)
+{
+    return "#usda 1.0\n\ndef Xform \"Building\" (\n    payload = @./" + buildingFile + "@</Leaf>\n)\n{\n}\n";
+}
+} // anonymous namespace
+
+// A reader on a heavy file costs the main thread nothing when the file knob is set.
+TEST_F(USDReadTest, SettingTheFileKnobOpensNothing)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("named.usda")).toStdString();
+    writeFile(path, sceneDefining("Named"));
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(path)));
+    EXPECT_FALSE(reader->hasPersistentMessage());
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_TRUE(bool(PXR_NS::SdfLayer::Find(path)));
+}
+
+// Before the walk knows the closure, no hash may match a cache stored under one in an earlier
+// session; after it, the hash is settled and evaluating again keeps it.
+TEST_F(USDReadTest, TheFirstEvaluationSettlesTheHash)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("settled.usda")).toStdString();
+    writeFile(path, sceneDefining("Settled"));
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    const U64 unwalked = reader->getHashValue();
+
+    ScenePayload first;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &first, &error)) << error;
+    const U64 walked = reader->getHashValue();
+    EXPECT_NE(unwalked, walked);
+
+    ScenePayload second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &second, &error)) << error;
+    EXPECT_EQ(walked, reader->getHashValue());
+    EXPECT_TRUE(first.isSameStack(second));
+}
+
+// The walk stamps a payload's file without opening it, and Reload re-keys the reader on it.
+TEST_F(USDReadTest, EvaluationLeavesPayloadsClosedAndKeysOnTheirFiles)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string building = dir.filePath(QString::fromUtf8("building.usda")).toStdString();
+    writeFile(building, leafWithRadius(1.));
+    writeFile(root, sceneWithPayload("building.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "evaluating opened a payload layer";
+    const U64 before = reader->getHashValue();
+
+    writeFile(building, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "Reload opened a payload layer";
+    EXPECT_NE(before, reader->getHashValue());
+}
+
+// A payload some stage has loaded is read again by Reload, though the walk left it closed.
+TEST_F(USDReadTest, ReloadReadsAPayloadAStageHasLoaded)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string building = dir.filePath(QString::fromUtf8("building.usda")).toStdString();
+    writeFile(building, leafWithRadius(1.));
+    writeFile(root, sceneWithPayload("building.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    const PXR_NS::SdfLayerRefPtr loaded = PXR_NS::SdfLayer::FindOrOpen(building);
+    ASSERT_TRUE(bool(loaded));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(loaded);
+    ASSERT_DOUBLE_EQ(1., leafRadius(stage));
+
+    writeFile(building, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+    EXPECT_DOUBLE_EQ(2., leafRadius(stage));
 }
 
 // USD reloads a layer in place for every consumer, so one reader's Reload re-keys every other
@@ -765,7 +874,14 @@ TEST_F(USDReadTest, ASublayerRewrittenWhileClosedKeysTheReaderAnew)
     NodePtr reader = createReader(top);
     ASSERT_TRUE(bool(reader));
     const std::string readerName = reader->getScriptName();
-    const U64 firstSession = reader->getHashValue();
+    const auto walkedHash = [](const NodePtr& node) {
+        ScenePayload walked;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &walked, &error)) << error;
+
+        return node->getHashValue();
+    };
+    const U64 firstSession = walkedHash(reader);
 
     const QString dirPath = dir.path() + QLatin1Char('/');
     const QString fileName = QString::fromUtf8("sublayer-closed.ntp");
@@ -777,14 +893,14 @@ TEST_F(USDReadTest, ASublayerRewrittenWhileClosedKeysTheReaderAnew)
     closeSession(getApp(), { top, leaf });
     reader = openSession(getApp(), dirPath, fileName, readerName);
     ASSERT_TRUE(bool(reader));
-    EXPECT_EQ(firstSession, reader->getHashValue());
+    EXPECT_EQ(firstSession, walkedHash(reader));
     reader.reset();
 
     closeSession(getApp(), { top, leaf });
     writeFile(leaf, leafWithRadius(2.));
     reader = openSession(getApp(), dirPath, fileName, readerName);
     ASSERT_TRUE(bool(reader));
-    EXPECT_NE(firstSession, reader->getHashValue());
+    EXPECT_NE(firstSession, walkedHash(reader));
 }
 
 // The save, rewrite, fresh-load path: the reader loaded after a sublayer changed while the

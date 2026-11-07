@@ -66,6 +66,16 @@ public:
     static double getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer);
 
     /**
+     * @brief Walks the file layers the file at path brings in and takes their stamps into the
+     * digest, unless the last walk was of path and no reload has run since. Opens files, payload
+     * arcs excepted, so it runs on evaluation, before the node's layer key is taken: that key and
+     * the stack hash built on it then never hold the digest of an unwalked file. Returns whether
+     * the digest moved, in which case the caller marks the node's hash dirty. Outside any
+     * SceneWriteBarrier::runExclusive().
+     **/
+    bool walk(const std::string& path);
+
+    /**
      * @brief Holds layer open until the next hold(), so a stage composed meanwhile finds it rather
      * than reading the file, and walks the file layers it brings in unless the last walk was of
      * layer and no reload has run since.
@@ -86,18 +96,19 @@ public:
     PXR_NS::UsdStageRefPtr getLastStage() const;
 
     /**
-     * @brief Opens the file at path, none when empty, walks every file it brings in and takes
-     * their stamps into the digest. Outside any render and any SceneWriteBarrier::ReadScope: when
-     * the file changes and when the node is created or loaded.
+     * @brief Names the file the node reads, none when empty. Reads nothing, opens nothing and
+     * walks nothing, so it is safe on the main thread: the next walk() does that work. Until then
+     * the digest matches no earlier session's, since the files the node brings in are unknown.
+     * Naming the file already named keeps the walk and the digest.
      **/
     void load(const std::string& path);
 
     /**
-     * @brief Reads again every file layer the last walk found or, before any walk, those of the
-     * file at path if another consumer has it open, then walks afresh, which also finds files
-     * that were missing. Drops the stamps of every file that was in the closure before or is
-     * after, and appends them to *reloadedFiles. Returns false with *errorMessage set when the
-     * reload fails; the walk is taken either way.
+     * @brief Reads again every file layer the last walk found and every open layer it brings in
+     * or, before any walk, those of the file at path if another consumer has it open. Opens
+     * nothing: the next walk() walks afresh, which finds files that were missing. Drops the stamps
+     * of those files, takes them again into the digest and appends them to *reloadedFiles. Returns
+     * false with *errorMessage set when the reload fails.
      **/
     bool reload(const std::string& path,
                 std::string* errorMessage,
@@ -105,8 +116,7 @@ public:
 
     /**
      * @brief EffectInstance::refreshFileDependencies() for the node: when the closure holds one of
-     * paths, walks it afresh, takes the stamps into the digest and returns true. Outside any
-     * SceneWriteBarrier::ReadScope.
+     * paths, takes the stamps into the digest and returns true. The next walk() walks afresh.
      **/
     bool refresh(const std::vector<std::string>& paths);
 
@@ -124,23 +134,36 @@ public:
      **/
     void purgeStamps();
 
-    // The digest the last load(), purgeStamps() or refresh() took, 0 before any.
+    // The digest the last load(), walk(), reload(), purgeStamps() or refresh() took, 0 with no file.
     U64 getDigest() const;
 
 private:
     void setClosure(const PXR_NS::SdfLayerRefPtr& layer);
 
+    // Stamps of the walked closure when there is one, else a new digest for an unwalked file.
+    void takeDigest();
+
     // Hashes the registry's stamps of _closurePaths: those recorded when each file was first
     // looked at, until a Reload drops them.
     U64 stampClosurePaths() const;
 
+    // Held across a walk, so two evaluations walk once. Taken before _mutex.
+    std::mutex _walkMutex;
     mutable std::mutex _mutex;
+    std::string _path;
+    std::uint64_t _loadCount;
+    // Whether _closure is of _path. Until then the digest is not made of stamps.
+    bool _walked;
     PXR_NS::SdfLayerRefPtr _layer;
     // Every file layer _layer brings in, its own first, as of the last walk: what reload() reads
     // again.
     std::vector<PXR_NS::SdfLayerRefPtr> _closure;
+    // The closure of the file named before _path, until a walk releases it off the main thread.
+    std::vector<PXR_NS::SdfLayerRefPtr> _retired;
     // Their files on disk, in the same order, then the files the closure names that could not be
-    // opened: stamped as missing, so one appearing re-keys the node at the next load or Reload.
+    // opened, then its payloads' files, which stay closed. The last two are stamped from what
+    // stat() says, so a missing file appearing or a payload changing re-keys the node at the next
+    // Reload or session.
     std::vector<std::string> _closurePaths;
     SceneLinkIndex _links;
     // SceneOps::getFileLayerReloadCount() when _closure was walked: hold() skips the walk, which
@@ -148,8 +171,9 @@ private:
     std::uint64_t _closureReloadCount;
     PXR_NS::SdfLayerRefPtr _stageLayer;
     PXR_NS::UsdStageRefPtr _stage;
-    // Taken only when the files are read, never by an evaluation, so an evaluation cannot re-key
-    // the node while the layers still hold what was read before.
+    // Re-stamped only when the files are read: the first walk, or a Reload. Stamps stay pinned
+    // otherwise, so an evaluation cannot re-key the node while the layers still hold what was read
+    // before.
     std::atomic<U64> _digest;
 };
 

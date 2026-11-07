@@ -229,7 +229,7 @@ USDReference::reloadFile()
     std::string error;
 
     // A file no stage has open yet is read fresh when it is first composed.
-    if (open && !SceneOps::reloadFileLayers(SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open)), &error)) {
+    if (open && !SceneOps::reloadFileLayers(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open)), &error)) {
         setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
     } else {
         clearPersistentMessage(false);

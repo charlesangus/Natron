@@ -360,9 +360,28 @@ public:
      * @brief What a width x height view shows: through the camera looked through, or through the
      * free camera, whose pivotDepth is its distance. For a stage camera, cameraToWorld is the
      * prim's own transform (with any scale), parentToWorld its parent's, and pivotDepth the depth
-     * of the scene's centre ahead of it. False only for a stage camera that cannot be read.
+     * ahead of it of the scene's centre, as computeFrameBounds() last found it. False only for a
+     * stage camera that cannot be read.
      **/
     bool getViewPose(int width, int height, CameraPose* pose) const;
+
+    // What a framing frames, worked out apart from moving the camera.
+    struct FrameBounds {
+        double min[3] = { 0., 0., 0. };
+        double max[3] = { 0., 0., 0. };
+        bool empty = true;
+        bool selection = false;
+    };
+
+    /**
+     * @brief The bounds of the prims at the paths in selection at timeCode, or of the scene when it
+     * is empty. A stage walk, so any thread other than the one painting. Prims with no payload
+     * loaded count by their extent hints, and no payload is read.
+     **/
+    FrameBounds computeFrameBounds(const std::vector<std::string>& selection, double timeCode) const;
+
+    // Frames the free camera on bounds, and looks through it. Main thread.
+    void applyFrameBounds(const FrameBounds& bounds);
 
     // Frames the free camera on the bounds of the scene at the shown time, and looks through it.
     void frameScene();
@@ -383,7 +402,7 @@ public:
     // Moves the free camera towards (factor < 1) or away from (factor > 1) its pivot.
     void dolly(double factor);
 
-    // The paths of the stage's UsdGeomCamera prims, in stage order.
+    // The paths of the stage's UsdGeomCamera prims, in stage order, as of the last sync or load.
     std::vector<std::string> getStageCameraPaths() const;
 
     /**
@@ -837,7 +856,12 @@ private:
     void requestSync(const ScenePayload& payload, const QString& error);
 
     // Main thread: the worker synced request serial, with error set on failure.
-    void onSynced(U64 serial, bool ok, const QString& error);
+    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds);
+
+    // Puts a framing on the worker. selection is empty for the scene.
+    void requestFraming(const std::vector<std::string>& selection);
+
+    void onFramingComputed(U64 id, const SceneViewportRenderer::FrameBounds& bounds);
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
@@ -845,7 +869,7 @@ private:
     void onBackgroundFrameDone();
 
     // Main thread: a batch of payload loads was committed.
-    void onStageLoadsServiced();
+    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds);
 
     // Runs fn with the engine's context current, on whichever thread that context lives.
     void runWithEngineContext(const std::function<void()>& fn);

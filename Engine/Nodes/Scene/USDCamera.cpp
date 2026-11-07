@@ -1030,6 +1030,13 @@ USDCamera::renderScene(const SceneRenderActionArgs& /*args*/,
         file.editClipping = editClipping && editClipping->getValue();
     }
 
+    if (file.enabled && _fileCamera->source.walk(file.path)) {
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
+    }
+
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
     if (!emitSceneLayer(ScenePayload(), reads, [this, file](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, file, error); }, outputScene, errorMessage)) {

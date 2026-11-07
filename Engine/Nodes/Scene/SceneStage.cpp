@@ -49,25 +49,6 @@ getAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec)
     return spec->GetFieldAs<PXR_NS::SdfPayloadListOp>(PXR_NS::SdfFieldKeys->Payload).GetAppliedItems();
 }
 
-// The payload asset paths spec and everything under it author, as authored.
-void
-collectAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec,
-                        std::set<std::string>* assets)
-{
-    for (const PXR_NS::SdfPayload& payload : getAuthoredPayloads(spec)) {
-        assets->insert(payload.GetAssetPath());
-    }
-    for (const PXR_NS::SdfPrimSpecHandle& child : spec->GetNameChildren()) {
-        collectAuthoredPayloads(child, assets);
-    }
-    for (const auto& variantSet : spec->GetVariantSets()) {
-        const PXR_NS::SdfVariantSetSpecHandle set = variantSet.second;
-        for (const PXR_NS::SdfVariantSpecHandle& variant : set->GetVariantList()) {
-            collectAuthoredPayloads(variant->GetPrimSpec(), assets);
-        }
-    }
-}
-
 // Opens asset and the sublayers and references it needs to compose, holding each in held. A nested
 // payload stays closed: its prim comes up unloaded unless it is asked for. Returns the error
 // opening asset itself gave; one of its dependencies failing is the stage's to report when it
@@ -99,8 +80,7 @@ openPayloadClosure(const std::string& asset,
     (*outcomes)[asset] = std::string();
     held->push_back(layer);
 
-    std::set<std::string> nested;
-    collectAuthoredPayloads(layer->GetPseudoRoot(), &nested);
+    const std::set<std::string> nested = SceneOps::getAuthoredPayloadAssets(layer);
     for (const std::string& dependency : layer->GetCompositionAssetDependencies()) {
         if (!dependency.empty() && !nested.count(dependency)) {
             openPayloadClosure(PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency), outcomes, held);

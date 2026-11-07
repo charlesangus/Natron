@@ -48,6 +48,7 @@ STARTUP_TIMEOUT_S = 120.0
 SETTLE_MS = 300
 STALL_FLUSH_MS = 120
 DRAG_EVENTS = 40
+RUBBER_BAND_PRESS_MARGIN = 40.0
 
 
 def env_list(name, default):
@@ -174,10 +175,22 @@ try:
                 return w
         return None
 
+    root_graph_cache = [None]
+
     def root_graph():
-        """The project's graph. A group's graph is named after the group; the root's has no name."""
+        """The project's graph. A group's graph is named after the group; the root's has no name.
+        Kept once found: walking every widget from Python on each synthetic event would swamp
+        what the hover op measures."""
+        graph = root_graph_cache[0]
+        if graph is not None:
+            try:
+                graph.objectName()
+                return graph
+            except RuntimeError:
+                pass
         graphs = [w for w in gt.widgets_of("NodeGraph") if not w.objectName()]
-        return graphs[0] if graphs else None
+        root_graph_cache[0] = graphs[0] if graphs else None
+        return root_graph_cache[0]
 
     def front_root_graph():
         """Brings the project's graph to the front of its pane. Once a graph has had focus, creating
@@ -488,23 +501,27 @@ try:
             y0 = min(b[1] for b in boxes)
             x1 = max(b[2] for b in boxes)
             y1 = max(b[3] for b in boxes)
-            # sqrt(0.1) of each side covers about a tenth of an evenly filled layout; the press
-            # lands outside every node and backdrop.
-            st["from"] = (x0 - 200.0, y0 - 200.0)
+            # sqrt(0.1) of each side covers about a tenth of an evenly filled layout.
+            st["corner"] = (x0, y0)
             st["to"] = (x0 + (x1 - x0) * 0.316, y0 + (y1 - y0) * 0.316)
             app.clearSelection()
 
         def events(ctx, st, rep):
-            (sx, sy), (ex, ey) = st["from"], st["to"]
-            mouse(QEvent.MouseButtonPress, to_view(sx, sy), Qt.LeftButton, Qt.LeftButton)
+            # The press misses every node, backdrop and edge only if it clears their grab radii,
+            # which are in viewport pixels: a fixed scene distance falls inside them zoomed out.
+            corner = to_view(*st["corner"])
+            start = QPointF(corner.x() - RUBBER_BAND_PRESS_MARGIN, corner.y() - RUBBER_BAND_PRESS_MARGIN)
+            end = to_view(*st["to"])
+            mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
             repaint()
             yield None
             for i in range(1, DRAG_EVENTS - 1):
                 f = i / float(DRAG_EVENTS - 2)
-                mouse(QEvent.MouseMove, to_view(sx + (ex - sx) * f, sy + (ey - sy) * f), Qt.NoButton, Qt.LeftButton)
+                at = QPointF(start.x() + (end.x() - start.x()) * f, start.y() + (end.y() - start.y()) * f)
+                mouse(QEvent.MouseMove, at, Qt.NoButton, Qt.LeftButton)
                 repaint()
                 yield None
-            mouse(QEvent.MouseButtonRelease, to_view(ex, ey), Qt.LeftButton, Qt.NoButton)
+            mouse(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
             repaint()
             yield None
 

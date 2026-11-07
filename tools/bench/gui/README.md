@@ -44,8 +44,12 @@ Both modes run Natron under a throwaway HOME seeded with `checkForUpdates=false`
 settings are neither read nor changed. Each run writes:
 
 - `build/bench/gui/<UTC>-<host>-<mode>.jsonl`, the results;
-- `build/bench/gui/<UTC>-<host>-<mode>/`, holding `natron.log`, `results.txt` and
+- `build/bench/gui/<UTC>-<host>-<mode>/<topology>/`, holding `natron.log`, `results.txt` and
   `stalls.jsonl`.
+
+Each topology runs in its own Natron process. An op that hangs ends its process, so it loses the
+remaining ops of that topology but not the other topologies. Results already written stay in the
+one `.jsonl`, and the exit code is the last non-zero one.
 
 The other options are `--ops` (a subset of ops), `--reps`, `--out` and `--self-check`.
 `--self-check` adds an op that blocks the main thread for 300 ms. It fails unless exactly one

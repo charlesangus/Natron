@@ -40,6 +40,8 @@
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <QDataStream>
@@ -734,7 +736,7 @@ struct KnobHelperPrivate
     // registerRFVListeners() for the variable the dimension's driver falls back to, if any.
     void registerDriverRFVListeners(int dimension);
 
-    std::string declarePythonVariables(bool addTab, int dimension);
+    std::string declarePythonVariables(bool addTab, int dimension, const std::string& expression);
 
     bool shouldUseGuiCurve() const
     {
@@ -2967,9 +2969,50 @@ extractAllOcurrences(const std::string& str,
     return true;
 }
 
+// Adds the identifiers in the Python source to names, strings and comments included, and returns
+// whether the source can reach the local variables of its function other than by naming them:
+// by evaluating text, by walking the stack or the frame of a running function, or by a module
+// or non-ASCII character that could do either without the telltale name being written out.
+static bool
+readExpressionNames(const std::string& source,
+                    std::unordered_set<std::string>* names)
+{
+    static const std::unordered_set<std::string> kScopeInspectors = {
+        "eval", "exec", "compile", "locals", "vars", "dir", "globals",
+        "_getframe", "currentframe", "stack", "getouterframes", "getframeinfo", "trace",
+        "f_locals", "f_back", "f_globals", "tb_frame", "gi_frame", "cr_frame", "ag_frame",
+        "__globals__", "__builtins__", "__import__", "__subclasses__",
+        "builtins", "importlib", "inspect", "sys", "gc", "traceback", "ctypes", "runpy", "pdb"
+    };
+    bool inspectsScope = false;
+    std::size_t i = 0;
+
+    while (i < source.size()) {
+        if ((unsigned char)source[i] >= 0x80) {
+            // Python folds look-alike characters in an identifier to its ASCII spelling.
+            inspectsScope = true;
+        }
+        if (!isIdentifierCharacter(source[i])) {
+            ++i;
+            continue;
+        }
+        std::size_t end = i + 1;
+        while ((end < source.size()) && isIdentifierCharacter(source[end])) {
+            ++end;
+        }
+        std::string name = source.substr(i, end - i);
+        i = end;
+        inspectsScope = inspectsScope || (kScopeInspectors.find(name) != kScopeInspectors.end());
+        names->insert(std::move(name));
+    }
+
+    return inspectsScope;
+}
+
 std::string
 KnobHelperPrivate::declarePythonVariables(bool addTab,
-                                          int dim)
+                                          int dim,
+                                          const std::string& expression)
 {
     if (!holder) {
         throw std::runtime_error("This parameter cannot have an expression");
@@ -3007,10 +3050,22 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         collectionScriptName = appID;
     }
     if (collection) {
+        // Each declaration is compiled with the expression, so declaring every sibling would make
+        // setting one expression cost as much as the graph is large, and setting one per node
+        // quadratic. The declarations are locals: only the expression's own text can name them,
+        // unless it inspects its scope.
+        std::unordered_set<std::string> mentioned;
+        const bool declareAll = readExpressionNames(expression, &mentioned);
+        if (effect) {
+            mentioned.insert(effect->getNode()->getScriptName_mt_safe());
+        }
         NodesList siblings = collection->getNodes();
         for (NodesList::iterator it = siblings.begin(); it != siblings.end(); ++it) {
             if ( (*it)->isActivated() && !(*it)->getParentMultiInstance() ) {
                 std::string scriptName = (*it)->getScriptName_mt_safe();
+                if (!declareAll && (mentioned.find(scriptName) == mentioned.end())) {
+                    continue;
+                }
                 if ( NATRON_PYTHON_NAMESPACE::isKeyword(scriptName) ) {
                     throw std::runtime_error(scriptName + " is a Python keyword");
                 }
@@ -3309,7 +3364,7 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension,
 
     std::string declarations;
     try {
-        declarations = declarePythonVariables(false, dimension);
+        declarations = declarePythonVariables(false, dimension, expressionCopy);
     } catch (const std::exception& e) {
         if (!readOnly) {
             throw;
@@ -3652,8 +3707,7 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
 
     std::stringstream ss;
     ss << "def "  << exprFuncName << "(frame, view):\n";
-    ss << _imp->declarePythonVariables(true, dimension);
-
+    ss << _imp->declarePythonVariables(true, dimension, expression);
 
     std::string script = ss.str();
     script.append(exprCpy);
@@ -4721,7 +4775,7 @@ KnobHelper::compileExpressionSource(const std::string& source,
     Py_DECREF(code);
     std::string declarations;
     try {
-        declarations = _imp->declarePythonVariables(true, 0);
+        declarations = _imp->declarePythonVariables(true, 0, source);
     } catch (const std::exception& e) {
         *error = e.what();
 

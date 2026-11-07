@@ -16,6 +16,9 @@
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
 #
+# Each topology runs in its own Natron process and appends to the one result file, so an op that
+# hangs ends only its topology's remaining ops. The exit code is the last non-zero one.
+#
 # --xvfb runs Tests/gui/run-gui-test.sh inside the natron-dev container (re-entering it through
 # tools/ci/local/devshell.sh from the host) with build/release/App/Natron, or the AppImage given.
 # Only one --xvfb run at a time: a second one waits on a lock rather than share the container.
@@ -33,7 +36,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 self="$repo/tools/bench/gui/run.sh"
 
 usage() {
-    sed -n '2,18p' "$self" >&2
+    sed -n '2,21p' "$self" >&2
     exit 2
 }
 
@@ -128,10 +131,35 @@ export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$r
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
 export GUI_BENCH_GIT_SHA
 GUI_BENCH_GIT_SHA=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
-export NATRON_STALL_LOG="$work/stalls.jsonl" NATRON_GUI_TEST_OUT="$work"
-rm -f "$NATRON_STALL_LOG"
 timeout_s=${GUI_BENCH_TIMEOUT:-21600}
 script="$repo/tools/bench/gui/gui_bench.py"
+
+# Calls run_one with the seconds left of the whole run's cap, once per topology.
+run_topologies() {
+    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology rc left
+    local -a list
+    IFS=, read -r -a list <<< "$topologies"
+    for topology in "${list[@]}"; do
+        left=$(( deadline - $(date +%s) ))
+        if [ "$left" -le 0 ]; then
+            echo "the ${timeout_s}s cap ended the run before $topology"
+            overall=124
+            break
+        fi
+        export GUI_BENCH_TOPOLOGIES=$topology
+        export NATRON_GUI_TEST_OUT="$work/$topology"
+        export NATRON_STALL_LOG="$NATRON_GUI_TEST_OUT/stalls.jsonl"
+        mkdir -p "$NATRON_GUI_TEST_OUT"
+        rm -f "$NATRON_STALL_LOG"
+        run_one "$left"
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "$topology ended with exit code $rc"
+            overall=$rc
+        fi
+    done
+    finish "$overall"
+}
 
 if [ "$mode" = xvfb ]; then
     if [ -n "$appimage" ]; then
@@ -150,8 +178,10 @@ if [ "$mode" = xvfb ]; then
         echo "another --xvfb run holds $lock; waiting"
         flock 9
     fi
-    GUI_TEST_TIMEOUT=$timeout_s "$repo/Tests/gui/run-gui-test.sh" "$script" "$natron"
-    finish $?
+    run_one() {
+        GUI_TEST_TIMEOUT=$1 "$repo/Tests/gui/run-gui-test.sh" "$script" "$natron"
+    }
+    run_topologies
 fi
 
 # --host
@@ -165,10 +195,13 @@ export HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_CACHE_HOME="$home/.cache
 export DISPLAY="$display" QT_QPA_PLATFORM=xcb NATRON_GUI_TEST_ROOT="$repo" GUI_TEST_HOST_DISPLAY="$display"
 unset LD_LIBRARY_PATH WAYLAND_DISPLAY
 cd "$repo" || finish 2
-timeout "$timeout_s" "$scratch/squashfs-root/AppRun" "$script" > "$work/natron.log" 2>&1 < /dev/null
-rc=$?
-if [ -f "$work/results.txt" ]; then
-    tail -n 5 "$work/results.txt"
-fi
-[ "$rc" -eq 124 ] && echo "timed out after ${timeout_s}s"
-finish "$rc"
+run_one() {
+    timeout "$1" "$scratch/squashfs-root/AppRun" "$script" > "$NATRON_GUI_TEST_OUT/natron.log" 2>&1 < /dev/null
+    local rc=$?
+    if [ -f "$NATRON_GUI_TEST_OUT/results.txt" ]; then
+        tail -n 5 "$NATRON_GUI_TEST_OUT/results.txt"
+    fi
+    [ "$rc" -eq 124 ] && echo "timed out after $1 s"
+    return "$rc"
+}
+run_topologies

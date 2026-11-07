@@ -196,6 +196,8 @@ public:
 
     void setDashed(bool dashed);
 
+    QRectF boundingRect() const OVERRIDE WARN_UNUSED_RETURN;
+
 public Q_SLOTS:
 
     /**

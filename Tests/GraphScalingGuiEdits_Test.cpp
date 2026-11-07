@@ -39,6 +39,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -62,6 +63,32 @@ createNamedNode(const AppInstancePtr& app,
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, name);
 
     return app->createNode(args);
+}
+
+KnobDoubleBasePtr
+doubleKnob(const NodePtr& node,
+           const char* name)
+{
+    return std::dynamic_pointer_cast<KnobDoubleBase>(node->getKnobByName(name));
+}
+
+NodePtr
+createWithMix(const AppInstancePtr& app,
+              const std::string& name,
+              double mix)
+{
+    NodePtr node = createNamedNode(app, kGradePluginID, name);
+    if (node) {
+        doubleKnob(node, "mix")->setValue(mix, ViewSpec::all(), 0);
+    }
+
+    return node;
+}
+
+double
+readOffset(const KnobDoubleBasePtr& offset)
+{
+    return offset->getValueAtTime(1., 0, ViewSpec::current(), false);
 }
 
 } // namespace
@@ -372,4 +399,121 @@ TEST_F(GraphScalingGuiEdits, BatchedNamingScansOnce)
         ASSERT_TRUE(bool(node));
         EXPECT_EQ(std::string("Same_5"), node->getScriptName());
     }
+}
+
+TEST_F(GraphScalingGuiEdits, SiblingReferenceEvaluatesAndFollowsTheSibling)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Target.mix.get() * 2", false, true));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.5, readOffset(offset));
+
+    std::set<NodePtr> deps;
+    reader->getEffectInstance()->getAllExpressionDependenciesRecursive(deps);
+    EXPECT_EQ(1u, deps.count(target));
+
+    doubleKnob(target, "mix")->setValue(0.75, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(1.5, readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, SiblingReachedByComputedNameStillResolves)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+
+    const char* const expressions[] = {
+        "eval('Tar' + 'get').mix.get()",
+        "eval('Tar' + 'get.mix.get()')",
+        "locals()['Target'].mix.get()",
+        "vars()['Target'].mix.get()",
+        "getattr(thisGroup, 'Tar' + 'get').mix.get()",
+        "thisGroup.getNode('Tar' + 'get').getParam('mix').get()",
+    };
+    for (const char* expression : expressions) {
+        SCOPED_TRACE(expression);
+        ASSERT_NO_THROW(offset->setExpression(0, expression, false, true));
+        EXPECT_TRUE(offset->isExpressionValid(0, 0));
+        EXPECT_DOUBLE_EQ(0.25, readOffset(offset));
+    }
+}
+
+TEST_F(GraphScalingGuiEdits, SiblingNameOnlyInAStringIsHarmless)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+
+    ASSERT_NO_THROW(offset->setExpression(0, "float(len('Target'))", false, true));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(6., readOffset(offset));
+
+    // A string naming a node that does not exist is not a reference to it.
+    ASSERT_NO_THROW(offset->setExpression(0, "float(len('Missing'))", false, true));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(7., readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, SiblingNameThatPrefixesAnotherIsNotConfused)
+{
+    NodePtr shortName = createWithMix(getApp(), "Blur1", 0.25);
+    NodePtr longName = createWithMix(getApp(), "Blur10", 0.75);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(shortName && longName && reader);
+    ASSERT_EQ(std::string("Blur1"), shortName->getScriptName_mt_safe());
+    ASSERT_EQ(std::string("Blur10"), longName->getScriptName_mt_safe());
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+
+    ASSERT_NO_THROW(offset->setExpression(0, "Blur1.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Blur10.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(offset));
+
+    // A longer name containing the shorter one does not declare the shorter one.
+    ASSERT_NO_THROW(offset->setExpression(0, "Blur10.mix.get() + 0 * len('Blur1')", false, true));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(offset));
+    offset->setExpression(0, "NotBlur1.mix.get()", false, false);
+    EXPECT_FALSE(offset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, SiblingCreatedAfterTheExpressionResolves)
+{
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(bool(reader));
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Later.mix.get()", false, false));
+    ASSERT_FALSE(offset->isExpressionValid(0, 0));
+
+    NodePtr later = createWithMix(getApp(), "Later", 0.5);
+    ASSERT_TRUE(bool(later));
+    ASSERT_EQ(std::string("Later"), later->getScriptName_mt_safe());
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.5, readOffset(offset));
+
+    doubleKnob(later, "mix")->setValue(0.125, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.125, readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, UndefinedSiblingStaysInvalidAmongOthers)
+{
+    NodePtr other = createNamedNode(getApp(), kGradePluginID, "Other");
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(other && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+
+    ASSERT_NO_THROW(offset->setExpression(0, "Missing.mix.get()", false, false));
+    EXPECT_FALSE(offset->isExpressionValid(0, 0));
+    ASSERT_NO_THROW(offset->setExpression(0, "Other.mix.get() + Missing.mix.get()", false, false));
+    EXPECT_FALSE(offset->isExpressionValid(0, 0));
 }

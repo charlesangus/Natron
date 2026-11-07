@@ -634,13 +634,22 @@ Edge::initLine()
     _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
 } // initLine
 
+// The line's rect grown by the pen width, which holds the line stroked with any cap or join. Item
+// lookups and painting ask for this on every edge, so it cannot afford the path stroking that
+// QGraphicsLineItem::boundingRect() does on each call.
+static QRectF
+strokedLineBounds(const QLineF& line,
+                  qreal penWidth)
+{
+    return QRectF(line.p1(), line.p2()).normalized().adjusted(-penWidth, -penWidth, penWidth, penWidth);
+}
+
 QRectF
 Edge::boundingRect() const
 {
-    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, but the
-    // arrow head is painted (and stroked with that same pen) outside the line's own rect,
-    // exactly as shape() below already accounts for.
-    QRectF rect = QGraphicsLineItem::boundingRect();
+    // The arrow head is painted, stroked with the same pen, outside the line's own rect, exactly
+    // as shape() below already accounts for.
+    QRectF rect = strokedLineBounds(line(), pen().widthF());
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
@@ -1074,6 +1083,12 @@ LinkArrow::refreshPosition()
     _arrowHead.clear();
     _arrowHead << middle << arrowP1 << arrowP2;
 } // refreshPosition
+
+QRectF
+LinkArrow::boundingRect() const
+{
+    return strokedLineBounds(line(), std::max<qreal>(pen().widthF(), _lineWidth));
+}
 
 void
 LinkArrow::paint(QPainter *painter,

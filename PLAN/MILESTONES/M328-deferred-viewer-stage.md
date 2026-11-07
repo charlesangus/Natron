@@ -32,13 +32,13 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 328.1: Stage opens unloaded
 
-- [ ] M328.P1.T1 — Open the viewer stage unloaded on a worker
+- [x] M328.P1.T1 — Open the viewer stage unloaded on a worker
   - files: `Gui/SceneViewport.{h,cpp}`, `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/SceneStage_Test.cpp`
   - approach: `SceneStage` gains a load-policy argument; the viewer passes `LoadNone`, while query and render callers keep `LoadAll` (`SceneOps.cpp:411`). Compose on the existing viewport worker (`SceneViewport.cpp:1202-1223`), and show a composing status in the viewer until the first sync lands.
   - verify: gtest — a stage over the city fixture's root opened this way has no building layer in `SdfLayer::GetLoadedLayers()`; harness — no main-thread gap over 100 ms during open of the city.
   - size: M
 
-- [ ] M328.P1.T2 — One load path, opened off-lock
+- [x] M328.P1.T2 — One load path, opened off-lock
   - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Gui/SceneViewport.{h,cpp}`, `Tests/Scene/SceneStage_Test.cpp`
   - approach: `SceneStage::requestLoad(paths, withDescendants)` and `requestUnload(paths)`. Using M327 - Heavy Scene Spike's findings, a worker opens the payload layers and holds references without the lock, then a short locked `LoadAndUnload` batches every pending request. Never `SetLoadRules`, which recomposes from root.
   - verify: gtest — two requests batch into one `LoadAndUnload`, `UsdNotice::ObjectsChanged` names only those subtrees; harness — lock hold time for one building is reported and the main thread stays within budget.
@@ -73,3 +73,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - size: M
 
 **Verification gate:** release gate green; harness on the payload city and flat file passes main-thread stall and unrequested-file budgets on the GPU host; `scene_graph_payloads.py` passes; existing panel GUI tests pass.
+
+## Decisions
+
+- 2026-11-07 — Phase 328.1 at f26c43835, unbuilt. First render moved off the main thread (PM-accepted implementer's design, not in the plan): the engine lives on a per-viewport render thread with a shared GL context. A frame taking in a stage change renders there with main free; any other frame blocks main while it draws, then blits. Without threaded GL the engine stays on main.

@@ -12,7 +12,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 - An eviction score of priority × recompute cost × reuse multiplier ÷ bytes, applied per tier and only past the high-water mark. A demotion goes to the next tier when the recompute cost exceeds the demotion cost, and the entry is dropped otherwise.
 - Retention priority signals: inputs of recently edited nodes (decaying), inputs of open panels, the active viewer's branch, expensive nodes, and a reuse-count multiplier on recompute cost.
 - Two admission policies behind a setting: admit everything, or admit only above a priority floor. The benchmark decides the default and the user signs off.
-- A persistent disk tier with a location and size preference (default `~/.cache/Natron/tier`, 20 GiB, capped at 25% of the free space at start). Any new build invalidates it.
+- A persistent disk tier shared by concurrent sessions, with a location and size preference (default `~/.cache/Natron/tier`, 20 GiB in total, capped at 25% of the free space). Each build has its own directory, so a new build starts cold without touching another build's files.
 - The DiskCache node as a pin: forced to disk, persistent, on its own budget (the existing 10 GiB setting), never evicted by the automatic policy.
 - `ImageKey` completed with mip level, layer and bit depth (hole I4). The lookup that downscales a finer mip stays as a fallback.
 
@@ -24,7 +24,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 **Edge cases:**
 - **Disk full or a write error on demotion:** the entry is dropped and one warning is logged per session.
-- **A second Natron instance:** concurrent sessions use one tier as peers; design pending (see Decisions).
+- **A second Natron instance:** concurrent instances are peers on one tier; none is locked out or given scratch space.
 - **A changed source file across sessions:** Read keys carry M260's file stamps, so a persisted entry for a changed file misses and Reload re-reads it.
 - **An entry in use:** it is pinned and never demoted while a render holds it, as today.
 - **A partially rendered entry:** its bitmap travels with it through demotion and promotion.
@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — **Peer-shared disk tier (user):** any number of sessions use one tier with no lock gating access. Each entry is an immutable file published by atomic rename and read with `pread`; automatic entries aren't mapped. Each build has its own directory. Background publishing is on, bounded by the recompute-versus-write test. A build with no live session is reclaimed after 7 days or sooner under pressure, pins included. A deleted project's pins hold their budget until a clear or a new build. No pixel merging: the larger result replaces the smaller. Consultant's design, not yet built; cost figures are estimates.
 - 2026-11-07 — M300.P1.T4 at 4cfe3b531, phase gate running. `Cache<Image>` with templated members for now, not the note's non-template cache; a large deep render can evict images by LRU until M300.P2.T2. `DeepReadWrite_Test` `EachFrameOfASequenceRendersItsOwnFileThroughTheCache` proves less now that held entries are pinned; tighten it at the next test pass.
 - 2026-11-07 — **Concurrent sessions coexist on the disk tier (user):** two sessions with different projects are very common and with the same project somewhat rare. Locking the tier to the first session is rejected; this replaces the second-instance edge case and the directory lock. Redesign pending before Phase 300.3.
 - 2026-11-07 — M300.P1.T3 at 9a477bf16, unbuilt until the phase gate. A restored DiskCache entry now has an empty bitmap and re-renders until M300.P3 persists bitmaps; the old code served never-rendered pixels as rendered, so the fix stays and the gap closes before the Feature ships. Each entry has its own `pendingLock` rather than the note's stripe.
@@ -108,23 +109,29 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Phase 300.3: Disk tier and pins
 
-- [ ] M300.P3.T1 — Add the disk tier
+- [ ] M300.P3.T1 — Add the peer-shared disk tier
   - files: `Engine/CacheDiskTier.h` (new), `Engine/CacheDiskTier.cpp` (new), `Engine/Settings.cpp`, `Engine/CacheHostTier.cpp`, `MemoryFile`, `Engine/Image.cpp`, `Engine/DeepImage.h`
-  - approach: The host tier demotes to disk when the recompute cost exceeds the estimated write cost, and drops the entry otherwise. Entries are mmapped files, reusing the `MemoryFile` code. A disk hit promotes the entry back to RAM. Preferences: location (default `~/.cache/Natron/tier`) and size (default 20 GiB, capped at 25% of the free space at start). Disk full or a write error drops the entry with one warning per session.
-  - verify: A unit test with a tiny RAM budget demotes an expensive entry to disk and drops a cheap one; a later lookup promotes it with identical pixels.
+  - approach: Per `docs/cache/tiered-cache.md`. Each entry is an immutable file under `<tier>/<build>/auto`, holding key, params, checksum and bitmap, published by rename and read by `pread`. Probes list one shard off the cache lock, with a short negative cache. An idle low-priority publisher and demotion both apply the recompute-versus-write test, with a per-file latency term. Budget comes from per-session ledgers plus a slow scan; eviction samples the persisted score. Write errors drop the entry with one warning per session. A retracted entry cancels its queued publish.
+  - verify: A tiny RAM budget demotes an expensive entry and drops a cheap one; promotion returns identical pixels. A second process hits an entry the first published. A forged key misses.
   - size: L
 
-- [ ] M300.P3.T2 — Persist the disk tier across sessions
+- [ ] M300.P3.T2 — Persist without an index, and let builds coexist
   - files: `Engine/CacheDiskTier.cpp`, `Engine/CacheSerialization.h`, `Engine/AppManager.cpp`, `Engine/Plugin.cpp`, `Engine/AppManagerPrivate.cpp`
-  - approach: An on-disk index of keys and headers is restored at start. A binary identity mismatch wipes the tier. The directory is locked, and a second instance falls back to a session-only scratch directory.
-  - verify: A test writes entries, restarts the cache and gets hits. A changed binary identity gives misses and an empty tier. A second instance gets a scratch directory.
+  - approach: Entries are found by name, so startup does no restore scan. Sessions register for liveness; any peer reaps dead sessions' temp files and ledgers. The identity stamps both executables (Natron and NatronRenderer) and selects the build directory; salted hashes are flagged and never published. A build with no live session is reclaimed after 7 days or sooner under pressure, oldest first. A rename self-test at start falls back to the default location, then to RAM only, with one warning.
+  - verify: A restart gets hits, whichever session started first. Two identities run together with neither losing files. A dead build is reclaimed. Natron and NatronRenderer hash a project identically across processes.
   - size: L
 
 - [ ] M300.P3.T3 — Make the DiskCache node a pin
   - files: `Engine/DiskCacheNode.cpp`, `Engine/DiskCacheNode.h`, `Engine/CacheDiskTier.cpp`, `Engine/AppManager.cpp`
-  - approach: The node's outputs become pinned disk-tier entries on their own budget (the existing DiskCache size setting). They persist and are never evicted by the automatic policy. Retire the separate DiskCache `Cache<Image>` instance.
-  - verify: A test fills the automatic tier past its budget and the pinned entries survive; restart restores them.
+  - approach: Pins live under `pins/<cacheID>` on their own budget (the existing DiskCache size setting), excluded from sampling. A live session writes `.live-<session>` there. Deleting a node removes that session's marker and unlinks only if no live peer holds the holder. Clearing unlinks this session's holders' pins and never other holders'; a peer's mapping stays valid. Pins stay mapped on local disks and are read into RAM on network mounts. Retire the separate DiskCache `Cache<Image>` instance.
+  - verify: Overfilling the automatic tier leaves pins intact, and a restart restores them. Deleting in session A keeps session B's pins; deleting in both removes them.
   - size: M
+
+- [ ] M300.P3.T4 — Prove the shared tier across real processes
+  - files: `Tests/CacheDiskTierProcess_Test.cpp` (new), `tools/bench/` (probe bench), `docs/cache/tiered-cache.md`
+  - approach: Spawn real processes for: hash equality including the renderer; peer visibility while both run; `kill -9` of a writer in a loop with no invalid read and `tmp/` reaped; unlink under an active `pread` and a mapped pin; four writers staying within budget; two fake builds with retention; the pin delete and clear matrix; `RLIMIT_FSIZE` giving one warning; an injected rename failure taking the fallback. Separately bench a 300,000-file probe and sampling run, and confirm the AppImage ships both executables in one directory.
+  - verify: The cases pass in debug and release. The bench's miss cost per frame is recorded, and the 1 s negative cache keeps a 1000-node miss under the 30 ms estimate or the note says what changed.
+  - size: L
 
 ## Phase 300.4: Measure and guard
 

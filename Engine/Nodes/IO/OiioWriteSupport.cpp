@@ -24,13 +24,16 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <new>
 #include <set>
+#include <string>
 #include <system_error>
 #include <variant>
 
@@ -40,11 +43,12 @@
 #include <unistd.h>
 #endif
 
+#include <OpenImageIO/strutil.h>
+
 #include <QDebug>
 
-#include <ofxMetadata.h>
-
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -774,14 +778,29 @@ namespace {
         return false;
     }
 
+    // OIIO's writers look attribute names up without regard to case.
+    bool oneOfIgnoringCase(std::initializer_list<const char*> names, const std::string& name)
+    {
+        for (const char* candidate : names) {
+            if (OIIO::Strutil::iequals(name, candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // Names whose value describes the layout of the file the metadata was read from, which the
     // writer fixes from its own knobs; carrying them over would contradict the file being written.
+    // The openexr: and oiio: names are instructions to OIIO's writers, not metadata.
     bool describesSourceLayout(const std::string& name)
     {
-        return oneOf({ "compression", "CompressionQuality", "dwaCompressionLevel", "planarconfig",
-                       "PixelAspectRatio", "lineOrder", "roundingmode", "chunkCount", "name", "type",
-                       "view", "multiView", "ExifVersion", "FlashPixVersion" },
-                     name);
+        return OIIO::Strutil::istarts_with(name, "openexr:") || OIIO::Strutil::istarts_with(name, "oiio:")
+            || oneOfIgnoringCase({ "compression", "CompressionQuality", "dwaCompressionLevel", "planarconfig",
+                                   "PixelAspectRatio", "lineOrder", "roundingmode", "chunkCount", "name", "type",
+                                   "view", "multiView", "ExifVersion", "FlashPixVersion", "textureformat",
+                                   "acesImageContainerFlag", "colorInteropID" },
+                                 name);
     }
 
     // The tags OIIO files without a prefix; every other EXIF tag is under "Exif:".
@@ -793,23 +812,25 @@ namespace {
                      name);
     }
 
+    // colorInteropID is excluded with ColorSpace (here for oiio/, in describesSourceLayout for exr/):
+    // OIIO only fills it when empty, so a copied value could contradict the Write's output colorspace.
     bool isExcludedOiioName(const std::string& name)
     {
-        return oneOf({ "ColorSpace", "BitsPerSample", "UnassociatedAlpha", "subimagename", "subimages",
-                       "Endian", "ioproxy", "Movie", "SHA-1", "ConstantColor", "AverageColor" },
-                     name);
+        return oneOfIgnoringCase({ "ColorSpace", "colorInteropID", "BitsPerSample", "UnassociatedAlpha", "subimagename", "subimages",
+                                   "Endian", "ioproxy", "Movie", "SHA-1", "ConstantColor", "AverageColor" },
+                                 name);
     }
 
     bool isExcludedTiffName(const std::string& name)
     {
-        return oneOf({ "Compression", "PhotometricInterpretation", "PlanarConfiguration", "RowsPerStrip",
-                       "Predictor", "ZipQuality", "UnassociatedAlpha" },
-                     name);
+        return oneOfIgnoringCase({ "Compression", "PhotometricInterpretation", "PlanarConfiguration", "RowsPerStrip",
+                                   "Predictor", "ZipQuality", "UnassociatedAlpha" },
+                                 name);
     }
 
     bool isExcludedDpxName(const std::string& name)
     {
-        return oneOf({ "ImageDescriptor", "Packing", "Encoding", "Version", "EndOfLinePadding", "EndOfImagePadding" }, name);
+        return oneOfIgnoringCase({ "ImageDescriptor", "Packing", "Encoding", "Version", "EndOfLinePadding", "EndOfImagePadding" }, name);
     }
 
     // The reverse of the Read's conversion of a RATIONAL to a double.
@@ -832,7 +853,106 @@ namespace {
         spec.attribute(name, OIIO::TypeRational, rate);
     }
 
-    void setValue(OIIO::ImageSpec& spec, const std::string& name, const ImageMetadata::Value& value)
+    // The layout keys describe the input as it was read, so a Reformat or the Write's own depth
+    // can leave them contradicting the file being written.
+    bool isInputIdentityKey(const std::string& key)
+    {
+        return oneOf({ kNatronMetadataKeyFilePath, kNatronMetadataKeySourceFrame, kNatronMetadataKeyFileSize,
+                       kNatronMetadataKeyMTime, kNatronMetadataKeyPixelAspect, kNatronMetadataKeyWidth,
+                       kNatronMetadataKeyHeight, kNatronMetadataKeyBitDepth, kNatronMetadataKeySampleType,
+                       kNatronMetadataKeyViewNames },
+                     key);
+    }
+
+    // PNG's text chunks hold only strings, so every other type is written as its text.
+    std::string valueText(const ImageMetadata::Value& value)
+    {
+        char buffer[40];
+
+        if (const int* i = std::get_if<int>(&value)) {
+            return std::to_string(*i);
+        }
+        if (const double* d = std::get_if<double>(&value)) {
+            std::snprintf(buffer, sizeof(buffer), "%.17g", *d);
+            return buffer;
+        }
+        if (const std::string* str = std::get_if<std::string>(&value)) {
+            return *str;
+        }
+        std::string text;
+        if (const std::vector<int>* ints = std::get_if<std::vector<int>>(&value)) {
+            for (std::size_t n = 0; n < ints->size(); ++n) {
+                text += (n ? "," : "") + std::to_string((*ints)[n]);
+            }
+        } else if (const std::vector<double>* doubles = std::get_if<std::vector<double>>(&value)) {
+            for (std::size_t n = 0; n < doubles->size(); ++n) {
+                std::snprintf(buffer, sizeof(buffer), "%.17g", (*doubles)[n]);
+                text += (n ? "," : "") + std::string(buffer);
+            }
+        }
+
+        return text;
+    }
+
+    // OIIO's EXR writer gives these names a fixed type, and OpenEXR's header predeclares the
+    // screenWindow pair, so a double under one of them is dropped rather than stored.
+    bool exrRequiresFloat(const std::string& name)
+    {
+        return oneOf({ "XResolution", "xDensity", "ExposureTime", "expTime", "FNumber", "aperture",
+                       "screenWindowWidth", "screenWindowCenter", "worldtocamera", "worldToCamera",
+                       "worldtoNDC", "worldToNDC", "worldtoscreen", "worldToScreen" },
+                     name);
+    }
+
+    // Non-finite values count as fitting: a float attribute can hold them, and the Read widens
+    // every float to a double, so this is what tells a float attribute from a real double.
+    bool fitsFloat(double value)
+    {
+        return !std::isfinite(value)
+            || (std::fabs(value) <= (double)std::numeric_limits<float>::max() && (double)(float)value == value);
+    }
+
+    void setDoubleVector(OIIO::ImageSpec& spec, const std::string& name, const std::vector<double>& doubles, bool keepDouble)
+    {
+        if (doubles.empty()) {
+            return;
+        }
+        // OIIO's EXR writer has no attribute for a double array of any other length.
+        const bool lengthHoldsDoubles = doubles.size() == 2 || doubles.size() == 3 || doubles.size() == 9 || doubles.size() == 16;
+        const bool asDouble = keepDouble && lengthHoldsDoubles && !exrRequiresFloat(name) && !std::all_of(doubles.begin(), doubles.end(), fitsFloat);
+        const OIIO::TypeDesc::BASETYPE base = asDouble ? OIIO::TypeDesc::DOUBLE : OIIO::TypeDesc::FLOAT;
+        OIIO::TypeDesc type(base, (int)doubles.size());
+        switch (doubles.size()) {
+        case 2:
+            type = OIIO::TypeDesc(base, OIIO::TypeDesc::VEC2);
+            break;
+        case 3:
+            type = OIIO::TypeDesc(base, OIIO::TypeDesc::VEC3, OIIO::TypeDesc::VECTOR);
+            break;
+        case 9:
+            type = OIIO::TypeDesc(base, OIIO::TypeDesc::MATRIX33);
+            break;
+        case 16:
+            type = OIIO::TypeDesc(base, OIIO::TypeDesc::MATRIX44);
+            break;
+        default:
+            break;
+        }
+        if (asDouble) {
+            spec.attribute(name, type, doubles.data());
+        } else {
+            std::vector<float> floats;
+            floats.reserve(doubles.size());
+            for (const double v : doubles) {
+                floats.push_back(knobValueAsFloat(v));
+            }
+            spec.attribute(name, type, floats.data());
+        }
+    }
+
+    // keepDouble is for OpenEXR, whose attributes hold doubles: a value a float cannot hold exactly
+    // stays a double, and any other stays the float the Read most likely widened it from.
+    void setValue(OIIO::ImageSpec& spec, const std::string& name, const ImageMetadata::Value& value, bool keepDouble = false)
     {
         if (const int* i = std::get_if<int>(&value)) {
             if (name == "FramesPerSecond") {
@@ -843,9 +963,11 @@ namespace {
         } else if (const double* d = std::get_if<double>(&value)) {
             if (name == "FramesPerSecond") {
                 setRational(spec, name, *d);
+            } else if (keepDouble && !exrRequiresFloat(name) && !fitsFloat(*d)) {
+                spec.attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::DOUBLE), d);
             } else {
-                // OpenEXR has no double attribute, and the tags of the other formats take a float.
-                spec.attribute(name, (float)*d);
+                // The standard tags of every format take a float.
+                spec.attribute(name, knobValueAsFloat(*d));
             }
         } else if (const std::string* str = std::get_if<std::string>(&value)) {
             spec.attribute(name, *str);
@@ -854,27 +976,7 @@ namespace {
                 spec.attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::INT, (int)ints->size()), ints->data());
             }
         } else if (const std::vector<double>* doubles = std::get_if<std::vector<double>>(&value)) {
-            const std::vector<float> floats(doubles->begin(), doubles->end());
-            OIIO::TypeDesc type(OIIO::TypeDesc::FLOAT, (int)floats.size());
-            switch (floats.size()) {
-            case 0:
-                return;
-            case 2:
-                type = OIIO::TypeDesc(OIIO::TypeDesc::FLOAT, OIIO::TypeDesc::VEC2);
-                break;
-            case 3:
-                type = OIIO::TypeVector;
-                break;
-            case 9:
-                type = OIIO::TypeMatrix33;
-                break;
-            case 16:
-                type = OIIO::TypeMatrix44;
-                break;
-            default:
-                break;
-            }
-            spec.attribute(name, type, floats.data());
+            setDoubleVector(spec, name, *doubles, keepDouble);
         }
     }
 
@@ -938,61 +1040,142 @@ namespace {
 void
 applyMetadata(OIIO::ImageSpec& spec,
               const ImageMetadata& metadata,
-              const std::string& formatName)
+              const std::string& formatName,
+              WriteMetadataMode mode)
 {
     const bool openExr = formatName == "openexr";
+    const bool png = formatName == "png";
     std::string dropped;
+    std::vector<ImageMetadata::const_iterator> verbatim;
 
     for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
         const std::string& key = it->first;
         std::string name;
         bool writable = true;
+        bool keepDouble = false;
+        // Set when the key has no native home in this file and its name does not describe the
+        // layout of the file it came from.
+        bool wholeKey = false;
 
-        if (key == kOfxMetadataKeyTimecode || key == kOfxMetadataKeyEdgecode) {
+        if (key == kNatronMetadataKeyTimecode || key == kNatronMetadataKeyEdgecode) {
             const std::string* text = std::get_if<std::string>(&it->second);
-            const bool isTimecode = key == kOfxMetadataKeyTimecode;
-            if (!text || !(isTimecode ? setTimecode(spec, *text) : setKeycode(spec, *text))) {
+            const bool isTimecode = key == kNatronMetadataKeyTimecode;
+            // PNG stores no attribute that is not a string, so a binary time code would be lost.
+            if (!png && text && (isTimecode ? setTimecode(spec, *text) : setKeycode(spec, *text))) {
+                continue;
+            }
+            if (mode != WriteMetadataMode::Default) {
+                verbatim.push_back(it);
+            } else {
                 dropped += " " + key;
             }
             continue;
         }
-        if (startsWith(key, kOfxMetadataKeyPrefixExr)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExr));
+        if (startsWith(key, kNatronMetadataKeyPrefixExr)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixExr));
             writable = openExr && !describesSourceLayout(rest);
+            wholeKey = !openExr && !describesSourceLayout(rest);
+            keepDouble = openExr;
             name = rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixExif)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExif));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixExif)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixExif));
             writable = !describesSourceLayout(rest);
             if (startsWith(rest, "GPS:")) {
                 name = rest;
             } else {
                 name = (!openExr && isUnprefixedExifTag(rest)) ? rest : "Exif:" + rest;
             }
-        } else if (startsWith(key, kOfxMetadataKeyPrefixTiff)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixTiff));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixTiff)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixTiff));
             writable = formatName == "tiff" && !isExcludedTiffName(rest);
+            wholeKey = formatName != "tiff" && !isExcludedTiffName(rest) && !describesSourceLayout(rest);
             name = "tiff:" + rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixDpx)) {
-            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixDpx));
+        } else if (startsWith(key, kNatronMetadataKeyPrefixDpx)) {
+            const std::string rest = key.substr(std::strlen(kNatronMetadataKeyPrefixDpx));
             writable = formatName == "dpx" && !isExcludedDpxName(rest);
+            wholeKey = formatName != "dpx" && !isExcludedDpxName(rest) && !describesSourceLayout(rest);
             name = "dpx:" + rest;
-        } else if (startsWith(key, kOfxMetadataKeyPrefixCin)) {
+        } else if (startsWith(key, kNatronMetadataKeyPrefixCin)) {
             writable = formatName == "cineon";
-            name = "cineon:" + key.substr(std::strlen(kOfxMetadataKeyPrefixCin));
+            wholeKey = !writable && !describesSourceLayout(key.substr(std::strlen(kNatronMetadataKeyPrefixCin)));
+            name = "cineon:" + key.substr(std::strlen(kNatronMetadataKeyPrefixCin));
         } else if (startsWith(key, "oiio/")) {
             const std::string rest = key.substr(5);
-            writable = !isExcludedOiioName(rest);
+            // OIIO's EXR and PNG writers treat every oiio: name as an instruction and store none
+            // of them, so in these two formats only the full key survives.
+            wholeKey = (openExr || png) && !isExcludedOiioName(rest);
+            writable = !isExcludedOiioName(rest) && !(wholeKey && mode != WriteMetadataMode::Default);
             name = "oiio:" + rest;
         } else {
-            // The remaining ofx/ keys describe the source file or the frame, and quicktime/ has
-            // no OIIO attribute; neither is worth a log line per frame.
+            // Without a native attribute, the remaining natron/ keys, quicktime/ keys and user keys
+            // can only go in under their own name, which is not worth a log line per frame in
+            // Default mode.
+            if (mode != WriteMetadataMode::Default && !describesSourceLayout(key) && !isExcludedOiioName(key)) {
+                verbatim.push_back(it);
+            }
             continue;
         }
         if (!writable || name.empty()) {
-            dropped += " " + key;
+            if (wholeKey && mode != WriteMetadataMode::Default) {
+                verbatim.push_back(it);
+            } else {
+                dropped += " " + key;
+            }
             continue;
         }
-        setValue(spec, name, it->second);
+        setValue(spec, name, it->second, keepDouble);
+    }
+    // Run after the loop so a format-native key for the same tag, which the loop has already
+    // written, takes precedence.
+    struct StandardTag {
+        const char* key;
+        const char* tag;
+        // The names OIIO's EXR writer stores in the same attribute as `tag`.
+        const char* exrNames[2];
+    };
+    static const StandardTag standardTags[] = {
+        { kNatronMetadataKeyCreator, "Software", {} },
+        { kNatronMetadataKeyCopyright, "Copyright", { "owner" } },
+        { kNatronMetadataKeyComment, "ImageDescription", { "comments", "description" } },
+        { kNatronMetadataKeyFrameRate, "FramesPerSecond", {} },
+        { kNatronMetadataKeyFocalLength, "FocalLength", {} },
+        { kNatronMetadataKeyFNumber, "FNumber", { "aperture" } },
+        { kNatronMetadataKeyExposureTime, "ExposureTime", { "expTime" } },
+    };
+    for (const StandardTag& tag : standardTags) {
+        const ImageMetadata::Value* value = metadata.find(tag.key);
+        if (!value) {
+            continue;
+        }
+        const std::string tagName = tag.tag;
+        const std::string exifName = "Exif:" + tagName;
+        bool alreadySet = spec.find_attribute(tagName) != NULL || spec.find_attribute(exifName) != NULL;
+        for (const char* exrName : tag.exrNames) {
+            alreadySet = alreadySet || (exrName && spec.find_attribute(exrName) != NULL);
+        }
+        if (alreadySet) {
+            continue;
+        }
+        // Unprefixed, these three are OpenEXR's own attributes or what a reader looks for first.
+        const bool exrUnprefixed = oneOf({ "Software", "Copyright", "ImageDescription" }, tagName);
+        const bool unprefixed = tagName == "FramesPerSecond" || (openExr ? exrUnprefixed : isUnprefixedExifTag(tagName));
+        setValue(spec, unprefixed ? tagName : exifName, *value);
+    }
+    for (const ImageMetadata::const_iterator& it : verbatim) {
+        const std::string& key = it->first;
+        if (mode == WriteMetadataMode::AllExceptInput && isInputIdentityKey(key)) {
+            continue;
+        }
+        if (spec.find_attribute(key) != NULL) {
+            continue;
+        }
+        if (openExr) {
+            setValue(spec, key, it->second, true);
+        } else if (png) {
+            spec.attribute(key, valueText(it->second));
+        } else {
+            dropped += " " + key;
+        }
     }
     if (!dropped.empty()) {
         qDebug() << "Metadata not written to" << formatName.c_str() << "file:" << dropped.c_str();

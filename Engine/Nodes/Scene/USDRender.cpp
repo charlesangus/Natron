@@ -34,19 +34,24 @@
 #include <QStringList>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -71,6 +76,14 @@ primIdLayer()
     return ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id"));
 }
 
+ImageLayerDesc
+normalLayer()
+{
+    static const char* const channels[] = { "X", "Y", "Z" };
+
+    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+}
+
 std::string
 primIdKey(std::uint32_t hash)
 {
@@ -83,7 +96,7 @@ primIdKey(std::uint32_t hash)
 
 USDRender::USDRender(NodePtr node)
     : NativeEffectBase(node)
-    , _cameraMenuRefreshPending(false)
+    , _settingsPrimMenuRefreshPending(false)
 {
 }
 
@@ -109,51 +122,31 @@ USDRender::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobChoicePtr camera = createKnob<KnobChoice>(tr("Camera"));
-    camera->setName(kUSDRenderParamCamera);
-    camera->setHintToolTip(tr("The camera to render through: one of the input scene's cameras, by path. Until one is "
-                              "chosen the scene's first camera is used. A chosen camera the scene no longer has is an "
-                              "error naming its path."));
-    camera->setAnimationEnabled(false);
-    page->addKnob(camera);
-    _camera = camera;
-
-    const ExtentKnobs::FormatKnobSet formatKnobs = ExtentKnobs::createFormatKnobs(this, page);
-    _format = formatKnobs.choice;
-    _formatSize = formatKnobs.size;
-    _formatPar = formatKnobs.par;
-
-    KnobChoicePtr fitMode = createKnob<KnobChoice>(tr("Fit Mode"));
-    fitMode->setName(kUSDRenderParamFitMode);
-    fitMode->setHintToolTip(tr("How the camera's aperture is conformed to the format when their shapes differ."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("fill", tr("Fill").toStdString(),
-                                       tr("The aperture fills the format: the side that does not fit is cropped.").toStdString()));
-        options.push_back(ChoiceOption("horizontal", tr("Horizontal").toStdString(),
-                                       tr("The aperture's width fills the format's; its height is cropped or extended.").toStdString()));
-        options.push_back(ChoiceOption("vertical", tr("Vertical").toStdString(),
-                                       tr("The aperture's height fills the format's; its width is cropped or extended.").toStdString()));
-        fitMode->populateChoices(options);
-    }
-    fitMode->setDefaultValue((int)HydraRender::eFitModeFill);
-    fitMode->setAnimationEnabled(false);
-    page->addKnob(fitMode);
-    _fitMode = fitMode;
+    KnobChoicePtr settingsPrim = createKnob<KnobChoice>(tr("Settings Prim"));
+    settingsPrim->setName(kUSDRenderParamSettingsPrim);
+    settingsPrim->setHintToolTip(tr("The RenderSettings prim whose camera, resolution, aspect ratio conform policy, renderer "
+                                    "and renderer settings the render follows: Stage Default is the one the stage's "
+                                    "renderSettingsPrimPath metadata names (a USDRenderSettings node with Make Active on "
+                                    "sets it), or one of the RenderSettings prims under /Render. Without one, the scene's "
+                                    "first camera renders the project's format with the renderer's own settings. A chosen "
+                                    "prim the scene no longer has is an error naming its path."));
+    settingsPrim->setAnimationEnabled(false);
+    settingsPrim->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kUSDRenderSettingsPrimStageDefault, tr("Stage Default").toStdString(), "")));
+    page->addKnob(settingsPrim);
+    _settingsPrim = settingsPrim;
 
     KnobChoicePtr renderer = createKnob<KnobChoice>(tr("Renderer"));
     renderer->setName(kUSDRenderParamRenderer);
-    renderer->setHintToolTip(tr("The Hydra render delegate that renders the scene. Storm renders with OpenGL; the "
-                                "others render on the CPU. A renderer that is not installed or cannot run here stays "
-                                "chosen, and the node is an error naming it until it is installed or another is "
-                                "chosen."));
+    renderer->setHintToolTip(tr("The Hydra render delegate that renders the scene. Scene Default is the one the render "
+                                "settings prim names (its natron:renderer attribute), Storm when there is none or it "
+                                "names none. Storm renders with OpenGL; the others render on the CPU. A renderer that "
+                                "is not installed or cannot run here stays chosen, and the node is an error naming it "
+                                "until it is installed or another is chosen."));
     {
         std::vector<ChoiceOption> options;
-        int stormIndex = 0;
+        options.push_back(ChoiceOption(kRenderDelegateSceneDefaultId, tr("Scene Default").toStdString(),
+                                       tr("The renderer the render settings prim names, Storm if it names none.").toStdString()));
         for (const RenderDelegates::Delegate& delegate : RenderDelegates::list()) {
-            if (RenderDelegates::isStorm(delegate.id)) {
-                stormIndex = (int)options.size();
-            }
             if (delegate.available) {
                 options.push_back(ChoiceOption(delegate.id, delegate.displayName, ""));
             } else {
@@ -163,7 +156,7 @@ USDRender::initializeKnobs()
             }
         }
         renderer->populateChoices(options);
-        renderer->setDefaultValue(stormIndex);
+        renderer->setDefaultValue(0);
     }
     renderer->setAnimationEnabled(false);
     page->addKnob(renderer);
@@ -184,7 +177,20 @@ USDRender::onKnobsLoaded()
 {
     NativeEffectBase::onKnobsLoaded();
     keepLoadedRenderer();
-    scheduleCameraMenuRefresh();
+    scheduleSettingsPrimMenuRefresh();
+}
+
+bool
+USDRender::knobChanged(KnobI* k,
+                       ValueChangedReasonEnum /*reason*/,
+                       ViewSpec /*view*/,
+                       double /*time*/,
+                       bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr renderer = _renderer.lock();
+    KnobChoicePtr settingsPrim = _settingsPrim.lock();
+
+    return (renderer && (k == renderer.get())) || (settingsPrim && (k == settingsPrim.get()));
 }
 
 void
@@ -208,70 +214,223 @@ USDRender::keepLoadedRenderer()
 }
 
 std::string
-USDRender::rendererId() const
+USDRender::rendererOverride() const
 {
     KnobChoicePtr renderer = _renderer.lock();
     const std::string id = renderer ? renderer->getActiveEntry().id : std::string();
 
-    return id.empty() ? std::string(kRenderDelegateStormId) : id;
+    return id.empty() ? std::string(kRenderDelegateSceneDefaultId) : id;
+}
+
+std::string
+USDRender::settingsPrimOverride() const
+{
+    KnobChoicePtr settingsPrim = _settingsPrim.lock();
+    const std::string id = settingsPrim ? settingsPrim->getActiveEntry().id : std::string();
+
+    return (id == kUSDRenderSettingsPrimStageDefault) ? std::string() : id;
 }
 
 void
 USDRender::onInputChanged(int inputNo)
 {
     NativeEffectBase::onInputChanged(inputNo);
-    scheduleCameraMenuRefresh();
+    scheduleSettingsPrimMenuRefresh();
 }
 
 void
 USDRender::onNodeHashChanged(U64 hash)
 {
     NativeEffectBase::onNodeHashChanged(hash);
-    scheduleCameraMenuRefresh();
+    scheduleSettingsPrimMenuRefresh();
 }
 
 void
-USDRender::scheduleCameraMenuRefresh()
+USDRender::scheduleSettingsPrimMenuRefresh()
 {
-    if (_cameraMenuRefreshPending.exchange(true)) {
+    if (_settingsPrimMenuRefreshPending.exchange(true)) {
         return;
     }
     // The hooks that call this fire mid-recompute of a hash, before the upstream scene settled.
     QMetaObject::invokeMethod(this, [this]() {
-        _cameraMenuRefreshPending = false;
-        refreshCameraMenu(); }, Qt::QueuedConnection);
+        _settingsPrimMenuRefreshPending = false;
+        refreshSettingsPrimMenu(); }, Qt::QueuedConnection);
 }
 
 void
-USDRender::refreshCameraMenu()
+USDRender::refreshSettingsPrimMenu()
 {
-    KnobChoicePtr camera = _camera.lock();
+    KnobChoicePtr settingsPrim = _settingsPrim.lock();
 
-    if (!camera) {
+    if (!settingsPrim) {
         return;
     }
-    std::vector<ChoiceOption> options;
+    std::vector<ChoiceOption> options(1, ChoiceOption(kUSDRenderSettingsPrimStageDefault, tr("Stage Default").toStdString(), ""));
     EffectInstancePtr input = getInput(0);
     ScenePayload scene;
     std::string error;
     if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                options.push_back(ChoiceOption(path.GetString(), path.GetString(), ""));
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        const PXR_NS::UsdPrim render = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Render")) : PXR_NS::UsdPrim();
+        if (render) {
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(render)) {
+                if (prim.IsA<PXR_NS::UsdRenderSettings>()) {
+                    const std::string path = prim.GetPath().GetString();
+                    options.push_back(ChoiceOption(path, path, ""));
+                }
             }
         }
     }
     // Repopulating an unchanged menu would move the hash and come back here.
-    const std::vector<ChoiceOption> current = camera->getEntries_mt_safe();
+    const std::vector<ChoiceOption> current = settingsPrim->getEntries_mt_safe();
     bool same = current.size() == options.size();
     for (std::size_t i = 0; same && (i < options.size()); ++i) {
         same = current[i].id == options[i].id;
     }
     if (!same) {
-        camera->populateChoices(options);
+        settingsPrim->populateChoices(options);
     }
 }
+
+struct USDRender::ActiveSettings {
+    ScenePayload scene;
+    // Holds the stage; given back before the render, which renders the node's own stage.
+    SceneQueryPool::Lease lease;
+    PXR_NS::UsdStageRefPtr stage;
+    PXR_NS::UsdTimeCode time;
+    // Invalid when the stage has no active one.
+    PXR_NS::UsdRenderSettings prim;
+    RenderSettingsPrim::StandardAttributes standard;
+    std::string renderer;
+};
+
+bool
+USDRender::readActiveSettings(double time,
+                              ViewIdx view,
+                              ActiveSettings* active,
+                              std::string* error) const
+{
+    auto failWith = [error](const std::string& message) {
+        *error = message;
+
+        return false;
+    };
+
+    EffectInstancePtr input = getInput(0);
+    if (!input) {
+        return failWith(tr("USDRender needs a scene on its Scene input.").toStdString());
+    }
+    if (input->evaluateScene(EvaluateSceneArgs(time, view), &active->scene, error) != eRenderRoIRetCodeOk) {
+        if (error->empty()) {
+            *error = tr("The input scene could not be evaluated.").toStdString();
+        }
+
+        return false;
+    }
+    if (active->scene.isEmpty()) {
+        return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
+    }
+    active->lease = SceneQueryPool::instance().borrow(active->scene, error);
+    active->stage = active->lease.getStage();
+    if (!active->stage) {
+        if (error->empty()) {
+            *error = tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
+    }
+    AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    active->time = PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(active->scene, time, fps));
+
+    std::string primError;
+    active->prim = RenderSettingsPrim::activePrim(active->stage, settingsPrimOverride(), &primError);
+    if (!active->prim && !primError.empty()) {
+        return failWith(primError);
+    }
+    if (active->prim) {
+        active->standard = RenderSettingsPrim::standardAttributes(active->prim);
+    }
+
+    // The node's renderer, else the prim's, else Storm.
+    active->renderer = rendererOverride();
+    if (active->renderer == kRenderDelegateSceneDefaultId) {
+        active->renderer.clear();
+        if (active->prim && !RenderSettingsPrim::rendererFor(active->prim.GetPrim(), &active->renderer, error)) {
+            return false;
+        }
+        if (active->renderer.empty()) {
+            active->renderer = kRenderDelegateStormId;
+        }
+    }
+
+    return true;
+} // USDRender::readActiveSettings
+
+bool
+USDRender::activeRenderer(double time,
+                          ViewIdx view,
+                          std::string* rendererId,
+                          std::string* error) const
+{
+    const std::string chosen = rendererOverride();
+
+    if (chosen != kRenderDelegateSceneDefaultId) {
+        *rendererId = chosen;
+
+        return true;
+    }
+    ActiveSettings active;
+    if (!readActiveSettings(time, view, &active, error)) {
+        return false;
+    }
+    *rendererId = active.renderer;
+
+    return true;
+}
+
+void
+USDRender::appendNodeContentHash(ContentHasher& h) const
+{
+    // Of the render settings knobs upstream, which every other node folds whole, only those the
+    // render reads are folded in (consumesHashNamespaces()): the active prim's in the namespaces
+    // of the renderer it renders with. When the active prim is none a node authors (a file's, or not known here),
+    // or the table is uncertain about it or its renderer, every one is.
+    NodePtr node = getNode();
+    NodePtr input = node ? node->getInput(0) : NodePtr();
+    const HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
+
+    h.appendString("renderSettings");
+    if (!table) {
+        h.appendBool(false);
+
+        return;
+    }
+    const std::string chosenPrim = settingsPrimOverride();
+    const std::string path = chosenPrim.empty() ? table->active : chosenPrim;
+    std::map<std::string, HashNamespaces::Scope>::const_iterator scope = path.empty() ? table->scopes.end() : table->scopes.find(path);
+    // An uncertain table knows only the prims and the active one a node over all of it settled.
+    const bool known = !table->uncertain || ((scope != table->scopes.end()) && scope->second.settled && (!chosenPrim.empty() || table->activeSettled));
+    if ((scope == table->scopes.end()) || !known) {
+        h.appendBool(false);
+        table->appendAll(h);
+
+        return;
+    }
+    std::string renderer = rendererOverride();
+    if (renderer == kRenderDelegateSceneDefaultId) {
+        renderer = scope->second.defaultRenderer.empty() ? std::string(kRenderDelegateStormId) : scope->second.defaultRenderer;
+    }
+    h.appendBool(true);
+    h.appendString(path);
+    h.appendString(renderer);
+    for (const std::string& ns : RenderSettingsPrim::namespaces(renderer)) {
+        std::map<std::string, U64>::const_iterator digest = scope->second.digests.find(ns);
+        h.appendString(ns);
+        h.appendU64((digest == scope->second.digests.end()) ? 0 : digest->second);
+    }
+} // USDRender::appendNodeContentHash
 
 void
 USDRender::outputFormat(double time,
@@ -279,13 +438,13 @@ USDRender::outputFormat(double time,
                         RectI* format,
                         double* par) const
 {
-    KnobIntPtr size = _formatSize.lock();
-    KnobDoublePtr formatPar = _formatPar.lock();
+    ActiveSettings active;
+    std::string error;
 
-    if (size && formatPar) {
-        const int width = size->getValueAtTime(time, 0, view);
-        const int height = size->getValueAtTime(time, 1, view);
-        const double aspect = formatPar->getValueAtTime(time, 0, view);
+    if (readActiveSettings(time, view, &active, &error) && active.prim) {
+        const int width = active.standard.resolution[0];
+        const int height = active.standard.resolution[1];
+        const double aspect = active.standard.pixelAspectRatio;
         if ((width > 0) && (height > 0) && (aspect > 0.)) {
             *format = RectI(0, 0, width, height);
             *par = aspect;
@@ -349,6 +508,15 @@ USDRender::getComponentsNeededAndProduced(double time,
     produced.push_back(ImageLayerDesc::getRGBAComponents());
     produced.push_back(depthLayer());
     produced.push_back(primIdLayer());
+    // Storm renders no normal AOV.
+    std::string renderer;
+    std::string error;
+    if (!activeRenderer(time, view, &renderer, &error)) {
+        renderer = kRenderDelegateStormId;
+    }
+    if (!RenderDelegates::isStorm(renderer)) {
+        produced.push_back(normalLayer());
+    }
 }
 
 FramesNeededMap
@@ -413,6 +581,39 @@ struct USDRender::RenderSetup {
     std::string warning;
 };
 
+namespace {
+// The fit that does what an aspectRatioConformPolicy asks, false with the policy's fallback if
+// none does.
+bool
+fitModeForPolicy(const PXR_NS::TfToken& policy,
+                 HydraRender::FitModeEnum* fit)
+{
+    *fit = HydraRender::eFitModeExpand;
+    if (policy.IsEmpty() || (policy == PXR_NS::UsdRenderTokens->expandAperture)) {
+        return true;
+    }
+    if (policy == PXR_NS::UsdRenderTokens->cropAperture) {
+        *fit = HydraRender::eFitModeFill;
+
+        return true;
+    }
+    // The aperture's width moves to the image's aspect, its height kept.
+    if (policy == PXR_NS::UsdRenderTokens->adjustApertureWidth) {
+        *fit = HydraRender::eFitModeVertical;
+
+        return true;
+    }
+    if (policy == PXR_NS::UsdRenderTokens->adjustApertureHeight) {
+        *fit = HydraRender::eFitModeHorizontal;
+
+        return true;
+    }
+
+    // adjustPixelAspectRatio, or an unknown token.
+    return false;
+}
+} // anon namespace
+
 bool
 USDRender::prepareRender(double time,
                          ViewIdx view,
@@ -426,79 +627,82 @@ USDRender::prepareRender(double time,
         return false;
     };
 
+    ActiveSettings active;
+    if (!readActiveSettings(time, view, &active, error)) {
+        return false;
+    }
+    const PXR_NS::UsdStageRefPtr& stage = active.stage;
+    const QString primPath = active.prim ? QString::fromStdString(active.prim.GetPath().GetString()) : QString();
+
+    // Hydra reads live textures from the store and never renders them: render the frame's first.
+    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(active.scene), time);
+    auto addWarning = [setup](const std::string& warning) {
+        setup->warning = setup->warning.empty() ? warning : setup->warning + "\n" + warning;
+    };
+    for (const SceneProjectionCameras::Unresolved& projection : active.lease.getUnresolvedProjections()) {
+        addWarning(tr("%1 projects through %2, which the scene has no camera at: it projects nothing.")
+                       .arg(QString::fromStdString(projection.shader.GetString()))
+                       .arg(QString::fromStdString(projection.camera))
+                       .toStdString());
+    }
+
     RectI format;
     double par;
-    outputFormat(time, view, &format, &par);
+    if (active.prim) {
+        const PXR_NS::GfVec2i& resolution = active.standard.resolution;
+        if ((resolution[0] <= 0) || (resolution[1] <= 0) || (active.standard.pixelAspectRatio <= 0.f)) {
+            return failWith(tr("The render settings prim at %1 asks for a %2x%3 image with a pixel aspect ratio of %4.")
+                                .arg(primPath)
+                                .arg(resolution[0])
+                                .arg(resolution[1])
+                                .arg(active.standard.pixelAspectRatio)
+                                .toStdString());
+        }
+        format = RectI(0, 0, resolution[0], resolution[1]);
+        par = active.standard.pixelAspectRatio;
+    } else {
+        Format projectFormat;
+        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        format = projectFormat;
+        par = projectFormat.getPixelAspectRatio();
+        addWarning(tr("The input scene has no active render settings prim: its first camera renders the project's "
+                      "format with the renderer's own settings.")
+                       .toStdString());
+    }
     setup->pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
     if (setup->pixels.isNull()) {
         return failWith(tr("The format is empty.").toStdString());
     }
 
-    EffectInstancePtr input = getInput(0);
-    if (!input) {
-        return failWith(tr("USDRender needs a scene on its Scene input.").toStdString());
-    }
-    ScenePayload scene;
-    if (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, error) != eRenderRoIRetCodeOk) {
-        if (error->empty()) {
-            *error = tr("The input scene could not be evaluated.").toStdString();
-        }
-
-        return false;
-    }
-    if (scene.isEmpty()) {
-        return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
-    }
-    // Hydra reads live textures from the store and never renders them: render the frame's first.
-    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene), time);
-    // The camera is read from a pooled stage, given back before the render: Storm renders the
-    // node's own stage on the render thread.
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
-    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    if (!stage) {
-        if (error->empty()) {
-            *error = tr("USD could not compose the input scene.").toStdString();
-        }
-
-        return false;
-    }
-    QStringList unresolved;
-    for (const SceneProjectionCameras::Unresolved& projection : lease.getUnresolvedProjections()) {
-        unresolved.push_back(tr("%1 projects through %2, which the scene has no camera at: it projects nothing.")
-                                 .arg(QString::fromStdString(projection.shader.GetString()))
-                                 .arg(QString::fromStdString(projection.camera)));
-    }
-    setup->warning = unresolved.join(QLatin1Char('\n')).toStdString();
-    AppInstancePtr app = getApp();
-    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
-    const PXR_NS::UsdTimeCode timeCode(SceneOps::frameToTimeCode(scene, time, fps));
-
-    KnobChoicePtr cameraKnob = _camera.lock();
-    std::string cameraPath = cameraKnob ? cameraKnob->getActiveEntry().id : std::string();
-    if (cameraPath.empty()) {
+    PXR_NS::SdfPath cameraPath = active.prim ? active.standard.camera : PXR_NS::SdfPath();
+    if (cameraPath.IsEmpty()) {
         const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
         if (cameras.empty()) {
             return failWith(tr("The input scene has no camera to render through.").toStdString());
         }
-        cameraPath = cameras.front().GetString();
+        cameraPath = cameras.front();
     }
-    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath)) {
-        return failWith(tr("No camera at %1 on the input scene.").arg(QString::fromStdString(cameraPath)).toStdString());
+    HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
+    if (active.prim && !fitModeForPolicy(active.standard.aspectRatioConformPolicy, &fit)) {
+        addWarning(tr("The render settings prim at %1 asks for the %2 aspect ratio conform policy, which "
+                      "the render does not do: the aperture is expanded instead (expandAperture).")
+                       .arg(primPath)
+                       .arg(QString::fromStdString(active.standard.aspectRatioConformPolicy.GetString()))
+                       .toStdString());
     }
-    KnobChoicePtr fitKnob = _fitMode.lock();
-    const int fitValue = fitKnob ? fitKnob->getValue() : 0;
-    const HydraRender::FitModeEnum fit = (fitValue == (int)HydraRender::eFitModeHorizontal) ? HydraRender::eFitModeHorizontal : (fitValue == (int)HydraRender::eFitModeVertical) ? HydraRender::eFitModeVertical
-                                                                                                                                                                                 : HydraRender::eFitModeFill;
     setup->request.owner = this;
-    setup->request.scene = scene;
-    setup->request.time = timeCode;
+    setup->request.scene = active.scene;
+    setup->request.time = active.time;
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
     KnobBoolPtr headlightKnob = _headlight.lock();
     setup->request.headlight = headlightKnob && headlightKnob->getValue();
-    setup->request.renderer = rendererId();
+    setup->request.renderer = active.renderer;
+    if (active.prim) {
+        setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
+    }
     const double aspect = (format.width() * par) / format.height();
-    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
+    if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
     }
 
@@ -522,6 +726,7 @@ USDRender::render(const RenderActionArgs& args)
     HydraRender::Request& request = setup.request;
     const RectI& pixels = setup.pixels;
     request.aborted = [this]() { return aborted(); };
+    request.threads = appPTR->getNCPUsAvailableForEffect();
 
     HydraRender::Result result;
     if (!HydraRender::render(request, &result, &error)) {
@@ -547,11 +752,13 @@ USDRender::render(const RenderActionArgs& args)
             ePlaneColor,
             ePlaneDepth,
             ePlanePrimId,
+            ePlaneNormal,
             ePlaneOther
         };
         const std::string& layerID = it->first.getLayerID();
         const PlaneEnum plane = it->first.isColorLayer() ? ePlaneColor : (layerID == "depth") ? ePlaneDepth
             : (layerID == "primId")                                                           ? ePlanePrimId
+            : (layerID == "normal")                                                           ? ePlaneNormal
                                                                                               : ePlaneOther;
         const int nComps = (int)image->getComponentsCount();
         const RectI roi = args.roi.intersect(image->getBounds());
@@ -583,6 +790,9 @@ USDRender::render(const RenderActionArgs& args)
                     case ePlanePrimId:
                         value = inside ? result.primId[index] : 0.f;
                         break;
+                    case ePlaneNormal:
+                        value = (inside && (c < 3) && !result.normal.empty()) ? result.normal[index * 3 + (std::size_t)c] : 0.f;
+                        break;
                     case ePlaneOther:
                         break;
                     }
@@ -591,7 +801,17 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    showWarning(setup.warning);
+    // The render stands; what the delegate could not render, or logged as an error naming no prim
+    // of the scene, stays on the node until a render without it.
+    std::string warning = setup.warning;
+    if (!result.warning.empty()) {
+        warning = warning.empty() ? result.warning : warning + "\n" + result.warning;
+    }
+    if (!result.errors.empty()) {
+        setPersistentMessage(eMessageTypeError, warning.empty() ? result.errors : result.errors + "\n" + warning);
+    } else {
+        showWarning(warning);
+    }
 
     return eStatusOK;
 } // USDRender::render
@@ -631,7 +851,9 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
         return false;
     }
     // Only Storm renders into GL; the other delegates' host pixels are read back by render().
-    if (!RenderDelegates::isStorm(rendererId())) {
+    std::string renderer;
+    std::string error;
+    if (!activeRenderer(query.time, query.view, &renderer, &error) || !RenderDelegates::isStorm(renderer)) {
         return false;
     }
 

@@ -64,11 +64,14 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderEndWatch.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/Settings.h"
+#include "Engine/StrokeRenderCoalescer.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
@@ -150,12 +153,31 @@ struct RenderThread
 
 typedef std::list<RenderThread> RenderThreads;
 
+// The point of a live stroke that a produced frame shows, so the overlay preview stops drawing what the frame already has,
+// or that the frame is a neat stroke render, whose upload ends the stroke's preview.
+struct StrokeDisplayMark {
+    NodeWPtr rotoPaintNode;
+    RotoStrokeItemWPtr stroke;
+    int multiStrokeIndex;
+    int age;
+    bool neatRender;
+
+    StrokeDisplayMark()
+        : rotoPaintNode()
+        , stroke()
+        , multiStrokeIndex(-1)
+        , age(-1)
+        , neatRender(false)
+    {
+    }
+};
 
 struct ProducedFrame
 {
     BufferableObjectPtrList frames;
     U64 age;
     RenderStatsPtr stats;
+    StrokeDisplayMark strokeMark;
 };
 
 struct ProducedFrameCompareAgeLess
@@ -3709,6 +3731,43 @@ ViewerRenderEngine::createScheduler(const OutputEffectInstancePtr& effect)
 }
 
 ////////////////////////ViewerCurrentFrameRequestScheduler////////////////////////
+
+// One live stroke render in flight per viewer.
+struct StrokeRenderGate {
+    StrokeRenderCoalescer coalescer;
+    ViewerInstance* viewer;
+
+    explicit StrokeRenderGate(ViewerInstance* viewer)
+        : coalescer()
+        , viewer(viewer)
+    {
+    }
+};
+
+typedef std::shared_ptr<StrokeRenderGate> StrokeRenderGatePtr;
+typedef std::weak_ptr<StrokeRenderGate> StrokeRenderGateWPtr;
+
+static void
+releaseStrokeRenderGate(const StrokeRenderGateWPtr& weakGate)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    StrokeRenderGatePtr gate = weakGate.lock();
+    if (!gate) {
+        return;
+    }
+    if (!gate->coalescer.finish()) {
+        return;
+    }
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr stroke;
+    bool isDrawing = false;
+    gate->viewer->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &stroke, &isDrawing);
+    // After pen-up the neat render covers the whole stroke.
+    if (isDrawing) {
+        gate->viewer->renderCurrentFrame(true);
+    }
+}
+
 class CurrentFrameFunctorArgs
     : public GenericThreadStartArgs
 {
@@ -3726,6 +3785,11 @@ public:
     RotoStrokeItemWPtr strokeItem;
     ViewerArgsPtr args[2];
     bool isRotoNeatRender;
+    // Two viewers may both see the neat render request; only the one that took it ends it.
+    bool tookNeatRender;
+    std::uint64_t latencyMark;
+    StrokeRenderGateWPtr strokeGate;
+    RenderEndWatch::TicketPtr renderEndTicket;
 
     CurrentFrameFunctorArgs()
         : GenericThreadStartArgs()
@@ -3741,6 +3805,10 @@ public:
         , strokeItem()
         , args()
         , isRotoNeatRender(false)
+        , tookNeatRender(false)
+        , latencyMark(0)
+        , strokeGate()
+        , renderEndTicket()
     {
     }
 
@@ -3767,16 +3835,24 @@ public:
         , strokeItem(strokeItem)
         , args()
         , isRotoNeatRender(isRotoNeatRender)
+        , tookNeatRender(false)
+        , latencyMark(0)
+        , strokeGate()
+        , renderEndTicket()
     {
         if (isRotoPaintRequest && isRotoNeatRender) {
-            isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
+            tookNeatRender = isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
         }
     }
 
     ~CurrentFrameFunctorArgs()
     {
-        if (isRotoPaintRequest && isRotoNeatRender) {
+        if (isRotoPaintRequest && tookNeatRender) {
             isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(false);
+        }
+        if (!strokeGate.expired()) {
+            StrokeRenderGateWPtr gate = strokeGate;
+            QMetaObject::invokeMethod(qApp, [gate]() { releaseStrokeRenderGate(gate); }, Qt::QueuedConnection);
         }
     }
 };
@@ -3805,9 +3881,11 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
     // Used to attribute an age to each renderCurrentFrameRequest
     U64 ageCounter;
 
+    StrokeRenderGatePtr strokeGate;
+
     ViewerCurrentFrameRequestSchedulerPrivate(ViewerInstance* viewer)
         : viewer(viewer)
-        , threadPool( QThreadPool::globalInstance() )
+        , threadPool(QThreadPool::globalInstance())
         , producedFramesMutex()
         , producedFrames()
         , producedFramesNotEmpty()
@@ -3815,6 +3893,7 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
         , currentFrameRenderTasksCond()
         , currentFrameRenderTasks()
         , ageCounter(0)
+        , strokeGate(std::make_shared<StrokeRenderGate>(viewer))
     {
     }
 
@@ -3853,7 +3932,8 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
 
     void notifyFrameProduced(const BufferableObjectPtrList& frames,
                              const RenderStatsPtr& stats,
-                             U64 age)
+                             U64 age,
+                             const StrokeDisplayMark& strokeMark = StrokeDisplayMark())
     {
         QMutexLocker k(&producedFramesMutex);
         ProducedFrame p;
@@ -3861,11 +3941,14 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
         p.frames = frames;
         p.age = age;
         p.stats = stats;
+        p.strokeMark = strokeMark;
         producedFrames.insert(p);
         producedFramesNotEmpty.wakeOne();
     }
 
-    void processProducedFrame(const RenderStatsPtr& stats, const BufferableObjectPtrList& frames);
+    void processProducedFrame(const RenderStatsPtr& stats,
+                              const BufferableObjectPtrList& frames,
+                              const StrokeDisplayMark& strokeMark = StrokeDisplayMark());
 };
 
 class RenderCurrentFrameFunctorRunnable
@@ -3905,6 +3988,11 @@ public:
             }
         }
 
+        RotoLatencyProbe* latencyProbe = RotoLatencyProbe::instance();
+        if (latencyProbe) {
+            latencyProbe->noteRenderStarted(_args->latencyMark);
+        }
+
         try {
             if (!_args->isRotoPaintRequest || _args->isRotoNeatRender) {
                 stat = _args->viewer->renderViewer(_args->view, QThread::currentThread() == qApp->thread(), false, _args->viewerHash, _args->canAbort,
@@ -3940,6 +4028,31 @@ public:
                     }
                 }
             }
+            if (latencyProbe) {
+                latencyProbe->noteRenderFinished(_args->latencyMark);
+            }
+        }
+
+        StrokeDisplayMark strokeMark;
+        if (_args->isRotoPaintRequest && !_args->isRotoNeatRender && !ret.empty()) {
+            // Renders of a stroke run one at a time, so the app's stroke data are still the ones this render used.
+            RotoStrokeItemPtr stroke = _args->strokeItem.lock();
+            RotoStrokeItemPtr appStroke;
+            int multiStrokeIndex = -1;
+            _args->viewer->getApp()->getStrokeAndMultiStrokeIndex(&appStroke, &multiStrokeIndex);
+            if (stroke && (appStroke == stroke)) {
+                strokeMark.rotoPaintNode = _args->isRotoPaintRequest;
+                strokeMark.stroke = stroke;
+                strokeMark.multiStrokeIndex = multiStrokeIndex;
+                strokeMark.age = _args->viewer->getApp()->getStrokeLastIndex();
+            }
+        }
+        if (_args->tookNeatRender && !ret.empty()) {
+            // Before the frame is handed on, so its display cannot overtake the hand-over.
+            strokeMark.rotoPaintNode = _args->isRotoPaintRequest;
+            strokeMark.neatRender = true;
+            _args->isRotoPaintRequest->getRotoContext()->notifyNeatRenderFrameProduced();
+            _args->tookNeatRender = false;
         }
 
         if (_args->request) {
@@ -3959,10 +4072,10 @@ public:
                 Q_UNUSED(deviceFrame);
             }
 #endif
-            _args->scheduler->notifyFrameProduced(ret, _args->stats, _args->request->age);
+            _args->scheduler->notifyFrameProduced(ret, _args->stats, _args->request->age, strokeMark);
         } else {
             assert( QThread::currentThread() == qApp->thread() );
-            _args->scheduler->processProducedFrame(_args->stats, ret);
+            _args->scheduler->processProducedFrame(_args->stats, ret, strokeMark);
         }
 
         ///This thread is done, clean-up its TLS
@@ -3981,6 +4094,7 @@ public:
 
     RenderStatsPtr stats;
     BufferableObjectPtrList frames;
+    StrokeDisplayMark strokeMark;
 
     ViewerCurrentFrameRequestSchedulerExecOnMT()
         : GenericThreadExecOnMainThreadArgs()
@@ -4062,6 +4176,7 @@ ViewerCurrentFrameRequestScheduler::threadLoopOnce(const GenericThreadStartArgsP
 
             mtArgs->frames = found->frames;
             mtArgs->stats = found->stats;
+            mtArgs->strokeMark = found->strokeMark;
 
             // Erase from the produced frames all renders that are older that the age we want to render
             // since they are no longer going to be used.
@@ -4105,13 +4220,14 @@ ViewerCurrentFrameRequestScheduler::executeOnMainThread(const GenericThreadExecO
 
     assert(args);
     if (args) {
-        _imp->processProducedFrame(args->stats, args->frames);
+        _imp->processProducedFrame(args->stats, args->frames, args->strokeMark);
     }
 }
 
 void
 ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStatsPtr& stats,
-                                                                const BufferableObjectPtrList& frames)
+                                                                const BufferableObjectPtrList& frames,
+                                                                const StrokeDisplayMark& strokeMark)
 {
     assert( QThread::currentThread() == qApp->thread() );
 
@@ -4119,7 +4235,7 @@ ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStat
         viewer->aboutToUpdateTextures();
     }
 
-    //bool hasDoneSomething = false;
+    bool updatedTextures = false;
     for (BufferableObjectPtrList::const_iterator it2 = frames.begin(); it2 != frames.end(); ++it2) {
         assert(*it2);
         UpdateViewerParamsPtr params = std::dynamic_pointer_cast<UpdateViewerParams>(*it2);
@@ -4132,9 +4248,26 @@ ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStat
             }
 
             viewer->updateViewer(params);
+            updatedTextures = true;
         }
     }
 
+    if (updatedTextures && (strokeMark.age >= 0) && !viewer->isViewerPaused(0)) {
+        NodePtr rotoPaintNode = strokeMark.rotoPaintNode.lock();
+        RotoStrokeItemPtr stroke = strokeMark.stroke.lock();
+        RotoContextPtr roto = rotoPaintNode ? rotoPaintNode->getRotoContext() : RotoContextPtr();
+        if (roto && stroke) {
+            roto->noteStrokeDisplayed(stroke, strokeMark.multiStrokeIndex, strokeMark.age);
+        }
+    }
+    if (updatedTextures && strokeMark.neatRender) {
+        // The texture is uploaded, so the paint that drops the preview already shows the neat frame.
+        NodePtr rotoPaintNode = strokeMark.rotoPaintNode.lock();
+        RotoContextPtr roto = rotoPaintNode ? rotoPaintNode->getRotoContext() : RotoContextPtr();
+        if (roto) {
+            roto->noteNeatRenderDisplayed();
+        }
+    }
 
     ///At least redraw the viewer, we might be here when the user removed a node upstream of the viewer.
     viewer->redrawViewer();
@@ -4209,19 +4342,24 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
     bool isDrawing = false;
     _imp->viewer->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
 
-    bool rotoUse1Thread = false;
+    // Stroke renders accumulate into the stroke's image, so they run one at a time and in order. Each one still splits
+    // its tiles over the thread pool wherever the nodes allow it.
+    bool serializeRotoRenders = false;
     bool isRotoNeatRender = false;
     if (!isDrawing) {
         isRotoNeatRender = rotoPaintNode ? rotoPaintNode->getRotoContext()->mustDoNeatRender() : false;
         if (rotoPaintNode && isRotoNeatRender) {
-            rotoUse1Thread = true;
+            serializeRotoRenders = true;
         } else {
             rotoPaintNode.reset();
             curStroke.reset();
         }
     } else {
         assert(rotoPaintNode);
-        rotoUse1Thread = true;
+        serializeRotoRenders = true;
+        if (!_imp->strokeGate->coalescer.request()) {
+            return;
+        }
     }
 
     ViewerArgsPtr args[2];
@@ -4332,6 +4470,13 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
 #endif
     functorArgs->args[0] = args[0];
     functorArgs->args[1] = args[1];
+    if (isDrawing) {
+        functorArgs->strokeGate = _imp->strokeGate;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        functorArgs->latencyMark = probe->noteRenderRequested();
+    }
+    functorArgs->renderEndTicket = RenderEndWatch::takeTicket();
 
     if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
         RenderCurrentFrameFunctorRunnable task(functorArgs);
@@ -4356,8 +4501,7 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
          */
         int maxThreads = _imp->threadPool->maxThreadCount();
 
-        //When painting, limit the number of threads to 1 to be sure strokes are painted in the right order
-        if (rotoUse1Thread || isTracking) {
+        if (serializeRotoRenders || isTracking) {
             maxThreads = 1;
         }
         // In Task graph mode the render thread waits for the RenderScheduler, which a pool thread must never do; the

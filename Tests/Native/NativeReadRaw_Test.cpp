@@ -38,7 +38,6 @@
 #include <QTemporaryDir>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 
 #include "BaseTest.h"
 #include "RawFixtures.h"
@@ -167,7 +166,7 @@ TEST_F(NativeReadRawTest, EachFixtureReadsAsRawWithItsChannelsMetadataAndPixels)
         EXPECT_EQ(RawMetadata::getWbCoeffs(header->metadata), RawMetadata::getWbCoeffs(metadata));
         EXPECT_EQ(RawMetadata::getCamToXyz(header->metadata), RawMetadata::getCamToXyz(metadata));
         EXPECT_EQ(header->metadata.getString(kRawMetadataCfaPattern), metadata.getString(kRawMetadataCfaPattern));
-        EXPECT_EQ(std::optional<std::string>(fixture.path()), metadata.getString(kOfxMetadataKeyFilePath));
+        EXPECT_EQ(std::optional<std::string>(fixture.path()), metadata.getString(kNatronMetadataKeyFilePath));
         const std::optional<RawLayout> layout = RawLayout::fromMetadata(metadata);
         ASSERT_TRUE(layout.has_value());
         EXPECT_EQ(fixture.period, layout->period());
@@ -321,7 +320,7 @@ TEST_F(NativeReadRawTest, RawSequenceFollowsTheTimeDomain)
     EXPECT_EQ(2., last);
 
     const ImageMetadata second = outputMetadata(read, 2.);
-    EXPECT_EQ(std::optional<int>(2), second.getInt(kOfxMetadataKeySourceFrame));
+    EXPECT_EQ(std::optional<int>(2), second.getInt(kNatronMetadataKeySourceFrame));
     EXPECT_EQ(std::optional<RawStageEnum>(eRawStageRaw), RawMetadata::getStage(second));
     EXPECT_TRUE(RawLayout::fromMetadata(second).has_value());
 }

@@ -52,13 +52,96 @@ class RotoCurveContextHostState;
 class RotoCurveInteract;
 class RotoPaintInteract;
 
-// The commands below that override mergeWith() take the key of the interact's open undo gesture
-// when they are created and merge only with a command of the same gesture, so one drag is one
-// undo step and two drags of the same points are two.
+/**
+ * @brief Tells whether an edit of points was refused outright by the bounded ripple check: it
+ * saw refusals since it was created and no edit that went through. An undo step that made such
+ * an edit has nothing to undo.
+ **/
+class RefusedEditWatch {
+public:
+    explicit RefusedEditWatch(const RotoCurveContextPtr& context);
 
-class MoveControlPointsUndoCommand
+    bool refusedEverything() const;
+
+private:
+    RotoCurveContextWPtr _context;
+    quint64 _refusedBefore, _allowedBefore;
+};
+
+/**
+ * @brief An undo step for one drag of existing points. It copies the points it edits once, when
+ * the first motion of the drag creates it, and every later motion of the same gesture extends it
+ * in place, so the cost of a motion does not grow with the keyframes the points carry. Undo
+ * copies the dragged state before putting the points back, and a redo after an undo puts that
+ * copy back rather than replaying the motions.
+ **/
+class RotoDragUndoCommand
     : public UndoCommand,
       public UndoGestureMember {
+public:
+    virtual ~RotoDragUndoCommand();
+
+    double getTime() const
+    {
+        return _time;
+    }
+
+    /**
+     * @brief Whether a motion of the gesture with the given key may still extend this command:
+     * it was created in that gesture and has never been undone.
+     **/
+    bool isOpenIn(quint64 gestureKey) const
+    {
+        return !_undone && !isObsolete() && UndoGesture::sameGesture(getGestureKey(), gestureKey);
+    }
+
+    virtual bool isObsolete() const OVERRIDE FINAL
+    {
+        return _refusals.refusedEverything();
+    }
+
+protected:
+    RotoDragUndoCommand(const RotoCurveInteractPtr& roto,
+                        double time);
+
+    /**
+     * @brief Copies point, which this command is about to edit, unless it is null or already
+     * copied. Auto-keying writes to every point of a shape, so an edit about to auto-key the shape
+     * of point copies all of its points.
+     **/
+    void addPoint(const BezierCPPtr& point);
+
+    /**
+     * @brief Copies the current state of the points, then puts back the state they had when
+     * they were added.
+     **/
+    void restoreBefore();
+
+    /**
+     * @brief Puts back the state restoreBefore() copied.
+     **/
+    void restoreAfter();
+
+    bool hasBeenUndone() const
+    {
+        return _undone;
+    }
+
+    RotoCurveInteractWPtr _roto;
+    double _time; //< the time at which the change was made
+
+private:
+    RefusedEditWatch _refusals;
+
+    void copyPoint(const BezierCPPtr& point);
+
+    std::vector<BezierCPPtr> _points, _before, _after;
+    std::vector<BezierPtr> _beziers, _beziersWithoutKey, _beziersKeyedByEdit;
+    bool _undone;
+};
+
+class MoveControlPointsUndoCommand
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveControlPointsUndoCommand)
 
 public:
@@ -72,25 +155,24 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Moves the points by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy);
 
 private:
+    void movePoints(double dx, double dy);
 
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
-    bool _featherLinkEnabled;
-    bool _rippleEditEnabled;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<int> _indexesToMove; //< indexes of the control points
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> > _originalPoints, _selectedPoints, _pointsToDrag;
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints, _pointsToDrag;
 };
 
 class TransformUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(TransformUndoCommand)
 
 public:
@@ -120,20 +202,27 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Applies a further transform to the points, as the next motion of the drag.
+     **/
+    void addTransform(double centerX,
+                      double centerY,
+                      double rot,
+                      double skewX,
+                      double skewY,
+                      double tx,
+                      double ty,
+                      double sx,
+                      double sy);
 
 private:
+    void transformPoints(Transform::Matrix3x3 matrix);
 
-    void transformPoint(const BezierCPPtr & point);
-
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
-    bool _rippleEditEnabled;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
     Transform::Matrix3x3Ptr _matrix;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> > _originalPoints, _selectedPoints;
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints;
 };
 
 class AddPointUndoCommand
@@ -286,9 +375,17 @@ private:
     bool isRemoved;
 };
 
+/**
+ * @brief How the opposite handle follows a dragged tangent handle.
+ **/
+enum TangentDragModeEnum {
+    eTangentDragModeAligned = 0, //< it keeps its length and stays opposite, unless the point is broken
+    eTangentDragModeTogether, //< it turns and stretches with the dragged handle
+    eTangentDragModeMirrored //< it moves by the opposite delta
+};
+
 class MoveTangentUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentUndoCommand)
 
 public:
@@ -298,71 +395,88 @@ public:
                            double time,
                            const BezierCPPtr& cp,
                            bool left,
-                           bool breakTangents);
+                           bool breakTangents,
+                           TangentDragModeEnum mode = eTangentDragModeAligned);
 
     virtual ~MoveTangentUndoCommand();
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Drags the tangent by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy, bool breakTangents, TangentDragModeEnum mode = eTangentDragModeAligned);
 
 private:
+    void moveTangent(double dx, double dy);
 
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
-    bool _featherLinkEnabled;
-    bool _rippleEditEnabled;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<std::pair<BezierCPPtr, BezierCPPtr> > _selectedPoints;
-    BezierCPPtr _tangentBeingDragged, _oldCp, _oldFp;
+    BezierCPPtr _tangentBeingDragged;
     bool _left;
     bool _breakTangents;
+    TangentDragModeEnum _mode;
 };
 
 class MoveFeatherBarUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveFeatherBarUndoCommand)
 
 public:
     /**
      * @brief Drags the feather bar of point by (dx, dy), and with it the feather of every point in
      * selectedPoints: each feather moves along its own direction by the signed distance the drag
-     * projects to on point's direction.
+     * projects to on point's direction. Each moved feather's tangents scale with the move so the
+     * feather stays an offset of its curve (a circle's stays a circle), unless keepTangents.
      **/
     MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
                               double dx,
                               double dy,
                               const std::pair<BezierCPPtr, BezierCPPtr>& point,
                               const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
-                              double time);
+                              double time,
+                              bool keepTangents);
+
+    /**
+     * @brief Moves the feather of every point in points outwards along its own direction by
+     * distance (inwards when negative), scaling tangents as the drag does unless keepTangents.
+     **/
+    MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
+                              double distance,
+                              const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
+                              double time,
+                              bool keepTangents);
 
     virtual ~MoveFeatherBarUndoCommand();
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Drags the bar by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy, bool keepTangents);
 
 private:
     struct FeatherBar {
         BezierCPPtr cp, fp;
-        BezierCPPtr oldCp, oldFp;
     };
 
     void addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point);
 
-    RotoCurveInteractWPtr _roto;
-    bool _firstRedoCalled;
+    void moveFeathers(double dx, double dy, bool keepTangents);
+
     double _dx, _dy;
-    bool _rippleEditEnabled;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints;
-    std::pair<BezierCPPtr, BezierCPPtr> _grabbedPoint;
     // The grabbed bar is first: its direction sets the distance every bar moves by.
     std::list<FeatherBar> _bars;
+    // _dx is the distance itself rather than a drag.
+    bool _byDistance;
+    // For the first move, made by redo() when the command is pushed.
+    bool _keepTangents;
 };
 
 class RemoveFeatherUndoCommand
@@ -393,8 +507,8 @@ private:
 };
 
 class OpenCloseUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(OpenCloseUndoCommand)
 
 public:
@@ -406,13 +520,24 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
+    /**
+     * @brief Takes in the tangent drag of the closing gesture, when this command was given that
+     * gesture's key, so that one undo reopens the shape and restores the tangents.
+     **/
+    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
 private:
     RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
     std::shared_ptr<RotoCurveContextHostState> _hostState;
+    std::shared_ptr<MoveTangentUndoCommand> _closingDrag;
 };
+
+// The commands below that override mergeWith() take the key of the interact's open undo gesture
+// when they are created and merge only with a command of the same gesture, so one drag is one
+// undo step and two drags of the same points are two.
 
 class SmoothCuspUndoCommand
     : public UndoCommand,
@@ -440,8 +565,14 @@ public:
     virtual void redo() OVERRIDE FINAL;
     virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
 
+    virtual bool isObsolete() const OVERRIDE FINAL
+    {
+        return _refusals.refusedEverything();
+    }
+
 private:
     RotoCurveInteractWPtr _roto;
+    RefusedEditWatch _refusals;
     bool _firstRedoCalled;
     double _time;
     int _count;
@@ -456,13 +587,20 @@ class MakeBezierUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MakeBezierUndoCommand)
 
 public:
+    /**
+     * @brief With createPoint, adds a point at (dx, dy); sharpenPrevious first collapses the exit
+     * handle of the point before it. Otherwise drags the last point's handles by (dx, dy): both
+     * mirrored, or with breakTangents only its exit handle.
+     **/
     MakeBezierUndoCommand(const RotoCurveInteractPtr& roto,
                           const BezierPtr& curve,
                           bool isOpenBezier,
                           bool createPoint,
                           double dx,
                           double dy,
-                          double time);
+                          double time,
+                          bool breakTangents = false,
+                          bool sharpenPrevious = false);
 
     virtual ~MakeBezierUndoCommand();
 
@@ -475,6 +613,8 @@ public:
     }
 
 private:
+    void sharpenLastPoint();
+
     bool _firstRedoCalled;
     RotoCurveInteractWPtr _roto;
     RotoLayerPtr _parentLayer;
@@ -487,6 +627,72 @@ private:
     double _time;
     int _lastPointAdded;
     bool _isOpenBezier;
+    bool _breakTangents;
+    bool _sharpenPrevious;
+    // The point before the added one, as it was before sharpenPrevious changed it.
+    BezierCPPtr _previousCpState, _previousFpState;
+};
+
+/**
+ * @brief Adds the points of a freehand sketch to the Bezier being drawn, or to a new one, with
+ * smooth tangents.
+ **/
+class SketchBezierUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(SketchBezierUndoCommand)
+
+public:
+    SketchBezierUndoCommand(const RotoCurveInteractPtr& roto,
+                            const BezierPtr& curve,
+                            bool isOpenBezier,
+                            const std::list<std::pair<double, double>>& points,
+                            double time,
+                            const std::pair<double, double>& pixelScale);
+
+    virtual ~SketchBezierUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    BezierPtr getCurve() const
+    {
+        return _curve;
+    }
+
+private:
+    RotoCurveInteractWPtr _roto;
+    BezierPtr _curve;
+    BezierPtr _before, _after;
+    RotoLayerPtr _parentLayer;
+    int _indexInLayer;
+    bool _createdCurve;
+    bool _firstRedoCalled;
+    bool _isOpenBezier;
+    std::list<std::pair<double, double>> _points;
+    double _time;
+    std::pair<double, double> _pixelScale;
+};
+
+/**
+ * @brief Marks points broken, so dragging one tangent handle no longer moves the other.
+ **/
+class BreakTangentsUndoCommand
+    : public RotoDragUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(BreakTangentsUndoCommand)
+
+public:
+    BreakTangentsUndoCommand(const RotoCurveInteractPtr& roto,
+                             const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
+                             double time);
+
+    virtual ~BreakTangentsUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _toBreak;
+    bool _done;
 };
 
 class MakeEllipseUndoCommand

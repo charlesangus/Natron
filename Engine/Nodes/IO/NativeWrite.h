@@ -70,7 +70,11 @@
 #define kNatronWriteParamTileSize "tileSize"
 #define kNatronWriteParamFrameRange "frameRange"
 #define kNatronWriteParamPartSplitting "partSplitting"
-#define kNatronWriteParamWriteMetadata "writeMetadata"
+#define kNatronWriteParamMetadata "metadata"
+#define kNatronWriteMetadataNone "none"
+#define kNatronWriteMetadataDefault "default"
+#define kNatronWriteMetadataAllExceptInput "allExceptInput"
+#define kNatronWriteMetadataAll "all"
 #define kNatronWriteParamViews "views"
 #define kNatronWriteParamFirstFrame "firstFrame"
 #define kNatronWriteParamLastFrame "lastFrame"
@@ -100,7 +104,7 @@ NATRON_NAMESPACE_ENTER
  * frameRange, firstFrame, lastFrame, frameIncrement, colorspace, the ocioContext group
  * contextKey1..4 and contextValue1..4, the hidden ocioConfigFile and ocioWorkingSpace, bitDepth,
  * compression, quality, dwaCompressionLevel, zipCompressionLevel, tileSize, partSplitting,
- * views, writeMetadata, readBack, reload.
+ * views, metadata, readBack, reload.
  *
  * The file always takes the input's format; a Reformat upstream changes it.
  **/
@@ -342,7 +346,7 @@ private:
     KnobIntWPtr _zipCompressionLevel;
     KnobChoiceWPtr _tileSize;
     KnobChoiceWPtr _partSplitting;
-    KnobBoolWPtr _writeMetadata;
+    KnobChoiceWPtr _metadata;
     KnobBoolWPtr _readBack;
     KnobButtonWPtr _reload;
     // The files read back, kept until purgeCaches() (Reload, a finished render) so that rendering

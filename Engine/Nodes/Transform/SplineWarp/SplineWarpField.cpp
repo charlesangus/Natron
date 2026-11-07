@@ -30,6 +30,7 @@
 #include <cstring>
 #include <list>
 
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -326,6 +327,22 @@ SplineWarpField::getSourceBounds() const
     }
 
     return bounds;
+}
+
+void
+SplineWarpField::getLargestKernelScales(double* scaleX,
+                                        double* scaleY) const
+{
+    const double ratioXY = _scaleX / _scaleY;
+    const double ratioYX = _scaleY / _scaleX;
+
+    *scaleX = 1.;
+    *scaleY = 1.;
+    for (std::size_t k = 0; k + 4 <= _jacobian.size(); k += 4) {
+        const double* J = &_jacobian[k];
+        *scaleX = std::max(*scaleX, Resampler::kernelScale(J[0], J[1] * ratioXY));
+        *scaleY = std::max(*scaleY, Resampler::kernelScale(J[2] * ratioYX, J[3]));
+    }
 }
 
 Point

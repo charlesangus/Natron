@@ -538,7 +538,7 @@ AutoStraightenOp::bake(const KnobReader& reader) const
                         reader.value(lensModel) == (int)AutoStraighten::eLensModelSpecific, reader.value(focalLength),
                         reader.value(cropFactor), reader.value(lensDependence), reader.value(aspectAdjust));
     p.crop = (Ashift::CropModeEnum)reader.value(autoCrop);
-    p.filter = (Resampler::FilterEnum)reader.value(filter);
+    p.filter = filterKnobs.read(reader);
     p.clamp = reader.value(clamp);
     p.blackOutside = reader.value(blackOutside);
 
@@ -880,10 +880,12 @@ AutoStraighten::initializeKnobs()
     page->addKnob(blackOutside);
     op().blackOutside = blackOutside;
 
+    op().filterKnobs.create(this, page, filter, clamp);
+
     addStageKnobs(page);
 
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // AutoStraighten::initializeKnobs
 
 void
@@ -909,16 +911,10 @@ AutoStraighten::refreshVisibility()
 }
 
 void
-AutoStraighten::updateClampEnabled(double time,
-                                   ViewSpec view)
+AutoStraighten::updateFilterVisibility(double time,
+                                       ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
@@ -930,7 +926,7 @@ AutoStraighten::onKnobsLoaded()
     _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
     _ui->onToolChangedInternal(defaultAction);
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -969,7 +965,7 @@ AutoStraighten::knobChanged(KnobI* k,
     KnobChoicePtr filterKnob = op().filter.lock();
 
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, viewIdx);
+        updateFilterVisibility(time, viewIdx);
 
         return true;
     }

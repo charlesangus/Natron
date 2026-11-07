@@ -41,9 +41,9 @@ makePinnedMetadata()
     ImageMetadata m;
 
     m.setInt("exr/a", 7);
-    m.setDouble("ofx/framerate", 24.0);
-    m.setString("ofx/project", "abc");
-    m.setIntVector("ofx/viewnames", std::vector<int> { 1, -2 });
+    m.setDouble("natron/framerate", 24.0);
+    m.setString("natron/project", "abc");
+    m.setIntVector("natron/viewnames", std::vector<int> { 1, -2 });
     m.setDoubleVector("zz", std::vector<double> { 0.5 });
 
     return m;
@@ -55,21 +55,21 @@ TEST(ImageMetadata, RoundTripsEveryValueType)
     ImageMetadata m;
 
     m.setInt("exif/ISO", 800);
-    m.setDouble("ofx/pixelaspect", 2.0);
-    m.setString("ofx/creator", "Natron");
+    m.setDouble("natron/pixelaspect", 2.0);
+    m.setString("natron/creator", "Natron");
     m.setIntVector("dpx/vec", std::vector<int> { 3, 1, 4 });
     m.setDoubleVector("exr/chromaticities", std::vector<double> { 0.64, 0.33, 0.3, 0.6 });
 
     ASSERT_EQ((size_t)5, m.size());
     EXPECT_EQ(800, m.getInt("exif/ISO").value());
-    EXPECT_EQ(2.0, m.getDouble("ofx/pixelaspect").value());
-    EXPECT_EQ(std::string("Natron"), m.getString("ofx/creator").value());
+    EXPECT_EQ(2.0, m.getDouble("natron/pixelaspect").value());
+    EXPECT_EQ(std::string("Natron"), m.getString("natron/creator").value());
     EXPECT_EQ((std::vector<int> { 3, 1, 4 }), m.getIntVector("dpx/vec").value());
     EXPECT_EQ((std::vector<double> { 0.64, 0.33, 0.3, 0.6 }), m.getDoubleVector("exr/chromaticities").value());
 
     EXPECT_EQ(ImageMetadataType::eInt, m.typeOf("exif/ISO").value());
-    EXPECT_EQ(ImageMetadataType::eDouble, m.typeOf("ofx/pixelaspect").value());
-    EXPECT_EQ(ImageMetadataType::eString, m.typeOf("ofx/creator").value());
+    EXPECT_EQ(ImageMetadataType::eDouble, m.typeOf("natron/pixelaspect").value());
+    EXPECT_EQ(ImageMetadataType::eString, m.typeOf("natron/creator").value());
     EXPECT_EQ(ImageMetadataType::eIntVector, m.typeOf("dpx/vec").value());
     EXPECT_EQ(ImageMetadataType::eDoubleVector, m.typeOf("exr/chromaticities").value());
 }
@@ -113,7 +113,7 @@ TEST(ImageMetadata, IteratesInSortedKeyOrder)
 {
     ImageMetadata m;
 
-    m.setInt("ofx/b", 1);
+    m.setInt("natron/b", 1);
     m.setInt("exr/z", 2);
     m.setInt("dpx/m", 3);
 
@@ -124,7 +124,7 @@ TEST(ImageMetadata, IteratesInSortedKeyOrder)
     ASSERT_EQ((size_t)3, keys.size());
     EXPECT_EQ(std::string("dpx/m"), keys[0]);
     EXPECT_EQ(std::string("exr/z"), keys[1]);
-    EXPECT_EQ(std::string("ofx/b"), keys[2]);
+    EXPECT_EQ(std::string("natron/b"), keys[2]);
 }
 
 TEST(ImageMetadata, EmptyIteratesNothing)
@@ -193,7 +193,7 @@ TEST(ImageMetadata, HashDistinguishesContents)
 
 TEST(ImageMetadata, HashIsPinned)
 {
-    EXPECT_EQ((U64)0x13e58f00e45f2806ULL, makePinnedMetadata().hash());
+    EXPECT_EQ((U64)0x47bd09b47e9f45dcULL, makePinnedMetadata().hash());
     EXPECT_EQ((U64)0, ImageMetadata().hash());
 }
 

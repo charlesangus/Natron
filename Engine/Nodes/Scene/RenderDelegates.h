@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,10 @@
 
 // Storm's HdRendererPlugin type name, the renderer every consumer starts with.
 #define kRenderDelegateStormId "HdStormRendererPlugin"
+
+// The id of a Renderer menu entry that renders with the renderer the active render settings prim
+// names (natron:renderer), Storm when it names none. No Hydra plug-in has it.
+#define kRenderDelegateSceneDefaultId "sceneDefault"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,6 +82,16 @@ std::string unavailableMessage(const std::string& id);
  * USD's plug-in registry. Only plug-ins registered before the first list() are seen.
  **/
 void registerPluginDirectory(const std::string& path);
+
+/**
+ * @brief Tests only. The hook runs just before every Hydra render call of the viewport and of
+ * USDRender, on the calling thread, so that a test can make the engine throw. Pass an empty
+ * function to remove it.
+ **/
+void setRenderFaultHook(std::function<void()> hook);
+
+// Runs the hook if one is set.
+void runRenderFaultHook();
 } // namespace RenderDelegates
 
 NATRON_NAMESPACE_EXIT

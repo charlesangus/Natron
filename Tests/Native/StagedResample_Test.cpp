@@ -82,6 +82,17 @@ const double kScaleX = 1.5;
 const double kScaleY = 0.75;
 const double kMix = 0.5;
 
+// The sampling the test op reports; the tests that sweep filters set them and restore the defaults.
+Resampler::FilterSpec gTestFilter = Resampler::eFilterCubic;
+bool gTestClamp = false;
+
+struct Placement {
+    double translateX = kTranslateX;
+    double translateY = kTranslateY;
+    double scaleX = kScaleX;
+    double scaleY = kScaleY;
+};
+
 constexpr InputSpec kInputs[] = {
     InputSpec { .label = "Source" },
 };
@@ -173,8 +184,8 @@ struct TestResampleOp {
     {
         ResampleSettings s;
 
-        s.filter = Resampler::eFilterCubic;
-        s.clamp = false;
+        s.filter = gTestFilter;
+        s.clamp = gTestClamp;
         s.blackOutside = true;
         s.invert = false;
         s.transformIsIdentity = isIdentity(params, context);
@@ -268,11 +279,11 @@ registerResampleOpsOnce()
 }
 
 Resampler::CanonicalTransformFn
-testTransformFn()
+testTransformFn(const Placement& at = Placement())
 {
-    return [](double /*time*/, double /*amount*/, bool invert, TransformMath::Mat3* matrix) {
-        *matrix = invert ? TransformMath::transformCanonical(kTranslateX, kTranslateY, kScaleX, kScaleY, 0., 0., false, 0., 0., 0.)
-                         : TransformMath::inverseTransformCanonical(kTranslateX, kTranslateY, kScaleX, kScaleY, 0., 0., false, 0., 0., 0.);
+    return [at](double /*time*/, double /*amount*/, bool invert, TransformMath::Mat3* matrix) {
+        *matrix = invert ? TransformMath::transformCanonical(at.translateX, at.translateY, at.scaleX, at.scaleY, 0., 0., false, 0., 0., 0.)
+                         : TransformMath::inverseTransformCanonical(at.translateX, at.translateY, at.scaleX, at.scaleY, 0., 0., false, 0., 0., 0.);
 
         return true;
     };
@@ -314,7 +325,8 @@ protected:
     bool createGraph(bool masked,
                      NodePtr* source,
                      NodePtr* mask,
-                     NodePtr* op)
+                     NodePtr* op,
+                     const Placement& at = Placement())
     {
         *source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
         *op = createNode(QString::fromUtf8(masked ? kStagedMaskedResampleOpPluginID : kStagedResampleOpPluginID));
@@ -325,7 +337,7 @@ protected:
         }
         setParitySourceComponents(*source, "rgba");
         connectNodes(*source, *op, 0, true);
-        if (!setKnobValues(*op, kStagedResampleParamTranslate, { kTranslateX, kTranslateY }) || !setKnobValues(*op, kStagedResampleParamScale, { kScaleX, kScaleY })) {
+        if (!setKnobValues(*op, kStagedResampleParamTranslate, { at.translateX, at.translateY }) || !setKnobValues(*op, kStagedResampleParamScale, { at.scaleX, at.scaleY })) {
             return false;
         }
         if (!masked) {
@@ -383,15 +395,17 @@ protected:
     // The op's pixels as Resampler computes them from the source's: the source resampled through
     // the test matrix over window, then, with masked, blended with the source under each pixel by
     // the mask's alpha times the mix.
-    void expectRenderMatchesResampler(bool masked)
+    void expectRenderMatchesResampler(bool masked,
+                                      const Placement& at = Placement(),
+                                      const std::string& label = std::string())
     {
         NodePtr source;
         NodePtr mask;
         NodePtr op;
-        ASSERT_TRUE(createGraph(masked, &source, &mask, &op));
+        ASSERT_TRUE(createGraph(masked, &source, &mask, &op, at));
 
         for (unsigned int level = 0; level < 2; ++level) {
-            const std::string what = std::string(masked ? "masked" : "plain") + ", mipmap level " + std::to_string(level);
+            const std::string what = label + std::string(masked ? "masked" : "plain") + ", mipmap level " + std::to_string(level);
             RectD rod;
             ASSERT_TRUE(regionOfDefinition(op, level, &rod)) << what;
             const RectI window = rod.toPixelEnclosing(level, 1.);
@@ -412,8 +426,8 @@ protected:
             const double s = RenderScale::fromMipmapLevel(level).toOfxPointD().x;
             const Resampler::SourceImage image(&sourcePixels[0], sourceWindow, 4);
             Resampler::SamplingTransforms transforms;
-            Resampler::buildSamplingTransforms(testTransformFn(), kTime, false, Resampler::BlurSettings(), s, s, false, 1., 1., &transforms);
-            const Resampler::ResampleParams params = Resampler::makeResampleParams(transforms, Resampler::eFilterCubic, false, true);
+            Resampler::buildSamplingTransforms(testTransformFn(at), kTime, false, Resampler::BlurSettings(), s, s, false, 1., 1., &transforms);
+            const Resampler::ResampleParams params = Resampler::makeResampleParams(transforms, gTestFilter, gTestClamp, true);
 
             const int width = window.width();
             std::vector<float> want((std::size_t)width * window.height() * 4);
@@ -451,6 +465,76 @@ protected:
 TEST_F(StagedResampleTest, RendersLikeTheResampler)
 {
     expectRenderMatchesResampler(false);
+}
+
+namespace {
+
+struct FilterCase {
+    const char* name;
+    Resampler::FilterSpec spec;
+};
+
+// The seven filters of M270 at their default parameters, Sinc at its two extreme lobe counts and
+// Bicubic at three (B, C) pairs besides the default, one with no outer lobe.
+const FilterCase kNewFilters[] = {
+    { "lanczos2", Resampler::eFilterLanczos2 },
+    { "lanczos3", Resampler::eFilterLanczos3 },
+    { "lanczos4", Resampler::eFilterLanczos4 },
+    { "sinc", Resampler::eFilterSinc },
+    { "blackman-harris", Resampler::eFilterBlackmanHarris },
+    { "gaussian", Resampler::eFilterGaussian },
+    { "bicubic", Resampler::eFilterBicubic },
+    { "sinc-lobes2", Resampler::FilterSpec(Resampler::eFilterSinc, 2) },
+    { "sinc-lobes8", Resampler::FilterSpec(Resampler::eFilterSinc, 8) },
+    { "bicubic-b0-c05", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.5) },
+    { "bicubic-b1-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 1., 0.) },
+    { "bicubic-b0-c0", Resampler::FilterSpec(Resampler::eFilterBicubic, 4, 0., 0.) },
+};
+
+struct ScaleCase {
+    const char* name;
+    Placement at;
+};
+
+// 1:1, 2x and 3x up, 4x and 64x down, each on an exact scale and on one that is not; 3x up and
+// just above it put the taps on and next to the kernel's zeros.
+const ScaleCase kScales[] = {
+    { "1to1-exact", { 2., -3., 1., 1. } },
+    { "1to1-inexact", { 0.3172, -0.2139, 1., 1. } },
+    { "up2-exact", { 0., 0., 2., 2. } },
+    { "up2-inexact", { 0.2713, 0.1371, 2.13, 1.9 } },
+    { "up3-exact", { 0., 0., 3., 3. } },
+    { "up3-near-boundary", { 0.5, 0.25, 3.0004, 2.9996 } },
+    { "down4-exact", { 0., 0., 0.25, 0.25 } },
+    { "down4-inexact", { 0.3172, -0.2139, 0.27, 0.23 } },
+    { "down64-exact", { 0., 0., 1. / 64., 1. / 64. } },
+    { "down64-inexact", { 1.5172, 0.1371, 0.0161, 0.0173 } },
+};
+
+} // namespace
+
+// Each new filter, through the staged op's FilterSpec, renders bit-exact what Resampler computes
+// from the same spec, with and without Clamp, on every scale above and at half scale too.
+TEST_F(StagedResampleTest, NewFiltersRenderLikeTheResamplerAtEveryScale)
+{
+    for (const FilterCase& f : kNewFilters) {
+        const bool honoursClamp = Resampler::filterHonoursClamp(f.spec.filter);
+        for (const ScaleCase& s : kScales) {
+            for (bool clamp : { false, true }) {
+                if (clamp && !honoursClamp) {
+                    continue;
+                }
+                gTestFilter = f.spec;
+                gTestClamp = clamp;
+                expectRenderMatchesResampler(false, s.at, std::string(f.name) + " " + s.name + (clamp ? " clamp" : "") + ", ");
+                gTestFilter = Resampler::eFilterCubic;
+                gTestClamp = false;
+                if (HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 // Under a mask and a mix of 0.5 the resampled pixels are blended with the source under them.
@@ -518,7 +602,7 @@ TEST_F(StagedResampleTest, RegionsOfInterestFollowTheMatrix)
             const double s = scale.toOfxPointD().x;
             const Resampler::RegionParams params = testRegionParams(masked != 0, kMix);
             RectD want;
-            Resampler::getRegionOfInterest(testTransformFn(), window, srcRoD, projectRect(), kTime, 1., s, s, params, &want);
+            Resampler::getRegionOfInterest(testTransformFn(), window, srcRoD, projectRect(), kTime, 1., 1., s, s, params, &want);
             if (masked) {
                 RectD reference = window;
                 Resampler::expandRoI(window, 1., s, s, params.filter, false, 1., &reference);

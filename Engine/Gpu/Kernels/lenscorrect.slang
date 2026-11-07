@@ -19,6 +19,7 @@ static const uint kTcaTermsBase = 20;
 static const uint kVignettingTermsBase = 32;
 static const uint kCoordBase = 36;
 static const uint kMaxCoordSteps = 4;
+static const uint kLobesWord = kCoordBase + 6 * kMaxCoordSteps;
 
 static const uint kScale = 0;
 static const uint kDistPoly3 = 1;
@@ -67,7 +68,7 @@ static const float kHuge = 1.6e16;
 
 struct LensCorrect
 {
-    uint filter;
+    FilterSpec spec;
     uint flags;
     uint nCoordSteps;
     uint tca;
@@ -91,7 +92,7 @@ struct LensCorrect
 LensCorrect lensCorrectLoad(StructuredBuffer<uint> params)
 {
     LensCorrect d;
-    d.filter = params[0];
+    d.spec = loadFilterSpec(params, 0, kLobesWord);
     d.flags = params[1];
     d.nCoordSteps = min(params[2], kMaxCoordSteps);
     d.tca = params[3];
@@ -555,7 +556,7 @@ float4 lensCorrectPixel(LensCorrect d, int2 p)
     }
     const ResampleSource src = lensCorrectSource(d);
     const bool clampFilter = (d.flags & kLensCorrectClamp) != 0;
-    float4 v = sampleAt(src, sg.x, sg.y, J, jacobian, d.filter, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
+    float4 v = sampleAt(src, sg.x, sg.y, J, jacobian, d.spec, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
     {
         if ((d.flags & kLensCorrectVignetteMask) != 0)
@@ -568,8 +569,8 @@ float4 lensCorrectPixel(LensCorrect d, int2 p)
     {
         const float2 sr = toSource(d, m.r);
         const float2 sb = toSource(d, m.b);
-        v.x = sampleAt(src, sr.x, sr.y, J, jacobian, d.filter, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0)).x;
-        v.z = sampleAt(src, sb.x, sb.y, J, jacobian, d.filter, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0)).z;
+        v.x = sampleAt(src, sr.x, sr.y, J, jacobian, d.spec, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0)).x;
+        v.z = sampleAt(src, sb.x, sb.y, J, jacobian, d.spec, clampFilter, kWrapNone, kWrapNone, int4(0, 0, 0, 0)).z;
     }
     const bool manual = (d.flags & kLensCorrectManualVignette) != 0;
     if (d.vignetting != 0 || manual)

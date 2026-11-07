@@ -52,10 +52,12 @@ struct SceneMetadata {
     double metersPerUnit = 0.01;
     std::string defaultPrim;
     double timeCodesPerSecond = 24.;
+    // The stage's active UsdRenderSettings prim (UsdRenderTokens->renderSettingsPrimPath); empty when none.
+    std::string renderSettingsPrimPath;
 
     bool operator==(const SceneMetadata& other) const
     {
-        return upAxis == other.upAxis && metersPerUnit == other.metersPerUnit && defaultPrim == other.defaultPrim && timeCodesPerSecond == other.timeCodesPerSecond;
+        return upAxis == other.upAxis && metersPerUnit == other.metersPerUnit && defaultPrim == other.defaultPrim && timeCodesPerSecond == other.timeCodesPerSecond && renderSettingsPrimPath == other.renderSettingsPrimPath;
     }
 
     bool operator!=(const SceneMetadata& other) const

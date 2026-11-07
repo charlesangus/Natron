@@ -54,6 +54,13 @@ const Resampler::FilterEnum kAllFilters[] = {
     Resampler::eFilterMitchell,
     Resampler::eFilterParzen,
     Resampler::eFilterNotch,
+    Resampler::eFilterLanczos2,
+    Resampler::eFilterLanczos3,
+    Resampler::eFilterLanczos4,
+    Resampler::eFilterSinc,
+    Resampler::eFilterBlackmanHarris,
+    Resampler::eFilterGaussian,
+    Resampler::eFilterBicubic,
 };
 
 std::vector<float>
@@ -384,6 +391,146 @@ TEST(ResamplerCoordMap, MissingSourceIsBlack)
     for (int k = 0; k < 8; ++k) {
         EXPECT_EQ(out[k], 0.f);
     }
+}
+
+namespace {
+// One-channel x-stripes over [0, 64)^2: the value is x % 2.
+std::vector<float>
+makeStripes()
+{
+    std::vector<float> data(64 * 64);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            data[(std::size_t)y * 64 + x] = (float)(x % 2);
+        }
+    }
+    return data;
+}
+
+float
+sampleOne(const SourceImage& src,
+          float x,
+          float y,
+          const float* jacobian,
+          const Resampler::FilterSpec& filter,
+          bool blackOutside,
+          WrapMode wrap = Resampler::eWrapNone)
+{
+    float out = -1.f;
+
+    Resampler::resampleRowFromCoords(src, &x, &y, jacobian, 1, filter, false, blackOutside, wrap, wrap, &out, 1);
+    return out;
+}
+} // anon namespace
+
+TEST(ResamplerCoordMap, NullJacobianIsThePlainKernel)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
+    const float unit[4] = { 1.f, 0.f, 0.f, 1.f };
+
+    for (Resampler::FilterEnum f : kAllFilters) {
+        for (float x : { 20.5f, 21.25f, 30.75f }) {
+            const float plain = sampleOne(src, x, 20.5f, 0, f, false);
+            EXPECT_EQ(plain, sampleOne(src, x, 20.5f, zero, f, false)) << "filter " << f << " x " << x;
+            if (f != Resampler::eFilterBox) {
+                EXPECT_EQ(plain, sampleOne(src, x, 20.5f, unit, f, false)) << "filter " << f << " x " << x;
+            }
+        }
+    }
+}
+
+TEST(ResamplerCoordMap, MinifyingJacobianWidensTheKernel)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float wideX[4] = { 4.f, 0.f, 0.f, 1.f };
+    const float wideY[4] = { 1.f, 0.f, 0.f, 4.f };
+
+    // Pixel 20 holds 0. Widening along x averages the stripes; widening only along y does not.
+    EXPECT_NEAR(sampleOne(src, 20.5f, 20.5f, 0, Resampler::eFilterLanczos3, false), 0.f, 1e-6);
+    EXPECT_NEAR(sampleOne(src, 20.5f, 20.5f, wideX, Resampler::eFilterLanczos3, false), 0.5f, 0.1f);
+    EXPECT_NEAR(sampleOne(src, 20.5f, 20.5f, wideY, Resampler::eFilterLanczos3, false), 0.f, 1e-6);
+}
+
+TEST(ResamplerCoordMap, PixelsOutsideTheSourceUseThePlainKernel)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float wide[4] = { 4.f, 0.f, 0.f, 4.f };
+    const float yWideOnly[4] = { 0.f, 0.f, 0.f, 4.f };
+    const float xWideOnly[4] = { 4.f, 0.f, 0.f, 0.f };
+
+    for (Resampler::FilterEnum f : { Resampler::eFilterLanczos3, Resampler::eFilterSinc, Resampler::eFilterGaussian }) {
+        // Only the row of the axis that is out is zeroed.
+        for (float x : { -10.5f, 80.5f }) {
+            EXPECT_EQ(sampleOne(src, x, 20.5f, yWideOnly, f, false), sampleOne(src, x, 20.5f, wide, f, false)) << "filter " << f << " x " << x;
+        }
+        for (float y : { -10.5f, 80.5f }) {
+            EXPECT_EQ(sampleOne(src, 20.5f, y, xWideOnly, f, false), sampleOne(src, 20.5f, y, wide, f, false)) << "filter " << f << " y " << y;
+        }
+        // With black outside, either axis out blacks the pixel.
+        EXPECT_EQ(sampleOne(src, -10.5f, 20.5f, wide, f, true), 0.f);
+        EXPECT_EQ(sampleOne(src, 20.5f, 80.5f, wide, f, true), 0.f);
+    }
+}
+
+TEST(ResamplerCoordMap, ClampMovedAxisUsesThePlainKernel)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float wide[4] = { 4.f, 0.f, 0.f, 4.f };
+
+    // eWrapClamp moves x onto the edge and zeroes its row, so it matches a Jacobian with that row zero.
+    const float yWideOnly[4] = { 0.f, 0.f, 0.f, 4.f };
+    EXPECT_EQ(sampleOne(src, -10.5f, 20.5f, wide, Resampler::eFilterLanczos3, false, Resampler::eWrapClamp), sampleOne(src, -10.5f, 20.5f, yWideOnly, Resampler::eFilterLanczos3, false, Resampler::eWrapClamp));
+    EXPECT_EQ(sampleOne(src, 80.5f, 20.5f, wide, Resampler::eFilterSinc, true, Resampler::eWrapClamp), sampleOne(src, 80.5f, 20.5f, yWideOnly, Resampler::eFilterSinc, true, Resampler::eWrapClamp));
+}
+
+TEST(ResamplerCoordMap, NonFiniteAndHugeJacobiansStayBounded)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
+    const float notFinite[4] = { nan, inf, -inf, nan };
+    const float huge[4] = { 1e30f, 0.f, 0.f, -1e30f };
+    const float mixed[4] = { 1e38f, inf, nan, 3e38f };
+
+    for (Resampler::FilterEnum f : kAllFilters) {
+        EXPECT_EQ(sampleOne(src, 20.5f, 20.5f, notFinite, f, false), sampleOne(src, 20.5f, 20.5f, zero, f, false)) << "filter " << f;
+        if (f == Resampler::eFilterBox) {
+            continue;
+        }
+        for (const float* j : { huge, mixed }) {
+            for (bool black : { false, true }) {
+                const float v = sampleOne(src, 20.5f, 20.5f, j, f, black);
+                EXPECT_TRUE(std::isfinite(v)) << "filter " << f;
+                EXPECT_GE(v, -0.5f) << "filter " << f;
+                EXPECT_LE(v, 1.5f) << "filter " << f;
+            }
+        }
+    }
+}
+
+TEST(ResamplerCoordMap, WrapFoldsTheCentreOnly)
+{
+    const std::vector<float> stripes = makeStripes();
+    const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
+    const float wide[4] = { 4.f, 0.f, 0.f, 4.f };
+
+    // Near the edge the footprint hangs over: those reads are black (or clamped), not wrapped.
+    for (bool black : { false, true }) {
+        const float folded = sampleOne(src, 1.5f, 20.5f, wide, Resampler::eFilterLanczos3, black);
+        EXPECT_EQ(sampleOne(src, 65.5f, 20.5f, wide, Resampler::eFilterLanczos3, black, Resampler::eWrapRepeat), folded);
+        EXPECT_EQ(sampleOne(src, -62.5f, 20.5f, wide, Resampler::eFilterLanczos3, black, Resampler::eWrapRepeat), folded);
+    }
+
+    // A mirrored coordinate beyond the right edge folds back inside; the footprint stays as the folded one.
+    const float mirrored = sampleOne(src, 62.5f, 20.5f, wide, Resampler::eFilterLanczos3, true);
+    EXPECT_EQ(sampleOne(src, 65.5f, 20.5f, wide, Resampler::eFilterLanczos3, true, Resampler::eWrapMirror), mirrored);
 }
 
 NATRON_NAMESPACE_EXIT
